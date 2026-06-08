@@ -1,0 +1,346 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Workbench — Cockpit</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:ital,wght@0,400;0,500;0,600;0,700;1,400;1,500&display=swap" rel="stylesheet" />
+<style>
+  html, body { margin: 0; padding: 0; height: 100%; background: #0b0c12; }
+  #root { height: 100vh; }
+  * { box-sizing: border-box; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+
+<script type="text/babel">
+// ════════════════════════════════════════════════════════════════════════
+//  Workbench — main cockpit mockup (static hi-fi). Retro-console aesthetic.
+//  Theme: "muted dark" (violet structural accent). The status palette doubles
+//  as the accent system: ● needs you = magenta · ⠹ working = amber ·
+//  ○ done/idle = green · · closed = grey.
+// ════════════════════════════════════════════════════════════════════════
+
+const THEME = {
+  bg: '#13151e', panel: '#171a25', rail: '#13151e', titlebar: '#10121a',
+  border: '#2c2f44', borderActive: '#7c6df2',
+  text: '#d8dae8', textDim2: '#7c8197', textFaint: '#474b60',
+  sel: '#232742', selBar: '#7c6df2', accent: '#8b7cf6', accentSoft: 'rgba(139,124,246,0.14)',
+  working: '#e0a83e', needs: '#e85d9e', done: '#54c47a', closed: '#5a5e72',
+  addText: '#6cc886', delText: '#e8707a',
+  str: '#9bd4a6', kw: '#c08bf0', fn: '#7fb0f5', num: '#e0a83e', com: '#5a6072',
+};
+
+// ── sample data (generic but realistic dev tasks) ──────────────────────────
+const WB_INSTANCES = [
+  { group: 'acme', proj: 'api-gateway', title: 'rate-limiter', note: 'adding token-bucket rate limiting', branch: 'agent/rate-limiter', worktree: true, status: 'working', add: 128, del: 12, cost: '$0.91', ago: '1m' },
+  { group: 'acme', proj: 'api-gateway', title: 'fix-auth-redirect', note: 'debugging OAuth callback loop', branch: 'agent/fix-auth-redirect', worktree: true, status: 'needs', add: 34, del: 51, cost: '$0.42', ago: 'now', selected: true },
+  { group: 'acme', proj: 'web-dashboard', title: 'chart-refactor', note: 'migrated charts to ECharts', branch: 'agent/chart-refactor', worktree: true, status: 'done', add: 402, del: 377, cost: '$1.20', ago: '8m' },
+  { group: 'acme', proj: 'web-dashboard', title: 'copy-tweaks', note: 'polishing empty states', branch: 'main', worktree: false, shared: true, status: 'working', add: 12, del: 3, cost: '$0.18', ago: '30s' },
+  { group: 'docs', proj: 'handbook', title: 'release-notes', note: 'draft v2.3 release notes', branch: 'main', worktree: false, status: 'needs', add: 56, del: 4, cost: '$0.47', ago: '3m' },
+  { group: 'docs', proj: 'handbook', title: 'api-reference', note: 'regenerate API reference', branch: '—', worktree: false, status: 'closed', add: null, del: null, cost: '$0.31', ago: '2h' },
+];
+const WB_GROUPS = [
+  { id: 'acme', label: 'acme', cost: '$3.51', projects: ['api-gateway', 'web-dashboard'] },
+  { id: 'docs', label: 'docs', cost: '$0.78', projects: ['handbook'] },
+];
+const STATUS = {
+  working: { glyph: '⠹', cv: 'working' }, needs: { glyph: '●', cv: 'needs' },
+  done: { glyph: '○', cv: 'done' }, closed: { glyph: '·', cv: 'closed' },
+};
+
+// ── panel chrome (terminal title chip breaks the top border) ───────────────
+function Panel({ title, right, accent, children, style, bodyStyle }) {
+  return (
+    <div style={{ position: 'relative', border: '1px solid var(--wb-border)', background: 'var(--wb-panel)', display: 'flex', flexDirection: 'column', minHeight: 0, minWidth: 0, ...style }}>
+      <div style={{ position: 'absolute', top: -8, left: 14, display: 'flex', alignItems: 'center', gap: 8, height: 16, padding: '0 7px', background: 'var(--wb-panel)', whiteSpace: 'nowrap', font: '600 10.5px var(--wb-mono)', letterSpacing: '0.12em', zIndex: 1, textTransform: 'uppercase', color: accent ? 'var(--wb-accent)' : 'var(--wb-textDim2)' }}>
+        <span style={{ color: 'var(--wb-borderActive)' }}>╭─</span>{title}
+      </div>
+      {right && (
+        <div style={{ position: 'absolute', top: -8, right: 12, height: 16, padding: '0 6px', background: 'var(--wb-panel)', display: 'flex', alignItems: 'center', whiteSpace: 'nowrap', zIndex: 1 }}>{right}</div>
+      )}
+      <div style={{ display: 'flex', flexDirection: 'column', minHeight: 0, flex: 1, ...bodyStyle }}>{children}</div>
+    </div>
+  );
+}
+
+// ── title bar (Windows-style) ──────────────────────────────────────────────
+function TitleBar() {
+  const menus = ['File', 'View', 'Instance', 'Layout', 'Help'];
+  return (
+    <div style={{ height: 36, flex: '0 0 36px', background: 'var(--wb-titlebar)', borderBottom: '1px solid var(--wb-border)', display: 'flex', alignItems: 'stretch', font: '12px var(--wb-mono)', color: 'var(--wb-text)', userSelect: 'none' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 9, padding: '0 14px' }}>
+        <span style={{ color: 'var(--wb-accent)', fontWeight: 700, fontSize: 14, letterSpacing: '-0.5px' }}>▞▚</span>
+        <span style={{ fontWeight: 700, letterSpacing: '0.04em' }}>Workbench</span>
+      </div>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 2, paddingLeft: 6 }}>
+        {menus.map((m) => (<span key={m} style={{ padding: '4px 9px', color: 'var(--wb-textDim2)', fontSize: 11.5, borderRadius: 3 }}>{m}</span>))}
+      </div>
+      <div style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 }}>
+        <span style={{ color: 'var(--wb-textFaint)', fontSize: 11 }}>—</span>
+        <span style={{ color: 'var(--wb-textDim2)', fontSize: 11.5 }}>acme · api-gateway</span>
+      </div>
+      <div style={{ display: 'flex', alignItems: 'stretch' }}>
+        {[{ g: '─', k: 'min', s: 13 }, { g: '▢', k: 'max', s: 11 }, { g: '✕', k: 'close', s: 11 }].map((b) => (
+          <div key={b.k} style={{ width: 44, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--wb-textDim2)', fontSize: b.s }}>{b.g}</div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ── instance card ──────────────────────────────────────────────────────────
+function InstanceCard({ ins }) {
+  const st = STATUS[ins.status];
+  const dim = ins.status === 'closed';
+  return (
+    <div style={{ position: 'relative', padding: '8px 11px 9px 13px', marginBottom: 3, background: ins.selected ? 'var(--wb-sel)' : 'transparent', borderLeft: `2px solid ${ins.selected ? 'var(--wb-selBar)' : 'transparent'}`, opacity: dim ? 0.55 : 1 }}>
+      <div style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
+        <span style={{ color: `var(--wb-${st.cv})`, fontSize: 12, width: 12, flex: '0 0 12px', textAlign: 'center', lineHeight: 1 }}>{st.glyph}</span>
+        <span style={{ color: 'var(--wb-text)', fontWeight: 600, fontSize: 13, flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{ins.title}</span>
+        {ins.status === 'needs' && (<span style={{ font: '600 9px var(--wb-mono)', letterSpacing: '0.08em', color: 'var(--wb-bg)', background: 'var(--wb-needs)', padding: '1px 5px', borderRadius: 2, textTransform: 'uppercase' }}>needs you</span>)}
+        <span style={{ color: 'var(--wb-textFaint)', fontSize: 10.5, flex: '0 0 auto' }}>{ins.ago}</span>
+      </div>
+      <div style={{ color: 'var(--wb-textDim2)', fontSize: 11.5, fontStyle: 'italic', margin: '3px 0 5px 20px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{ins.note}</div>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 9, marginLeft: 20, font: '10.5px var(--wb-mono)', color: 'var(--wb-textFaint)' }}>
+        <span style={{ display: 'flex', alignItems: 'center', gap: 4, minWidth: 0 }}>
+          {ins.worktree && <span style={{ color: 'var(--wb-accent)' }}>⑃</span>}
+          <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 130 }}>{ins.branch}</span>
+        </span>
+        {ins.shared && <span style={{ color: 'var(--wb-working)' }}>⚠ shared</span>}
+        {ins.add != null && (<span style={{ marginLeft: 'auto', display: 'flex', gap: 5 }}><span style={{ color: 'var(--wb-addText)' }}>+{ins.add}</span><span style={{ color: 'var(--wb-delText)' }}>−{ins.del}</span></span>)}
+        <span style={{ marginLeft: ins.add != null ? 0 : 'auto', color: 'var(--wb-textDim2)' }}>{ins.cost}</span>
+      </div>
+    </div>
+  );
+}
+
+// ── instance manager rail ──────────────────────────────────────────────────
+function Rail() {
+  return (
+    <Panel title="instances"
+      right={<span style={{ color: 'var(--wb-done)', border: '1px solid var(--wb-border)', borderRadius: 2, padding: '1px 6px', letterSpacing: '0.06em', font: '10px var(--wb-mono)' }}>auto-yes</span>}
+      style={{ width: 322, flex: '0 0 322px' }} bodyStyle={{ padding: '14px 0 0' }}>
+      <div style={{ margin: '0 12px 10px', padding: '7px 11px', display: 'flex', alignItems: 'center', gap: 8, background: 'var(--wb-accentSoft)', border: '1px solid var(--wb-needs)' }}>
+        <span style={{ color: 'var(--wb-needs)', fontSize: 12 }}>●</span>
+        <span style={{ color: 'var(--wb-text)', fontSize: 12, fontWeight: 600, whiteSpace: 'nowrap' }}>2 agents need you</span>
+        <span style={{ marginLeft: 'auto', color: 'var(--wb-textDim2)', fontSize: 10.5 }}>filter ▸</span>
+      </div>
+      <div style={{ overflow: 'hidden', flex: 1 }}>
+        {WB_GROUPS.map((g) => (
+          <div key={g.id} style={{ marginBottom: 4 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 7, padding: '4px 12px', font: '600 10.5px var(--wb-mono)', letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--wb-textDim2)' }}>
+              <span style={{ color: 'var(--wb-textFaint)' }}>▾</span>
+              <span style={{ color: 'var(--wb-accent)' }}>{g.label}</span>
+              <span style={{ marginLeft: 'auto', color: 'var(--wb-textFaint)', letterSpacing: 0 }}>{g.cost}</span>
+            </div>
+            {g.projects.map((p) => (
+              <div key={p}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 7, padding: '3px 12px 3px 22px', font: '11.5px var(--wb-mono)', color: 'var(--wb-textDim2)' }}>
+                  <span style={{ color: 'var(--wb-textFaint)' }}>▾</span>
+                  <span style={{ color: 'var(--wb-text)' }}>{p}</span>
+                  <span style={{ color: 'var(--wb-textFaint)', fontSize: 10 }}>⌥ main</span>
+                </div>
+                <div style={{ paddingLeft: 8 }}>
+                  {WB_INSTANCES.filter((i) => i.group === g.id && i.proj === p).map((i) => (<InstanceCard key={i.title} ins={i} />))}
+                </div>
+              </div>
+            ))}
+          </div>
+        ))}
+      </div>
+      <div style={{ borderTop: '1px solid var(--wb-border)', padding: '7px 13px', display: 'flex', alignItems: 'center', gap: 6, font: '10.5px var(--wb-mono)', color: 'var(--wb-textDim2)' }}>
+        <span style={{ color: 'var(--wb-accent)' }}>+</span> new instance
+        <span style={{ marginLeft: 'auto', color: 'var(--wb-textFaint)' }}>n</span>
+      </div>
+    </Panel>
+  );
+}
+
+// ── claude console (center) ────────────────────────────────────────────────
+function Sep() { return <span style={{ color: 'var(--wb-textFaint)', padding: '0 8px' }}>·</span>; }
+function L({ c, children, style }) { return <div style={{ color: c ? `var(--wb-${c})` : 'var(--wb-text)', padding: '0.5px 0', ...style }}>{children}</div>; }
+function Console() {
+  return (
+    <Panel title="console · fix-auth-redirect" accent
+      right={<span style={{ font: '10px var(--wb-mono)', color: 'var(--wb-needs)', letterSpacing: '0.06em' }}>● awaiting you</span>}
+      style={{ flex: 1, margin: '0 -1px' }} bodyStyle={{ padding: 0, paddingTop: 10 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 0, padding: '9px 14px 8px', borderBottom: '1px solid var(--wb-border)', font: '11px var(--wb-mono)', color: 'var(--wb-textDim2)', whiteSpace: 'nowrap', overflow: 'hidden' }}>
+        <span style={{ color: 'var(--wb-text)', fontWeight: 600 }}>api-gateway</span>
+        <Sep /> <span style={{ color: 'var(--wb-accent)' }}>⑃ agent/fix-auth-redirect</span>
+        <Sep /> <span style={{ fontStyle: 'italic', overflow: 'hidden', textOverflow: 'ellipsis' }}>debugging OAuth callback loop</span>
+        <span style={{ marginLeft: 'auto', paddingLeft: 12, color: 'var(--wb-textDim2)' }}>$0.42</span>
+      </div>
+      <div style={{ flex: 1, padding: '13px 16px', font: '12.5px/1.55 var(--wb-mono)', overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
+        <L c="textDim2" style={{ marginBottom: 6 }}><span style={{ color: 'var(--wb-accent)' }}>›</span> trace the redirect loop and fix it</L>
+        <L><span style={{ color: 'var(--wb-accent)' }}>▸</span> I'll trace the OAuth callback loop. Let me check the redirect handler.</L>
+        <div style={{ height: 7 }} />
+        <L c="textDim2"><span style={{ color: 'var(--wb-done)' }}>⚙</span> read&nbsp;&nbsp;<span style={{ color: 'var(--wb-fn)' }}>src/auth/callback.ts</span></L>
+        <L c="textDim2"><span style={{ color: 'var(--wb-done)' }}>⚙</span> grep&nbsp;&nbsp;<span style={{ color: 'var(--wb-str)' }}>"redirect_uri"</span> <span style={{ color: 'var(--wb-textFaint)' }}>· 7 matches</span></L>
+        <div style={{ height: 7 }} />
+        <L>{'\u25B8'} The callback re-enters because the <span style={{ color: 'var(--wb-kw)' }}>state</span> param isn't persisted</L>
+        <L style={{ paddingLeft: 13 }}>across the redirect. Adding a short-lived state store keyed by nonce.</L>
+        <div style={{ height: 7 }} />
+        <L c="textDim2"><span style={{ color: 'var(--wb-done)' }}>✓</span> edit&nbsp;&nbsp;<span style={{ color: 'var(--wb-fn)' }}>src/auth/state-store.ts</span>&nbsp;&nbsp;<span style={{ color: 'var(--wb-addText)' }}>+34</span> <span style={{ color: 'var(--wb-delText)' }}>−0</span></L>
+        <L c="textDim2"><span style={{ color: 'var(--wb-done)' }}>✓</span> edit&nbsp;&nbsp;<span style={{ color: 'var(--wb-fn)' }}>src/auth/callback.ts</span>&nbsp;&nbsp;&nbsp;&nbsp;<span style={{ color: 'var(--wb-addText)' }}>+0</span>&nbsp;&nbsp;<span style={{ color: 'var(--wb-delText)' }}>−51</span></L>
+        <div style={{ height: 7 }} />
+        <L>{'\u25B8'} Let me run the auth suite to confirm the loop is gone.</L>
+        <div style={{ height: 9 }} />
+        <div style={{ border: '1px solid var(--wb-needs)', background: 'var(--wb-accentSoft)', maxWidth: 560 }}>
+          <div style={{ font: '600 10px var(--wb-mono)', letterSpacing: '0.1em', textTransform: 'uppercase', color: 'var(--wb-needs)', padding: '6px 12px 0' }}>permission · run command</div>
+          <div style={{ padding: '5px 12px 10px' }}>
+            <div style={{ color: 'var(--wb-text)', padding: '4px 0 9px' }}><span style={{ color: 'var(--wb-textFaint)' }}>$</span> npm run test:auth</div>
+            <div style={{ color: 'var(--wb-text)' }}><span style={{ color: 'var(--wb-needs)' }}>❯</span> 1. Yes, run it</div>
+            <div style={{ color: 'var(--wb-textDim2)', paddingLeft: 16 }}>2. Yes, and don't ask again for npm</div>
+            <div style={{ color: 'var(--wb-textDim2)', paddingLeft: 16 }}>3. No, tell the agent what to do</div>
+          </div>
+        </div>
+      </div>
+      <div style={{ padding: '0 16px 10px' }}>
+        <div style={{ border: '1px solid var(--wb-border)', padding: '8px 12px', font: '12.5px var(--wb-mono)', color: 'var(--wb-textDim2)', display: 'flex', alignItems: 'center', gap: 8 }}>
+          <span style={{ color: 'var(--wb-accent)' }}>›</span>
+          <span style={{ color: 'var(--wb-textFaint)' }}>reply, or press 1 / 2 / 3</span>
+          <span style={{ marginLeft: 1, width: 7, height: 15, background: 'var(--wb-text)', display: 'inline-block' }} />
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '7px 2px 0', font: '10.5px var(--wb-mono)', color: 'var(--wb-textFaint)' }}>
+          <span><span style={{ color: 'var(--wb-needs)' }}>◐</span> sonnet-4.6</span>
+          <span>⑃ agent/fix-auth-redirect</span>
+          <span>⛁ 18.3k ctx</span>
+          <span style={{ marginLeft: 'auto' }}>$0.42</span>
+          <span>⏱ 5h · 41%</span>
+        </div>
+      </div>
+    </Panel>
+  );
+}
+
+// ── right dock: editor (top) + project shell (bottom) ──────────────────────
+function Tab({ label, active, dirty }) {
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '6px 13px', font: '11px var(--wb-mono)', color: active ? 'var(--wb-text)' : 'var(--wb-textDim2)', background: active ? 'var(--wb-panel)' : 'transparent', borderBottom: active ? '1px solid var(--wb-borderActive)' : '1px solid transparent' }}>
+      {label}{dirty && <span style={{ color: 'var(--wb-working)', fontSize: 14, lineHeight: 0 }}>●</span>}
+    </div>
+  );
+}
+function codeLine(n, indent, frags) {
+  return (
+    <div key={n} style={{ display: 'flex' }}>
+      <span style={{ width: 30, flex: '0 0 30px', textAlign: 'right', paddingRight: 12, color: 'var(--wb-textFaint)', userSelect: 'none' }}>{n}</span>
+      <span style={{ paddingLeft: indent * 16, whiteSpace: 'pre' }}>{frags.map((fr, i) => <React.Fragment key={i}>{fr}</React.Fragment>)}</span>
+    </div>
+  );
+}
+function Editor() {
+  const k = (t) => <span style={{ color: 'var(--wb-kw)' }}>{t}</span>;
+  const s = (t) => <span style={{ color: 'var(--wb-str)' }}>{t}</span>;
+  const f = (t) => <span style={{ color: 'var(--wb-fn)' }}>{t}</span>;
+  const c = (t) => <span style={{ color: 'var(--wb-com)' }}>{t}</span>;
+  const p = (t) => <span style={{ color: 'var(--wb-text)' }}>{t}</span>;
+  const n = (t) => <span style={{ color: 'var(--wb-num)' }}>{t}</span>;
+  return (
+    <Panel title="editor" style={{ flex: '1 1 58%' }} bodyStyle={{ padding: 0, paddingTop: 9 }}>
+      <div style={{ display: 'flex', borderBottom: '1px solid var(--wb-border)', alignItems: 'stretch', background: 'var(--wb-titlebar)' }}>
+        <Tab label="state-store.ts" active dirty />
+        <Tab label="callback.ts" />
+        <span style={{ flex: 1 }} />
+        <div style={{ display: 'flex', alignItems: 'center', padding: '0 11px', font: '10px var(--wb-mono)', color: 'var(--wb-textFaint)' }}>typescript</div>
+      </div>
+      <div style={{ padding: '4px 0', font: '12px/1.6 var(--wb-mono)', color: 'var(--wb-text)', flex: 1, overflow: 'hidden' }}>
+        {codeLine(1, 0, [c('// short-lived state store keyed by nonce')])}
+        {codeLine(2, 0, [k('const '), p('store '), k('= new '), f('Map'), p('<'), f('string'), p(', '), f('Entry'), p('>()')])}
+        {codeLine(3, 0, [])}
+        {codeLine(4, 0, [k('export function '), f('put'), p('(nonce: '), f('string'), p(', uri: '), f('string'), p(') {')])}
+        {codeLine(5, 1, [p('store.'), f('set'), p('(nonce, { uri, exp: '), f('Date'), p('.'), f('now'), p('() + '), n('120_000'), p(' })')])}
+        {codeLine(6, 0, [p('}')])}
+        {codeLine(7, 0, [])}
+        {codeLine(8, 0, [k('export function '), f('take'), p('(nonce: '), f('string'), p(') {')])}
+        {codeLine(9, 1, [k('const '), p('e = store.'), f('get'), p('(nonce)')])}
+        {codeLine(10, 1, [p('store.'), f('delete'), p('(nonce)')])}
+        {codeLine(11, 1, [k('return '), p('e && e.exp > '), f('Date'), p('.'), f('now'), p('() ? e.uri : '), k('null')])}
+        {codeLine(12, 0, [p('}')])}
+      </div>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '5px 13px', borderTop: '1px solid var(--wb-border)', font: '10px var(--wb-mono)', color: 'var(--wb-textFaint)', whiteSpace: 'nowrap' }}>
+        <span style={{ color: 'var(--wb-working)' }}>● unsaved</span>
+        <span>Ln 5, Col 18</span>
+        <span style={{ marginLeft: 'auto' }}>⌃S save</span>
+      </div>
+    </Panel>
+  );
+}
+function Shell() {
+  return (
+    <Panel title="shell · api-gateway" style={{ flex: '1 1 42%', marginTop: 14 }} bodyStyle={{ padding: 0, paddingTop: 9 }}>
+      <div style={{ padding: '11px 14px', font: '12px/1.6 var(--wb-mono)', color: 'var(--wb-text)', flex: 1, overflow: 'hidden' }}>
+        <div style={{ color: 'var(--wb-textDim2)' }}>~/work/.workbench/worktrees/fix-auth-redirect <span style={{ color: 'var(--wb-accent)' }}>(agent/fix-auth-redirect)</span></div>
+        <div><span style={{ color: 'var(--wb-done)' }}>$</span> git status -sb</div>
+        <div style={{ color: 'var(--wb-textDim2)' }}>## agent/fix-auth-redirect</div>
+        <div><span style={{ color: 'var(--wb-working)' }}>&nbsp;M</span> src/auth/callback.ts</div>
+        <div><span style={{ color: 'var(--wb-addText)' }}>&nbsp;A</span> src/auth/state-store.ts</div>
+        <div style={{ marginTop: 4 }}><span style={{ color: 'var(--wb-done)' }}>$</span>{' '}<span style={{ width: 7, height: 14, background: 'var(--wb-text)', display: 'inline-block', verticalAlign: 'middle' }} /></div>
+      </div>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '6px 12px', borderTop: '1px solid var(--wb-border)', font: '10px var(--wb-mono)', color: 'var(--wb-textDim2)' }}>
+        {['status', 'diff', 'commit'].map((b) => (<span key={b} style={{ border: '1px solid var(--wb-border)', borderRadius: 2, padding: '2px 8px' }}>{b}</span>))}
+      </div>
+    </Panel>
+  );
+}
+
+// ── status bar ─────────────────────────────────────────────────────────────
+function Meter({ label, pct, color }) {
+  const cells = 6, filled = Math.round((pct / 100) * cells);
+  return (
+    <span style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
+      <span style={{ color: 'var(--wb-textDim2)' }}>{label}</span>
+      <span style={{ letterSpacing: '-1px' }}>{Array.from({ length: cells }).map((_, i) => (<span key={i} style={{ color: i < filled ? `var(--wb-${color})` : 'var(--wb-textFaint)' }}>▮</span>))}</span>
+      <span style={{ color: 'var(--wb-textDim2)' }}>{pct}%</span>
+    </span>
+  );
+}
+function StatusBar() {
+  const hints = [['⌘K', 'palette'], ['n', 'new'], ['↵', 'focus'], ['⌃\\', 'split'], ['g', 'jump→needs'], ['q', 'quit']];
+  return (
+    <div style={{ height: 28, flex: '0 0 28px', background: 'var(--wb-titlebar)', borderTop: '1px solid var(--wb-border)', display: 'flex', alignItems: 'center', gap: 16, padding: '0 14px', font: '10.5px var(--wb-mono)', color: 'var(--wb-textDim2)' }}>
+      <span style={{ display: 'flex', alignItems: 'center', gap: 6, color: 'var(--wb-needs)' }}>● 2 need you</span>
+      <div style={{ display: 'flex', gap: 13, alignItems: 'center' }}>
+        {hints.map(([k, v]) => (<span key={k}><span style={{ color: 'var(--wb-accent)' }}>{k}</span> {v}</span>))}
+      </div>
+      <div style={{ marginLeft: 'auto', display: 'flex', gap: 16, alignItems: 'center' }}>
+        <Meter label="5h" pct={41} color="working" />
+        <Meter label="wk" pct={18} color="done" />
+      </div>
+    </div>
+  );
+}
+
+// ── full cockpit ───────────────────────────────────────────────────────────
+function Cockpit() {
+  const vars = {};
+  Object.keys(THEME).forEach((kk) => { vars[`--wb-${kk}`] = THEME[kk]; });
+  vars['--wb-mono'] = "'JetBrains Mono', ui-monospace, monospace";
+  return (
+    <div style={{ ...vars, width: '100%', height: '100%', background: 'var(--wb-bg)', color: 'var(--wb-text)', display: 'flex', flexDirection: 'column', font: "12.5px var(--wb-mono)", overflow: 'hidden' }}>
+      <TitleBar />
+      <div style={{ flex: 1, display: 'flex', minHeight: 0, padding: '14px 0 0' }}>
+        <Rail />
+        <Console />
+        <div style={{ width: 472, flex: '0 0 472px', display: 'flex', flexDirection: 'column', padding: '0 14px 0 13px', minHeight: 0 }}>
+          <Editor />
+          <Shell />
+        </div>
+      </div>
+      <StatusBar />
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<Cockpit />);
+</script>
+</body>
+</html>
