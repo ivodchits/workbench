@@ -483,6 +483,33 @@ emit per-byte global events.
 - **Done when:** Every registered action is searchable in the palette with its binding; a
   binding can be remapped and persists; permission mode can be switched from the UI.
 
+### Step 3.11 — Git panel (history / branches / checkout) **(may need 2 passes)**
+- **Goal:** A project-scoped Git panel: browse history, manage branches (checkout/create/
+  delete), inspect the working tree (stage/stash/discard), and fetch/pull/push — the repo-level
+  counterpart to the instance-scoped Diff/Review panel.
+- **Depends on:** 1.6, 2.7
+- **Design refs:** `§5` (Git), `§7` (Git panel), `§6` (worktree relation).
+- **Build:** A dockable panel bound to a **project** (not an instance). Read paths via `git2`
+  (libgit2) so they're fast and don't shell out per row: commit log (graph where it helps,
+  author/date/message/short-SHA in the box-drawing aesthetic), branch list with ahead/behind,
+  status (staged/unstaged/untracked), and per-commit diff + changed-file list. Write paths:
+  checkout, create/rename/delete branch, stage/unstage hunks, stash/pop, fetch/pull/push —
+  shelling out to `git` for the cases libgit2 handles awkwardly (merge/rebase, push-with-creds).
+  **Read-first, write-behind-confirmation:** any state-rewriting op (force-push, branch delete,
+  discard, hard reset) sits behind an explicit confirm and is logged; **never auto-push**.
+  Checking out a branch in a project with live worktree instances surfaces the same
+  **shared-working-dir warning** as 2.6/`§6` (you're moving HEAD under an agent). Worktree
+  create/remove stays an **instance-card** action (2.4/2.5) — the Git panel shows worktree
+  branches as ordinary branches but doesn't own their lifecycle. Wire git actions into the
+  command palette (3.10) with bindings; keyboard-navigable history + checkout (`§5.y`).
+- **Key files:** `src/panels/Git/`, `src-tauri/src/git/` (extend the diff/worktree module),
+  `src/ipc/git.ts`.
+- **Done when:** Opening the Git panel on a real repo shows live history and branches; you can
+  check out a branch (with the warning when worktree instances are live), stash and pop, and
+  fetch/pull/push; destructive ops prompt for confirmation; the view refreshes after each action.
+- **Out of scope:** a full commit composer / interactive rebase UI (use the Project Shell);
+  worktree provisioning (owned by 2.4/2.5).
+
 ---
 
 ## Phase 4 — Remote access & power features (`§8` Phase 4, `§11`)
@@ -613,7 +640,7 @@ Pull these in once the relevant phase is stable; each is an independent step whe
 **Phase 1 — MVP**
 - [x] 1.1 Theme system & retro chrome
 - [x] 1.2 Persistence layer & data model
-- [ ] 1.3 Project registry UI
+- [x] 1.3 Project registry UI
 - [ ] 1.4 Instance Manager rail
 - [ ] 1.5 Instance lifecycle ↔ console
 - [ ] 1.6 Dockview panel system + layout persistence
@@ -642,6 +669,7 @@ Pull these in once the relevant phase is stable; each is an independent step whe
 - [ ] 3.8 Session restore (`Ctrl+Shift+T`)
 - [ ] 3.9 Theme variants, CRT toggle, per-instance accent
 - [ ] 3.10 Command palette, remappable keys, permission-mode switch
+- [ ] 3.11 Git panel (history / branches / checkout)
 
 **Phase 4 — remote & power**
 - [ ] 4.1 PTY multiplexing backend

@@ -263,6 +263,7 @@ side**, or put the **code editor next to a live markdown preview** — whatever 
 | **Editor** | a file / file tree | Multiple allowed (e.g. source + the markdown it documents). |
 | **Markdown Preview** | a file | Pairs with an Editor panel for live preview. |
 | **Diff / Review** | an instance | Shows what that agent changed vs its branch base. |
+| **Git** | a project (repo) | History, branches, checkout, stash — the repo-level git view. |
 
 **Default arrangement** (what you get on first launch — fully rearrangeable afterward):
 
@@ -316,6 +317,44 @@ side**, or put the **code editor next to a live markdown preview** — whatever 
 ### Diff / Review
 - Diff against the branch base — see exactly what the agent changed. Makes "I want to
   make small changes to files Claude edited" pleasant: review the diff, tweak inline, save.
+
+### Git
+The repo-level git view, bound to a **project** (not an instance) — this is the
+counterpart to the instance-scoped **Diff / Review** pane above. Diff/Review answers
+*"what did this agent change?"*; the Git panel answers *"what's the state of the repo,
+and let me move around in it."* Open one per project; it reads the project's main working
+dir (worktrees keep their own branch, surfaced via the **⑃** marker in the rail, §3/§6).
+
+**What it shows / does:**
+- **History** — a commit log (graph view of branches/merges where it helps), with author,
+  date, message, and short SHA in the box-drawing aesthetic (§5.x). Click a commit to see
+  its diff and changed-file list in place.
+- **Branches** — list local + remote branches with ahead/behind counts; **checkout**,
+  create, rename, delete, and fast-forward/merge from the panel. Checking out a branch in
+  a project that has live worktree instances surfaces the same "shared working dir" warning
+  as §6 (you're moving HEAD under an agent's feet) rather than silently switching.
+- **Working tree** — staged/unstaged/untracked at a glance, stage/unstage hunks, **stash**
+  / pop, discard (behind confirmation). Overlaps intentionally with the Project Shell's
+  pre-seeded `git status` (§5 Project Shell) — the Git panel is the GUI affordance, the
+  shell stays the escape hatch for anything not surfaced here.
+- **Remote** — fetch / pull / push with ahead/behind shown; **never auto-pushes**.
+
+**Design notes:**
+- **Read-first, write-behind-confirmation.** History/branch browsing is frictionless and
+  non-destructive; anything that rewrites state (force-push, branch delete, discard, hard
+  reset) sits behind an explicit confirm and is logged. Keep the panel honest — it shows
+  real repo state, it doesn't paper over it.
+- **Relation to worktrees (§6).** Worktree provisioning/merge/cleanup stays an
+  *instance-card* action (§5 Instance Manager rail) because it's tied to an agent's
+  lifecycle. The Git panel is the *project-wide* lens — it can show the worktree branches
+  as ordinary branches but doesn't own their create/remove flow.
+- **Keyboard-first (§5.y):** focus history, move by commit, check out the selected branch,
+  and trigger fetch/pull/push from the keyboard; all git actions are in the command palette
+  with their bindings shown.
+- **Implementation:** `git2` (libgit2) for read paths (log, branch list, status, diff) so
+  the history view is fast and doesn't shell out per row; shell out to `git` for the few
+  operations libgit2 handles awkwardly (some merge/rebase/push-with-creds cases). Same
+  `git2`-or-shell-out choice already noted in §9.
 
 ### 5.x Visual design — retro console (the Claude Squad vibe)
 
@@ -416,6 +455,13 @@ manual `worktree add`/`remove` dance when you do want it.)
   save named arrangements ("2-up review", "single focus", "writing: editor + preview")
   and switch with a hotkey. Pairs naturally with the dockable panel system.
 - **Per-instance diff/review pane + one-click merge** — closes the loop on parallel work.
+- **Git panel (repo-level history / branches / checkout)** *(requested)* — the project-scoped
+  counterpart to the per-instance diff pane (§5 Git). Lets you read history, switch branches,
+  and manage the working tree without dropping to the Project Shell — handy when an agent
+  leaves you on a branch and you want to see where you are, check out something else, or stash
+  before a risky run. Read-first, destructive ops behind confirmation; worktree create/remove
+  stays an instance-card action (§6). Mostly read paths via `git2`, so it's cheap to build on
+  the git layer already needed for the diff pane and worktrees.
 - **Cost & token tracking** per instance / project / group. **Source note:** hook payloads
   do **not** carry cost/token data — read it from the transcript JSONL
   (`~/.claude/projects/<proj>/<session-id>.jsonl`, per-message `usage`:
@@ -510,7 +556,9 @@ manual `worktree add`/`remove` dance when you do want it.)
 - **Phase 3 — polish:** cost tracking + cumulative per-session tokens + the usage-limit
   meter (the §4.5 file-tailing + statusline side-channel subsystem), layout presets,
   prompt templates (with `{0}`/`{1}` fill-in) + queue, `CLAUDE.md` editor + MCP server
-  manager, session restore (`Ctrl+Shift+T`), theme variants + CRT toggle.
+  manager, session restore (`Ctrl+Shift+T`), theme variants + CRT toggle, the **Git panel**
+  (history / branches / checkout, §5 Git — builds on the `git2` layer landed in Phase 2 for
+  the diff view and worktrees).
 - **Phase 4 — power/remote:** the **PTY-multiplexing backend** (§11 Phase B) and the
   **OS-window tear-off** that rides on it (§5); the remote API + Android companion (§11,
   itself phased A→B→C); notification routing (Discord/phone); optional headless SDK features.
