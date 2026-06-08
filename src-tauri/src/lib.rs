@@ -7,6 +7,7 @@ mod db;
 mod git;
 mod pty;
 mod registry;
+mod sys;
 
 use tauri::Manager;
 
@@ -46,6 +47,7 @@ pub fn run() {
             registry::get_instance_cmd,
             registry::edit_instance,
             registry::remove_instance,
+            sys::open_path,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

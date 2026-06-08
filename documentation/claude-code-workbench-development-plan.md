@@ -641,7 +641,7 @@ Pull these in once the relevant phase is stable; each is an independent step whe
 - [x] 1.1 Theme system & retro chrome
 - [x] 1.2 Persistence layer & data model
 - [x] 1.3 Project registry UI
-- [ ] 1.4 Instance Manager rail
+- [x] 1.4 Instance Manager rail
 - [ ] 1.5 Instance lifecycle ↔ console
 - [ ] 1.6 Dockview panel system + layout persistence
 - [ ] 1.7 Project Shell panel

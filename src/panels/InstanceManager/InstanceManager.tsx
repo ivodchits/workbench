@@ -1,17 +1,23 @@
-// Instance Manager rail (step 1.3 — project registry slice).
+// Instance Manager rail (step 1.4 — the full Group → Project → Instance tree).
 //
-// The left rail from the design mockup. This step builds the Group → Project
-// tree with full project CRUD (add via folder picker, edit, remove) and group
-// assignment/creation. The instance rows, task notes, status dots, and row
-// actions hang off each project in step 1.4 — the tree shape here is built to
-// accept them.
+// Step 1.3 built the project registry; this step grows it into the left rail
+// proper: each project is a collapsible subtree of instance cards with inline-
+// editable task notes, a static status dot (the live hook-fed state machine is
+// Phase 2), and row actions (new / rename / edit note / toggle worktree / open
+// working dir / kill). A header summary counts agents that "need you".
+//
+// Out of scope (later steps): live status (2.2), real worktree provisioning
+// (2.4), and clicking an instance to spawn/focus its console (1.5). Selection is
+// tracked here already so 1.5 can hang the console binding off it.
 
 import { useEffect, useMemo, useState, type CSSProperties } from "react";
 import Panel from "../../theme/Panel";
 import { GLYPH } from "../../theme";
-import type { Group, Project } from "../../ipc/registry";
-import { deleteProject, loadRegistry, useRegistry } from "../../state/registry";
+import type { Group, Instance, Project } from "../../ipc/registry";
+import { deleteInstance, deleteProject, loadRegistry, useRegistry } from "../../state/registry";
 import ProjectDialog from "./ProjectDialog";
+import InstanceDialog from "./InstanceDialog";
+import InstanceCard from "./InstanceCard";
 import Modal from "./Modal";
 
 /** A group with its projects, plus a synthetic "ungrouped" bucket (id `null`). */
@@ -21,11 +27,14 @@ interface GroupSection {
 }
 
 function InstanceManager() {
-  const { groups, projects, loaded, error } = useRegistry();
-  const [adding, setAdding] = useState(false);
-  const [editTarget, setEditTarget] = useState<Project | null>(null);
-  const [removeTarget, setRemoveTarget] = useState<Project | null>(null);
+  const { groups, projects, instances, loaded, error } = useRegistry();
+  const [addingProject, setAddingProject] = useState(false);
+  const [editProjectTarget, setEditProjectTarget] = useState<Project | null>(null);
+  const [removeProjectTarget, setRemoveProjectTarget] = useState<Project | null>(null);
+  const [newInstanceProject, setNewInstanceProject] = useState<Project | null>(null);
+  const [killTarget, setKillTarget] = useState<Instance | null>(null);
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
+  const [selectedId, setSelectedId] = useState<string | null>(null);
 
   useEffect(() => {
     void loadRegistry();
@@ -52,6 +61,22 @@ function InstanceManager() {
     return out;
   }, [groups, projects]);
 
+  // Instances keyed by project, preserving the backend ordering.
+  const instancesByProject = useMemo<Map<string, Instance[]>>(() => {
+    const map = new Map<string, Instance[]>();
+    for (const i of instances) {
+      const arr = map.get(i.projectId) ?? [];
+      arr.push(i);
+      map.set(i.projectId, arr);
+    }
+    return map;
+  }, [instances]);
+
+  const needsCount = useMemo(
+    () => instances.filter((i) => i.status === "needs_you").length,
+    [instances],
+  );
+
   const toggle = (key: string) =>
     setCollapsed((prev) => {
       const next = new Set(prev);
@@ -65,7 +90,7 @@ function InstanceManager() {
   return (
     <>
       <Panel
-        title="projects"
+        title="instances"
         style={{ width: 322, flex: "0 0 322px" }}
         bodyStyle={{ padding: "14px 0 0" }}
       >
@@ -83,6 +108,25 @@ function InstanceManager() {
           </div>
         )}
 
+        {needsCount > 0 && (
+          <div
+            style={{
+              margin: "0 12px 10px",
+              padding: "7px 11px",
+              display: "flex",
+              alignItems: "center",
+              gap: 8,
+              background: "var(--wb-accentSoft)",
+              border: "1px solid var(--wb-needs)",
+            }}
+          >
+            <span style={{ color: "var(--wb-needs)", fontSize: 12 }}>●</span>
+            <span style={{ color: "var(--wb-text)", fontSize: 12, fontWeight: 600 }}>
+              {needsCount} {needsCount === 1 ? "agent needs" : "agents need"} you
+            </span>
+          </div>
+        )}
+
         <div style={{ overflow: "auto", flex: 1 }}>
           {!loaded && <Hint>loading…</Hint>}
           {isEmpty && (
@@ -92,7 +136,7 @@ function InstanceManager() {
           )}
 
           {sections.map((sec) => {
-            const key = sec.group?.id ?? "__ungrouped__";
+            const key = `group:${sec.group?.id ?? "__ungrouped__"}`;
             const label = sec.group?.name ?? "ungrouped";
             const isCollapsed = collapsed.has(key);
             return (
@@ -108,11 +152,18 @@ function InstanceManager() {
                 </button>
                 {!isCollapsed &&
                   sec.projects.map((p) => (
-                    <ProjectRow
+                    <ProjectNode
                       key={p.id}
                       project={p}
-                      onEdit={() => setEditTarget(p)}
-                      onRemove={() => setRemoveTarget(p)}
+                      instances={instancesByProject.get(p.id) ?? []}
+                      collapsed={collapsed.has(`proj:${p.id}`)}
+                      onToggle={() => toggle(`proj:${p.id}`)}
+                      selectedId={selectedId}
+                      onSelect={setSelectedId}
+                      onEdit={() => setEditProjectTarget(p)}
+                      onRemove={() => setRemoveProjectTarget(p)}
+                      onNewInstance={() => setNewInstanceProject(p)}
+                      onKill={setKillTarget}
                     />
                   ))}
               </div>
@@ -120,80 +171,150 @@ function InstanceManager() {
           })}
         </div>
 
-        <button onClick={() => setAdding(true)} style={footerActionStyle}>
+        <button onClick={() => setAddingProject(true)} style={footerActionStyle}>
           <span style={{ color: "var(--wb-accent)" }}>+</span> add project
           <span style={{ marginLeft: "auto", color: "var(--wb-textFaint)" }}>p</span>
         </button>
       </Panel>
 
-      {adding && <ProjectDialog groups={groups} onClose={() => setAdding(false)} />}
-      {editTarget && (
+      {addingProject && <ProjectDialog groups={groups} onClose={() => setAddingProject(false)} />}
+      {editProjectTarget && (
         <ProjectDialog
-          project={editTarget}
+          project={editProjectTarget}
           groups={groups}
-          onClose={() => setEditTarget(null)}
+          onClose={() => setEditProjectTarget(null)}
         />
       )}
-      {removeTarget && (
-        <RemoveConfirm project={removeTarget} onClose={() => setRemoveTarget(null)} />
+      {removeProjectTarget && (
+        <RemoveProjectConfirm
+          project={removeProjectTarget}
+          instanceCount={(instancesByProject.get(removeProjectTarget.id) ?? []).length}
+          onClose={() => setRemoveProjectTarget(null)}
+        />
       )}
+      {newInstanceProject && (
+        <InstanceDialog project={newInstanceProject} onClose={() => setNewInstanceProject(null)} />
+      )}
+      {killTarget && <KillConfirm instance={killTarget} onClose={() => setKillTarget(null)} />}
     </>
   );
 }
 
-interface ProjectRowProps {
+// --- project subtree --------------------------------------------------------
+
+interface ProjectNodeProps {
   project: Project;
+  instances: Instance[];
+  collapsed: boolean;
+  onToggle: () => void;
+  selectedId: string | null;
+  onSelect: (id: string) => void;
   onEdit: () => void;
   onRemove: () => void;
+  onNewInstance: () => void;
+  onKill: (instance: Instance) => void;
 }
 
-function ProjectRow({ project, onEdit, onRemove }: ProjectRowProps) {
+function ProjectNode({
+  project,
+  instances,
+  collapsed,
+  onToggle,
+  selectedId,
+  onSelect,
+  onEdit,
+  onRemove,
+  onNewInstance,
+  onKill,
+}: ProjectNodeProps) {
   const [hover, setHover] = useState(false);
   return (
-    <div
-      onMouseEnter={() => setHover(true)}
-      onMouseLeave={() => setHover(false)}
-      style={{
-        display: "flex",
-        alignItems: "center",
-        gap: 7,
-        padding: "5px 12px 5px 22px",
-        font: "11.5px var(--wb-mono)",
-        color: "var(--wb-textDim2)",
-        background: hover ? "var(--wb-sel)" : "transparent",
-      }}
-    >
-      <span style={{ color: "var(--wb-textFaint)" }}>▾</span>
-      <span
+    <div>
+      <div
+        onMouseEnter={() => setHover(true)}
+        onMouseLeave={() => setHover(false)}
         style={{
-          color: "var(--wb-text)",
-          minWidth: 0,
-          overflow: "hidden",
-          textOverflow: "ellipsis",
-          whiteSpace: "nowrap",
+          display: "flex",
+          alignItems: "center",
+          gap: 7,
+          padding: "4px 12px 4px 22px",
+          font: "11.5px var(--wb-mono)",
+          color: "var(--wb-textDim2)",
         }}
-        title={project.rootPath}
       >
-        {project.name}
-      </span>
-      {project.defaultBranch && (
-        <span style={{ color: "var(--wb-textFaint)", fontSize: 10, flex: "0 0 auto" }}>
-          ⌥ {project.defaultBranch}
+        <button
+          onClick={onToggle}
+          aria-label={collapsed ? "expand project" : "collapse project"}
+          style={caretButtonStyle}
+        >
+          <span style={{ color: "var(--wb-textFaint)" }}>{collapsed ? "▸" : "▾"}</span>
+        </button>
+        <span
+          onClick={onToggle}
+          style={{
+            color: "var(--wb-text)",
+            minWidth: 0,
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+            whiteSpace: "nowrap",
+            cursor: "pointer",
+          }}
+          title={project.rootPath}
+        >
+          {project.name}
         </span>
+        {project.defaultBranch && (
+          <span style={{ color: "var(--wb-textFaint)", fontSize: 10, flex: "0 0 auto" }}>
+            ⌥ {project.defaultBranch}
+          </span>
+        )}
+        {instances.length > 0 && (
+          <span style={{ color: "var(--wb-textFaint)", fontSize: 10, flex: "0 0 auto" }}>
+            {instances.length}
+          </span>
+        )}
+        <span
+          style={{
+            marginLeft: "auto",
+            display: "flex",
+            gap: 8,
+            flex: "0 0 auto",
+            visibility: hover ? "visible" : "hidden",
+          }}
+        >
+          <ProjectAction label="new instance" onClick={onNewInstance}>
+            +
+          </ProjectAction>
+          <ProjectAction label="edit project" onClick={onEdit}>
+            edit
+          </ProjectAction>
+          <ProjectAction label="remove project" onClick={onRemove} danger>
+            {GLYPH.fail}
+          </ProjectAction>
+        </span>
+      </div>
+
+      {!collapsed && (
+        <div style={{ paddingLeft: 8 }}>
+          {instances.map((i) => (
+            <InstanceCard
+              key={i.id}
+              instance={i}
+              selected={selectedId === i.id}
+              onSelect={() => onSelect(i.id)}
+              onKill={() => onKill(i)}
+            />
+          ))}
+          <button onClick={onNewInstance} style={newInstanceRowStyle}>
+            <span style={{ color: "var(--wb-accent)" }}>+</span> new instance
+          </button>
+        </div>
       )}
-      <span style={{ marginLeft: "auto", display: "flex", gap: 8, visibility: hover ? "visible" : "hidden" }}>
-        <RowAction label="edit" onClick={onEdit}>
-          edit
-        </RowAction>
-        <RowAction label="remove" onClick={onRemove} danger>
-          {GLYPH.fail}
-        </RowAction>
-      </span>
     </div>
   );
 }
 
-function RowAction({
+function ProjectAction({
   children,
   onClick,
   danger,
@@ -223,7 +344,17 @@ function RowAction({
   );
 }
 
-function RemoveConfirm({ project, onClose }: { project: Project; onClose: () => void }) {
+// --- confirmations ----------------------------------------------------------
+
+function RemoveProjectConfirm({
+  project,
+  instanceCount,
+  onClose,
+}: {
+  project: Project;
+  instanceCount: number;
+  onClose: () => void;
+}) {
   const [busy, setBusy] = useState(false);
   const confirm = async () => {
     setBusy(true);
@@ -239,25 +370,71 @@ function RemoveConfirm({ project, onClose }: { project: Project; onClose: () => 
       <div style={{ fontSize: 12.5, color: "var(--wb-text)", lineHeight: 1.5 }}>
         Remove <strong style={{ color: "var(--wb-accent)" }}>{project.name}</strong> from
         Workbench? This unregisters it here — the folder on disk is untouched.
+        {instanceCount > 0 && (
+          <div style={{ marginTop: 8, color: "var(--wb-working)" }}>
+            {GLYPH.warn} {instanceCount} instance{instanceCount === 1 ? "" : "s"} will be removed
+            with it.
+          </div>
+        )}
       </div>
-      <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 16 }}>
-        <button onClick={onClose} style={confirmButtonStyle}>
-          cancel
-        </button>
-        <button
-          onClick={() => void confirm()}
-          disabled={busy}
-          style={{ ...confirmButtonStyle, borderColor: "var(--wb-needs)", color: "var(--wb-needs)" }}
-        >
-          {GLYPH.fail} remove
-        </button>
-      </div>
+      <ConfirmButtons busy={busy} onCancel={onClose} onConfirm={() => void confirm()} label="remove" />
     </Modal>
   );
 }
 
+function KillConfirm({ instance, onClose }: { instance: Instance; onClose: () => void }) {
+  const [busy, setBusy] = useState(false);
+  const confirm = async () => {
+    setBusy(true);
+    try {
+      await deleteInstance(instance.id);
+      onClose();
+    } catch {
+      setBusy(false);
+    }
+  };
+  return (
+    <Modal title="kill instance" onClose={onClose} width={400}>
+      <div style={{ fontSize: 12.5, color: "var(--wb-text)", lineHeight: 1.5 }}>
+        Kill <strong style={{ color: "var(--wb-accent)" }}>{instance.title}</strong>? This removes
+        the instance from the rail.
+      </div>
+      <ConfirmButtons busy={busy} onCancel={onClose} onConfirm={() => void confirm()} label="kill" />
+    </Modal>
+  );
+}
+
+function ConfirmButtons({
+  busy,
+  onCancel,
+  onConfirm,
+  label,
+}: {
+  busy: boolean;
+  onCancel: () => void;
+  onConfirm: () => void;
+  label: string;
+}) {
+  return (
+    <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 16 }}>
+      <button onClick={onCancel} style={confirmButtonStyle}>
+        cancel
+      </button>
+      <button
+        onClick={onConfirm}
+        disabled={busy}
+        style={{ ...confirmButtonStyle, borderColor: "var(--wb-needs)", color: "var(--wb-needs)" }}
+      >
+        {GLYPH.fail} {label}
+      </button>
+    </div>
+  );
+}
+
 function Hint({ children }: { children: React.ReactNode }) {
-  return <div style={{ padding: "10px 16px", color: "var(--wb-textFaint)", fontSize: 12 }}>{children}</div>;
+  return (
+    <div style={{ padding: "10px 16px", color: "var(--wb-textFaint)", fontSize: 12 }}>{children}</div>
+  );
 }
 
 const groupHeaderStyle: CSSProperties = {
@@ -274,6 +451,29 @@ const groupHeaderStyle: CSSProperties = {
   border: "none",
   cursor: "pointer",
   textAlign: "left",
+};
+
+const caretButtonStyle: CSSProperties = {
+  background: "transparent",
+  border: "none",
+  padding: 0,
+  cursor: "pointer",
+  display: "flex",
+  alignItems: "center",
+};
+
+const newInstanceRowStyle: CSSProperties = {
+  display: "flex",
+  alignItems: "center",
+  gap: 6,
+  width: "100%",
+  background: "transparent",
+  border: "none",
+  cursor: "pointer",
+  textAlign: "left",
+  padding: "4px 11px 8px 33px",
+  font: "10.5px var(--wb-mono)",
+  color: "var(--wb-textDim2)",
 };
 
 const footerActionStyle: CSSProperties = {

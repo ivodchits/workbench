@@ -6,19 +6,27 @@
 // scale of a personal project list this is simpler and less bug-prone than
 // surgically patching local arrays, and keeps the UI in lockstep with SQLite.
 //
-// Instances are deliberately absent here — step 1.3 is the *project* registry;
-// the instance tree (and its own loading) lands with the rail in step 1.4.
+// Step 1.4 grows the store to the full Group → Project → Instance tree: the rail
+// now loads instances alongside groups + projects and exposes instance CRUD with
+// the same reload-on-mutation discipline.
 
 import { useSyncExternalStore } from "react";
 import {
   createGroup,
+  createInstance,
   createProject,
+  editInstance,
   editProject,
   getGroups,
+  getInstances,
   getProjects,
   removeGroup,
+  removeInstance,
   removeProject,
   type Group,
+  type Instance,
+  type InstancePatch,
+  type NewInstance,
   type NewProject,
   type Project,
   type ProjectPatch,
@@ -27,13 +35,20 @@ import {
 export interface RegistryState {
   groups: Group[];
   projects: Project[];
+  instances: Instance[];
   /** False until the first load resolves, so the UI can show a loading state. */
   loaded: boolean;
   /** Last error from a load/mutation, surfaced near the rail. */
   error: string | null;
 }
 
-let state: RegistryState = { groups: [], projects: [], loaded: false, error: null };
+let state: RegistryState = {
+  groups: [],
+  projects: [],
+  instances: [],
+  loaded: false,
+  error: null,
+};
 const listeners = new Set<() => void>();
 
 function setState(patch: Partial<RegistryState>): void {
@@ -53,11 +68,15 @@ function getSnapshot(): RegistryState {
   return state;
 }
 
-/** Reload groups + projects from the backend. Safe to call after any mutation. */
+/** Reload the whole tree from the backend. Safe to call after any mutation. */
 export async function loadRegistry(): Promise<void> {
   try {
-    const [groups, projects] = await Promise.all([getGroups(), getProjects()]);
-    setState({ groups, projects, loaded: true, error: null });
+    const [groups, projects, instances] = await Promise.all([
+      getGroups(),
+      getProjects(),
+      getInstances(),
+    ]);
+    setState({ groups, projects, instances, loaded: true, error: null });
   } catch (e) {
     setState({ error: String(e), loaded: true });
   }
@@ -99,6 +118,20 @@ export async function addGroup(name: string): Promise<Group> {
 
 export function deleteGroup(id: string): Promise<void> {
   return mutate(() => removeGroup(id));
+}
+
+// --- instance mutations -----------------------------------------------------
+
+export function addInstance(input: NewInstance): Promise<void> {
+  return mutate(() => createInstance(input));
+}
+
+export function updateInstance(id: string, patch: InstancePatch): Promise<void> {
+  return mutate(() => editInstance(id, patch));
+}
+
+export function deleteInstance(id: string): Promise<void> {
+  return mutate(() => removeInstance(id));
 }
 
 // --- React binding ----------------------------------------------------------
