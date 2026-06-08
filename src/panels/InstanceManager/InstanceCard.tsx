@@ -125,7 +125,7 @@ function InstanceCard({ instance, selected, onSelect, onKill }: InstanceCardProp
               ✎
             </RowAction>
             <RowAction label="open working dir" onClick={() => void openPath(instance.workingDir)}>
-              ⊞
+              🗀
             </RowAction>
             <RowAction label="kill instance" onClick={onKill} danger>
               {GLYPH.fail}
