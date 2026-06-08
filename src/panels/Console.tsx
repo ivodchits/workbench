@@ -7,11 +7,11 @@
 
 import { useEffect, useRef } from "react";
 import { Channel } from "@tauri-apps/api/core";
-import { Terminal, type ITheme } from "@xterm/xterm";
+import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
 
-import { mono, mutedDark } from "../theme/tokens";
+import { deriveXtermTheme, mono } from "../theme/tokens";
 import {
   ptyKill,
   ptyResize,
@@ -21,33 +21,6 @@ import {
   type SpawnKind,
   type SpawnResult,
 } from "../ipc/pty";
-
-/** Derive an xterm theme from the app theme tokens so the console matches the chrome. */
-function xtermTheme(): ITheme {
-  return {
-    background: mutedDark.bg,
-    foreground: mutedDark.text,
-    cursor: mutedDark.accent,
-    cursorAccent: mutedDark.bg,
-    selectionBackground: mutedDark.sel,
-    black: "#1b1e2b",
-    red: mutedDark.needs,
-    green: mutedDark.done,
-    yellow: mutedDark.working,
-    blue: "#6f8bff",
-    magenta: mutedDark.accent,
-    cyan: "#5bc8d6",
-    white: mutedDark.text,
-    brightBlack: mutedDark.textFaint,
-    brightRed: mutedDark.needs,
-    brightGreen: mutedDark.done,
-    brightYellow: mutedDark.working,
-    brightBlue: "#8ba3ff",
-    brightMagenta: mutedDark.accent,
-    brightCyan: "#7fdbe6",
-    brightWhite: "#ffffff",
-  };
-}
 
 interface ConsoleProps {
   /** What to run in this console. */
@@ -71,7 +44,7 @@ function Console({ kind, cwd, onSpawned, onError }: ConsoleProps) {
       fontFamily: mono,
       fontSize: 13,
       cursorBlink: true,
-      theme: xtermTheme(),
+      theme: deriveXtermTheme(),
       allowProposedApi: true,
     });
     const fit = new FitAddon();

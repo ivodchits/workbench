@@ -1,13 +1,17 @@
-/* Global base — monospace-everywhere terminal surface. Step 1.1 grows this into
-   the full retro chrome (box-drawing borders, title bars, spinner). */
+/* Global base — the monospace-everywhere terminal surface (§5.x). Chrome borders
+   and title bars are drawn by the React `Panel` primitive; this file owns the
+   document base, the bundled terminal font, selection, and scrollbars so even
+   the browser furniture stays inside the aesthetic. */
 
-@font-face {
-  font-family: "JetBrains Mono";
-  font-style: normal;
-  font-weight: 400 700;
-  font-display: swap;
-  src: local("JetBrains Mono");
-}
+/* Bundle JetBrains Mono locally (weights 400/500/600/700, + italics) — a desktop
+   app shouldn't depend on a system install or a font CDN. `src/theme/tokens.ts`
+   references it first in the `mono` stack, with system monospace fallbacks. */
+@import "@fontsource/jetbrains-mono/400.css";
+@import "@fontsource/jetbrains-mono/500.css";
+@import "@fontsource/jetbrains-mono/600.css";
+@import "@fontsource/jetbrains-mono/700.css";
+@import "@fontsource/jetbrains-mono/400-italic.css";
+@import "@fontsource/jetbrains-mono/500-italic.css";
 
 * {
   box-sizing: border-box;
@@ -33,4 +37,38 @@ body {
 
 ::selection {
   background: var(--wb-sel, #232742);
+}
+
+/* Thin, square, on-theme scrollbars so panels don't break the spell. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--wb-border, #2c2f44) transparent;
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--wb-border, #2c2f44);
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--wb-textFaint, #474b60);
+  background-clip: padding-box;
+}
+
+/* Inputs/buttons inherit the terminal font instead of the UA default. */
+input,
+button,
+textarea,
+select {
+  font-family: inherit;
 }

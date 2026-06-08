@@ -611,7 +611,7 @@ Pull these in once the relevant phase is stable; each is an independent step whe
 - [x] 0.3 Run real `claude` in the console
 
 **Phase 1 — MVP**
-- [ ] 1.1 Theme system & retro chrome
+- [x] 1.1 Theme system & retro chrome
 - [ ] 1.2 Persistence layer & data model
 - [ ] 1.3 Project registry UI
 - [ ] 1.4 Instance Manager rail
