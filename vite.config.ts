@@ -14,14 +14,16 @@ export default defineConfig(async () => ({
   clearScreen: false,
   // 2. tauri expects a fixed port, fail if that port is not available
   server: {
-    port: 1420,
+    // 1430/1431 (not Tauri's default 1420/1421) so Workbench's dev server can
+    // run alongside the popcorn app without a port clash.
+    port: 1430,
     strictPort: true,
     host: host || false,
     hmr: host
       ? {
           protocol: "ws",
           host,
-          port: 1421,
+          port: 1431,
         }
       : undefined,
     watch: {
