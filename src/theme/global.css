@@ -1,0 +1,36 @@
+/* Global base — monospace-everywhere terminal surface. Step 1.1 grows this into
+   the full retro chrome (box-drawing borders, title bars, spinner). */
+
+@font-face {
+  font-family: "JetBrains Mono";
+  font-style: normal;
+  font-weight: 400 700;
+  font-display: swap;
+  src: local("JetBrains Mono");
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+}
+
+body {
+  background: var(--wb-bg, #13151e);
+  color: var(--wb-text, #d8dae8);
+  font: 12.5px var(--wb-mono, ui-monospace, monospace);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  overflow: hidden;
+  user-select: none;
+}
+
+::selection {
+  background: var(--wb-sel, #232742);
+}

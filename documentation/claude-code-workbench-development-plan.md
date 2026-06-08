@@ -606,7 +606,7 @@ Pull these in once the relevant phase is stable; each is an independent step whe
 ## Progress tracker
 
 **Phase 0 — spike**
-- [ ] 0.1 Scaffold the app
+- [x] 0.1 Scaffold the app
 - [ ] 0.2 PTY bridge spike (shell)
 - [ ] 0.3 Run real `claude` in the console
 

@@ -10,7 +10,17 @@ file without leaving the app.
 
 ## Status
 
-🏗️ **Pre-development.** The design and build plan are complete; implementation has not started.
+🏗️ **Phase 0 — spike.** Step 0.1 (scaffold) done: a themed Tauri 2 + React/TS + Vite
+window titled "Workbench" with the planned repo layout in place. Next: the PTY↔webview
+bridge (0.2).
+
+### Develop
+
+```sh
+npm install          # one-time
+npm run tauri:dev    # run the app
+npm run tauri:build  # produce a bundle
+```
 
 ## Documentation
 
