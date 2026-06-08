@@ -90,6 +90,17 @@ const MIGRATIONS: &[&str] = &[
     CREATE INDEX idx_projects_group ON projects(group_id);
     CREATE INDEX idx_instances_project ON instances(project_id);
     "#,
+    // v1 -> v2: persisted dockview layouts (step 1.6). One serialized dock tree
+    // per workspace key. The MVP uses a single global key; the column is keyed so
+    // a later step can persist a layout per project (design §3/§4.6) without a
+    // schema change. `tree` holds the JSON blob the frontend (de)serializes.
+    r#"
+    CREATE TABLE layouts (
+        workspace_key  TEXT PRIMARY KEY,
+        tree           TEXT NOT NULL,
+        updated_at     INTEGER NOT NULL
+    );
+    "#,
 ];
 
 /// Apply any migrations the database hasn't seen yet, advancing

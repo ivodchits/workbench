@@ -1,0 +1,55 @@
+/* dockview retro skin (step 1.6) — remap dockview's CSS variables onto the
+ * Workbench theme tokens so the dock chrome (tab strips, splitters, drop
+ * overlays) reads as the same terminal surface as the rest of the app: square
+ * corners, thin borders, monospace tabs. We start from the built-in `abyss`
+ * theme and override the high-level variables; everything resolves to `--wb-*`,
+ * so a theme switch (Phase 3) recolors the dock with the chrome. */
+
+.dockview-theme-abyss.wb-dock {
+  /* surfaces */
+  --dv-group-view-background-color: var(--wb-panel);
+  --dv-tabs-and-actions-container-background-color: var(--wb-titlebar);
+  --dv-activegroup-visiblepanel-tab-background-color: var(--wb-panel);
+  --dv-activegroup-hiddenpanel-tab-background-color: var(--wb-titlebar);
+  --dv-inactivegroup-visiblepanel-tab-background-color: var(--wb-titlebar);
+  --dv-inactivegroup-hiddenpanel-tab-background-color: var(--wb-titlebar);
+
+  /* tab text */
+  --dv-activegroup-visiblepanel-tab-color: var(--wb-text);
+  --dv-activegroup-hiddenpanel-tab-color: var(--wb-textDim2);
+  --dv-inactivegroup-visiblepanel-tab-color: var(--wb-textDim2);
+  --dv-inactivegroup-hiddenpanel-tab-color: var(--wb-textFaint);
+
+  /* borders / splitters */
+  --dv-tab-divider-color: var(--wb-border);
+  --dv-separator-border: var(--wb-border);
+  --dv-paneview-header-border-color: var(--wb-border);
+  --dv-sash-color: transparent;
+  --dv-active-sash-color: var(--wb-borderActive);
+  --dv-icon-hover-background-color: var(--wb-sel);
+  --dv-scrollbar-background-color: var(--wb-border);
+
+  /* drag-to-split / drop target overlay in the accent */
+  --dv-drag-over-background-color: var(--wb-accentSoft);
+  --dv-drag-over-border-color: var(--wb-borderActive);
+
+  /* geometry — square, compact, monospace */
+  --dv-border-radius: 0px;
+  --dv-tabs-and-actions-container-height: 30px;
+  --dv-tab-font-size: 11px;
+  --dv-tabs-and-actions-container-font-size: 11px;
+  --dv-floating-box-shadow: 0 0 0 1px var(--wb-borderActive);
+
+  font-family: var(--wb-mono);
+}
+
+/* The active tab gets an accent underline, echoing the editor tabs in the
+ * mockup; inactive tabs stay flush so the strip reads like a terminal header. */
+.dockview-theme-abyss.wb-dock .dv-tab.dv-active-tab {
+  box-shadow: inset 0 -1px 0 0 var(--wb-borderActive);
+}
+
+/* A thin border around each group so panels read as boxed terminal surfaces. */
+.dockview-theme-abyss.wb-dock .dv-groupview {
+  border: 1px solid var(--wb-border);
+}

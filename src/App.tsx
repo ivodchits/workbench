@@ -1,22 +1,26 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { applyTheme, mutedDark } from "./theme/tokens";
 import InstanceManager from "./panels/InstanceManager";
-import ConsoleArea from "./panels/ConsoleArea";
+import Workspace from "./panels/Workspace";
 import { useConsoles } from "./state/consoles";
 
-// Step 1.5 turns the cockpit into its real shape: the Instance Manager rail on
-// the left drives a center Console area, where clicking an instance launches (or
-// focuses) its claude console and several run side by side. The Phase-0 manual
-// launcher is gone — instances are the way you start agents now. The freely
-// arrangeable dockview layout that replaces the interim console grid lands in 1.6.
+// Step 1.5 turned the cockpit into its real shape: the Instance Manager rail on
+// the left drives the panel surface, where clicking an instance launches (or
+// focuses) its claude console. Step 1.6 replaces the interim console grid with a
+// `dockview` Workspace — split / tab / float in-window, layout saved & restored —
+// and makes the rail collapsible.
 
 function App() {
   const { open, activeId } = useConsoles();
+  const [railCollapsed, setRailCollapsed] = useState(false);
 
   useEffect(() => {
     applyTheme(mutedDark);
   }, []);
 
+  // Dormant placeholders (restored from a saved layout) aren't running, so the
+  // chrome counts only live consoles.
+  const liveCount = open.filter((c) => c.status !== "dormant").length;
   const active = open.find((c) => c.instanceId === activeId) ?? null;
 
   return (
@@ -33,22 +37,59 @@ function App() {
     >
       <TitleBar
         context={
-          open.length === 0
+          liveCount === 0
             ? "no console"
-            : `${open.length} console${open.length === 1 ? "" : "s"}`
+            : `${liveCount} console${liveCount === 1 ? "" : "s"}`
         }
       />
 
       <div style={{ flex: 1, display: "flex", gap: 14, minHeight: 0, padding: "14px 14px 0" }}>
-        <InstanceManager />
-        <ConsoleArea />
+        {railCollapsed ? (
+          <CollapsedRail onExpand={() => setRailCollapsed(false)} />
+        ) : (
+          <InstanceManager onCollapse={() => setRailCollapsed(true)} />
+        )}
+        <Workspace />
       </div>
 
-      <StatusBar
-        openCount={open.length}
-        sessionId={active?.sessionId ?? null}
-      />
+      <StatusBar openCount={liveCount} sessionId={active?.sessionId ?? null} />
     </div>
+  );
+}
+
+/** The rail's collapsed state: a slim strip with a vertical label + expand caret. */
+function CollapsedRail({ onExpand }: { onExpand: () => void }) {
+  return (
+    <button
+      onClick={onExpand}
+      aria-label="expand instance rail"
+      title="expand instance rail"
+      style={{
+        flex: "0 0 26px",
+        width: 26,
+        background: "var(--wb-panel)",
+        border: "1px solid var(--wb-border)",
+        color: "var(--wb-textDim2)",
+        cursor: "pointer",
+        display: "flex",
+        flexDirection: "column",
+        alignItems: "center",
+        gap: 12,
+        padding: "10px 0",
+        font: "10.5px var(--wb-mono)",
+      }}
+    >
+      <span style={{ color: "var(--wb-accent)" }}>▸</span>
+      <span
+        style={{
+          writingMode: "vertical-rl",
+          letterSpacing: "0.18em",
+          textTransform: "uppercase",
+        }}
+      >
+        instances
+      </span>
+    </button>
   );
 }
 

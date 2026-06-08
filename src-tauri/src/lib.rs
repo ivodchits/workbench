@@ -5,6 +5,7 @@
 
 mod db;
 mod git;
+mod layout;
 mod pty;
 mod registry;
 mod sys;
@@ -48,6 +49,8 @@ pub fn run() {
             registry::get_instance_cmd,
             registry::edit_instance,
             registry::remove_instance,
+            layout::get_layout,
+            layout::set_layout,
             sys::open_path,
         ])
         .run(tauri::generate_context!())

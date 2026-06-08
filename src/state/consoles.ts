@@ -1,13 +1,17 @@
-// Consoles store (step 1.5) — the runtime (non-persisted) registry of *open*
-// Claude consoles. Distinct from the SQLite-backed `registry` store: an instance
-// row is a saved config that always exists; a console is the live PTY+terminal
-// you launch for it. Clicking an instance opens (or focuses) its console; closing
-// a console stops its PTY while the row survives, so re-opening relaunches a fresh
-// `claude` session.
+// Consoles store (step 1.5, extended in 1.6) — the runtime registry of console
+// *panels*. Distinct from the SQLite-backed `registry` store: an instance row is
+// a saved config that always exists; a console is the panel you launch for it.
 //
-// A tiny external store exposed to React via `useSyncExternalStore`, mirroring the
-// shape of `state/registry`. State here is intentionally ephemeral — it's the set
-// of what's running *now*, rebuilt each launch.
+// Membership here is the source of truth that the dockview `Workspace` (1.6)
+// reconciles its panels against: each entry maps 1:1 to a Console panel in the
+// dock. A console can be:
+//   • spawning/running/error — a live PTY+terminal,
+//   • dormant — a placeholder restored from a saved layout, awaiting a relaunch.
+// Dormant entries are how "reopen → same layout" works without auto-launching
+// `claude` (that's session-restore, step 3.8): the box returns in place, the PTY
+// does not. Clicking it relaunches a fresh session.
+//
+// A tiny external store exposed to React via `useSyncExternalStore`.
 
 import { useSyncExternalStore } from "react";
 import type { SpawnKind, SpawnResult } from "../ipc/pty";
@@ -15,15 +19,15 @@ import type { Instance } from "../ipc/registry";
 import { updateInstance } from "./registry";
 
 /** Browsers cap live WebGL contexts (~16); we reserve a margin (design §5 /
- *  decision 14). The first `WEBGL_CAP` consoles render via WebGL; the rest fall
- *  back to xterm's DOM renderer. Invisible in practice at this workflow's scale. */
+ *  decision 14). The first `WEBGL_CAP` *live* consoles render via WebGL; the rest
+ *  fall back to xterm's DOM renderer. Invisible in practice at this scale. */
 export const WEBGL_CAP = 10;
 
-export type ConsoleStatus = "spawning" | "running" | "error";
+export type ConsoleStatus = "dormant" | "spawning" | "running" | "error";
 
 export interface ConsoleSession {
   instanceId: string;
-  /** Resolved working directory the PTY launched in. */
+  /** Resolved working directory the PTY launched in (empty while dormant). */
   cwd: string;
   kind: SpawnKind;
   /** Whether this console claimed a WebGL renderer slot (sticky for its life). */
@@ -38,7 +42,7 @@ export interface ConsoleSession {
 }
 
 interface ConsolesState {
-  /** Open consoles in launch order (stable render order for the grid). */
+  /** Console panels in creation order (stable render order). */
   open: ConsoleSession[];
   /** The focused console, or null when none are open. */
   activeId: string | null;
@@ -64,50 +68,82 @@ function getSnapshot(): ConsolesState {
   return state;
 }
 
-function patchSession(
-  instanceId: string,
-  patch: Partial<ConsoleSession>,
-): void {
+function patchSession(instanceId: string, patch: Partial<ConsoleSession>): void {
   const open = state.open.map((c) =>
     c.instanceId === instanceId ? { ...c, ...patch } : c,
   );
   emit({ ...state, open });
 }
 
+/** Count live consoles (dormant ones hold no PTY and no renderer slot). */
+function liveWebglCount(): number {
+  return state.open.filter((c) => c.webgl && c.status !== "dormant").length;
+}
+
 /**
- * Open the console for `instance`, or focus it if already open. A fresh console
- * starts in `spawning`; the hosting component drives the PTY and reports back via
+ * Open the console for `instance`, focusing it if already live, or relaunching
+ * it if it was a dormant placeholder. A fresh/relaunched console starts in
+ * `spawning`; the hosting panel drives the PTY and reports back via
  * `markSpawned` / `markError`.
  */
 export function openConsole(instance: Instance): void {
   const existing = state.open.find((c) => c.instanceId === instance.id);
-  if (existing) {
+  if (existing && existing.status !== "dormant") {
     focusConsole(instance.id);
     return;
   }
-  const webglInUse = state.open.filter((c) => c.webgl).length;
-  const session: ConsoleSession = {
-    instanceId: instance.id,
+
+  const live: Omit<ConsoleSession, "instanceId"> = {
     cwd: instance.workingDir,
     kind: "claude",
-    webgl: webglInUse < WEBGL_CAP,
+    webgl: liveWebglCount() < WEBGL_CAP,
     status: "spawning",
     sessionId: null,
     error: null,
     focusSeq: ++focusSeq,
   };
+
+  if (existing) {
+    // Relaunch a dormant placeholder in place — the panel already exists.
+    patchSession(instance.id, live);
+    emit({ ...state, activeId: instance.id });
+    return;
+  }
+
+  const session: ConsoleSession = { instanceId: instance.id, ...live };
   emit({ open: [...state.open, session], activeId: instance.id });
 }
 
-/** Make `instanceId` the focused console (no-op if it isn't open). */
-export function focusConsole(instanceId: string): void {
-  if (!state.open.some((c) => c.instanceId === instanceId)) return;
-  patchSessionFocus(instanceId);
-  if (state.activeId !== instanceId) emit({ ...state, activeId: instanceId });
+/**
+ * Seed dormant placeholders for `instanceIds` not already open — used by the
+ * Workspace to back the console panels a saved layout restores. Idempotent.
+ */
+export function hydrateDormant(instanceIds: string[]): void {
+  const present = new Set(state.open.map((c) => c.instanceId));
+  const additions = instanceIds
+    .filter((id) => !present.has(id))
+    .map<ConsoleSession>((instanceId) => ({
+      instanceId,
+      cwd: "",
+      kind: "claude",
+      webgl: false,
+      status: "dormant",
+      sessionId: null,
+      error: null,
+      focusSeq: 0,
+    }));
+  if (additions.length === 0) return;
+  emit({ ...state, open: [...state.open, ...additions] });
 }
 
-function patchSessionFocus(instanceId: string): void {
-  patchSession(instanceId, { focusSeq: ++focusSeq });
+/** Make `instanceId` the focused console (no-op if not open or already active). */
+export function focusConsole(instanceId: string): void {
+  if (state.activeId === instanceId) return;
+  if (!state.open.some((c) => c.instanceId === instanceId)) return;
+  const open = state.open.map((c) =>
+    c.instanceId === instanceId ? { ...c, focusSeq: ++focusSeq } : c,
+  );
+  emit({ open, activeId: instanceId });
 }
 
 /**
@@ -129,11 +165,13 @@ export function markError(instanceId: string, message: string): void {
 }
 
 /**
- * Close a console: drop it from the open set. Unmounting its host terminates the
- * PTY (the host's cleanup calls `ptyKill`), so the instance row survives and can
- * relaunch. Focus falls back to the most-recently-focused remaining console.
+ * Close a console: drop it from the open set entirely (panel removed too, via
+ * the Workspace reconciler). Unmounting its host terminates the PTY (the host's
+ * cleanup calls `ptyKill`), so the instance row survives and can relaunch. Focus
+ * falls back to the most-recently-focused remaining console.
  */
 export function closeConsole(instanceId: string): void {
+  if (!state.open.some((c) => c.instanceId === instanceId)) return;
   const open = state.open.filter((c) => c.instanceId !== instanceId);
   let activeId = state.activeId;
   if (activeId === instanceId) {

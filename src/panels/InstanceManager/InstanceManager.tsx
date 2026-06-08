@@ -29,7 +29,12 @@ interface GroupSection {
   projects: Project[];
 }
 
-function InstanceManager() {
+interface InstanceManagerProps {
+  /** Collapse the rail to a slim strip (rendered as a title-bar action). */
+  onCollapse?: () => void;
+}
+
+function InstanceManager({ onCollapse }: InstanceManagerProps) {
   const { groups, projects, instances, loaded, error } = useRegistry();
   const { open: openConsoles } = useConsoles();
   const [addingProject, setAddingProject] = useState(false);
@@ -110,6 +115,26 @@ function InstanceManager() {
         title="instances"
         style={{ width: 322, flex: "0 0 322px" }}
         bodyStyle={{ padding: "14px 0 0" }}
+        right={
+          onCollapse && (
+            <button
+              onClick={onCollapse}
+              aria-label="collapse instance rail"
+              title="collapse instance rail"
+              style={{
+                background: "transparent",
+                border: "none",
+                cursor: "pointer",
+                padding: 0,
+                lineHeight: 1,
+                font: "11px var(--wb-mono)",
+                color: "var(--wb-textDim2)",
+              }}
+            >
+              ◂
+            </button>
+          )
+        }
       >
         {error && (
           <div
