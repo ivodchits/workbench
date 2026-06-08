@@ -612,7 +612,7 @@ Pull these in once the relevant phase is stable; each is an independent step whe
 
 **Phase 1 — MVP**
 - [x] 1.1 Theme system & retro chrome
-- [ ] 1.2 Persistence layer & data model
+- [x] 1.2 Persistence layer & data model
 - [ ] 1.3 Project registry UI
 - [ ] 1.4 Instance Manager rail
 - [ ] 1.5 Instance lifecycle ↔ console
