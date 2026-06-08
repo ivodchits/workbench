@@ -1,15 +1,18 @@
-// One instance row in the rail (step 1.4). Mirrors the design mockup: a status
-// dot, the title (inline-renamable), a "needs you" badge, last-activity, the
-// inline-editable task note, and a meta line with the ⑃ worktree marker + branch
-// and a mini cost readout. Hover (or keyboard focus) reveals row actions:
-// toggle worktree, open the working dir, edit note, and kill.
+// One instance row in the rail (step 1.4; console wiring added in 1.5). Mirrors
+// the design mockup: a status dot, the title (inline-renamable), a "needs you"
+// badge, last-activity, the inline-editable task note, and a meta line with the
+// ⑃ worktree marker + branch and a mini cost readout. Hover (or keyboard focus)
+// reveals row actions: toggle worktree, open the working dir, edit note, and kill.
 //
-// Status here is a static placeholder driven by the stored field; the live
+// Clicking the row launches (or focuses) the instance's claude console; a small
+// live marker (`consoleStatus`) replaces the static status glyph while a console
+// is open. The persisted `status` field stays a static placeholder — the live
 // hook-fed state machine and real worktree provisioning land in Phase 2.
 
 import { useState } from "react";
 import { GLYPH, Spinner } from "../../theme";
 import type { Instance } from "../../ipc/registry";
+import type { ConsoleStatus } from "../../state/consoles";
 import { openPath } from "../../ipc/os";
 import { updateInstance } from "../../state/registry";
 import { relativeTime, statusDisplay } from "./status";
@@ -18,11 +21,23 @@ import InlineEdit from "./InlineEdit";
 interface InstanceCardProps {
   instance: Instance;
   selected: boolean;
+  /** Live console state for this instance, or null when no console is open. */
+  consoleStatus: ConsoleStatus | null;
+  /** Visual select only (keyboard focus / hover) — does not launch a console. */
   onSelect: () => void;
+  /** Launch or focus this instance's console (row click / Enter). */
+  onActivate: () => void;
   onKill: () => void;
 }
 
-function InstanceCard({ instance, selected, onSelect, onKill }: InstanceCardProps) {
+function InstanceCard({
+  instance,
+  selected,
+  consoleStatus,
+  onSelect,
+  onActivate,
+  onKill,
+}: InstanceCardProps) {
   const [hover, setHover] = useState(false);
   const [editingNote, setEditingNote] = useState(false);
   const [editingTitle, setEditingTitle] = useState(false);
@@ -36,12 +51,12 @@ function InstanceCard({ instance, selected, onSelect, onKill }: InstanceCardProp
   return (
     <div
       tabIndex={0}
-      onClick={onSelect}
+      onClick={onActivate}
       onFocus={onSelect}
       onKeyDown={(e) => {
         if (e.key === "Enter" && !editingNote && !editingTitle) {
           e.preventDefault();
-          setEditingNote(true);
+          onActivate();
         }
       }}
       onMouseEnter={() => setHover(true)}
@@ -61,15 +76,24 @@ function InstanceCard({ instance, selected, onSelect, onKill }: InstanceCardProp
       <div style={{ display: "flex", alignItems: "baseline", gap: 8 }}>
         <span
           style={{
-            color: st.colorVar,
+            color: consoleStatus ? consoleMarker(consoleStatus).colorVar : st.colorVar,
             fontSize: 12,
             width: 12,
             flex: "0 0 12px",
             textAlign: "center",
             lineHeight: 1,
           }}
+          title={consoleStatus ? `console ${consoleStatus}` : st.label}
         >
-          {st.working ? <Spinner size={12} /> : st.glyph}
+          {consoleStatus === "spawning" ? (
+            <Spinner size={12} />
+          ) : consoleStatus ? (
+            consoleMarker(consoleStatus).glyph
+          ) : st.working ? (
+            <Spinner size={12} />
+          ) : (
+            st.glyph
+          )}
         </span>
         <span
           style={{
@@ -194,6 +218,18 @@ function InstanceCard({ instance, selected, onSelect, onKill }: InstanceCardProp
       </div>
     </div>
   );
+}
+
+/** The rail glyph + color for an open console (spawning is shown as a spinner). */
+function consoleMarker(status: ConsoleStatus): { glyph: string; colorVar: string } {
+  switch (status) {
+    case "running":
+      return { glyph: GLYPH.run, colorVar: "var(--wb-accent)" };
+    case "error":
+      return { glyph: GLYPH.fail, colorVar: "var(--wb-needs)" };
+    default:
+      return { glyph: GLYPH.run, colorVar: "var(--wb-working)" };
+  }
 }
 
 function RowAction({

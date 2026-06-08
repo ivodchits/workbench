@@ -1,61 +1,23 @@
-import { useCallback, useEffect, useState } from "react";
+import { useEffect } from "react";
 import { applyTheme, mutedDark } from "./theme/tokens";
-import { GLYPH, Spinner } from "./theme";
-import Panel from "./theme/Panel";
-import Console from "./panels/Console";
 import InstanceManager from "./panels/InstanceManager";
-import { defaultWorkingDir, type SpawnKind, type SpawnResult } from "./ipc/pty";
+import ConsoleArea from "./panels/ConsoleArea";
+import { useConsoles } from "./state/consoles";
 
-// Step 1.1 wrapped the Phase-0 PTY spike in the retro chrome; step 1.3 adds the
-// Instance Manager rail (the project registry) on the left, beside the existing
-// launcher/console. The chrome, rail, and embedded terminal all read from the
-// same theme tokens, so they're one continuous surface. The console wiring
-// (clicking a project/instance to launch its agent) and the dockview layout
-// arrive in later steps (1.5, 1.6) — for now the center keeps the manual
-// launcher for exercising the PTY bridge.
-
-interface Running {
-  kind: SpawnKind;
-  cwd: string;
-}
+// Step 1.5 turns the cockpit into its real shape: the Instance Manager rail on
+// the left drives a center Console area, where clicking an instance launches (or
+// focuses) its claude console and several run side by side. The Phase-0 manual
+// launcher is gone — instances are the way you start agents now. The freely
+// arrangeable dockview layout that replaces the interim console grid lands in 1.6.
 
 function App() {
-  const [cwd, setCwd] = useState("");
-  const [kind, setKind] = useState<SpawnKind>("claude");
-  const [running, setRunning] = useState<Running | null>(null);
-  const [sessionId, setSessionId] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const { open, activeId } = useConsoles();
 
   useEffect(() => {
     applyTheme(mutedDark);
-    void defaultWorkingDir().then((dir) => {
-      if (dir) setCwd((prev) => prev || dir);
-    });
   }, []);
 
-  const launch = useCallback(() => {
-    if (!cwd.trim()) {
-      setError("Enter a working directory.");
-      return;
-    }
-    setError(null);
-    setSessionId(null);
-    setRunning({ kind, cwd: cwd.trim() });
-  }, [cwd, kind]);
-
-  const stop = useCallback(() => {
-    setRunning(null);
-    setSessionId(null);
-  }, []);
-
-  const onSpawned = useCallback((result: SpawnResult) => {
-    setSessionId(result.sessionId);
-  }, []);
-
-  const onError = useCallback((message: string) => {
-    setError(message);
-    setRunning(null);
-  }, []);
+  const active = open.find((c) => c.instanceId === activeId) ?? null;
 
   return (
     <div
@@ -69,73 +31,23 @@ function App() {
         overflow: "hidden",
       }}
     >
-      <TitleBar context={running ? `${running.kind} · ${running.cwd}` : "launcher"} />
+      <TitleBar
+        context={
+          open.length === 0
+            ? "no console"
+            : `${open.length} console${open.length === 1 ? "" : "s"}`
+        }
+      />
 
       <div style={{ flex: 1, display: "flex", gap: 14, minHeight: 0, padding: "14px 14px 0" }}>
         <InstanceManager />
-        {running ? (
-          <Panel
-            title={`console · ${running.kind}`}
-            accent
-            right={
-              sessionId ? (
-                <span style={{ font: "10px var(--wb-mono)", color: "var(--wb-textDim2)" }}>
-                  session {sessionId.slice(0, 8)}
-                </span>
-              ) : (
-                <span style={{ font: "10px var(--wb-mono)", color: "var(--wb-working)" }}>
-                  <Spinner size={10} /> spawning
-                </span>
-              )
-            }
-            style={{ flex: 1 }}
-            bodyStyle={{ padding: 0, paddingTop: 9 }}
-          >
-            <div
-              style={{
-                flex: "0 0 auto",
-                display: "flex",
-                alignItems: "center",
-                gap: 10,
-                padding: "6px 12px",
-                borderBottom: "1px solid var(--wb-border)",
-                font: "11px var(--wb-mono)",
-              }}
-            >
-              <button onClick={stop} style={buttonStyle}>
-                {GLYPH.fail} stop
-              </button>
-              <span style={{ color: "var(--wb-textDim2)" }}>
-                {running.kind === "claude"
-                  ? "interactive claude — try plan mode, a slash command, approve a permission prompt"
-                  : "shell"}
-              </span>
-            </div>
-            <div style={{ flex: "1 1 auto", minHeight: 0 }}>
-              <Console
-                key={`${running.kind}:${running.cwd}`}
-                kind={running.kind}
-                cwd={running.cwd}
-                onSpawned={onSpawned}
-                onError={onError}
-              />
-            </div>
-          </Panel>
-        ) : (
-          <Panel title="launcher" style={{ flex: 1 }} bodyStyle={{ padding: "20px 22px" }}>
-            <Launcher
-              cwd={cwd}
-              kind={kind}
-              error={error}
-              onCwd={setCwd}
-              onKind={setKind}
-              onLaunch={launch}
-            />
-          </Panel>
-        )}
+        <ConsoleArea />
       </div>
 
-      <StatusBar sessionId={sessionId} />
+      <StatusBar
+        openCount={open.length}
+        sessionId={active?.sessionId ?? null}
+      />
     </div>
   );
 }
@@ -167,17 +79,13 @@ function TitleBar({ context }: { context: string }) {
         <span style={{ color: "var(--wb-textDim2)", fontSize: 11.5 }}>{context}</span>
       </div>
       <span style={{ color: "var(--wb-textFaint)", fontSize: 11, padding: "0 14px" }}>
-        phase 1 · theme
+        phase 1 · console
       </span>
     </div>
   );
 }
 
-function StatusBar({ sessionId }: { sessionId: string | null }) {
-  const hints: [string, string][] = [
-    ["↵", "launch"],
-    ["✗", "stop"],
-  ];
+function StatusBar({ openCount, sessionId }: { openCount: number; sessionId: string | null }) {
   return (
     <div
       style={{
@@ -194,13 +102,9 @@ function StatusBar({ sessionId }: { sessionId: string | null }) {
       }}
     >
       <span style={{ color: "var(--wb-accent)" }}>muted dark</span>
-      <div style={{ display: "flex", gap: 13, alignItems: "center" }}>
-        {hints.map(([k, v]) => (
-          <span key={k}>
-            <span style={{ color: "var(--wb-accent)" }}>{k}</span> {v}
-          </span>
-        ))}
-      </div>
+      <span>
+        {openCount} {openCount === 1 ? "console" : "consoles"}
+      </span>
       {sessionId && (
         <span style={{ marginLeft: "auto", color: "var(--wb-textFaint)" }}>
           session {sessionId.slice(0, 8)}
@@ -209,72 +113,5 @@ function StatusBar({ sessionId }: { sessionId: string | null }) {
     </div>
   );
 }
-
-interface LauncherProps {
-  cwd: string;
-  kind: SpawnKind;
-  error: string | null;
-  onCwd: (v: string) => void;
-  onKind: (k: SpawnKind) => void;
-  onLaunch: () => void;
-}
-
-function Launcher({ cwd, kind, error, onCwd, onKind, onLaunch }: LauncherProps) {
-  return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 14, maxWidth: 640 }}>
-      <div style={{ color: "var(--wb-textDim2)", fontSize: 13 }}>
-        Launch a PTY to exercise the themed console.
-      </div>
-
-      <label style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: 12 }}>
-        <span style={{ color: "var(--wb-textDim2)" }}>working directory</span>
-        <input
-          value={cwd}
-          onChange={(e) => onCwd(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter") onLaunch();
-          }}
-          placeholder="C:\\path\\to\\a\\repo"
-          spellCheck={false}
-          style={{
-            background: "var(--wb-bg)",
-            color: "var(--wb-text)",
-            border: "1px solid var(--wb-border)",
-            padding: "6px 8px",
-            fontFamily: "var(--wb-mono)",
-            fontSize: 12.5,
-          }}
-        />
-      </label>
-
-      <div style={{ display: "flex", gap: 16, fontSize: 12 }}>
-        {(["claude", "shell"] as const).map((k) => (
-          <label key={k} style={{ display: "flex", alignItems: "center", gap: 6, cursor: "pointer" }}>
-            <input type="radio" name="kind" checked={kind === k} onChange={() => onKind(k)} />
-            <span>{k}</span>
-          </label>
-        ))}
-      </div>
-
-      <div>
-        <button onClick={onLaunch} style={{ ...buttonStyle, padding: "6px 14px" }}>
-          {GLYPH.run} launch
-        </button>
-      </div>
-
-      {error && <div style={{ color: "var(--wb-needs)", fontSize: 12 }}>{error}</div>}
-    </div>
-  );
-}
-
-const buttonStyle: React.CSSProperties = {
-  background: "var(--wb-titlebar)",
-  color: "var(--wb-text)",
-  border: "1px solid var(--wb-border)",
-  padding: "3px 10px",
-  fontFamily: "var(--wb-mono)",
-  fontSize: 11.5,
-  cursor: "pointer",
-};
 
 export default App;

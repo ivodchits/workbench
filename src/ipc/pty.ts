@@ -1,7 +1,8 @@
-// Typed wrappers over the Rust PTY commands (steps 0.2–0.3). The backend owns
-// the child; we stream its output in over a Tauri Channel and send keystrokes +
-// resize back via commands. Step 0.3 adds the `claude` launcher: pick a working
-// dir and kind, and the backend returns the session UUID it minted.
+// Typed wrappers over the Rust PTY commands. The backend owns each child; we
+// stream its output in over a Tauri Channel and send keystrokes + resize back via
+// commands. Step 1.5 keys every call by `instanceId` so many consoles run at
+// once, and exposes the `session_id → instance_id` lookup the Phase-2 hook server
+// will use.
 
 import { Channel, invoke } from "@tauri-apps/api/core";
 
@@ -23,31 +24,44 @@ interface RawSpawnResult {
   cwd: string;
 }
 
-/** Spawn the chosen child in `cwd` and route its output to `onOutput`. */
+/** Spawn the chosen child for `instanceId` in `cwd`, routing output to `onOutput`. */
 export async function ptySpawn(
+  instanceId: string,
   onOutput: Channel<PtyChunk>,
   kind: SpawnKind,
   cwd: string | null,
   cols: number,
   rows: number,
 ): Promise<SpawnResult> {
-  const raw = await invoke<RawSpawnResult>("pty_spawn", { onOutput, kind, cwd, cols, rows });
+  const raw = await invoke<RawSpawnResult>("pty_spawn", {
+    instanceId,
+    onOutput,
+    kind,
+    cwd,
+    cols,
+    rows,
+  });
   return { sessionId: raw.session_id, cwd: raw.cwd };
 }
 
-/** Forward keystrokes (UTF-8 bytes) to the PTY. */
-export function ptyWrite(data: Uint8Array): Promise<void> {
-  return invoke("pty_write", { data: Array.from(data) });
+/** Forward keystrokes (UTF-8 bytes) to an instance's PTY. */
+export function ptyWrite(instanceId: string, data: Uint8Array): Promise<void> {
+  return invoke("pty_write", { instanceId, data: Array.from(data) });
 }
 
-/** Resize the PTY to match the terminal's cols/rows. */
-export function ptyResize(cols: number, rows: number): Promise<void> {
-  return invoke("pty_resize", { cols, rows });
+/** Resize an instance's PTY to match its terminal's cols/rows. */
+export function ptyResize(instanceId: string, cols: number, rows: number): Promise<void> {
+  return invoke("pty_resize", { instanceId, cols, rows });
 }
 
-/** Kill the active PTY child. */
-export function ptyKill(): Promise<void> {
-  return invoke("pty_kill");
+/** Kill an instance's PTY child. */
+export function ptyKill(instanceId: string): Promise<void> {
+  return invoke("pty_kill", { instanceId });
+}
+
+/** Resolve a `session_id` to its owning `instanceId` (Phase-2 hook routing). */
+export function sessionInstance(sessionId: string): Promise<string | null> {
+  return invoke("session_instance", { sessionId });
 }
 
 /** The home dir, used to prefill the launcher's working-dir field. */

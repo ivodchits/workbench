@@ -32,6 +32,7 @@ pub fn run() {
             pty::pty_write,
             pty::pty_resize,
             pty::pty_kill,
+            pty::session_instance,
             pty::default_working_dir,
             git::detect_repo,
             registry::create_group,

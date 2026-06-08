@@ -6,14 +6,17 @@
 // Phase 2), and row actions (new / rename / edit note / toggle worktree / open
 // working dir / kill). A header summary counts agents that "need you".
 //
-// Out of scope (later steps): live status (2.2), real worktree provisioning
-// (2.4), and clicking an instance to spawn/focus its console (1.5). Selection is
-// tracked here already so 1.5 can hang the console binding off it.
+// Step 1.5 wires the rail to consoles: clicking an instance launches (or focuses)
+// its claude console, and each row shows a live marker while its console is open.
+// Out of scope (later steps): live hook-fed status (2.2), real worktree
+// provisioning (2.4), and the dockview arrangement of consoles (1.6).
 
 import { useEffect, useMemo, useState, type CSSProperties } from "react";
 import Panel from "../../theme/Panel";
 import { GLYPH } from "../../theme";
 import type { Group, Instance, Project } from "../../ipc/registry";
+import type { ConsoleStatus } from "../../state/consoles";
+import { closeConsole, openConsole, useConsoles } from "../../state/consoles";
 import { deleteInstance, deleteProject, loadRegistry, useRegistry } from "../../state/registry";
 import ProjectDialog from "./ProjectDialog";
 import InstanceDialog from "./InstanceDialog";
@@ -28,6 +31,7 @@ interface GroupSection {
 
 function InstanceManager() {
   const { groups, projects, instances, loaded, error } = useRegistry();
+  const { open: openConsoles } = useConsoles();
   const [addingProject, setAddingProject] = useState(false);
   const [editProjectTarget, setEditProjectTarget] = useState<Project | null>(null);
   const [removeProjectTarget, setRemoveProjectTarget] = useState<Project | null>(null);
@@ -39,6 +43,19 @@ function InstanceManager() {
   useEffect(() => {
     void loadRegistry();
   }, []);
+
+  // Live console state per instance, so each row can show a running/spawning
+  // marker (null = no console open).
+  const consoleStatusById = useMemo(() => {
+    const m = new Map<string, ConsoleStatus>();
+    for (const c of openConsoles) m.set(c.instanceId, c.status);
+    return m;
+  }, [openConsoles]);
+
+  const activate = (instance: Instance) => {
+    setSelectedId(instance.id);
+    openConsole(instance);
+  };
 
   // Bucket projects under their group; ungrouped projects sort last.
   const sections = useMemo<GroupSection[]>(() => {
@@ -159,7 +176,9 @@ function InstanceManager() {
                       collapsed={collapsed.has(`proj:${p.id}`)}
                       onToggle={() => toggle(`proj:${p.id}`)}
                       selectedId={selectedId}
+                      consoleStatusById={consoleStatusById}
                       onSelect={setSelectedId}
+                      onActivate={activate}
                       onEdit={() => setEditProjectTarget(p)}
                       onRemove={() => setRemoveProjectTarget(p)}
                       onNewInstance={() => setNewInstanceProject(p)}
@@ -208,7 +227,9 @@ interface ProjectNodeProps {
   collapsed: boolean;
   onToggle: () => void;
   selectedId: string | null;
+  consoleStatusById: Map<string, ConsoleStatus>;
   onSelect: (id: string) => void;
+  onActivate: (instance: Instance) => void;
   onEdit: () => void;
   onRemove: () => void;
   onNewInstance: () => void;
@@ -221,7 +242,9 @@ function ProjectNode({
   collapsed,
   onToggle,
   selectedId,
+  consoleStatusById,
   onSelect,
+  onActivate,
   onEdit,
   onRemove,
   onNewInstance,
@@ -301,7 +324,9 @@ function ProjectNode({
               key={i.id}
               instance={i}
               selected={selectedId === i.id}
+              consoleStatus={consoleStatusById.get(i.id) ?? null}
               onSelect={() => onSelect(i.id)}
+              onActivate={() => onActivate(i)}
               onKill={() => onKill(i)}
             />
           ))}
@@ -387,6 +412,8 @@ function KillConfirm({ instance, onClose }: { instance: Instance; onClose: () =>
   const confirm = async () => {
     setBusy(true);
     try {
+      // Stop the PTY (if a console is open) before deleting the row.
+      closeConsole(instance.id);
       await deleteInstance(instance.id);
       onClose();
     } catch {
@@ -396,8 +423,8 @@ function KillConfirm({ instance, onClose }: { instance: Instance; onClose: () =>
   return (
     <Modal title="kill instance" onClose={onClose} width={400}>
       <div style={{ fontSize: 12.5, color: "var(--wb-text)", lineHeight: 1.5 }}>
-        Kill <strong style={{ color: "var(--wb-accent)" }}>{instance.title}</strong>? This removes
-        the instance from the rail.
+        Kill <strong style={{ color: "var(--wb-accent)" }}>{instance.title}</strong>? This stops its
+        console and removes the instance from the rail.
       </div>
       <ConfirmButtons busy={busy} onCancel={onClose} onConfirm={() => void confirm()} label="kill" />
     </Modal>

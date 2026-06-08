@@ -1,18 +1,18 @@
-//! PTY bridge (Phase 0 spike).
+//! PTY supervisor (step 1.5).
 //!
-//! Owns a single `portable-pty` child and streams its output to the frontend
-//! over a Tauri `Channel<Vec<u8>>`. Keystrokes and resize flow back through
-//! `#[tauri::command]`s. This is the de-risk for going Tauri-native (design
-//! §4.1): prove the PTY↔webview bridge before building on it.
+//! Owns every `portable-pty` child and streams each one's output to the frontend
+//! over a per-PTY Tauri `Channel<Vec<u8>>`. Keystrokes and resize flow back
+//! through `#[tauri::command]`s. The PTY↔webview bridge is the de-risk for going
+//! Tauri-native (design §4.1); Phase 0 proved it with one PTY.
 //!
-//! Step 0.2 proved this with the user's shell. Step 0.3 generalizes it to launch
-//! the real interactive `claude` TUI in a chosen working directory with a
-//! Workbench-minted `--session-id <uuid>` (design §4.2, decision 12): correlate
-//! the PTY to a session *at spawn*, never by racing `SessionStart`.
-//!
-//! Scope is still one PTY. The multi-PTY supervisor and the `session_id → card`
-//! registry arrive in later steps (1.5).
+//! Step 1.5 generalizes the single-PTY spike into a supervisor keyed by
+//! **`instance_id`**, so many consoles run side by side. Each `claude` child is
+//! launched with a Workbench-minted `--session-id <uuid>` (design §4.2, decision
+//! 12) and the supervisor keeps a `session_id → instance_id` map alongside the
+//! `instance_id → PTY` map — the lookup the Phase-2 hook server needs to route an
+//! event (which only carries `session_id`) back to its card.
 
+use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -25,21 +25,28 @@ use tauri::ipc::Channel;
 use tauri::State;
 
 /// A live PTY child plus the handles needed to write to it, resize it, and kill
-/// it. The reader runs on its own detached thread and isn't tracked here.
+/// it. The reader runs on its own detached thread and isn't tracked here. For a
+/// `claude` child, `session_id` is the minted UUID (so it can be unmapped from
+/// the `session_id → instance_id` index on teardown); a shell has none.
 struct PtySession {
     master: Box<dyn MasterPty + Send>,
     writer: Box<dyn Write + Send>,
     child: Box<dyn Child + Send + Sync>,
+    session_id: Option<String>,
 }
 
-/// Tauri-managed state holding the (single) active PTY session.
+/// Tauri-managed state holding every active PTY, keyed by `instance_id`, plus the
+/// reverse `session_id → instance_id` index (design §4.4 / decision 10: the hook
+/// server filters incoming events by `session_id`, dropping any session Workbench
+/// didn't mint).
 #[derive(Default)]
 pub struct PtyManager {
-    session: Mutex<Option<PtySession>>,
+    sessions: Mutex<HashMap<String, PtySession>>,
+    by_session: Mutex<HashMap<String, String>>,
 }
 
 /// What to run in the PTY. `Shell` is the 0.2 spike path (debugging convenience);
-/// `Claude` is the real target — an interactive `claude` TUI for one session.
+/// `Claude` is the real target — an interactive `claude` TUI for one instance.
 #[derive(Debug, Clone, Copy, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum SpawnKind {
@@ -57,12 +64,13 @@ pub struct SpawnResult {
     cwd: String,
 }
 
-/// Spawn `kind` in `cwd` (defaulting to the home dir) inside a fresh PTY and
-/// stream its output to `on_output`. Replaces any existing session (kills it
-/// first) so the frontend can relaunch.
+/// Spawn `kind` for `instance_id` in `cwd` inside a fresh PTY and stream its
+/// output to `on_output`. Relaunches cleanly: any existing PTY for the same
+/// instance is killed first.
 #[tauri::command]
 pub fn pty_spawn(
     state: State<'_, PtyManager>,
+    instance_id: String,
     on_output: Channel<Vec<u8>>,
     kind: SpawnKind,
     cwd: Option<String>,
@@ -88,8 +96,8 @@ pub fn pty_spawn(
         SpawnKind::Shell => shell_candidates(&cwd),
     };
 
-    // Tear down any prior session only once we know we have something to spawn.
-    kill_session(state.inner());
+    // Tear down any prior PTY for this instance only once we know we can spawn.
+    kill_instance(state.inner(), &instance_id);
 
     let pty_system = native_pty_system();
     let pair = pty_system
@@ -127,7 +135,7 @@ pub fn pty_spawn(
     // Pump PTY output to the frontend until the child exits or the pipe closes.
     // `Channel::send` over IPC serializes `Vec<u8>` as a JS number array; the
     // frontend reassembles it into a Uint8Array. (Raw-ArrayBuffer streaming is a
-    // later optimization; correctness first for the spike.)
+    // later optimization; correctness first.)
     thread::spawn(move || {
         let mut buf = [0u8; 8192];
         loop {
@@ -143,11 +151,22 @@ pub fn pty_spawn(
         }
     });
 
-    *state.session.lock().unwrap() = Some(PtySession {
-        master: pair.master,
-        writer,
-        child,
-    });
+    if let Some(sid) = &session_id {
+        state
+            .by_session
+            .lock()
+            .unwrap()
+            .insert(sid.clone(), instance_id.clone());
+    }
+    state.sessions.lock().unwrap().insert(
+        instance_id,
+        PtySession {
+            master: pair.master,
+            writer,
+            child,
+            session_id: session_id.clone(),
+        },
+    );
 
     Ok(SpawnResult {
         session_id,
@@ -155,11 +174,15 @@ pub fn pty_spawn(
     })
 }
 
-/// Forward keystrokes (UTF-8 bytes from xterm `onData`) to the PTY.
+/// Forward keystrokes (UTF-8 bytes from xterm `onData`) to an instance's PTY.
 #[tauri::command]
-pub fn pty_write(state: State<'_, PtyManager>, data: Vec<u8>) -> Result<(), String> {
-    let mut guard = state.session.lock().unwrap();
-    let session = guard.as_mut().ok_or("no active PTY")?;
+pub fn pty_write(
+    state: State<'_, PtyManager>,
+    instance_id: String,
+    data: Vec<u8>,
+) -> Result<(), String> {
+    let mut guard = state.sessions.lock().unwrap();
+    let session = guard.get_mut(&instance_id).ok_or("no active PTY")?;
     session
         .writer
         .write_all(&data)
@@ -170,11 +193,16 @@ pub fn pty_write(state: State<'_, PtyManager>, data: Vec<u8>) -> Result<(), Stri
         .map_err(|e| format!("pty flush failed: {e}"))
 }
 
-/// Resize the PTY so the child reflows to the new terminal dimensions.
+/// Resize an instance's PTY so the child reflows to the new terminal dimensions.
 #[tauri::command]
-pub fn pty_resize(state: State<'_, PtyManager>, cols: u16, rows: u16) -> Result<(), String> {
-    let guard = state.session.lock().unwrap();
-    let session = guard.as_ref().ok_or("no active PTY")?;
+pub fn pty_resize(
+    state: State<'_, PtyManager>,
+    instance_id: String,
+    cols: u16,
+    rows: u16,
+) -> Result<(), String> {
+    let guard = state.sessions.lock().unwrap();
+    let session = guard.get(&instance_id).ok_or("no active PTY")?;
     session
         .master
         .resize(PtySize {
@@ -186,11 +214,19 @@ pub fn pty_resize(state: State<'_, PtyManager>, cols: u16, rows: u16) -> Result<
         .map_err(|e| format!("pty resize failed: {e}"))
 }
 
-/// Kill the active PTY child (if any) and drop the session.
+/// Kill an instance's PTY child (if any) and drop the session.
 #[tauri::command]
-pub fn pty_kill(state: State<'_, PtyManager>) -> Result<(), String> {
-    kill_session(state.inner());
+pub fn pty_kill(state: State<'_, PtyManager>, instance_id: String) -> Result<(), String> {
+    kill_instance(state.inner(), &instance_id);
     Ok(())
+}
+
+/// Resolve a `session_id` back to the `instance_id` that owns it, or `None` if
+/// Workbench didn't mint it. The Phase-2 hook server uses this to route events
+/// (which carry only `session_id`) to the right card, and to drop foreign ones.
+#[tauri::command]
+pub fn session_instance(state: State<'_, PtyManager>, session_id: String) -> Option<String> {
+    state.by_session.lock().unwrap().get(&session_id).cloned()
 }
 
 /// Default working directory offered to the launcher form (the home dir).
@@ -272,9 +308,15 @@ fn home_dir() -> Option<PathBuf> {
         .map(PathBuf::from)
 }
 
-/// Shared teardown: kill the child and drop the session, if one exists.
-fn kill_session(mgr: &PtyManager) {
-    if let Some(mut session) = mgr.session.lock().unwrap().take() {
+/// Shared teardown: kill the instance's child, drop the session, and unmap its
+/// `session_id`. Take the session out from under the `sessions` lock before
+/// touching `by_session` so the two mutexes are never held nested.
+fn kill_instance(mgr: &PtyManager, instance_id: &str) {
+    let removed = mgr.sessions.lock().unwrap().remove(instance_id);
+    if let Some(mut session) = removed {
         let _ = session.child.kill();
+        if let Some(sid) = session.session_id {
+            mgr.by_session.lock().unwrap().remove(&sid);
+        }
     }
 }
