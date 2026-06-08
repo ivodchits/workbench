@@ -1,7 +1,9 @@
-// Console panel (step 0.2 spike): a single xterm.js terminal bound to the
-// backend shell PTY. Output streams in over a Tauri Channel; keystrokes and
-// resize flow back through the IPC wrappers. This is the bridge being de-risked
-// before any real UI (rail, dock, claude launcher) is built on top of it.
+// Console panel (steps 0.2–0.3): a single xterm.js terminal bound to a backend
+// PTY. Output streams in over a Tauri Channel; keystrokes and resize flow back
+// through the IPC wrappers. Step 0.3 points it at the real interactive `claude`
+// TUI (a minted `--session-id`) in a chosen working dir, proving the bridge
+// renders plan mode, permission prompts, slash commands, and the status line
+// before any real UI (rail, dock, registry) is built on top of it.
 
 import { useEffect, useRef } from "react";
 import { Channel } from "@tauri-apps/api/core";
@@ -10,7 +12,15 @@ import { FitAddon } from "@xterm/addon-fit";
 import "@xterm/xterm/css/xterm.css";
 
 import { mono, mutedDark } from "../theme/tokens";
-import { ptyKill, ptyResize, ptySpawn, ptyWrite, type PtyChunk } from "../ipc/pty";
+import {
+  ptyKill,
+  ptyResize,
+  ptySpawn,
+  ptyWrite,
+  type PtyChunk,
+  type SpawnKind,
+  type SpawnResult,
+} from "../ipc/pty";
 
 /** Derive an xterm theme from the app theme tokens so the console matches the chrome. */
 function xtermTheme(): ITheme {
@@ -39,7 +49,18 @@ function xtermTheme(): ITheme {
   };
 }
 
-function Console() {
+interface ConsoleProps {
+  /** What to run in this console. */
+  kind: SpawnKind;
+  /** Working directory to launch in. */
+  cwd: string;
+  /** Reports the backend's spawn result (incl. minted session id) to the parent. */
+  onSpawned?: (result: SpawnResult) => void;
+  /** Surfaces a spawn failure to the parent. */
+  onError?: (message: string) => void;
+}
+
+function Console({ kind, cwd, onSpawned, onError }: ConsoleProps) {
   const containerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -84,7 +105,13 @@ function Console() {
     requestAnimationFrame(() => {
       if (disposed) return;
       fit.fit();
-      void ptySpawn(output, term.cols, term.rows);
+      ptySpawn(output, kind, cwd, term.cols, term.rows)
+        .then((result) => {
+          if (!disposed) onSpawned?.(result);
+        })
+        .catch((e: unknown) => {
+          if (!disposed) onError?.(e instanceof Error ? e.message : String(e));
+        });
       ro.observe(container);
       term.focus();
     });
@@ -97,7 +124,7 @@ function Console() {
       void ptyKill();
       term.dispose();
     };
-  }, []);
+  }, [kind, cwd, onSpawned, onError]);
 
   return (
     <div
