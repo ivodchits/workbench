@@ -3,13 +3,16 @@ import { applyTheme, mutedDark } from "./theme/tokens";
 import { GLYPH, Spinner } from "./theme";
 import Panel from "./theme/Panel";
 import Console from "./panels/Console";
+import InstanceManager from "./panels/InstanceManager";
 import { defaultWorkingDir, type SpawnKind, type SpawnResult } from "./ipc/pty";
 
-// Step 1.1: the retro chrome wrapping the Phase-0 PTY spike. The title bar,
-// box-drawing `Panel`, status glyphs, and status bar all read from the same
-// theme tokens that derive the xterm.js theme, so the chrome and the embedded
-// terminal are one continuous surface. The launcher/console logic is unchanged
-// from 0.3 — the real cockpit (rail, dock, registry) arrives in later steps.
+// Step 1.1 wrapped the Phase-0 PTY spike in the retro chrome; step 1.3 adds the
+// Instance Manager rail (the project registry) on the left, beside the existing
+// launcher/console. The chrome, rail, and embedded terminal all read from the
+// same theme tokens, so they're one continuous surface. The console wiring
+// (clicking a project/instance to launch its agent) and the dockview layout
+// arrive in later steps (1.5, 1.6) — for now the center keeps the manual
+// launcher for exercising the PTY bridge.
 
 interface Running {
   kind: SpawnKind;
@@ -68,7 +71,8 @@ function App() {
     >
       <TitleBar context={running ? `${running.kind} · ${running.cwd}` : "launcher"} />
 
-      <div style={{ flex: 1, display: "flex", minHeight: 0, padding: "14px 14px 0" }}>
+      <div style={{ flex: 1, display: "flex", gap: 14, minHeight: 0, padding: "14px 14px 0" }}>
+        <InstanceManager />
         {running ? (
           <Panel
             title={`console · ${running.kind}`}
