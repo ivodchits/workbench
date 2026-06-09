@@ -18,6 +18,7 @@ import type { Group, Instance, Project } from "../../ipc/registry";
 import type { ConsoleStatus } from "../../state/consoles";
 import { closeConsole, openConsole, useConsoles } from "../../state/consoles";
 import { closeShell, getOpenShells, openShell } from "../../state/shells";
+import { closeEditor, getOpenEditors, openEditor } from "../../state/editors";
 import { setActiveProject, useActiveProject } from "../../state/activeProject";
 import { release } from "../terminalPool";
 import { deleteInstance, deleteProject, loadRegistry, useRegistry } from "../../state/registry";
@@ -75,6 +76,13 @@ function InstanceManager({ onCollapse }: InstanceManagerProps) {
   const openShellForProject = (project: Project) => {
     setActiveProject(project.id);
     openShell({ projectId: project.id, cwd: project.rootPath, label: project.name });
+  };
+
+  // Open (or focus) the Editor for the project, its file tree scoped to the
+  // project root; switches the active workspace to that project.
+  const openEditorForProject = (project: Project) => {
+    setActiveProject(project.id);
+    openEditor({ projectId: project.id, rootPath: project.rootPath, label: project.name });
   };
 
   // Accordion: when the active project changes, expand it and collapse the rest,
@@ -239,6 +247,7 @@ function InstanceManager({ onCollapse }: InstanceManagerProps) {
                       consoleStatusById={consoleStatusById}
                       onActivate={activate}
                       onOpenShell={() => openShellForProject(p)}
+                      onOpenEditor={() => openEditorForProject(p)}
                       onEdit={() => setEditProjectTarget(p)}
                       onRemove={() => setRemoveProjectTarget(p)}
                       onNewInstance={() => setNewInstanceProject(p)}
@@ -294,6 +303,8 @@ interface ProjectNodeProps {
   onActivate: (instance: Instance) => void;
   /** Open (or focus) this project's shell. */
   onOpenShell: () => void;
+  /** Open (or focus) this project's editor. */
+  onOpenEditor: () => void;
   onEdit: () => void;
   onRemove: () => void;
   onNewInstance: () => void;
@@ -310,6 +321,7 @@ function ProjectNode({
   consoleStatusById,
   onActivate,
   onOpenShell,
+  onOpenEditor,
   onEdit,
   onRemove,
   onNewInstance,
@@ -384,6 +396,9 @@ function ProjectNode({
             </ProjectAction>
             <ProjectAction label="open project shell" onClick={onOpenShell}>
               {GLYPH.prompt}
+            </ProjectAction>
+            <ProjectAction label="open editor" onClick={onOpenEditor}>
+              ✎
             </ProjectAction>
             <ProjectAction label="edit project" onClick={onEdit}>
               edit
@@ -501,6 +516,10 @@ function RemoveProjectConfirm({
       for (const s of getOpenShells().filter((s) => s.projectId === project.id)) {
         closeShell(s.shellId);
         release(s.shellId);
+      }
+      // Editors hold no PTY — just drop them (unsaved buffers go with the project).
+      for (const e of getOpenEditors().filter((e) => e.projectId === project.id)) {
+        closeEditor(e.editorId);
       }
       await deleteProject(project.id);
       onClose();

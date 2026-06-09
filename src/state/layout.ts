@@ -12,6 +12,7 @@
 import type { SerializedDockview } from "dockview";
 import { getLayout, setLayout } from "../ipc/layout";
 import type { ShellDescriptor } from "./shells";
+import type { EditorDescriptor } from "./editors";
 
 /**
  * The workspace key the MVP persists under. Layout is global for now; the schema
@@ -21,8 +22,8 @@ import type { ShellDescriptor } from "./shells";
 export const WORKSPACE_KEY = "__global__";
 
 /** Bump if the saved-payload shape changes incompatibly. (v2 added `shells`;
- *  v3 made shells project-scoped.) */
-const SCHEMA_VERSION = 3;
+ *  v3 made shells project-scoped; v4 added `editors`.) */
+const SCHEMA_VERSION = 4;
 
 export interface SavedLayout {
   version: number;
@@ -31,6 +32,8 @@ export interface SavedLayout {
   consoleInstanceIds: string[];
   /** Shell panels (id + target dir + label) — restored as dormant placeholders. */
   shells: ShellDescriptor[];
+  /** Editor panels (id + root + label + open tabs) — tabs re-read from disk. */
+  editors: EditorDescriptor[];
 }
 
 /** Load and validate the saved layout for `key`; null when absent or unreadable. */
@@ -52,6 +55,7 @@ export async function loadLayout(key: string = WORKSPACE_KEY): Promise<SavedLayo
         ? parsed.consoleInstanceIds
         : [],
       shells: Array.isArray(parsed.shells) ? parsed.shells : [],
+      editors: Array.isArray(parsed.editors) ? parsed.editors : [],
     };
   } catch {
     return null; // corrupt blob — start from an empty workspace
@@ -65,8 +69,15 @@ function write(
   tree: SerializedDockview,
   consoleInstanceIds: string[],
   shells: ShellDescriptor[],
+  editors: EditorDescriptor[],
 ): Promise<void> {
-  const payload: SavedLayout = { version: SCHEMA_VERSION, tree, consoleInstanceIds, shells };
+  const payload: SavedLayout = {
+    version: SCHEMA_VERSION,
+    tree,
+    consoleInstanceIds,
+    shells,
+    editors,
+  };
   return setLayout(key, JSON.stringify(payload)).catch(() => {
     // Persisting layout is best-effort; a failed write just means the next
     // launch falls back to the last good layout (or empty).
@@ -74,7 +85,7 @@ function write(
 }
 
 /**
- * Persist `tree` + `consoleInstanceIds` + `shells` for `key`, debounced. Repeated
+ * Persist `tree` + console / shell / editor panels for `key`, debounced. Repeated
  * calls (e.g. while dragging a splitter) collapse into one write after the layout
  * settles.
  */
@@ -82,13 +93,14 @@ export function saveLayoutDebounced(
   tree: SerializedDockview,
   consoleInstanceIds: string[],
   shells: ShellDescriptor[],
+  editors: EditorDescriptor[],
   key: string = WORKSPACE_KEY,
   delayMs = 400,
 ): void {
   if (saveTimer) clearTimeout(saveTimer);
   saveTimer = setTimeout(() => {
     saveTimer = null;
-    void write(key, tree, consoleInstanceIds, shells);
+    void write(key, tree, consoleInstanceIds, shells, editors);
   }, delayMs);
 }
 
@@ -101,11 +113,12 @@ export function saveLayoutNow(
   tree: SerializedDockview,
   consoleInstanceIds: string[],
   shells: ShellDescriptor[],
+  editors: EditorDescriptor[],
   key: string,
 ): void {
   if (saveTimer) {
     clearTimeout(saveTimer);
     saveTimer = null;
   }
-  void write(key, tree, consoleInstanceIds, shells);
+  void write(key, tree, consoleInstanceIds, shells, editors);
 }

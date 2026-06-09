@@ -4,6 +4,7 @@
 // prefs store; step 1.3 adds git inspection for project registration.
 
 mod db;
+mod fs;
 mod git;
 mod layout;
 mod pty;
@@ -51,6 +52,9 @@ pub fn run() {
             registry::remove_instance,
             layout::get_layout,
             layout::set_layout,
+            fs::read_dir,
+            fs::read_file,
+            fs::write_file,
             sys::open_path,
         ])
         .run(tauri::generate_context!())

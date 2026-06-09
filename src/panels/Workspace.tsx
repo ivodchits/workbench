@@ -30,7 +30,7 @@ import "../theme/dockview.css";
 
 import ConsolePanel, { type ConsolePanelParams } from "./ConsolePanel";
 import ShellPanel, { type ShellPanelParams } from "./Shell";
-import { EditorPanel } from "./StubPanels";
+import EditorPanel, { type EditorPanelParams } from "./Editor";
 import { GLYPH } from "../theme";
 import { useRegistry } from "../state/registry";
 import {
@@ -50,6 +50,15 @@ import {
   useShells,
   type ShellSession,
 } from "../state/shells";
+import {
+  closeEditor,
+  getActiveEditorId,
+  getOpenEditors,
+  hydrateEditors,
+  useEditors,
+  type EditorDescriptor,
+  type EditorSession,
+} from "../state/editors";
 import { useActiveProject } from "../state/activeProject";
 import { loadLayout, saveLayoutDebounced, saveLayoutNow } from "../state/layout";
 import { release } from "./terminalPool";
@@ -58,12 +67,13 @@ interface LayoutSnapshot {
   tree: SerializedDockview;
   consoleIds: string[];
   shells: { shellId: string; projectId: string; cwd: string; label: string }[];
+  editors: EditorDescriptor[];
 }
 
 const COMPONENTS = {
   console: ConsolePanel as React.FunctionComponent<IDockviewPanelProps>,
   shell: ShellPanel as React.FunctionComponent<IDockviewPanelProps>,
-  editor: EditorPanel,
+  editor: EditorPanel as React.FunctionComponent<IDockviewPanelProps>,
 };
 
 /** A console panel carries its instance id in params; other panels don't. */
@@ -75,6 +85,12 @@ function consoleInstanceId(panel: { params?: Record<string, unknown> }): string 
 /** A shell panel carries its minted shell id in params; other panels don't. */
 function shellPanelId(panel: { params?: Record<string, unknown> }): string | null {
   const id = panel.params?.shellId;
+  return typeof id === "string" ? id : null;
+}
+
+/** An editor panel carries its minted editor id in params; other panels don't. */
+function editorPanelId(panel: { params?: Record<string, unknown> }): string | null {
+  const id = panel.params?.editorId;
   return typeof id === "string" ? id : null;
 }
 
@@ -106,6 +122,7 @@ function Workspace() {
   const [api, setApi] = useState<DockviewApi | null>(null);
   const { open, activeId } = useConsoles();
   const { open: shellsOpen, activeId: activeShellId } = useShells();
+  const { open: editorsOpen, activeId: activeEditorId } = useEditors();
   const { instances } = useRegistry();
   const activeProjectId = useActiveProject();
 
@@ -142,7 +159,19 @@ function Workspace() {
     const shells = getOpenShells()
       .filter((s) => present.has(s.shellId))
       .map((s) => ({ shellId: s.shellId, projectId: s.projectId, cwd: s.cwd, label: s.label }));
-    return { tree: a.toJSON(), consoleIds, shells };
+    // Editors persist their open tabs so a restore re-reads them from disk; only
+    // editors still docked are captured (others belong to another project).
+    const editors: EditorDescriptor[] = getOpenEditors()
+      .filter((e) => present.has(e.editorId))
+      .map((e) => ({
+        editorId: e.editorId,
+        projectId: e.projectId,
+        rootPath: e.rootPath,
+        label: e.label,
+        openPaths: e.files.map((f) => f.path),
+        activePath: e.activePath,
+      }));
+    return { tree: a.toJSON(), consoleIds, shells, editors };
   }, []);
 
   // Persist the active project's arrangement (debounced).
@@ -150,8 +179,8 @@ function Workspace() {
     (a: DockviewApi) => {
       const key = displayedProjectRef.current;
       if (!key) return; // no project on screen → nothing to persist
-      const { tree, consoleIds, shells } = collect(a);
-      saveLayoutDebounced(tree, consoleIds, shells, key);
+      const { tree, consoleIds, shells, editors } = collect(a);
+      saveLayoutDebounced(tree, consoleIds, shells, editors, key);
     },
     [collect],
   );
@@ -230,6 +259,41 @@ function Workspace() {
     }
   }, []);
 
+  // Same reconcile for editors (keyed by project id directly, like shells). An
+  // editor holds no PTY, so removal just drops the panel — the buffers stay in
+  // the store until the editor is genuinely closed.
+  const editorFocusRef = useRef<string | null>(null);
+  const reconcileEditors = useCallback((a: DockviewApi) => {
+    const projId = displayedProjectRef.current;
+    const openEditors = getOpenEditors();
+    const projEditors: EditorSession[] = openEditors.filter((e) => e.projectId === projId);
+
+    for (const editor of projEditors) {
+      if (a.getPanel(editor.editorId)) continue;
+      const params: EditorPanelParams = { editorId: editor.editorId };
+      const position = a.panels.length > 0 ? ({ direction: "right" } as const) : undefined;
+      a.addPanel({
+        id: editor.editorId,
+        component: "editor",
+        title: `editor · ${editor.label}`,
+        params,
+        ...(position ? { position } : {}),
+      });
+    }
+    // Remove only editors gone from the store entirely (closed) — never another
+    // project's editor (same rule as consoles/shells above).
+    const allEditorIds = new Set(openEditors.map((e) => e.editorId));
+    for (const panel of [...a.panels]) {
+      const id = editorPanelId(panel);
+      if (id && !allEditorIds.has(id)) a.removePanel(panel);
+    }
+    const aEditor = getActiveEditorId();
+    if (aEditor && a.getPanel(aEditor) && aEditor !== editorFocusRef.current) {
+      a.getPanel(aEditor)?.api.setActive();
+      editorFocusRef.current = aEditor;
+    }
+  }, []);
+
   const onReady = (event: DockviewReadyEvent) => {
     const a = event.api;
     setApi(a);
@@ -253,14 +317,17 @@ function Workspace() {
         if (switchingRef.current) return; // programmatic project swap — keep alive
         const consoleId = consoleInstanceId(panel);
         const shellId = shellPanelId(panel);
-        const id = consoleId ?? shellId;
+        const editorId = editorPanelId(panel);
+        const id = consoleId ?? shellId ?? editorId;
         if (!id) return;
         queueMicrotask(() => {
           if (switchingRef.current) return;
           if (a.getPanel(id)) return; // it was a move, not a close
           if (consoleId) closeConsole(consoleId);
           else if (shellId) closeShell(shellId);
-          release(id);
+          else if (editorId) closeEditor(editorId);
+          // Editors own no pooled terminal, so only console/shell ids release one.
+          if (consoleId || shellId) release(id);
         });
       }),
     );
@@ -280,6 +347,7 @@ function Workspace() {
     if (displayedProjectRef.current === activeProjectId) {
       reconcileConsoles(api);
       reconcileShells(api);
+      reconcileEditors(api);
       return;
     }
 
@@ -294,13 +362,14 @@ function Workspace() {
 
       restoredRef.current = false; // suspend persist during the swap
       if (prev != null) {
-        const { tree, consoleIds, shells } = collect(api);
-        saveLayoutNow(tree, consoleIds, shells, prev);
+        const { tree, consoleIds, shells, editors } = collect(api);
+        saveLayoutNow(tree, consoleIds, shells, editors, prev);
       }
       switchingRef.current = true; // keep the outgoing project's PTYs alive
       if (saved) {
         hydrateDormant(saved.consoleInstanceIds);
         hydrateShells(saved.shells);
+        hydrateEditors(saved.editors);
         // `fromJSON` replaces the whole layout (removing the outgoing project's
         // panels itself) — don't `clear()` first, or it can fail and lose the
         // saved grouping (tabbed consoles would rebuild as separate columns).
@@ -312,22 +381,26 @@ function Workspace() {
       displayedProjectRef.current = activeProjectId;
       restoredRef.current = true;
 
-      // Settle: add any live console/shell for this project the saved tree didn't
-      // include (e.g. one you opened while switching) and drop stragglers.
+      // Settle: add any live console/shell/editor for this project the saved tree
+      // didn't include (e.g. one you opened while switching) and drop stragglers.
       reconcileConsoles(api);
       reconcileShells(api);
+      reconcileEditors(api);
     })();
   }, [
     api,
     activeProjectId,
     open,
     shellsOpen,
+    editorsOpen,
     activeId,
     activeShellId,
+    activeEditorId,
     instances,
     collect,
     reconcileConsoles,
     reconcileShells,
+    reconcileEditors,
   ]);
 
   return (
