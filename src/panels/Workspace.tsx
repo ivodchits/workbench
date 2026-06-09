@@ -103,16 +103,15 @@ function Workspace() {
     if (!api) return;
     const openIds = new Set(open.map((c) => c.instanceId));
 
-    // Add a panel for every open console that doesn't have one yet.
+    // Add a panel for every open console that doesn't have one yet. The first
+    // console fills the area; each later one opens as its own column beside the
+    // others (the §5 side-by-side default) rather than piling into one tab group.
     let consoleCount = api.panels.filter((p) => consoleInstanceId(p) !== null).length;
     for (const session of open) {
       if (api.getPanel(session.instanceId)) continue;
       const title = instances.find((i) => i.id === session.instanceId)?.title ?? "console";
       const params: ConsolePanelParams = { instanceId: session.instanceId };
-      // First console fills the area; the second splits beside it (the §5
-      // side-by-side default); further ones tab into the active group.
-      const position =
-        consoleCount === 1 ? ({ direction: "right" } as const) : undefined;
+      const position = consoleCount > 0 ? ({ direction: "right" } as const) : undefined;
       api.addPanel({
         id: session.instanceId,
         component: "console",
@@ -151,29 +150,34 @@ function Workspace() {
 }
 
 /**
- * Per-group header buttons. A docked group can float (undock) or maximize; a
- * floating group can dock back into the grid — the missing inverse of undock.
+ * Per-group header buttons. A docked group can float (undock), split a tabbed
+ * panel out into its own column, or maximize; a floating group can dock back
+ * into the grid. Float/dock-back and split-out all resolve to one primitive —
+ * move the active panel into a fresh grid column on the right — which avoids the
+ * "docks as a hidden/empty panel" and "docks as a buried tab" failure modes.
  */
-function HeaderActions({ containerApi, activePanel }: IDockviewHeaderActionsProps) {
+function HeaderActions({ containerApi, activePanel, panels }: IDockviewHeaderActionsProps) {
   if (!activePanel) return null;
   const floating = activePanel.api.location.type !== "grid";
 
-  const dockBack = () => {
-    // Tab back into an existing grid group, or seed one if everything floats.
-    const target = containerApi.groups.find((g) => g.api.location.type === "grid");
-    activePanel.api.moveTo(
-      target ? { group: target, position: "center" } : { position: "right" },
-    );
+  const moveToOwnColumn = () => {
+    const group = containerApi.addGroup({ direction: "right" });
+    activePanel.api.moveTo({ group, position: "center" });
   };
 
   return (
     <div style={{ display: "flex", alignItems: "center", gap: 2, padding: "0 6px" }}>
       {floating ? (
-        <HeaderButton label="dock panel back" onClick={dockBack}>
+        <HeaderButton label="dock panel back" onClick={moveToOwnColumn}>
           ⤓
         </HeaderButton>
       ) : (
         <>
+          {panels.length > 1 && (
+            <HeaderButton label="move panel to its own column" onClick={moveToOwnColumn}>
+              ◨
+            </HeaderButton>
+          )}
           <HeaderButton
             label="float panel in-window"
             onClick={() => containerApi.addFloatingGroup(activePanel)}
