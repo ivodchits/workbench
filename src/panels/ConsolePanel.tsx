@@ -49,11 +49,12 @@ function ConsolePanel(props: IDockviewPanelProps<ConsolePanelParams>) {
 
   const dormant = !session || session.status === "dormant";
 
+  // No onMouseDown→setActive here: that stole DOM focus from xterm's input on
+  // every click. dockview activates the group natively when its content gains
+  // focus, and that syncs the store via onDidActivePanelChange — so the terminal
+  // keeps focus and you can type.
   return (
-    <div
-      onMouseDown={() => props.api.setActive()}
-      style={{ height: "100%", display: "flex", flexDirection: "column", minHeight: 0 }}
-    >
+    <div style={{ height: "100%", display: "flex", flexDirection: "column", minHeight: 0 }}>
       <HeaderStrip
         project={project}
         instance={instance}
