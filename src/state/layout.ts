@@ -11,6 +11,7 @@
 
 import type { SerializedDockview } from "dockview";
 import { getLayout, setLayout } from "../ipc/layout";
+import type { ShellDescriptor } from "./shells";
 
 /**
  * The workspace key the MVP persists under. Layout is global for now; the schema
@@ -19,14 +20,17 @@ import { getLayout, setLayout } from "../ipc/layout";
  */
 export const WORKSPACE_KEY = "__global__";
 
-/** Bump if the saved-payload shape changes incompatibly. */
-const SCHEMA_VERSION = 1;
+/** Bump if the saved-payload shape changes incompatibly. (v2 added `shells`;
+ *  v3 made shells project-scoped.) */
+const SCHEMA_VERSION = 3;
 
 export interface SavedLayout {
   version: number;
   tree: SerializedDockview;
   /** Instance ids that had a Console panel — restored as dormant placeholders. */
   consoleInstanceIds: string[];
+  /** Shell panels (id + target dir + label) — restored as dormant placeholders. */
+  shells: ShellDescriptor[];
 }
 
 /** Load and validate the saved layout for `key`; null when absent or unreadable. */
@@ -47,6 +51,7 @@ export async function loadLayout(key: string = WORKSPACE_KEY): Promise<SavedLayo
       consoleInstanceIds: Array.isArray(parsed.consoleInstanceIds)
         ? parsed.consoleInstanceIds
         : [],
+      shells: Array.isArray(parsed.shells) ? parsed.shells : [],
     };
   } catch {
     return null; // corrupt blob — start from an empty workspace
@@ -55,24 +60,52 @@ export async function loadLayout(key: string = WORKSPACE_KEY): Promise<SavedLayo
 
 let saveTimer: ReturnType<typeof setTimeout> | null = null;
 
+function write(
+  key: string,
+  tree: SerializedDockview,
+  consoleInstanceIds: string[],
+  shells: ShellDescriptor[],
+): Promise<void> {
+  const payload: SavedLayout = { version: SCHEMA_VERSION, tree, consoleInstanceIds, shells };
+  return setLayout(key, JSON.stringify(payload)).catch(() => {
+    // Persisting layout is best-effort; a failed write just means the next
+    // launch falls back to the last good layout (or empty).
+  });
+}
+
 /**
- * Persist `tree` + `consoleInstanceIds` for `key`, debounced. Repeated calls
- * (e.g. while dragging a splitter) collapse into one write after the layout
+ * Persist `tree` + `consoleInstanceIds` + `shells` for `key`, debounced. Repeated
+ * calls (e.g. while dragging a splitter) collapse into one write after the layout
  * settles.
  */
 export function saveLayoutDebounced(
   tree: SerializedDockview,
   consoleInstanceIds: string[],
+  shells: ShellDescriptor[],
   key: string = WORKSPACE_KEY,
   delayMs = 400,
 ): void {
   if (saveTimer) clearTimeout(saveTimer);
   saveTimer = setTimeout(() => {
     saveTimer = null;
-    const payload: SavedLayout = { version: SCHEMA_VERSION, tree, consoleInstanceIds };
-    void setLayout(key, JSON.stringify(payload)).catch(() => {
-      // Persisting layout is best-effort; a failed write just means the next
-      // launch falls back to the last good layout (or empty).
-    });
+    void write(key, tree, consoleInstanceIds, shells);
   }, delayMs);
+}
+
+/**
+ * Persist immediately, cancelling any pending debounced write. Used when swapping
+ * away from a project (design §3 per-project layout): the outgoing project's tree
+ * must be flushed before the dock is cleared and the next project loaded.
+ */
+export function saveLayoutNow(
+  tree: SerializedDockview,
+  consoleInstanceIds: string[],
+  shells: ShellDescriptor[],
+  key: string,
+): void {
+  if (saveTimer) {
+    clearTimeout(saveTimer);
+    saveTimer = null;
+  }
+  void write(key, tree, consoleInstanceIds, shells);
 }

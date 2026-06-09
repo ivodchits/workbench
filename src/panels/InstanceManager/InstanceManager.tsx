@@ -11,12 +11,15 @@
 // Out of scope (later steps): live hook-fed status (2.2), real worktree
 // provisioning (2.4), and the dockview arrangement of consoles (1.6).
 
-import { useEffect, useMemo, useState, type CSSProperties } from "react";
+import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import Panel from "../../theme/Panel";
 import { GLYPH } from "../../theme";
 import type { Group, Instance, Project } from "../../ipc/registry";
 import type { ConsoleStatus } from "../../state/consoles";
 import { closeConsole, openConsole, useConsoles } from "../../state/consoles";
+import { closeShell, getOpenShells, openShell } from "../../state/shells";
+import { setActiveProject, useActiveProject } from "../../state/activeProject";
+import { release } from "../terminalPool";
 import { deleteInstance, deleteProject, loadRegistry, useRegistry } from "../../state/registry";
 import ProjectDialog from "./ProjectDialog";
 import InstanceDialog from "./InstanceDialog";
@@ -37,13 +40,13 @@ interface InstanceManagerProps {
 function InstanceManager({ onCollapse }: InstanceManagerProps) {
   const { groups, projects, instances, loaded, error } = useRegistry();
   const { open: openConsoles } = useConsoles();
+  const activeProjectId = useActiveProject();
   const [addingProject, setAddingProject] = useState(false);
   const [editProjectTarget, setEditProjectTarget] = useState<Project | null>(null);
   const [removeProjectTarget, setRemoveProjectTarget] = useState<Project | null>(null);
   const [newInstanceProject, setNewInstanceProject] = useState<Project | null>(null);
   const [killTarget, setKillTarget] = useState<Instance | null>(null);
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
-  const [selectedId, setSelectedId] = useState<string | null>(null);
 
   useEffect(() => {
     void loadRegistry();
@@ -51,16 +54,47 @@ function InstanceManager({ onCollapse }: InstanceManagerProps) {
 
   // Live console state per instance, so each row can show a running/spawning
   // marker (null = no console open).
+  // Dormant entries (placeholders restored from a saved layout, including other
+  // projects' workspaces) hold no live PTY, so they don't override the row's
+  // persisted status glyph — only an actually-live console shows a marker.
   const consoleStatusById = useMemo(() => {
     const m = new Map<string, ConsoleStatus>();
-    for (const c of openConsoles) m.set(c.instanceId, c.status);
+    for (const c of openConsoles) if (c.status !== "dormant") m.set(c.instanceId, c.status);
     return m;
   }, [openConsoles]);
 
+  // Opening an instance's console makes its project the active workspace (so the
+  // dock shows that project's panels), then launches/focuses the console.
   const activate = (instance: Instance) => {
-    setSelectedId(instance.id);
+    setActiveProject(instance.projectId);
     openConsole(instance);
   };
+
+  // Open (or focus) the Project Shell in the project's root dir, labelled with
+  // the project name; switches the active workspace to that project.
+  const openShellForProject = (project: Project) => {
+    setActiveProject(project.id);
+    openShell({ projectId: project.id, cwd: project.rootPath, label: project.name });
+  };
+
+  // Accordion: when the active project changes, expand it and collapse the rest,
+  // so the rail focuses on the workspace you're in. Manual caret toggles still
+  // work afterward (this only fires on an active-project *change*, not on every
+  // registry reload — note edits etc. mustn't re-collapse what you opened).
+  const prevActiveRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!activeProjectId || activeProjectId === prevActiveRef.current) return;
+    prevActiveRef.current = activeProjectId;
+    setCollapsed((prev) => {
+      const next = new Set(prev);
+      for (const p of projects) {
+        const key = `proj:${p.id}`;
+        if (p.id === activeProjectId) next.delete(key);
+        else next.add(key);
+      }
+      return next;
+    });
+  }, [activeProjectId, projects]);
 
   // Bucket projects under their group; ungrouped projects sort last.
   const sections = useMemo<GroupSection[]>(() => {
@@ -200,10 +234,11 @@ function InstanceManager({ onCollapse }: InstanceManagerProps) {
                       instances={instancesByProject.get(p.id) ?? []}
                       collapsed={collapsed.has(`proj:${p.id}`)}
                       onToggle={() => toggle(`proj:${p.id}`)}
-                      selectedId={selectedId}
+                      active={activeProjectId === p.id}
+                      onSelectProject={() => setActiveProject(p.id)}
                       consoleStatusById={consoleStatusById}
-                      onSelect={setSelectedId}
                       onActivate={activate}
+                      onOpenShell={() => openShellForProject(p)}
                       onEdit={() => setEditProjectTarget(p)}
                       onRemove={() => setRemoveProjectTarget(p)}
                       onNewInstance={() => setNewInstanceProject(p)}
@@ -232,7 +267,7 @@ function InstanceManager({ onCollapse }: InstanceManagerProps) {
       {removeProjectTarget && (
         <RemoveProjectConfirm
           project={removeProjectTarget}
-          instanceCount={(instancesByProject.get(removeProjectTarget.id) ?? []).length}
+          instanceIds={(instancesByProject.get(removeProjectTarget.id) ?? []).map((i) => i.id)}
           onClose={() => setRemoveProjectTarget(null)}
         />
       )}
@@ -251,10 +286,14 @@ interface ProjectNodeProps {
   instances: Instance[];
   collapsed: boolean;
   onToggle: () => void;
-  selectedId: string | null;
+  /** True when this is the active project (its workspace is on screen). */
+  active: boolean;
+  /** Make this the active project (swaps the dock to its workspace). */
+  onSelectProject: () => void;
   consoleStatusById: Map<string, ConsoleStatus>;
-  onSelect: (id: string) => void;
   onActivate: (instance: Instance) => void;
+  /** Open (or focus) this project's shell. */
+  onOpenShell: () => void;
   onEdit: () => void;
   onRemove: () => void;
   onNewInstance: () => void;
@@ -266,80 +305,121 @@ function ProjectNode({
   instances,
   collapsed,
   onToggle,
-  selectedId,
+  active,
+  onSelectProject,
   consoleStatusById,
-  onSelect,
   onActivate,
+  onOpenShell,
   onEdit,
   onRemove,
   onNewInstance,
   onKill,
 }: ProjectNodeProps) {
   const [hover, setHover] = useState(false);
+
+  // Live tile summary: how many instances, how many have a running console, and
+  // how many need you. (`needs_you` is a static placeholder until the Phase-2
+  // hook-fed status engine drives it.)
+  const running = instances.filter((i) => {
+    const s = consoleStatusById.get(i.id);
+    return s === "running" || s === "spawning";
+  }).length;
+  const needsYou = instances.filter((i) => i.status === "needs_you").length;
+
   return (
     <div>
+      {/* The project tile — clicking it makes this the active workspace. */}
       <div
+        onClick={onSelectProject}
         onMouseEnter={() => setHover(true)}
         onMouseLeave={() => setHover(false)}
         style={{
-          display: "flex",
-          alignItems: "center",
-          gap: 7,
-          padding: "4px 12px 4px 22px",
-          font: "11.5px var(--wb-mono)",
-          color: "var(--wb-textDim2)",
+          padding: "8px 12px 9px 18px",
+          borderLeft: `2px solid ${active ? "var(--wb-selBar)" : "transparent"}`,
+          background: active ? "var(--wb-sel)" : hover ? "var(--wb-sel)" : "transparent",
+          cursor: "pointer",
         }}
+        title={`${project.rootPath}\n(click to open this project's workspace)`}
       >
-        <button
-          onClick={onToggle}
-          aria-label={collapsed ? "expand project" : "collapse project"}
-          style={caretButtonStyle}
-        >
-          <span style={{ color: "var(--wb-textFaint)" }}>{collapsed ? "▸" : "▾"}</span>
-        </button>
-        <span
-          onClick={onToggle}
-          style={{
-            color: "var(--wb-text)",
-            minWidth: 0,
-            overflow: "hidden",
-            textOverflow: "ellipsis",
-            whiteSpace: "nowrap",
-            cursor: "pointer",
-          }}
-          title={project.rootPath}
-        >
-          {project.name}
-        </span>
-        {project.defaultBranch && (
-          <span style={{ color: "var(--wb-textFaint)", fontSize: 10, flex: "0 0 auto" }}>
-            ⌥ {project.defaultBranch}
+        {/* Row 1 — caret · name · branch · actions */}
+        <div style={{ display: "flex", alignItems: "center", gap: 7, font: "13px var(--wb-mono)" }}>
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              onToggle();
+            }}
+            aria-label={collapsed ? "expand project" : "collapse project"}
+            style={caretButtonStyle}
+          >
+            <span style={{ color: "var(--wb-textFaint)" }}>{collapsed ? "▸" : "▾"}</span>
+          </button>
+          <span
+            style={{
+              color: active ? "var(--wb-accent)" : "var(--wb-text)",
+              fontWeight: 600,
+              minWidth: 0,
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              whiteSpace: "nowrap",
+            }}
+          >
+            {project.name}
           </span>
-        )}
-        {instances.length > 0 && (
-          <span style={{ color: "var(--wb-textFaint)", fontSize: 10, flex: "0 0 auto" }}>
-            {instances.length}
+          {project.defaultBranch && (
+            <span style={{ color: "var(--wb-textFaint)", fontSize: 10, flex: "0 0 auto" }}>
+              ⌥ {project.defaultBranch}
+            </span>
+          )}
+          <span
+            style={{
+              marginLeft: "auto",
+              display: "flex",
+              gap: 8,
+              flex: "0 0 auto",
+              visibility: hover ? "visible" : "hidden",
+            }}
+          >
+            <ProjectAction label="new instance" onClick={onNewInstance}>
+              +
+            </ProjectAction>
+            <ProjectAction label="open project shell" onClick={onOpenShell}>
+              {GLYPH.prompt}
+            </ProjectAction>
+            <ProjectAction label="edit project" onClick={onEdit}>
+              edit
+            </ProjectAction>
+            <ProjectAction label="remove project" onClick={onRemove} danger>
+              {GLYPH.fail}
+            </ProjectAction>
           </span>
-        )}
-        <span
+        </div>
+
+        {/* Row 2 — instance summary */}
+        <div
           style={{
-            marginLeft: "auto",
             display: "flex",
+            alignItems: "center",
             gap: 8,
-            flex: "0 0 auto",
-            visibility: hover ? "visible" : "hidden",
+            marginLeft: 21,
+            marginTop: 3,
+            font: "10.5px var(--wb-mono)",
+            color: "var(--wb-textFaint)",
           }}
         >
-          <ProjectAction label="new instance" onClick={onNewInstance}>
-            +
-          </ProjectAction>
-          <ProjectAction label="edit project" onClick={onEdit}>
-            edit
-          </ProjectAction>
-          <ProjectAction label="remove project" onClick={onRemove} danger>
-            {GLYPH.fail}
-          </ProjectAction>
-        </span>
+          {instances.length === 0 ? (
+            <span>no instances</span>
+          ) : (
+            <>
+              <span>
+                {instances.length} instance{instances.length === 1 ? "" : "s"}
+              </span>
+              {running > 0 && <span style={{ color: "var(--wb-accent)" }}>{running} running</span>}
+              {needsYou > 0 && (
+                <span style={{ color: "var(--wb-needs)" }}>● {needsYou} need you</span>
+              )}
+            </>
+          )}
+        </div>
       </div>
 
       {!collapsed && (
@@ -348,9 +428,7 @@ function ProjectNode({
             <InstanceCard
               key={i.id}
               instance={i}
-              selected={selectedId === i.id}
               consoleStatus={consoleStatusById.get(i.id) ?? null}
-              onSelect={() => onSelect(i.id)}
               onActivate={() => onActivate(i)}
               onKill={() => onKill(i)}
             />
@@ -377,7 +455,10 @@ function ProjectAction({
 }) {
   return (
     <button
-      onClick={onClick}
+      onClick={(e) => {
+        e.stopPropagation();
+        onClick();
+      }}
       aria-label={label}
       title={label}
       style={{
@@ -398,17 +479,29 @@ function ProjectAction({
 
 function RemoveProjectConfirm({
   project,
-  instanceCount,
+  instanceIds,
   onClose,
 }: {
   project: Project;
-  instanceCount: number;
+  instanceIds: string[];
   onClose: () => void;
 }) {
   const [busy, setBusy] = useState(false);
+  const instanceCount = instanceIds.length;
   const confirm = async () => {
     setBusy(true);
     try {
+      // Tear down this project's live consoles + shell (kill their PTYs) before
+      // deleting, so removing a project never leaves orphaned background agents —
+      // their panels may not even be on screen (another project's workspace is).
+      for (const id of instanceIds) {
+        closeConsole(id);
+        release(id);
+      }
+      for (const s of getOpenShells().filter((s) => s.projectId === project.id)) {
+        closeShell(s.shellId);
+        release(s.shellId);
+      }
       await deleteProject(project.id);
       onClose();
     } catch {
@@ -437,8 +530,12 @@ function KillConfirm({ instance, onClose }: { instance: Instance; onClose: () =>
   const confirm = async () => {
     setBusy(true);
     try {
-      // Stop the PTY (if a console is open) before deleting the row.
+      // Stop the PTY (if a console is open) before deleting the row. `release`
+      // kills it directly in case the console's panel isn't currently docked
+      // (another project's workspace is on screen), where panel-removal teardown
+      // wouldn't fire.
       closeConsole(instance.id);
+      release(instance.id);
       await deleteInstance(instance.id);
       onClose();
     } catch {

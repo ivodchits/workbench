@@ -127,6 +127,13 @@ export function acquire(container: HTMLDivElement, opts: AcquireOptions): void {
   term.focus();
 }
 
+/** Focus an instance's terminal, if it's in the pool (no-op otherwise). Used by
+ *  the Shell panel's git quick-buttons to hand keyboard focus back to the shell
+ *  after injecting a command. */
+export function focusTerminal(instanceId: string): void {
+  pool.get(instanceId)?.term.focus();
+}
+
 /** Re-measure and resize the terminal (and thus its PTY) to its container. */
 export function refit(entryOrId: TermEntry | string): void {
   const entry = typeof entryOrId === "string" ? pool.get(entryOrId) : entryOrId;

@@ -1,7 +1,7 @@
-// Stub panels (step 1.6) — Shell and Editor are registered as dockview panel
-// types now so the dock knows how to render them (and can restore them from a
-// saved layout), but their real content lands in 1.7 (Project Shell) and 1.8
-// (CodeMirror Editor). Until then they show a placeholder.
+// Stub panels — the Editor is registered as a dockview panel type now so the
+// dock knows how to render it (and can restore it from a saved layout), but its
+// real content lands in 1.8 (CodeMirror Editor). Until then it shows a
+// placeholder. (The Shell panel became real in 1.7 — see `Shell.tsx`.)
 
 function StubBody({ label, step }: { label: string; step: string }) {
   return (
@@ -24,10 +24,6 @@ function StubBody({ label, step }: { label: string; step: string }) {
       <div style={{ color: "var(--wb-textFaint)", fontSize: 11 }}>arrives in {step}</div>
     </div>
   );
-}
-
-export function ShellPanel() {
-  return <StubBody label="project shell" step="step 1.7" />;
 }
 
 export function EditorPanel() {

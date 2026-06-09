@@ -644,7 +644,7 @@ Pull these in once the relevant phase is stable; each is an independent step whe
 - [x] 1.4 Instance Manager rail
 - [x] 1.5 Instance lifecycle ↔ console
 - [x] 1.6 Dockview panel system + layout persistence
-- [ ] 1.7 Project Shell panel
+- [x] 1.7 Project Shell panel
 - [ ] 1.8 Editor panel (CodeMirror 6)
 - [ ] 1.9 Markdown preview
 - [ ] 1.10 Keyboard-first core

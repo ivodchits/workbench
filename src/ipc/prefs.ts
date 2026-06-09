@@ -14,6 +14,8 @@ export interface Prefs {
   themeId: string;
   /** Local port the hook server binds on `127.0.0.1` (wired in Phase 2). */
   hookServerPort: number;
+  /** Last-selected project id, restored on launch so you land where you left. */
+  activeProjectId: string;
 }
 
 const STORE_FILE = "prefs.json";

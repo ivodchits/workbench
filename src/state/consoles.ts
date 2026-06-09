@@ -68,6 +68,18 @@ function getSnapshot(): ConsolesState {
   return state;
 }
 
+/** Read the open consoles outside React (used by the Workspace's swap reconcile,
+ *  which runs synchronously right after `hydrateDormant` — before React commits a
+ *  render, so the hook-backed refs would still be stale). */
+export function getOpenConsoles(): ConsoleSession[] {
+  return state.open;
+}
+
+/** The active console id, read outside React (see `getOpenConsoles`). */
+export function getActiveConsoleId(): string | null {
+  return state.activeId;
+}
+
 function patchSession(instanceId: string, patch: Partial<ConsoleSession>): void {
   const open = state.open.map((c) =>
     c.instanceId === instanceId ? { ...c, ...patch } : c,

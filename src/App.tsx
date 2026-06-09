@@ -3,20 +3,48 @@ import { applyTheme, mutedDark } from "./theme/tokens";
 import InstanceManager from "./panels/InstanceManager";
 import Workspace from "./panels/Workspace";
 import { useConsoles } from "./state/consoles";
+import { useRegistry } from "./state/registry";
+import { initActiveProject, setActiveProject, useActiveProject } from "./state/activeProject";
 
 // Step 1.5 turned the cockpit into its real shape: the Instance Manager rail on
 // the left drives the panel surface, where clicking an instance launches (or
 // focuses) its claude console. Step 1.6 replaces the interim console grid with a
 // `dockview` Workspace — split / tab / float in-window, layout saved & restored —
-// and makes the rail collapsible.
+// and makes the rail collapsible. Step 1.6b makes the workspace per-project: the
+// rail's project selection drives which project's dock is on screen.
 
 function App() {
   const { open, activeId } = useConsoles();
+  const { projects, loaded } = useRegistry();
+  const activeProjectId = useActiveProject();
   const [railCollapsed, setRailCollapsed] = useState(false);
+  const [prefsReady, setPrefsReady] = useState(false);
 
   useEffect(() => {
     applyTheme(mutedDark);
   }, []);
+
+  // Restore the last-selected project from prefs before we consider a default.
+  useEffect(() => {
+    let mounted = true;
+    void initActiveProject().finally(() => {
+      if (mounted) setPrefsReady(true);
+    });
+    return () => {
+      mounted = false;
+    };
+  }, []);
+
+  // Once projects load (and prefs have been read), make sure something is active:
+  // keep the restored selection if it still exists, else fall back to the first
+  // project (or null when there are none).
+  useEffect(() => {
+    if (!prefsReady || !loaded) return;
+    const valid = activeProjectId !== null && projects.some((p) => p.id === activeProjectId);
+    if (!valid) setActiveProject(projects[0]?.id ?? null);
+  }, [prefsReady, loaded, projects, activeProjectId]);
+
+  const activeProject = projects.find((p) => p.id === activeProjectId) ?? null;
 
   // Suppress the webview's native context menu. Its "Reload" reloads the whole
   // page, which drops every live console (the frontend state resets and the
@@ -45,13 +73,7 @@ function App() {
         overflow: "hidden",
       }}
     >
-      <TitleBar
-        context={
-          liveCount === 0
-            ? "no console"
-            : `${liveCount} console${liveCount === 1 ? "" : "s"}`
-        }
-      />
+      <TitleBar context={activeProject ? activeProject.name : "no project"} />
 
       <div style={{ flex: 1, display: "flex", gap: 14, minHeight: 0, padding: "14px 14px 0" }}>
         {railCollapsed ? (

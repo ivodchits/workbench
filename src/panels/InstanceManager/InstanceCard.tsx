@@ -22,24 +22,14 @@ import InlineEdit from "./InlineEdit";
 
 interface InstanceCardProps {
   instance: Instance;
-  selected: boolean;
   /** Live console state for this instance, or null when no console is open. */
   consoleStatus: ConsoleStatus | null;
-  /** Visual select only (keyboard focus / hover) — does not launch a console. */
-  onSelect: () => void;
   /** Launch or focus this instance's console (row click / Enter). */
   onActivate: () => void;
   onKill: () => void;
 }
 
-function InstanceCard({
-  instance,
-  selected,
-  consoleStatus,
-  onSelect,
-  onActivate,
-  onKill,
-}: InstanceCardProps) {
+function InstanceCard({ instance, consoleStatus, onActivate, onKill }: InstanceCardProps) {
   const [hover, setHover] = useState(false);
   const [editingNote, setEditingNote] = useState(false);
   const [editingTitle, setEditingTitle] = useState(false);
@@ -50,11 +40,12 @@ function InstanceCard({
   const toggleWorktree = () =>
     void updateInstance(instance.id, { worktreeOn: !instance.worktreeOn });
 
+  // No persistent "selected" highlight: several instances are visible (and live)
+  // at once, so there's no single active row — only hover reveals row actions.
   return (
     <div
       tabIndex={0}
       onClick={onActivate}
-      onFocus={onSelect}
       onKeyDown={(e) => {
         if (e.key === "Enter" && !editingNote && !editingTitle) {
           e.preventDefault();
@@ -68,8 +59,8 @@ function InstanceCard({
         padding: "8px 11px 9px 13px",
         marginBottom: 3,
         cursor: "pointer",
-        background: selected ? "var(--wb-sel)" : "transparent",
-        borderLeft: `2px solid ${selected ? "var(--wb-selBar)" : "transparent"}`,
+        background: hover ? "var(--wb-sel)" : "transparent",
+        borderLeft: "2px solid transparent",
         opacity: dim ? 0.55 : 1,
         outline: "none",
       }}
