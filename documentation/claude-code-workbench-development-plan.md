@@ -452,6 +452,24 @@ emit per-byte global events.
 - **Done when:** You can see all three scopes with precedence, add a stdio + an http server via
   the CLI path, and edit `.mcp.json` raw — without corrupting `~/.claude.json`.
 
+### Step 3.7b — Skill manager **(may need 2 passes)**
+- **Goal:** View / create / edit / remove Agent Skills across user and project scopes.
+- **Depends on:** 3.6
+- **Design refs:** `§7` (Skill/plugin awareness; reuses the CLAUDE.md editor).
+- **Build:** List skills per scope — user (`~/.claude/skills/<name>/SKILL.md`) and project
+  (`.claude/skills/<name>/SKILL.md`) — showing each skill's scope and, where available, whether
+  it's currently loaded in a session (cross-reference the `system/init` event). **Create**
+  scaffolds a new `<name>/SKILL.md` with valid frontmatter (`name`, `description`); **edit** opens
+  `SKILL.md` in the 3.6 editor with frontmatter validation (kebab-case `name`, non-empty
+  `description`) + markdown preview; **remove** deletes the folder (behind confirmation);
+  enable/disable by toggling. A "try it" action inserts `/<name>` into the focused console so you
+  can iterate on the description until the skill actually triggers. Plugin-bundled skills are shown
+  read-only (awareness, not editing). Unlike 3.7, these are **pure filesystem ops** — a folder + a
+  markdown file per skill, no shared-JSON corruption risk and no CLI dependency.
+- **Done when:** You can see user + project skills with their scope, scaffold a new skill with
+  valid frontmatter, edit + preview it in-app, invoke it via `/<name>` in a console, and delete it
+  — all without leaving Workbench.
+
 ### Step 3.8 — Session restore (`Ctrl+Shift+T`)
 - **Goal:** Reopen yesterday's instances in place, resumed.
 - **Depends on:** 1.6, 1.5
@@ -666,6 +684,7 @@ Pull these in once the relevant phase is stable; each is an independent step whe
 - [ ] 3.5 Prompt queue
 - [ ] 3.6 CLAUDE.md quick-editor
 - [ ] 3.7 MCP server manager
+- [ ] 3.7b Skill manager
 - [ ] 3.8 Session restore (`Ctrl+Shift+T`)
 - [ ] 3.9 Theme variants, CRT toggle, per-instance accent
 - [ ] 3.10 Command palette, remappable keys, permission-mode switch
