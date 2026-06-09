@@ -24,8 +24,10 @@ pub use server::HookStatus;
 const PORT_KEY: &str = "hook_server_port";
 
 /// Preferred base port; we walk upward from here if it's taken. Chosen in the
-/// IANA dynamic/private range to avoid clashing with common dev servers.
-const PORT_BASE: u16 = 48970;
+/// IANA dynamic/private range to avoid clashing with common dev servers. A debug
+/// build starts from a different base so it doesn't race a release instance for the
+/// same port (each also persists its own choice in its own `meta` table).
+const PORT_BASE: u16 = if cfg!(debug_assertions) { 49010 } else { 48970 };
 const PORT_SPAN: u16 = 32;
 
 /// Start the hook bridge: bind a port, persist it, install hooks, serve. Failures

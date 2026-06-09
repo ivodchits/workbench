@@ -25,7 +25,17 @@ pub fn run() {
             // survives restarts (design §4.6). Created on first launch.
             let dir = app.path().app_data_dir()?;
             std::fs::create_dir_all(&dir)?;
-            let db = db::Db::open(&dir.join("workbench.db"))?;
+            // A debug build (`tauri dev`) uses a separate database file so it can
+            // run alongside an installed release without sharing the registry,
+            // layouts, or persisted hook port. The frontend isolates `prefs.json`
+            // the same way via `import.meta.env.DEV`; the hook bridge isolates its
+            // settings.json entry + port range via `cfg!(debug_assertions)`.
+            let db_name = if cfg!(debug_assertions) {
+                "workbench.dev.db"
+            } else {
+                "workbench.db"
+            };
+            let db = db::Db::open(&dir.join(db_name))?;
             app.manage(db);
 
             // Start the Phase-2 hook bridge: a local endpoint that receives Claude

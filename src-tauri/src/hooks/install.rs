@@ -21,7 +21,18 @@ use serde_json::{json, Map, Value};
 /// Sentinel path on our local endpoint. Used both as the route the server listens
 /// on and as the marker that identifies "our" hooks in settings.json regardless of
 /// which port we ended up binding.
-pub const HOOK_PATH: &str = "/__workbench_hook";
+///
+/// A debug build uses a distinct path so a release and a `tauri dev` instance can
+/// both have an entry in the *same* `~/.claude/settings.json` at once: every
+/// `claude` session then POSTs to both endpoints, and each server keeps only the
+/// sessions it minted (the others are dropped by the session-id filter). The two
+/// paths are matched with `ends_with` (see [`is_ours`]), not `contains`, precisely
+/// because the debug path has the release path as a prefix.
+pub const HOOK_PATH: &str = if cfg!(debug_assertions) {
+    "/__workbench_hook__dev"
+} else {
+    "/__workbench_hook"
+};
 
 /// The hook events Workbench subscribes to (design §4.4). All are valid Claude Code
 /// event names. A single matcher-less entry per event fires for every matcher, so
@@ -143,14 +154,17 @@ fn take_event_array(hooks: &mut Map<String, Value>, event: &str) -> Result<Vec<V
     }
 }
 
-/// True when a hook object is one of ours: an `http` hook whose URL carries the
-/// sentinel path. Matching on the path (not the full URL) makes us port-agnostic.
+/// True when a hook object is one of ours: an `http` hook whose URL ends with this
+/// build's sentinel path. Matching the path (not the full URL) makes us
+/// port-agnostic; matching with `ends_with` rather than `contains` keeps the
+/// release build (`…/__workbench_hook`) from claiming the debug build's entry
+/// (`…/__workbench_hook__dev`), which has the release path as a prefix.
 fn is_ours(hook: &Value) -> bool {
     hook.get("type").and_then(Value::as_str) == Some("http")
         && hook
             .get("url")
             .and_then(Value::as_str)
-            .is_some_and(|u| u.contains(HOOK_PATH))
+            .is_some_and(|u| u.ends_with(HOOK_PATH))
 }
 
 /// Write `settings` pretty-printed, creating `~/.claude` if needed. Writes to a
@@ -300,6 +314,42 @@ mod tests {
         assert!(!install_hooks_at(&path, &url).unwrap());
         let entries = read(&path)["hooks"]["PreToolUse"].as_array().unwrap().len();
         assert_eq!(entries, 2);
+
+        std::fs::remove_dir_all(path.parent().unwrap()).ok();
+    }
+
+    #[test]
+    fn other_builds_workbench_entry_is_left_alone() {
+        // The "other" build's sentinel: whichever this test build is NOT. Tests
+        // compile in debug, so HOOK_PATH is the dev path; the release path
+        // (`/__workbench_hook`) is the other build's, and must survive our install
+        // so a release + dev instance can coexist in one settings.json.
+        let other_path = if HOOK_PATH.ends_with("__dev") {
+            "/__workbench_hook"
+        } else {
+            "/__workbench_hook__dev"
+        };
+        let other_url = format!("http://127.0.0.1:40000{other_path}");
+
+        let path = temp_settings("coexist");
+        let preexisting = json!({
+            "hooks": { "Stop": [ { "hooks": [ { "type": "http", "url": other_url } ] } ] }
+        });
+        std::fs::write(&path, serde_json::to_string_pretty(&preexisting).unwrap()).unwrap();
+
+        let url = format!("http://127.0.0.1:48970{HOOK_PATH}");
+        install_hooks_at(&path, &url).unwrap();
+
+        // Stop now has BOTH the other build's entry and ours.
+        let settings = read(&path);
+        let urls: Vec<String> = settings["hooks"]["Stop"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|e| e["hooks"][0]["url"].as_str().map(str::to_owned))
+            .collect();
+        assert!(urls.contains(&other_url), "other build's hook must be preserved");
+        assert!(urls.contains(&url), "our hook must be added");
 
         std::fs::remove_dir_all(path.parent().unwrap()).ok();
     }

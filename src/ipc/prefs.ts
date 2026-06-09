@@ -19,7 +19,11 @@ export interface Prefs {
 // can advertise the port), persisted in the SQLite `meta` table, and read by the
 // frontend via `getHookServerStatus()` (see `ipc/hooks.ts`) — not a pref here.
 
-const STORE_FILE = "prefs.json";
+// A debug build (`tauri dev`, where `import.meta.env.DEV` is true) keeps its prefs
+// in a separate file so it can run alongside an installed release without sharing
+// the active theme/project selection. Mirrors the `workbench.dev.db` split in the
+// Rust setup.
+const STORE_FILE = import.meta.env.DEV ? "prefs.dev.json" : "prefs.json";
 
 let storePromise: Promise<Store> | null = null;
 
