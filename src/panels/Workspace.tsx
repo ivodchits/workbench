@@ -48,6 +48,7 @@ function Workspace() {
 
   const restoredRef = useRef(false);
   const disposablesRef = useRef<Array<{ dispose: () => void }>>([]);
+  const wrapRef = useRef<HTMLDivElement>(null);
 
   // Persist the current arrangement (debounced). Captured once we have an api.
   const persist = (a: DockviewApi) => {
@@ -98,6 +99,25 @@ function Workspace() {
     };
   }, []);
 
+  // While a tab/panel drag is in progress, flag the wrapper so the content
+  // overlays go pointer-transparent (see dockview.css) and dockview's droptargets
+  // underneath can receive the drag — otherwise the `always` renderer's overlay
+  // swallows it and panels can't be dragged between groups.
+  useEffect(() => {
+    const el = wrapRef.current;
+    if (!el) return;
+    const on = () => el.classList.add("wb-dragging");
+    const off = () => el.classList.remove("wb-dragging");
+    el.addEventListener("dragstart", on, true);
+    el.addEventListener("dragend", off, true);
+    el.addEventListener("drop", off, true);
+    return () => {
+      el.removeEventListener("dragstart", on, true);
+      el.removeEventListener("dragend", off, true);
+      el.removeEventListener("drop", off, true);
+    };
+  }, []);
+
   // Reconcile dockview panels with the open-console set.
   useEffect(() => {
     if (!api) return;
@@ -135,7 +155,7 @@ function Workspace() {
   }, [api, open, activeId, instances]);
 
   return (
-    <div style={{ flex: 1, minWidth: 0, minHeight: 0 }}>
+    <div ref={wrapRef} style={{ flex: 1, minWidth: 0, minHeight: 0 }}>
       <DockviewReact
         components={COMPONENTS}
         watermarkComponent={Watermark}

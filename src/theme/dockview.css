@@ -53,3 +53,13 @@
 .dockview-theme-abyss.wb-dock .dv-groupview {
   border: 1px solid var(--wb-border);
 }
+
+/* Keep panel drag-and-drop working under the `always` renderer. That renderer
+ * (needed so a tabbed-away console keeps its PTY alive) hoists panel content into
+ * an overlay that covers each group's drop-detection element, so dragging a tab
+ * over a group otherwise hits the content and never the droptarget. While a drag
+ * is in progress (`wb-dragging` toggled in Workspace) we make the content
+ * overlays transparent to events so the droptargets underneath receive them. */
+.wb-dragging .dv-render-overlay {
+  pointer-events: none;
+}
