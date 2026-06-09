@@ -60,6 +60,7 @@
  * over a group otherwise hits the content and never the droptarget. While a drag
  * is in progress (`wb-dragging` toggled in Workspace) we make the content
  * overlays transparent to events so the droptargets underneath receive them. */
-.wb-dragging .dv-render-overlay {
-  pointer-events: none;
+.wb-dragging .dv-render-overlay,
+.wb-dragging .dv-render-overlay * {
+  pointer-events: none !important;
 }

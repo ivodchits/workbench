@@ -75,6 +75,10 @@ function Workspace() {
         const id = consoleInstanceId(panel);
         if (id) closeConsole(id);
       }),
+      // Second trigger for the drag passthrough (see the document-level effect):
+      // dockview's authoritative drag-start signals.
+      a.onWillDragPanel(() => wrapRef.current?.classList.add("wb-dragging")),
+      a.onWillDragGroup(() => wrapRef.current?.classList.add("wb-dragging")),
     );
 
     // Restore the saved arrangement, backing each console panel with a dormant
@@ -102,19 +106,20 @@ function Workspace() {
   // While a tab/panel drag is in progress, flag the wrapper so the content
   // overlays go pointer-transparent (see dockview.css) and dockview's droptargets
   // underneath can receive the drag — otherwise the `always` renderer's overlay
-  // swallows it and panels can't be dragged between groups.
+  // (which hoists panel content above each group's drop-detection area) swallows
+  // it and panels can't be dragged between groups. Listened at document level so
+  // it fires regardless of where dockview mounts; dockview's own drag events
+  // (wired in onReady) are a second trigger.
   useEffect(() => {
-    const el = wrapRef.current;
-    if (!el) return;
-    const on = () => el.classList.add("wb-dragging");
-    const off = () => el.classList.remove("wb-dragging");
-    el.addEventListener("dragstart", on, true);
-    el.addEventListener("dragend", off, true);
-    el.addEventListener("drop", off, true);
+    const on = () => wrapRef.current?.classList.add("wb-dragging");
+    const off = () => wrapRef.current?.classList.remove("wb-dragging");
+    document.addEventListener("dragstart", on, true);
+    document.addEventListener("dragend", off, true);
+    document.addEventListener("drop", off, true);
     return () => {
-      el.removeEventListener("dragstart", on, true);
-      el.removeEventListener("dragend", off, true);
-      el.removeEventListener("drop", off, true);
+      document.removeEventListener("dragstart", on, true);
+      document.removeEventListener("dragend", off, true);
+      document.removeEventListener("drop", off, true);
     };
   }, []);
 
