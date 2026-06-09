@@ -6,8 +6,10 @@
 //
 // Membership authority is the `consoles` store: a reconciler keeps dockview's
 // panel set in step with `open`, adding a panel when a console opens and removing
-// it when one closes. dockview's `always` renderer keeps tabbed-away panels
-// mounted so their PTYs survive split/tab/float. Restored panels come back as
+// it when one closes. Consoles survive tab-switching and panel moves because the
+// terminal + PTY live in a detached pool (see `terminalPool`), not in the panel's
+// React subtree — so we use dockview's default `onlyWhenVisible` renderer (which
+// drag-and-drop depends on) rather than `always`. Restored panels come back as
 // dormant placeholders (see `state/consoles`) rather than auto-launching `claude`.
 
 import { useEffect, useRef, useState } from "react";
@@ -28,6 +30,7 @@ import { GLYPH } from "../theme";
 import { useRegistry } from "../state/registry";
 import { closeConsole, focusConsole, hydrateDormant, useConsoles } from "../state/consoles";
 import { loadLayout, saveLayoutDebounced } from "../state/layout";
+import { release } from "./terminalPool";
 
 const COMPONENTS = {
   console: ConsolePanel as React.FunctionComponent<IDockviewPanelProps>,
@@ -48,7 +51,6 @@ function Workspace() {
 
   const restoredRef = useRef(false);
   const disposablesRef = useRef<Array<{ dispose: () => void }>>([]);
-  const wrapRef = useRef<HTMLDivElement>(null);
 
   // Persist the current arrangement (debounced). Captured once we have an api.
   const persist = (a: DockviewApi) => {
@@ -70,15 +72,19 @@ function Workspace() {
         const id = panel ? consoleInstanceId(panel) : null;
         if (id) focusConsole(id);
       }),
-      // A panel closed via dockview's UI drops the live console (stops its PTY).
+      // A panel removed from the dock closes its console and stops its PTY — but
+      // dockview also fires this (then re-adds) when a panel is *moved* between
+      // groups. Defer one microtask and confirm the panel is really gone before
+      // tearing down, so a drag-to-another-group doesn't kill the session.
       a.onDidRemovePanel((panel) => {
         const id = consoleInstanceId(panel);
-        if (id) closeConsole(id);
+        if (!id) return;
+        queueMicrotask(() => {
+          if (a.getPanel(id)) return; // it was a move, not a close
+          closeConsole(id);
+          release(id);
+        });
       }),
-      // Second trigger for the drag passthrough (see the document-level effect):
-      // dockview's authoritative drag-start signals.
-      a.onWillDragPanel(() => wrapRef.current?.classList.add("wb-dragging")),
-      a.onWillDragGroup(() => wrapRef.current?.classList.add("wb-dragging")),
     );
 
     // Restore the saved arrangement, backing each console panel with a dormant
@@ -100,26 +106,6 @@ function Workspace() {
     return () => {
       for (const d of disposablesRef.current) d.dispose();
       disposablesRef.current = [];
-    };
-  }, []);
-
-  // While a tab/panel drag is in progress, flag the wrapper so the content
-  // overlays go pointer-transparent (see dockview.css) and dockview's droptargets
-  // underneath can receive the drag — otherwise the `always` renderer's overlay
-  // (which hoists panel content above each group's drop-detection area) swallows
-  // it and panels can't be dragged between groups. Listened at document level so
-  // it fires regardless of where dockview mounts; dockview's own drag events
-  // (wired in onReady) are a second trigger.
-  useEffect(() => {
-    const on = () => wrapRef.current?.classList.add("wb-dragging");
-    const off = () => wrapRef.current?.classList.remove("wb-dragging");
-    document.addEventListener("dragstart", on, true);
-    document.addEventListener("dragend", off, true);
-    document.addEventListener("drop", off, true);
-    return () => {
-      document.removeEventListener("dragstart", on, true);
-      document.removeEventListener("dragend", off, true);
-      document.removeEventListener("drop", off, true);
     };
   }, []);
 
@@ -160,14 +146,13 @@ function Workspace() {
   }, [api, open, activeId, instances]);
 
   return (
-    <div ref={wrapRef} style={{ flex: 1, minWidth: 0, minHeight: 0 }}>
+    <div style={{ flex: 1, minWidth: 0, minHeight: 0 }}>
       <DockviewReact
         components={COMPONENTS}
         watermarkComponent={Watermark}
         rightHeaderActionsComponent={HeaderActions}
         theme={themeAbyss}
         className="wb-dock"
-        defaultRenderer="always"
         onReady={onReady}
       />
     </div>
