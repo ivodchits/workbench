@@ -18,6 +18,16 @@ function App() {
     applyTheme(mutedDark);
   }, []);
 
+  // Suppress the webview's native context menu. Its "Reload" reloads the whole
+  // page, which drops every live console (the frontend state resets and the
+  // saved layout restores as dormant placeholders) — a surprising, destructive
+  // action mid-session. Desktop apps don't expose a browser context menu anyway.
+  useEffect(() => {
+    const block = (e: MouseEvent) => e.preventDefault();
+    document.addEventListener("contextmenu", block);
+    return () => document.removeEventListener("contextmenu", block);
+  }, []);
+
   // Dormant placeholders (restored from a saved layout) aren't running, so the
   // chrome counts only live consoles.
   const liveCount = open.filter((c) => c.status !== "dormant").length;

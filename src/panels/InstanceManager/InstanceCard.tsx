@@ -3,6 +3,7 @@
 // badge, last-activity, the inline-editable task note, and a meta line with the
 // ⑃ worktree marker + branch and a mini cost readout. Hover (or keyboard focus)
 // reveals row actions: toggle worktree, open the working dir, edit note, and kill.
+// The meta line's token readout (real figures land in 3.1) shows `0K` for now.
 //
 // Clicking the row launches (or focuses) the instance's claude console; a small
 // live marker (`consoleStatus`) replaces the static status glyph while a console
@@ -16,6 +17,7 @@ import type { ConsoleStatus } from "../../state/consoles";
 import { openPath } from "../../ipc/os";
 import { updateInstance } from "../../state/registry";
 import { relativeTime, statusDisplay } from "./status";
+import { formatTokens, totalTokens } from "../../util/format";
 import InlineEdit from "./InlineEdit";
 
 interface InstanceCardProps {
@@ -188,7 +190,7 @@ function InstanceCard({
         />
       </div>
 
-      {/* Row 3 — worktree marker + branch · cost */}
+      {/* Row 3 — worktree marker + branch · tokens */}
       <div
         style={{
           display: "flex",
@@ -212,8 +214,11 @@ function InstanceCard({
             {instance.branch ?? "—"}
           </span>
         </span>
-        <span style={{ marginLeft: "auto", color: "var(--wb-textDim2)" }}>
-          ${instance.costUsd.toFixed(2)}
+        <span
+          style={{ marginLeft: "auto", color: "var(--wb-textDim2)" }}
+          title="tokens used (input + output + cache)"
+        >
+          {formatTokens(totalTokens(instance))}
         </span>
       </div>
     </div>

@@ -15,6 +15,7 @@ import { GLYPH, Spinner } from "../theme";
 import Console from "./Console";
 import type { Instance, Project } from "../ipc/registry";
 import type { SpawnResult } from "../ipc/pty";
+import { formatTokens, totalTokens } from "../util/format";
 import { useRegistry } from "../state/registry";
 import {
   markError,
@@ -158,7 +159,9 @@ function HeaderStrip({
         {sessionId && (
           <span style={{ color: "var(--wb-textFaint)" }}>{sessionId.slice(0, 8)}</span>
         )}
-        <span>${instance.costUsd.toFixed(2)}</span>
+        <span title="tokens used (input + output + cache)">
+          {formatTokens(totalTokens(instance))}
+        </span>
       </span>
     </div>
   );

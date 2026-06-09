@@ -150,30 +150,48 @@ function Workspace() {
   );
 }
 
-/** Per-group header buttons: float the active panel in-window, or maximize it. */
+/**
+ * Per-group header buttons. A docked group can float (undock) or maximize; a
+ * floating group can dock back into the grid — the missing inverse of undock.
+ */
 function HeaderActions({ containerApi, activePanel }: IDockviewHeaderActionsProps) {
   if (!activePanel) return null;
   const floating = activePanel.api.location.type !== "grid";
+
+  const dockBack = () => {
+    // Tab back into an existing grid group, or seed one if everything floats.
+    const target = containerApi.groups.find((g) => g.api.location.type === "grid");
+    activePanel.api.moveTo(
+      target ? { group: target, position: "center" } : { position: "right" },
+    );
+  };
+
   return (
     <div style={{ display: "flex", alignItems: "center", gap: 2, padding: "0 6px" }}>
-      {!floating && (
-        <HeaderButton
-          label="float panel in-window"
-          onClick={() => containerApi.addFloatingGroup(activePanel)}
-        >
-          ⤢
+      {floating ? (
+        <HeaderButton label="dock panel back" onClick={dockBack}>
+          ⤓
         </HeaderButton>
+      ) : (
+        <>
+          <HeaderButton
+            label="float panel in-window"
+            onClick={() => containerApi.addFloatingGroup(activePanel)}
+          >
+            ⧉
+          </HeaderButton>
+          <HeaderButton
+            label="maximize panel"
+            onClick={() =>
+              containerApi.hasMaximizedGroup()
+                ? containerApi.exitMaximizedGroup()
+                : containerApi.maximizeGroup(activePanel)
+            }
+          >
+            ⤢
+          </HeaderButton>
+        </>
       )}
-      <HeaderButton
-        label="maximize panel"
-        onClick={() =>
-          containerApi.hasMaximizedGroup()
-            ? containerApi.exitMaximizedGroup()
-            : containerApi.maximizeGroup(activePanel)
-        }
-      >
-        ▣
-      </HeaderButton>
     </div>
   );
 }
