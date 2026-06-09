@@ -25,10 +25,10 @@ import {
   type EditorSession,
   type OpenFile,
 } from "../../state/editors";
-import { detectLanguage, isMarkdown } from "./language";
+import { detectLanguage, previewKind } from "./language";
 import FileTree from "./FileTree";
 import CodeMirrorView from "./CodeMirrorView";
-import MarkdownPreview from "./MarkdownPreview";
+import PreviewPane from "./PreviewPane";
 import { type PreviewPanelParams } from "../PreviewPanel";
 
 /** Deterministic id for a file's preview panel — reused so reopening focuses it. */
@@ -154,8 +154,8 @@ function EditorBody({
   }, [files, save]);
 
   const lang = activeFile ? detectLanguage(activeFile.name) : null;
-  const markdown = activeFile ? isMarkdown(activeFile.name) : false;
-  const splitPreview = markdown && showPreview;
+  const kind = activeFile ? previewKind(activeFile.name) : null;
+  const splitPreview = kind !== null && showPreview;
 
   return (
     <div style={{ height: "100%", display: "flex", minHeight: 0, minWidth: 0 }}>
@@ -248,7 +248,7 @@ function EditorBody({
           files={files}
           activePath={activePath}
           languageLabel={lang?.label ?? null}
-          isMarkdown={markdown}
+          previewable={kind !== null}
           previewOn={showPreview}
           onTogglePreview={() => setShowPreview((v) => !v)}
           onPopOutPreview={activeFile ? () => onPopOutPreview(activeFile.path) : undefined}
@@ -299,9 +299,9 @@ function EditorBody({
                   onCursor={(line, col) => setCursor({ line, col })}
                 />
               </div>
-              {splitPreview && (
+              {splitPreview && kind && (
                 <div style={{ flex: 1, minWidth: 0, minHeight: 0 }}>
-                  <MarkdownPreview source={activeFile.content} />
+                  <PreviewPane kind={kind} source={activeFile.content} />
                 </div>
               )}
             </div>
@@ -326,7 +326,7 @@ function TabStrip({
   files,
   activePath,
   languageLabel,
-  isMarkdown,
+  previewable,
   previewOn,
   onTogglePreview,
   onPopOutPreview,
@@ -336,8 +336,8 @@ function TabStrip({
   files: OpenFile[];
   activePath: string | null;
   languageLabel: string | null;
-  /** True when the active file is markdown — gates the preview controls. */
-  isMarkdown: boolean;
+  /** True when the active file can be previewed (markdown/html) — gates the controls. */
+  previewable: boolean;
   /** Whether the in-panel preview split is currently on. */
   previewOn: boolean;
   onTogglePreview: () => void;
@@ -403,13 +403,13 @@ function TabStrip({
         );
       })}
       <span style={{ flex: 1 }} />
-      {isMarkdown && (
+      {previewable && (
         <div style={{ display: "flex", alignItems: "center", gap: 4, padding: "0 6px", flex: "0 0 auto" }}>
           <button
             onClick={onTogglePreview}
-            aria-label="toggle markdown preview"
+            aria-label="toggle preview"
             aria-pressed={previewOn}
-            title="toggle markdown preview (in-panel)"
+            title="toggle preview (in-panel)"
             style={tabStripButton(previewOn)}
           >
             ▤ preview

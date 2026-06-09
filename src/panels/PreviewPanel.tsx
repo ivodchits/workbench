@@ -1,7 +1,8 @@
-// Markdown Preview panel (step 1.9) — the standalone, dockable counterpart to the
-// in-Editor preview toggle. Bound to a single markdown file (an owning editor + a
-// path) so it can sit side-by-side with anything: the editor that spawned it, a
-// console, a shell (design §5, "Markdown Preview · bound to a file").
+// Preview panel (step 1.9) — the standalone, dockable counterpart to the in-Editor
+// preview toggle. Bound to a single previewable file (an owning editor + a path),
+// markdown or HTML, so it can sit side-by-side with anything: the editor that
+// spawned it, a console, a shell (design §5, "Markdown Preview · bound to a file").
+// The renderer is chosen by file kind (see `PreviewPane`).
 //
 // It tracks the file's *live* buffer: it reads the owning editor's open tab from
 // the editors store, so edits in the editor update this panel as you type. If that
@@ -20,7 +21,8 @@ import type { IDockviewPanelProps } from "dockview";
 import { GLYPH } from "../theme";
 import { readFile } from "../ipc/fs";
 import { useEditors } from "../state/editors";
-import MarkdownPreview from "./Editor/MarkdownPreview";
+import { previewKind } from "./Editor/language";
+import PreviewPane from "./Editor/PreviewPane";
 
 export interface PreviewPanelParams {
   /** The editor whose buffer this preview mirrors. */
@@ -38,6 +40,7 @@ export function PreviewPanel(props: IDockviewPanelProps<PreviewPanelParams>) {
   const { open } = useEditors();
 
   const name = basename(path);
+  const kind = previewKind(name) ?? "markdown";
   const setTitle = props.api.setTitle.bind(props.api);
   useEffect(() => setTitle(`preview · ${name}`), [setTitle, name]);
 
@@ -103,7 +106,7 @@ export function PreviewPanel(props: IDockviewPanelProps<PreviewPanelParams>) {
         </div>
       )}
       <div style={{ flex: 1, minHeight: 0 }}>
-        <MarkdownPreview source={source} />
+        <PreviewPane kind={kind} source={source} />
       </div>
     </div>
   );

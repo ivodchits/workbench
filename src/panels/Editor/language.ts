@@ -57,9 +57,19 @@ const BY_NAME: Record<string, () => DetectedLanguage> = {
   ".gitignore": () => PLAIN,
 };
 
-/** True when a file name is markdown (drives the Editor's preview controls, step 1.9). */
-export function isMarkdown(fileName: string): boolean {
-  return detectLanguage(fileName).label === "markdown";
+/** Kinds of file the Editor can live-preview (step 1.9: markdown; HTML added after). */
+export type PreviewKind = "markdown" | "html";
+
+/**
+ * The preview kind for a file name, or null when it isn't previewable. Drives the
+ * Editor's preview controls and which renderer the preview pane uses — markdown is
+ * parsed to sanitized HTML, HTML is rendered live in a sandboxed iframe.
+ */
+export function previewKind(fileName: string): PreviewKind | null {
+  const label = detectLanguage(fileName).label;
+  if (label === "markdown") return "markdown";
+  if (label === "html") return "html";
+  return null;
 }
 
 /** Detect the language for a file name (any path tail works — only the base is used). */
