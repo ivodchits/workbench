@@ -5,6 +5,8 @@ import Workspace from "./panels/Workspace";
 import { useConsoles } from "./state/consoles";
 import { useRegistry } from "./state/registry";
 import { initActiveProject, setActiveProject, useActiveProject } from "./state/activeProject";
+import { useGlobalKeys } from "./keyboard";
+import { registerCommand } from "./keyboard/bus";
 
 // Step 1.5 turned the cockpit into its real shape: the Instance Manager rail on
 // the left drives the panel surface, where clicking an instance launches (or
@@ -23,6 +25,26 @@ function App() {
   useEffect(() => {
     applyTheme(mutedDark);
   }, []);
+
+  // The global keymap listener (Ctrl+Shift / Alt / Ctrl+Tab chords). Rail single
+  // keys are handled inside the rail itself (see InstanceManager).
+  useGlobalKeys();
+
+  // App owns `focusRail` (Alt+0) because it owns the rail's collapsed state: expand
+  // it if needed, then hand focus to the first rail row (after the re-render paints).
+  useEffect(
+    () =>
+      registerCommand("focusRail", () => {
+        setRailCollapsed(false);
+        requestAnimationFrame(() =>
+          requestAnimationFrame(() => {
+            const first = document.querySelector<HTMLElement>("[data-wb-rail] [data-wb-rail-row]");
+            first?.focus();
+          }),
+        );
+      }),
+    [],
+  );
 
   // Restore the last-selected project from prefs before we consider a default.
   useEffect(() => {

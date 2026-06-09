@@ -15,10 +15,17 @@ import { GLYPH, Spinner } from "../../theme";
 import type { Instance } from "../../ipc/registry";
 import type { ConsoleStatus } from "../../state/consoles";
 import { openPath } from "../../ipc/os";
+import { ptyWrite } from "../../ipc/pty";
+import { matchCommand } from "../../keyboard";
 import { updateInstance } from "../../state/registry";
 import { relativeTime, statusDisplay } from "./status";
 import { formatTokens, totalTokens } from "../../util/format";
 import InlineEdit from "./InlineEdit";
+
+// The keystroke that interrupts a running agent: ESC stops the current generation
+// in the claude TUI. Sent straight to the PTY (works without focusing the console).
+// Keep this as the single source for the interrupt key (design §11 caveat).
+const INTERRUPT_KEY = new Uint8Array([0x1b]);
 
 interface InstanceCardProps {
   instance: Instance;
@@ -40,18 +47,52 @@ function InstanceCard({ instance, consoleStatus, onActivate, onKill }: InstanceC
   const toggleWorktree = () =>
     void updateInstance(instance.id, { worktreeOn: !instance.worktreeOn });
 
+  // Rail single-keys for a focused instance card (design §5.y). The guards defer
+  // to an open inline editor (typing) and to events from child controls; nav /
+  // new / add-project / return are left to bubble up to the rail container.
+  const onCardKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    if (editingNote || editingTitle) return;
+    if (e.target !== e.currentTarget) return;
+    const m = matchCommand(e.nativeEvent, "rail");
+    if (!m) return;
+    switch (m.command) {
+      case "railOpen":
+        onActivate();
+        break;
+      case "railEditNote":
+        setEditingNote(true);
+        break;
+      case "railRename":
+        setEditingTitle(true);
+        break;
+      case "railKill":
+        onKill();
+        break;
+      case "railWorktree":
+        toggleWorktree();
+        break;
+      case "railOpenDir":
+        void openPath(instance.workingDir);
+        break;
+      case "railInterrupt":
+        if (consoleStatus === "running") void ptyWrite(instance.id, INTERRUPT_KEY);
+        break;
+      default:
+        return; // not a card concern
+    }
+    e.preventDefault();
+    e.stopPropagation();
+  };
+
   // No persistent "selected" highlight: several instances are visible (and live)
   // at once, so there's no single active row — only hover reveals row actions.
   return (
     <div
       tabIndex={0}
+      data-wb-rail-row
+      data-wb-instance-id={instance.id}
       onClick={onActivate}
-      onKeyDown={(e) => {
-        if (e.key === "Enter" && !editingNote && !editingTitle) {
-          e.preventDefault();
-          onActivate();
-        }
-      }}
+      onKeyDown={onCardKeyDown}
       onMouseEnter={() => setHover(true)}
       onMouseLeave={() => setHover(false)}
       style={{

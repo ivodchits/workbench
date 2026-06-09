@@ -16,12 +16,26 @@ import Panel from "../../theme/Panel";
 import { GLYPH } from "../../theme";
 import type { Group, Instance, Project } from "../../ipc/registry";
 import type { ConsoleStatus } from "../../state/consoles";
-import { closeConsole, openConsole, useConsoles } from "../../state/consoles";
+import {
+  closeConsole,
+  getActiveConsoleId,
+  openConsole,
+  useConsoles,
+} from "../../state/consoles";
 import { closeShell, getOpenShells, openShell } from "../../state/shells";
 import { closeEditor, getOpenEditors, openEditor } from "../../state/editors";
-import { setActiveProject, useActiveProject } from "../../state/activeProject";
+import { getActiveProject, setActiveProject, useActiveProject } from "../../state/activeProject";
+import { focusActivePanel } from "../../state/dock";
 import { release } from "../terminalPool";
-import { deleteInstance, deleteProject, loadRegistry, useRegistry } from "../../state/registry";
+import {
+  deleteInstance,
+  deleteProject,
+  getRegistry,
+  loadRegistry,
+  useRegistry,
+} from "../../state/registry";
+import { isTextInput, matchCommand } from "../../keyboard";
+import { registerCommand } from "../../keyboard/bus";
 import ProjectDialog from "./ProjectDialog";
 import InstanceDialog from "./InstanceDialog";
 import InstanceCard from "./InstanceCard";
@@ -48,10 +62,97 @@ function InstanceManager({ onCollapse }: InstanceManagerProps) {
   const [newInstanceProject, setNewInstanceProject] = useState<Project | null>(null);
   const [killTarget, setKillTarget] = useState<Instance | null>(null);
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
+  const railRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     void loadRegistry();
   }, []);
+
+  // Global chords the rail owns (the keyboard layer dispatches these via the bus).
+  // Handlers read fresh state through module getters, so registering once is safe.
+  useEffect(() => {
+    const disposers = [
+      registerCommand("newInstance", () => {
+        const proj = getRegistry().projects.find((p) => p.id === getActiveProject());
+        if (proj) setNewInstanceProject(proj);
+      }),
+      registerCommand("killInstance", () => {
+        const inst = getRegistry().instances.find((i) => i.id === getActiveConsoleId());
+        if (inst) setKillTarget(inst);
+      }),
+      // "Jump to next / previous agent that needs you" — registered no-ops until
+      // the Phase-2 status engine knows which agents actually need you (plan 1.10
+      // / §4.4). Bound to Ctrl+Shift+Alt+Up / Down.
+      registerCommand("jumpNeedsYou", () => {}),
+      registerCommand("jumpPrevNeedsYou", () => {}),
+    ];
+    return () => {
+      for (const d of disposers) d();
+    };
+  }, []);
+
+  // Move roving focus between rail rows (project tiles + instance cards). `delta`
+  // is +1 (down) / -1 (up); wraps from an unfocused state to the first/last row.
+  const moveRailFocus = (delta: 1 | -1) => {
+    const rows = Array.from(
+      railRef.current?.querySelectorAll<HTMLElement>("[data-wb-rail-row]") ?? [],
+    );
+    if (rows.length === 0) return;
+    const idx = rows.indexOf(document.activeElement as HTMLElement);
+    const next =
+      idx < 0 ? (delta > 0 ? rows[0] : rows[rows.length - 1]) : rows[idx + delta];
+    if (next) {
+      next.focus();
+      next.scrollIntoView({ block: "nearest" });
+    }
+  };
+
+  // Rail-scope single keys, handled on the bubble from the focused row. Per-row
+  // actions (open / edit note / kill / …) are handled on the row itself and stop
+  // propagation; only navigation + project-level actions reach here.
+  const onRailKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    if (isTextInput(e.target)) return; // typing in an inline editor
+    const m = matchCommand(e.nativeEvent, "rail");
+    if (!m) return;
+    switch (m.command) {
+      case "railNext":
+        moveRailFocus(1);
+        break;
+      case "railPrev":
+        moveRailFocus(-1);
+        break;
+      case "railAddProject":
+        setAddingProject(true);
+        break;
+      case "railReturn":
+        focusActivePanel();
+        break;
+      case "railNew": {
+        const el = document.activeElement as HTMLElement | null;
+        const projectId =
+          el?.dataset.wbProjectId ??
+          instances.find((i) => i.id === el?.dataset.wbInstanceId)?.projectId;
+        const proj = projects.find((p) => p.id === projectId);
+        if (proj) setNewInstanceProject(proj);
+        break;
+      }
+      case "railCollapse": {
+        // Bubbled from an instance card (a project tile collapses itself): move
+        // focus up to the card's parent project tile.
+        const el = document.activeElement as HTMLElement | null;
+        const parentId = instances.find((i) => i.id === el?.dataset.wbInstanceId)?.projectId;
+        if (parentId) {
+          railRef.current
+            ?.querySelector<HTMLElement>(`[data-wb-project-id="${parentId}"]`)
+            ?.focus();
+        }
+        break;
+      }
+      default:
+        return; // handled on the row, or not a container concern
+    }
+    e.preventDefault();
+  };
 
   // Live console state per instance, so each row can show a running/spawning
   // marker (null = no console open).
@@ -211,7 +312,12 @@ function InstanceManager({ onCollapse }: InstanceManagerProps) {
           </div>
         )}
 
-        <div style={{ overflow: "auto", flex: 1 }}>
+        <div
+          ref={railRef}
+          data-wb-rail
+          onKeyDown={onRailKeyDown}
+          style={{ overflow: "auto", flex: 1 }}
+        >
           {!loaded && <Hint>loading…</Hint>}
           {isEmpty && (
             <div style={{ padding: "10px 16px", color: "var(--wb-textDim2)", fontSize: 12 }}>
@@ -338,10 +444,41 @@ function ProjectNode({
   }).length;
   const needsYou = instances.filter((i) => i.status === "needs_you").length;
 
+  // Rail single-keys for a focused project tile: Enter opens (selects + expands),
+  // Left/Right collapse/expand. Everything else (j/k nav, n, p, Esc) bubbles to
+  // the rail container.
+  const onTileKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    if (e.target !== e.currentTarget) return;
+    const m = matchCommand(e.nativeEvent, "rail");
+    if (!m) return;
+    switch (m.command) {
+      case "railOpen":
+        onSelectProject();
+        if (collapsed) onToggle();
+        break;
+      case "railCollapse":
+        if (collapsed) return; // nothing to collapse — let it bubble (no-op)
+        onToggle();
+        break;
+      case "railExpand":
+        if (!collapsed) return;
+        onToggle();
+        break;
+      default:
+        return; // not a tile concern
+    }
+    e.preventDefault();
+    e.stopPropagation();
+  };
+
   return (
     <div>
       {/* The project tile — clicking it makes this the active workspace. */}
       <div
+        tabIndex={0}
+        data-wb-rail-row
+        data-wb-project-id={project.id}
+        onKeyDown={onTileKeyDown}
         onClick={onSelectProject}
         onMouseEnter={() => setHover(true)}
         onMouseLeave={() => setHover(false)}

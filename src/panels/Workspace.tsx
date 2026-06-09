@@ -62,6 +62,7 @@ import {
 } from "../state/editors";
 import { useActiveProject } from "../state/activeProject";
 import { loadLayout, saveLayoutDebounced, saveLayoutNow } from "../state/layout";
+import { setDockApi } from "../state/dock";
 import { release } from "./terminalPool";
 
 interface LayoutSnapshot {
@@ -133,6 +134,12 @@ function Workspace() {
 
   const restoredRef = useRef(false);
   const disposablesRef = useRef<Array<{ dispose: () => void }>>([]);
+  // The last console id we brought to front. Asserting focus only on a *new* value
+  // (not on every repaint) is what lets keyboard focus rest on a non-console panel:
+  // editor keystrokes re-render the Workspace, and without this guard the reconcile
+  // would keep yanking dockview's active panel back to the last console — desyncing
+  // the active panel from where the keyboard actually is (step 1.10 focus bug).
+  const consoleFocusRef = useRef<string | null>(null);
   // The last shell id we brought to front. Asserting focus only on a *new* value
   // (not on every shell-store repaint) keeps a shell's spawn→running transition
   // from yanking focus back off a console you clicked while it was starting.
@@ -226,8 +233,9 @@ function Workspace() {
       if (id && !openIds.has(id)) a.removePanel(panel);
     }
     const aId = getActiveConsoleId();
-    if (aId && a.getPanel(aId) && a.activePanel?.id !== aId) {
+    if (aId && a.getPanel(aId) && aId !== consoleFocusRef.current) {
       a.getPanel(aId)?.api.setActive();
+      consoleFocusRef.current = aId;
     }
   }, []);
 
@@ -302,6 +310,7 @@ function Workspace() {
   const onReady = (event: DockviewReadyEvent) => {
     const a = event.api;
     setApi(a);
+    setDockApi(a); // expose the single dock to the keyboard layer (state/dock)
 
     disposablesRef.current.push(
       // Save on any layout change — but not while restoring or mid-swap.
@@ -342,6 +351,7 @@ function Workspace() {
     return () => {
       for (const d of disposablesRef.current) d.dispose();
       disposablesRef.current = [];
+      setDockApi(null);
     };
   }, []);
 

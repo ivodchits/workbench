@@ -665,7 +665,7 @@ Pull these in once the relevant phase is stable; each is an independent step whe
 - [x] 1.7 Project Shell panel
 - [x] 1.8 Editor panel (CodeMirror 6)
 - [x] 1.9 Markdown preview
-- [ ] 1.10 Keyboard-first core
+- [x] 1.10 Keyboard-first core
 
 **Phase 2 — status engine & worktrees**
 - [ ] 2.1 Hook server + user-level install + session_id filter

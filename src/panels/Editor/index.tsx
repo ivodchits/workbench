@@ -158,7 +158,10 @@ function EditorBody({
   const splitPreview = kind !== null && showPreview;
 
   return (
-    <div style={{ height: "100%", display: "flex", minHeight: 0, minWidth: 0 }}>
+    // `data-wb-panel` lets the keyboard layer (state/dock) find this panel's
+    // CodeMirror to focus it when you cycle/focus to it (an editor owns no pooled
+    // terminal, so it can't be focused by id the way consoles/shells are).
+    <div data-wb-panel={editorId} style={{ height: "100%", display: "flex", minHeight: 0, minWidth: 0 }}>
       {/* file tree — collapsible to a slim strip like the app rail */}
       {treeCollapsed ? (
         <button

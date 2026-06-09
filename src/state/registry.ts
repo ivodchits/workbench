@@ -68,6 +68,12 @@ function getSnapshot(): RegistryState {
   return state;
 }
 
+/** Read the registry outside React (used by keyboard-command handlers, which are
+ *  registered once and must resolve the *current* projects/instances when fired). */
+export function getRegistry(): RegistryState {
+  return state;
+}
+
 /** Reload the whole tree from the backend. Safe to call after any mutation. */
 export async function loadRegistry(): Promise<void> {
   try {

@@ -72,3 +72,15 @@ textarea,
 select {
   font-family: inherit;
 }
+
+/* Keyboard focus on a rail row (step 1.10): a left accent bar + tinted ground, so
+   the roving selection is visible without the UA's heavy default ring. Only shows
+   for keyboard focus (`:focus-visible`), never on mouse click. */
+[data-wb-rail-row] {
+  outline: none;
+}
+
+[data-wb-rail-row]:focus-visible {
+  background: var(--wb-sel, #232742);
+  box-shadow: inset 2px 0 0 0 var(--wb-accent, #c9a26b);
+}
