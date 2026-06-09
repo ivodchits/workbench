@@ -37,6 +37,8 @@ interface CodeMirrorViewProps {
   onChange: (content: string) => void;
   /** Fired on Ctrl/Cmd+S with the current document text. */
   onSave: (content: string) => void;
+  /** Fired on Ctrl/Cmd+Shift+S — save every dirty tab in this editor. */
+  onSaveAll: () => void;
   /** Fired when the caret moves, with 1-based line/column. */
   onCursor?: (line: number, col: number) => void;
 }
@@ -47,6 +49,7 @@ function CodeMirrorView({
   language,
   onChange,
   onSave,
+  onSaveAll,
   onCursor,
 }: CodeMirrorViewProps) {
   const hostRef = useRef<HTMLDivElement>(null);
@@ -54,9 +57,11 @@ function CodeMirrorView({
   // Latest callbacks, so the view (built once per `path`) never calls a stale one.
   const onChangeRef = useRef(onChange);
   const onSaveRef = useRef(onSave);
+  const onSaveAllRef = useRef(onSaveAll);
   const onCursorRef = useRef(onCursor);
   onChangeRef.current = onChange;
   onSaveRef.current = onSave;
+  onSaveAllRef.current = onSaveAll;
   onCursorRef.current = onCursor;
 
   useEffect(() => {
@@ -79,6 +84,14 @@ function CodeMirrorView({
           preventDefault: true,
           run: (view) => {
             onSaveRef.current(view.state.doc.toString());
+            return true;
+          },
+        },
+        {
+          key: "Mod-Shift-s",
+          preventDefault: true,
+          run: () => {
+            onSaveAllRef.current();
             return true;
           },
         },

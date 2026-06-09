@@ -55,6 +55,7 @@ function EditorBody({ session }: { session: EditorSession }) {
   const { editorId, rootPath, files, activePath } = session;
   const [notice, setNotice] = useState<string | null>(null);
   const [cursor, setCursor] = useState<{ line: number; col: number } | null>(null);
+  const [treeCollapsed, setTreeCollapsed] = useState(false);
   const activeFile = files.find((f) => f.path === activePath) ?? null;
 
   // Read a file from disk and open it, surfacing read failures (binary / too
@@ -106,21 +107,100 @@ function EditorBody({ session }: { session: EditorSession }) {
     [editorId],
   );
 
+  // Save every dirty tab (Ctrl/Cmd+Shift+S). Store content stays current via
+  // `onChange` on each keystroke, so we can save inactive tabs straight from it.
+  const saveAll = useCallback(async () => {
+    for (const f of files) {
+      if (f.content !== f.baseline) await save(f.path, f.content);
+    }
+  }, [files, save]);
+
   const lang = activeFile ? detectLanguage(activeFile.name) : null;
 
   return (
     <div style={{ height: "100%", display: "flex", minHeight: 0, minWidth: 0 }}>
-      {/* file tree */}
-      <div
-        style={{
-          flex: "0 0 180px",
-          minWidth: 0,
-          borderRight: "1px solid var(--wb-border)",
-          overflow: "hidden",
-        }}
-      >
-        <FileTree rootPath={rootPath} activePath={activePath} onOpenFile={onOpenFromTree} />
-      </div>
+      {/* file tree — collapsible to a slim strip like the app rail */}
+      {treeCollapsed ? (
+        <button
+          onClick={() => setTreeCollapsed(false)}
+          aria-label="expand file tree"
+          title="expand file tree"
+          style={{
+            flex: "0 0 24px",
+            width: 24,
+            background: "var(--wb-panel)",
+            border: "none",
+            borderRight: "1px solid var(--wb-border)",
+            color: "var(--wb-textDim2)",
+            cursor: "pointer",
+            display: "flex",
+            flexDirection: "column",
+            alignItems: "center",
+            gap: 10,
+            padding: "9px 0",
+            font: "10px var(--wb-mono)",
+          }}
+        >
+          <span style={{ color: "var(--wb-accent)" }}>▸</span>
+          <span
+            style={{
+              writingMode: "vertical-rl",
+              letterSpacing: "0.16em",
+              textTransform: "uppercase",
+            }}
+          >
+            files
+          </span>
+        </button>
+      ) : (
+        <div
+          style={{
+            flex: "0 0 180px",
+            minWidth: 0,
+            borderRight: "1px solid var(--wb-border)",
+            display: "flex",
+            flexDirection: "column",
+            minHeight: 0,
+          }}
+        >
+          <div
+            style={{
+              flex: "0 0 auto",
+              display: "flex",
+              alignItems: "center",
+              padding: "4px 6px 4px 11px",
+              borderBottom: "1px solid var(--wb-border)",
+              background: "var(--wb-titlebar)",
+              font: "10px var(--wb-mono)",
+              letterSpacing: "0.12em",
+              textTransform: "uppercase",
+              color: "var(--wb-textFaint)",
+            }}
+          >
+            files
+            <button
+              onClick={() => setTreeCollapsed(true)}
+              aria-label="collapse file tree"
+              title="collapse file tree"
+              style={{
+                marginLeft: "auto",
+                background: "transparent",
+                border: "none",
+                cursor: "pointer",
+                padding: 0,
+                lineHeight: 1,
+                font: "11px var(--wb-mono)",
+                color: "var(--wb-textDim2)",
+              }}
+            >
+              ◂
+            </button>
+          </div>
+          <div style={{ flex: 1, minHeight: 0 }}>
+            <FileTree rootPath={rootPath} activePath={activePath} onOpenFile={onOpenFromTree} />
+          </div>
+        </div>
+      )}
 
       {/* tabs + editor + footer */}
       <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", minHeight: 0 }}>
@@ -159,6 +239,7 @@ function EditorBody({ session }: { session: EditorSession }) {
               language={lang?.extension ?? null}
               onChange={(content) => updateContent(editorId, activeFile.path, content)}
               onSave={(content) => void save(activeFile.path, content)}
+              onSaveAll={() => void saveAll()}
               onCursor={(line, col) => setCursor({ line, col })}
             />
           ) : (
@@ -166,7 +247,13 @@ function EditorBody({ session }: { session: EditorSession }) {
           )}
         </div>
 
-        <Footer file={activeFile} cursor={cursor} onSave={save} />
+        <Footer
+          file={activeFile}
+          cursor={cursor}
+          dirtyCount={files.reduce((n, f) => (f.content !== f.baseline ? n + 1 : n), 0)}
+          onSave={save}
+          onSaveAll={() => void saveAll()}
+        />
       </div>
     </div>
   );
@@ -263,11 +350,15 @@ function TabStrip({
 function Footer({
   file,
   cursor,
+  dirtyCount,
   onSave,
+  onSaveAll,
 }: {
   file: OpenFile | null;
   cursor: { line: number; col: number } | null;
+  dirtyCount: number;
   onSave: (path: string, content: string) => Promise<void>;
+  onSaveAll: () => void;
 }) {
   const dirty = file ? file.content !== file.baseline : false;
   return (
@@ -291,21 +382,20 @@ function Footer({
             {dirty ? "● unsaved" : "○ saved"}
           </span>
           {cursor && <span>Ln {cursor.line}, Col {cursor.col}</span>}
-          <button
-            onClick={() => void onSave(file.path, file.content)}
-            disabled={!dirty}
-            style={{
-              marginLeft: "auto",
-              background: "transparent",
-              border: "none",
-              cursor: dirty ? "pointer" : "default",
-              color: dirty ? "var(--wb-accent)" : "var(--wb-textFaint)",
-              font: "10px var(--wb-mono)",
-              padding: 0,
-            }}
-          >
-            ⌃S save
-          </button>
+          <span style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 12 }}>
+            {dirtyCount >= 2 && (
+              <button onClick={onSaveAll} style={footerButton("var(--wb-accent)")}>
+                ⌃⇧S save all ({dirtyCount})
+              </button>
+            )}
+            <button
+              onClick={() => void onSave(file.path, file.content)}
+              disabled={!dirty}
+              style={footerButton(dirty ? "var(--wb-accent)" : "var(--wb-textFaint)", !dirty)}
+            >
+              ⌃S save
+            </button>
+          </span>
         </>
       ) : (
         <span>no file open</span>
@@ -337,6 +427,17 @@ function MissingEditor() {
       <div style={{ color: "var(--wb-textFaint)", font: "11px var(--wb-mono)" }}>close this panel</div>
     </div>
   );
+}
+
+function footerButton(color: string, disabled = false): React.CSSProperties {
+  return {
+    background: "transparent",
+    border: "none",
+    cursor: disabled ? "default" : "pointer",
+    color,
+    font: "10px var(--wb-mono)",
+    padding: 0,
+  };
 }
 
 const centered: React.CSSProperties = {
