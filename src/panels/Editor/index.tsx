@@ -25,9 +25,16 @@ import {
   type EditorSession,
   type OpenFile,
 } from "../../state/editors";
-import { detectLanguage } from "./language";
+import { detectLanguage, isMarkdown } from "./language";
 import FileTree from "./FileTree";
 import CodeMirrorView from "./CodeMirrorView";
+import MarkdownPreview from "./MarkdownPreview";
+import { type PreviewPanelParams } from "../PreviewPanel";
+
+/** Deterministic id for a file's preview panel — reused so reopening focuses it. */
+function previewPanelId(ownerEditorId: string, path: string): string {
+  return `preview:${ownerEditorId}:${path}`;
+}
 
 export interface EditorPanelParams {
   editorId: string;
@@ -47,15 +54,46 @@ export function EditorPanel(props: IDockviewPanelProps<EditorPanelParams>) {
   const setTitle = props.api.setTitle.bind(props.api);
   useEffect(() => setTitle(title), [setTitle, title]);
 
+  // Open (or focus) a standalone Preview panel beside this editor, bound to the
+  // given file's live buffer. Reuses the deterministic id so re-triggering focuses
+  // the existing pane rather than stacking duplicates.
+  const openPreviewPanel = useCallback(
+    (path: string) => {
+      const id = previewPanelId(editorId, path);
+      const existing = props.containerApi.getPanel(id);
+      if (existing) {
+        existing.api.setActive();
+        return;
+      }
+      const params: PreviewPanelParams = { ownerEditorId: editorId, path };
+      props.containerApi.addPanel({
+        id,
+        component: "preview",
+        params,
+        position: { referencePanel: props.api.id, direction: "right" },
+      });
+    },
+    [editorId, props.containerApi, props.api.id],
+  );
+
   if (!session) return <MissingEditor />;
-  return <EditorBody session={session} />;
+  return <EditorBody session={session} onPopOutPreview={openPreviewPanel} />;
 }
 
-function EditorBody({ session }: { session: EditorSession }) {
+function EditorBody({
+  session,
+  onPopOutPreview,
+}: {
+  session: EditorSession;
+  onPopOutPreview: (path: string) => void;
+}) {
   const { editorId, rootPath, files, activePath } = session;
   const [notice, setNotice] = useState<string | null>(null);
   const [cursor, setCursor] = useState<{ line: number; col: number } | null>(null);
   const [treeCollapsed, setTreeCollapsed] = useState(false);
+  // In-panel markdown preview split (editor | preview). Persisted only in component
+  // state; gated by the active file actually being markdown.
+  const [showPreview, setShowPreview] = useState(false);
   const activeFile = files.find((f) => f.path === activePath) ?? null;
 
   // Read a file from disk and open it, surfacing read failures (binary / too
@@ -116,6 +154,8 @@ function EditorBody({ session }: { session: EditorSession }) {
   }, [files, save]);
 
   const lang = activeFile ? detectLanguage(activeFile.name) : null;
+  const markdown = activeFile ? isMarkdown(activeFile.name) : false;
+  const splitPreview = markdown && showPreview;
 
   return (
     <div style={{ height: "100%", display: "flex", minHeight: 0, minWidth: 0 }}>
@@ -208,6 +248,10 @@ function EditorBody({ session }: { session: EditorSession }) {
           files={files}
           activePath={activePath}
           languageLabel={lang?.label ?? null}
+          isMarkdown={markdown}
+          previewOn={showPreview}
+          onTogglePreview={() => setShowPreview((v) => !v)}
+          onPopOutPreview={activeFile ? () => onPopOutPreview(activeFile.path) : undefined}
           onFocus={(p) => focusFile(editorId, p)}
           onClose={(p) => closeFile(editorId, p)}
         />
@@ -232,16 +276,35 @@ function EditorBody({ session }: { session: EditorSession }) {
 
         <div style={{ flex: 1, minHeight: 0, background: "var(--wb-bg)" }}>
           {activeFile ? (
-            <CodeMirrorView
-              key={activeFile.path}
-              path={activeFile.path}
-              initialDoc={activeFile.content}
-              language={lang?.extension ?? null}
-              onChange={(content) => updateContent(editorId, activeFile.path, content)}
-              onSave={(content) => void save(activeFile.path, content)}
-              onSaveAll={() => void saveAll()}
-              onCursor={(line, col) => setCursor({ line, col })}
-            />
+            // Keep CodeMirror's wrapper stable across the preview toggle so the
+            // editor isn't remounted (which would drop undo history + cursor);
+            // toggling only adds/removes the sibling preview pane.
+            <div style={{ height: "100%", display: "flex", minHeight: 0, minWidth: 0 }}>
+              <div
+                style={{
+                  flex: 1,
+                  minWidth: 0,
+                  minHeight: 0,
+                  ...(splitPreview ? { borderRight: "1px solid var(--wb-border)" } : {}),
+                }}
+              >
+                <CodeMirrorView
+                  key={activeFile.path}
+                  path={activeFile.path}
+                  initialDoc={activeFile.content}
+                  language={lang?.extension ?? null}
+                  onChange={(content) => updateContent(editorId, activeFile.path, content)}
+                  onSave={(content) => void save(activeFile.path, content)}
+                  onSaveAll={() => void saveAll()}
+                  onCursor={(line, col) => setCursor({ line, col })}
+                />
+              </div>
+              {splitPreview && (
+                <div style={{ flex: 1, minWidth: 0, minHeight: 0 }}>
+                  <MarkdownPreview source={activeFile.content} />
+                </div>
+              )}
+            </div>
           ) : (
             <EmptyState hasFiles={files.length > 0} />
           )}
@@ -263,12 +326,23 @@ function TabStrip({
   files,
   activePath,
   languageLabel,
+  isMarkdown,
+  previewOn,
+  onTogglePreview,
+  onPopOutPreview,
   onFocus,
   onClose,
 }: {
   files: OpenFile[];
   activePath: string | null;
   languageLabel: string | null;
+  /** True when the active file is markdown — gates the preview controls. */
+  isMarkdown: boolean;
+  /** Whether the in-panel preview split is currently on. */
+  previewOn: boolean;
+  onTogglePreview: () => void;
+  /** Open the preview as a separate dockable panel; undefined when no file is open. */
+  onPopOutPreview?: () => void;
   onFocus: (path: string) => void;
   onClose: (path: string) => void;
 }) {
@@ -329,6 +403,28 @@ function TabStrip({
         );
       })}
       <span style={{ flex: 1 }} />
+      {isMarkdown && (
+        <div style={{ display: "flex", alignItems: "center", gap: 4, padding: "0 6px", flex: "0 0 auto" }}>
+          <button
+            onClick={onTogglePreview}
+            aria-label="toggle markdown preview"
+            aria-pressed={previewOn}
+            title="toggle markdown preview (in-panel)"
+            style={tabStripButton(previewOn)}
+          >
+            ▤ preview
+          </button>
+          <button
+            onClick={onPopOutPreview}
+            disabled={!onPopOutPreview}
+            aria-label="open preview in a side panel"
+            title="open preview in a side panel"
+            style={tabStripButton(false, !onPopOutPreview)}
+          >
+            ⇲
+          </button>
+        </div>
+      )}
       {languageLabel && (
         <div
           style={{
@@ -345,6 +441,19 @@ function TabStrip({
       )}
     </div>
   );
+}
+
+function tabStripButton(active: boolean, disabled = false): React.CSSProperties {
+  return {
+    background: active ? "var(--wb-accentSoft)" : "transparent",
+    border: "none",
+    cursor: disabled ? "default" : "pointer",
+    color: disabled ? "var(--wb-textFaint)" : active ? "var(--wb-accent)" : "var(--wb-textDim2)",
+    font: "10px var(--wb-mono)",
+    padding: "3px 7px",
+    lineHeight: 1,
+    whiteSpace: "nowrap",
+  };
 }
 
 function Footer({

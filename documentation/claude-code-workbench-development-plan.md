@@ -664,7 +664,7 @@ Pull these in once the relevant phase is stable; each is an independent step whe
 - [x] 1.6 Dockview panel system + layout persistence
 - [x] 1.7 Project Shell panel
 - [x] 1.8 Editor panel (CodeMirror 6)
-- [ ] 1.9 Markdown preview
+- [x] 1.9 Markdown preview
 - [ ] 1.10 Keyboard-first core
 
 **Phase 2 — status engine & worktrees**

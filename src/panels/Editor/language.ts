@@ -57,6 +57,11 @@ const BY_NAME: Record<string, () => DetectedLanguage> = {
   ".gitignore": () => PLAIN,
 };
 
+/** True when a file name is markdown (drives the Editor's preview controls, step 1.9). */
+export function isMarkdown(fileName: string): boolean {
+  return detectLanguage(fileName).label === "markdown";
+}
+
 /** Detect the language for a file name (any path tail works — only the base is used). */
 export function detectLanguage(fileName: string): DetectedLanguage {
   const base = fileName.split(/[\\/]/).pop() ?? fileName;

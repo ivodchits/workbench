@@ -31,6 +31,7 @@ import "../theme/dockview.css";
 import ConsolePanel, { type ConsolePanelParams } from "./ConsolePanel";
 import ShellPanel, { type ShellPanelParams } from "./Shell";
 import EditorPanel, { type EditorPanelParams } from "./Editor";
+import PreviewPanel from "./PreviewPanel";
 import { GLYPH } from "../theme";
 import { useRegistry } from "../state/registry";
 import {
@@ -74,6 +75,10 @@ const COMPONENTS = {
   console: ConsolePanel as React.FunctionComponent<IDockviewPanelProps>,
   shell: ShellPanel as React.FunctionComponent<IDockviewPanelProps>,
   editor: EditorPanel as React.FunctionComponent<IDockviewPanelProps>,
+  // Markdown Preview panels carry no backing store/PTY and use `ownerEditorId` (not
+  // `editorId`) in params, so the reconcilers above ignore them — they persist and
+  // restore purely as part of the dockview tree.
+  preview: PreviewPanel as React.FunctionComponent<IDockviewPanelProps>,
 };
 
 /** A console panel carries its instance id in params; other panels don't. */

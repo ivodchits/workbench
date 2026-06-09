@@ -1,0 +1,162 @@
+/* Themed markdown preview (step 1.9). Styles the sanitized HTML that `renderMarkdown`
+   produces, scoped under `.wb-md`, so the preview reads as part of the retro chrome
+   (§5.x): monospace everywhere, thin square borders, the violet accent for links and
+   blockquotes, status-palette greens/reds reused for diff-ish fences. All colors come
+   from the `--wb-*` theme tokens so a theme switch (Phase 3) recolors it for free. */
+
+.wb-md {
+  font: 13px/1.65 var(--wb-mono);
+  color: var(--wb-text);
+  padding: 14px 18px 40px;
+  overflow-wrap: break-word;
+  word-break: break-word;
+}
+
+.wb-md > :first-child {
+  margin-top: 0;
+}
+
+.wb-md h1,
+.wb-md h2,
+.wb-md h3,
+.wb-md h4,
+.wb-md h5,
+.wb-md h6 {
+  color: var(--wb-text);
+  font-weight: 600;
+  line-height: 1.3;
+  margin: 1.5em 0 0.6em;
+}
+
+.wb-md h1 {
+  font-size: 1.5em;
+  border-bottom: 1px solid var(--wb-border);
+  padding-bottom: 0.3em;
+}
+
+.wb-md h2 {
+  font-size: 1.28em;
+  border-bottom: 1px solid var(--wb-border);
+  padding-bottom: 0.25em;
+}
+
+.wb-md h3 {
+  font-size: 1.13em;
+}
+
+.wb-md h4,
+.wb-md h5,
+.wb-md h6 {
+  font-size: 1em;
+  color: var(--wb-textDim2);
+}
+
+.wb-md p,
+.wb-md ul,
+.wb-md ol,
+.wb-md blockquote,
+.wb-md table,
+.wb-md pre {
+  margin: 0 0 0.85em;
+}
+
+.wb-md a {
+  color: var(--wb-accent);
+  text-decoration: none;
+}
+
+.wb-md a:hover {
+  text-decoration: underline;
+}
+
+.wb-md strong {
+  color: var(--wb-text);
+  font-weight: 700;
+}
+
+.wb-md em {
+  font-style: italic;
+}
+
+.wb-md ul,
+.wb-md ol {
+  padding-left: 1.6em;
+}
+
+.wb-md li {
+  margin: 0.2em 0;
+}
+
+.wb-md li > input[type="checkbox"] {
+  margin-right: 0.5em;
+  accent-color: var(--wb-accent);
+}
+
+.wb-md blockquote {
+  border-left: 2px solid var(--wb-accent);
+  padding: 0.1em 0 0.1em 0.9em;
+  color: var(--wb-textDim2);
+}
+
+.wb-md hr {
+  border: none;
+  border-top: 1px solid var(--wb-border);
+  margin: 1.6em 0;
+}
+
+/* inline code */
+.wb-md code {
+  font: inherit;
+  background: var(--wb-titlebar);
+  border: 1px solid var(--wb-border);
+  border-radius: 0;
+  padding: 0.05em 0.35em;
+  color: var(--wb-str);
+}
+
+/* fenced code block — the `code` inside drops the inline chrome */
+.wb-md pre {
+  background: var(--wb-titlebar);
+  border: 1px solid var(--wb-border);
+  padding: 11px 13px;
+  overflow-x: auto;
+}
+
+.wb-md pre code {
+  background: transparent;
+  border: none;
+  padding: 0;
+  color: var(--wb-text);
+}
+
+.wb-md table {
+  border-collapse: collapse;
+  display: block;
+  overflow-x: auto;
+  max-width: 100%;
+}
+
+.wb-md th,
+.wb-md td {
+  border: 1px solid var(--wb-border);
+  padding: 5px 10px;
+  text-align: left;
+}
+
+.wb-md th {
+  background: var(--wb-titlebar);
+  color: var(--wb-textDim2);
+  font-weight: 600;
+}
+
+.wb-md img {
+  max-width: 100%;
+}
+
+.wb-md kbd {
+  font: inherit;
+  background: var(--wb-titlebar);
+  border: 1px solid var(--wb-border);
+  border-bottom-width: 2px;
+  padding: 0.05em 0.4em;
+}
