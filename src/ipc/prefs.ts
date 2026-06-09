@@ -12,11 +12,12 @@ import { load, type Store } from "@tauri-apps/plugin-store";
 export interface Prefs {
   /** Active theme token preset id (see `theme/`). */
   themeId: string;
-  /** Local port the hook server binds on `127.0.0.1` (wired in Phase 2). */
-  hookServerPort: number;
   /** Last-selected project id, restored on launch so you land where you left. */
   activeProjectId: string;
 }
+// Note: the hook-server port is owned by the Rust backend (it must bind before it
+// can advertise the port), persisted in the SQLite `meta` table, and read by the
+// frontend via `getHookServerStatus()` (see `ipc/hooks.ts`) — not a pref here.
 
 const STORE_FILE = "prefs.json";
 

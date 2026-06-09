@@ -6,6 +6,7 @@
 mod db;
 mod fs;
 mod git;
+mod hooks;
 mod layout;
 mod pty;
 mod registry;
@@ -26,6 +27,14 @@ pub fn run() {
             std::fs::create_dir_all(&dir)?;
             let db = db::Db::open(&dir.join("workbench.db"))?;
             app.manage(db);
+
+            // Start the Phase-2 hook bridge: a local endpoint that receives Claude
+            // Code's hooks and filters them by session id (design §4.4, decision
+            // 10). A failure here must not stop the app — it only degrades the
+            // status engine — so we log and continue.
+            if let Err(e) = hooks::init(app.handle()) {
+                eprintln!("[hooks] init failed: {e}");
+            }
             Ok(())
         })
         .manage(pty::PtyManager::default())
@@ -36,6 +45,7 @@ pub fn run() {
             pty::pty_kill,
             pty::session_instance,
             pty::default_working_dir,
+            hooks::hook_server_status,
             git::detect_repo,
             registry::create_group,
             registry::get_groups,

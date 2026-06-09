@@ -7,6 +7,7 @@ import { useRegistry } from "./state/registry";
 import { initActiveProject, setActiveProject, useActiveProject } from "./state/activeProject";
 import { useGlobalKeys } from "./keyboard";
 import { registerCommand } from "./keyboard/bus";
+import { getHookServerStatus, onHookEvent } from "./ipc/hooks";
 
 // Step 1.5 turned the cockpit into its real shape: the Instance Manager rail on
 // the left drives the panel surface, where clicking an instance launches (or
@@ -111,6 +112,42 @@ function App() {
   );
 }
 
+/** Live hook-server readout for the status bar: the bound port and a running count
+ *  of accepted events. Confirms at a glance that the Phase-2 bridge is up and that
+ *  a focused agent's hooks are landing (the count ticks as it works). */
+function HookIndicator() {
+  const [status, setStatus] = useState<{ port: number; accepted: number } | null>(null);
+
+  useEffect(() => {
+    let mounted = true;
+    void getHookServerStatus()
+      .then((s) => {
+        if (mounted) setStatus({ port: s.port, accepted: s.accepted });
+      })
+      .catch(() => {
+        /* server failed to start; leave the indicator dim */
+      });
+
+    // Bump the count reactively rather than polling.
+    const unlisten = onHookEvent(() => {
+      setStatus((prev) => (prev ? { ...prev, accepted: prev.accepted + 1 } : prev));
+    });
+    return () => {
+      mounted = false;
+      void unlisten.then((off) => off());
+    };
+  }, []);
+
+  if (!status) {
+    return <span style={{ color: "var(--wb-textFaint)" }}>hooks ○</span>;
+  }
+  return (
+    <span title="local hook server (Phase 2 status bridge)">
+      <span style={{ color: "var(--wb-done)" }}>●</span> hooks :{status.port} · {status.accepted}
+    </span>
+  );
+}
+
 /** The rail's collapsed state: a slim strip with a vertical label + expand caret. */
 function CollapsedRail({ onExpand }: { onExpand: () => void }) {
   return (
@@ -174,7 +211,7 @@ function TitleBar({ context }: { context: string }) {
         <span style={{ color: "var(--wb-textDim2)", fontSize: 11.5 }}>{context}</span>
       </div>
       <span style={{ color: "var(--wb-textFaint)", fontSize: 11, padding: "0 14px" }}>
-        phase 1 · console
+        phase 2 · hooks
       </span>
     </div>
   );
@@ -200,6 +237,7 @@ function StatusBar({ openCount, sessionId }: { openCount: number; sessionId: str
       <span>
         {openCount} {openCount === 1 ? "console" : "consoles"}
       </span>
+      <HookIndicator />
       {sessionId && (
         <span style={{ marginLeft: "auto", color: "var(--wb-textFaint)" }}>
           session {sessionId.slice(0, 8)}

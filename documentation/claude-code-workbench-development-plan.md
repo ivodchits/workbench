@@ -668,7 +668,7 @@ Pull these in once the relevant phase is stable; each is an independent step whe
 - [x] 1.10 Keyboard-first core
 
 **Phase 2 — status engine & worktrees**
-- [ ] 2.1 Hook server + user-level install + session_id filter
+- [x] 2.1 Hook server + user-level install + session_id filter
 - [ ] 2.2 Status state machine
 - [ ] 2.3 Notifications, tray badge, attention focus
 - [ ] 2.4 Worktree provisioning

@@ -28,4 +28,9 @@ portable-pty = "0.9"
 rusqlite = { version = "0.32", features = ["bundled"] }
 uuid = { version = "1", features = ["v4"] }
 which = "7"
+# Phase 2: the local hook bridge (design §4.4). axum on 127.0.0.1 receives the
+# `http` hooks Claude Code POSTs; tokio supplies the listener axum serves on (we
+# run it on Tauri's own async runtime).
+axum = "0.8"
+tokio = { version = "1", features = ["net"] }
 

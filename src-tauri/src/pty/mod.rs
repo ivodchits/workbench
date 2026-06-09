@@ -45,6 +45,18 @@ pub struct PtyManager {
     by_session: Mutex<HashMap<String, String>>,
 }
 
+impl PtyManager {
+    /// Resolve a `session_id` to the `instance_id` that owns it, or `None` when
+    /// Workbench didn't mint it. This is the **session-id filter** the hook server
+    /// relies on (design §4.4, decision 10): user-level hooks fire for every Claude
+    /// session on the machine, so the endpoint drops any event whose session isn't
+    /// one of ours. The map holds exactly the sessions we launched with
+    /// `--session-id` and that are still live.
+    pub fn instance_for_session(&self, session_id: &str) -> Option<String> {
+        self.by_session.lock().unwrap().get(session_id).cloned()
+    }
+}
+
 /// What to run in the PTY. `Shell` is the 0.2 spike path (debugging convenience);
 /// `Claude` is the real target — an interactive `claude` TUI for one instance.
 #[derive(Debug, Clone, Copy, Deserialize)]
@@ -226,7 +238,7 @@ pub fn pty_kill(state: State<'_, PtyManager>, instance_id: String) -> Result<(),
 /// (which carry only `session_id`) to the right card, and to drop foreign ones.
 #[tauri::command]
 pub fn session_instance(state: State<'_, PtyManager>, session_id: String) -> Option<String> {
-    state.by_session.lock().unwrap().get(&session_id).cloned()
+    state.instance_for_session(&session_id)
 }
 
 /// Default working directory offered to the launcher form (the home dir).

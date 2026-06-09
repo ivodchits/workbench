@@ -13,7 +13,7 @@
 use std::path::Path;
 use std::sync::Mutex;
 
-use rusqlite::Connection;
+use rusqlite::{Connection, OptionalExtension};
 
 /// Tauri-managed handle to the registry database.
 pub struct Db {
@@ -42,6 +42,24 @@ impl Db {
         Ok(Self {
             conn: Mutex::new(conn),
         })
+    }
+
+    /// Read a value from the `meta` key/value table, or `None` if unset.
+    pub fn meta_get(&self, key: &str) -> rusqlite::Result<Option<String>> {
+        let conn = self.conn.lock().expect("db lock poisoned");
+        conn.query_row("SELECT value FROM meta WHERE key = ?1", [key], |r| r.get(0))
+            .optional()
+    }
+
+    /// Upsert a value into the `meta` key/value table.
+    pub fn meta_set(&self, key: &str, value: &str) -> rusqlite::Result<()> {
+        let conn = self.conn.lock().expect("db lock poisoned");
+        conn.execute(
+            "INSERT INTO meta (key, value) VALUES (?1, ?2)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            (key, value),
+        )?;
+        Ok(())
     }
 }
 
@@ -99,6 +117,16 @@ const MIGRATIONS: &[&str] = &[
         workspace_key  TEXT PRIMARY KEY,
         tree           TEXT NOT NULL,
         updated_at     INTEGER NOT NULL
+    );
+    "#,
+    // v2 -> v3: a small key/value store for backend-owned settings that aren't
+    // part of the relational registry and that the frontend doesn't author. The
+    // first use (step 2.1) is the persisted hook-server port, so the URL written
+    // into `~/.claude/settings.json` stays stable across launches (design §4.4).
+    r#"
+    CREATE TABLE meta (
+        key    TEXT PRIMARY KEY,
+        value  TEXT NOT NULL
     );
     "#,
 ];
