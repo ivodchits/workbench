@@ -90,6 +90,14 @@ export function acquire(container: HTMLDivElement, opts: AcquireOptions): void {
       term.scrollToTop();
       if (!saved || saved.atBottom) term.scrollToBottom();
       else term.scrollToLine(saved.line);
+      // Re-parenting the host moves xterm's <canvas> elements across DOM
+      // containers, which desyncs the WebGL renderer's GPU glyph atlas: already-
+      // painted cells keep showing stale/garbled glyphs until something marks them
+      // dirty (which is why dragging a selection over them snaps them straight).
+      // Rebuild the atlas and force a full repaint so the re-attached canvas paints
+      // fresh. Harmless no-op for the DOM renderer (same as the font-load rebuild).
+      term.clearTextureAtlas();
+      term.refresh(0, term.rows - 1);
     });
     return;
   }
