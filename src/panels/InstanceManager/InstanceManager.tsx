@@ -23,7 +23,7 @@ import {
   openConsole,
   useConsoles,
 } from "../../state/consoles";
-import { closeShell, getOpenShells, openShell } from "../../state/shells";
+import { closeShell, getOpenShells, newShell, openShell } from "../../state/shells";
 import { closeEditor, getOpenEditors, openEditor } from "../../state/editors";
 import {
   getLiveStatuses,
@@ -134,7 +134,7 @@ function InstanceManager({ onCollapse }: InstanceManagerProps) {
       }),
       registerCommand("newShell", () => {
         const proj = getRegistry().projects.find((p) => p.id === getActiveProject());
-        if (proj) openShellForProject(proj);
+        if (proj) newShellForProject(proj);
       }),
       registerCommand("killInstance", () => {
         const inst = getRegistry().instances.find((i) => i.id === getActiveConsoleId());
@@ -254,6 +254,16 @@ function InstanceManager({ onCollapse }: InstanceManagerProps) {
   const openShellForProject = (project: Project) => {
     setActiveProject(project.id);
     openShell({ projectId: project.id, cwd: project.rootPath, label: project.name });
+  };
+
+  // Spawn an *additional* shell for the project (Ctrl+Shift+T), even if one is
+  // already open — handy when a long-running command ties one up. Later shells get
+  // a numbered label so their tabs stay distinguishable from the first.
+  const newShellForProject = (project: Project) => {
+    setActiveProject(project.id);
+    const n = getOpenShells().filter((s) => s.projectId === project.id).length;
+    const label = n === 0 ? project.name : `${project.name} ${n + 1}`;
+    newShell({ projectId: project.id, cwd: project.rootPath, label });
   };
 
   // Open (or focus) the Editor for the project, its file tree scoped to the

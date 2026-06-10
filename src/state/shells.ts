@@ -6,7 +6,10 @@
 //
 //   • A console is bound 1:1 to a registry *instance* and runs `claude`; a shell
 //     is bound to a *project* (its root working dir). So shells carry their own
-//     minted id, not an instance id, and there's one shell per project (reused).
+//     minted id, not an instance id. A project can have *several* shells open at
+//     once (e.g. one tied up running a debug build while another is free for git):
+//     `newShell` always mints a fresh one, while `openShell` focus-or-creates for
+//     the rail's "jump to a shell" affordance.
 //   • A shell holds no precious session (unlike a `claude` console), so it's keyed
 //     by `shellId` and freely respawned.
 //
@@ -87,9 +90,11 @@ export function getActiveShellId(): string | null {
 }
 
 /**
- * Open the shell for `target`'s project. If one is already open for that project,
+ * Open *a* shell for `target`'s project. If one is already open for that project,
  * focus it (relaunching it first if it was a dormant placeholder) rather than
- * piling up duplicates; otherwise mint a fresh one in `spawning`.
+ * piling up duplicates; otherwise mint a fresh one in `spawning`. This is the
+ * "jump to a shell" path (the rail's prompt button) — use `newShell` to always
+ * spawn an additional one.
  */
 export function openShell(target: ShellTarget): void {
   const existing = state.open.find((s) => s.projectId === target.projectId);
@@ -100,6 +105,16 @@ export function openShell(target: ShellTarget): void {
     emit({ ...state, activeId: existing.shellId });
     return;
   }
+  newShell(target);
+}
+
+/**
+ * Mint a fresh shell for `target`'s project and focus it — even when one is
+ * already open. This is the "give me another shell" path (the New-Shell command):
+ * a project can hold several, e.g. one busy running a debug build while another
+ * stays free for git. The caller is responsible for a distinguishing `label`.
+ */
+export function newShell(target: ShellTarget): void {
   const shellId = `shell:${crypto.randomUUID()}`;
   const session: ShellSession = { shellId, ...target, status: "spawning", error: null };
   emit({ open: [...state.open, session], activeId: shellId });
