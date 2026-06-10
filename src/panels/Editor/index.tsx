@@ -304,7 +304,11 @@ function EditorBody({
               </div>
               {splitPreview && kind && (
                 <div style={{ flex: 1, minWidth: 0, minHeight: 0 }}>
-                  <PreviewPane kind={kind} source={activeFile.content} />
+                  <PreviewPane
+                    kind={kind}
+                    source={activeFile.content}
+                    scrollKey={`editor:${editorId}:${activeFile.path}`}
+                  />
                 </div>
               )}
             </div>

@@ -11,10 +11,17 @@ interface PreviewPaneProps {
   kind: PreviewKind;
   /** The buffer to render (typically a live editor buffer). */
   source: string;
+  /** Stable id for remembering the markdown preview's scroll offset across tab
+   *  switches (see `MarkdownPreview`). Ignored by the HTML renderer. */
+  scrollKey?: string;
 }
 
-function PreviewPane({ kind, source }: PreviewPaneProps) {
-  return kind === "html" ? <HtmlPreview source={source} /> : <MarkdownPreview source={source} />;
+function PreviewPane({ kind, source, scrollKey }: PreviewPaneProps) {
+  return kind === "html" ? (
+    <HtmlPreview source={source} />
+  ) : (
+    <MarkdownPreview source={source} scrollKey={scrollKey} />
+  );
 }
 
 export default PreviewPane;

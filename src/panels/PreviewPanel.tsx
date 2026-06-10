@@ -106,7 +106,7 @@ export function PreviewPanel(props: IDockviewPanelProps<PreviewPanelParams>) {
         </div>
       )}
       <div style={{ flex: 1, minHeight: 0 }}>
-        <PreviewPane kind={kind} source={source} />
+        <PreviewPane kind={kind} source={source} scrollKey={`preview:${ownerEditorId}:${path}`} />
       </div>
     </div>
   );
