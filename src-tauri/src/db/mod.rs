@@ -129,6 +129,15 @@ const MIGRATIONS: &[&str] = &[
         value  TEXT NOT NULL
     );
     "#,
+    // v3 -> v4: per-project worktree post-create setup (step 2.5, design §6).
+    // `worktree_setup_command` is an optional shell line run in a freshly
+    // provisioned worktree (deps install etc.); `worktree_copy_env` re-seeds the
+    // repo root's `.env*` files (which worktrees don't share). Both default to
+    // off/empty so existing projects keep the no-setup behavior.
+    r#"
+    ALTER TABLE projects ADD COLUMN worktree_setup_command TEXT;
+    ALTER TABLE projects ADD COLUMN worktree_copy_env INTEGER NOT NULL DEFAULT 0;
+    "#,
 ];
 
 /// Apply any migrations the database hasn't seen yet, advancing

@@ -672,7 +672,7 @@ Pull these in once the relevant phase is stable; each is an independent step whe
 - [x] 2.2 Status state machine
 - [x] 2.3 Notifications, tray badge, attention focus
 - [x] 2.4 Worktree provisioning
-- [ ] 2.5 Worktree post-create & teardown
+- [x] 2.5 Worktree post-create & teardown
 - [ ] 2.6 Shared-working-dir warning
 - [ ] 2.7 Diff / Review panel
 

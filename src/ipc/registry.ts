@@ -21,6 +21,10 @@ export interface Project {
   name: string;
   rootPath: string;
   defaultBranch: string | null;
+  /** Shell command run in a freshly provisioned worktree (step 2.5); null = none. */
+  worktreeSetupCommand: string | null;
+  /** Re-seed the repo root's `.env*` files into new worktrees (step 2.5). */
+  worktreeCopyEnv: boolean;
   sortOrder: number;
   createdAt: number;
 }
@@ -60,6 +64,8 @@ export interface NewProject {
   rootPath: string;
   defaultBranch?: string | null;
   groupId?: string | null;
+  worktreeSetupCommand?: string | null;
+  worktreeCopyEnv?: boolean;
 }
 
 export interface ProjectPatch {
@@ -67,6 +73,8 @@ export interface ProjectPatch {
   rootPath?: string;
   defaultBranch?: string | null;
   groupId?: string | null;
+  worktreeSetupCommand?: string | null;
+  worktreeCopyEnv?: boolean;
   sortOrder?: number;
 }
 

@@ -78,6 +78,10 @@ pub struct Project {
     pub name: String,
     pub root_path: String,
     pub default_branch: Option<String>,
+    /// Optional shell command run in a freshly provisioned worktree (step 2.5).
+    pub worktree_setup_command: Option<String>,
+    /// Re-seed the repo root's `.env*` files into new worktrees (step 2.5).
+    pub worktree_copy_env: bool,
     pub sort_order: i64,
     pub created_at: i64,
 }
@@ -123,6 +127,9 @@ pub struct NewProject {
     pub root_path: String,
     pub default_branch: Option<String>,
     pub group_id: Option<String>,
+    pub worktree_setup_command: Option<String>,
+    #[serde(default)]
+    pub worktree_copy_env: bool,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -132,6 +139,8 @@ pub struct ProjectPatch {
     pub root_path: Option<String>,
     pub default_branch: Option<Option<String>>,
     pub group_id: Option<Option<String>>,
+    pub worktree_setup_command: Option<Option<String>>,
+    pub worktree_copy_env: Option<bool>,
     pub sort_order: Option<i64>,
 }
 
@@ -256,36 +265,49 @@ fn row_to_project(r: &Row) -> rusqlite::Result<Project> {
         name: r.get(2)?,
         root_path: r.get(3)?,
         default_branch: r.get(4)?,
-        sort_order: r.get(5)?,
-        created_at: r.get(6)?,
+        worktree_setup_command: r.get(5)?,
+        worktree_copy_env: r.get(6)?,
+        sort_order: r.get(7)?,
+        created_at: r.get(8)?,
     })
 }
 
-const PROJECT_COLS: &str =
-    "id, group_id, name, root_path, default_branch, sort_order, created_at";
+const PROJECT_COLS: &str = "id, group_id, name, root_path, default_branch, \
+    worktree_setup_command, worktree_copy_env, sort_order, created_at";
 
 pub fn insert_project(conn: &Connection, input: NewProject) -> rusqlite::Result<Project> {
+    // Normalize an empty/whitespace setup command to NULL so "configured" is a
+    // simple `IS NOT NULL` check downstream.
+    let setup_cmd = input
+        .worktree_setup_command
+        .map(|s| s.trim().to_owned())
+        .filter(|s| !s.is_empty());
     let project = Project {
         id: new_id(),
         group_id: input.group_id,
         name: input.name,
         root_path: input.root_path,
         default_branch: input.default_branch,
+        worktree_setup_command: setup_cmd,
+        worktree_copy_env: input.worktree_copy_env,
         sort_order: 0,
         created_at: now(),
     };
     conn.execute(
-        "INSERT INTO projects (id, group_id, name, root_path, default_branch, sort_order, created_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-        (
-            &project.id,
-            &project.group_id,
-            &project.name,
-            &project.root_path,
-            &project.default_branch,
+        "INSERT INTO projects (id, group_id, name, root_path, default_branch,
+            worktree_setup_command, worktree_copy_env, sort_order, created_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+        rusqlite::params![
+            project.id,
+            project.group_id,
+            project.name,
+            project.root_path,
+            project.default_branch,
+            project.worktree_setup_command,
+            project.worktree_copy_env,
             project.sort_order,
             project.created_at,
-        ),
+        ],
     )?;
     Ok(project)
 }
@@ -320,21 +342,31 @@ pub fn update_project(
     if let Some(group_id) = patch.group_id {
         p.group_id = group_id;
     }
+    if let Some(setup) = patch.worktree_setup_command {
+        // Normalize blank → NULL so "configured" stays an `IS NOT NULL` check.
+        p.worktree_setup_command = setup.map(|s| s.trim().to_owned()).filter(|s| !s.is_empty());
+    }
+    if let Some(copy_env) = patch.worktree_copy_env {
+        p.worktree_copy_env = copy_env;
+    }
     if let Some(sort_order) = patch.sort_order {
         p.sort_order = sort_order;
     }
     conn.execute(
         "UPDATE projects
-         SET group_id = ?2, name = ?3, root_path = ?4, default_branch = ?5, sort_order = ?6
+         SET group_id = ?2, name = ?3, root_path = ?4, default_branch = ?5,
+             worktree_setup_command = ?6, worktree_copy_env = ?7, sort_order = ?8
          WHERE id = ?1",
-        (
-            &p.id,
-            &p.group_id,
-            &p.name,
-            &p.root_path,
-            &p.default_branch,
+        rusqlite::params![
+            p.id,
+            p.group_id,
+            p.name,
+            p.root_path,
+            p.default_branch,
+            p.worktree_setup_command,
+            p.worktree_copy_env,
             p.sort_order,
-        ),
+        ],
     )?;
     Ok(p)
 }
@@ -665,6 +697,8 @@ mod tests {
                 name: "copicnic-web".into(),
                 root_path: "/work/copicnic-web".into(),
                 default_branch: Some("main".into()),
+                worktree_setup_command: None,
+                worktree_copy_env: false,
                 group_id: Some(group.id.clone()),
             },
         )
@@ -707,6 +741,8 @@ mod tests {
                 name: "p".into(),
                 root_path: "/p".into(),
                 default_branch: None,
+                worktree_setup_command: None,
+                worktree_copy_env: false,
                 group_id: None,
             },
         )
@@ -750,6 +786,8 @@ mod tests {
                 name: "p".into(),
                 root_path: "/p".into(),
                 default_branch: None,
+                worktree_setup_command: None,
+                worktree_copy_env: false,
                 group_id: None,
             },
         )
@@ -788,6 +826,8 @@ mod tests {
                 name: "p".into(),
                 root_path: "/p".into(),
                 default_branch: None,
+                worktree_setup_command: None,
+                worktree_copy_env: false,
                 group_id: Some(group.id.clone()),
             },
         )

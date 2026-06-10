@@ -42,7 +42,13 @@ import {
   loadRegistry,
   useRegistry,
 } from "../../state/registry";
-import { provisionWorktree, revertToRoot, slugify } from "../../state/worktree";
+import {
+  provisionWorktree,
+  revertToRoot,
+  slugify,
+  teardownWorktree,
+} from "../../state/worktree";
+import { worktreeTeardownInfo, type SetupResult, type TeardownInfo } from "../../ipc/git";
 import { isTextInput, matchCommand } from "../../keyboard";
 import { registerCommand } from "../../keyboard/bus";
 import { notifyNeedsYou, updateTrayBadge } from "../../ipc/attention";
@@ -531,13 +537,20 @@ function InstanceManager({ onCollapse }: InstanceManagerProps) {
         <InstanceDialog project={newInstanceProject} onClose={() => setNewInstanceProject(null)} />
       )}
       {killTarget && <KillConfirm instance={killTarget} onClose={() => setKillTarget(null)} />}
-      {worktreeTarget && (
-        <WorktreeConfirm
-          instance={worktreeTarget}
-          project={projects.find((p) => p.id === worktreeTarget.projectId) ?? null}
-          onClose={() => setWorktreeTarget(null)}
-        />
-      )}
+      {worktreeTarget &&
+        (worktreeTarget.worktreeOn ? (
+          <WorktreeTeardown
+            instance={worktreeTarget}
+            project={projects.find((p) => p.id === worktreeTarget.projectId) ?? null}
+            onClose={() => setWorktreeTarget(null)}
+          />
+        ) : (
+          <WorktreeProvision
+            instance={worktreeTarget}
+            project={projects.find((p) => p.id === worktreeTarget.projectId) ?? null}
+            onClose={() => setWorktreeTarget(null)}
+          />
+        ))}
     </>
   );
 }
@@ -874,10 +887,11 @@ function KillConfirm({ instance, onClose }: { instance: Instance; onClose: () =>
   );
 }
 
-/** Confirm provisioning a worktree (toggle ON) or returning to the project root
- *  (toggle OFF). Provisioning restarts the claude session in the new dir, so this
- *  is a deliberate confirm rather than the old instant flag-flip (step 2.4). */
-function WorktreeConfirm({
+/** Confirm provisioning a worktree (toggle ON). Provisioning restarts the claude
+ *  session in the new dir, so this is a deliberate confirm rather than an instant
+ *  flag-flip (step 2.4). After provisioning, any post-create setup (step 2.5 — copy
+ *  `.env*`, run the project's setup command) reports its result here before closing. */
+function WorktreeProvision({
   instance,
   project,
   onClose,
@@ -888,12 +902,14 @@ function WorktreeConfirm({
 }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const turningOn = !instance.worktreeOn;
+  const [setup, setSetup] = useState<SetupResult | null>(null);
   // Whether a live console would be restarted by this change (we relaunch claude
   // in the new working dir).
   const consoleLive = getOpenConsoles().some(
     (c) => c.instanceId === instance.id && c.status !== "dormant",
   );
+  const willRunSetup =
+    !!project && (project.worktreeCopyEnv || (project.worktreeSetupCommand ?? "").trim().length > 0);
 
   const confirm = async () => {
     if (!project) {
@@ -903,36 +919,103 @@ function WorktreeConfirm({
     setBusy(true);
     setError(null);
     try {
-      if (turningOn) await provisionWorktree(instance, project);
-      else await revertToRoot(instance, project);
-      onClose();
+      const result = await provisionWorktree(instance, project);
+      // If there was meaningful setup to show (a command ran), keep the dialog open
+      // on its result screen; otherwise we're done.
+      if (result.skipped || (!result.command && result.copiedEnv.length === 0)) {
+        onClose();
+      } else {
+        setSetup(result);
+        setBusy(false);
+      }
     } catch (e) {
       setError(String(e instanceof Error ? e.message : e));
       setBusy(false);
     }
   };
 
+  // Result screen: the worktree exists; show what the setup step did.
+  if (setup) {
+    return (
+      <Modal title="worktree setup" onClose={onClose} width={520}>
+        <div style={{ fontSize: 12.5, color: "var(--wb-text)", lineHeight: 1.5 }}>
+          Worktree provisioned on{" "}
+          <span style={{ color: "var(--wb-accent)", fontFamily: "var(--wb-mono)" }}>
+            {instance.branch}
+          </span>
+          .
+          {setup.copiedEnv.length > 0 && (
+            <div style={{ marginTop: 6, color: "var(--wb-done)" }}>
+              {GLYPH.ok} copied {setup.copiedEnv.join(", ")}
+            </div>
+          )}
+          {setup.command && (
+            <div style={{ marginTop: 8 }}>
+              <div
+                style={{
+                  color: setup.failed ? "var(--wb-needs)" : "var(--wb-done)",
+                  fontFamily: "var(--wb-mono)",
+                  fontSize: 11.5,
+                }}
+              >
+                {setup.failed ? GLYPH.fail : GLYPH.ok} {setup.command}
+                {setup.exitCode !== null && ` (exit ${setup.exitCode})`}
+              </div>
+              {setup.output.trim() && (
+                <pre
+                  style={{
+                    marginTop: 6,
+                    maxHeight: 220,
+                    overflow: "auto",
+                    padding: "8px 10px",
+                    background: "var(--wb-bg)",
+                    border: "1px solid var(--wb-border)",
+                    font: "10.5px/1.45 var(--wb-mono)",
+                    color: "var(--wb-textDim2)",
+                    whiteSpace: "pre-wrap",
+                    wordBreak: "break-word",
+                  }}
+                >
+                  {setup.output}
+                </pre>
+              )}
+            </div>
+          )}
+        </div>
+        <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 16 }}>
+          <button
+            onClick={onClose}
+            style={{ ...confirmButtonStyle, borderColor: "var(--wb-borderActive)" }}
+          >
+            {GLYPH.ok} done
+          </button>
+        </div>
+      </Modal>
+    );
+  }
+
   return (
-    <Modal title={turningOn ? "isolate in a worktree" : "return to project root"} onClose={onClose} width={420}>
+    <Modal title="isolate in a worktree" onClose={onClose} width={420}>
       <div style={{ fontSize: 12.5, color: "var(--wb-text)", lineHeight: 1.5 }}>
-        {turningOn ? (
-          <>
-            Provision an isolated worktree for{" "}
-            <strong style={{ color: "var(--wb-accent)" }}>{instance.title}</strong> on a new branch{" "}
-            <span style={{ color: "var(--wb-accent)", fontFamily: "var(--wb-mono)" }}>
-              agent/{slugify(instance.title)}
-            </span>
-            ?
-          </>
-        ) : (
-          <>
-            Point <strong style={{ color: "var(--wb-accent)" }}>{instance.title}</strong> back at the
-            project root? The worktree folder and its{" "}
-            <span style={{ color: "var(--wb-accent)", fontFamily: "var(--wb-mono)" }}>
-              {instance.branch ?? "agent/…"}
-            </span>{" "}
-            branch are left on disk — merge &amp; cleanup arrive in the next step.
-          </>
+        Provision an isolated worktree for{" "}
+        <strong style={{ color: "var(--wb-accent)" }}>{instance.title}</strong> on a new branch{" "}
+        <span style={{ color: "var(--wb-accent)", fontFamily: "var(--wb-mono)" }}>
+          agent/{slugify(instance.title)}
+        </span>
+        ?
+        {willRunSetup && (
+          <div style={{ marginTop: 8, color: "var(--wb-textDim2)" }}>
+            {project?.worktreeCopyEnv && <>Copies <code>.env*</code>. </>}
+            {(project?.worktreeSetupCommand ?? "").trim() && (
+              <>
+                Runs{" "}
+                <span style={{ color: "var(--wb-accent)", fontFamily: "var(--wb-mono)" }}>
+                  {project?.worktreeSetupCommand}
+                </span>
+                .
+              </>
+            )}
+          </div>
         )}
         {consoleLive && (
           <div style={{ marginTop: 8, color: "var(--wb-working)" }}>
@@ -955,10 +1038,273 @@ function WorktreeConfirm({
           disabled={busy}
           style={{ ...confirmButtonStyle, borderColor: "var(--wb-borderActive)" }}
         >
-          {busy ? "working…" : turningOn ? `${GLYPH.worktree} isolate` : "return to root"}
+          {busy ? "working…" : `${GLYPH.worktree} isolate`}
         </button>
       </div>
     </Modal>
+  );
+}
+
+type TeardownAction = "merge" | "rebase" | "discard" | "detach";
+
+/** The worktree "done" flow (step 2.5, design §6/§7): show what the agent changed,
+ *  then integrate (merge/rebase) the branch + remove the worktree, discard it, or
+ *  just detach (leave it on disk). Integration conflicts surface git's message for
+ *  the user to resolve in the Project Shell. */
+function WorktreeTeardown({
+  instance,
+  project,
+  onClose,
+}: {
+  instance: Instance;
+  project: Project | null;
+  onClose: () => void;
+}) {
+  const [info, setInfo] = useState<TeardownInfo | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [action, setAction] = useState<TeardownAction>("merge");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const target = info?.targetBranch ?? null;
+  const canIntegrate = !!target;
+
+  // Load the diff summary + integration target on open.
+  useEffect(() => {
+    if (!project) {
+      setLoadError("project not found");
+      return;
+    }
+    let alive = true;
+    void worktreeTeardownInfo(project.rootPath, instance.workingDir)
+      .then((i) => {
+        if (!alive) return;
+        setInfo(i);
+        // Fall back to a non-integrating default if HEAD is detached.
+        if (!i.targetBranch) setAction("detach");
+      })
+      .catch((e) => alive && setLoadError(String(e instanceof Error ? e.message : e)));
+    return () => {
+      alive = false;
+    };
+  }, [project, instance.workingDir]);
+
+  const confirm = async () => {
+    if (!project) return;
+    setBusy(true);
+    setError(null);
+    try {
+      if (action === "detach") {
+        await revertToRoot(instance, project);
+      } else if (action === "discard") {
+        await teardownWorktree(instance, project, { integrate: null, force: true });
+      } else {
+        await teardownWorktree(instance, project, {
+          integrate: action, // "merge" | "rebase"
+          targetBranch: target,
+          force: false,
+        });
+      }
+      onClose();
+    } catch (e) {
+      setError(String(e instanceof Error ? e.message : e));
+      setBusy(false);
+    }
+  };
+
+  const diff = info?.diff;
+  return (
+    <Modal title="worktree — done" onClose={onClose} width={480}>
+      <div style={{ fontSize: 12.5, color: "var(--wb-text)", lineHeight: 1.5 }}>
+        <div>
+          <strong style={{ color: "var(--wb-accent)" }}>{instance.title}</strong> on{" "}
+          <span style={{ color: "var(--wb-accent)", fontFamily: "var(--wb-mono)" }}>
+            {instance.branch}
+          </span>
+        </div>
+
+        {/* Diff summary — stands in for the Diff/Review panel (step 2.7). */}
+        {loadError ? (
+          <div style={{ marginTop: 8, color: "var(--wb-needs)", fontSize: 11.5 }}>
+            {GLYPH.warn} {loadError}
+          </div>
+        ) : !info ? (
+          <div style={{ marginTop: 8, color: "var(--wb-textDim2)", fontSize: 11.5 }}>
+            reading changes…
+          </div>
+        ) : (
+          <div style={{ marginTop: 8 }}>
+            <div style={{ font: "11px var(--wb-mono)", color: "var(--wb-textDim2)" }}>
+              {diff && (diff.filesChanged > 0 || diff.stat) ? (
+                <>
+                  {diff.filesChanged} file{diff.filesChanged === 1 ? "" : "s"} changed
+                  {diff.insertions > 0 && (
+                    <span style={{ color: "var(--wb-done)" }}> +{diff.insertions}</span>
+                  )}
+                  {diff.deletions > 0 && (
+                    <span style={{ color: "var(--wb-needs)" }}> −{diff.deletions}</span>
+                  )}
+                  <span style={{ color: "var(--wb-textFaint)" }}> vs {diff.base}</span>
+                </>
+              ) : (
+                <span>no changes vs {diff?.base ?? "base"}</span>
+              )}
+            </div>
+            {diff?.stat.trim() && (
+              <pre
+                style={{
+                  marginTop: 6,
+                  maxHeight: 160,
+                  overflow: "auto",
+                  padding: "8px 10px",
+                  background: "var(--wb-bg)",
+                  border: "1px solid var(--wb-border)",
+                  font: "10.5px/1.45 var(--wb-mono)",
+                  color: "var(--wb-textDim2)",
+                  whiteSpace: "pre",
+                }}
+              >
+                {diff.stat}
+              </pre>
+            )}
+          </div>
+        )}
+
+        {/* Action picker. */}
+        <div style={{ marginTop: 12, display: "flex", flexDirection: "column", gap: 6 }}>
+          <TeardownChoice
+            checked={action === "merge"}
+            onSelect={() => setAction("merge")}
+            disabled={!canIntegrate}
+            label={
+              <>
+                Merge into{" "}
+                <span style={{ color: "var(--wb-accent)", fontFamily: "var(--wb-mono)" }}>
+                  {target ?? "…"}
+                </span>{" "}
+                &amp; remove
+              </>
+            }
+            hint="merge commit on the target, then delete the worktree + branch"
+          />
+          <TeardownChoice
+            checked={action === "rebase"}
+            onSelect={() => setAction("rebase")}
+            disabled={!canIntegrate}
+            label={
+              <>
+                Rebase onto{" "}
+                <span style={{ color: "var(--wb-accent)", fontFamily: "var(--wb-mono)" }}>
+                  {target ?? "…"}
+                </span>{" "}
+                &amp; remove
+              </>
+            }
+            hint="replay commits for a linear history (fast-forward), then remove"
+          />
+          <TeardownChoice
+            checked={action === "discard"}
+            onSelect={() => setAction("discard")}
+            label="Discard"
+            hint="remove the worktree + branch without integrating — throws the work away"
+            danger
+          />
+          <TeardownChoice
+            checked={action === "detach"}
+            onSelect={() => setAction("detach")}
+            label="Detach, keep on disk"
+            hint="point the instance back at the project root; leave the worktree untouched"
+          />
+        </div>
+
+        {error && (
+          <div
+            style={{
+              marginTop: 10,
+              color: "var(--wb-needs)",
+              fontFamily: "var(--wb-mono)",
+              fontSize: 11,
+              whiteSpace: "pre-wrap",
+            }}
+          >
+            {GLYPH.fail} {error}
+            {(action === "merge" || action === "rebase") && (
+              <div style={{ marginTop: 4, color: "var(--wb-textDim2)" }}>
+                Resolve in the Project Shell, or choose another action.
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+
+      <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 16 }}>
+        <button onClick={onClose} style={confirmButtonStyle}>
+          cancel
+        </button>
+        <button
+          onClick={() => void confirm()}
+          disabled={busy || (!info && !loadError)}
+          style={{
+            ...confirmButtonStyle,
+            borderColor: action === "discard" ? "var(--wb-needs)" : "var(--wb-borderActive)",
+            color: action === "discard" ? "var(--wb-needs)" : "var(--wb-text)",
+          }}
+        >
+          {busy ? "working…" : "confirm"}
+        </button>
+      </div>
+    </Modal>
+  );
+}
+
+function TeardownChoice({
+  checked,
+  onSelect,
+  label,
+  hint,
+  disabled,
+  danger,
+}: {
+  checked: boolean;
+  onSelect: () => void;
+  label: React.ReactNode;
+  hint: string;
+  disabled?: boolean;
+  danger?: boolean;
+}) {
+  return (
+    <label
+      style={{
+        display: "flex",
+        gap: 8,
+        alignItems: "flex-start",
+        padding: "6px 8px",
+        border: `1px solid ${checked ? "var(--wb-borderActive)" : "var(--wb-border)"}`,
+        background: checked ? "var(--wb-sel)" : "transparent",
+        cursor: disabled ? "not-allowed" : "pointer",
+        opacity: disabled ? 0.45 : 1,
+      }}
+    >
+      <input
+        type="radio"
+        checked={checked}
+        disabled={disabled}
+        onChange={onSelect}
+        style={{ marginTop: 2 }}
+      />
+      <span style={{ display: "flex", flexDirection: "column", gap: 2, minWidth: 0 }}>
+        <span
+          style={{
+            fontSize: 12,
+            fontWeight: 600,
+            color: danger ? "var(--wb-needs)" : "var(--wb-text)",
+          }}
+        >
+          {label}
+        </span>
+        <span style={{ font: "10px var(--wb-mono)", color: "var(--wb-textFaint)" }}>{hint}</span>
+      </span>
+    </label>
   );
 }
 

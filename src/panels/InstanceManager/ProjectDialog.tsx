@@ -31,6 +31,8 @@ function ProjectDialog({ project, groups, onClose }: ProjectDialogProps) {
   const [branch, setBranch] = useState(project?.defaultBranch ?? "");
   const [groupChoice, setGroupChoice] = useState<string>(project?.groupId ?? NO_GROUP);
   const [newGroupName, setNewGroupName] = useState("");
+  const [setupCommand, setSetupCommand] = useState(project?.worktreeSetupCommand ?? "");
+  const [copyEnv, setCopyEnv] = useState(project?.worktreeCopyEnv ?? false);
   const [gitRepo, setGitRepo] = useState<boolean | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -94,12 +96,15 @@ function ProjectDialog({ project, groups, onClose }: ProjectDialogProps) {
       }
 
       const branchValue = branch.trim() || null;
+      const setupValue = setupCommand.trim() || null;
       if (editing && project) {
         await updateProject(project.id, {
           name: name.trim(),
           rootPath: path.trim(),
           defaultBranch: branchValue,
           groupId,
+          worktreeSetupCommand: setupValue,
+          worktreeCopyEnv: copyEnv,
         });
       } else {
         await addProject({
@@ -107,6 +112,8 @@ function ProjectDialog({ project, groups, onClose }: ProjectDialogProps) {
           rootPath: path.trim(),
           defaultBranch: branchValue,
           groupId,
+          worktreeSetupCommand: setupValue,
+          worktreeCopyEnv: copyEnv,
         });
       }
       onClose();
@@ -114,7 +121,19 @@ function ProjectDialog({ project, groups, onClose }: ProjectDialogProps) {
       setError(String(e instanceof Error ? e.message : e));
       setBusy(false);
     }
-  }, [canSave, groupChoice, newGroupName, branch, editing, project, name, path, onClose]);
+  }, [
+    canSave,
+    groupChoice,
+    newGroupName,
+    branch,
+    editing,
+    project,
+    name,
+    path,
+    setupCommand,
+    copyEnv,
+    onClose,
+  ]);
 
   return (
     <Modal title={editing ? "edit project" : "add project"} onClose={onClose}>
@@ -180,6 +199,38 @@ function ProjectDialog({ project, groups, onClose }: ProjectDialogProps) {
               style={{ ...inputStyle, marginTop: 7 }}
             />
           )}
+        </Field>
+
+        {/* Worktree post-create setup (step 2.5). Runs only when an instance flips
+            its worktree toggle on — worktrees don't share .env / node_modules. */}
+        <Field label="worktree setup">
+          <label
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 7,
+              font: "11.5px var(--wb-mono)",
+              color: "var(--wb-textDim2)",
+              cursor: "pointer",
+            }}
+          >
+            <input
+              type="checkbox"
+              checked={copyEnv}
+              onChange={(e) => setCopyEnv(e.target.checked)}
+            />
+            copy <code style={{ color: "var(--wb-accent)" }}>.env*</code> from the repo root
+          </label>
+          <input
+            value={setupCommand}
+            onChange={(e) => setSetupCommand(e.target.value)}
+            placeholder="setup command, e.g. npm install (optional)"
+            spellCheck={false}
+            style={{ ...inputStyle, marginTop: 7 }}
+          />
+          <span style={{ font: "10px var(--wb-mono)", color: "var(--wb-textFaint)", marginTop: 4 }}>
+            Run in each new worktree before its console starts.
+          </span>
         </Field>
 
         {error && <div style={{ color: "var(--wb-needs)", fontSize: 11.5 }}>{error}</div>}

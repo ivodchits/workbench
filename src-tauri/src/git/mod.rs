@@ -245,6 +245,327 @@ fn ensure_excluded(root: &Path, base: &Path) {
     let _ = std::fs::write(&exclude, next);
 }
 
+// ---------------------------------------------------------------------------
+// Worktree post-create setup (step 2.5) — design §6 "gotcha".
+// ---------------------------------------------------------------------------
+
+/// Outcome of the optional post-create setup run for a fresh worktree. The
+/// worktree exists regardless of this result — a failing setup command is
+/// surfaced but never unwinds the provisioning (design §6: the setup step is a
+/// convenience, not a gate).
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SetupResult {
+    /// True when nothing was configured (no `.env` copy, no command) so no work ran.
+    pub skipped: bool,
+    /// Top-level `.env*` filenames copied from the repo root into the worktree.
+    pub copied_env: Vec<String>,
+    /// The setup command that ran (echoed back for display), if any.
+    pub command: Option<String>,
+    /// Combined stdout+stderr of the setup command, tail-capped for display.
+    pub output: String,
+    /// The command's exit code, or `None` if it couldn't be launched / none ran.
+    pub exit_code: Option<i32>,
+    /// True when the command exited non-zero or failed to launch.
+    pub failed: bool,
+}
+
+/// Run the optional post-create steps for a just-provisioned worktree (design
+/// §6): copy the repo root's `.env*` files (which worktrees don't share) and/or
+/// run a user-defined setup command (`npm install`, deps symlink, …) in the
+/// worktree. Both are optional; an absent command and `copy_env == false` make
+/// this a no-op (`skipped`). The worktree is left intact even if the command
+/// fails — the caller surfaces `failed`/`output` so the user can fix it by hand.
+#[tauri::command]
+pub fn run_worktree_setup(
+    repo_root: String,
+    worktree_path: String,
+    command: Option<String>,
+    copy_env: bool,
+) -> Result<SetupResult, String> {
+    let wt = Path::new(&worktree_path);
+    if !wt.is_dir() {
+        return Err(format!("worktree path is not a directory: {worktree_path}"));
+    }
+    let cmd = command.map(|s| s.trim().to_owned()).filter(|s| !s.is_empty());
+
+    let copied_env = if copy_env {
+        copy_env_files(Path::new(&repo_root), wt)
+    } else {
+        Vec::new()
+    };
+
+    if cmd.is_none() && !copy_env {
+        return Ok(SetupResult {
+            skipped: true,
+            copied_env,
+            command: None,
+            output: String::new(),
+            exit_code: None,
+            failed: false,
+        });
+    }
+
+    let (exit_code, output, failed) = match &cmd {
+        Some(c) => {
+            let (code, out) = run_setup_command(wt, c);
+            (code, tail(&out, 8_000), code != Some(0))
+        }
+        None => (None, String::new(), false),
+    };
+
+    Ok(SetupResult {
+        skipped: false,
+        copied_env,
+        command: cmd,
+        output,
+        exit_code,
+        failed,
+    })
+}
+
+/// Copy every top-level `.env` / `.env.*` file from `src` into `dst`, skipping any
+/// the worktree already has (never clobber). Returns the filenames copied. Worktrees
+/// don't share these (they're typically git-ignored), so a fresh one needs them
+/// re-seeded before `claude` or a dev server runs there. Best-effort: a read/copy
+/// error on one file is silently skipped rather than failing the whole setup.
+fn copy_env_files(src: &Path, dst: &Path) -> Vec<String> {
+    let mut copied = Vec::new();
+    let entries = match std::fs::read_dir(src) {
+        Ok(e) => e,
+        Err(_) => return copied,
+    };
+    for entry in entries.flatten() {
+        if !entry.file_type().map(|t| t.is_file()).unwrap_or(false) {
+            continue;
+        }
+        let name = entry.file_name();
+        let name = match name.to_str() {
+            Some(n) => n,
+            None => continue,
+        };
+        // `.env` exactly, or `.env.<something>` (`.env.local`, `.env.production`),
+        // but not unrelated dotfiles like `.environment`.
+        if name != ".env" && !name.starts_with(".env.") {
+            continue;
+        }
+        let target = dst.join(name);
+        if target.exists() {
+            continue; // the worktree already has one — leave it
+        }
+        if std::fs::copy(entry.path(), &target).is_ok() {
+            copied.push(name.to_owned());
+        }
+    }
+    copied
+}
+
+/// Run `command` through the platform shell in `dir`, returning its exit code (or
+/// `None` if it couldn't launch) and combined stdout+stderr. Uses `cmd /C` on
+/// Windows and `sh -c` elsewhere so a user's setup line ("npm ci && cp ../.env .")
+/// behaves the way it would in their terminal.
+fn run_setup_command(dir: &Path, command: &str) -> (Option<i32>, String) {
+    let mut cmd = if cfg!(windows) {
+        let mut c = Command::new("cmd");
+        c.args(["/C", command]);
+        c
+    } else {
+        let mut c = Command::new("sh");
+        c.args(["-c", command]);
+        c
+    };
+    cmd.current_dir(dir);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    match cmd.output() {
+        Ok(out) => {
+            let mut s = String::from_utf8_lossy(&out.stdout).into_owned();
+            let err = String::from_utf8_lossy(&out.stderr);
+            if !err.trim().is_empty() {
+                if !s.is_empty() && !s.ends_with('\n') {
+                    s.push('\n');
+                }
+                s.push_str(&err);
+            }
+            (out.status.code(), s)
+        }
+        Err(e) => (None, format!("failed to launch setup command: {e}")),
+    }
+}
+
+/// Keep only the last `max` characters of `s` (on a char boundary), prefixing an
+/// elision marker when truncated — so a chatty `npm install` log doesn't flood the
+/// UI but its tail (where errors land) is preserved.
+fn tail(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        return s.to_owned();
+    }
+    let kept: String = s.chars().rev().take(max).collect::<Vec<_>>().into_iter().rev().collect();
+    format!("…\n{kept}")
+}
+
+// ---------------------------------------------------------------------------
+// Worktree teardown (step 2.5) — design §6 / §7 "one-click merge".
+// ---------------------------------------------------------------------------
+
+/// A `git diff --stat`-style summary of what a worktree changed versus the branch
+/// it would integrate into. Stands in for the full Diff/Review panel (step 2.7,
+/// not yet landed) so the teardown dialog can show the shape of the change.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DiffStat {
+    pub files_changed: u32,
+    pub insertions: u32,
+    pub deletions: u32,
+    /// The per-file `--stat` text, for display in the dialog.
+    pub stat: String,
+    /// The ref the diff was taken against (the integration target).
+    pub base: String,
+}
+
+/// What the teardown dialog needs to render before the user picks an action: the
+/// branch the worktree would integrate into (the main repo's current branch) and a
+/// diff summary against it.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TeardownInfo {
+    /// The main repo's currently checked-out branch — the merge/rebase target.
+    /// `None` for a detached HEAD (integration is then unavailable in the UI).
+    pub target_branch: Option<String>,
+    pub diff: DiffStat,
+}
+
+/// Gather the teardown dialog's read-only context (design §7): the integration
+/// target branch and a diff summary of the worktree against it. Pure inspection —
+/// no repo state changes here.
+#[tauri::command]
+pub fn worktree_teardown_info(
+    repo_root: String,
+    worktree_path: String,
+) -> Result<TeardownInfo, String> {
+    let root = Path::new(&repo_root);
+    let wt = Path::new(&worktree_path);
+    if !wt.is_dir() {
+        return Err(format!("worktree path is not a directory: {worktree_path}"));
+    }
+    // The integration target is whatever the main repo has checked out; fall back
+    // to its detected default branch for a detached HEAD so the diff still has a base.
+    let target_branch = git_output(root, &["rev-parse", "--abbrev-ref", "HEAD"]).filter(|b| b != "HEAD");
+    let base = target_branch
+        .clone()
+        .or_else(|| detect_default_branch(root))
+        .unwrap_or_else(|| "HEAD".to_owned());
+
+    // Diff the worktree's working tree (committed + uncommitted) against the base,
+    // so "what did this agent change" captures everything, staged or not.
+    let stat = git_output(wt, &["diff", "--stat", &base]).unwrap_or_default();
+    let shortstat = git_output(wt, &["diff", "--shortstat", &base]).unwrap_or_default();
+    let (files_changed, insertions, deletions) = parse_shortstat(&shortstat);
+
+    Ok(TeardownInfo {
+        target_branch,
+        diff: DiffStat {
+            files_changed,
+            insertions,
+            deletions,
+            stat,
+            base,
+        },
+    })
+}
+
+/// Parse git's `--shortstat` line — e.g. `3 files changed, 45 insertions(+), 2
+/// deletions(-)` — into its three counts. Any field git omits (a change with no
+/// insertions, say) defaults to 0.
+fn parse_shortstat(line: &str) -> (u32, u32, u32) {
+    let mut files = 0;
+    let mut ins = 0;
+    let mut del = 0;
+    for part in line.split(',') {
+        let part = part.trim();
+        let num: u32 = part
+            .split_whitespace()
+            .next()
+            .and_then(|n| n.parse().ok())
+            .unwrap_or(0);
+        if part.contains("file") {
+            files = num;
+        } else if part.contains("insertion") {
+            ins = num;
+        } else if part.contains("deletion") {
+            del = num;
+        }
+    }
+    (files, ins, del)
+}
+
+/// Integrate a worktree's `agent/<slug>` branch into the main repo (design §7
+/// one-click merge). With `rebase == false` this merges `branch` into the main
+/// repo's current branch; with `rebase == true` it first replays the worktree's
+/// commits onto `target_branch` (in the worktree) for a linear history, then
+/// fast-forwards the main branch onto the result.
+///
+/// Conflicts (or a dirty tree) surface as an error with git's message — the user
+/// resolves them in the Project Shell. A failed rebase is aborted so the worktree
+/// is left clean for a retry. This only integrates; `remove_worktree` does cleanup.
+#[tauri::command]
+pub fn integrate_worktree(
+    repo_root: String,
+    worktree_path: String,
+    branch: String,
+    target_branch: String,
+    rebase: bool,
+) -> Result<String, String> {
+    let root = Path::new(&repo_root);
+    let wt = Path::new(&worktree_path);
+
+    if rebase {
+        // Replay the agent commits onto the target in the worktree; abort on
+        // conflict so we don't leave a half-rebased detached state behind.
+        if let Err(e) = git_run(wt, &["rebase", &target_branch]) {
+            let _ = git_run(wt, &["rebase", "--abort"]);
+            return Err(format!("rebase onto {target_branch} failed: {e}"));
+        }
+        // The branch is now ahead of the target by exactly its commits — a
+        // fast-forward keeps history linear with no merge commit.
+        git_run(root, &["merge", "--ff-only", &branch])
+    } else {
+        git_run(root, &["merge", &branch])
+    }
+}
+
+/// Remove a worktree and (optionally) its branch (design §6 cleanup). `force`
+/// removes even with uncommitted changes in the worktree — used by the "discard"
+/// path; the default merge path removes cleanly. Branch deletion is best-effort
+/// (`-D`): a lingering branch is harmless and visible later in the Git panel, so a
+/// failure there doesn't fail the whole teardown once the worktree itself is gone.
+#[tauri::command]
+pub fn remove_worktree(
+    repo_root: String,
+    worktree_path: String,
+    branch: Option<String>,
+    delete_branch: bool,
+    force: bool,
+) -> Result<(), String> {
+    let root = Path::new(&repo_root);
+    let mut args = vec!["worktree", "remove", &worktree_path];
+    if force {
+        args.push("--force");
+    }
+    git_run(root, &args)?;
+
+    if delete_branch {
+        if let Some(b) = branch.as_deref().filter(|b| !b.is_empty()) {
+            let _ = git_run(root, &["branch", "-D", b]);
+        }
+    }
+    Ok(())
+}
+
 /// Run `git -C <path> <args>`, returning trimmed stdout on success or the captured
 /// stderr on failure. Unlike `git_output` (which swallows errors into `None`), this
 /// surfaces *why* a command failed so provisioning can report it to the user.
@@ -379,6 +700,152 @@ mod tests {
         let dir = temp_dir("notrepo");
         let result = provision_worktree(dir.to_string_lossy().into_owned(), "x".into(), None);
         assert!(result.is_err());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn parse_shortstat_handles_missing_fields() {
+        assert_eq!(
+            parse_shortstat(" 3 files changed, 45 insertions(+), 2 deletions(-)"),
+            (3, 45, 2)
+        );
+        // git omits a side that's zero.
+        assert_eq!(parse_shortstat(" 1 file changed, 7 insertions(+)"), (1, 7, 0));
+        assert_eq!(parse_shortstat(" 1 file changed, 4 deletions(-)"), (1, 0, 4));
+        assert_eq!(parse_shortstat(""), (0, 0, 0));
+    }
+
+    #[test]
+    fn tail_caps_and_marks_truncation() {
+        assert_eq!(tail("short", 100), "short"); // under the cap → untouched
+        let big = "x".repeat(50);
+        let out = tail(&big, 10);
+        assert!(out.starts_with("…\n"));
+        assert!(out.ends_with(&"x".repeat(10)));
+    }
+
+    #[test]
+    fn copy_env_files_seeds_only_env_files_without_clobbering() {
+        let src = temp_dir("envsrc");
+        let dst = temp_dir("envdst");
+        std::fs::write(src.join(".env"), "A=1").unwrap();
+        std::fs::write(src.join(".env.local"), "B=2").unwrap();
+        std::fs::write(src.join(".environment"), "nope").unwrap(); // not an env file
+        std::fs::write(src.join("README.md"), "hi").unwrap();
+        std::fs::write(dst.join(".env.local"), "EXISTING").unwrap(); // must not clobber
+
+        let mut copied = copy_env_files(&src, &dst);
+        copied.sort();
+        assert_eq!(copied, vec![".env".to_owned()]); // .env.local already present, others ignored
+        assert_eq!(std::fs::read_to_string(dst.join(".env")).unwrap(), "A=1");
+        assert_eq!(std::fs::read_to_string(dst.join(".env.local")).unwrap(), "EXISTING");
+        assert!(!dst.join(".environment").exists());
+
+        std::fs::remove_dir_all(&src).ok();
+        std::fs::remove_dir_all(&dst).ok();
+    }
+
+    #[test]
+    fn setup_runs_command_in_the_worktree() {
+        let dir = temp_dir("setup");
+        if which::which("git").is_err() {
+            std::fs::remove_dir_all(&dir).ok();
+            return;
+        }
+        // A worktree-shaped target (any dir works — the command runs in `current_dir`).
+        // Write a marker file from the setup command and confirm it lands in `dir`.
+        let cmd = if cfg!(windows) {
+            "echo done> setup-ran.txt"
+        } else {
+            "echo done > setup-ran.txt"
+        };
+        let res = run_worktree_setup(
+            dir.to_string_lossy().into_owned(),
+            dir.to_string_lossy().into_owned(),
+            Some(cmd.into()),
+            false,
+        )
+        .unwrap();
+        assert!(!res.skipped);
+        assert_eq!(res.exit_code, Some(0));
+        assert!(!res.failed);
+        assert!(dir.join("setup-ran.txt").exists());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn setup_with_nothing_configured_is_skipped() {
+        let dir = temp_dir("setup-skip");
+        let res = run_worktree_setup(
+            dir.to_string_lossy().into_owned(),
+            dir.to_string_lossy().into_owned(),
+            None,
+            false,
+        )
+        .unwrap();
+        assert!(res.skipped);
+        assert!(res.copied_env.is_empty());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// End-to-end teardown: provision a worktree, commit a change in it, read the
+    /// diff summary, merge it into the main repo, and remove the worktree + branch.
+    #[test]
+    fn integrate_merge_then_remove_worktree() {
+        let dir = temp_dir("teardown");
+        if !init_repo(&dir) {
+            std::fs::remove_dir_all(&dir).ok();
+            return;
+        }
+        let base = dir.join("worktrees").to_string_lossy().into_owned();
+        let wt = provision_worktree(
+            dir.to_string_lossy().into_owned(),
+            "add feature".into(),
+            Some(base),
+        )
+        .unwrap();
+        let wt_path = Path::new(&wt.path);
+
+        // Make a committed change in the worktree.
+        std::fs::write(wt_path.join("feature.txt"), "hello").unwrap();
+        git_run(wt_path, &["add", "."]).unwrap();
+        git_run(wt_path, &["commit", "-q", "-m", "add feature"]).unwrap();
+
+        // The teardown summary should see one changed file against the main branch.
+        let info = worktree_teardown_info(
+            dir.to_string_lossy().into_owned(),
+            wt.path.clone(),
+        )
+        .unwrap();
+        assert!(info.target_branch.is_some());
+        assert_eq!(info.diff.files_changed, 1);
+        assert!(info.diff.insertions >= 1);
+
+        // Merge the branch into the main repo, then remove the worktree + branch.
+        integrate_worktree(
+            dir.to_string_lossy().into_owned(),
+            wt.path.clone(),
+            wt.branch.clone(),
+            info.target_branch.unwrap(),
+            false,
+        )
+        .unwrap();
+        assert!(dir.join("feature.txt").exists(), "merge landed the file in main");
+
+        remove_worktree(
+            dir.to_string_lossy().into_owned(),
+            wt.path.clone(),
+            Some(wt.branch.clone()),
+            true,
+            false,
+        )
+        .unwrap();
+        assert!(!wt_path.exists(), "worktree dir removed");
+        assert!(
+            !branch_exists(&dir, &wt.branch),
+            "agent branch deleted after merge"
+        );
+
         std::fs::remove_dir_all(&dir).ok();
     }
 }
