@@ -30,6 +30,8 @@ export type CommandId =
   | "splitPanel"
   | "closePanel"
   | "newInstance"
+  | "newEditor"
+  | "newShell"
   | "killInstance"
   | "jumpNeedsYou"
   | "jumpPrevNeedsYou"
@@ -92,6 +94,8 @@ export const BINDINGS: Binding[] = [
   { chord: "Ctrl+Shift+W", command: "closePanel", scope: "global", title: "Close the focused panel" },
   // --- global: instance control --------------------------------------------
   { chord: "Ctrl+Shift+N", command: "newInstance", scope: "global", title: "New instance in the active project" },
+  { chord: "Ctrl+Shift+E", command: "newEditor", scope: "global", title: "Open the editor for the active project" },
+  { chord: "Ctrl+Shift+T", command: "newShell", scope: "global", title: "Open a shell for the active project" },
   { chord: "Ctrl+Shift+K", command: "killInstance", scope: "global", title: "Kill the focused instance" },
   // Attention navigation (wired to the status engine in Phase 2). Modifiers must
   // be written in `eventToChord`'s canonical order (Ctrl → Alt → Shift) or the

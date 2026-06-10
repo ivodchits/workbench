@@ -39,6 +39,8 @@ function dispatch({ command, arg }: Match): void {
     // which is how `jumpNeedsYou` stays a registered stub until Phase 2).
     case "focusRail":
     case "newInstance":
+    case "newEditor":
+    case "newShell":
     case "killInstance":
     case "jumpNeedsYou":
     case "jumpPrevNeedsYou":
