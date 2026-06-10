@@ -45,6 +45,7 @@ import {
 import {
   provisionWorktree,
   revertToRoot,
+  sharedWorkingDirInstances,
   slugify,
   teardownWorktree,
 } from "../../state/worktree";
@@ -332,6 +333,10 @@ function InstanceManager({ onCollapse }: InstanceManagerProps) {
     return map;
   }, [instances]);
 
+  // Instances whose (toggle-off) working dir is shared with another — they get a
+  // non-blocking "shared working dir" warning + one-click isolate (step 2.6).
+  const sharedInstanceIds = useMemo(() => sharedWorkingDirInstances(instances), [instances]);
+
   // When the filter is active, only show instances that currently need you.
   // Projects with no matching instances are hidden from the section list.
   const filteredInstancesByProject = useMemo(() => {
@@ -497,6 +502,7 @@ function InstanceManager({ onCollapse }: InstanceManagerProps) {
                       onSelectProject={() => setActiveProject(p.id)}
                       consoleStatusById={consoleStatusById}
                       liveStatuses={liveStatuses}
+                      sharedInstanceIds={sharedInstanceIds}
                       onActivate={activate}
                       onOpenShell={() => openShellForProject(p)}
                       onOpenEditor={() => openEditorForProject(p)}
@@ -568,6 +574,8 @@ interface ProjectNodeProps {
   onSelectProject: () => void;
   consoleStatusById: Map<string, ConsoleStatus>;
   liveStatuses: ReadonlyMap<string, LiveStatus>;
+  /** Instances flagged as sharing a working dir (step 2.6). */
+  sharedInstanceIds: ReadonlySet<string>;
   onActivate: (instance: Instance) => void;
   /** Open (or focus) this project's shell. */
   onOpenShell: () => void;
@@ -589,6 +597,7 @@ function ProjectNode({
   onSelectProject,
   consoleStatusById,
   liveStatuses,
+  sharedInstanceIds,
   onActivate,
   onOpenShell,
   onOpenEditor,
@@ -758,6 +767,7 @@ function ProjectNode({
               instance={i}
               consoleStatus={consoleStatusById.get(i.id) ?? null}
               live={liveStatuses.get(i.id) ?? null}
+              shared={sharedInstanceIds.has(i.id)}
               onActivate={() => onActivate(i)}
               onToggleWorktree={() => onToggleWorktree(i)}
               onKill={() => onKill(i)}

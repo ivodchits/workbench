@@ -38,6 +38,42 @@ export function slugify(title: string): string {
 }
 
 /**
+ * Find the instances that share a working directory with another worktree-off
+ * instance (step 2.6 — design §6 caveat, decision 6). Two toggle-off instances
+ * in the same dir can step on each other's edits, so the rail flags them
+ * (non-blocking) and offers a one-click "isolate in a worktree" (the 2.4 flow).
+ *
+ * Only worktree-*off* instances are considered — a worktree-on instance has its
+ * own isolated dir and can't collide. `closed` instances aren't running, so they
+ * can't overwrite anything and are excluded (no spurious warning from a parked
+ * session). A dir is "shared" only when ≥2 such instances point at it; the result
+ * is the set of every flagged instance's id.
+ */
+export function sharedWorkingDirInstances(instances: Instance[]): Set<string> {
+  const byDir = new Map<string, string[]>();
+  for (const i of instances) {
+    if (i.worktreeOn || i.status === "closed") continue;
+    const key = normalizeDir(i.workingDir);
+    const ids = byDir.get(key);
+    if (ids) ids.push(i.id);
+    else byDir.set(key, [i.id]);
+  }
+  const shared = new Set<string>();
+  for (const ids of byDir.values()) {
+    if (ids.length >= 2) for (const id of ids) shared.add(id);
+  }
+  return shared;
+}
+
+/** Normalize a path for equality: forward slashes, no trailing separator, lower-
+ *  cased. Windows paths are case-insensitive and these working dirs come straight
+ *  from the same project record, so this conservatively folds the few ways the
+ *  same root could differ in string form. */
+function normalizeDir(path: string): string {
+  return path.replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
+}
+
+/**
  * If `instanceId` has a *live* (non-dormant) console, restart it so `claude`
  * relaunches in the instance's current working dir. Reads the freshly-reloaded
  * instance from the registry, so callers must `updateInstance(...)` first. A

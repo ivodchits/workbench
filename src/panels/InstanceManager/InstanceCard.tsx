@@ -5,6 +5,11 @@
 // focus) reveals row actions: toggle worktree, open the working dir, edit note,
 // and kill. The meta line's token readout (real figures land in 3.1) shows `0K`.
 //
+// Step 2.6 adds the "shared working dir" warning: when this instance shares its
+// working dir with another worktree-off instance (`shared`), the meta line shows
+// a non-blocking ⚠ marker that doubles as a one-click "isolate in a worktree"
+// (the 2.4 provision flow) — design §6 caveat, decision 6.
+//
 // Clicking the row launches (or focuses) the instance's claude console. The status
 // dot is the merged view (`mergeStatus`): the PTY lifecycle, the live hook-fed
 // status (step 2.2 — working spinner, ● needs you, ○ done, compacting, nested
@@ -35,6 +40,9 @@ interface InstanceCardProps {
   consoleStatus: ConsoleStatus | null;
   /** Live hook-fed status for this instance, or null when none (step 2.2). */
   live: LiveStatus | null;
+  /** True when this worktree-off instance shares its working dir with another
+   *  (step 2.6) — shows the non-blocking ⚠ "shared" warning + one-click isolate. */
+  shared: boolean;
   /** Launch or focus this instance's console (row click / Enter). */
   onActivate: () => void;
   /** Provision (or revert) this instance's worktree — opens a confirm (step 2.4). */
@@ -46,6 +54,7 @@ function InstanceCard({
   instance,
   consoleStatus,
   live,
+  shared,
   onActivate,
   onToggleWorktree,
   onKill,
@@ -287,6 +296,33 @@ function InstanceCard({
             {instance.branch ?? "—"}
           </span>
         </span>
+        {shared && (
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              onToggleWorktree();
+            }}
+            aria-label="shared working dir — isolate in a worktree"
+            title={
+              "Shared working dir: another instance runs here too — they can " +
+              "overwrite each other's edits. Click to isolate this one in a worktree."
+            }
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 3,
+              flex: "0 0 auto",
+              background: "transparent",
+              border: "none",
+              padding: 0,
+              cursor: "pointer",
+              font: "10.5px var(--wb-mono)",
+              color: "var(--wb-working)",
+            }}
+          >
+            {GLYPH.warn} shared
+          </button>
+        )}
         <span
           style={{ marginLeft: "auto", color: "var(--wb-textDim2)" }}
           title="tokens used (input + output + cache)"
