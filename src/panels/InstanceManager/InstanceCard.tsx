@@ -206,6 +206,7 @@ function InstanceCard({
               label={instance.worktreeOn ? "return to project root" : "isolate in a worktree"}
               onClick={onToggleWorktree}
               active={instance.worktreeOn}
+              fontSize={16.5}
             >
               {GLYPH.worktree}
             </RowAction>
@@ -344,12 +345,14 @@ function RowAction({
   label,
   danger,
   active,
+  fontSize = 11,
 }: {
   children: React.ReactNode;
   onClick: () => void;
   label: string;
   danger?: boolean;
   active?: boolean;
+  fontSize?: number;
 }) {
   const color = danger
     ? "var(--wb-needs)"
@@ -370,7 +373,7 @@ function RowAction({
         cursor: "pointer",
         padding: 0,
         lineHeight: 1,
-        font: "11px var(--wb-mono)",
+        font: `${fontSize}px var(--wb-mono)`,
         color,
       }}
     >

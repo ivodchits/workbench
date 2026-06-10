@@ -697,15 +697,18 @@ function ProjectNode({
         onMouseEnter={() => setHover(true)}
         onMouseLeave={() => setHover(false)}
         style={{
-          padding: "8px 12px 9px 18px",
-          borderLeft: `2px solid ${active ? "var(--wb-selBar)" : "transparent"}`,
+          padding: "12px 15px 13px 15px",
+          margin: "5px 8px",
+          borderRadius: 4,
+          border: `1px solid ${active ? "var(--wb-borderActive)" : "var(--wb-border)"}`,
+          borderLeft: `3px solid ${active ? "var(--wb-selBar)" : "var(--wb-border)"}`,
           background: active ? "var(--wb-sel)" : hover ? "var(--wb-sel)" : "transparent",
           cursor: "pointer",
         }}
         title={`${project.rootPath}\n(click to open this project's workspace)`}
       >
         {/* Row 1 — caret · name · branch · actions */}
-        <div style={{ display: "flex", alignItems: "center", gap: 7, font: "13px var(--wb-mono)" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 7, font: "15px var(--wb-mono)" }}>
           <button
             onClick={(e) => {
               e.stopPropagation();
@@ -742,13 +745,13 @@ function ProjectNode({
               visibility: hover ? "visible" : "hidden",
             }}
           >
-            <ProjectAction label="new instance" onClick={onNewInstance}>
+            <ProjectAction label="new instance" onClick={onNewInstance} fontSize={15.75}>
               +
             </ProjectAction>
-            <ProjectAction label="open project shell" onClick={onOpenShell}>
+            <ProjectAction label="open project shell" onClick={onOpenShell} fontSize={15.75}>
               {GLYPH.prompt}
             </ProjectAction>
-            <ProjectAction label="open editor" onClick={onOpenEditor}>
+            <ProjectAction label="open editor" onClick={onOpenEditor} fontSize={12.6}>
               ✎
             </ProjectAction>
             <ProjectAction label="edit project" onClick={onEdit}>
@@ -819,11 +822,13 @@ function ProjectAction({
   onClick,
   danger,
   label,
+  fontSize = 10.5,
 }: {
   children: React.ReactNode;
   onClick: () => void;
   danger?: boolean;
   label: string;
+  fontSize?: number;
 }) {
   return (
     <button
@@ -838,7 +843,8 @@ function ProjectAction({
         border: "none",
         cursor: "pointer",
         padding: 0,
-        font: "10.5px var(--wb-mono)",
+        lineHeight: 1,
+        font: `${fontSize}px var(--wb-mono)`,
         color: danger ? "var(--wb-needs)" : "var(--wb-accent)",
       }}
     >
