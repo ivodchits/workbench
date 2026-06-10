@@ -4,7 +4,12 @@ import InstanceManager from "./panels/InstanceManager";
 import Workspace from "./panels/Workspace";
 import { useConsoles } from "./state/consoles";
 import { useRegistry } from "./state/registry";
-import { initActiveProject, setActiveProject, useActiveProject } from "./state/activeProject";
+import {
+  getActiveProject,
+  initActiveProject,
+  setActiveProject,
+  useActiveProject,
+} from "./state/activeProject";
 import { useGlobalKeys } from "./keyboard";
 import { registerCommand } from "./keyboard/bus";
 import { getHookServerStatus, onHookEvent } from "./ipc/hooks";
@@ -40,15 +45,21 @@ function App() {
   useGlobalKeys();
 
   // App owns `focusRail` (Alt+0) because it owns the rail's collapsed state: expand
-  // it if needed, then hand focus to the first rail row (after the re-render paints).
+  // it if needed, then hand focus to the active project's tile (read live so we
+  // don't capture a stale id), falling back to the first rail row.
   useEffect(
     () =>
       registerCommand("focusRail", () => {
         setRailCollapsed(false);
         requestAnimationFrame(() =>
           requestAnimationFrame(() => {
-            const first = document.querySelector<HTMLElement>("[data-wb-rail] [data-wb-rail-row]");
-            first?.focus();
+            const rail = document.querySelector("[data-wb-rail]");
+            const activeId = getActiveProject();
+            const target =
+              (activeId &&
+                rail?.querySelector<HTMLElement>(`[data-wb-project-id="${activeId}"]`)) ||
+              rail?.querySelector<HTMLElement>("[data-wb-rail-row]");
+            target?.focus();
           }),
         );
       }),
