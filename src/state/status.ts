@@ -5,17 +5,24 @@
 // reflects a *running* session, so it's derived fresh from hooks and never
 // persisted (a stale "working" after a restart would lie — session restore is 3.8).
 //
-// Precedence — only **needs-you** is sticky, and only against *tool churn*:
+// Precedence — the two *resting* states (● needs-you, ○ done) are sticky against
+// tool churn, because only **you** leave them, never a stray/late tool event:
 //   • `permission_prompt` (`PermissionRequest` / `Notification`) → ● needs you.
 //     While a tool waits on your approval, a *parallel batch* keeps emitting
 //     `PreToolUse`/`PostToolUse` for its other tools, which must NOT stomp the
-//     pending prompt — so tool events never downgrade a needs-you.
-//   • It clears the moment the agent resumes: `PostToolBatch` (the batch you
-//     approved finished), `UserPromptSubmit`, `PermissionDenied`, `Stop`/`Session
-//     End` — plus a time-grace fallback (a tool event > NEEDS_GRACE_MS after the
-//     prompt began, in case `PostToolBatch` doesn't fire).
-//   • Everything else is "latest event wins": `Stop`/`idle_prompt` → ○ done,
-//     tool events → ◐ working, `PreCompact` → compacting.
+//     pending prompt — so no tool event ever downgrades a needs-you.
+//   • Needs-you clears only on a definitive resume signal: `PostToolBatch` (the
+//     batch you approved finished), `UserPromptSubmit`, `PermissionDenied`,
+//     `Stop`/`StopFailure`, `SessionEnd`. There is **no timer** — a time-grace
+//     fallback can't tell "you approved" from "an unrelated event arrived while the
+//     prompt is still pending", which flickered needs-you → working spuriously. If
+//     `PostToolBatch` doesn't fire, the needs-you simply holds until the turn's Stop.
+//   • Done (`Stop`/`idle_prompt`) holds until you start a new turn: only
+//     `UserPromptSubmit` (or a fresh `permission_prompt`) wakes it. A bare
+//     `PreToolUse` does NOT — a finished agent only resumes when you act, so a
+//     stray/late/duplicate PreToolUse must not flicker done → working.
+//   • Everything else is "latest event wins": tool events → ◐ working,
+//     `PreCompact`/`PostCompact` → a transient compacting overlay over the phase.
 //
 // (Note: this deliberately departs from the original §4.4 "everything sticky"
 // sketch, which assumed `idle_prompt` = needs-you and had no resume signal —
@@ -31,12 +38,6 @@ import { onHookEvent, type HookEnvelope, type HookEvent } from "../ipc/hooks";
 /** One repaint per this window for debounced (tool-event) changes. Attention /
  *  turn-boundary transitions ignore it — they must be instant. */
 const DEBOUNCE_MS = 150;
-
-/** A needs-you held this long stops being protected from tool events: a tool
- *  event arriving past this since the prompt began means the agent has resumed
- *  (you approved) even if `PostToolBatch` didn't fire. Comfortably longer than the
- *  ms-scale gap between a permission prompt and its batch's trailing events. */
-const NEEDS_GRACE_MS = 1500;
 
 /** Live phase of a card, driven by the hook stream. Distinct from the persisted
  *  `InstanceStatus`: this only exists while a session is running. */
@@ -57,8 +58,9 @@ export interface LiveStatus {
   subagents: number;
   /** Epoch seconds of the last event that touched this card (live "ago"). */
   updatedAt: number;
-  /** When the current needs-you began (epoch s), for the grace fallback; null
-   *  whenever the phase isn't needs-you. */
+  /** When the current needs-you began (epoch s); null whenever the phase isn't
+   *  needs-you. Retained for display/debug ("waiting since …") — the phase logic no
+   *  longer keys off it (a held needs-you clears on a resume signal, not a timer). */
   needsSince: number | null;
   /** The hook event that produced the current phase (tooltip/debug). */
   reason: string | null;
@@ -125,21 +127,22 @@ export function reduceStatus(
   // No observable change — return the prior entry so the store can skip a repaint.
   const keep = (): Reduction => ({ entry: base, instant: false });
 
-  // A *new tool is starting* (PreToolUse): genuine new work. This is the one tool
-  // signal allowed to wake a resting "done" — a new tool only starts when there's
-  // work to do, whereas the stragglers that land after `Stop` are completions
-  // (PostToolUse / PostToolBatch), never starts. A held needs-you clears once past
-  // the grace window (you approved and work moved on).
+  // A *new tool is starting* (PreToolUse): genuine new work — but it must never
+  // reanimate a *resting* state on its own. `needs_you` holds until you act on the
+  // prompt (cleared by PostToolBatch / UserPromptSubmit / Stop, below); `done` holds
+  // until you start a new turn (UserPromptSubmit). A stray, duplicated, or late
+  // PreToolUse that lands on a finished card is exactly the done→working flicker we
+  // must not produce — only the user resumes a finished agent.
   const startWork = (): Reduction => {
-    if (needsYou && !graceElapsed(base, at)) return keep();
+    if (base.phase === "needs_you" || base.phase === "done") return keep();
     return to("working", false);
   };
   // A tool/subagent *finished* (a completion): must never reanimate a resting state
-  // (that's the done→working→done flicker). It only advances active states and
-  // updates the subagent count under a held needs-you.
+  // (that's the done→working→done flicker) and never break a held needs-you. It only
+  // advances active states and updates the subagent count under a held needs-you.
   const finishWork = (extra: Partial<LiveStatus> = {}): Reduction => {
     if (base.phase === "done") return keep();
-    if (needsYou && !graceElapsed(base, at)) {
+    if (needsYou) {
       // Hold the needs-you; only repaint if the subagent count changed, so the
       // "ago" stays anchored to when you were first asked.
       return Object.keys(extra).length > 0 ? to("needs_you", false, extra) : keep();
@@ -181,7 +184,7 @@ export function reduceStatus(
 
     // --- tool / subagent churn (debounced) ----------------------------------
     case "PreToolUse":
-      return startWork(); // new tool → may resume a resting "done"
+      return startWork(); // new tool advances active states; never wakes a resting one
     case "PostToolUse":
     case "PostToolUseFailure":
       return finishWork(); // completion → never wakes a resting state
@@ -196,22 +199,20 @@ export function reduceStatus(
         ? keep()
         : { entry: { ...base, compacting: true, updatedAt: at, reason: name }, instant: true };
     case "PostCompact":
-      // Compaction finished → your move (○). `/compact` rides in on a UserPromptSubmit
-      // that set "working", so just clearing the overlay would strand it on working;
-      // a genuine mid-turn auto-compaction resumes via the next PreToolUse (which
-      // wakes done). Only act if we were actually compacting.
-      return base.compacting ? to("done", true) : keep();
+      // Compaction finished → just lift the overlay and let the card return to
+      // whatever it was doing. Both `/compact` and a mid-turn auto-compaction ride
+      // on a working session, so the prior phase is "working"; the turn's own `Stop`
+      // marks done. (Forcing done here would strand a still-working agent, since a
+      // resting "done" is no longer woken by the resumed work's PreToolUse.) Only act
+      // if we were actually compacting.
+      return base.compacting
+        ? { entry: { ...base, compacting: false, updatedAt: at, reason: name }, instant: true }
+        : keep();
 
     default:
       // Unknown/other event: no status change.
       return keep();
   }
-}
-
-/** True once a needs-you has outlived the grace window (so a tool event past it
- *  should be read as the agent having resumed after you approved). */
-function graceElapsed(s: LiveStatus, at: number): boolean {
-  return s.needsSince != null && at - s.needsSince > NEEDS_GRACE_MS / 1000;
 }
 
 // --- transition listeners ---------------------------------------------------

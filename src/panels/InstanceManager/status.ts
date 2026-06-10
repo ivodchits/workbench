@@ -50,6 +50,8 @@ export interface CardStatusView {
   spinning: boolean;
   /** This card is awaiting you — drives the badge and the "N need you" counts. */
   needsYou: boolean;
+  /** Agent finished its last task and is ready for a new one. */
+  done: boolean;
   /** Active subagents, for the nested spinner (>0 shows the ↳ line). */
   subagents: number;
   /** Context is being compacted (a transient working sub-state). */
@@ -61,6 +63,7 @@ export interface CardStatusView {
 const BLANK = {
   spinning: false,
   needsYou: false,
+  done: false,
   subagents: 0,
   compacting: false,
   liveAt: null as number | null,
@@ -101,7 +104,7 @@ export function mergeStatus(
       case "needs_you":
         return { ...BLANK, glyph: "●", colorVar: "var(--wb-needs)", label: "needs you", needsYou: true, liveAt };
       case "done":
-        return { ...BLANK, glyph: "○", colorVar: "var(--wb-done)", label: "done", liveAt };
+        return { ...BLANK, glyph: "○", colorVar: "var(--wb-done)", label: "done", done: true, liveAt };
       case "idle":
         return { ...BLANK, glyph: "○", colorVar: "var(--wb-done)", label: "idle", liveAt };
     }

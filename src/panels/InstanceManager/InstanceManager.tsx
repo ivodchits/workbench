@@ -568,6 +568,11 @@ function ProjectNode({
       mergeStatus(consoleStatusById.get(i.id) ?? null, liveStatuses.get(i.id) ?? null, i.status)
         .needsYou,
   ).length;
+  const done = instances.filter(
+    (i) =>
+      mergeStatus(consoleStatusById.get(i.id) ?? null, liveStatuses.get(i.id) ?? null, i.status)
+        .done,
+  ).length;
 
   // Rail single-keys for a focused project tile: Enter opens (selects + expands),
   // Left/Right collapse/expand. Everything else (j/k nav, n, p, Esc) bubbles to
@@ -691,6 +696,9 @@ function ProjectNode({
                 {instances.length} instance{instances.length === 1 ? "" : "s"}
               </span>
               {running > 0 && <span style={{ color: "var(--wb-accent)" }}>{running} running</span>}
+              {done > 0 && (
+                <span style={{ color: "var(--wb-done)" }}>● {done} done</span>
+              )}
               {needsYou > 0 && (
                 <span style={{ color: "var(--wb-needs)" }}>● {needsYou} need you</span>
               )}
