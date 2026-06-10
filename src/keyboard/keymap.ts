@@ -95,8 +95,8 @@ export const BINDINGS: Binding[] = [
   { chord: "Ctrl+Shift+K", command: "killInstance", scope: "global", title: "Kill the focused instance" },
   // Attention navigation (wired to the status engine in Phase 2). Ctrl+Shift+Alt
   // keeps clear of the Intel-GPU display-rotate combo (Ctrl+Alt+Arrow, no Shift).
-  { chord: "Ctrl+Alt+Shift+Up", command: "jumpNeedsYou", scope: "global", title: "Jump to next agent that needs you" },
-  { chord: "Ctrl+Alt+Shift+Down", command: "jumpPrevNeedsYou", scope: "global", title: "Jump to previous agent that needs you" },
+  { chord: "Shift+Alt+PageDown", command: "jumpNeedsYou", scope: "global", title: "Jump to next agent that needs you" },
+  { chord: "Shift+Alt+PageUp", command: "jumpPrevNeedsYou", scope: "global", title: "Jump to previous agent that needs you" },
 
   // --- rail: navigation (TUI single keys) -----------------------------------
   { chord: "Up", command: "railPrev", scope: "rail", title: "Rail: move up" },
