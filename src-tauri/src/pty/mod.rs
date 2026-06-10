@@ -26,13 +26,16 @@ use tauri::State;
 
 /// A live PTY child plus the handles needed to write to it, resize it, and kill
 /// it. The reader runs on its own detached thread and isn't tracked here. For a
-/// `claude` child, `session_id` is the minted UUID (so it can be unmapped from
-/// the `session_id → instance_id` index on teardown); a shell has none.
+/// Each child's working dir is kept so a rotated session (`/clear` / `/compact`,
+/// which mint a fresh id) can be re-correlated to this instance by cwd.
 struct PtySession {
     master: Box<dyn MasterPty + Send>,
     writer: Box<dyn Write + Send>,
     child: Box<dyn Child + Send + Sync>,
-    session_id: Option<String>,
+    /// The working dir this child launched in. Used to re-correlate a session that
+    /// Claude Code *rotated* under us — `/clear` and `/compact` start a fresh
+    /// session id that we never minted, but in the same cwd as this live instance.
+    cwd: String,
 }
 
 /// Tauri-managed state holding every active PTY, keyed by `instance_id`, plus the
@@ -54,6 +57,48 @@ impl PtyManager {
     /// `--session-id` and that are still live.
     pub fn instance_for_session(&self, session_id: &str) -> Option<String> {
         self.by_session.lock().unwrap().get(session_id).cloned()
+    }
+
+    /// Re-correlate a session id Workbench didn't mint to a live instance by its
+    /// working dir, registering the mapping so subsequent events pass the filter.
+    /// This is how `/clear` and `/compact` survive (they rotate the session id):
+    /// the new session runs in the same cwd as exactly one live instance we
+    /// launched. Returns `None` — leaving the event dropped — when no live instance
+    /// matches, or when the dir is ambiguous (≥2 live instances share it), so the
+    /// §4.4 filter stays honest: we only ever adopt into an instance we're running.
+    pub fn adopt_session_for_cwd(&self, session_id: &str, cwd: &str) -> Option<String> {
+        let target = norm_dir(cwd);
+        let instance_id = {
+            let sessions = self.sessions.lock().unwrap();
+            let mut hits = sessions
+                .iter()
+                .filter(|(_, s)| norm_dir(&s.cwd) == target)
+                .map(|(id, _)| id.clone());
+            let first = hits.next()?;
+            if hits.next().is_some() {
+                return None; // ambiguous — two live instances in the same dir
+            }
+            first
+        };
+        // Replace this instance's mapping rather than add a second one: the old
+        // (rotated-away) session id must stop resolving, or a late `SessionEnd` for
+        // it would mark the still-live card "ended".
+        let mut map = self.by_session.lock().unwrap();
+        map.retain(|_, v| v != &instance_id);
+        map.insert(session_id.to_string(), instance_id.clone());
+        Some(instance_id)
+    }
+}
+
+/// Normalize a directory path for comparison: unify separators, drop a trailing
+/// slash, and fold case on Windows (its filesystem is case-insensitive).
+fn norm_dir(p: &str) -> String {
+    let s = p.replace('\\', "/");
+    let s = s.trim_end_matches('/');
+    if cfg!(windows) {
+        s.to_lowercase()
+    } else {
+        s.to_string()
     }
 }
 
@@ -170,19 +215,20 @@ pub fn pty_spawn(
             .unwrap()
             .insert(sid.clone(), instance_id.clone());
     }
+    let cwd_str = cwd.to_string_lossy().into_owned();
     state.sessions.lock().unwrap().insert(
         instance_id,
         PtySession {
             master: pair.master,
             writer,
             child,
-            session_id: session_id.clone(),
+            cwd: cwd_str.clone(),
         },
     );
 
     Ok(SpawnResult {
         session_id,
-        cwd: cwd.to_string_lossy().into_owned(),
+        cwd: cwd_str,
     })
 }
 
@@ -327,8 +373,8 @@ fn kill_instance(mgr: &PtyManager, instance_id: &str) {
     let removed = mgr.sessions.lock().unwrap().remove(instance_id);
     if let Some(mut session) = removed {
         let _ = session.child.kill();
-        if let Some(sid) = session.session_id {
-            mgr.by_session.lock().unwrap().remove(&sid);
-        }
+        // Purge every session id mapping to this instance — the minted one and any
+        // adopted after a `/clear` / `/compact` rotation — so no stale id lingers.
+        mgr.by_session.lock().unwrap().retain(|_, v| v != instance_id);
     }
 }

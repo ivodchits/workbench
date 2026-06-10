@@ -103,8 +103,10 @@ async fn run(listener: std::net::TcpListener, ctx: Arc<HookContext>) -> std::io:
 enum Decision {
     /// Passed the session-id filter — forward this to the frontend.
     Accept(Box<HookEnvelope>),
-    /// A well-formed event from a session Workbench didn't mint — drop it.
-    Drop,
+    /// A well-formed event from a session Workbench didn't mint. Carries the parsed
+    /// event so the handler can attempt cwd-adoption for a rotated session
+    /// (`/clear` / `/compact`) before finally dropping it.
+    Drop(Box<HookEvent>),
     /// Unparseable body — ignore it (we never error back at Claude).
     Ignore,
 }
@@ -122,7 +124,7 @@ fn classify(body: &[u8], resolve: impl Fn(&str) -> Option<String>) -> Decision {
             received_at: now(),
             event,
         })),
-        None => Decision::Drop,
+        None => Decision::Drop(Box::new(event)),
     }
 }
 
@@ -130,17 +132,41 @@ fn classify(body: &[u8], resolve: impl Fn(&str) -> Option<String>) -> Decision {
 async fn handle(State(ctx): State<Arc<HookContext>>, body: Bytes) -> StatusCode {
     ctx.received.fetch_add(1, Ordering::Relaxed);
     let pty = ctx.app.state::<PtyManager>();
-    match classify(&body, |sid| pty.instance_for_session(sid)) {
-        Decision::Accept(envelope) => {
+    let decision = classify(&body, |sid| pty.instance_for_session(sid));
+    let envelope = match decision {
+        Decision::Accept(envelope) => Some(envelope),
+        // A dropped event may be from a session Claude rotated under us
+        // (`/clear` / `/compact`): adopt it by cwd if it maps to a single live
+        // instance, otherwise it's genuinely foreign and stays dropped.
+        Decision::Drop(event) => adopt(&pty, *event).map(Box::new),
+        Decision::Ignore => None,
+    };
+    match envelope {
+        Some(envelope) => {
             ctx.accepted.fetch_add(1, Ordering::Relaxed);
             let _ = ctx.app.emit(HOOK_EVENT, *envelope);
         }
-        Decision::Drop => {
+        None => {
             ctx.dropped.fetch_add(1, Ordering::Relaxed);
         }
-        Decision::Ignore => {}
     }
     StatusCode::OK
+}
+
+/// Try to rescue a dropped event by re-correlating a rotated session to a live
+/// instance via its working dir. `/clear` and `/compact` mint a fresh session id
+/// that keeps running in the same cwd, and the first rotated event we see may be a
+/// prompt or tool event (not necessarily `SessionStart`) — every event carries
+/// `cwd`, so any of them can re-register the mapping. Returns the instance-tagged
+/// envelope on success; a genuinely foreign session (no live instance in that dir)
+/// matches nothing and stays dropped.
+fn adopt(pty: &PtyManager, event: HookEvent) -> Option<HookEnvelope> {
+    let instance_id = pty.adopt_session_for_cwd(&event.session_id, event.cwd.as_deref()?)?;
+    Some(HookEnvelope {
+        instance_id,
+        received_at: now(),
+        event,
+    })
 }
 
 fn now() -> i64 {
@@ -176,7 +202,7 @@ mod tests {
     fn foreign_session_is_dropped() {
         let body = br#"{"session_id":"someone-elses","hook_event_name":"Stop"}"#;
         let resolve = |_: &str| None; // nothing registered
-        assert!(matches!(classify(body, resolve), Decision::Drop));
+        assert!(matches!(classify(body, resolve), Decision::Drop(_)));
     }
 
     /// A malformed body (no `session_id`, or not JSON) is ignored, never errored.

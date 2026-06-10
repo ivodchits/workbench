@@ -8,6 +8,7 @@ import { initActiveProject, setActiveProject, useActiveProject } from "./state/a
 import { useGlobalKeys } from "./keyboard";
 import { registerCommand } from "./keyboard/bus";
 import { getHookServerStatus, onHookEvent } from "./ipc/hooks";
+import { initStatusEngine } from "./state/status";
 
 // Step 1.5 turned the cockpit into its real shape: the Instance Manager rail on
 // the left drives the panel surface, where clicking an instance launches (or
@@ -25,6 +26,13 @@ function App() {
 
   useEffect(() => {
     applyTheme(mutedDark);
+  }, []);
+
+  // Start the status engine: consume the hook stream and drive live card status
+  // (the sticky precedence machine, step 2.2). Idempotent + app-lifetime, so no
+  // cleanup — see initStatusEngine.
+  useEffect(() => {
+    initStatusEngine();
   }, []);
 
   // The global keymap listener (Ctrl+Shift / Alt / Ctrl+Tab chords). Rail single

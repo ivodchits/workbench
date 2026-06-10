@@ -30,6 +30,7 @@ import {
   type SpawnKind,
   type SpawnResult,
 } from "../ipc/pty";
+import { markInterrupted } from "../state/status";
 
 interface TermEntry {
   /** The element xterm renders into; re-parented across mounts, never recreated. */
@@ -100,6 +101,13 @@ export function acquire(container: HTMLDivElement, opts: AcquireOptions): void {
 
   const dataSub = term.onData((data) => {
     void ptyWrite(opts.instanceId, new TextEncoder().encode(data));
+    // A lone Esc / Ctrl+C in a claude console is an interrupt — and interrupting
+    // fires no hook, so optimistically flip the dot to "done" (step 2.2). A lone
+    // Esc is exactly "\x1b"; arrow keys etc. arrive as multi-byte escape sequences,
+    // so this won't misfire on navigation.
+    if (opts.kind === "claude" && (data === "\x1b" || data === "\x03")) {
+      markInterrupted(opts.instanceId);
+    }
   });
   const resizeSub = term.onResize(({ cols, rows }) => {
     void ptyResize(opts.instanceId, cols, rows);

@@ -20,7 +20,12 @@ export interface HookEvent {
   permission_mode: string | null;
   /** Present on tool/permission events. */
   tool_name: string | null;
-  /** Any remaining event-specific fields (tool_input, message, source, …). */
+  /** `Notification` type: "permission_prompt" | "idle_prompt" | "auth_success" |
+   *  "elicitation_*" — how the status engine tells the ● alarm from an idle ○. */
+  notification_type?: string | null;
+  /** Human-readable notification text (fallback when `notification_type` absent). */
+  message?: string | null;
+  /** Any remaining event-specific fields (tool_input, source, …). */
   [key: string]: unknown;
 }
 

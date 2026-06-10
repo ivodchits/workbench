@@ -41,15 +41,19 @@ const HOOK_EVENTS: &[&str] = &[
     "UserPromptSubmit",
     "PreToolUse",
     "PostToolUse",
+    "PostToolUseFailure",
+    "PostToolBatch",
     "PermissionRequest",
     "PermissionDenied",
     "Notification",
     "Stop",
+    "StopFailure",
     "SubagentStart",
     "SubagentStop",
     "SessionStart",
     "SessionEnd",
     "PreCompact",
+    "PostCompact",
 ];
 
 /// Install (or refresh) the Workbench hooks pointing at `port`. Returns `Ok(true)`

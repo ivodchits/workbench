@@ -17,6 +17,7 @@ import { useSyncExternalStore } from "react";
 import type { SpawnKind, SpawnResult } from "../ipc/pty";
 import type { Instance } from "../ipc/registry";
 import { updateInstance } from "./registry";
+import { clearLiveStatus } from "./status";
 
 /** Browsers cap live WebGL contexts (~16); we reserve a margin (design §5 /
  *  decision 14). The first `WEBGL_CAP` *live* consoles render via WebGL; the rest
@@ -184,6 +185,10 @@ export function markError(instanceId: string, message: string): void {
  */
 export function closeConsole(instanceId: string): void {
   if (!state.open.some((c) => c.instanceId === instanceId)) return;
+  // Drop any live hook-fed status so the row doesn't hold a stale "working"/"needs
+  // you" after its PTY is gone (the backend also unmaps the session, so late events
+  // are filtered out — this just clears the visual immediately). (step 2.2)
+  clearLiveStatus(instanceId);
   const open = state.open.filter((c) => c.instanceId !== instanceId);
   let activeId = state.activeId;
   if (activeId === instanceId) {

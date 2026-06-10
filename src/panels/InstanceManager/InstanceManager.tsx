@@ -24,6 +24,8 @@ import {
 } from "../../state/consoles";
 import { closeShell, getOpenShells, openShell } from "../../state/shells";
 import { closeEditor, getOpenEditors, openEditor } from "../../state/editors";
+import { useLiveStatuses, type LiveStatus } from "../../state/status";
+import { mergeStatus } from "./status";
 import { getActiveProject, setActiveProject, useActiveProject } from "../../state/activeProject";
 import { focusActivePanel, routePanelFocus } from "../../state/dock";
 import { release } from "../terminalPool";
@@ -55,6 +57,7 @@ interface InstanceManagerProps {
 function InstanceManager({ onCollapse }: InstanceManagerProps) {
   const { groups, projects, instances, loaded, error } = useRegistry();
   const { open: openConsoles } = useConsoles();
+  const liveStatuses = useLiveStatuses();
   const activeProjectId = useActiveProject();
   const [addingProject, setAddingProject] = useState(false);
   const [editProjectTarget, setEditProjectTarget] = useState<Project | null>(null);
@@ -243,9 +246,16 @@ function InstanceManager({ onCollapse }: InstanceManagerProps) {
     return map;
   }, [instances]);
 
+  // "Needs you" now comes from the merged live status (hook-driven), not the
+  // persisted placeholder — so the header count and badges track real sessions.
   const needsCount = useMemo(
-    () => instances.filter((i) => i.status === "needs_you").length,
-    [instances],
+    () =>
+      instances.filter(
+        (i) =>
+          mergeStatus(consoleStatusById.get(i.id) ?? null, liveStatuses.get(i.id) ?? null, i.status)
+            .needsYou,
+      ).length,
+    [instances, consoleStatusById, liveStatuses],
   );
 
   const toggle = (key: string) =>
@@ -357,6 +367,7 @@ function InstanceManager({ onCollapse }: InstanceManagerProps) {
                       active={activeProjectId === p.id}
                       onSelectProject={() => setActiveProject(p.id)}
                       consoleStatusById={consoleStatusById}
+                      liveStatuses={liveStatuses}
                       onActivate={activate}
                       onOpenShell={() => openShellForProject(p)}
                       onOpenEditor={() => openEditorForProject(p)}
@@ -412,6 +423,7 @@ interface ProjectNodeProps {
   /** Make this the active project (swaps the dock to its workspace). */
   onSelectProject: () => void;
   consoleStatusById: Map<string, ConsoleStatus>;
+  liveStatuses: ReadonlyMap<string, LiveStatus>;
   onActivate: (instance: Instance) => void;
   /** Open (or focus) this project's shell. */
   onOpenShell: () => void;
@@ -431,6 +443,7 @@ function ProjectNode({
   active,
   onSelectProject,
   consoleStatusById,
+  liveStatuses,
   onActivate,
   onOpenShell,
   onOpenEditor,
@@ -442,13 +455,16 @@ function ProjectNode({
   const [hover, setHover] = useState(false);
 
   // Live tile summary: how many instances, how many have a running console, and
-  // how many need you. (`needs_you` is a static placeholder until the Phase-2
-  // hook-fed status engine drives it.)
+  // how many need you (the latter from the merged hook-fed status, step 2.2).
   const running = instances.filter((i) => {
     const s = consoleStatusById.get(i.id);
     return s === "running" || s === "spawning";
   }).length;
-  const needsYou = instances.filter((i) => i.status === "needs_you").length;
+  const needsYou = instances.filter(
+    (i) =>
+      mergeStatus(consoleStatusById.get(i.id) ?? null, liveStatuses.get(i.id) ?? null, i.status)
+        .needsYou,
+  ).length;
 
   // Rail single-keys for a focused project tile: Enter opens (selects + expands),
   // Left/Right collapse/expand. Everything else (j/k nav, n, p, Esc) bubbles to
@@ -587,6 +603,7 @@ function ProjectNode({
               key={i.id}
               instance={i}
               consoleStatus={consoleStatusById.get(i.id) ?? null}
+              live={liveStatuses.get(i.id) ?? null}
               onActivate={() => onActivate(i)}
               onKill={() => onKill(i)}
             />

@@ -18,6 +18,7 @@ import Console from "./Console";
 import type { Instance, Project } from "../ipc/registry";
 import type { SpawnResult } from "../ipc/pty";
 import { formatTokens, totalTokens } from "../util/format";
+import { useLiveStatuses, type LiveStatus } from "../state/status";
 import { useRegistry } from "../state/registry";
 import {
   markError,
@@ -35,6 +36,7 @@ function ConsolePanel(props: IDockviewPanelProps<ConsolePanelParams>) {
   const { instanceId } = props.params;
   const { open } = useConsoles();
   const { instances, projects } = useRegistry();
+  const live = useLiveStatuses().get(instanceId) ?? null;
 
   const session = open.find((c) => c.instanceId === instanceId) ?? null;
   const instance = instances.find((i) => i.id === instanceId) ?? null;
@@ -62,6 +64,7 @@ function ConsolePanel(props: IDockviewPanelProps<ConsolePanelParams>) {
         instance={instance}
         sessionId={session?.sessionId ?? instance.lastSessionId ?? null}
         status={session?.status ?? "dormant"}
+        live={live}
       />
       <div style={{ flex: "1 1 auto", minHeight: 0 }}>
         {dormant ? (
@@ -103,17 +106,20 @@ function LiveConsole({
   );
 }
 
-/** project · branch · task note · short session id · cost — the context line (§5). */
+/** project · branch · task note · status · short session id · cost — the context
+ *  line (§5). The live status glyph reflects the hook-fed state machine (2.2). */
 function HeaderStrip({
   project,
   instance,
   sessionId,
   status,
+  live,
 }: {
   project: Project | null;
   instance: Instance;
   sessionId: string | null;
   status: ConsoleSession["status"];
+  live: LiveStatus | null;
 }) {
   const branch = instance.branch ?? project?.defaultBranch ?? null;
   return (
@@ -154,10 +160,12 @@ function HeaderStrip({
         </>
       )}
       <span style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 10, paddingLeft: 12 }}>
-        {status === "spawning" && (
+        {status === "spawning" ? (
           <span style={{ color: "var(--wb-working)" }}>
             <Spinner size={10} /> spawning
           </span>
+        ) : (
+          <LiveBadge live={live} />
         )}
         {sessionId && (
           <span style={{ color: "var(--wb-textFaint)" }}>{sessionId.slice(0, 8)}</span>
@@ -172,6 +180,36 @@ function HeaderStrip({
 
 function Sep() {
   return <span style={{ color: "var(--wb-textFaint)", padding: "0 8px" }}>·</span>;
+}
+
+/** Compact live-status indicator in the console header (step 2.2). Mirrors the
+ *  rail dot for the focused agent: working spinner, ● needs you, ○ done/idle, or
+ *  a "compacting…" transient. Nothing while there's no live signal yet. */
+function LiveBadge({ live }: { live: LiveStatus | null }) {
+  if (!live || live.phase === "ended") return null;
+  if (live.compacting) {
+    return (
+      <span style={{ color: "var(--wb-working)" }}>
+        <Spinner size={10} /> compacting…
+      </span>
+    );
+  }
+  switch (live.phase) {
+    case "working":
+      return (
+        <span style={{ color: "var(--wb-working)" }}>
+          <Spinner size={10} /> working
+        </span>
+      );
+    case "needs_you":
+      return <span style={{ color: "var(--wb-needs)" }}>● needs you</span>;
+    case "done":
+      return <span style={{ color: "var(--wb-done)" }}>○ done</span>;
+    case "idle":
+      return <span style={{ color: "var(--wb-done)" }}>○ idle</span>;
+    default:
+      return null;
+  }
 }
 
 /** A panel restored from a saved layout whose PTY isn't running. */

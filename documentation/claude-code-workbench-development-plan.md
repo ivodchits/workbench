@@ -669,7 +669,7 @@ Pull these in once the relevant phase is stable; each is an independent step whe
 
 **Phase 2 — status engine & worktrees**
 - [x] 2.1 Hook server + user-level install + session_id filter
-- [ ] 2.2 Status state machine
+- [x] 2.2 Status state machine
 - [ ] 2.3 Notifications, tray badge, attention focus
 - [ ] 2.4 Worktree provisioning
 - [ ] 2.5 Worktree post-create & teardown

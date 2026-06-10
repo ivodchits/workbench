@@ -1,24 +1,26 @@
-// One instance row in the rail (step 1.4; console wiring added in 1.5). Mirrors
-// the design mockup: a status dot, the title (inline-renamable), a "needs you"
-// badge, last-activity, the inline-editable task note, and a meta line with the
-// ⑃ worktree marker + branch and a mini cost readout. Hover (or keyboard focus)
-// reveals row actions: toggle worktree, open the working dir, edit note, and kill.
-// The meta line's token readout (real figures land in 3.1) shows `0K` for now.
+// One instance row in the rail (step 1.4; console wiring 1.5; live status 2.2).
+// Mirrors the design mockup: a status dot, the title (inline-renamable), a "needs
+// you" badge, last-activity, the inline-editable task note, and a meta line with
+// the ⑃ worktree marker + branch and a mini cost readout. Hover (or keyboard
+// focus) reveals row actions: toggle worktree, open the working dir, edit note,
+// and kill. The meta line's token readout (real figures land in 3.1) shows `0K`.
 //
-// Clicking the row launches (or focuses) the instance's claude console; a small
-// live marker (`consoleStatus`) replaces the static status glyph while a console
-// is open. The persisted `status` field stays a static placeholder — the live
-// hook-fed state machine and real worktree provisioning land in Phase 2.
+// Clicking the row launches (or focuses) the instance's claude console. The status
+// dot is the merged view (`mergeStatus`): the PTY lifecycle, the live hook-fed
+// status (step 2.2 — working spinner, ● needs you, ○ done, compacting, nested
+// subagents), and the persisted placeholder, in that precedence.
 
 import { useState } from "react";
 import { GLYPH, Spinner } from "../../theme";
 import type { Instance } from "../../ipc/registry";
 import type { ConsoleStatus } from "../../state/consoles";
+import type { LiveStatus } from "../../state/status";
 import { openPath } from "../../ipc/os";
 import { ptyWrite } from "../../ipc/pty";
 import { matchCommand } from "../../keyboard";
 import { updateInstance } from "../../state/registry";
-import { relativeTime, statusDisplay } from "./status";
+import { markInterrupted } from "../../state/status";
+import { mergeStatus, relativeTime } from "./status";
 import { formatTokens, totalTokens } from "../../util/format";
 import InlineEdit from "./InlineEdit";
 
@@ -31,17 +33,19 @@ interface InstanceCardProps {
   instance: Instance;
   /** Live console state for this instance, or null when no console is open. */
   consoleStatus: ConsoleStatus | null;
+  /** Live hook-fed status for this instance, or null when none (step 2.2). */
+  live: LiveStatus | null;
   /** Launch or focus this instance's console (row click / Enter). */
   onActivate: () => void;
   onKill: () => void;
 }
 
-function InstanceCard({ instance, consoleStatus, onActivate, onKill }: InstanceCardProps) {
+function InstanceCard({ instance, consoleStatus, live, onActivate, onKill }: InstanceCardProps) {
   const [hover, setHover] = useState(false);
   const [editingNote, setEditingNote] = useState(false);
   const [editingTitle, setEditingTitle] = useState(false);
-  const st = statusDisplay(instance.status);
-  const dim = instance.status === "closed";
+  const view = mergeStatus(consoleStatus, live, instance.status);
+  const dim = !live && !consoleStatus && instance.status === "closed";
   const showActions = hover || editingNote || editingTitle;
 
   const toggleWorktree = () =>
@@ -75,7 +79,10 @@ function InstanceCard({ instance, consoleStatus, onActivate, onKill }: InstanceC
         void openPath(instance.workingDir);
         break;
       case "railInterrupt":
-        if (consoleStatus === "running") void ptyWrite(instance.id, INTERRUPT_KEY);
+        if (consoleStatus === "running") {
+          void ptyWrite(instance.id, INTERRUPT_KEY);
+          markInterrupted(instance.id); // interrupting fires no hook — update the dot ourselves
+        }
         break;
       default:
         return; // not a card concern
@@ -110,24 +117,16 @@ function InstanceCard({ instance, consoleStatus, onActivate, onKill }: InstanceC
       <div style={{ display: "flex", alignItems: "baseline", gap: 8 }}>
         <span
           style={{
-            color: consoleStatus ? consoleMarker(consoleStatus).colorVar : st.colorVar,
+            color: view.colorVar,
             fontSize: 12,
             width: 12,
             flex: "0 0 12px",
             textAlign: "center",
             lineHeight: 1,
           }}
-          title={consoleStatus ? `console ${consoleStatus}` : st.label}
+          title={view.label}
         >
-          {consoleStatus === "spawning" ? (
-            <Spinner size={12} />
-          ) : consoleStatus ? (
-            consoleMarker(consoleStatus).glyph
-          ) : st.working ? (
-            <Spinner size={12} />
-          ) : (
-            st.glyph
-          )}
+          {view.spinning ? <Spinner size={12} color={view.colorVar} /> : view.glyph}
         </span>
         <span
           style={{
@@ -154,7 +153,23 @@ function InstanceCard({ instance, consoleStatus, onActivate, onKill }: InstanceC
             }}
           />
         </span>
-        {instance.status === "needs_you" && (
+        {view.compacting && (
+          <span
+            style={{
+              font: "600 9px var(--wb-mono)",
+              letterSpacing: "0.08em",
+              color: "var(--wb-working)",
+              border: "1px solid var(--wb-working)",
+              padding: "1px 5px",
+              borderRadius: 2,
+              textTransform: "uppercase",
+              flex: "0 0 auto",
+            }}
+          >
+            compacting
+          </span>
+        )}
+        {view.needsYou && (
           <span
             style={{
               font: "600 9px var(--wb-mono)",
@@ -191,10 +206,30 @@ function InstanceCard({ instance, consoleStatus, onActivate, onKill }: InstanceC
           </span>
         ) : (
           <span style={{ color: "var(--wb-textFaint)", fontSize: 10.5, flex: "0 0 auto" }}>
-            {relativeTime(instance.lastActivityAt)}
+            {relativeTime(view.liveAt ?? instance.lastActivityAt)}
           </span>
         )}
       </div>
+
+      {/* Nested subagent activity (SubagentStart/Stop), §4.4. */}
+      {view.subagents > 0 && (
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 5,
+            margin: "2px 0 0 20px",
+            font: "10.5px var(--wb-mono)",
+            color: "var(--wb-textDim2)",
+          }}
+        >
+          <span style={{ color: "var(--wb-working)" }}>↳</span>
+          <Spinner size={10} />
+          <span>
+            {view.subagents} subagent{view.subagents === 1 ? "" : "s"}
+          </span>
+        </div>
+      )}
 
       {/* Row 2 — task note (inline-editable) */}
       <div
@@ -255,18 +290,6 @@ function InstanceCard({ instance, consoleStatus, onActivate, onKill }: InstanceC
       </div>
     </div>
   );
-}
-
-/** The rail glyph + color for an open console (spawning is shown as a spinner). */
-function consoleMarker(status: ConsoleStatus): { glyph: string; colorVar: string } {
-  switch (status) {
-    case "running":
-      return { glyph: GLYPH.run, colorVar: "var(--wb-accent)" };
-    case "error":
-      return { glyph: GLYPH.fail, colorVar: "var(--wb-needs)" };
-    default:
-      return { glyph: GLYPH.run, colorVar: "var(--wb-working)" };
-  }
 }
 
 function RowAction({
