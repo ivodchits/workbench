@@ -214,6 +214,27 @@ function graceElapsed(s: LiveStatus, at: number): boolean {
   return s.needsSince != null && at - s.needsSince > NEEDS_GRACE_MS / 1000;
 }
 
+// --- transition listeners ---------------------------------------------------
+// Called synchronously when a card's phase changes (before the React flush).
+// Used to drive OS notifications without polling the store.
+
+type TransitionListener = (
+  instanceId: string,
+  phase: StatusPhase,
+  prevPhase: StatusPhase | null,
+) => void;
+
+const transitionListeners = new Set<TransitionListener>();
+
+/** Subscribe to phase transitions (any direction). Returns an unsubscribe fn.
+ *  Idempotent: calling subscribe twice with the same reference is a no-op. */
+export function onStatusTransition(cb: TransitionListener): () => void {
+  transitionListeners.add(cb);
+  return () => {
+    transitionListeners.delete(cb);
+  };
+}
+
 // --- store ------------------------------------------------------------------
 // `latest` is the authoritative state, updated synchronously on every event.
 // `committed` is what React sees via getSnapshot; it only advances on a flush
@@ -258,6 +279,11 @@ export function ingestHookEvent(envelope: HookEnvelope): void {
   const next = new Map(latest);
   next.set(instanceId, entry);
   latest = next;
+  // Notify transition listeners synchronously on any phase change. `keep()`
+  // returns the same object reference, so this only fires on real transitions.
+  if (entry.phase !== prev?.phase) {
+    for (const l of transitionListeners) l(instanceId, entry.phase, prev?.phase ?? null);
+  }
   if (instant) flushNow();
   else scheduleFlush();
 }

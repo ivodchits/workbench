@@ -1,0 +1,21 @@
+// Attention IPC (step 2.3) — notify the Rust side of needs-you transitions
+// and badge count changes. Calls are fire-and-forget: failures are logged but
+// never surface to the user (the tray/notification are purely informational).
+
+import { invoke } from "@tauri-apps/api/core";
+
+/** Fire an OS toast notification for one instance that just entered needs-you.
+ *  The Rust side throttles repeated calls for the same agent by design (the
+ *  frontend only calls this on fresh `→ needs_you` transitions). */
+export function notifyNeedsYou(instanceTitle: string, taskNote?: string): Promise<void> {
+  return invoke("notify_needs_you", {
+    instanceTitle,
+    taskNote: taskNote ?? null,
+  });
+}
+
+/** Update the tray icon tooltip to reflect the current needs-you count.
+ *  Pass 0 to clear the badge (tooltip reverts to "Workbench"). */
+export function updateTrayBadge(count: number): Promise<void> {
+  return invoke("update_tray_badge", { count });
+}

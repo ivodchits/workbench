@@ -19,12 +19,18 @@ import type { ConsoleStatus } from "../../state/consoles";
 import {
   closeConsole,
   getActiveConsoleId,
+  getOpenConsoles,
   openConsole,
   useConsoles,
 } from "../../state/consoles";
 import { closeShell, getOpenShells, openShell } from "../../state/shells";
 import { closeEditor, getOpenEditors, openEditor } from "../../state/editors";
-import { useLiveStatuses, type LiveStatus } from "../../state/status";
+import {
+  getLiveStatuses,
+  onStatusTransition,
+  useLiveStatuses,
+  type LiveStatus,
+} from "../../state/status";
 import { mergeStatus } from "./status";
 import { getActiveProject, setActiveProject, useActiveProject } from "../../state/activeProject";
 import { focusActivePanel, routePanelFocus } from "../../state/dock";
@@ -38,6 +44,7 @@ import {
 } from "../../state/registry";
 import { isTextInput, matchCommand } from "../../keyboard";
 import { registerCommand } from "../../keyboard/bus";
+import { notifyNeedsYou, updateTrayBadge } from "../../ipc/attention";
 import ProjectDialog from "./ProjectDialog";
 import InstanceDialog from "./InstanceDialog";
 import InstanceCard from "./InstanceCard";
@@ -65,6 +72,7 @@ function InstanceManager({ onCollapse }: InstanceManagerProps) {
   const [newInstanceProject, setNewInstanceProject] = useState<Project | null>(null);
   const [killTarget, setKillTarget] = useState<Instance | null>(null);
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
+  const [needsYouOnly, setNeedsYouOnly] = useState(false);
   const railRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -74,6 +82,47 @@ function InstanceManager({ onCollapse }: InstanceManagerProps) {
   // Global chords the rail owns (the keyboard layer dispatches these via the bus).
   // Handlers read fresh state through module getters, so registering once is safe.
   useEffect(() => {
+    // Jump to the next/previous agent that needs you. All data is read through
+    // module-level getters so the registered-once closure is never stale.
+    const doJump = (dir: 1 | -1) => {
+      const { instances } = getRegistry();
+      const live = getLiveStatuses();
+      const consoleMap = new Map<string, ConsoleStatus>();
+      for (const c of getOpenConsoles()) {
+        if (c.status !== "dormant") consoleMap.set(c.instanceId, c.status);
+      }
+      const needsIds = instances
+        .filter(
+          (i) =>
+            mergeStatus(consoleMap.get(i.id) ?? null, live.get(i.id) ?? null, i.status).needsYou,
+        )
+        .map((i) => i.id);
+      if (needsIds.length === 0) return;
+
+      const currentId = getActiveConsoleId();
+      const currentIdx = needsIds.indexOf(currentId ?? "");
+      const nextIdx =
+        currentIdx < 0
+          ? dir > 0
+            ? 0
+            : needsIds.length - 1
+          : (currentIdx + dir + needsIds.length) % needsIds.length;
+
+      const targetId = needsIds[nextIdx];
+      const target = instances.find((i) => i.id === targetId);
+      if (!target) return;
+
+      setActiveProject(target.projectId);
+      openConsole(target);
+      routePanelFocus(target.id);
+      // Scroll the rail card into view after the next paint
+      requestAnimationFrame(() => {
+        railRef.current
+          ?.querySelector<HTMLElement>(`[data-wb-instance-id="${targetId}"]`)
+          ?.scrollIntoView({ block: "nearest" });
+      });
+    };
+
     const disposers = [
       registerCommand("newInstance", () => {
         const proj = getRegistry().projects.find((p) => p.id === getActiveProject());
@@ -83,16 +132,27 @@ function InstanceManager({ onCollapse }: InstanceManagerProps) {
         const inst = getRegistry().instances.find((i) => i.id === getActiveConsoleId());
         if (inst) setKillTarget(inst);
       }),
-      // "Jump to next / previous agent that needs you" — registered no-ops until
-      // the Phase-2 status engine knows which agents actually need you (plan 1.10
-      // / §4.4). Bound to Ctrl+Shift+Alt+Up / Down.
-      registerCommand("jumpNeedsYou", () => {}),
-      registerCommand("jumpPrevNeedsYou", () => {}),
+      registerCommand("jumpNeedsYou", () => doJump(1)),
+      registerCommand("jumpPrevNeedsYou", () => doJump(-1)),
     ];
     return () => {
       for (const d of disposers) d();
     };
   }, []);
+
+  // Fire an OS notification when an instance transitions into "needs you".
+  // Reads the registry inside the callback so we always get the current title
+  // even if the component re-rendered since subscription was set up.
+  useEffect(
+    () =>
+      onStatusTransition((instanceId, phase) => {
+        if (phase !== "needs_you") return;
+        const inst = getRegistry().instances.find((i) => i.id === instanceId);
+        if (!inst) return;
+        void notifyNeedsYou(inst.title, inst.taskNote ?? undefined).catch(() => {});
+      }),
+    [],
+  );
 
   // Move roving focus between rail rows (project tiles + instance cards). `delta`
   // is +1 (down) / -1 (up); wraps from an unfocused state to the first/last row.
@@ -246,6 +306,22 @@ function InstanceManager({ onCollapse }: InstanceManagerProps) {
     return map;
   }, [instances]);
 
+  // When the filter is active, only show instances that currently need you.
+  // Projects with no matching instances are hidden from the section list.
+  const filteredInstancesByProject = useMemo(() => {
+    if (!needsYouOnly) return instancesByProject;
+    const result = new Map<string, Instance[]>();
+    for (const [projId, insts] of instancesByProject) {
+      const filtered = insts.filter(
+        (i) =>
+          mergeStatus(consoleStatusById.get(i.id) ?? null, liveStatuses.get(i.id) ?? null, i.status)
+            .needsYou,
+      );
+      if (filtered.length > 0) result.set(projId, filtered);
+    }
+    return result;
+  }, [needsYouOnly, instancesByProject, consoleStatusById, liveStatuses]);
+
   // "Needs you" now comes from the merged live status (hook-driven), not the
   // persisted placeholder — so the header count and badges track real sessions.
   const needsCount = useMemo(
@@ -257,6 +333,16 @@ function InstanceManager({ onCollapse }: InstanceManagerProps) {
       ).length,
     [instances, consoleStatusById, liveStatuses],
   );
+
+  // Keep the tray badge tooltip in sync with the needs-you count.
+  useEffect(() => {
+    void updateTrayBadge(needsCount).catch(() => {});
+  }, [needsCount]);
+
+  // Auto-clear the filter when no agents need you anymore.
+  useEffect(() => {
+    if (needsCount === 0) setNeedsYouOnly(false);
+  }, [needsCount]);
 
   const toggle = (key: string) =>
     setCollapsed((prev) => {
@@ -325,6 +411,21 @@ function InstanceManager({ onCollapse }: InstanceManagerProps) {
             <span style={{ color: "var(--wb-text)", fontSize: 12, fontWeight: 600 }}>
               {needsCount} {needsCount === 1 ? "agent needs" : "agents need"} you
             </span>
+            <button
+              onClick={() => setNeedsYouOnly((v) => !v)}
+              title={needsYouOnly ? "show all instances" : "show only agents that need you"}
+              style={{
+                marginLeft: "auto",
+                background: "transparent",
+                border: "none",
+                cursor: "pointer",
+                font: "10.5px var(--wb-mono)",
+                color: needsYouOnly ? "var(--wb-needs)" : "var(--wb-textDim2)",
+                padding: 0,
+              }}
+            >
+              {needsYouOnly ? "all ◂" : "filter ▸"}
+            </button>
           </div>
         )}
 
@@ -357,11 +458,13 @@ function InstanceManager({ onCollapse }: InstanceManagerProps) {
                   </span>
                 </button>
                 {!isCollapsed &&
-                  sec.projects.map((p) => (
+                  sec.projects
+                    .filter((p) => !needsYouOnly || filteredInstancesByProject.has(p.id))
+                    .map((p) => (
                     <ProjectNode
                       key={p.id}
                       project={p}
-                      instances={instancesByProject.get(p.id) ?? []}
+                      instances={filteredInstancesByProject.get(p.id) ?? []}
                       collapsed={collapsed.has(`proj:${p.id}`)}
                       onToggle={() => toggle(`proj:${p.id}`)}
                       active={activeProjectId === p.id}

@@ -164,6 +164,10 @@ function mainKey(e: KeyboardEvent): string | null {
       return "Right";
     case "Delete":
       return "Delete";
+    case "PageDown":
+      return "PageDown";
+    case "PageUp":
+      return "PageUp";
     default:
       return null;
   }

@@ -3,6 +3,7 @@
 // bridge (step 0.2); step 1.2 added the SQLite registry (db + registry) and the
 // prefs store; step 1.3 adds git inspection for project registration.
 
+mod attention;
 mod db;
 mod fs;
 mod git;
@@ -20,6 +21,7 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_store::Builder::default().build())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_notification::init())
         .setup(|app| {
             // Open the registry database under the OS app-data dir so it
             // survives restarts (design §4.6). Created on first launch.
@@ -45,6 +47,9 @@ pub fn run() {
             if let Err(e) = hooks::init(app.handle()) {
                 eprintln!("[hooks] init failed: {e}");
             }
+            // Set up the system tray icon (step 2.3). Failures are logged;
+            // the tray badge commands degrade gracefully when unavailable.
+            attention::setup_tray(app.handle());
             Ok(())
         })
         .manage(pty::PtyManager::default())
@@ -76,6 +81,8 @@ pub fn run() {
             fs::read_file,
             fs::write_file,
             sys::open_path,
+            attention::notify_needs_you,
+            attention::update_tray_badge,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
