@@ -169,6 +169,11 @@ export function acquire(container: HTMLDivElement, opts: AcquireOptions): void {
   const term = new Terminal({
     fontFamily: mono,
     fontSize: 13,
+    // Pin both weights to the exact faces bundled in global.css (400/700). xterm's
+    // default `fontWeightBold: "bold"` lets the browser pick the nearest weight and,
+    // if the real 700 face isn't loaded yet, synthesize one — the wavy-baseline bold.
+    fontWeight: 400,
+    fontWeightBold: 700,
     cursorBlink: true,
     theme: deriveXtermTheme(),
     allowProposedApi: true,
@@ -238,10 +243,20 @@ export function acquire(container: HTMLDivElement, opts: AcquireOptions): void {
   // synthesized-bold glyphs, which sit on a wavy baseline and never refresh on
   // their own — only invalidated cells redraw, which is why dragging a selection
   // over a run snaps it straight. (The DOM renderer reflows on font-load by itself,
-  // so this only bites WebGL.) Rebuild the atlas once the font is ready so every
-  // cell repaints with the real face. Harmless no-op for the DOM renderer or if the
-  // font was already loaded.
-  void document.fonts.ready.then(() => {
+  // so this only bites WebGL.) Rebuild the atlas once the faces are ready so every
+  // cell repaints with the real glyphs. Harmless no-op for the DOM renderer or if
+  // the faces were already loaded.
+  //
+  // `document.fonts.ready` is NOT enough on its own: it only waits for faces already
+  // in the loading pipeline, and the bold (700) face is lazy — nothing fetches it
+  // until weight 700 is actually rendered. Open a console before any bold HTML has
+  // pulled it in and `ready` resolves with only the regular face, the atlas rebakes
+  // with *synthesized* bold, and the wavy bold persists. So explicitly `load()` both
+  // weights (which forces the fetch) and only then rebuild.
+  void Promise.all([
+    document.fonts.load('400 13px "JetBrains Mono"'),
+    document.fonts.load('700 13px "JetBrains Mono"'),
+  ]).then(() => {
     if (pool.get(opts.instanceId) !== entry) return; // released/replaced meanwhile
     term.clearTextureAtlas();
   });
