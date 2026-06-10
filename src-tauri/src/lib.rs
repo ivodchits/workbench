@@ -79,6 +79,7 @@ pub fn run() {
             registry::get_instances,
             registry::get_instance_cmd,
             registry::edit_instance,
+            registry::mirror_instance_task_note,
             registry::remove_instance,
             layout::get_layout,
             layout::set_layout,

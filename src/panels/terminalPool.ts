@@ -31,6 +31,7 @@ import {
   type SpawnResult,
 } from "../ipc/pty";
 import { markInterrupted } from "../state/status";
+import { mirrorInstanceTaskNote } from "../state/registry";
 
 interface TermEntry {
   /** The element xterm renders into; re-parented across mounts, never recreated. */
@@ -39,6 +40,9 @@ interface TermEntry {
   fit: FitAddon;
   dataSub: { dispose(): void };
   resizeSub: { dispose(): void };
+  /** Listener that mirrors the agent's terminal title into the task note; only
+   *  attached for claude consoles (see `acquire`). */
+  titleSub?: { dispose(): void };
   /** Scroll position captured at the last `detach`, restored on re-attach so the
    *  viewport doesn't desync from the buffer (see `acquire`/`detach`). */
   scrollState?: { line: number; atBottom: boolean };
@@ -56,6 +60,61 @@ export interface AcquireOptions {
 }
 
 const pool = new Map<string, TermEntry>();
+
+// --- task-note mirroring from the terminal title (OSC 0/2) ------------------
+// Claude Code emits an OSC title sequence naming its current task; xterm parses
+// it and fires `onTitleChange`. We debounce-mirror that into the instance's task
+// note. The backend gates the write on a per-instance auto flag, so a manually
+// edited note is never clobbered; here we only filter noise and rate-limit.
+
+/** Debounce timers + last-sent title, keyed by instance id. */
+const titleTimers = new Map<string, ReturnType<typeof setTimeout>>();
+const lastMirroredTitle = new Map<string, string>();
+
+/** Wait this long after the last title change before writing — Claude flips the
+ *  title as it moves between sub-steps, and this lets it settle to the latest. */
+const TITLE_MIRROR_DEBOUNCE_MS = 700;
+
+function basename(p: string): string {
+  const parts = p.replace(/[\\/]+$/, "").split(/[\\/]/);
+  return parts[parts.length - 1] ?? "";
+}
+
+/** Normalize a raw OSC title into a note, or null if it's empty/generic noise.
+ *  Claude resets the title to the cwd or a bare "claude" when idle — neither is a
+ *  useful note, so those are dropped rather than mirrored. */
+function cleanTitle(raw: string, cwd: string): string | null {
+  const t = raw
+    // eslint-disable-next-line no-control-regex -- stripping C0/DEL bytes is the point
+    .replace(/[\u0000-\u001F\u007F]/g, "") // strip stray control chars
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!t) return null;
+  const lower = t.toLowerCase();
+  if (lower === "claude" || lower === "claude code") return null;
+  const base = basename(cwd).toLowerCase();
+  if (base && lower === base) return null;
+  return t;
+}
+
+function scheduleTitleMirror(instanceId: string, title: string): void {
+  if (lastMirroredTitle.get(instanceId) === title) return; // already sent
+  clearTimeout(titleTimers.get(instanceId));
+  titleTimers.set(
+    instanceId,
+    setTimeout(() => {
+      titleTimers.delete(instanceId);
+      lastMirroredTitle.set(instanceId, title);
+      void mirrorInstanceTaskNote(instanceId, title);
+    }, TITLE_MIRROR_DEBOUNCE_MS),
+  );
+}
+
+function clearTitleMirror(instanceId: string): void {
+  clearTimeout(titleTimers.get(instanceId));
+  titleTimers.delete(instanceId);
+  lastMirroredTitle.delete(instanceId);
+}
 
 /**
  * Attach the instance's terminal into `container`, creating the terminal + PTY on
@@ -158,7 +217,20 @@ export function acquire(container: HTMLDivElement, opts: AcquireOptions): void {
     void ptyResize(opts.instanceId, cols, rows);
   });
 
-  const entry: TermEntry = { host, term, fit, dataSub, resizeSub };
+  // Mirror the agent's terminal title into the task note (live-mirror feature).
+  // Claude Code names its current task via an OSC title sequence; xterm parses it
+  // and fires this event. Only claude consoles drive the note — a plain shell sets
+  // its title to the cwd, which isn't a task. The backend gates the actual write
+  // on the instance's auto flag, so a manually edited note is never overwritten.
+  let titleSub: { dispose(): void } | undefined;
+  if (opts.kind === "claude") {
+    titleSub = term.onTitleChange((raw) => {
+      const clean = cleanTitle(raw, opts.cwd);
+      if (clean) scheduleTitleMirror(opts.instanceId, clean);
+    });
+  }
+
+  const entry: TermEntry = { host, term, fit, dataSub, resizeSub, titleSub };
   pool.set(opts.instanceId, entry);
 
   // The WebGL renderer bakes a glyph atlas at open time; if the bundled web font
@@ -326,6 +398,8 @@ export function release(instanceId: string): void {
   pool.delete(instanceId);
   entry.dataSub.dispose();
   entry.resizeSub.dispose();
+  entry.titleSub?.dispose();
+  clearTitleMirror(instanceId);
   void ptyKill(instanceId);
   entry.term.dispose();
   entry.host.remove();

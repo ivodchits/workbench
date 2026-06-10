@@ -34,6 +34,9 @@ export interface Instance {
   projectId: string;
   title: string;
   taskNote: string;
+  /** While true, taskNote follows the agent's terminal title; a manual edit
+   *  flips it false so the note is never overwritten. */
+  taskNoteAuto: boolean;
   worktreeOn: boolean;
   branch: string | null;
   lastSessionId: string | null;
@@ -91,6 +94,7 @@ export interface NewInstance {
 export interface InstancePatch {
   title?: string;
   taskNote?: string;
+  taskNoteAuto?: boolean;
   worktreeOn?: boolean;
   branch?: string | null;
   lastSessionId?: string | null;
@@ -158,6 +162,13 @@ export function getInstance(id: string): Promise<Instance> {
 
 export function editInstance(id: string, patch: InstancePatch): Promise<Instance> {
   return invoke("edit_instance", { id, patch });
+}
+
+/** Mirror a terminal-title-derived note into taskNote, gated on the backend's
+ *  auto flag. Resolves to the updated row, or null when nothing changed (the note
+ *  was manually overridden, or the title matched what's already stored). */
+export function mirrorTaskNote(id: string, title: string): Promise<Instance | null> {
+  return invoke("mirror_instance_task_note", { id, title });
 }
 
 export function removeInstance(id: string): Promise<void> {

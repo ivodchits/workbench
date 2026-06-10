@@ -138,6 +138,16 @@ const MIGRATIONS: &[&str] = &[
     ALTER TABLE projects ADD COLUMN worktree_setup_command TEXT;
     ALTER TABLE projects ADD COLUMN worktree_copy_env INTEGER NOT NULL DEFAULT 0;
     "#,
+    // v4 -> v5: live-mirror the task note from the agent's terminal title (the
+    // OSC title Claude Code emits names its current task — design §7 "live to-do
+    // mirroring"). `task_note_auto` tracks whether the note is still following the
+    // title; a manual edit flips it off so the user's text is never clobbered.
+    // New rows default to on; existing rows that already carry a (manual) note are
+    // seeded off so a first run doesn't overwrite it.
+    r#"
+    ALTER TABLE instances ADD COLUMN task_note_auto INTEGER NOT NULL DEFAULT 1;
+    UPDATE instances SET task_note_auto = 0 WHERE task_note <> '';
+    "#,
 ];
 
 /// Apply any migrations the database hasn't seen yet, advancing

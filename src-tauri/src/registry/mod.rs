@@ -93,6 +93,9 @@ pub struct Instance {
     pub project_id: String,
     pub title: String,
     pub task_note: String,
+    /// While true, `task_note` follows the agent's terminal title (live mirror);
+    /// a manual edit flips it false so the user's note is never overwritten.
+    pub task_note_auto: bool,
     pub worktree_on: bool,
     pub branch: Option<String>,
     pub last_session_id: Option<String>,
@@ -161,6 +164,7 @@ pub struct NewInstance {
 pub struct InstancePatch {
     pub title: Option<String>,
     pub task_note: Option<String>,
+    pub task_note_auto: Option<bool>,
     pub worktree_on: Option<bool>,
     pub branch: Option<Option<String>>,
     pub last_session_id: Option<Option<String>>,
@@ -398,13 +402,14 @@ fn row_to_instance(r: &Row) -> rusqlite::Result<Instance> {
         sort_order: r.get(14)?,
         created_at: r.get(15)?,
         last_activity_at: r.get(16)?,
+        task_note_auto: r.get(17)?,
     })
 }
 
 const INSTANCE_COLS: &str = "id, project_id, title, task_note, worktree_on, branch, \
     last_session_id, working_dir, status, input_tokens, output_tokens, \
     cache_creation_tokens, cache_read_tokens, cost_usd, sort_order, created_at, \
-    last_activity_at";
+    last_activity_at, task_note_auto";
 
 pub fn insert_instance(conn: &Connection, input: NewInstance) -> rusqlite::Result<Instance> {
     // Default the working dir to the parent project's root when not provided.
@@ -412,11 +417,16 @@ pub fn insert_instance(conn: &Connection, input: NewInstance) -> rusqlite::Resul
         Some(dir) => dir,
         None => get_project(conn, &input.project_id)?.root_path,
     };
+    // A note supplied at creation is the user's own text, so it isn't auto-mirrored;
+    // an empty/omitted note starts in auto mode so the terminal title can fill it.
+    let task_note = input.task_note.unwrap_or_default();
+    let task_note_auto = task_note.trim().is_empty();
     let instance = Instance {
         id: new_id(),
         project_id: input.project_id,
         title: input.title,
-        task_note: input.task_note.unwrap_or_default(),
+        task_note,
+        task_note_auto,
         worktree_on: input.worktree_on.unwrap_or(false),
         branch: input.branch,
         last_session_id: None,
@@ -435,8 +445,8 @@ pub fn insert_instance(conn: &Connection, input: NewInstance) -> rusqlite::Resul
         "INSERT INTO instances (id, project_id, title, task_note, worktree_on, branch,
             last_session_id, working_dir, status, input_tokens, output_tokens,
             cache_creation_tokens, cache_read_tokens, cost_usd, sort_order, created_at,
-            last_activity_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
+            last_activity_at, task_note_auto)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)",
         rusqlite::params![
             instance.id,
             instance.project_id,
@@ -455,6 +465,7 @@ pub fn insert_instance(conn: &Connection, input: NewInstance) -> rusqlite::Resul
             instance.sort_order,
             instance.created_at,
             instance.last_activity_at,
+            instance.task_note_auto,
         ],
     )?;
     Ok(instance)
@@ -504,6 +515,9 @@ pub fn update_instance(
     if let Some(v) = patch.task_note {
         i.task_note = v;
     }
+    if let Some(v) = patch.task_note_auto {
+        i.task_note_auto = v;
+    }
     if let Some(v) = patch.worktree_on {
         i.worktree_on = v;
     }
@@ -545,7 +559,7 @@ pub fn update_instance(
             title = ?2, task_note = ?3, worktree_on = ?4, branch = ?5, last_session_id = ?6,
             working_dir = ?7, status = ?8, input_tokens = ?9, output_tokens = ?10,
             cache_creation_tokens = ?11, cache_read_tokens = ?12, cost_usd = ?13,
-            sort_order = ?14, last_activity_at = ?15
+            sort_order = ?14, last_activity_at = ?15, task_note_auto = ?16
          WHERE id = ?1",
         rusqlite::params![
             i.id,
@@ -563,9 +577,31 @@ pub fn update_instance(
             i.cost_usd,
             i.sort_order,
             i.last_activity_at,
+            i.task_note_auto,
         ],
     )?;
     Ok(i)
+}
+
+/// Apply a terminal-title-derived note, but only while the instance is still
+/// auto-mirroring (the user hasn't manually edited it). Returns the updated row
+/// when the note actually changed, else `None` (mirroring off, or title unchanged)
+/// so the caller can skip a needless reload.
+pub fn mirror_task_note(
+    conn: &Connection,
+    id: &str,
+    title: &str,
+) -> rusqlite::Result<Option<Instance>> {
+    let mut i = get_instance(conn, id)?;
+    if !i.task_note_auto || i.task_note == title {
+        return Ok(None);
+    }
+    i.task_note = title.to_owned();
+    conn.execute(
+        "UPDATE instances SET task_note = ?2 WHERE id = ?1",
+        rusqlite::params![i.id, i.task_note],
+    )?;
+    Ok(Some(i))
 }
 
 pub fn delete_instance(conn: &Connection, id: &str) -> rusqlite::Result<()> {
@@ -664,6 +700,19 @@ pub fn edit_instance(
 ) -> Result<Instance, String> {
     let conn = lock(&db)?;
     update_instance(&conn, &id, patch).map_err(|e| e.to_string())
+}
+
+/// Mirror a terminal-title-derived note into `task_note`, gated on the instance's
+/// auto flag (a manual edit turns it off). Returns the updated row, or `None` when
+/// nothing changed — so the frontend only reloads on a real change.
+#[tauri::command]
+pub fn mirror_instance_task_note(
+    db: State<'_, Db>,
+    id: String,
+    title: String,
+) -> Result<Option<Instance>, String> {
+    let conn = lock(&db)?;
+    mirror_task_note(&conn, &id, &title).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -775,6 +824,79 @@ mod tests {
         assert_eq!(updated.task_note, "now doing X");
         assert_eq!(updated.status, InstanceStatus::NeedsYou);
         assert_eq!(updated.last_session_id.as_deref(), Some("sess-123"));
+    }
+
+    #[test]
+    fn mirror_follows_title_until_manually_edited() {
+        let c = conn();
+        let project = insert_project(
+            &c,
+            NewProject {
+                name: "p".into(),
+                root_path: "/p".into(),
+                default_branch: None,
+                worktree_setup_command: None,
+                worktree_copy_env: false,
+                group_id: None,
+            },
+        )
+        .unwrap();
+        // No note at creation -> starts in auto-mirror mode.
+        let inst = insert_instance(
+            &c,
+            NewInstance {
+                project_id: project.id.clone(),
+                title: "t".into(),
+                task_note: None,
+                worktree_on: None,
+                branch: None,
+                working_dir: None,
+            },
+        )
+        .unwrap();
+        assert!(inst.task_note_auto);
+
+        // Title mirrors in while auto is on.
+        let m = mirror_task_note(&c, &inst.id, "running the test suite").unwrap();
+        assert_eq!(m.unwrap().task_note, "running the test suite");
+
+        // An unchanged title is a no-op (None -> no reload).
+        assert!(mirror_task_note(&c, &inst.id, "running the test suite")
+            .unwrap()
+            .is_none());
+
+        // A manual edit turns mirroring off...
+        update_instance(
+            &c,
+            &inst.id,
+            InstancePatch {
+                task_note: Some("my own note".into()),
+                task_note_auto: Some(false),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        // ...so a later title no longer clobbers it.
+        assert!(mirror_task_note(&c, &inst.id, "some new title")
+            .unwrap()
+            .is_none());
+        assert_eq!(get_instance(&c, &inst.id).unwrap().task_note, "my own note");
+
+        // A note supplied at creation starts with mirroring off.
+        let manual = insert_instance(
+            &c,
+            NewInstance {
+                project_id: project.id.clone(),
+                title: "t2".into(),
+                task_note: Some("typed up front".into()),
+                worktree_on: None,
+                branch: None,
+                working_dir: None,
+            },
+        )
+        .unwrap();
+        assert!(!manual.task_note_auto);
     }
 
     #[test]

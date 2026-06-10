@@ -20,6 +20,7 @@ import {
   getGroups,
   getInstances,
   getProjects,
+  mirrorTaskNote,
   removeGroup,
   removeInstance,
   removeProject,
@@ -143,6 +144,18 @@ export async function addInstance(input: NewInstance): Promise<Instance> {
 
 export function updateInstance(id: string, patch: InstancePatch): Promise<void> {
   return mutate(() => editInstance(id, patch));
+}
+
+/** Mirror a terminal-title-derived note into an instance (live-mirror feature).
+ *  Reloads only when the backend reports a real change; failures are swallowed so
+ *  a transient title-mirror error never surfaces as a registry error to the user. */
+export async function mirrorInstanceTaskNote(id: string, title: string): Promise<void> {
+  try {
+    const updated = await mirrorTaskNote(id, title);
+    if (updated) await loadRegistry();
+  } catch {
+    // best-effort; ignore.
+  }
 }
 
 export function deleteInstance(id: string): Promise<void> {

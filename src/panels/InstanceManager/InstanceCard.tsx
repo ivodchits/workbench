@@ -259,7 +259,11 @@ function InstanceCard({
           value={instance.taskNote}
           editing={editingNote}
           onEditingChange={setEditingNote}
-          onCommit={(next) => void updateInstance(instance.id, { taskNote: next })}
+          // A manual edit takes the note off auto-mirror, so the agent's terminal
+          // title stops overwriting what the user typed (live-mirror feature).
+          onCommit={(next) =>
+            void updateInstance(instance.id, { taskNote: next, taskNoteAuto: false })
+          }
           placeholder="add a task note…"
           ariaLabel="edit task note"
           style={{ fontSize: 11.5, fontStyle: "italic", color: "var(--wb-textDim2)" }}
