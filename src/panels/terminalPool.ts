@@ -20,7 +20,7 @@ import { FitAddon } from "@xterm/addon-fit";
 import { WebglAddon } from "@xterm/addon-webgl";
 import "@xterm/xterm/css/xterm.css";
 
-import { deriveXtermTheme, mono } from "../theme/tokens";
+import { activeTheme, deriveXtermTheme, mono } from "../theme/tokens";
 import {
   ptyKill,
   ptyResize,
@@ -39,6 +39,9 @@ interface TermEntry {
   fit: FitAddon;
   dataSub: { dispose(): void };
   resizeSub: { dispose(): void };
+  /** Scroll position captured at the last `detach`, restored on re-attach so the
+   *  viewport doesn't desync from the buffer (see `acquire`/`detach`). */
+  scrollState?: { line: number; atBottom: boolean };
 }
 
 export interface AcquireOptions {
@@ -65,6 +68,21 @@ export function acquire(container: HTMLDivElement, opts: AcquireOptions): void {
     container.appendChild(existing.host); // moves it out of any old container
     refit(existing);
     existing.term.focus();
+    // Re-parenting resets the `.xterm-viewport` DOM scrollTop to 0 while the
+    // buffer stays scrolled where it was, so the scrollbar desyncs from the
+    // rendered rows (pinned at the top, content showing the old position, and the
+    // stale scroll area unable to reach the real bottom until a resize). A plain
+    // `fit()` doesn't fix it — it's a no-op when the panel size is unchanged, so
+    // it never re-syncs the viewport. Defer one frame so the re-attached element
+    // has its final layout, then refit and re-sync: follow new output if it was at
+    // the bottom (the common case for a live session), else restore the exact line.
+    const saved = existing.scrollState;
+    requestAnimationFrame(() => {
+      if (pool.get(opts.instanceId) !== existing) return; // released/replaced
+      refit(existing);
+      if (!saved || saved.atBottom) existing.term.scrollToBottom();
+      else existing.term.scrollToLine(saved.line);
+    });
     return;
   }
 
@@ -83,6 +101,17 @@ export function acquire(container: HTMLDivElement, opts: AcquireOptions): void {
   const fit = new FitAddon();
   term.loadAddon(fit);
   term.open(host);
+
+  term.attachCustomKeyEventHandler((e) => {
+    if (e.ctrlKey && e.shiftKey && e.code === "KeyC" && e.type === "keydown") {
+      const sel = term.getSelection();
+      if (sel) void navigator.clipboard.writeText(sel);
+      return false; // prevent xterm from processing this key further
+    }
+    return true;
+  });
+
+  attachContextMenu(host, term);
 
   // WebGL must load after open (it needs the rendered canvas). Dispose on context
   // loss so xterm reverts to the DOM renderer rather than rendering nothing.
@@ -161,8 +190,101 @@ export function refit(entryOrId: TermEntry | string): void {
 export function detach(container: HTMLDivElement, instanceId: string): void {
   const entry = pool.get(instanceId);
   if (entry && entry.host.parentElement === container) {
+    // Capture scroll position before the DOM detach throws it away, so the
+    // re-attach in `acquire` can restore it instead of snapping to a stale 0.
+    const buf = entry.term.buffer.active;
+    entry.scrollState = { line: buf.viewportY, atBottom: buf.viewportY >= buf.baseY };
     container.removeChild(entry.host);
   }
+}
+
+function attachContextMenu(host: HTMLDivElement, term: Terminal): void {
+  host.addEventListener("contextmenu", (e) => {
+    e.preventDefault();
+    showTermContextMenu(e.clientX, e.clientY, term);
+  });
+}
+
+function showTermContextMenu(cx: number, cy: number, term: Terminal): void {
+  document.querySelector(".wb-ctx-menu")?.remove();
+
+  const { panel, border, text: fg, textDim2, sel: hoverBg } = activeTheme;
+  const selection = term.getSelection();
+
+  const menu = document.createElement("div");
+  menu.className = "wb-ctx-menu";
+  Object.assign(menu.style, {
+    position: "fixed",
+    zIndex: "9999",
+    left: `${cx}px`,
+    top: `${cy}px`,
+    background: panel,
+    border: `1px solid ${border}`,
+    borderRadius: "4px",
+    padding: "4px 0",
+    minWidth: "120px",
+    boxShadow: "0 4px 16px rgba(0,0,0,0.5)",
+    fontFamily: mono,
+    fontSize: "12px",
+    visibility: "hidden",
+  });
+
+  function dismiss() {
+    menu.remove();
+    document.removeEventListener("mousedown", onOutside);
+    document.removeEventListener("keydown", onEsc, true);
+  }
+
+  function addItem(label: string, enabled: boolean, action: () => void): void {
+    const item = document.createElement("div");
+    Object.assign(item.style, {
+      padding: "5px 12px",
+      cursor: enabled ? "pointer" : "default",
+      color: enabled ? fg : textDim2,
+      userSelect: "none",
+    });
+    item.textContent = label;
+    if (enabled) {
+      item.addEventListener("mouseenter", () => { item.style.background = hoverBg; });
+      item.addEventListener("mouseleave", () => { item.style.background = ""; });
+      item.addEventListener("mousedown", (e) => {
+        e.preventDefault();
+        dismiss();
+        action();
+      });
+    }
+    menu.appendChild(item);
+  }
+
+  addItem("Copy", selection.length > 0, () => {
+    void navigator.clipboard.writeText(selection);
+  });
+  addItem("Paste", true, () => {
+    void navigator.clipboard.readText().then((t) => term.paste(t));
+  });
+
+  const onOutside = (e: MouseEvent) => {
+    if (!menu.contains(e.target as Node)) dismiss();
+  };
+  const onEsc = (e: KeyboardEvent) => {
+    if (e.key === "Escape") { e.stopPropagation(); dismiss(); }
+  };
+
+  document.body.appendChild(menu);
+
+  // Reposition after render so the menu doesn't bleed off-screen, then show.
+  requestAnimationFrame(() => {
+    const r = menu.getBoundingClientRect();
+    if (r.right > window.innerWidth) menu.style.left = `${cx - r.width}px`;
+    if (r.bottom > window.innerHeight) menu.style.top = `${cy - r.height}px`;
+    menu.style.visibility = "visible";
+  });
+
+  // Delay listener so the triggering mousedown doesn't immediately dismiss.
+  setTimeout(() => {
+    document.addEventListener("mousedown", onOutside);
+    document.addEventListener("keydown", onEsc, true);
+  }, 0);
 }
 
 /**
