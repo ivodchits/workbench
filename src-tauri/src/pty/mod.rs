@@ -69,16 +69,30 @@ impl PtyManager {
     pub fn adopt_session_for_cwd(&self, session_id: &str, cwd: &str) -> Option<String> {
         let target = norm_dir(cwd);
         let instance_id = {
-            let sessions = self.sessions.lock().unwrap();
-            let mut hits = sessions
-                .iter()
-                .filter(|(_, s)| norm_dir(&s.cwd) == target)
-                .map(|(id, _)| id.clone());
-            let first = hits.next()?;
-            if hits.next().is_some() {
-                return None; // ambiguous — two live instances in the same dir
+            let mut sessions = self.sessions.lock().unwrap();
+            let mut live_match: Option<String> = None;
+            for (id, s) in sessions.iter_mut() {
+                if norm_dir(&s.cwd) != target {
+                    continue;
+                }
+                // Skip corpses. When a `claude` child exits on its own (`/exit`,
+                // Ctrl-D, crash) its reader thread breaks on EOF but never removes the
+                // `PtySession`, so a dead entry can linger in `sessions` keyed to its
+                // old cwd. Counting that corpse would trip the ambiguity guard below
+                // and strand a rotated session whose `/clear` happened in the same dir
+                // — the "hooks dead after /clear" bug. `try_wait` reaps without
+                // blocking: `Ok(Some(_))` means the child already exited, so it's not a
+                // valid adoption target. An `Err`/`Ok(None)` (can't tell / still
+                // running) is treated as live, so we never drop a real instance.
+                if matches!(s.child.try_wait(), Ok(Some(_))) {
+                    continue;
+                }
+                if live_match.is_some() {
+                    return None; // ambiguous — two live instances in the same dir
+                }
+                live_match = Some(id.clone());
             }
-            first
+            live_match?
         };
         // Replace this instance's mapping rather than add a second one: the old
         // (rotated-away) session id must stop resolving, or a late `SessionEnd` for

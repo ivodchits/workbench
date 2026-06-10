@@ -154,8 +154,18 @@ export function reduceStatus(
     // --- turn boundaries (instant) ------------------------------------------
     case "SessionStart":
       return to("idle", true, { subagents: 0 });
-    case "SessionEnd":
-      return to("ended", true, { subagents: 0 });
+    case "SessionEnd": {
+      // `/clear` fires `SessionEnd` with `reason: "clear"`, but it is a *rotation*,
+      // not a death: the same `claude` process keeps running in the same cwd and
+      // simply mints a fresh session id (verified empirically — no `SessionStart`
+      // follows; the next `UserPromptSubmit` carries the new id and is re-correlated
+      // by cwd in the backend `adopt` path). Marking the card "ended" here is the bug
+      // that made `/clear` look like it killed the session — so treat a clear as a
+      // fresh idle turn and let the next event light it back up. Every other reason
+      // (`prompt_input_exit`, `logout`, `other`) is a genuine end.
+      const reason = typeof event.reason === "string" ? event.reason : "";
+      return to(reason === "clear" ? "idle" : "ended", true, { subagents: 0 });
+    }
 
     // --- you acted (instant): start a new turn, clearing any resting state ---
     case "UserPromptSubmit":
