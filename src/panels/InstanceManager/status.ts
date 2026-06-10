@@ -6,8 +6,10 @@
 // shows.
 //
 // The status palette doubles as the UI accent system: ● needs you = magenta ·
-// ⠹/◐ working = amber · ○ done/idle = green · · closed = grey. `idle` shares the
-// green "done/idle" glyph per the §4.4 mapping.
+// ⠹/◐ working = amber · ○ done/idle = green · − closed = grey. `idle` shares the
+// green "done/idle" glyph per the §4.4 mapping. A row with no live session and no
+// open console always reads as − closed (grey), so a dormant instance never looks
+// like a ○ done that's awaiting your move (`mergeStatus` step 4).
 
 import { GLYPH } from "../../theme";
 import type { InstanceStatus } from "../../ipc/registry";
@@ -30,7 +32,7 @@ const TABLE: Record<InstanceStatus, StatusDisplay> = {
   working: { glyph: "◐", colorVar: "var(--wb-working)", label: "working", working: true },
   needs_you: { glyph: "●", colorVar: "var(--wb-needs)", label: "needs you", working: false },
   done: { glyph: "○", colorVar: "var(--wb-done)", label: "done", working: false },
-  closed: { glyph: "·", colorVar: "var(--wb-closed)", label: "closed", working: false },
+  closed: { glyph: "−", colorVar: "var(--wb-closed)", label: "closed", working: false },
 };
 
 export function statusDisplay(status: InstanceStatus): StatusDisplay {
@@ -115,9 +117,15 @@ export function mergeStatus(
     return { ...BLANK, glyph: GLYPH.run, colorVar: "var(--wb-accent)", label: "running" };
   }
 
-  // 4. Dormant / no console: the persisted placeholder.
-  const d = statusDisplay(persisted);
-  return { ...BLANK, glyph: d.glyph, colorVar: d.colorVar, label: d.label, spinning: d.working };
+  // 4. No live session and no open console → this instance is *closed*: it still
+  //    exists (and can be relaunched) but isn't running and needs nothing from you.
+  //    Show the grey "−" so it reads as dormant, distinct from a live ○ done (your
+  //    move). The persisted `status` is just a static placeholder here (the live
+  //    engine never writes it back), so a dormant row would otherwise wrongly show
+  //    its default idle/done green ○ — hence we render the closed look outright.
+  void persisted;
+  const d = statusDisplay("closed");
+  return { ...BLANK, glyph: d.glyph, colorVar: d.colorVar, label: d.label };
 }
 
 /** Compact relative time ("now", "3m", "2h", "5d") from an epoch-seconds stamp. */

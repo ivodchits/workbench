@@ -58,7 +58,7 @@ export interface ThemeTokens {
   needs: string;
   /** ○ done / idle. */
   done: string;
-  /** · closed / dim. */
+  /** − closed / dim. */
   closed: string;
 
   // ── diff ──────────────────────────────────────────────────────────────────
@@ -98,7 +98,7 @@ export interface ThemeTokens {
 /**
  * "Muted dark" — violet structural accent, calm for long sessions. The status
  * palette doubles as the UI accent system: ● needs you = magenta · ◐ working =
- * amber · ○ done/idle = green · · closed = grey. (Matches the design mockup.)
+ * amber · ○ done/idle = green · − closed = grey. (Matches the design mockup.)
  */
 export const mutedDark: ThemeTokens = {
   bg: "#13151e",

@@ -16,7 +16,7 @@ export const STATUS_GLYPH: Record<Status, string> = {
   working: "◐",
   needs: "●",
   done: "○",
-  closed: "·",
+  closed: "−",
 };
 
 /** The theme token each status maps to — both the glyph color and its accent. */
