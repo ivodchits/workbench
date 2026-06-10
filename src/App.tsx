@@ -198,14 +198,6 @@ function TitleBar({ context }: { context: string }) {
         color: "var(--wb-text)",
       }}
     >
-      <div style={{ display: "flex", alignItems: "center", gap: 9, padding: "0 14px" }}>
-        <span
-          style={{ color: "var(--wb-accent)", fontWeight: 700, fontSize: 14, letterSpacing: "-0.5px" }}
-        >
-          ▞▚
-        </span>
-        <span style={{ fontWeight: 700, letterSpacing: "0.04em" }}>Workbench</span>
-      </div>
       <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }}>
         <span style={{ color: "var(--wb-textFaint)", fontSize: 11 }}>╶</span>
         <span style={{ color: "var(--wb-textDim2)", fontSize: 11.5 }}>{context}</span>
