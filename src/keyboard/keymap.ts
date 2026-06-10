@@ -93,10 +93,11 @@ export const BINDINGS: Binding[] = [
   // --- global: instance control --------------------------------------------
   { chord: "Ctrl+Shift+N", command: "newInstance", scope: "global", title: "New instance in the active project" },
   { chord: "Ctrl+Shift+K", command: "killInstance", scope: "global", title: "Kill the focused instance" },
-  // Attention navigation (wired to the status engine in Phase 2). Ctrl+Shift+Alt
-  // keeps clear of the Intel-GPU display-rotate combo (Ctrl+Alt+Arrow, no Shift).
-  { chord: "Shift+Alt+PageDown", command: "jumpNeedsYou", scope: "global", title: "Jump to next agent that needs you" },
-  { chord: "Shift+Alt+PageUp", command: "jumpPrevNeedsYou", scope: "global", title: "Jump to previous agent that needs you" },
+  // Attention navigation (wired to the status engine in Phase 2). Modifiers must
+  // be written in `eventToChord`'s canonical order (Ctrl → Alt → Shift) or the
+  // string match in `matchCommand` never fires — hence `Alt+Shift`, not `Shift+Alt`.
+  { chord: "Alt+Shift+PageDown", command: "jumpNeedsYou", scope: "global", title: "Jump to next agent that needs you" },
+  { chord: "Alt+Shift+PageUp", command: "jumpPrevNeedsYou", scope: "global", title: "Jump to previous agent that needs you" },
 
   // --- rail: navigation (TUI single keys) -----------------------------------
   { chord: "Up", command: "railPrev", scope: "rail", title: "Rail: move up" },

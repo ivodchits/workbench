@@ -30,7 +30,12 @@ body {
   color: var(--wb-text, #d8dae8);
   font: 12.5px var(--wb-mono, ui-monospace, monospace);
   -webkit-font-smoothing: antialiased;
-  text-rendering: optimizeLegibility;
+  /* `optimizeLegibility` forces complex shaping (kerning/ligatures) that, with the
+     bundled web font, lands bold glyphs on slightly off baselines in Chromium — the
+     "wavey" look that snaps straight while a run is selected (selection repaints via
+     a simpler text path). A monospace surface wants neither kerning nor ligatures,
+     so render straight. */
+  text-rendering: optimizeSpeed;
   overflow: hidden;
   user-select: none;
 }
