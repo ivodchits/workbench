@@ -12,7 +12,7 @@
 //! `instance_id → PTY` map — the lookup the Phase-2 hook server needs to route an
 //! event (which only carries `session_id`) back to its card.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::ffi::OsStr;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -46,6 +46,13 @@ struct PtySession {
 pub struct PtyManager {
     sessions: Mutex<HashMap<String, PtySession>>,
     by_session: Mutex<HashMap<String, String>>,
+    /// Instances whose session just rotated under us (they emitted `SessionEnd`
+    /// with `reason:"clear"`) and are therefore awaiting a fresh, unminted session
+    /// id we can only re-correlate by cwd. Only an instance flagged here is an
+    /// adoption candidate — see [`Self::adopt_session_for_cwd`]. This is what keeps
+    /// a `/clear` rotation from being absorbed by a co-located *working* instance
+    /// (or a foreign `claude`) that happens to share the working directory.
+    pending_rotation: Mutex<HashSet<String>>,
 }
 
 impl PtyManager {
@@ -59,19 +66,52 @@ impl PtyManager {
         self.by_session.lock().unwrap().get(session_id).cloned()
     }
 
+    /// Flag `instance_id` as awaiting a rotated session, because its old session
+    /// just emitted `SessionEnd{reason:"clear"}`. A `/clear` mints a brand-new
+    /// session id with no link to the old one *except the shared cwd*, so the only
+    /// safe re-correlation is: adopt the next unmapped session in that cwd into the
+    /// instance that actually cleared. Flagging makes that target explicit. Cleared
+    /// on successful adoption (or when the instance is killed).
+    pub fn mark_pending_rotation(&self, instance_id: &str) {
+        self.pending_rotation
+            .lock()
+            .unwrap()
+            .insert(instance_id.to_string());
+    }
+
     /// Re-correlate a session id Workbench didn't mint to a live instance by its
     /// working dir, registering the mapping so subsequent events pass the filter.
-    /// This is how `/clear` and `/compact` survive (they rotate the session id):
-    /// the new session runs in the same cwd as exactly one live instance we
-    /// launched. Returns `None` — leaving the event dropped — when no live instance
-    /// matches, or when the dir is ambiguous (≥2 live instances share it), so the
-    /// §4.4 filter stays honest: we only ever adopt into an instance we're running.
+    /// This is how a `/clear` rotation survives (it mints a fresh session id in the
+    /// same cwd): the old id's `SessionEnd{reason:"clear"}` flags the instance via
+    /// [`Self::mark_pending_rotation`], and here we adopt the rotated session into
+    /// it.
+    ///
+    /// Crucially, the candidate set is **only instances flagged pending-rotation** —
+    /// not every live instance in the cwd. When several instances share a working
+    /// directory (worktrees off → all default to the project root), a bare-cwd match
+    /// is ambiguous: it would let a rotated/foreign session be adopted into a
+    /// co-located instance that's actively *working*, flipping its card. (That was
+    /// the bug: while the siblings were open the ambiguity guard just dropped the
+    /// event; closing them left one live instance in the dir, so the next stray
+    /// clear-rotation got adopted into the survivor and reset it to idle.) Gating on
+    /// the pending flag means only an instance that genuinely rotated is eligible.
+    ///
+    /// Returns `None` — leaving the event dropped — when no pending instance matches,
+    /// or when ≥2 pending instances share the dir (still ambiguous, but now only
+    /// among instances that all actually cleared), so the §4.4 filter stays honest:
+    /// we only ever adopt into an instance we're running.
     pub fn adopt_session_for_cwd(&self, session_id: &str, cwd: &str) -> Option<String> {
         let target = norm_dir(cwd);
         let instance_id = {
+            let pending = self.pending_rotation.lock().unwrap();
             let mut sessions = self.sessions.lock().unwrap();
             let mut live_match: Option<String> = None;
             for (id, s) in sessions.iter_mut() {
+                // Only an instance that actually rotated (`/clear`) is a candidate;
+                // a co-located working instance or foreign session is never adopted.
+                if !pending.contains(id) {
+                    continue;
+                }
                 if norm_dir(&s.cwd) != target {
                     continue;
                 }
@@ -88,12 +128,15 @@ impl PtyManager {
                     continue;
                 }
                 if live_match.is_some() {
-                    return None; // ambiguous — two live instances in the same dir
+                    return None; // ambiguous — two cleared instances in the same dir
                 }
                 live_match = Some(id.clone());
             }
             live_match?
         };
+        // The rotation is now correlated — clear the flag so a later stray session in
+        // the same dir can't be adopted into this instance a second time.
+        self.pending_rotation.lock().unwrap().remove(&instance_id);
         // Replace this instance's mapping rather than add a second one: the old
         // (rotated-away) session id must stop resolving, or a late `SessionEnd` for
         // it would mark the still-live card "ended".
@@ -388,7 +431,10 @@ fn kill_instance(mgr: &PtyManager, instance_id: &str) {
     if let Some(mut session) = removed {
         let _ = session.child.kill();
         // Purge every session id mapping to this instance — the minted one and any
-        // adopted after a `/clear` / `/compact` rotation — so no stale id lingers.
+        // adopted after a `/clear` rotation — so no stale id lingers.
         mgr.by_session.lock().unwrap().retain(|_, v| v != instance_id);
+        // Drop any pending-rotation flag too, so a stray session in this dir can't
+        // be adopted into a now-dead instance.
+        mgr.pending_rotation.lock().unwrap().remove(instance_id);
     }
 }

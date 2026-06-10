@@ -134,10 +134,22 @@ async fn handle(State(ctx): State<Arc<HookContext>>, body: Bytes) -> StatusCode 
     let pty = ctx.app.state::<PtyManager>();
     let decision = classify(&body, |sid| pty.instance_for_session(sid));
     let envelope = match decision {
-        Decision::Accept(envelope) => Some(envelope),
-        // A dropped event may be from a session Claude rotated under us
-        // (`/clear` / `/compact`): adopt it by cwd if it maps to a single live
-        // instance, otherwise it's genuinely foreign and stays dropped.
+        Decision::Accept(envelope) => {
+            // A `/clear` rotates the session id: the OLD (still-mapped) id emits
+            // `SessionEnd{reason:"clear"}`, then the new id appears unmapped and is
+            // re-correlated by cwd. Flag this instance as the only legitimate
+            // adoption target for that rotation, so a co-located *working* instance
+            // (or a foreign `claude`) sharing the cwd can never absorb the rotated
+            // session — the bug where closing the masking siblings let a stray
+            // clear-rotation flip a working card to idle.
+            if is_clear_rotation(&envelope.event) {
+                pty.mark_pending_rotation(&envelope.instance_id);
+            }
+            Some(envelope)
+        }
+        // A dropped event may be from a session Claude rotated under us (`/clear`):
+        // adopt it by cwd into the instance flagged pending-rotation, otherwise it's
+        // genuinely foreign and stays dropped.
         Decision::Drop(event) => adopt(&pty, *event).map(Box::new),
         Decision::Ignore => None,
     };
@@ -167,6 +179,17 @@ fn adopt(pty: &PtyManager, event: HookEvent) -> Option<HookEnvelope> {
         received_at: now(),
         event,
     })
+}
+
+/// True iff this event is a `/clear` rotation: a `SessionEnd` carrying
+/// `reason:"clear"`. Such an event is the signal that the emitting instance is
+/// about to keep running under a fresh session id, so it (and only it) becomes the
+/// adoption target for the next unmapped session in its cwd. Other `SessionEnd`
+/// reasons (`prompt_input_exit` / `logout` / `other`) are genuine deaths, not
+/// rotations, and must not flag a pending adoption.
+fn is_clear_rotation(event: &HookEvent) -> bool {
+    event.hook_event_name.as_deref() == Some("SessionEnd")
+        && event.rest.get("reason").and_then(|v| v.as_str()) == Some("clear")
 }
 
 fn now() -> i64 {
@@ -227,5 +250,28 @@ mod tests {
             }
             _ => panic!("expected Accept"),
         }
+    }
+
+    /// Only `SessionEnd{reason:"clear"}` flags a pending rotation — the signal that
+    /// a `/clear` is re-minting the session id in the same cwd. Other `SessionEnd`
+    /// reasons are genuine deaths and must not make the instance an adoption target.
+    #[test]
+    fn clear_rotation_is_detected() {
+        let parse = |body: &[u8]| serde_json::from_slice::<HookEvent>(body).unwrap();
+        assert!(is_clear_rotation(&parse(
+            br#"{"session_id":"a","hook_event_name":"SessionEnd","reason":"clear"}"#
+        )));
+        // A real end (not a rotation) — must not flag.
+        assert!(!is_clear_rotation(&parse(
+            br#"{"session_id":"a","hook_event_name":"SessionEnd","reason":"logout"}"#
+        )));
+        // SessionEnd with no reason — must not flag.
+        assert!(!is_clear_rotation(&parse(
+            br#"{"session_id":"a","hook_event_name":"SessionEnd"}"#
+        )));
+        // The right reason on the wrong event — must not flag.
+        assert!(!is_clear_rotation(&parse(
+            br#"{"session_id":"a","hook_event_name":"Stop","reason":"clear"}"#
+        )));
     }
 }
