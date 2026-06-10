@@ -128,6 +128,14 @@ function InstanceManager({ onCollapse }: InstanceManagerProps) {
         const proj = getRegistry().projects.find((p) => p.id === getActiveProject());
         if (proj) setNewInstanceProject(proj);
       }),
+      registerCommand("newEditor", () => {
+        const proj = getRegistry().projects.find((p) => p.id === getActiveProject());
+        if (proj) openEditorForProject(proj);
+      }),
+      registerCommand("newShell", () => {
+        const proj = getRegistry().projects.find((p) => p.id === getActiveProject());
+        if (proj) openShellForProject(proj);
+      }),
       registerCommand("killInstance", () => {
         const inst = getRegistry().instances.find((i) => i.id === getActiveConsoleId());
         if (inst) setKillTarget(inst);
