@@ -14,6 +14,9 @@ export interface Prefs {
   themeId: string;
   /** Last-selected project id, restored on launch so you land where you left. */
   activeProjectId: string;
+  /** Override for where worktrees are provisioned (step 2.4). Empty = the default
+   *  sibling `.workbench/worktrees/` next to each repo (decision 7). */
+  worktreeBasePath: string;
 }
 // Note: the hook-server port is owned by the Rust backend (it must bind before it
 // can advertise the port), persisted in the SQLite `meta` table, and read by the

@@ -42,6 +42,7 @@ import {
   loadRegistry,
   useRegistry,
 } from "../../state/registry";
+import { provisionWorktree, revertToRoot, slugify } from "../../state/worktree";
 import { isTextInput, matchCommand } from "../../keyboard";
 import { registerCommand } from "../../keyboard/bus";
 import { notifyNeedsYou, updateTrayBadge } from "../../ipc/attention";
@@ -71,6 +72,7 @@ function InstanceManager({ onCollapse }: InstanceManagerProps) {
   const [removeProjectTarget, setRemoveProjectTarget] = useState<Project | null>(null);
   const [newInstanceProject, setNewInstanceProject] = useState<Project | null>(null);
   const [killTarget, setKillTarget] = useState<Instance | null>(null);
+  const [worktreeTarget, setWorktreeTarget] = useState<Instance | null>(null);
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
   const [needsYouOnly, setNeedsYouOnly] = useState(false);
   const railRef = useRef<HTMLDivElement>(null);
@@ -495,6 +497,7 @@ function InstanceManager({ onCollapse }: InstanceManagerProps) {
                       onEdit={() => setEditProjectTarget(p)}
                       onRemove={() => setRemoveProjectTarget(p)}
                       onNewInstance={() => setNewInstanceProject(p)}
+                      onToggleWorktree={setWorktreeTarget}
                       onKill={setKillTarget}
                     />
                   ))}
@@ -528,6 +531,13 @@ function InstanceManager({ onCollapse }: InstanceManagerProps) {
         <InstanceDialog project={newInstanceProject} onClose={() => setNewInstanceProject(null)} />
       )}
       {killTarget && <KillConfirm instance={killTarget} onClose={() => setKillTarget(null)} />}
+      {worktreeTarget && (
+        <WorktreeConfirm
+          instance={worktreeTarget}
+          project={projects.find((p) => p.id === worktreeTarget.projectId) ?? null}
+          onClose={() => setWorktreeTarget(null)}
+        />
+      )}
     </>
   );
 }
@@ -553,6 +563,7 @@ interface ProjectNodeProps {
   onEdit: () => void;
   onRemove: () => void;
   onNewInstance: () => void;
+  onToggleWorktree: (instance: Instance) => void;
   onKill: (instance: Instance) => void;
 }
 
@@ -571,6 +582,7 @@ function ProjectNode({
   onEdit,
   onRemove,
   onNewInstance,
+  onToggleWorktree,
   onKill,
 }: ProjectNodeProps) {
   const [hover, setHover] = useState(false);
@@ -734,6 +746,7 @@ function ProjectNode({
               consoleStatus={consoleStatusById.get(i.id) ?? null}
               live={liveStatuses.get(i.id) ?? null}
               onActivate={() => onActivate(i)}
+              onToggleWorktree={() => onToggleWorktree(i)}
               onKill={() => onKill(i)}
             />
           ))}
@@ -857,6 +870,94 @@ function KillConfirm({ instance, onClose }: { instance: Instance; onClose: () =>
         console and removes the instance from the rail.
       </div>
       <ConfirmButtons busy={busy} onCancel={onClose} onConfirm={() => void confirm()} label="kill" />
+    </Modal>
+  );
+}
+
+/** Confirm provisioning a worktree (toggle ON) or returning to the project root
+ *  (toggle OFF). Provisioning restarts the claude session in the new dir, so this
+ *  is a deliberate confirm rather than the old instant flag-flip (step 2.4). */
+function WorktreeConfirm({
+  instance,
+  project,
+  onClose,
+}: {
+  instance: Instance;
+  project: Project | null;
+  onClose: () => void;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const turningOn = !instance.worktreeOn;
+  // Whether a live console would be restarted by this change (we relaunch claude
+  // in the new working dir).
+  const consoleLive = getOpenConsoles().some(
+    (c) => c.instanceId === instance.id && c.status !== "dormant",
+  );
+
+  const confirm = async () => {
+    if (!project) {
+      setError("project not found");
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      if (turningOn) await provisionWorktree(instance, project);
+      else await revertToRoot(instance, project);
+      onClose();
+    } catch (e) {
+      setError(String(e instanceof Error ? e.message : e));
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Modal title={turningOn ? "isolate in a worktree" : "return to project root"} onClose={onClose} width={420}>
+      <div style={{ fontSize: 12.5, color: "var(--wb-text)", lineHeight: 1.5 }}>
+        {turningOn ? (
+          <>
+            Provision an isolated worktree for{" "}
+            <strong style={{ color: "var(--wb-accent)" }}>{instance.title}</strong> on a new branch{" "}
+            <span style={{ color: "var(--wb-accent)", fontFamily: "var(--wb-mono)" }}>
+              agent/{slugify(instance.title)}
+            </span>
+            ?
+          </>
+        ) : (
+          <>
+            Point <strong style={{ color: "var(--wb-accent)" }}>{instance.title}</strong> back at the
+            project root? The worktree folder and its{" "}
+            <span style={{ color: "var(--wb-accent)", fontFamily: "var(--wb-mono)" }}>
+              {instance.branch ?? "agent/…"}
+            </span>{" "}
+            branch are left on disk — merge &amp; cleanup arrive in the next step.
+          </>
+        )}
+        {consoleLive && (
+          <div style={{ marginTop: 8, color: "var(--wb-working)" }}>
+            {GLYPH.warn} Its console is running — this restarts the claude session in the new
+            directory.
+          </div>
+        )}
+        {error && (
+          <div style={{ marginTop: 8, color: "var(--wb-needs)", fontFamily: "var(--wb-mono)", fontSize: 11.5 }}>
+            {GLYPH.fail} {error}
+          </div>
+        )}
+      </div>
+      <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 16 }}>
+        <button onClick={onClose} style={confirmButtonStyle}>
+          cancel
+        </button>
+        <button
+          onClick={() => void confirm()}
+          disabled={busy}
+          style={{ ...confirmButtonStyle, borderColor: "var(--wb-borderActive)" }}
+        >
+          {busy ? "working…" : turningOn ? `${GLYPH.worktree} isolate` : "return to root"}
+        </button>
+      </div>
     </Modal>
   );
 }

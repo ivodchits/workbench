@@ -128,8 +128,17 @@ export function deleteGroup(id: string): Promise<void> {
 
 // --- instance mutations -----------------------------------------------------
 
-export function addInstance(input: NewInstance): Promise<void> {
-  return mutate(() => createInstance(input));
+/** Create an instance and return its row (callers need the new id to provision a
+ *  worktree right after — step 2.4). Reloads the registry on success. */
+export async function addInstance(input: NewInstance): Promise<Instance> {
+  try {
+    const instance = await createInstance(input);
+    await loadRegistry();
+    return instance;
+  } catch (e) {
+    setState({ error: String(e) });
+    throw e;
+  }
 }
 
 export function updateInstance(id: string, patch: InstancePatch): Promise<void> {

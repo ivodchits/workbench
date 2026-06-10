@@ -37,19 +37,25 @@ interface InstanceCardProps {
   live: LiveStatus | null;
   /** Launch or focus this instance's console (row click / Enter). */
   onActivate: () => void;
+  /** Provision (or revert) this instance's worktree — opens a confirm (step 2.4). */
+  onToggleWorktree: () => void;
   onKill: () => void;
 }
 
-function InstanceCard({ instance, consoleStatus, live, onActivate, onKill }: InstanceCardProps) {
+function InstanceCard({
+  instance,
+  consoleStatus,
+  live,
+  onActivate,
+  onToggleWorktree,
+  onKill,
+}: InstanceCardProps) {
   const [hover, setHover] = useState(false);
   const [editingNote, setEditingNote] = useState(false);
   const [editingTitle, setEditingTitle] = useState(false);
   const view = mergeStatus(consoleStatus, live, instance.status);
   const dim = !live && !consoleStatus && instance.status === "closed";
   const showActions = hover || editingNote || editingTitle;
-
-  const toggleWorktree = () =>
-    void updateInstance(instance.id, { worktreeOn: !instance.worktreeOn });
 
   // Rail single-keys for a focused instance card (design §5.y). The guards defer
   // to an open inline editor (typing) and to events from child controls; nav /
@@ -73,7 +79,7 @@ function InstanceCard({ instance, consoleStatus, live, onActivate, onKill }: Ins
         onKill();
         break;
       case "railWorktree":
-        toggleWorktree();
+        onToggleWorktree();
         break;
       case "railOpenDir":
         void openPath(instance.workingDir);
@@ -188,8 +194,8 @@ function InstanceCard({ instance, consoleStatus, live, onActivate, onKill }: Ins
         {showActions ? (
           <span style={{ display: "flex", gap: 7, flex: "0 0 auto" }}>
             <RowAction
-              label={instance.worktreeOn ? "worktree on" : "worktree off"}
-              onClick={toggleWorktree}
+              label={instance.worktreeOn ? "return to project root" : "isolate in a worktree"}
+              onClick={onToggleWorktree}
               active={instance.worktreeOn}
             >
               {GLYPH.worktree}

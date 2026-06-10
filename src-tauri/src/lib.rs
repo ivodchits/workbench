@@ -62,6 +62,7 @@ pub fn run() {
             pty::default_working_dir,
             hooks::hook_server_status,
             git::detect_repo,
+            git::provision_worktree,
             registry::create_group,
             registry::get_groups,
             registry::edit_group,
