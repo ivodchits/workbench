@@ -121,7 +121,8 @@ function InstanceManager({ onCollapse }: InstanceManagerProps) {
   // Global chords the rail owns (the keyboard layer dispatches these via the bus).
   // Handlers read fresh state through module getters, so registering once is safe.
   useEffect(() => {
-    // Jump to the next/previous agent that needs you. All data is read through
+    // Jump to the next/previous agent that needs you, falling back to "done"
+    // agents when none need you (lower priority). All data is read through
     // module-level getters so the registered-once closure is never stale.
     const doJump = (dir: 1 | -1) => {
       const { instances } = getRegistry();
@@ -130,24 +131,28 @@ function InstanceManager({ onCollapse }: InstanceManagerProps) {
       for (const c of getOpenConsoles()) {
         if (c.status !== "dormant") consoleMap.set(c.instanceId, c.status);
       }
-      const needsIds = instances
-        .filter(
-          (i) =>
-            mergeStatus(consoleMap.get(i.id) ?? null, live.get(i.id) ?? null, i.status).needsYou,
-        )
-        .map((i) => i.id);
-      if (needsIds.length === 0) return;
+      const needsIds: string[] = [];
+      const doneIds: string[] = [];
+      for (const i of instances) {
+        const view = mergeStatus(consoleMap.get(i.id) ?? null, live.get(i.id) ?? null, i.status);
+        if (view.needsYou) needsIds.push(i.id);
+        else if (view.done) doneIds.push(i.id);
+      }
+      // Needs-you takes priority; done agents only enter the rotation when no
+      // agent needs you.
+      const rotation = needsIds.length > 0 ? needsIds : doneIds;
+      if (rotation.length === 0) return;
 
       const currentId = getActiveConsoleId();
-      const currentIdx = needsIds.indexOf(currentId ?? "");
+      const currentIdx = rotation.indexOf(currentId ?? "");
       const nextIdx =
         currentIdx < 0
           ? dir > 0
             ? 0
-            : needsIds.length - 1
-          : (currentIdx + dir + needsIds.length) % needsIds.length;
+            : rotation.length - 1
+          : (currentIdx + dir + rotation.length) % rotation.length;
 
-      const targetId = needsIds[nextIdx];
+      const targetId = rotation[nextIdx];
       const target = instances.find((i) => i.id === targetId);
       if (!target) return;
 
