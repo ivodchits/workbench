@@ -26,15 +26,44 @@ function MarkdownPreview({ source, scrollKey }: MarkdownPreviewProps) {
   // for other reasons too — cursor moves, sibling tabs).
   const html = useMemo(() => renderMarkdown(source), [source]);
   const scrollRef = useRef<HTMLDivElement>(null);
+  // True while we're re-applying the saved offset on mount; suppresses the scroll
+  // handler so a transient clamped scroll event (fired while the element still has
+  // no layout) can't overwrite the saved offset with 0.
+  const restoringRef = useRef(false);
 
   // Restore the saved offset after the rendered HTML lands in the DOM but before
   // paint, so a remount jumps straight to where we left off without flashing the
   // top first. Re-runs when `scrollKey` changes (e.g. the in-editor split preview
   // following a switch to another file).
+  //
+  // Dockview unmounts hidden panels (onlyWhenVisible) and remounts them when you
+  // tab back; at that point the scroll container can still be zero-height (it gets
+  // sized a frame later), and setting scrollTop on a zero-height element is a
+  // no-op — which left the preview pinned to the top. So if the element has no
+  // layout yet, wait for a ResizeObserver to report its real size, then apply.
   useLayoutEffect(() => {
     const el = scrollRef.current;
     if (!el || scrollKey === undefined) return;
-    el.scrollTop = loadScroll(scrollKey);
+    const target = loadScroll(scrollKey);
+    if (target === 0) return;
+
+    restoringRef.current = true;
+    const apply = (): boolean => {
+      if (!el.clientHeight) return false; // no layout yet — try again on resize
+      el.scrollTop = target;
+      restoringRef.current = false;
+      return true;
+    };
+    if (apply()) return;
+
+    const ro = new ResizeObserver(() => {
+      if (apply()) ro.disconnect();
+    });
+    ro.observe(el);
+    return () => {
+      ro.disconnect();
+      restoringRef.current = false;
+    };
   }, [scrollKey]);
 
   return (
@@ -43,7 +72,10 @@ function MarkdownPreview({ source, scrollKey }: MarkdownPreviewProps) {
       onScroll={
         scrollKey === undefined
           ? undefined
-          : (e) => saveScroll(scrollKey, e.currentTarget.scrollTop)
+          : (e) => {
+              if (restoringRef.current) return;
+              saveScroll(scrollKey, e.currentTarget.scrollTop);
+            }
       }
       style={{ height: "100%", overflow: "auto", background: "var(--wb-panel)", minHeight: 0 }}
     >

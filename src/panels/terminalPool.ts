@@ -80,8 +80,16 @@ export function acquire(container: HTMLDivElement, opts: AcquireOptions): void {
     requestAnimationFrame(() => {
       if (pool.get(opts.instanceId) !== existing) return; // released/replaced
       refit(existing);
-      if (!saved || saved.atBottom) existing.term.scrollToBottom();
-      else existing.term.scrollToLine(saved.line);
+      const term = existing.term;
+      // The re-parent reset the DOM viewport's scrollTop to 0, but xterm's buffer
+      // model still believes it's at the old line — so a plain scrollToLine/
+      // scrollToBottom to that same line computes a zero delta and no-ops, leaving
+      // the scrollbar stuck at the top (and a live, bottom-pinned session looking
+      // like it scrolled all the way up). Force a real move through the top first so
+      // xterm re-syncs the viewport's scrollTop to the rendered rows.
+      term.scrollToTop();
+      if (!saved || saved.atBottom) term.scrollToBottom();
+      else term.scrollToLine(saved.line);
     });
     return;
   }
