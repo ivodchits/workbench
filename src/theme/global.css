@@ -34,8 +34,14 @@ body {
      bundled web font, lands bold glyphs on slightly off baselines in Chromium — the
      "wavey" look that snaps straight while a run is selected (selection repaints via
      a simpler text path). A monospace surface wants neither kerning nor ligatures,
-     so render straight. */
+     so render straight. `optimizeSpeed` alone is unreliable here: Blink ignores it
+     for kerning and never drops JetBrains Mono's `calt` contextual alternates, so
+     the waviness creeps back. The explicit font-feature properties are the reliable
+     kill switches; optimizeSpeed stays as a harmless belt-and-braces. */
   text-rendering: optimizeSpeed;
+  font-kerning: none;
+  font-variant-ligatures: none;
+  font-feature-settings: "liga" 0, "calt" 0, "kern" 0;
   overflow: hidden;
   user-select: none;
 }

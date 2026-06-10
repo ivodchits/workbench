@@ -6,6 +6,13 @@
 
 .wb-md {
   font: 13px/1.65 var(--wb-mono);
+  /* The `font` shorthand above resets font-kerning / font-variant-ligatures /
+     font-feature-settings to their initial values, so the shaping-off properties
+     set on `body` (global.css) don't reach here — re-assert them, or JetBrains
+     Mono's kerning + contextual alternates put bold glyphs on a wavy baseline. */
+  font-kerning: none;
+  font-variant-ligatures: none;
+  font-feature-settings: "liga" 0, "calt" 0, "kern" 0;
   color: var(--wb-text);
   padding: 14px 18px 40px;
   overflow-wrap: break-word;
