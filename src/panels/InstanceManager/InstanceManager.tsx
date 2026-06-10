@@ -36,10 +36,12 @@ import { getActiveProject, setActiveProject, useActiveProject } from "../../stat
 import { focusActivePanel, routePanelFocus } from "../../state/dock";
 import { release } from "../terminalPool";
 import {
+  addInstance,
   deleteInstance,
   deleteProject,
   getRegistry,
   loadRegistry,
+  updateInstance,
   useRegistry,
 } from "../../state/registry";
 import {
@@ -54,9 +56,38 @@ import { isTextInput, matchCommand } from "../../keyboard";
 import { registerCommand } from "../../keyboard/bus";
 import { notifyNeedsYou, updateTrayBadge } from "../../ipc/attention";
 import ProjectDialog from "./ProjectDialog";
-import InstanceDialog from "./InstanceDialog";
 import InstanceCard from "./InstanceCard";
 import Modal from "./Modal";
+
+// Create a new instance with no dialog: the title is the next free integer for the
+// project (1, 2, 3, …), the task note is empty, and the worktree toggle is off —
+// every field stays editable on the card afterward. Opens its console straight
+// away so the fresh instance is immediately usable.
+async function spawnInstance(project: Project): Promise<void> {
+  let max = 0;
+  for (const i of getRegistry().instances) {
+    if (i.projectId === project.id && /^\d+$/.test(i.title.trim())) {
+      max = Math.max(max, Number(i.title.trim()));
+    }
+  }
+  const instance = await addInstance({ projectId: project.id, title: String(max + 1) });
+  setActiveProject(instance.projectId);
+  openConsole(instance);
+  routePanelFocus(instance.id);
+}
+
+// After an auto-numbered instance is removed, close the gap so the numeric titles
+// stay contiguous (remove 2 from 1·2·3·4·5 → 1·2·3·4). Only purely-numeric titles
+// reflow — instances you've renamed keep their names and are skipped over. The plan
+// is built from one snapshot up front, then applied in ascending order so a rename
+// never lands on a number that's still in use.
+async function renumberInstances(projectId: string): Promise<void> {
+  const renames = getRegistry()
+    .instances.filter((i) => i.projectId === projectId && /^\d+$/.test(i.title.trim()))
+    .map((inst, idx) => ({ id: inst.id, want: String(idx + 1), have: inst.title.trim() }))
+    .filter((r) => r.want !== r.have);
+  for (const r of renames) await updateInstance(r.id, { title: r.want });
+}
 
 /** A group with its projects, plus a synthetic "ungrouped" bucket (id `null`). */
 interface GroupSection {
@@ -77,7 +108,6 @@ function InstanceManager({ onCollapse }: InstanceManagerProps) {
   const [addingProject, setAddingProject] = useState(false);
   const [editProjectTarget, setEditProjectTarget] = useState<Project | null>(null);
   const [removeProjectTarget, setRemoveProjectTarget] = useState<Project | null>(null);
-  const [newInstanceProject, setNewInstanceProject] = useState<Project | null>(null);
   const [killTarget, setKillTarget] = useState<Instance | null>(null);
   const [worktreeTarget, setWorktreeTarget] = useState<Instance | null>(null);
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
@@ -135,7 +165,7 @@ function InstanceManager({ onCollapse }: InstanceManagerProps) {
     const disposers = [
       registerCommand("newInstance", () => {
         const proj = getRegistry().projects.find((p) => p.id === getActiveProject());
-        if (proj) setNewInstanceProject(proj);
+        if (proj) void spawnInstance(proj);
       }),
       registerCommand("newEditor", () => {
         const proj = getRegistry().projects.find((p) => p.id === getActiveProject());
@@ -213,7 +243,7 @@ function InstanceManager({ onCollapse }: InstanceManagerProps) {
           el?.dataset.wbProjectId ??
           instances.find((i) => i.id === el?.dataset.wbInstanceId)?.projectId;
         const proj = projects.find((p) => p.id === projectId);
-        if (proj) setNewInstanceProject(proj);
+        if (proj) void spawnInstance(proj);
         break;
       }
       case "railCollapse": {
@@ -508,7 +538,7 @@ function InstanceManager({ onCollapse }: InstanceManagerProps) {
                       onOpenEditor={() => openEditorForProject(p)}
                       onEdit={() => setEditProjectTarget(p)}
                       onRemove={() => setRemoveProjectTarget(p)}
-                      onNewInstance={() => setNewInstanceProject(p)}
+                      onNewInstance={() => void spawnInstance(p)}
                       onToggleWorktree={setWorktreeTarget}
                       onKill={setKillTarget}
                     />
@@ -538,9 +568,6 @@ function InstanceManager({ onCollapse }: InstanceManagerProps) {
           instanceIds={(instancesByProject.get(removeProjectTarget.id) ?? []).map((i) => i.id)}
           onClose={() => setRemoveProjectTarget(null)}
         />
-      )}
-      {newInstanceProject && (
-        <InstanceDialog project={newInstanceProject} onClose={() => setNewInstanceProject(null)} />
       )}
       {killTarget && <KillConfirm instance={killTarget} onClose={() => setKillTarget(null)} />}
       {worktreeTarget &&
@@ -881,6 +908,7 @@ function KillConfirm({ instance, onClose }: { instance: Instance; onClose: () =>
       closeConsole(instance.id);
       release(instance.id);
       await deleteInstance(instance.id);
+      await renumberInstances(instance.projectId);
       onClose();
     } catch {
       setBusy(false);
