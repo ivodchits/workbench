@@ -145,6 +145,19 @@ export function acquire(container: HTMLDivElement, opts: AcquireOptions): void {
   const entry: TermEntry = { host, term, fit, dataSub, resizeSub };
   pool.set(opts.instanceId, entry);
 
+  // The WebGL renderer bakes a glyph atlas at open time; if the bundled web font
+  // (JetBrains Mono) hasn't finished loading yet, that atlas caches the fallback /
+  // synthesized-bold glyphs, which sit on a wavy baseline and never refresh on
+  // their own — only invalidated cells redraw, which is why dragging a selection
+  // over a run snaps it straight. (The DOM renderer reflows on font-load by itself,
+  // so this only bites WebGL.) Rebuild the atlas once the font is ready so every
+  // cell repaints with the real face. Harmless no-op for the DOM renderer or if the
+  // font was already loaded.
+  void document.fonts.ready.then(() => {
+    if (pool.get(opts.instanceId) !== entry) return; // released/replaced meanwhile
+    term.clearTextureAtlas();
+  });
+
   // Defer the first fit + spawn one frame so xterm has rendered and the addon can
   // measure char size; then spawn the child at the fitted dimensions.
   requestAnimationFrame(() => {
