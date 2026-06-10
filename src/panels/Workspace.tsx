@@ -62,7 +62,7 @@ import {
 } from "../state/editors";
 import { useActiveProject } from "../state/activeProject";
 import { loadLayout, saveLayoutDebounced, saveLayoutNow } from "../state/layout";
-import { setDockApi } from "../state/dock";
+import { routePanelFocus, setDockApi } from "../state/dock";
 import { release } from "./terminalPool";
 
 interface LayoutSnapshot {
@@ -317,10 +317,19 @@ function Workspace() {
       a.onDidLayoutChange(() => {
         if (restoredRef.current) persist(a);
       }),
-      // Reflect dockview-driven focus (tab clicks) back into the consoles store.
+      // The single chokepoint for "the active panel changed" — fired by tab
+      // clicks, Ctrl+Tab (`focusContent`), and the rail's store→reconcile→setActive
+      // path alike. Reflect it into the consoles store, and route the keyboard into
+      // the panel's content: dockview's programmatic activation doesn't move DOM
+      // focus on its own, so without this, selecting an instance in the rail or
+      // cycling panels leaves the keyboard nowhere (the reported focus bug). Skip
+      // while a programmatic project swap is in flight (switchingRef) so the swap's
+      // intermediate activations don't yank focus around.
       a.onDidActivePanelChange((panel) => {
-        const id = panel ? consoleInstanceId(panel) : null;
+        if (!panel) return;
+        const id = consoleInstanceId(panel);
         if (id) focusConsole(id);
+        if (!switchingRef.current) routePanelFocus(panel.id);
       }),
       // A panel removed from the dock closes its console/shell and stops its PTY
       // — but dockview also fires this (then re-adds) when a panel is *moved*

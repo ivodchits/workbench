@@ -25,7 +25,7 @@ import {
 import { closeShell, getOpenShells, openShell } from "../../state/shells";
 import { closeEditor, getOpenEditors, openEditor } from "../../state/editors";
 import { getActiveProject, setActiveProject, useActiveProject } from "../../state/activeProject";
-import { focusActivePanel } from "../../state/dock";
+import { focusActivePanel, routePanelFocus } from "../../state/dock";
 import { release } from "../terminalPool";
 import {
   deleteInstance,
@@ -166,10 +166,16 @@ function InstanceManager({ onCollapse }: InstanceManagerProps) {
   }, [openConsoles]);
 
   // Opening an instance's console makes its project the active workspace (so the
-  // dock shows that project's panels), then launches/focuses the console.
+  // dock shows that project's panels), then launches/focuses the console. Route the
+  // keyboard into that console too: when it's a *new* active panel the Workspace's
+  // onDidActivePanelChange handles focus, but when you re-select the already-active
+  // console (e.g. to get back from the editor) no activation fires, so focus it
+  // here as well. routePanelFocus is deferred + a no-op until the panel/terminal
+  // exists, so a fresh open or a project swap settles via the activation path.
   const activate = (instance: Instance) => {
     setActiveProject(instance.projectId);
     openConsole(instance);
+    routePanelFocus(instance.id);
   };
 
   // Open (or focus) the Project Shell in the project's root dir, labelled with

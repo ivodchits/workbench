@@ -4,9 +4,11 @@
 // either the live `xterm` terminal, an error notice, or — for a panel restored
 // from a saved layout — a dormant placeholder offering a relaunch.
 //
-// The panel is bound to an instance via `params.instanceId`. It stays mounted
-// while tabbed away (the Workspace sets dockview's `always` renderer) so its PTY
-// survives split/tab/float; closing the panel unmounts it, which stops the PTY.
+// The panel is bound to an instance via `params.instanceId`. dockview's default
+// `onlyWhenVisible` renderer unmounts the content when it's tabbed away or moved,
+// but the PTY + xterm live in a detached pool (see `terminalPool`), so the `claude`
+// session survives split/tab/float and re-attaches on remount; closing the panel is
+// the only thing that stops the PTY (via the Workspace's remove handler).
 
 import { useCallback, useEffect } from "react";
 import type { IDockviewPanelProps } from "dockview";

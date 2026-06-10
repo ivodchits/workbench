@@ -19,26 +19,40 @@ export function setDockApi(a: DockviewApi | null): void {
 }
 
 /**
- * Activate a panel's group and route DOM focus into its content. Activating alone
- * only brings the tab to front — it does *not* move the keyboard out of whatever
- * is currently focused (the source console's xterm, the editor's CodeMirror) — so
- * we focus the target's content explicitly, by panel type:
+ * Route DOM focus into a panel's content, by panel type:
  *
  *   • console / shell — the panel id is the terminal-pool key (Workspace adds them
  *     as `id: instanceId` / `id: shellId`, and both host via `Console`), so
  *     `focusTerminal(panel.id)` focuses the live xterm. (A `params.instanceId`
- *     lookup misses shells, whose param is `shellId` — that was the focus bug.)
+ *     lookup misses shells, whose param is `shellId` — that was the original focus bug.)
  *   • editor — owns no pooled terminal; we focus its CodeMirror content directly
  *     (tagged with `data-wb-panel={editorId}` in the Editor panel).
  *
  * Each step is a no-op for the other panel types, so the right one wins.
+ *
+ * **Deferred a frame on purpose.** dockview's *programmatic* activation
+ * (`api.setActive()`) intentionally does **not** move DOM focus — it only refreshes
+ * its internal focus state — so without this the keyboard stays wherever it was
+ * (the rail row, the previous console) or lands on nothing, and typing vanishes.
+ * And activation also triggers a React re-render (`focusConsole` → reconcile);
+ * focusing synchronously would be stomped by that commit. Running on the next frame
+ * makes our focus the final word. Exported so the one activation chokepoint
+ * (`Workspace.onDidActivePanelChange`) can route focus for *every* path — rail
+ * selection, tab click, Ctrl+Tab — through the same place.
  */
+export function routePanelFocus(panelId: string): void {
+  requestAnimationFrame(() => {
+    focusTerminal(panelId); // console + shell (pool keyed by panel id)
+    document
+      .querySelector<HTMLElement>(`[data-wb-panel="${panelId}"] .cm-content`)
+      ?.focus(); // editor (no-op when the panel isn't an editor)
+  });
+}
+
+/** Activate a panel's group/tab and hand the keyboard to its content. */
 function focusContent(panel: IDockviewPanel): void {
   panel.api.setActive();
-  focusTerminal(panel.id); // console + shell (pool keyed by panel id)
-  document
-    .querySelector<HTMLElement>(`[data-wb-panel="${panel.id}"] .cm-content`)
-    ?.focus(); // editor (no-op when the panel isn't an editor)
+  routePanelFocus(panel.id);
 }
 
 /** Move focus to the next (`+1`) or previous (`-1`) panel, wrapping around. */
