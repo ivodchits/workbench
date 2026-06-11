@@ -307,9 +307,24 @@ export function acquire(container: HTMLDivElement, opts: AcquireOptions): void {
 
 /** Focus an instance's terminal, if it's in the pool (no-op otherwise). Used by
  *  the Shell panel's git quick-buttons to hand keyboard focus back to the shell
- *  after injecting a command. */
+ *  after injecting a command, and by `routePanelFocus` on every panel-focus change. */
 export function focusTerminal(instanceId: string): void {
-  pool.get(instanceId)?.term.focus();
+  const entry = pool.get(instanceId);
+  if (!entry) return;
+  entry.term.focus();
+  // Focusing xterm's helper textarea makes the browser scroll `.xterm-viewport` to
+  // bring it into view, resetting the DOM scrollTop to 0 while the buffer model stays
+  // put — the same scrollbar desync a re-parent/tab-switch causes, but here with no
+  // detach/re-attach or visibility change to trigger a re-sync. This only bites when
+  // the terminal is *already* visible: two consoles side-by-side, where switching
+  // focus between them neither hides nor remounts either one, so neither the
+  // detach/acquire path nor the visibility observer runs (the scrollbar snaps to the
+  // top while the rows stay put). Tabbed / other-project switches recover via those
+  // paths already. Re-sync on the next frame, once the focus-scroll has landed.
+  requestAnimationFrame(() => {
+    if (pool.get(instanceId) !== entry) return; // released/replaced
+    resyncViewport(entry); // read the live model — focus never disturbed it
+  });
 }
 
 /** Re-measure and resize the terminal (and thus its PTY) to its container. */
