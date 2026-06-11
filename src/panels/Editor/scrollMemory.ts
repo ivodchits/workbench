@@ -12,6 +12,15 @@
 // supplies), so a genuine unmount/remount round-trips through the same map. Used by
 // the markdown preview and the CodeMirror editor; the pooled terminal has its own
 // re-sync (its scroll lives in xterm's buffer model, not a DOM scrollTop).
+//
+// Restore can't assume the content is already there: a genuine remount (switching
+// projects swaps the whole dock via `fromJSON`) shows the panel *before* its buffer
+// has loaded — the editor re-reads files from disk asynchronously, so the preview
+// first renders empty and only grows tall enough to scroll a beat later. The
+// intersection fires against that empty render, so a one-shot restore finds nothing
+// to scroll and gives up. A ResizeObserver on the content closes the gap: while a
+// restore is still pending, every growth of the scrollable content re-tries it until
+// the saved offset finally sticks.
 
 const offsets = new Map<string, number>();
 
@@ -24,6 +33,9 @@ export function persistScroll(el: HTMLElement, key: string): () => void {
   // write (and any transient clamp while the element is still sizing) can't be
   // mistaken for a user scroll and overwrite the saved value.
   let restoring = false;
+  // A restore was requested but the content wasn't tall enough to honor it yet — so
+  // keep re-trying on content growth until it lands.
+  let pending = false;
 
   const onScroll = () => {
     // Ignore events fired while we're restoring or while the element has no layout
@@ -42,11 +54,33 @@ export function persistScroll(el: HTMLElement, key: string): () => void {
     return el.scrollTop > 0; // false if the write clamped back to the top
   };
 
+  // Try the restore; if it can't land yet (content still loading / sizing), arm the
+  // ResizeObserver path to retry as the content grows.
+  const tryRestore = () => {
+    pending = !apply();
+  };
+
   const io = new IntersectionObserver((entries) => {
     if (!entries[entries.length - 1]?.isIntersecting) return;
-    // The element may still be settling its size on re-attach; retry next frame.
-    if (!apply()) requestAnimationFrame(apply);
+    // The element may still be settling its size on re-attach; retry next frame too.
+    tryRestore();
+    if (pending) requestAnimationFrame(tryRestore);
   });
+
+  // The scrollable content can mount/grow after the panel is shown (async buffer
+  // load on a project swap). Re-try the pending restore whenever it resizes, then
+  // stand down once it sticks. Observe the content children (their box reflects the
+  // full content height, which `el`'s own box does not) and keep that observation
+  // current as React swaps children in.
+  const ro = new ResizeObserver(() => {
+    if (pending) tryRestore();
+  });
+  const observeContent = () => {
+    for (const child of Array.from(el.children)) ro.observe(child);
+  };
+  observeContent();
+  const mo = new MutationObserver(observeContent);
+  mo.observe(el, { childList: true });
 
   el.addEventListener("scroll", onScroll, { passive: true });
   io.observe(el);
@@ -54,5 +88,7 @@ export function persistScroll(el: HTMLElement, key: string): () => void {
   return () => {
     el.removeEventListener("scroll", onScroll);
     io.disconnect();
+    ro.disconnect();
+    mo.disconnect();
   };
 }
