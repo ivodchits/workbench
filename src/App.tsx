@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { applyTheme, mutedDark } from "./theme/tokens";
 import InstanceManager from "./panels/InstanceManager";
 import Workspace from "./panels/Workspace";
+import PresetsBar from "./panels/PresetsBar";
 import { useConsoles } from "./state/consoles";
 import { useRegistry } from "./state/registry";
 import {
@@ -227,9 +228,7 @@ function TitleBar({ context }: { context: string }) {
         <span style={{ color: "var(--wb-textFaint)", fontSize: 11 }}>╶</span>
         <span style={{ color: "var(--wb-textDim2)", fontSize: 11.5 }}>{context}</span>
       </div>
-      <span style={{ color: "var(--wb-textFaint)", fontSize: 11, padding: "0 14px" }}>
-        phase 2 · hooks
-      </span>
+      <PresetsBar />
     </div>
   );
 }

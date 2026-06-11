@@ -35,6 +35,8 @@ export type CommandId =
   | "killInstance"
   | "jumpNeedsYou"
   | "jumpPrevNeedsYou"
+  | "savePreset"
+  | "applyPreset" // carries a 1-based preset number in `arg`
   // rail
   | "railPrev"
   | "railNext"
@@ -103,6 +105,17 @@ export const BINDINGS: Binding[] = [
   // string match in `matchCommand` never fires — hence `Alt+Shift`, not `Shift+Alt`.
   { chord: "Alt+Shift+PageDown", command: "jumpNeedsYou", scope: "global", title: "Jump to next agent that needs you" },
   { chord: "Alt+Shift+PageUp", command: "jumpPrevNeedsYou", scope: "global", title: "Jump to previous agent that needs you" },
+  // --- global: layout presets (step 3.3) ------------------------------------
+  // Recall the active project's saved arrangements by number. `Alt+<digit>` is
+  // taken by focus-panel, so presets ride the `Ctrl+Shift+<digit>` command space.
+  { chord: "Ctrl+Shift+S", command: "savePreset", scope: "global", title: "Save current layout as a preset" },
+  ...Array.from({ length: 9 }, (_, i): Binding => ({
+    chord: `Ctrl+Shift+${i + 1}`,
+    command: "applyPreset",
+    arg: i + 1,
+    scope: "global",
+    title: `Recall layout preset ${i + 1}`,
+  })),
 
   // --- rail: navigation (TUI single keys) -----------------------------------
   { chord: "Up", command: "railPrev", scope: "rail", title: "Rail: move up" },

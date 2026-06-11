@@ -25,8 +25,9 @@ export const WORKSPACE_KEY = "__global__";
 /** Bump if the saved-payload shape changes incompatibly. (v2 added `shells`;
  *  v3 made shells project-scoped; v4 added `editors`.) `diffs` (step 2.7) was
  *  added without a bump — every reader defaults it to `[]` when absent, so old
- *  and new blobs interoperate. */
-const SCHEMA_VERSION = 4;
+ *  and new blobs interoperate. Exported because layout presets (step 3.3) stamp
+ *  the same version onto the `SavedLayout` snapshots they store. */
+export const SCHEMA_VERSION = 4;
 
 export interface SavedLayout {
   version: number;

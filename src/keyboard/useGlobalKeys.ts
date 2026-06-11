@@ -17,6 +17,7 @@ import {
   focusPanelIndex,
   splitActivePanel,
 } from "../state/dock";
+import { applyPresetByIndex } from "../state/presets";
 
 function dispatch({ command, arg }: Match): void {
   switch (command) {
@@ -35,8 +36,13 @@ function dispatch({ command, arg }: Match): void {
     case "closePanel":
       closeActivePanel();
       break;
+    // Recall a saved arrangement by number — pure store logic, no owning component.
+    case "applyPreset":
+      if (arg) applyPresetByIndex(arg);
+      break;
     // Component-owned — dispatched to the registered handler (no-op if absent,
     // which is how `jumpNeedsYou` stays a registered stub until Phase 2).
+    // `savePreset` is owned by the presets bar, which prompts for a name.
     case "focusRail":
     case "newInstance":
     case "newEditor":
@@ -44,6 +50,7 @@ function dispatch({ command, arg }: Match): void {
     case "killInstance":
     case "jumpNeedsYou":
     case "jumpPrevNeedsYou":
+    case "savePreset":
       runCommand(command, arg);
       break;
     // Rail-scope commands never reach here (they're matched in the rail's own

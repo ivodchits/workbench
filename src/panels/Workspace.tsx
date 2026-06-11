@@ -71,8 +71,15 @@ import {
   type DiffSession,
 } from "../state/diffs";
 import { useActiveProject } from "../state/activeProject";
-import { loadLayout, saveLayoutDebounced, saveLayoutNow } from "../state/layout";
+import {
+  loadLayout,
+  saveLayoutDebounced,
+  saveLayoutNow,
+  SCHEMA_VERSION,
+  type SavedLayout,
+} from "../state/layout";
 import { routePanelFocus, setDockApi } from "../state/dock";
+import { registerLayoutController } from "../state/presets";
 import { release } from "./terminalPool";
 
 interface LayoutSnapshot {
@@ -363,6 +370,45 @@ function Workspace() {
       diffFocusRef.current = aDiff;
     }
   }, []);
+
+  // Layout presets (step 3.3) snapshot/restore the live dock. Capturing is just
+  // `collect` stamped with the schema version; applying mirrors the project-swap's
+  // restore sequence but *stays on the same project* — so it hydrates the preset's
+  // dormant panels, swaps the tree (with `switchingRef` set so `fromJSON`'s panel
+  // churn doesn't tear down live PTYs), then reconciles in any live session the
+  // preset's tree didn't include and persists the result as the project's layout.
+  const snapshotLayout = useCallback((): SavedLayout | null => {
+    if (!api) return null;
+    const { tree, consoleIds, shells, editors, diffs } = collect(api);
+    return { version: SCHEMA_VERSION, tree, consoleInstanceIds: consoleIds, shells, editors, diffs };
+  }, [api, collect]);
+
+  const applyLayout = useCallback(
+    (saved: SavedLayout) => {
+      if (!api) return;
+      restoredRef.current = false; // suspend persist during the restore
+      switchingRef.current = true; // keep live PTYs alive through `fromJSON`'s churn
+      hydrateDormant(saved.consoleInstanceIds);
+      hydrateShells(saved.shells);
+      hydrateEditors(saved.editors);
+      hydrateDiffs(saved.diffs);
+      restoreTree(api, saved.tree);
+      switchingRef.current = false;
+      restoredRef.current = true;
+      reconcileConsoles(api);
+      reconcileShells(api);
+      reconcileEditors(api);
+      reconcileDiffs(api);
+      persist(api); // the applied arrangement becomes the project's current layout
+    },
+    [api, persist, reconcileConsoles, reconcileShells, reconcileEditors, reconcileDiffs],
+  );
+
+  // Expose snapshot/apply to the presets store for the lifetime of the dock.
+  useEffect(() => {
+    registerLayoutController({ snapshot: snapshotLayout, apply: applyLayout });
+    return () => registerLayoutController(null);
+  }, [snapshotLayout, applyLayout]);
 
   const onReady = (event: DockviewReadyEvent) => {
     const a = event.api;
