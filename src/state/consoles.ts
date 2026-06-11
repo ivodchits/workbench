@@ -16,7 +16,7 @@
 import { useSyncExternalStore } from "react";
 import type { SpawnKind, SpawnResult } from "../ipc/pty";
 import type { Instance } from "../ipc/registry";
-import { updateInstance } from "./registry";
+import { applyInstanceUsage, updateInstance } from "./registry";
 import { clearLiveStatus } from "./status";
 
 /** Browsers cap live WebGL contexts (~16); we reserve a margin (design §5 /
@@ -163,13 +163,26 @@ export function focusConsole(instanceId: string): void {
  * Record a successful spawn: flip the console to `running` and persist the minted
  * session id onto the instance row (so a later session-restore can resume it).
  *
+ * A (re)launch mints a brand-new, empty session (not a `--resume`), so its context
+ * window starts at 0. We clear the previous session's token figures — both
+ * immediately in the store and durably in the DB — so a re-launched console (after
+ * closing the panel or restarting the app) never inherits last session's count; the
+ * tailer then refills the window from the new session's first turn.
+ *
  * Note we deliberately do *not* update `session.cwd` here: it's a dependency of
  * the hosting terminal's effect, so mutating it would tear the PTY down and
  * respawn. The working dir is fixed for a console's lifetime.
  */
 export function markSpawned(instanceId: string, result: SpawnResult): void {
   patchSession(instanceId, { status: "running", sessionId: result.sessionId });
-  void updateInstance(instanceId, { lastSessionId: result.sessionId });
+  const zero = {
+    inputTokens: 0,
+    outputTokens: 0,
+    cacheCreationTokens: 0,
+    cacheReadTokens: 0,
+  };
+  applyInstanceUsage({ instanceId, ...zero });
+  void updateInstance(instanceId, { lastSessionId: result.sessionId, ...zero });
 }
 
 /** Record a spawn failure so the console can surface it in place. */

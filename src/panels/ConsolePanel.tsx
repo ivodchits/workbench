@@ -1,6 +1,6 @@
 // ConsolePanel (step 1.6) — the dockview panel that hosts one instance's Claude
 // console. dockview supplies the tab/group chrome; this renders the content:
-// a header strip (project · branch · task note · short session id · cost) above
+// a header strip (project · branch · task note · short session id · tokens) above
 // either the live `xterm` terminal, an error notice, or — for a panel restored
 // from a saved layout — a dormant placeholder offering a relaunch.
 //
@@ -17,7 +17,7 @@ import { GLYPH, Spinner } from "../theme";
 import Console from "./Console";
 import type { Instance, Project } from "../ipc/registry";
 import type { SpawnResult } from "../ipc/pty";
-import { formatTokens, totalTokens } from "../util/format";
+import { contextWindowTokens, formatTokens, tokenBreakdown } from "../util/format";
 import { useLiveStatuses, type LiveStatus } from "../state/status";
 import { useRegistry } from "../state/registry";
 import {
@@ -106,8 +106,9 @@ function LiveConsole({
   );
 }
 
-/** project · branch · task note · status · short session id · cost — the context
- *  line (§5). The live status glyph reflects the hook-fed state machine (2.2). */
+/** project · branch · task note · status · short session id · ctx — the context
+ *  line (§5). `ctx` is the current context-window occupancy (matches /context,
+ *  step 3.1). The live status glyph reflects the hook-fed state machine (2.2). */
 function HeaderStrip({
   project,
   instance,
@@ -170,8 +171,8 @@ function HeaderStrip({
         {sessionId && (
           <span style={{ color: "var(--wb-textFaint)" }}>{sessionId.slice(0, 8)}</span>
         )}
-        <span title="tokens used (input + output + cache)">
-          {formatTokens(totalTokens(instance))}
+        <span title={tokenBreakdown(instance)} style={{ color: "var(--wb-textDim2)" }}>
+          ctx {formatTokens(contextWindowTokens(instance))}
         </span>
       </span>
     </div>

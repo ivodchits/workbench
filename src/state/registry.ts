@@ -32,6 +32,7 @@ import {
   type Project,
   type ProjectPatch,
 } from "../ipc/registry";
+import type { UsageUpdate } from "../ipc/transcript";
 
 export interface RegistryState {
   groups: Group[];
@@ -160,6 +161,33 @@ export async function mirrorInstanceTaskNote(id: string, title: string): Promise
 
 export function deleteInstance(id: string): Promise<void> {
   return mutate(() => removeInstance(id));
+}
+
+/** Fold a live token update (transcript tailer, step 3.1) onto its instance row.
+ *  These arrive every ~2s per active agent, so we patch the one row in place
+ *  rather than reloading the whole tree; a no-op when nothing changed. The backend
+ *  also persists the figures, so a later full reload stays consistent. */
+export function applyInstanceUsage(u: UsageUpdate): void {
+  const idx = state.instances.findIndex((i) => i.id === u.instanceId);
+  if (idx === -1) return;
+  const cur = state.instances[idx];
+  if (
+    cur.inputTokens === u.inputTokens &&
+    cur.outputTokens === u.outputTokens &&
+    cur.cacheCreationTokens === u.cacheCreationTokens &&
+    cur.cacheReadTokens === u.cacheReadTokens
+  ) {
+    return;
+  }
+  const instances = state.instances.slice();
+  instances[idx] = {
+    ...cur,
+    inputTokens: u.inputTokens,
+    outputTokens: u.outputTokens,
+    cacheCreationTokens: u.cacheCreationTokens,
+    cacheReadTokens: u.cacheReadTokens,
+  };
+  setState({ instances });
 }
 
 // --- React binding ----------------------------------------------------------

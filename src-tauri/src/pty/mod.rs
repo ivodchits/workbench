@@ -66,6 +66,19 @@ impl PtyManager {
         self.by_session.lock().unwrap().get(session_id).cloned()
     }
 
+    /// Snapshot every live `(instance_id, session_id)` mapping — the sessions
+    /// Workbench minted (or adopted after a `/clear`) that are still running. The
+    /// transcript tailer (step 3.1) uses this to know which sessions' JSONL to
+    /// follow; a rotated or killed session simply drops out of the snapshot.
+    pub fn live_sessions(&self) -> Vec<(String, String)> {
+        self.by_session
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(sid, iid)| (iid.clone(), sid.clone()))
+            .collect()
+    }
+
     /// Flag `instance_id` as awaiting a rotated session, because its old session
     /// just emitted `SessionEnd{reason:"clear"}`. A `/clear` mints a brand-new
     /// session id with no link to the old one *except the shared cwd*, so the only

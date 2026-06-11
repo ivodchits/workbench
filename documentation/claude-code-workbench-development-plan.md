@@ -377,17 +377,31 @@ emit per-byte global events.
 
 ## Phase 3 — Polish & power features (`§8` Phase 3)
 
-### Step 3.1 — Transcript-tailing: cumulative tokens + cost
-- **Goal:** The file-tailing telemetry subsystem: per-session cumulative tokens and cost.
+### Step 3.1 — Transcript-tailing: cumulative tokens
+- **Goal:** The file-tailing telemetry subsystem: per-session cumulative tokens.
 - **Depends on:** 1.5
-- **Design refs:** `§4.5`, `§7` (cost), decision 16.
-- **Build:** Tail `~/.claude/projects/<proj>/<session-id>.jsonl`; sum per-message `usage`
-  (`input` / `output` / `cache_creation` / `cache_read`) as **distinct figures** (no single
-  inflated total); read cumulative `total_cost_usd` from `~/.claude/statusline.jsonl`. Show on
-  the instance card and console header; aggregate per project/group for billing.
-- **Done when:** A running session's card shows live token figures (split) + cost; values
-  aggregate up to project and group.
-- **Out of scope:** the usage-limit meter (next — different source).
+- **Design refs:** `§4.5`, decision 16.
+- **Build:** Tail the session transcript (located by globbing
+  `~/.claude/projects/*/<session-id>.jsonl` — the UUID is unique across project folders, so
+  this sidesteps reproducing Claude Code's cwd→folder encoding, which differs for worktrees).
+  Track the **latest main-thread assistant turn's** `usage` and surface its **context-window
+  occupancy** = `input + cache_creation + cache_read` — the same figure `/context` shows ("how
+  full is this agent's context"). This is the *latest turn*, **not a cumulative sum**: a sum
+  balloons every turn (each re-reads the whole cached prefix) and diverges wildly from `/context`
+  (cumulative ≈ 212K vs window ≈ 48K on the same session). Skip `isSidechain` turns (subagents
+  have their own window). Read incrementally (byte offset + buffered partial line) so a long
+  session isn't re-parsed each tick. Persist to the instance row and emit a `usage-updated` event
+  for the live UI. Show the window figure on the instance card and as `ctx NNk` in the console
+  header, with the input/cache-write/cache-read breakdown in a tooltip.
+- **Cost dropped (project decision):** tokens are the only figure surfaced. Cost is *not*
+  computed or shown — removing the pricing-table / `~/.claude/statusline.jsonl` dependency (that
+  file doesn't exist by default and transcripts no longer carry per-message cost).
+- **No `%` yet:** the transcript records the model (`claude-opus-4-8`) but not the 200k-vs-1M
+  variant, so the `/context` denominator isn't reliably knowable here. Show the absolute window;
+  a `%` can come from 3.2's statusline (which carries the limit).
+- **Done when:** A running session's card + console header show the live context-window size,
+  matching `/context`, and it shrinks after `/compact` or `/clear`.
+- **Out of scope:** cumulative/lifetime token totals; cost; the usage-limit meter (3.2).
 
 ### Step 3.2 — Usage-limit meter via managed statusline
 - **Goal:** Account-wide 5-hour + weekly usage meter with reset countdowns.
@@ -677,7 +691,7 @@ Pull these in once the relevant phase is stable; each is an independent step whe
 - [x] 2.7 Diff / Review panel
 
 **Phase 3 — polish & power**
-- [ ] 3.1 Transcript-tailing: tokens + cost
+- [x] 3.1 Transcript-tailing: cumulative tokens
 - [ ] 3.2 Usage-limit meter via managed statusline
 - [ ] 3.3 Layout presets
 - [ ] 3.4 Prompt template library

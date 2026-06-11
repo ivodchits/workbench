@@ -1,9 +1,11 @@
 // One instance row in the rail (step 1.4; console wiring 1.5; live status 2.2).
 // Mirrors the design mockup: a status dot, the title (inline-renamable), a "needs
 // you" badge, last-activity, the inline-editable task note, and a meta line with
-// the ⑃ worktree marker + branch and a mini cost readout. Hover (or keyboard
+// the ⑃ worktree marker + branch and a mini token readout. Hover (or keyboard
 // focus) reveals row actions: toggle worktree, open the working dir, edit note,
-// and kill. The meta line's token readout (real figures land in 3.1) shows `0K`.
+// and kill. The meta line's token readout is the live context-window occupancy
+// (matches Claude Code's /context), tracked by the transcript tailer (step 3.1);
+// its tooltip carries the input/cache-write/cache-read breakdown.
 //
 // Step 2.6 adds the "shared working dir" warning: when this instance shares its
 // working dir with another worktree-off instance (`shared`), the meta line shows
@@ -26,7 +28,7 @@ import { matchCommand } from "../../keyboard";
 import { updateInstance } from "../../state/registry";
 import { markInterrupted } from "../../state/status";
 import { mergeStatus, relativeTime } from "./status";
-import { formatTokens, totalTokens } from "../../util/format";
+import { contextWindowTokens, formatTokens, tokenBreakdown } from "../../util/format";
 import InlineEdit from "./InlineEdit";
 
 // The keystroke that interrupts a running agent: ESC stops the current generation
@@ -339,9 +341,9 @@ function InstanceCard({
         )}
         <span
           style={{ marginLeft: "auto", color: "var(--wb-textDim2)" }}
-          title="tokens used (input + output + cache)"
+          title={tokenBreakdown(instance)}
         >
-          {formatTokens(totalTokens(instance))}
+          {formatTokens(contextWindowTokens(instance))}
         </span>
       </div>
     </div>

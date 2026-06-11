@@ -12,6 +12,7 @@ mod layout;
 mod pty;
 mod registry;
 mod sys;
+mod transcript;
 
 use tauri::Manager;
 
@@ -50,6 +51,10 @@ pub fn run() {
             // Set up the system tray icon (step 2.3). Failures are logged;
             // the tray badge commands degrade gracefully when unavailable.
             attention::setup_tray(app.handle());
+            // Start the transcript tailer (step 3.1): follow each live session's
+            // JSONL and surface cumulative tokens on its card/console header. A
+            // background thread; failures only degrade the token readout.
+            transcript::init(app.handle());
             Ok(())
         })
         .manage(pty::PtyManager::default())

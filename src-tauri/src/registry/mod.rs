@@ -609,6 +609,33 @@ pub fn delete_instance(conn: &Connection, id: &str) -> rusqlite::Result<()> {
     Ok(())
 }
 
+/// Write just the latest-turn token figures for an instance — the components of
+/// its current context window (transcript tailer, step 3.1). A targeted UPDATE
+/// rather than a full-row read-modify-write, so it never clobbers a column the
+/// status engine may have changed concurrently (e.g. `status`). Silently does
+/// nothing if the row is gone (killed mid-poll).
+pub fn set_instance_tokens(
+    conn: &Connection,
+    id: &str,
+    input_tokens: i64,
+    output_tokens: i64,
+    cache_creation_tokens: i64,
+    cache_read_tokens: i64,
+) -> rusqlite::Result<()> {
+    conn.execute(
+        "UPDATE instances SET input_tokens = ?2, output_tokens = ?3,
+            cache_creation_tokens = ?4, cache_read_tokens = ?5 WHERE id = ?1",
+        rusqlite::params![
+            id,
+            input_tokens,
+            output_tokens,
+            cache_creation_tokens,
+            cache_read_tokens
+        ],
+    )?;
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // Tauri commands — lock the managed Db and map errors to strings.
 // ---------------------------------------------------------------------------
