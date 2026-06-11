@@ -294,6 +294,7 @@ function EditorBody({
                 <CodeMirrorView
                   key={activeFile.path}
                   path={activeFile.path}
+                  scrollKey={`cm:${editorId}:${activeFile.path}`}
                   initialDoc={activeFile.content}
                   language={lang?.extension ?? null}
                   onChange={(content) => updateContent(editorId, activeFile.path, content)}

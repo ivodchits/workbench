@@ -25,10 +25,14 @@ import { indentOnInput, bracketMatching, foldGutter, foldKeymap } from "@codemir
 import { searchKeymap, highlightSelectionMatches } from "@codemirror/search";
 
 import { codeMirrorTheme } from "../../theme";
+import { persistScroll } from "./scrollMemory";
 
 interface CodeMirrorViewProps {
   /** Stable for the component's life — the parent keys on it. */
   path: string;
+  /** Stable id under which this view's scroll offset is remembered across tab
+   *  switches (dockview detaches the DOM, resetting scrollTop). Omit to opt out. */
+  scrollKey?: string;
   /** Initial buffer text (from the store; may hold unsaved edits). */
   initialDoc: string;
   /** Language extension for `path`, or null for plain text. */
@@ -45,6 +49,7 @@ interface CodeMirrorViewProps {
 
 function CodeMirrorView({
   path,
+  scrollKey,
   initialDoc,
   language,
   onChange,
@@ -123,7 +128,14 @@ function CodeMirrorView({
     });
     view.focus();
 
-    return () => view.destroy();
+    // Remember the scroll offset across tab switches — dockview detaches the panel
+    // DOM, which resets the scroller's scrollTop with no event or React lifecycle.
+    const stopScroll = scrollKey ? persistScroll(view.scrollDOM, scrollKey) : undefined;
+
+    return () => {
+      stopScroll?.();
+      view.destroy();
+    };
     // `path` keys the mount; doc/language are read at creation. Editing the same
     // file never changes these, so the view is built exactly once per open file.
     // eslint-disable-next-line react-hooks/exhaustive-deps

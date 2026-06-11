@@ -43,9 +43,37 @@ interface TermEntry {
   /** Listener that mirrors the agent's terminal title into the task note; only
    *  attached for claude consoles (see `acquire`). */
   titleSub?: { dispose(): void };
+  /** Fires when `host` is shown again after being hidden, to re-sync the viewport
+   *  on a dockview tab switch (which detaches the DOM without a React lifecycle —
+   *  see `acquire`). Disposed in `release`. */
+  visSub?: IntersectionObserver;
   /** Scroll position captured at the last `detach`, restored on re-attach so the
    *  viewport doesn't desync from the buffer (see `acquire`/`detach`). */
   scrollState?: { line: number; atBottom: boolean };
+}
+
+/**
+ * Re-sync the rendered viewport to xterm's buffer model after the host's DOM
+ * scrollTop was reset to 0 (by a re-parent or a tab-switch re-attach). xterm's model
+ * still holds the old line, so a plain scrollToLine to it computes a zero delta and
+ * no-ops, leaving the scrollbar stuck at the top (a live, bottom-pinned session then
+ * looks scrolled all the way up). Forcing a real move through the top first makes
+ * xterm re-sync the DOM scrollTop to the rendered rows. Pass `saved` to restore an
+ * exact pre-detach position; omit it to read the live model (the tab-switch case,
+ * where the model was never disturbed). Also rebuilds the WebGL glyph atlas, which
+ * the cross-container move desyncs (harmless no-op for the DOM renderer).
+ */
+function resyncViewport(entry: TermEntry, saved?: TermEntry["scrollState"]): void {
+  refit(entry);
+  const term = entry.term;
+  const buf = term.buffer.active;
+  const atBottom = saved ? saved.atBottom : buf.viewportY >= buf.baseY;
+  const line = saved ? saved.line : buf.viewportY;
+  term.scrollToTop();
+  if (atBottom) term.scrollToBottom();
+  else term.scrollToLine(line);
+  term.clearTextureAtlas();
+  term.refresh(0, term.rows - 1);
 }
 
 export interface AcquireOptions {
@@ -133,30 +161,11 @@ export function acquire(container: HTMLDivElement, opts: AcquireOptions): void {
     // stale scroll area unable to reach the real bottom until a resize). A plain
     // `fit()` doesn't fix it — it's a no-op when the panel size is unchanged, so
     // it never re-syncs the viewport. Defer one frame so the re-attached element
-    // has its final layout, then refit and re-sync: follow new output if it was at
-    // the bottom (the common case for a live session), else restore the exact line.
+    // has its final layout, then refit and re-sync to the exact pre-detach position.
     const saved = existing.scrollState;
     requestAnimationFrame(() => {
       if (pool.get(opts.instanceId) !== existing) return; // released/replaced
-      refit(existing);
-      const term = existing.term;
-      // The re-parent reset the DOM viewport's scrollTop to 0, but xterm's buffer
-      // model still believes it's at the old line — so a plain scrollToLine/
-      // scrollToBottom to that same line computes a zero delta and no-ops, leaving
-      // the scrollbar stuck at the top (and a live, bottom-pinned session looking
-      // like it scrolled all the way up). Force a real move through the top first so
-      // xterm re-syncs the viewport's scrollTop to the rendered rows.
-      term.scrollToTop();
-      if (!saved || saved.atBottom) term.scrollToBottom();
-      else term.scrollToLine(saved.line);
-      // Re-parenting the host moves xterm's <canvas> elements across DOM
-      // containers, which desyncs the WebGL renderer's GPU glyph atlas: already-
-      // painted cells keep showing stale/garbled glyphs until something marks them
-      // dirty (which is why dragging a selection over them snaps them straight).
-      // Rebuild the atlas and force a full repaint so the re-attached canvas paints
-      // fresh. Harmless no-op for the DOM renderer (same as the font-load rebuild).
-      term.clearTextureAtlas();
-      term.refresh(0, term.rows - 1);
+      resyncViewport(existing, saved);
     });
     return;
   }
@@ -237,6 +246,22 @@ export function acquire(container: HTMLDivElement, opts: AcquireOptions): void {
 
   const entry: TermEntry = { host, term, fit, dataSub, resizeSub, titleSub };
   pool.set(opts.instanceId, entry);
+
+  // Re-sync the viewport whenever the host is shown again after being hidden.
+  // Switching dockview tabs detaches and re-attaches the panel DOM *without*
+  // unmounting the React component, so `Console`'s detach/acquire (which drive the
+  // re-sync above) never run — only this observer sees the tab-switch re-attach,
+  // which like a re-parent resets the DOM scrollTop to 0 and desyncs the scrollbar.
+  // Lives for the terminal's life (disposed in `release`); set up once here.
+  const visSub = new IntersectionObserver((entries) => {
+    if (!entries[entries.length - 1]?.isIntersecting) return;
+    requestAnimationFrame(() => {
+      if (pool.get(opts.instanceId) !== entry) return; // released/replaced
+      resyncViewport(entry); // read the live model — the tab switch never disturbed it
+    });
+  });
+  visSub.observe(host);
+  entry.visSub = visSub;
 
   // The WebGL renderer bakes a glyph atlas at open time; if the bundled web font
   // (JetBrains Mono) hasn't finished loading yet, that atlas caches the fallback /
@@ -411,6 +436,7 @@ export function release(instanceId: string): void {
   const entry = pool.get(instanceId);
   if (!entry) return;
   pool.delete(instanceId);
+  entry.visSub?.disconnect();
   entry.dataSub.dispose();
   entry.resizeSub.dispose();
   entry.titleSub?.dispose();
