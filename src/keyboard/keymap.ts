@@ -37,6 +37,7 @@ export type CommandId =
   | "jumpPrevNeedsYou"
   | "savePreset"
   | "applyPreset" // carries a 1-based preset number in `arg`
+  | "openTemplates"
   // rail
   | "railPrev"
   | "railNext"
@@ -100,6 +101,7 @@ export const BINDINGS: Binding[] = [
   { chord: "Ctrl+Shift+E", command: "newEditor", scope: "global", title: "Open the editor for the active project" },
   { chord: "Ctrl+Shift+T", command: "newShell", scope: "global", title: "New shell in the active project" },
   { chord: "Ctrl+Shift+K", command: "killInstance", scope: "global", title: "Kill the focused instance" },
+  { chord: "Ctrl+Shift+P", command: "openTemplates", scope: "global", title: "Open the prompt template library" },
   // Attention navigation (wired to the status engine in Phase 2). Modifiers must
   // be written in `eventToChord`'s canonical order (Ctrl → Alt → Shift) or the
   // string match in `matchCommand` never fires — hence `Alt+Shift`, not `Shift+Alt`.

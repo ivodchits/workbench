@@ -327,6 +327,23 @@ export function focusTerminal(instanceId: string): void {
   });
 }
 
+/**
+ * Insert `text` into an instance's live terminal as a **bracketed paste**, routed
+ * through xterm's normal `onData` → PTY path (so it's identical to a real paste).
+ * Bracketed paste is what makes multi-line prompts safe: the `claude` TUI receives
+ * the whole block as one paste rather than submitting at the first newline. Used by
+ * the prompt-template library (step 3.4) to land a resolved prompt in a console
+ * without sending it (the caller writes a trailing `\r` separately to submit).
+ * Focuses the terminal and returns false if the instance has no live terminal.
+ */
+export function pasteIntoTerminal(instanceId: string, text: string): boolean {
+  const entry = pool.get(instanceId);
+  if (!entry) return false;
+  entry.term.paste(text);
+  entry.term.focus();
+  return true;
+}
+
 /** Re-measure and resize the terminal (and thus its PTY) to its container. */
 export function refit(entryOrId: TermEntry | string): void {
   const entry = typeof entryOrId === "string" ? pool.get(entryOrId) : entryOrId;

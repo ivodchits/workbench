@@ -51,6 +51,7 @@ function dispatch({ command, arg }: Match): void {
     case "jumpNeedsYou":
     case "jumpPrevNeedsYou":
     case "savePreset":
+    case "openTemplates":
       runCommand(command, arg);
       break;
     // Rail-scope commands never reach here (they're matched in the rail's own

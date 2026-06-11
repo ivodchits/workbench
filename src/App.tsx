@@ -3,6 +3,7 @@ import { applyTheme, mutedDark } from "./theme/tokens";
 import InstanceManager from "./panels/InstanceManager";
 import Workspace from "./panels/Workspace";
 import PresetsBar from "./panels/PresetsBar";
+import TemplateLibraryHost from "./panels/TemplateLibrary";
 import { useConsoles } from "./state/consoles";
 import { useRegistry } from "./state/registry";
 import {
@@ -134,6 +135,10 @@ function App() {
       </div>
 
       <StatusBar openCount={liveCount} sessionId={active?.sessionId ?? null} />
+
+      {/* Prompt template library (step 3.4): always mounted so Ctrl+Shift+P can
+          open it; renders the modal only while open. */}
+      <TemplateLibraryHost />
     </div>
   );
 }
