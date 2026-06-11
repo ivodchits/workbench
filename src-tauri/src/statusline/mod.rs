@@ -19,7 +19,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter, Manager, State};
 
@@ -48,10 +48,15 @@ const SCRIPT_NAME: &str = if cfg!(debug_assertions) {
 /// our script can chain it across relaunches (decision 17: don't clobber the user's).
 const CHAINED_KEY: &str = "statusline_chained_cmd";
 
+/// `meta` key holding the most recent limits snapshot (JSON). Restored into
+/// [`LimitsState`] on launch so the meter isn't blank until the next session renders
+/// its statusline — the only source of fresh `rate_limits`.
+const SNAPSHOT_KEY: &str = "usage_limits_snapshot";
+
 /// One rolling usage window (5-hour or weekly): how much of the account's allowance is
 /// spent and when it resets. `resets_at` is epoch seconds, so the UI can show a live
 /// countdown.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RateWindow {
     pub used_percentage: f64,
@@ -74,7 +79,7 @@ impl RateWindow {
 
 /// The account-wide rate-limit snapshot surfaced to the UI. Both windows are optional
 /// — they appear only after the first API response, and on Pro/Max only.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RateLimits {
     pub five_hour: Option<RateWindow>,
@@ -121,7 +126,37 @@ pub fn ingest(app: &AppHandle, body: &[u8]) {
             *guard = Some(limits.clone());
         }
     }
+    // Persist so the next launch can restore this immediately (the figures only
+    // arrive from a live session's statusline, so without this the meter is blank
+    // until the first agent runs).
+    if let Some(db) = app.try_state::<Db>() {
+        if let Ok(json) = serde_json::to_string(&limits) {
+            let _ = db.meta_set(SNAPSHOT_KEY, &json);
+        }
+    }
     let _ = app.emit(LIMITS_EVENT, limits);
+}
+
+/// Restore the last-known limits snapshot from the registry into [`LimitsState`] at
+/// launch, so `usage_limits` returns the most recent figures immediately rather than
+/// `None` until the next session renders its statusline. The UI marks any window whose
+/// reset has already passed as stale, so this can't resurrect a misleading "live"
+/// number — it just avoids an empty meter on every launch.
+pub fn restore(app: &AppHandle) {
+    let Some(db) = app.try_state::<Db>() else {
+        return;
+    };
+    let Some(json) = db.meta_get(SNAPSHOT_KEY).ok().flatten() else {
+        return;
+    };
+    let Ok(limits) = serde_json::from_str::<RateLimits>(&json) else {
+        return;
+    };
+    if let Some(state) = app.try_state::<LimitsState>() {
+        if let Ok(mut guard) = state.0.lock() {
+            *guard = Some(limits);
+        }
+    }
 }
 
 /// The current account-wide limits (or `None` until the first statusline POST). Read
@@ -343,6 +378,23 @@ mod tests {
         let limits = RateLimits::parse(rl);
         assert_eq!(limits.five_hour.unwrap().used_percentage, 41.0);
         assert_eq!(limits.seven_day.unwrap().resets_at, 1781608663);
+    }
+
+    /// A snapshot round-trips through JSON (the persist→restore path): the same
+    /// serde used to store it in `meta` reads it back unchanged, so the meter restores
+    /// the last figures at launch.
+    #[test]
+    fn snapshot_round_trips_through_json() {
+        let rl = json!({
+            "five_hour": { "used_percentage": 41.0, "resets_at": 1781215663_i64 },
+            "seven_day": { "used_percentage": 18.3, "resets_at": 1781608663_i64 }
+        });
+        let limits = RateLimits::parse(&rl);
+        let json = serde_json::to_string(&limits).unwrap();
+        let back: RateLimits = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.five_hour.unwrap().used_percentage, 41.0);
+        assert_eq!(back.seven_day.unwrap().resets_at, 1781608663);
+        assert_eq!(back.received_at, limits.received_at);
     }
 
     /// A missing window is `None`, not an error — either window may be absent.

@@ -42,6 +42,11 @@ pub fn run() {
             let db = db::Db::open(&dir.join(db_name))?;
             app.manage(db);
 
+            // Seed the account-wide usage meter from the last persisted snapshot so it
+            // shows the most recent figures at launch instead of staying blank until a
+            // session's statusline fires (step 3.2; the only source of fresh limits).
+            statusline::restore(app.handle());
+
             // Start the Phase-2 hook bridge: a local endpoint that receives Claude
             // Code's hooks and filters them by session id (design §4.4, decision
             // 10). A failure here must not stop the app — it only degrades the

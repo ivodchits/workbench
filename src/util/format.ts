@@ -34,6 +34,18 @@ export function formatCountdown(resetsAtEpochSecs: number): string {
   return `${mins}m`;
 }
 
+/** A coarse "time ago" for an epoch-seconds instant: `just now`, `5m ago`, `3h ago`,
+ *  `2d ago` (step 3.2 — how fresh the restored usage snapshot is). */
+export function formatAgo(epochSecs: number): string {
+  const secs = Math.floor(Date.now() / 1000) - epochSecs;
+  if (secs < 45) return "just now";
+  const mins = Math.round(secs / 60);
+  if (mins < 60) return `${mins}m ago`;
+  const hours = Math.round(mins / 60);
+  if (hours < 24) return `${hours}h ago`;
+  return `${Math.round(hours / 24)}d ago`;
+}
+
 /** The window and its components spelled out, for a tooltip. */
 export function tokenBreakdown(instance: Instance): string {
   const f = (n: number) => n.toLocaleString();

@@ -17,7 +17,7 @@ import { initStatusEngine } from "./state/status";
 import { initUsageEngine } from "./state/usage";
 import { initUsageLimits, useUsageLimits } from "./state/usageLimits";
 import type { RateWindow } from "./ipc/usageLimits";
-import { formatCountdown } from "./util/format";
+import { formatCountdown, formatAgo } from "./util/format";
 
 // Step 1.5 turned the cockpit into its real shape: the Instance Manager rail on
 // the left drives the panel surface, where clicking an instance launches (or
@@ -295,7 +295,11 @@ function UsageMeters() {
   return (
     <span
       style={{ display: "flex", alignItems: "center", gap: 16 }}
-      title="account-wide usage — machine-local and approximate; resets count down live"
+      title={
+        "account-wide usage — machine-local and approximate; resets count down live. " +
+        `Last reading ${formatAgo(limits.receivedAt)} (refreshes when a session's ` +
+        "statusline renders)."
+      }
     >
       {limits.fiveHour && <Meter label="5h" window={limits.fiveHour} color="working" />}
       {limits.sevenDay && <Meter label="wk" window={limits.sevenDay} color="done" />}
@@ -304,27 +308,38 @@ function UsageMeters() {
 }
 
 /** One usage window as a 6-cell box-drawing bar, matching the design mockup's Meter:
- *  filled cells in the window's accent, the rest faint, then `NN%` and the countdown. */
+ *  filled cells in the window's accent, the rest faint, then `NN%` and the countdown.
+ *  A window whose reset has already passed is **stale** — its old percentage no longer
+ *  describes the now-rolled-over window, so we dim it and drop the number rather than
+ *  show a figure that's silently wrong (until the next statusline POST refreshes it). */
 function Meter({ label, window, color }: { label: string; window: RateWindow; color: string }) {
   const cells = 6;
+  const stale = window.resetsAt <= Math.floor(Date.now() / 1000);
   const pct = Math.max(0, Math.min(100, window.usedPercentage));
-  const filled = Math.round((pct / 100) * cells);
+  const filled = stale ? 0 : Math.round((pct / 100) * cells);
   const reset = formatCountdown(window.resetsAt);
   return (
     <span
-      style={{ display: "flex", alignItems: "center", gap: 5 }}
-      title={`${label} window · ${pct.toFixed(0)}% used · resets in ${reset}`}
+      style={{ display: "flex", alignItems: "center", gap: 5, opacity: stale ? 0.55 : 1 }}
+      title={
+        stale
+          ? `${label} window has reset since the last reading — awaiting the next session for a fresh figure`
+          : `${label} window · ${pct.toFixed(0)}% used · resets in ${reset}`
+      }
     >
       <span style={{ color: "var(--wb-textDim2)" }}>{label}</span>
       <span style={{ letterSpacing: "-1px" }}>
         {Array.from({ length: cells }).map((_, i) => (
-          <span key={i} style={{ color: i < filled ? `var(--wb-${color})` : "var(--wb-textFaint)" }}>
+          <span
+            key={i}
+            style={{ color: i < filled ? `var(--wb-${color})` : "var(--wb-textFaint)" }}
+          >
             ▮
           </span>
         ))}
       </span>
-      <span style={{ color: "var(--wb-textDim2)" }}>{pct.toFixed(0)}%</span>
-      <span style={{ color: "var(--wb-textFaint)" }}>{reset}</span>
+      <span style={{ color: "var(--wb-textDim2)" }}>{stale ? "—" : `${pct.toFixed(0)}%`}</span>
+      {!stale && <span style={{ color: "var(--wb-textFaint)" }}>{reset}</span>}
     </span>
   );
 }
