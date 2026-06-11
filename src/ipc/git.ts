@@ -127,3 +127,65 @@ export function removeWorktree(
 ): Promise<void> {
   return invoke("remove_worktree", { repoRoot, worktreePath, branch, deleteBranch, force });
 }
+
+// --- diff / review (step 2.7) -----------------------------------------------
+
+/** One changed file in an instance's diff vs its base (step 2.7). */
+export interface DiffFile {
+  /** Path relative to the working dir, forward-slashed — the list key/label. */
+  path: string;
+  /** Absolute path for the editor to read/write; null for a deleted file. */
+  absPath: string | null;
+  /** "added" | "modified" | "deleted" | "typechange" | "untracked". */
+  status: string;
+  insertions: number;
+  deletions: number;
+  /** True when git reports the file binary (no textual diff / inline edit). */
+  binary: boolean;
+}
+
+/** An instance's changes vs its base ref (step 2.7) — the Diff/Review summary. */
+export interface InstanceDiff {
+  /** The ref the diff was taken against (shown as "vs &lt;base&gt;"). */
+  base: string;
+  files: DiffFile[];
+  filesChanged: number;
+  insertions: number;
+  deletions: number;
+}
+
+/**
+ * List what an instance changed vs its base (step 2.7, design §5). `base` overrides
+ * the auto-resolved default (a worktree diffs against the main repo's current
+ * branch; a root instance against `HEAD`). Includes untracked files.
+ */
+export function instanceDiff(
+  repoRoot: string,
+  workingDir: string,
+  base?: string,
+): Promise<InstanceDiff> {
+  return invoke("instance_diff", { repoRoot, workingDir, base: base ?? null });
+}
+
+/** One file's unified diff (step 2.7). */
+export interface FileDiff {
+  path: string;
+  base: string;
+  /** Unified-diff text — each line led by `+`/`-`/` `/`@`. Empty when binary. */
+  text: string;
+  binary: boolean;
+  untracked: boolean;
+}
+
+/**
+ * Read one file's unified diff against `base` (step 2.7). Untracked files have no
+ * base version, so pass `untracked: true` to get an all-added synthesis from disk.
+ */
+export function instanceFileDiff(
+  workingDir: string,
+  base: string,
+  path: string,
+  untracked: boolean,
+): Promise<FileDiff> {
+  return invoke("instance_file_diff", { workingDir, base, path, untracked });
+}

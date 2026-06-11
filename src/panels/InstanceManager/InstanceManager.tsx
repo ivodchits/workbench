@@ -25,6 +25,7 @@ import {
 } from "../../state/consoles";
 import { closeShell, getOpenShells, newShell, openShell } from "../../state/shells";
 import { closeEditor, getOpenEditors, openEditor } from "../../state/editors";
+import { closeDiff, diffIdFor, getOpenDiffs, openDiff } from "../../state/diffs";
 import {
   getLiveStatuses,
   onStatusTransition,
@@ -293,6 +294,22 @@ function InstanceManager({ onCollapse }: InstanceManagerProps) {
     routePanelFocus(instance.id);
   };
 
+  // Open (or focus) this instance's Diff/Review panel (step 2.7) — what it changed
+  // vs its branch base — switching the active workspace to its project so the panel
+  // docks alongside the instance's console.
+  const reviewInstance = (instance: Instance) => {
+    const project = projects.find((p) => p.id === instance.projectId);
+    if (!project) return;
+    setActiveProject(instance.projectId);
+    openDiff({
+      instanceId: instance.id,
+      projectId: instance.projectId,
+      repoRoot: project.rootPath,
+      workingDir: instance.workingDir,
+      title: instance.title,
+    });
+  };
+
   // Open (or focus) the Project Shell in the project's root dir, labelled with
   // the project name; switches the active workspace to that project.
   const openShellForProject = (project: Project) => {
@@ -539,6 +556,7 @@ function InstanceManager({ onCollapse }: InstanceManagerProps) {
                       liveStatuses={liveStatuses}
                       sharedInstanceIds={sharedInstanceIds}
                       onActivate={activate}
+                      onReview={reviewInstance}
                       onOpenShell={() => openShellForProject(p)}
                       onOpenEditor={() => openEditorForProject(p)}
                       onEdit={() => setEditProjectTarget(p)}
@@ -609,6 +627,8 @@ interface ProjectNodeProps {
   /** Instances flagged as sharing a working dir (step 2.6). */
   sharedInstanceIds: ReadonlySet<string>;
   onActivate: (instance: Instance) => void;
+  /** Open (or focus) an instance's Diff/Review panel (step 2.7). */
+  onReview: (instance: Instance) => void;
   /** Open (or focus) this project's shell. */
   onOpenShell: () => void;
   /** Open (or focus) this project's editor. */
@@ -631,6 +651,7 @@ function ProjectNode({
   liveStatuses,
   sharedInstanceIds,
   onActivate,
+  onReview,
   onOpenShell,
   onOpenEditor,
   onEdit,
@@ -805,6 +826,7 @@ function ProjectNode({
               shared={sharedInstanceIds.has(i.id)}
               onActivate={() => onActivate(i)}
               onToggleWorktree={() => onToggleWorktree(i)}
+              onReview={() => onReview(i)}
               onKill={() => onKill(i)}
             />
           ))}
@@ -884,6 +906,10 @@ function RemoveProjectConfirm({
       for (const e of getOpenEditors().filter((e) => e.projectId === project.id)) {
         closeEditor(e.editorId);
       }
+      // Diffs hold no PTY/buffer either — drop the project's review panels too.
+      for (const d of getOpenDiffs().filter((d) => d.projectId === project.id)) {
+        closeDiff(d.diffId);
+      }
       await deleteProject(project.id);
       onClose();
     } catch {
@@ -918,6 +944,7 @@ function KillConfirm({ instance, onClose }: { instance: Instance; onClose: () =>
       // wouldn't fire.
       closeConsole(instance.id);
       release(instance.id);
+      closeDiff(diffIdFor(instance.id)); // drop its review panel, if open
       await deleteInstance(instance.id);
       await renumberInstances(instance.projectId);
       onClose();

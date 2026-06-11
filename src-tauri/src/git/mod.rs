@@ -413,8 +413,8 @@ fn tail(s: &str, max: usize) -> String {
 // ---------------------------------------------------------------------------
 
 /// A `git diff --stat`-style summary of what a worktree changed versus the branch
-/// it would integrate into. Stands in for the full Diff/Review panel (step 2.7,
-/// not yet landed) so the teardown dialog can show the shape of the change.
+/// it would integrate into — a compact at-a-glance figure for the teardown dialog
+/// (the full file-by-file review lives in the Diff/Review panel, step 2.7).
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DiffStat {
@@ -564,6 +564,287 @@ pub fn remove_worktree(
         }
     }
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Diff / Review (step 2.7) — design §5 "Diff / Review".
+// ---------------------------------------------------------------------------
+
+/// One changed file in an instance's diff against its base (step 2.7). The list
+/// entry the Diff/Review panel renders: a status glyph, the path, and ± counts.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DiffFile {
+    /// Path relative to the working dir, forward-slashed — the list label + key.
+    pub path: String,
+    /// Absolute on-disk path the panel reads/writes for inline edits; `None` for a
+    /// deleted file (nothing to open).
+    pub abs_path: Option<String>,
+    /// `"added" | "modified" | "deleted" | "typechange" | "untracked"`.
+    pub status: String,
+    /// Lines added (0 for a binary or deleted-only change).
+    pub insertions: u32,
+    /// Lines removed (0 for an addition / binary).
+    pub deletions: u32,
+    /// True when git reports the file binary — no textual diff, no inline edit.
+    pub binary: bool,
+}
+
+/// An instance's changes versus its base ref (step 2.7, design §5) — the answer to
+/// "what did this agent change?": tracked changes (committed + uncommitted) against
+/// the base, plus untracked new files.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InstanceDiff {
+    /// The ref the diff was taken against (the panel shows "vs &lt;base&gt;").
+    pub base: String,
+    pub files: Vec<DiffFile>,
+    pub files_changed: u32,
+    pub insertions: u32,
+    pub deletions: u32,
+}
+
+/// List what an instance changed versus its base (step 2.7). The base is resolved
+/// by `resolve_base` unless `base` is given. Pure inspection — no repo state
+/// changes. Renames are intentionally *not* detected (`-M` omitted): a rename shows
+/// as an add + a delete, which keeps the `--numstat` and `--name-status` paths
+/// aligned (no `{old => new}` munging) — fine for a review pane (staging is out of
+/// scope here).
+#[tauri::command]
+pub fn instance_diff(
+    repo_root: String,
+    working_dir: String,
+    base: Option<String>,
+) -> Result<InstanceDiff, String> {
+    let wd = Path::new(&working_dir);
+    if !wd.is_dir() {
+        return Err(format!("working dir is not a directory: {working_dir}"));
+    }
+    let base = resolve_base(Path::new(&repo_root), wd, base);
+
+    // Counts (and the binary flag) from --numstat; the change kind from
+    // --name-status. `core.quotePath=false` keeps non-ASCII paths verbatim so they
+    // match what we hand back for the editor to open.
+    let mut files: Vec<DiffFile> = Vec::new();
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+    let status_by_path = parse_name_status(
+        &git_output(wd, &["-c", "core.quotePath=false", "diff", "--name-status", &base])
+            .unwrap_or_default(),
+    );
+    let numstat =
+        git_output(wd, &["-c", "core.quotePath=false", "diff", "--numstat", &base]).unwrap_or_default();
+    for line in numstat.lines() {
+        let mut cols = line.splitn(3, '\t');
+        let ins_raw = cols.next().unwrap_or("");
+        let del_raw = cols.next().unwrap_or("");
+        let path = match cols.next() {
+            Some(p) if !p.is_empty() => p.to_owned(),
+            _ => continue,
+        };
+        let binary = ins_raw == "-" || del_raw == "-";
+        let insertions = ins_raw.parse().unwrap_or(0);
+        let deletions = del_raw.parse().unwrap_or(0);
+        let status = status_by_path
+            .get(&path)
+            .cloned()
+            .unwrap_or_else(|| "modified".to_owned());
+        let abs_path = if status == "deleted" {
+            None
+        } else {
+            Some(wd.join(&path).to_string_lossy().into_owned())
+        };
+        seen.insert(path.clone());
+        files.push(DiffFile { path, abs_path, status, insertions, deletions, binary });
+    }
+
+    // Untracked files never appear in `git diff` — list them separately and count
+    // their lines as additions (the whole file is "new").
+    let untracked =
+        git_output(wd, &["-c", "core.quotePath=false", "ls-files", "--others", "--exclude-standard"])
+            .unwrap_or_default();
+    for path in untracked.lines() {
+        if path.is_empty() || seen.contains(path) {
+            continue;
+        }
+        let abs = wd.join(path);
+        let (insertions, binary) = count_added_lines(&abs);
+        files.push(DiffFile {
+            path: path.to_owned(),
+            abs_path: Some(abs.to_string_lossy().into_owned()),
+            status: "untracked".to_owned(),
+            insertions,
+            deletions: 0,
+            binary,
+        });
+    }
+
+    files.sort_by(|a, b| a.path.cmp(&b.path));
+    let files_changed = files.len() as u32;
+    let insertions = files.iter().map(|f| f.insertions).sum();
+    let deletions = files.iter().map(|f| f.deletions).sum();
+    Ok(InstanceDiff { base, files, files_changed, insertions, deletions })
+}
+
+/// One file's unified diff against the base (step 2.7) — fetched on demand when the
+/// user selects a file in the panel. `untracked` files have no base version, so we
+/// synthesize an all-added diff from the file's current content.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FileDiff {
+    pub path: String,
+    pub base: String,
+    /// Unified-diff text — each line led by `+`/`-`/` `/`@`. Empty when binary.
+    pub text: String,
+    pub binary: bool,
+    pub untracked: bool,
+}
+
+/// Read one file's unified diff for the Diff/Review panel (step 2.7). For tracked
+/// files this is `git diff <base> -- <path>` (untrimmed, so leading context isn't
+/// lost); for `untracked` files it's an all-added synthesis from disk.
+#[tauri::command]
+pub fn instance_file_diff(
+    working_dir: String,
+    base: String,
+    path: String,
+    untracked: bool,
+) -> Result<FileDiff, String> {
+    let wd = Path::new(&working_dir);
+    if untracked {
+        let (text, binary) = synth_added_diff(&wd.join(&path));
+        return Ok(FileDiff { path, base, text, binary, untracked: true });
+    }
+    let out = git_stdout(wd, &["-c", "core.quotePath=false", "diff", &base, "--", &path])
+        .unwrap_or_default();
+    let binary = out.contains("Binary files ");
+    Ok(FileDiff {
+        text: if binary { String::new() } else { out },
+        path,
+        base,
+        binary,
+        untracked: false,
+    })
+}
+
+/// Pick the ref to diff an instance's working dir against (step 2.7). An explicit
+/// `base` wins. Otherwise a *linked worktree* (a dir other than the repo root)
+/// diffs against the main repo's current branch — the branch it would integrate
+/// into, mirroring `worktree_teardown_info`. A root instance diffs against `HEAD`,
+/// surfacing the agent's uncommitted (and any committed) work since HEAD.
+fn resolve_base(repo_root: &Path, working_dir: &Path, explicit: Option<String>) -> String {
+    if let Some(b) = explicit.map(|s| s.trim().to_owned()).filter(|s| !s.is_empty()) {
+        return b;
+    }
+    if !same_path(repo_root, working_dir) {
+        if let Some(b) =
+            git_output(repo_root, &["rev-parse", "--abbrev-ref", "HEAD"]).filter(|b| b != "HEAD")
+        {
+            return b;
+        }
+        if let Some(b) = detect_default_branch(repo_root) {
+            return b;
+        }
+    }
+    "HEAD".to_owned()
+}
+
+/// Parse `git diff --name-status` into a `path → status` map. Status letters map to
+/// our display vocabulary; unknown letters fall back to "modified". (No `-M`, so we
+/// only ever see single-path A/M/D/T lines — see `instance_diff`.)
+fn parse_name_status(out: &str) -> std::collections::HashMap<String, String> {
+    let mut map = std::collections::HashMap::new();
+    for line in out.lines() {
+        let mut cols = line.splitn(2, '\t');
+        let code = cols.next().unwrap_or("");
+        let path = match cols.next() {
+            Some(p) if !p.is_empty() => p,
+            _ => continue,
+        };
+        let status = match code.chars().next() {
+            Some('A') => "added",
+            Some('D') => "deleted",
+            Some('T') => "typechange",
+            Some('M') => "modified",
+            _ => "modified",
+        };
+        map.insert(path.to_owned(), status.to_owned());
+    }
+    map
+}
+
+/// Count a file's lines (as all-added) and detect binary, for an untracked entry.
+/// A NUL byte in the first chunk marks it binary (git's own heuristic); an unreadable
+/// file counts as 0 lines, non-binary.
+fn count_added_lines(path: &Path) -> (u32, bool) {
+    match std::fs::read(path) {
+        Ok(bytes) => {
+            if bytes.iter().take(8000).any(|&b| b == 0) {
+                return (0, true);
+            }
+            let text = String::from_utf8_lossy(&bytes);
+            let mut n = text.lines().count() as u32;
+            // A trailing newline-less final line still counts; `lines()` already
+            // yields it, but an empty file has zero lines.
+            if text.is_empty() {
+                n = 0;
+            }
+            (n, false)
+        }
+        Err(_) => (0, false),
+    }
+}
+
+/// Synthesize an all-added unified diff for an untracked file from its content, so
+/// the panel renders it the same way as a tracked diff. Returns empty text + binary
+/// when the file is binary or unreadable.
+fn synth_added_diff(path: &Path) -> (String, bool) {
+    let bytes = match std::fs::read(path) {
+        Ok(b) => b,
+        Err(_) => return (String::new(), false),
+    };
+    if bytes.iter().take(8000).any(|&b| b == 0) {
+        return (String::new(), true);
+    }
+    let text = String::from_utf8_lossy(&bytes);
+    if text.is_empty() {
+        return (String::new(), false);
+    }
+    let lines: Vec<&str> = text.lines().collect();
+    let mut out = format!("@@ -0,0 +1,{} @@\n", lines.len());
+    for line in lines {
+        out.push('+');
+        out.push_str(line);
+        out.push('\n');
+    }
+    (out, false)
+}
+
+/// True when two paths point at the same location (canonicalized; falls back to a
+/// raw compare when either can't be canonicalized).
+fn same_path(a: &Path, b: &Path) -> bool {
+    match (std::fs::canonicalize(a), std::fs::canonicalize(b)) {
+        (Ok(x), Ok(y)) => x == y,
+        _ => a == b,
+    }
+}
+
+/// Like `git_output` but returns stdout **untrimmed** — diff text must keep its
+/// leading/trailing whitespace and newlines intact. `None` on a missing/erroring git.
+fn git_stdout(path: &Path, args: &[&str]) -> Option<String> {
+    let mut cmd = Command::new("git");
+    cmd.arg("-C").arg(path).args(args);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    let out = cmd.output().ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    Some(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
 /// Run `git -C <path> <args>`, returning trimmed stdout on success or the captured
@@ -845,6 +1126,79 @@ mod tests {
             !branch_exists(&dir, &wt.branch),
             "agent branch deleted after merge"
         );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn parse_name_status_maps_change_codes() {
+        let map = parse_name_status("A\tnew.rs\nM\tlib.rs\nD\told.rs\nT\tlink");
+        assert_eq!(map.get("new.rs").unwrap(), "added");
+        assert_eq!(map.get("lib.rs").unwrap(), "modified");
+        assert_eq!(map.get("old.rs").unwrap(), "deleted");
+        assert_eq!(map.get("link").unwrap(), "typechange");
+        assert!(!map.contains_key("missing"));
+    }
+
+    #[test]
+    fn synth_added_diff_prefixes_every_line() {
+        let dir = temp_dir("synth");
+        let f = dir.join("a.txt");
+        std::fs::write(&f, "one\ntwo\n").unwrap();
+        let (text, binary) = synth_added_diff(&f);
+        assert!(!binary);
+        assert!(text.starts_with("@@ -0,0 +1,2 @@\n"));
+        assert!(text.contains("\n+one\n"));
+        assert!(text.contains("\n+two\n"));
+
+        // A NUL byte marks the file binary (no diff text).
+        std::fs::write(&f, [b'a', 0, b'b']).unwrap();
+        let (text, binary) = synth_added_diff(&f);
+        assert!(binary);
+        assert!(text.is_empty());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// End-to-end diff: an uncommitted edit, a deletion, and an untracked file in a
+    /// root instance show up against HEAD with the right statuses + a per-file diff.
+    #[test]
+    fn instance_diff_reports_tracked_and_untracked_changes() {
+        let dir = temp_dir("diff");
+        if !init_repo(&dir) {
+            std::fs::remove_dir_all(&dir).ok();
+            return;
+        }
+        // Seed two tracked files and commit them, so HEAD has a baseline.
+        std::fs::write(dir.join("keep.txt"), "v1\n").unwrap();
+        std::fs::write(dir.join("gone.txt"), "bye\n").unwrap();
+        git_run(&dir, &["add", "."]).unwrap();
+        git_run(&dir, &["commit", "-q", "-m", "seed"]).unwrap();
+
+        // Now: modify one, delete the other, and add an untracked file.
+        std::fs::write(dir.join("keep.txt"), "v1\nv2\n").unwrap();
+        std::fs::remove_file(dir.join("gone.txt")).unwrap();
+        std::fs::write(dir.join("fresh.txt"), "hello\nworld\n").unwrap();
+
+        // Root instance → base is HEAD (working_dir == repo_root).
+        let root = dir.to_string_lossy().into_owned();
+        let diff = instance_diff(root.clone(), root.clone(), None).unwrap();
+        assert_eq!(diff.base, "HEAD");
+        assert_eq!(diff.files_changed, 3);
+
+        let by_path = |p: &str| diff.files.iter().find(|f| f.path == p).unwrap();
+        assert_eq!(by_path("keep.txt").status, "modified");
+        assert_eq!(by_path("gone.txt").status, "deleted");
+        assert!(by_path("gone.txt").abs_path.is_none(), "deleted files aren't editable");
+        let fresh = by_path("fresh.txt");
+        assert_eq!(fresh.status, "untracked");
+        assert_eq!(fresh.insertions, 2);
+
+        // A tracked file's diff comes from git; an untracked file's is synthesized.
+        let tracked = instance_file_diff(root.clone(), "HEAD".into(), "keep.txt".into(), false).unwrap();
+        assert!(tracked.text.contains("+v2"), "diff shows the added line");
+        let synth = instance_file_diff(root, "HEAD".into(), "fresh.txt".into(), true).unwrap();
+        assert!(synth.untracked);
+        assert!(synth.text.contains("+hello") && synth.text.contains("+world"));
 
         std::fs::remove_dir_all(&dir).ok();
     }

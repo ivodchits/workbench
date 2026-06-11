@@ -46,6 +46,7 @@ export type CommandId =
   | "railRename"
   | "railKill"
   | "railWorktree"
+  | "railDiff"
   | "railOpenDir"
   | "railInterrupt"
   | "railAddProject"
@@ -120,6 +121,7 @@ export const BINDINGS: Binding[] = [
   { chord: "X", command: "railKill", scope: "rail", title: "Rail: kill instance" },
   { chord: "Delete", command: "railKill", scope: "rail", title: "Rail: kill instance" },
   { chord: "W", command: "railWorktree", scope: "rail", title: "Rail: toggle worktree" },
+  { chord: "D", command: "railDiff", scope: "rail", title: "Rail: review changes (diff)" },
   { chord: "O", command: "railOpenDir", scope: "rail", title: "Rail: open working dir" },
   { chord: "I", command: "railInterrupt", scope: "rail", title: "Rail: interrupt agent" },
   { chord: "P", command: "railAddProject", scope: "rail", title: "Rail: add project" },

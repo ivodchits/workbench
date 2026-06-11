@@ -47,6 +47,8 @@ interface InstanceCardProps {
   onActivate: () => void;
   /** Provision (or revert) this instance's worktree — opens a confirm (step 2.4). */
   onToggleWorktree: () => void;
+  /** Open (or focus) this instance's Diff/Review panel (step 2.7). */
+  onReview: () => void;
   onKill: () => void;
 }
 
@@ -57,6 +59,7 @@ function InstanceCard({
   shared,
   onActivate,
   onToggleWorktree,
+  onReview,
   onKill,
 }: InstanceCardProps) {
   const [hover, setHover] = useState(false);
@@ -89,6 +92,9 @@ function InstanceCard({
         break;
       case "railWorktree":
         onToggleWorktree();
+        break;
+      case "railDiff":
+        onReview();
         break;
       case "railOpenDir":
         void openPath(instance.workingDir);
@@ -209,6 +215,9 @@ function InstanceCard({
               fontSize={16.5}
             >
               {GLYPH.worktree}
+            </RowAction>
+            <RowAction label="review changes (diff)" onClick={onReview}>
+              ±
             </RowAction>
             <RowAction label="edit note" onClick={() => setEditingNote(true)}>
               ✎

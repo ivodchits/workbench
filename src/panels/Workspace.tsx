@@ -31,6 +31,7 @@ import "../theme/dockview.css";
 import ConsolePanel, { type ConsolePanelParams } from "./ConsolePanel";
 import ShellPanel, { type ShellPanelParams } from "./Shell";
 import EditorPanel, { type EditorPanelParams } from "./Editor";
+import DiffPanel, { type DiffPanelParams } from "./Diff";
 import PreviewPanel from "./PreviewPanel";
 import { GLYPH } from "../theme";
 import { useRegistry } from "../state/registry";
@@ -60,6 +61,15 @@ import {
   type EditorDescriptor,
   type EditorSession,
 } from "../state/editors";
+import {
+  closeDiff,
+  getActiveDiffId,
+  getOpenDiffs,
+  hydrateDiffs,
+  useDiffs,
+  type DiffDescriptor,
+  type DiffSession,
+} from "../state/diffs";
 import { useActiveProject } from "../state/activeProject";
 import { loadLayout, saveLayoutDebounced, saveLayoutNow } from "../state/layout";
 import { routePanelFocus, setDockApi } from "../state/dock";
@@ -70,12 +80,16 @@ interface LayoutSnapshot {
   consoleIds: string[];
   shells: { shellId: string; projectId: string; cwd: string; label: string }[];
   editors: EditorDescriptor[];
+  diffs: DiffDescriptor[];
 }
 
 const COMPONENTS = {
   console: ConsolePanel as React.FunctionComponent<IDockviewPanelProps>,
   shell: ShellPanel as React.FunctionComponent<IDockviewPanelProps>,
   editor: EditorPanel as React.FunctionComponent<IDockviewPanelProps>,
+  // Diff/Review panels carry only an instance binding (no PTY/buffer) and re-fetch
+  // from git on mount, so the reconciler treats them like editors.
+  diff: DiffPanel as React.FunctionComponent<IDockviewPanelProps>,
   // Markdown Preview panels carry no backing store/PTY and use `ownerEditorId` (not
   // `editorId`) in params, so the reconcilers above ignore them — they persist and
   // restore purely as part of the dockview tree.
@@ -97,6 +111,12 @@ function shellPanelId(panel: { params?: Record<string, unknown> }): string | nul
 /** An editor panel carries its minted editor id in params; other panels don't. */
 function editorPanelId(panel: { params?: Record<string, unknown> }): string | null {
   const id = panel.params?.editorId;
+  return typeof id === "string" ? id : null;
+}
+
+/** A diff panel carries its `diff:<instanceId>` id in params; other panels don't. */
+function diffPanelId(panel: { params?: Record<string, unknown> }): string | null {
+  const id = panel.params?.diffId;
   return typeof id === "string" ? id : null;
 }
 
@@ -129,6 +149,7 @@ function Workspace() {
   const { open, activeId } = useConsoles();
   const { open: shellsOpen, activeId: activeShellId } = useShells();
   const { open: editorsOpen, activeId: activeEditorId } = useEditors();
+  const { open: diffsOpen, activeId: activeDiffId } = useDiffs();
   const { instances } = useRegistry();
   const activeProjectId = useActiveProject();
 
@@ -183,7 +204,9 @@ function Workspace() {
         openPaths: e.files.map((f) => f.path),
         activePath: e.activePath,
       }));
-    return { tree: a.toJSON(), consoleIds, shells, editors };
+    // Diffs persist only their binding — the panel re-fetches from git on restore.
+    const diffs: DiffDescriptor[] = getOpenDiffs().filter((d) => present.has(d.diffId));
+    return { tree: a.toJSON(), consoleIds, shells, editors, diffs };
   }, []);
 
   // Persist the active project's arrangement (debounced).
@@ -191,8 +214,8 @@ function Workspace() {
     (a: DockviewApi) => {
       const key = displayedProjectRef.current;
       if (!key) return; // no project on screen → nothing to persist
-      const { tree, consoleIds, shells, editors } = collect(a);
-      saveLayoutDebounced(tree, consoleIds, shells, editors, key);
+      const { tree, consoleIds, shells, editors, diffs } = collect(a);
+      saveLayoutDebounced(tree, consoleIds, shells, editors, diffs, key);
     },
     [collect],
   );
@@ -307,6 +330,40 @@ function Workspace() {
     }
   }, []);
 
+  // Same reconcile for Diff/Review panels (keyed by project id directly, like
+  // editors). A diff panel holds no PTY/buffer — removal just drops the panel.
+  const diffFocusRef = useRef<string | null>(null);
+  const reconcileDiffs = useCallback((a: DockviewApi) => {
+    const projId = displayedProjectRef.current;
+    const openDiffs = getOpenDiffs();
+    const projDiffs: DiffSession[] = openDiffs.filter((d) => d.projectId === projId);
+
+    for (const diff of projDiffs) {
+      if (a.getPanel(diff.diffId)) continue;
+      const params: DiffPanelParams = { diffId: diff.diffId };
+      const position = a.panels.length > 0 ? ({ direction: "right" } as const) : undefined;
+      a.addPanel({
+        id: diff.diffId,
+        component: "diff",
+        title: `diff · ${diff.title}`,
+        params,
+        ...(position ? { position } : {}),
+      });
+    }
+    // Remove only diffs gone from the store entirely (closed) — never another
+    // project's diff (same rule as consoles/shells/editors above).
+    const allDiffIds = new Set(openDiffs.map((d) => d.diffId));
+    for (const panel of [...a.panels]) {
+      const id = diffPanelId(panel);
+      if (id && !allDiffIds.has(id)) a.removePanel(panel);
+    }
+    const aDiff = getActiveDiffId();
+    if (aDiff && a.getPanel(aDiff) && aDiff !== diffFocusRef.current) {
+      a.getPanel(aDiff)?.api.setActive();
+      diffFocusRef.current = aDiff;
+    }
+  }, []);
+
   const onReady = (event: DockviewReadyEvent) => {
     const a = event.api;
     setApi(a);
@@ -341,7 +398,8 @@ function Workspace() {
         const consoleId = consoleInstanceId(panel);
         const shellId = shellPanelId(panel);
         const editorId = editorPanelId(panel);
-        const id = consoleId ?? shellId ?? editorId;
+        const diffId = diffPanelId(panel);
+        const id = consoleId ?? shellId ?? editorId ?? diffId;
         if (!id) return;
         queueMicrotask(() => {
           if (switchingRef.current) return;
@@ -349,7 +407,8 @@ function Workspace() {
           if (consoleId) closeConsole(consoleId);
           else if (shellId) closeShell(shellId);
           else if (editorId) closeEditor(editorId);
-          // Editors own no pooled terminal, so only console/shell ids release one.
+          else if (diffId) closeDiff(diffId);
+          // Editors/diffs own no pooled terminal, so only console/shell ids release one.
           if (consoleId || shellId) release(id);
         });
       }),
@@ -372,6 +431,7 @@ function Workspace() {
       reconcileConsoles(api);
       reconcileShells(api);
       reconcileEditors(api);
+      reconcileDiffs(api);
       return;
     }
 
@@ -386,14 +446,15 @@ function Workspace() {
 
       restoredRef.current = false; // suspend persist during the swap
       if (prev != null) {
-        const { tree, consoleIds, shells, editors } = collect(api);
-        saveLayoutNow(tree, consoleIds, shells, editors, prev);
+        const { tree, consoleIds, shells, editors, diffs } = collect(api);
+        saveLayoutNow(tree, consoleIds, shells, editors, diffs, prev);
       }
       switchingRef.current = true; // keep the outgoing project's PTYs alive
       if (saved) {
         hydrateDormant(saved.consoleInstanceIds);
         hydrateShells(saved.shells);
         hydrateEditors(saved.editors);
+        hydrateDiffs(saved.diffs);
         // `fromJSON` replaces the whole layout (removing the outgoing project's
         // panels itself) — don't `clear()` first, or it can fail and lose the
         // saved grouping (tabbed consoles would rebuild as separate columns).
@@ -405,11 +466,12 @@ function Workspace() {
       displayedProjectRef.current = activeProjectId;
       restoredRef.current = true;
 
-      // Settle: add any live console/shell/editor for this project the saved tree
-      // didn't include (e.g. one you opened while switching) and drop stragglers.
+      // Settle: add any live console/shell/editor/diff for this project the saved
+      // tree didn't include (e.g. one you opened while switching) and drop stragglers.
       reconcileConsoles(api);
       reconcileShells(api);
       reconcileEditors(api);
+      reconcileDiffs(api);
     })();
   }, [
     api,
@@ -417,14 +479,17 @@ function Workspace() {
     open,
     shellsOpen,
     editorsOpen,
+    diffsOpen,
     activeId,
     activeShellId,
     activeEditorId,
+    activeDiffId,
     instances,
     collect,
     reconcileConsoles,
     reconcileShells,
     reconcileEditors,
+    reconcileDiffs,
   ]);
 
   return (

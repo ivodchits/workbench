@@ -674,7 +674,7 @@ Pull these in once the relevant phase is stable; each is an independent step whe
 - [x] 2.4 Worktree provisioning
 - [x] 2.5 Worktree post-create & teardown
 - [x] 2.6 Shared-working-dir warning
-- [ ] 2.7 Diff / Review panel
+- [x] 2.7 Diff / Review panel
 
 **Phase 3 — polish & power**
 - [ ] 3.1 Transcript-tailing: tokens + cost
