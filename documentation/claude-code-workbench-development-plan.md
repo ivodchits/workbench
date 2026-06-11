@@ -542,6 +542,97 @@ emit per-byte global events.
 - **Out of scope:** a full commit composer / interactive rebase UI (use the Project Shell);
   worktree provisioning (owned by 2.4/2.5).
 
+### Step 3.12 — Remote projects (SSH + tmux), no telemetry **(may need 2 passes)**
+- **Goal:** Let a project point at a **remote host over SSH** instead of a local folder, run
+  each instance as a persistent **tmux session** there, and drive its `claude` TUI in a normal
+  Console — so you can supervise agents on your server box alongside local ones. **Telemetry is
+  deliberately out of scope for remote** (no hooks, no tokens, no usage meter, no git/diff): the
+  remote agent's user-level hooks POST to *its* localhost and its transcript lives on *its* disk,
+  neither of which crosses the SSH boundary, so those subsystems simply stay inert for remote
+  instances rather than being wired across. Remote projects and instances are **clearly badged**
+  as remote in the UI.
+- **Depends on:** 1.5, 1.3
+- **Design refs:** `§4.2` (PTY-as-bytes; the bridge is transport-agnostic), `§3` (data model).
+  **Not to be confused with Phase 4 / `§11`**, which is remote *access to Workbench itself*
+  (phone → desktop over the tailnet). This step is the inverse: Workbench (local) → a remote
+  agent over SSH.
+- **Model (decided — "Model A"):** an **instance = one tmux *session*** on the host (named
+  `wb-<short instance id>`), **not** a window in a shared session. One-session-per-instance is
+  what sidesteps tmux's client-mirroring (multiple clients on the *same* session share one active
+  window, so two consoles couldn't show two windows at once). A **project** groups those sessions
+  on a single SSH destination. Persistence falls out for free: closing a console or quitting
+  Workbench only *detaches* — the remote session (and `claude`) keep running and reattach on
+  relaunch.
+- **Build:**
+  - **Data model (migration v5→v6, append-only per `db/mod.rs`).** Add to `projects`:
+    `remote_ssh_dest TEXT` (NULL ⇒ local; non-NULL flags a remote project) and `remote_dir TEXT`
+    (the working directory on the host). For a remote project, also store `remote_dir` into the
+    existing `root_path` (kept NOT NULL) so code paths that read `root_path` for display don't
+    break. Add to `instances`: `remote_tmux_session TEXT` (NULL for local; the session name —
+    defaulted to `wb-<short id>` on create, or the adopted name on import). Extend the Rust
+    `Project`/`Instance` structs + `New*`/`*Patch` + the TS types in `src/ipc/registry.ts` to
+    carry these.
+  - **SSH destination, not credentials.** The dialog takes a single **SSH destination string**
+    (e.g. `myserver`, resolved from the user's `~/.ssh/config`) plus the remote dir; auth/host/
+    port/key stay in SSH config where they belong. Don't build credential management. (Optional
+    explicit `user@host:port` is fine, but lead with the config-alias path.)
+  - **Spawn path (`pty/mod.rs`).** Thread an optional `remote: Option<RemoteSpawn>`
+    (`{ dest, session, dir }`) into `pty_spawn`. When present, build the child as
+    `ssh -tt <dest> -- tmux new-session -A -s <session> -c <dir> "bash -lc claude"` instead of the
+    local `claude_command`. Notes: `-A` makes it **attach-or-create** (first launch creates the
+    session and runs the command; a reconnect attaches the live one and *ignores* the command —
+    exactly the desired reconnect semantics); `bash -lc` forces a **login shell** so `claude`/
+    `tmux` are on PATH (an `ssh -- tmux …` non-login shell often isn't). The local `ssh` child is
+    just another `portable-pty` child — **the reader thread, `pty_write`, `pty_resize`, output
+    Channel are all unchanged** (this is the cheap part). Set `SpawnResult.session_id = None` for
+    remote (no session-id minting — there's no local hook/transcript correlation to do), which
+    `markSpawned` already tolerates.
+  - **Frontend spawn threading.** `consoles.ts:openConsole` hardcodes `kind: "claude"`; for a
+    remote instance, look up its project and pass the `remote` descriptor through
+    `ConsoleSession` → `Console.tsx` → `terminalPool.acquire` → `ptySpawn`. Add the `remote` field
+    to `src/ipc/pty.ts`'s `ptySpawn`.
+  - **Add-project dialog (`ProjectDialog.tsx`).** Add a **"remote (SSH)"** toggle. When on:
+    replace the folder picker + `detectRepo` git inspection (skip it entirely) with an SSH-dest
+    field + a remote-dir field; hide the worktree-setup section (local-only). When off, the dialog
+    is exactly as today.
+  - **Lifecycle semantics (the key behavioral difference).** **Detach ≠ kill.** Closing the
+    console or quitting Workbench lets the `ssh` child die, which only detaches tmux — the remote
+    session persists (that's the whole point). **Removing** an instance must explicitly
+    `ssh <dest> tmux kill-session -t <session>` *then* delete the row. Surface this in the rail's
+    remove action for remote instances (e.g. confirm "kill remote session `wb-…`?").
+  - **Discover & adopt existing sessions.** On opening a remote project (and via a refresh
+    action), run `ssh <dest> tmux ls` and reconcile: mark our `wb-*` instances running vs detached,
+    and offer to **import** any *other* live sessions on the host as new instances (attach as-is
+    with `tmux attach -t <name>`, storing the adopted name in `remote_tmux_session`). This is the
+    Model-A analog of "recognise what's already running on the server."
+  - **Remote badging (explicit requirement).** Both the **project** header and every **instance
+    card** for a remote project show a clear remote indicator (a new glyph, e.g. `⇄`, + the SSH
+    dest, like `⇄ ssh:myserver`). Because there are no hooks, the instance status dot would lie —
+    render a static **remote** glyph in its place instead of an idle/working dot.
+  - **Gate local-only features off for remote instances** (don't wire them across): hook-driven
+    status, transcript tokens, usage meter, worktree toggle, Diff/Review, Git panel, Editor file
+    tree, shared-dir warning. They should be hidden or disabled (not error) when the owning project
+    is remote.
+  - **Resize caveat (note, not a blocker):** `portable-pty` resizes the local `ssh` PTY; ssh
+    propagates the window-change to the remote PTY and tmux follows. tmux sizes a session to its
+    *smallest* attached client, so a second hand-attached client elsewhere can shrink the view —
+    a non-issue with only Workbench attached.
+- **Key files:** `src-tauri/src/db/mod.rs` (migration), `src-tauri/src/registry/mod.rs`,
+  `src-tauri/src/pty/mod.rs`, `src/ipc/registry.ts`, `src/ipc/pty.ts`,
+  `src/panels/InstanceManager/ProjectDialog.tsx`, `src/panels/InstanceManager/InstanceCard.tsx`,
+  `src/state/consoles.ts`, `src/panels/Console.tsx`, `src/panels/terminalPool.ts`, `src/theme/`
+  (the remote glyph).
+- **Done when:** You can "+ add project", flip it to remote, enter an SSH destination + remote
+  dir; create an instance and watch its `claude` TUI run live in a Console over SSH+tmux; close
+  the console and reopen it to find the **same session still running** (reattached); remove the
+  instance and confirm the remote tmux session is gone (`tmux ls` no longer lists it); and the
+  project + its instances are visibly badged as remote with no misleading status dots. A second
+  remote instance runs side-by-side in its own console without mirroring.
+- **Out of scope:** any remote telemetry (status/tokens/usage — explicitly excluded); remote
+  git/diff/editor/shell panels (local-only this step; a remote shell could reuse the same SSH path
+  later); reverse-tunnel/Tailscale hook bridging (that's the "real version" deferred); Model B
+  (windows-of-one-session); credential/known-hosts management (delegated to SSH config).
+
 ---
 
 ## Phase 4 — Remote access & power features (`§8` Phase 4, `§11`)
@@ -703,6 +794,7 @@ Pull these in once the relevant phase is stable; each is an independent step whe
 - [ ] 3.9 Theme variants, CRT toggle, per-instance accent
 - [ ] 3.10 Command palette, remappable keys, permission-mode switch
 - [ ] 3.11 Git panel (history / branches / checkout)
+- [ ] 3.12 Remote projects (SSH + tmux), no telemetry
 
 **Phase 4 — remote & power**
 - [ ] 4.1 PTY multiplexing backend
