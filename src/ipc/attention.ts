@@ -7,8 +7,13 @@ import { invoke } from "@tauri-apps/api/core";
 /** Fire an OS toast notification for one instance that just entered needs-you.
  *  The Rust side throttles repeated calls for the same agent by design (the
  *  frontend only calls this on fresh `→ needs_you` transitions). */
-export function notifyNeedsYou(instanceTitle: string, taskNote?: string): Promise<void> {
+export function notifyNeedsYou(
+  projectName: string,
+  instanceTitle: string,
+  taskNote?: string,
+): Promise<void> {
   return invoke("notify_needs_you", {
+    projectName,
     instanceTitle,
     taskNote: taskNote ?? null,
   });

@@ -200,9 +200,15 @@ function InstanceManager({ onCollapse }: InstanceManagerProps) {
     () =>
       onStatusTransition((instanceId, phase) => {
         if (phase !== "needs_you") return;
-        const inst = getRegistry().instances.find((i) => i.id === instanceId);
+        const reg = getRegistry();
+        const inst = reg.instances.find((i) => i.id === instanceId);
         if (!inst) return;
-        void notifyNeedsYou(inst.title, inst.taskNote ?? undefined).catch(() => {});
+        const project = reg.projects.find((p) => p.id === inst.projectId);
+        void notifyNeedsYou(
+          project?.name ?? "",
+          inst.title,
+          inst.taskNote ?? undefined,
+        ).catch(() => {});
       }),
     [],
   );

@@ -51,15 +51,21 @@ pub fn setup_tray(app: &AppHandle) {
 #[tauri::command]
 pub fn notify_needs_you(
     app: AppHandle,
+    project_name: String,
     instance_title: String,
     task_note: Option<String>,
 ) -> Result<(), String> {
     let body = task_note
         .filter(|n| !n.trim().is_empty())
         .unwrap_or_else(|| "waiting for your input".to_string());
+    let headline = if project_name.trim().is_empty() {
+        format!("{} needs you", instance_title)
+    } else {
+        format!("{}.{} needs you", project_name, instance_title)
+    };
     app.notification()
         .builder()
-        .title(format!("{} needs you", instance_title))
+        .title(headline)
         .body(body)
         .show()
         .map_err(|e| e.to_string())
