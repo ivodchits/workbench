@@ -19,6 +19,40 @@ export function setDockApi(a: DockviewApi | null): void {
 }
 
 /**
+ * Bring `panelId` to the foreground and hand it the keyboard — the *final* word,
+ * even when opening it triggers an async project swap.
+ *
+ * Opening a console in *another* project switches the active project, which kicks
+ * off the Workspace's async dock swap (it awaits the target project's saved
+ * layout). That swap's reconcile pass re-asserts the target project's last-active
+ * shell/editor/diff — their `activeId` is global and now points at a freshly
+ * restored panel — and would otherwise steal the active panel + DOM focus from the
+ * console you actually jumped to (the reconcilers run consoles first, so a later
+ * editor/diff pass wins). A plain `routePanelFocus` from the caller also fires too
+ * early: the target panel doesn't exist until the swap's reconcile adds it.
+ *
+ * So we poll across frames until the panel appears. The swap's reconcilers run in
+ * one *synchronous* block once the layout load resolves, so the first frame that
+ * observes the panel is guaranteed to be after every reconciler — our `setActive`
+ * lands last and wins. Bounded so a panel that never arrives can't spin forever.
+ * Same-project / already-open consoles satisfy the check on the first tick.
+ */
+export function activatePanel(panelId: string): void {
+  let tries = 0;
+  const tick = () => {
+    if (!api) return;
+    const panel = api.getPanel(panelId);
+    if (panel) {
+      panel.api.setActive();
+      routePanelFocus(panelId);
+      return;
+    }
+    if (++tries < 40) requestAnimationFrame(tick);
+  };
+  requestAnimationFrame(tick);
+}
+
+/**
  * Route DOM focus into a panel's content, by panel type:
  *
  *   • console / shell — the panel id is the terminal-pool key (Workspace adds them

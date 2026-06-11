@@ -34,7 +34,7 @@ import {
 } from "../../state/status";
 import { mergeStatus } from "./status";
 import { getActiveProject, setActiveProject, useActiveProject } from "../../state/activeProject";
-import { focusActivePanel, routePanelFocus } from "../../state/dock";
+import { activatePanel, focusActivePanel } from "../../state/dock";
 import { release } from "../terminalPool";
 import {
   addInstance,
@@ -74,7 +74,7 @@ async function spawnInstance(project: Project): Promise<void> {
   const instance = await addInstance({ projectId: project.id, title: String(max + 1) });
   setActiveProject(instance.projectId);
   openConsole(instance);
-  routePanelFocus(instance.id);
+  activatePanel(instance.id);
 }
 
 // After an auto-numbered instance is removed, close the gap so the numeric titles
@@ -159,7 +159,9 @@ function InstanceManager({ onCollapse }: InstanceManagerProps) {
 
       setActiveProject(target.projectId);
       openConsole(target);
-      routePanelFocus(target.id);
+      // Win the focus race against the target project's swap-in reconcile (which
+      // would otherwise re-assert its last-active editor/diff) — see dock.ts.
+      activatePanel(target.id);
       // Scroll the rail card into view after the next paint
       requestAnimationFrame(() => {
         railRef.current
@@ -288,16 +290,16 @@ function InstanceManager({ onCollapse }: InstanceManagerProps) {
   }, [openConsoles]);
 
   // Opening an instance's console makes its project the active workspace (so the
-  // dock shows that project's panels), then launches/focuses the console. Route the
-  // keyboard into that console too: when it's a *new* active panel the Workspace's
-  // onDidActivePanelChange handles focus, but when you re-select the already-active
-  // console (e.g. to get back from the editor) no activation fires, so focus it
-  // here as well. routePanelFocus is deferred + a no-op until the panel/terminal
-  // exists, so a fresh open or a project swap settles via the activation path.
+  // dock shows that project's panels), then launches/focuses the console.
+  // `activatePanel` asserts focus on *this* console as the final word once the
+  // dock settles — even across a project swap, whose reconcile would otherwise
+  // re-assert the target project's last-active editor/diff and steal focus (see
+  // dock.ts). It also covers re-selecting an already-active console (e.g. coming
+  // back from the editor), where the panel is present on the first tick.
   const activate = (instance: Instance) => {
     setActiveProject(instance.projectId);
     openConsole(instance);
-    routePanelFocus(instance.id);
+    activatePanel(instance.id);
   };
 
   // Open (or focus) this instance's Diff/Review panel (step 2.7) — what it changed
