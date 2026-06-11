@@ -15,6 +15,9 @@ import { registerCommand } from "./keyboard/bus";
 import { getHookServerStatus, onHookEvent } from "./ipc/hooks";
 import { initStatusEngine } from "./state/status";
 import { initUsageEngine } from "./state/usage";
+import { initUsageLimits, useUsageLimits } from "./state/usageLimits";
+import type { RateWindow } from "./ipc/usageLimits";
+import { formatCountdown } from "./util/format";
 
 // Step 1.5 turned the cockpit into its real shape: the Instance Manager rail on
 // the left drives the panel surface, where clicking an instance launches (or
@@ -40,6 +43,7 @@ function App() {
   useEffect(() => {
     initStatusEngine();
     initUsageEngine();
+    initUsageLimits();
   }, []);
 
   // The global keymap listener (Ctrl+Shift / Alt / Ctrl+Tab chords). Rail single
@@ -251,12 +255,77 @@ function StatusBar({ openCount, sessionId }: { openCount: number; sessionId: str
         {openCount} {openCount === 1 ? "console" : "consoles"}
       </span>
       <HookIndicator />
-      {sessionId && (
-        <span style={{ marginLeft: "auto", color: "var(--wb-textFaint)" }}>
-          session {sessionId.slice(0, 8)}
-        </span>
-      )}
+      <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 16 }}>
+        <UsageMeters />
+        {sessionId && (
+          <span style={{ color: "var(--wb-textFaint)" }}>session {sessionId.slice(0, 8)}</span>
+        )}
+      </div>
     </div>
+  );
+}
+
+/** Account-wide usage meter (step 3.2): the rolling 5-hour and weekly windows, each a
+ *  6-cell bar + percent + reset countdown (design §4.5; the §5.x status-bar Meter).
+ *  Account-global, so this is one readout for the whole app — fed by whichever
+ *  session's statusline POSTed most recently. Shows a dim placeholder until the first
+ *  snapshot arrives (it appears only after a session's first API response, Pro/Max
+ *  only). Ticks every 30s so the countdowns stay fresh without per-second churn. */
+function UsageMeters() {
+  const limits = useUsageLimits();
+  const [, tick] = useState(0);
+  useEffect(() => {
+    const t = setInterval(() => tick((n) => n + 1), 30_000);
+    return () => clearInterval(t);
+  }, []);
+
+  if (!limits || (!limits.fiveHour && !limits.sevenDay)) {
+    return (
+      <span
+        style={{ color: "var(--wb-textFaint)" }}
+        title={
+          "account usage limits — appear after the first API response in a Claude " +
+          "session (Pro/Max only). Figures are machine-local and approximate."
+        }
+      >
+        ⏱ limits ○
+      </span>
+    );
+  }
+  return (
+    <span
+      style={{ display: "flex", alignItems: "center", gap: 16 }}
+      title="account-wide usage — machine-local and approximate; resets count down live"
+    >
+      {limits.fiveHour && <Meter label="5h" window={limits.fiveHour} color="working" />}
+      {limits.sevenDay && <Meter label="wk" window={limits.sevenDay} color="done" />}
+    </span>
+  );
+}
+
+/** One usage window as a 6-cell box-drawing bar, matching the design mockup's Meter:
+ *  filled cells in the window's accent, the rest faint, then `NN%` and the countdown. */
+function Meter({ label, window, color }: { label: string; window: RateWindow; color: string }) {
+  const cells = 6;
+  const pct = Math.max(0, Math.min(100, window.usedPercentage));
+  const filled = Math.round((pct / 100) * cells);
+  const reset = formatCountdown(window.resetsAt);
+  return (
+    <span
+      style={{ display: "flex", alignItems: "center", gap: 5 }}
+      title={`${label} window · ${pct.toFixed(0)}% used · resets in ${reset}`}
+    >
+      <span style={{ color: "var(--wb-textDim2)" }}>{label}</span>
+      <span style={{ letterSpacing: "-1px" }}>
+        {Array.from({ length: cells }).map((_, i) => (
+          <span key={i} style={{ color: i < filled ? `var(--wb-${color})` : "var(--wb-textFaint)" }}>
+            ▮
+          </span>
+        ))}
+      </span>
+      <span style={{ color: "var(--wb-textDim2)" }}>{pct.toFixed(0)}%</span>
+      <span style={{ color: "var(--wb-textFaint)" }}>{reset}</span>
+    </span>
   );
 }
 

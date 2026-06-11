@@ -95,6 +95,9 @@ async fn run(listener: std::net::TcpListener, ctx: Arc<HookContext>) -> std::io:
     let listener = tokio::net::TcpListener::from_std(listener)?;
     let router = Router::new()
         .route(HOOK_PATH, post(handle))
+        // The managed statusline POSTs Claude Code's statusline JSON here so the
+        // account-wide usage meter (step 3.2) can read its `rate_limits`.
+        .route(crate::statusline::INGEST_PATH, post(handle_statusline))
         .with_state(ctx);
     axum::serve(listener, router).await
 }
@@ -162,6 +165,16 @@ async fn handle(State(ctx): State<Arc<HookContext>>, body: Bytes) -> StatusCode 
             ctx.dropped.fetch_add(1, Ordering::Relaxed);
         }
     }
+    StatusCode::OK
+}
+
+/// Receive the managed statusline's POST (step 3.2): the statusline JSON Claude Code
+/// pipes to a custom command, carrying account-wide `rate_limits`. Pure observation,
+/// always `200`. Deliberately *not* session-filtered — rate limits are account-global,
+/// so any session's statusline (even a foreign `claude`) reports the same figures, and
+/// `ingest` just keeps the newest snapshot.
+async fn handle_statusline(State(ctx): State<Arc<HookContext>>, body: Bytes) -> StatusCode {
+    crate::statusline::ingest(&ctx.app, &body);
     StatusCode::OK
 }
 

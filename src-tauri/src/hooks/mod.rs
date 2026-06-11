@@ -8,7 +8,9 @@
 //! step 2.2; notifications are 2.3.
 
 mod events;
-mod install;
+// `pub(crate)` so step 3.2's statusline installer can reuse the crash-safe
+// settings.json read/write helpers (single source of truth for that file).
+pub(crate) mod install;
 mod server;
 
 use std::sync::Arc;
@@ -53,6 +55,12 @@ pub fn init(app: &AppHandle) -> Result<u16, String> {
     let _ = db.meta_set(PORT_KEY, &port.to_string());
     if let Err(e) = install::install_hooks(port) {
         eprintln!("[hooks] could not install hooks: {e}");
+    }
+    // Install the managed statusline that feeds the account-wide usage meter (step
+    // 3.2). It shares this port and the same settings.json; a failure only costs the
+    // meter, so log and continue.
+    if let Err(e) = crate::statusline::install(app, port) {
+        eprintln!("[statusline] could not install: {e}");
     }
 
     let ctx = Arc::new(HookContext::new(app.clone(), port));

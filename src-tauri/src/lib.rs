@@ -11,6 +11,7 @@ mod hooks;
 mod layout;
 mod pty;
 mod registry;
+mod statusline;
 mod sys;
 mod transcript;
 
@@ -58,6 +59,9 @@ pub fn run() {
             Ok(())
         })
         .manage(pty::PtyManager::default())
+        // Account-wide usage-limit snapshot, fed by the managed statusline (step 3.2).
+        // Managed up front so the ingest route can write it before setup completes.
+        .manage(statusline::LimitsState::default())
         .invoke_handler(tauri::generate_handler![
             pty::pty_spawn,
             pty::pty_write,
@@ -66,6 +70,7 @@ pub fn run() {
             pty::session_instance,
             pty::default_working_dir,
             hooks::hook_server_status,
+            statusline::usage_limits,
             git::detect_repo,
             git::provision_worktree,
             git::run_worktree_setup,
@@ -96,6 +101,7 @@ pub fn run() {
             sys::open_path,
             attention::notify_needs_you,
             attention::update_tray_badge,
+            attention::update_tray_usage,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

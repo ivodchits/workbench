@@ -692,7 +692,7 @@ Pull these in once the relevant phase is stable; each is an independent step whe
 
 **Phase 3 — polish & power**
 - [x] 3.1 Transcript-tailing: cumulative tokens
-- [ ] 3.2 Usage-limit meter via managed statusline
+- [x] 3.2 Usage-limit meter via managed statusline
 - [ ] 3.3 Layout presets
 - [ ] 3.4 Prompt template library
 - [ ] 3.5 Prompt queue

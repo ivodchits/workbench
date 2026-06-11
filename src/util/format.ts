@@ -20,6 +20,20 @@ export function formatTokens(n: number): string {
   return `${Math.round(n / 1000)}K`;
 }
 
+/** A compact countdown to an epoch-seconds instant: `now`, `45m`, `3h12m`, `2d4h`
+ *  (step 3.2 usage-limit resets). Coarse on purpose — the meter ticks every ~30s. */
+export function formatCountdown(resetsAtEpochSecs: number): string {
+  const secs = resetsAtEpochSecs - Math.floor(Date.now() / 1000);
+  if (secs <= 0) return "now";
+  const totalMin = Math.floor(secs / 60);
+  const days = Math.floor(totalMin / 1440);
+  const hours = Math.floor((totalMin % 1440) / 60);
+  const mins = totalMin % 60;
+  if (days > 0) return `${days}d${hours}h`;
+  if (hours > 0) return `${hours}h${mins}m`;
+  return `${mins}m`;
+}
+
 /** The window and its components spelled out, for a tooltip. */
 export function tokenBreakdown(instance: Instance): string {
   const f = (n: number) => n.toLocaleString();

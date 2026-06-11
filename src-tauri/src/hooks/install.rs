@@ -80,8 +80,9 @@ fn install_hooks_at(path: &Path, url: &str) -> Result<bool, String> {
 
 /// Read `settings.json` as a JSON object, returning `{}` if the file is absent.
 /// A parse failure or a non-object root is a hard error: we refuse to clobber a
-/// file we don't understand.
-fn read_settings(path: &Path) -> Result<Value, String> {
+/// file we don't understand. `pub(crate)` so step 3.2's statusline installer shares
+/// the same parse-or-refuse behavior.
+pub(crate) fn read_settings(path: &Path) -> Result<Value, String> {
     match std::fs::read_to_string(path) {
         Ok(text) if text.trim().is_empty() => Ok(json!({})),
         Ok(text) => {
@@ -173,8 +174,9 @@ fn is_ours(hook: &Value) -> bool {
 
 /// Write `settings` pretty-printed, creating `~/.claude` if needed. Writes to a
 /// temp file then renames over the target (atomic replace on Windows and Unix) so a
-/// crash mid-write can't truncate the user's config.
-fn write_settings(path: &Path, settings: &Value) -> Result<(), String> {
+/// crash mid-write can't truncate the user's config. `pub(crate)` so step 3.2's
+/// statusline installer writes the shared file the same crash-safe way.
+pub(crate) fn write_settings(path: &Path, settings: &Value) -> Result<(), String> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir).map_err(|e| format!("creating {}: {e}", dir.display()))?;
     }
@@ -187,8 +189,8 @@ fn write_settings(path: &Path, settings: &Value) -> Result<(), String> {
     })
 }
 
-/// `~/.claude/settings.json`.
-fn settings_path() -> Result<PathBuf, String> {
+/// `~/.claude/settings.json`. `pub(crate)` so step 3.2 resolves the same file.
+pub(crate) fn settings_path() -> Result<PathBuf, String> {
     let home = std::env::var_os("USERPROFILE")
         .or_else(|| std::env::var_os("HOME"))
         .ok_or("no home directory (USERPROFILE/HOME unset)")?;

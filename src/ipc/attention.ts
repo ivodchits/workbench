@@ -24,3 +24,12 @@ export function notifyNeedsYou(
 export function updateTrayBadge(count: number): Promise<void> {
   return invoke("update_tray_badge", { count });
 }
+
+/** Update the tray tooltip's account-wide usage clause (step 3.2). Either window may
+ *  be null (absent / not reported yet); both null clears the clause. */
+export function updateTrayUsage(
+  fiveHourPct: number | null,
+  weeklyPct: number | null,
+): Promise<void> {
+  return invoke("update_tray_usage", { fiveHourPct, weeklyPct });
+}
