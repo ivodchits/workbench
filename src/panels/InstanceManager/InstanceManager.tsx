@@ -188,11 +188,14 @@ function InstanceManager({ onCollapse }: InstanceManagerProps) {
         if (inst) setKillTarget(inst);
       }),
       registerCommand("showDiff", () => {
-        // Review the focused console's instance vs its branch base (the rail `D`
-        // key's global counterpart). Read fresh state so the once-registered closure
-        // never goes stale, mirroring `reviewInstance`.
+        // Review an instance vs its branch base (the rail `D` key's global
+        // counterpart). Prefer the rail card with keyboard focus — you're looking at
+        // it, and its console needn't be open — then fall back to the active
+        // console's instance (when a console/editor/diff is what's focused). Read
+        // fresh state so the once-registered closure never goes stale.
         const { instances, projects } = getRegistry();
-        const inst = instances.find((i) => i.id === getActiveConsoleId());
+        const focusedId = (document.activeElement as HTMLElement | null)?.dataset.wbInstanceId;
+        const inst = instances.find((i) => i.id === (focusedId ?? getActiveConsoleId() ?? ""));
         if (!inst) return;
         const project = projects.find((p) => p.id === inst.projectId);
         if (!project) return;
