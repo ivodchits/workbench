@@ -33,6 +33,7 @@ export type CommandId =
   | "newEditor"
   | "newShell"
   | "killInstance"
+  | "showDiff"
   | "jumpNeedsYou"
   | "jumpPrevNeedsYou"
   | "savePreset"
@@ -103,6 +104,7 @@ export const BINDINGS: Binding[] = [
   { chord: "Ctrl+Shift+E", command: "newEditor", scope: "global", title: "Open the editor for the active project" },
   { chord: "Ctrl+Shift+T", command: "newShell", scope: "global", title: "New shell in the active project" },
   { chord: "Ctrl+Shift+K", command: "killInstance", scope: "global", title: "Kill the focused instance" },
+  { chord: "Ctrl+Shift+D", command: "showDiff", scope: "global", title: "Review changes (diff) for the focused instance" },
   { chord: "Ctrl+Shift+P", command: "openTemplates", scope: "global", title: "Open the prompt template library" },
   { chord: "Ctrl+Shift+Q", command: "openQueue", scope: "global", title: "Queue a prompt for an instance" },
   // Attention navigation (wired to the status engine in Phase 2). Modifiers must

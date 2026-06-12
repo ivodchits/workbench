@@ -48,6 +48,7 @@ function dispatch({ command, arg }: Match): void {
     case "newEditor":
     case "newShell":
     case "killInstance":
+    case "showDiff":
     case "jumpNeedsYou":
     case "jumpPrevNeedsYou":
     case "savePreset":

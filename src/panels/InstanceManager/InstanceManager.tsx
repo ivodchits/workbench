@@ -187,6 +187,24 @@ function InstanceManager({ onCollapse }: InstanceManagerProps) {
         const inst = getRegistry().instances.find((i) => i.id === getActiveConsoleId());
         if (inst) setKillTarget(inst);
       }),
+      registerCommand("showDiff", () => {
+        // Review the focused console's instance vs its branch base (the rail `D`
+        // key's global counterpart). Read fresh state so the once-registered closure
+        // never goes stale, mirroring `reviewInstance`.
+        const { instances, projects } = getRegistry();
+        const inst = instances.find((i) => i.id === getActiveConsoleId());
+        if (!inst) return;
+        const project = projects.find((p) => p.id === inst.projectId);
+        if (!project) return;
+        setActiveProject(inst.projectId);
+        openDiff({
+          instanceId: inst.id,
+          projectId: inst.projectId,
+          repoRoot: project.rootPath,
+          workingDir: inst.workingDir,
+          title: inst.title,
+        });
+      }),
       registerCommand("jumpNeedsYou", () => doJump(1)),
       registerCommand("jumpPrevNeedsYou", () => doJump(-1)),
     ];
