@@ -5402,7 +5402,9 @@ dependencies = [
  "tauri-plugin-store",
  "tokio",
  "uuid",
+ "webview2-com",
  "which",
+ "windows",
 ]
 
 [[package]]

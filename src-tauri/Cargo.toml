@@ -35,3 +35,11 @@ which = "7"
 axum = "0.8"
 tokio = { version = "1", features = ["net"] }
 
+# Windows-only: intercept WebView2 accelerator keys so we can suppress the engine's
+# built-in reload shortcuts (F5 / Ctrl+R / Ctrl+Shift+R), which would otherwise
+# reload the whole renderer and drop every live console (see `accel` module). Pinned
+# to the versions Tauri 2 already resolves (Cargo.lock) so we share one compiled copy.
+[target.'cfg(windows)'.dependencies]
+webview2-com = "0.38"
+windows = { version = "0.61", features = ["Win32_UI_Input_KeyboardAndMouse"] }
+

@@ -3,6 +3,7 @@
 // bridge (step 0.2); step 1.2 added the SQLite registry (db + registry) and the
 // prefs store; step 1.3 adds git inspection for project registration.
 
+mod accel;
 mod attention;
 mod db;
 mod fs;
@@ -63,6 +64,12 @@ pub fn run() {
             // JSONL and surface cumulative tokens on its card/console header. A
             // background thread; failures only degrade the token readout.
             transcript::init(app.handle());
+            // Suppress WebView2's built-in reload accelerators (F5 / Ctrl+R /
+            // Ctrl+Shift+R) on the main window so a stray keypress can't reload the
+            // renderer and drop every live console. DevTools keys stay enabled.
+            if let Some(win) = app.get_webview_window("main") {
+                accel::block_reload_accelerators(&win);
+            }
             Ok(())
         })
         .manage(pty::PtyManager::default())
