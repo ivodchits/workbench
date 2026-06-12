@@ -53,10 +53,6 @@ export type CommandId =
   | "openQueue"
   | "openCommandPalette"
   | "openKeymapEditor"
-  | "permissionModeDefault"
-  | "permissionModeAcceptEdits"
-  | "permissionModePlan"
-  | "cyclePermissionMode"
   // rail
   | "railPrev"
   | "railNext"
@@ -144,13 +140,9 @@ const RAW_BINDINGS: RawBinding[] = [
   // Command palette (3.10) — IntelliJ-style "find action". `Ctrl+Shift+A` because the
   // prime `Ctrl+Shift+P` slot is already the template library.
   { chord: "Ctrl+Shift+A", command: "openCommandPalette", scope: "global", title: "Open the command palette" },
-  // The keymap editor and the permission-mode switches ship unbound — reachable from
-  // the palette / UI, and the natural things to put a custom key on.
+  // The keymap editor ships unbound — reachable from the palette / appearance menu,
+  // and a natural thing to put a custom key on.
   { chord: "", command: "openKeymapEditor", scope: "global", title: "Edit keyboard shortcuts" },
-  { chord: "", command: "permissionModeDefault", scope: "global", title: "Permission mode: default (ask)" },
-  { chord: "", command: "permissionModeAcceptEdits", scope: "global", title: "Permission mode: accept edits" },
-  { chord: "", command: "permissionModePlan", scope: "global", title: "Permission mode: plan" },
-  { chord: "", command: "cyclePermissionMode", scope: "global", title: "Permission mode: cycle (Shift+Tab)" },
   // Attention navigation (wired to the status engine in Phase 2). Modifiers must
   // be written in `eventToChord`'s canonical order (Ctrl → Alt → Shift) or the
   // string match in `matchCommand` never fires — hence `Alt+Shift`, not `Shift+Alt`.

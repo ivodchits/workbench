@@ -15,10 +15,6 @@ import {
   setActiveProject,
   useActiveProject,
 } from "./state/activeProject";
-import {
-  cycleModeOnActive,
-  setModeOnActive,
-} from "./state/permissionMode";
 import { useGlobalKeys } from "./keyboard";
 import { loadKeymap } from "./keyboard/keymap";
 import { registerCommand, runCommand } from "./keyboard/bus";
@@ -54,18 +50,6 @@ function App() {
   // Apply persisted keyboard remaps (step 3.10) before the first keypress.
   useEffect(() => {
     void loadKeymap();
-  }, []);
-
-  // Permission-mode quick switch (step 3.10): the palette / remappable commands act
-  // on the focused claude console (the header control is the per-panel mouse parity).
-  useEffect(() => {
-    const ds = [
-      registerCommand("permissionModeDefault", () => setModeOnActive("default")),
-      registerCommand("permissionModeAcceptEdits", () => setModeOnActive("acceptEdits")),
-      registerCommand("permissionModePlan", () => setModeOnActive("plan")),
-      registerCommand("cyclePermissionMode", () => cycleModeOnActive()),
-    ];
-    return () => ds.forEach((d) => d());
   }, []);
 
   // Ctrl + mouse wheel anywhere adjusts the global font scale (step 3.9).

@@ -22,14 +22,6 @@ import { contextWindowTokens, formatTokens, tokenBreakdown } from "../util/forma
 import { useLiveStatuses, type LiveStatus } from "../state/status";
 import { useRegistry } from "../state/registry";
 import {
-  MODE_CYCLE,
-  MODE_LABEL,
-  resetMode,
-  setMode,
-  usePermissionMode,
-  type PermissionMode,
-} from "../state/permissionMode";
-import {
   markError,
   markSpawned,
   openConsole,
@@ -82,7 +74,6 @@ function ConsolePanel(props: IDockviewPanelProps<ConsolePanelParams>) {
         instance={instance}
         sessionId={session?.sessionId ?? instance.lastSessionId ?? null}
         status={session?.status ?? "dormant"}
-        canSwitchMode={session?.status === "running" && session.kind === "claude"}
         live={live}
       />
       <div style={{ flex: "1 1 auto", minHeight: 0 }}>
@@ -106,12 +97,7 @@ function LiveConsole({
   session: ConsoleSession;
 }) {
   const onSpawned = useCallback(
-    (result: SpawnResult) => {
-      // A fresh launch and `claude --resume` both start in `default` permission
-      // mode, so re-pin the assumption the switch tracks (step 3.10).
-      resetMode(instanceId);
-      markSpawned(instanceId, result);
-    },
+    (result: SpawnResult) => markSpawned(instanceId, result),
     [instanceId],
   );
   const onError = useCallback(
@@ -139,14 +125,12 @@ function HeaderStrip({
   instance,
   sessionId,
   status,
-  canSwitchMode,
   live,
 }: {
   project: Project | null;
   instance: Instance;
   sessionId: string | null;
   status: ConsoleSession["status"];
-  canSwitchMode: boolean;
   live: LiveStatus | null;
 }) {
   const branch = instance.branch ?? project?.defaultBranch ?? null;
@@ -188,7 +172,6 @@ function HeaderStrip({
         </>
       )}
       <span style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 10, paddingLeft: 12 }}>
-        {canSwitchMode && <PermissionModeControl instanceId={instance.id} />}
         {status === "spawning" ? (
           <span style={{ color: "var(--wb-working)" }}>
             <Spinner size={10} /> spawning
@@ -209,60 +192,6 @@ function HeaderStrip({
 
 function Sep() {
   return <span style={{ color: "var(--wb-textFaint)", padding: "0 8px" }}>·</span>;
-}
-
-/** Permission-mode quick switch (step 3.10) — a 3-segment control that flips this
- *  live claude session between default / accept-edits / plan by sending Shift+Tab
- *  cycles to the PTY (design §7). The active segment is the *assumed* mode; it can
- *  drift if you press Shift+Tab directly in the terminal — picking a mode re-pins it.
- *  A mousedown-handled control so clicking it never steals focus from the terminal. */
-function PermissionModeControl({ instanceId }: { instanceId: string }) {
-  const mode = usePermissionMode(instanceId);
-  return (
-    <span
-      title={
-        "permission mode (sent as Shift+Tab) — default asks before each tool, " +
-        "accept-edits auto-approves edits, plan is read-only planning. The marker is " +
-        "assumed; if it looks off, click the mode again."
-      }
-      style={{ display: "inline-flex", border: "1px solid var(--wb-border)", overflow: "hidden" }}
-    >
-      {MODE_CYCLE.map((m) => (
-        <PermSegment key={m} mode={m} active={m === mode} instanceId={instanceId} />
-      ))}
-    </span>
-  );
-}
-
-function PermSegment({
-  mode,
-  active,
-  instanceId,
-}: {
-  mode: PermissionMode;
-  active: boolean;
-  instanceId: string;
-}) {
-  return (
-    <button
-      tabIndex={-1}
-      onMouseDown={(e) => {
-        e.preventDefault();
-        if (!active) setMode(instanceId, mode);
-      }}
-      style={{
-        background: active ? "var(--wb-accent)" : "transparent",
-        color: active ? "var(--wb-bg)" : "var(--wb-textDim2)",
-        border: "none",
-        font: "10px var(--wb-mono)",
-        padding: "2px 6px",
-        cursor: active ? "default" : "pointer",
-        lineHeight: 1.4,
-      }}
-    >
-      {MODE_LABEL[mode]}
-    </button>
-  );
 }
 
 /** Compact live-status indicator in the console header (step 2.2). Mirrors the

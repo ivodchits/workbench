@@ -541,11 +541,17 @@ emit per-byte global events.
 - **Goal:** Complete keyboard-first control.
 - **Depends on:** 1.10
 - **Design refs:** `§5.y`, `§7` (permission-mode quick switch).
-- **Build:** Fuzzy command palette listing every action with its binding; remap UI persisting
-  to a keymap file; permission-mode quick switch (plan / accept-edits / default) per session
-  sent into the PTY. (Optional: vim/modal scheme behind a setting.)
-- **Done when:** Every registered action is searchable in the palette with its binding; a
-  binding can be remapped and persists; permission mode can be switched from the UI.
+- **Design decision (2026-06-12):** The **permission-mode quick switch was dropped**. Without
+  scraping the TUI (a guardrail) Workbench can't read the current mode, so a UI switch could
+  only send blind `Shift+Tab` (CSI Z) cycles against an *assumed* state that drifts the moment
+  you press Shift+Tab in the terminal yourself — and the native Shift+Tab cycle is already a
+  fine one-key control. Not worth the drift. 3.10 ships the two durable pieces: the palette and
+  remappable keys.
+- **Build:** Fuzzy command palette (`Ctrl+Shift+A`) listing every global action with its live
+  binding and running it; remap UI persisting overrides to a keymap file (the prefs store).
+  (Optional: vim/modal scheme behind a setting — not built.)
+- **Done when:** Every registered global action is searchable in the palette with its binding; a
+  binding can be remapped and persists across restart.
 
 ### Step 3.11 — Git panel (history / branches / checkout) **(may need 2 passes)**
 - **Goal:** A project-scoped Git panel: browse history, manage branches (checkout/create/
@@ -825,7 +831,7 @@ Pull these in once the relevant phase is stable; each is an independent step whe
 - [x] 3.7b Skill manager
 - [x] 3.8 Resume last session (`Ctrl+Shift+R`)
 - [x] 3.9 Theme variants, CRT toggle, per-instance accent (+ Ctrl+wheel font size)
-- [x] 3.10 Command palette, remappable keys, permission-mode switch
+- [x] 3.10 Command palette + remappable keys (permission-mode switch dropped — see step)
 - [ ] 3.11 Git panel (history / branches / checkout)
 - [ ] 3.12 Remote projects (SSH + tmux), no telemetry
 
