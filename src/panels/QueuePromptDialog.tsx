@@ -110,13 +110,16 @@ function QueuePromptDialog({
   };
 
   const onKeyDown = (e: React.KeyboardEvent) => {
-    // Ctrl/Cmd+Enter queues (plain Enter is a newline in the textarea). Esc is
-    // handled by the Modal; stop it here so it doesn't also reach the rail.
+    // Ctrl/Cmd+Enter queues (plain Enter is a newline in the textarea). Esc closes
+    // — handle it here (preventing it from also reaching the rail); stopping
+    // propagation without closing was the bug that swallowed the Modal's own Esc.
     if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
       e.preventDefault();
       submit();
     } else if (e.key === "Escape") {
+      e.preventDefault();
       e.stopPropagation();
+      onClose();
     }
   };
 
