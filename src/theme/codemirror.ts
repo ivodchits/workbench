@@ -15,6 +15,16 @@ import type { Extension } from "@codemirror/state";
 
 import { activeTheme, mono, type ThemeTokens } from "./tokens";
 
+/** Expand a `#rgb`/`#rrggbb` token to an `rgba()` string at the given alpha. */
+function withAlpha(hex: string, alpha: number): string {
+  let h = hex.replace("#", "");
+  if (h.length === 3) h = h.split("").map((c) => c + c).join("");
+  const r = parseInt(h.slice(0, 2), 16);
+  const g = parseInt(h.slice(2, 4), 16);
+  const b = parseInt(h.slice(4, 6), 16);
+  return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+}
+
 /**
  * Build the editor-chrome theme. `dark: true` tells CodeMirror's own defaults
  * (e.g. the focus ring) to assume a dark base, matching our surfaces.
@@ -45,13 +55,19 @@ function editorChrome(tokens: ThemeTokens): Extension {
         borderLeftWidth: "2px",
       },
       // Selection layer — target both focused and unfocused so a click-away keeps
-      // the highlight visible (CM splits these across two rules).
+      // the highlight visible (CM splits these across two rules). A clear violet
+      // wash (not the row-tuned `sel` token, which is nearly invisible as an
+      // inline highlight) reads as a real text selection.
       "&.cm-focused .cm-selectionBackground, .cm-selectionBackground, .cm-content ::selection":
         {
-          backgroundColor: tokens.sel,
+          backgroundColor: withAlpha(tokens.selBar, 0.35),
         },
+      // The selection layer sits at `z-index: -1`, *behind* `.cm-content`, so an
+      // opaque active-line background would paint over (hide) any selection on
+      // the caret's line — which is exactly the line word-selection acts on. Keep
+      // it a translucent darkening so the selection shows through.
       ".cm-activeLine": {
-        backgroundColor: tokens.titlebar,
+        backgroundColor: "rgba(0, 0, 0, 0.28)",
       },
       ".cm-gutters": {
         backgroundColor: tokens.bg,
