@@ -67,12 +67,21 @@ function applyCrt(on: boolean): void {
   document.documentElement.dataset.wbCrt = on ? "on" : "off";
 }
 
-/** Zoom the whole UI at the document root (chrome + editor scale crisply) and
- *  rescale the terminals (which keep their own glyphs crisp under the zoom). */
+/** Zoom the whole UI at the app root (chrome + editor scale crisply) and rescale
+ *  the terminals (which keep their own glyphs crisp under the zoom). */
 function applyFontScale(scale: number): void {
   // `zoom` (Chromium/WebView2) is a layout-level scale — DOM text re-rasterizes
   // crisp at the new size, unlike `transform: scale`. The terminals counter it.
-  document.documentElement.style.zoom = String(scale);
+  //
+  // `zoom` multiplies the element's used height/width, so a viewport-fixed size
+  // would overflow (footer off the bottom) at >100% and fall short at <100%. Size
+  // the zoomed root to `calc(100v* / scale)` so after the ×scale it renders exactly
+  // window-sized and the flex column (with its bottom status bar) fills it. The App
+  // root itself is `height:100%` of this element.
+  const root = document.getElementById("root") ?? document.body;
+  root.style.zoom = String(scale);
+  root.style.height = `calc(100vh / ${scale})`;
+  root.style.width = `calc(100vw / ${scale})`;
   rescaleAll(scale);
 }
 
