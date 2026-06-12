@@ -35,7 +35,8 @@ function PresetsBar() {
     void loadPresetsFor(activeProjectId);
   }, [activeProjectId]);
 
-  // Ctrl+Shift+S (global keymap) → open the inline save field.
+  // `savePreset` command → open the inline save field. No keyboard chord (it
+  // collided with the editor's Ctrl+Shift+S Save-All); driven by the ＋ button.
   useEffect(
     () =>
       registerCommand("savePreset", () => {
@@ -188,7 +189,7 @@ function PresetsBar() {
               setDraft("");
               setMode({ kind: "save" });
             }}
-            title="save the current arrangement as a preset (Ctrl+Shift+S)"
+            title="save the current arrangement as a preset"
             style={{ ...iconButtonStyle, padding: "2px 6px", border: "1px solid var(--wb-border)" }}
           >
             ＋

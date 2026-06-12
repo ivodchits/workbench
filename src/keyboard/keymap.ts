@@ -123,7 +123,8 @@ export const BINDINGS: Binding[] = [
   // --- global: layout presets (step 3.3) ------------------------------------
   // Recall the active project's saved arrangements by number. `Alt+<digit>` is
   // taken by focus-panel, so presets ride the `Ctrl+Shift+<digit>` command space.
-  { chord: "Ctrl+Shift+S", command: "savePreset", scope: "global", title: "Save current layout as a preset" },
+  // Saving a preset has no chord — `Ctrl+Shift+S` collides with the editor's
+  // Save-All, and saving is rare enough to leave to the PresetsBar button.
   ...Array.from({ length: 9 }, (_, i): Binding => ({
     chord: `Ctrl+Shift+${i + 1}`,
     command: "applyPreset",
