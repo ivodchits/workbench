@@ -92,6 +92,56 @@ export interface AcquireOptions {
 
 const pool = new Map<string, TermEntry>();
 
+// --- live theme + font-size re-application (step 3.9) ------------------------
+// The appearance store (`state/appearance`) drives both: switching a theme preset
+// re-derives every terminal's xterm theme, and Ctrl+wheel font scaling re-sizes
+// every terminal. Terminals live outside React in this pool, so the store reaches
+// them through these functions rather than a re-render.
+
+/** The xterm font size at scale 1; the chrome's base is the same 13px feel. */
+const BASE_FONT_SIZE = 13;
+
+/** Current global font scale (1 = 100%). New terminals adopt it on `acquire`; an
+ *  existing pool is rescaled by `rescaleAll`. Owned here so the store needn't be
+ *  threaded through every `acquire` call. */
+let currentScale = 1;
+
+/**
+ * Size one terminal to the global scale. The whole app is zoomed by `scale` at the
+ * document root (so chrome + editor scale uniformly); a canvas/WebGL terminal would
+ * blur under that zoom, so each terminal host *counter-zooms* by `1/scale` to render
+ * at native resolution and instead grows its real `fontSize` to `BASE × scale`. Net
+ * visual size matches the zoomed chrome while glyphs stay crisp. Refit so the PTY's
+ * cols/rows track the new cell size.
+ */
+function applyScale(entry: TermEntry, scale: number): void {
+  entry.host.style.zoom = String(1 / scale);
+  entry.term.options.fontSize = Math.round(BASE_FONT_SIZE * scale);
+  // Defer the refit one frame so the zoom + font change have reflowed before the
+  // FitAddon measures (the container box is unchanged, so no ResizeObserver fires
+  // to correct a stale fit). fontSize + counter-zoom also invalidate the WebGL
+  // glyph atlas, so rebuild it after the resize.
+  requestAnimationFrame(() => {
+    refit(entry);
+    entry.term.clearTextureAtlas();
+  });
+}
+
+/** Re-apply `tokens`' derived xterm theme to every live terminal (theme switch). */
+export function rethemeAll(): void {
+  for (const entry of pool.values()) {
+    entry.term.options.theme = deriveXtermTheme();
+    entry.term.clearTextureAtlas();
+    entry.term.refresh(0, entry.term.rows - 1);
+  }
+}
+
+/** Set the global font scale and resize every live terminal to it (Ctrl+wheel). */
+export function rescaleAll(scale: number): void {
+  currentScale = scale;
+  for (const entry of pool.values()) applyScale(entry, scale);
+}
+
 // --- task-note mirroring from the terminal title (OSC 0/2) ------------------
 // Claude Code emits an OSC title sequence naming its current task; xterm parses
 // it and fires `onTitleChange`. We debounce-mirror that into the instance's task
@@ -176,11 +226,14 @@ export function acquire(container: HTMLDivElement, opts: AcquireOptions): void {
   const host = document.createElement("div");
   host.style.height = "100%";
   host.style.width = "100%";
+  // Counter-zoom against the document-root zoom so glyphs render crisp (see
+  // `applyScale`); the matching `fontSize` below gives the visual scale.
+  host.style.zoom = String(1 / currentScale);
   container.appendChild(host);
 
   const term = new Terminal({
     fontFamily: mono,
-    fontSize: 13,
+    fontSize: Math.round(BASE_FONT_SIZE * currentScale),
     // Pin both weights to the exact faces bundled in global.css (400/700). xterm's
     // default `fontWeightBold: "bold"` lets the browser pick the nearest weight and,
     // if the real 700 face isn't loaded yet, synthesize one — the wavy-baseline bold.

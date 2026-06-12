@@ -18,7 +18,8 @@
 // subagents), and the persisted placeholder, in that precedence.
 
 import { useState } from "react";
-import { GLYPH, Spinner } from "../../theme";
+import { ACCENT_SWATCHES, GLYPH, Spinner } from "../../theme";
+import { accentVars } from "./accent";
 import type { Instance } from "../../ipc/registry";
 import type { ConsoleStatus } from "../../state/consoles";
 import type { LiveStatus } from "../../state/status";
@@ -69,10 +70,11 @@ function InstanceCard({
   const [hover, setHover] = useState(false);
   const [editingNote, setEditingNote] = useState(false);
   const [editingTitle, setEditingTitle] = useState(false);
+  const [pickingAccent, setPickingAccent] = useState(false);
   const view = mergeStatus(consoleStatus, live, instance.status);
   const queued = useQueued().get(instance.id) ?? null;
   const dim = !live && !consoleStatus && instance.status === "closed";
-  const showActions = hover || editingNote || editingTitle;
+  const showActions = hover || editingNote || editingTitle || pickingAccent;
 
   // Rail single-keys for a focused instance card (design §5.y). The guards defer
   // to an open inline editor (typing) and to events from child controls; nav /
@@ -140,6 +142,8 @@ function InstanceCard({
         borderLeft: "2px solid transparent",
         opacity: dim ? 0.55 : 1,
         outline: "none",
+        // Per-instance accent (step 3.9): re-tints every `var(--wb-accent)` inside.
+        ...accentVars(instance.accent),
       }}
     >
       {/* Row 1 — status · title · needs badge · ago / actions */}
@@ -256,6 +260,13 @@ function InstanceCard({
             <RowAction label="review changes (diff)" onClick={onReview}>
               ±
             </RowAction>
+            <RowAction
+              label="accent color"
+              onClick={() => setPickingAccent((v) => !v)}
+              active={instance.accent != null}
+            >
+              ◣
+            </RowAction>
             <RowAction label="edit note" onClick={() => setEditingNote(true)}>
               ✎
             </RowAction>
@@ -272,6 +283,17 @@ function InstanceCard({
           </span>
         )}
       </div>
+
+      {pickingAccent && (
+        <AccentPicker
+          current={instance.accent}
+          onPick={(color) => {
+            void updateInstance(instance.id, { accent: color });
+            setPickingAccent(false);
+          }}
+          onClose={() => setPickingAccent(false)}
+        />
+      )}
 
       {/* Nested subagent activity (SubagentStart/Stop), §4.4. */}
       {view.subagents > 0 && (
@@ -425,6 +447,95 @@ function RowAction({
     >
       {children}
     </button>
+  );
+}
+
+/** A small swatch popover for the per-instance accent (step 3.9). Fixed palette
+ *  (design decision) + a "none" that clears back to the theme accent. A full-screen
+ *  transparent backdrop closes it on an outside click; the swatch click itself is
+ *  stopped from bubbling to the card's row-activate. */
+function AccentPicker({
+  current,
+  onPick,
+  onClose,
+}: {
+  current: string | null;
+  onPick: (color: string | null) => void;
+  onClose: () => void;
+}) {
+  return (
+    <>
+      {/* Outside-click catcher (under the popover). */}
+      <div
+        onClick={(e) => {
+          e.stopPropagation();
+          onClose();
+        }}
+        style={{ position: "fixed", inset: 0, zIndex: 50 }}
+      />
+      <div
+        onClick={(e) => e.stopPropagation()}
+        style={{
+          position: "absolute",
+          top: 28,
+          right: 11,
+          zIndex: 51,
+          display: "flex",
+          alignItems: "center",
+          gap: 6,
+          padding: "6px 8px",
+          background: "var(--wb-panel)",
+          border: "1px solid var(--wb-border)",
+          boxShadow: "0 4px 16px rgba(0,0,0,0.5)",
+        }}
+      >
+        {ACCENT_SWATCHES.map((s) => (
+          <button
+            key={s.id}
+            type="button"
+            aria-label={`accent ${s.id}`}
+            title={s.id}
+            onClick={(e) => {
+              e.stopPropagation();
+              onPick(s.color);
+            }}
+            style={{
+              width: 14,
+              height: 14,
+              padding: 0,
+              cursor: "pointer",
+              background: s.color,
+              border:
+                current === s.color
+                  ? "2px solid var(--wb-text)"
+                  : "1px solid rgba(0,0,0,0.4)",
+            }}
+          />
+        ))}
+        <button
+          type="button"
+          aria-label="no accent (theme default)"
+          title="none (theme default)"
+          onClick={(e) => {
+            e.stopPropagation();
+            onPick(null);
+          }}
+          style={{
+            width: 14,
+            height: 14,
+            padding: 0,
+            cursor: "pointer",
+            background: "transparent",
+            color: "var(--wb-textDim2)",
+            border: current == null ? "2px solid var(--wb-text)" : "1px solid var(--wb-border)",
+            font: "10px var(--wb-mono)",
+            lineHeight: 1,
+          }}
+        >
+          ∅
+        </button>
+      </div>
+    </>
   );
 }
 

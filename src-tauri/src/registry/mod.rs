@@ -109,6 +109,9 @@ pub struct Instance {
     pub sort_order: i64,
     pub created_at: i64,
     pub last_activity_at: Option<i64>,
+    /// Optional per-instance accent color (step 3.9). Overlays the active theme's
+    /// structural accent on this instance's card + console; `None` inherits it.
+    pub accent: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -177,6 +180,9 @@ pub struct InstancePatch {
     pub cost_usd: Option<f64>,
     pub sort_order: Option<i64>,
     pub last_activity_at: Option<Option<i64>>,
+    /// `Some(None)` clears the accent (back to the theme default); `Some(Some(_))`
+    /// sets it; `None` leaves it untouched.
+    pub accent: Option<Option<String>>,
 }
 
 // ---------------------------------------------------------------------------
@@ -403,13 +409,14 @@ fn row_to_instance(r: &Row) -> rusqlite::Result<Instance> {
         created_at: r.get(15)?,
         last_activity_at: r.get(16)?,
         task_note_auto: r.get(17)?,
+        accent: r.get(18)?,
     })
 }
 
 const INSTANCE_COLS: &str = "id, project_id, title, task_note, worktree_on, branch, \
     last_session_id, working_dir, status, input_tokens, output_tokens, \
     cache_creation_tokens, cache_read_tokens, cost_usd, sort_order, created_at, \
-    last_activity_at, task_note_auto";
+    last_activity_at, task_note_auto, accent";
 
 pub fn insert_instance(conn: &Connection, input: NewInstance) -> rusqlite::Result<Instance> {
     // Default the working dir to the parent project's root when not provided.
@@ -440,13 +447,14 @@ pub fn insert_instance(conn: &Connection, input: NewInstance) -> rusqlite::Resul
         sort_order: 0,
         created_at: now(),
         last_activity_at: None,
+        accent: None,
     };
     conn.execute(
         "INSERT INTO instances (id, project_id, title, task_note, worktree_on, branch,
             last_session_id, working_dir, status, input_tokens, output_tokens,
             cache_creation_tokens, cache_read_tokens, cost_usd, sort_order, created_at,
-            last_activity_at, task_note_auto)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)",
+            last_activity_at, task_note_auto, accent)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)",
         rusqlite::params![
             instance.id,
             instance.project_id,
@@ -466,6 +474,7 @@ pub fn insert_instance(conn: &Connection, input: NewInstance) -> rusqlite::Resul
             instance.created_at,
             instance.last_activity_at,
             instance.task_note_auto,
+            instance.accent,
         ],
     )?;
     Ok(instance)
@@ -554,12 +563,15 @@ pub fn update_instance(
     if let Some(v) = patch.last_activity_at {
         i.last_activity_at = v;
     }
+    if let Some(v) = patch.accent {
+        i.accent = v;
+    }
     conn.execute(
         "UPDATE instances SET
             title = ?2, task_note = ?3, worktree_on = ?4, branch = ?5, last_session_id = ?6,
             working_dir = ?7, status = ?8, input_tokens = ?9, output_tokens = ?10,
             cache_creation_tokens = ?11, cache_read_tokens = ?12, cost_usd = ?13,
-            sort_order = ?14, last_activity_at = ?15, task_note_auto = ?16
+            sort_order = ?14, last_activity_at = ?15, task_note_auto = ?16, accent = ?17
          WHERE id = ?1",
         rusqlite::params![
             i.id,
@@ -578,6 +590,7 @@ pub fn update_instance(
             i.sort_order,
             i.last_activity_at,
             i.task_note_auto,
+            i.accent,
         ],
     )?;
     Ok(i)
@@ -843,6 +856,7 @@ mod tests {
                 task_note: Some("now doing X".into()),
                 status: Some(InstanceStatus::NeedsYou),
                 last_session_id: Some(Some("sess-123".into())),
+                accent: Some(Some("#8b7cf6".into())),
                 ..Default::default()
             },
         )
@@ -851,6 +865,23 @@ mod tests {
         assert_eq!(updated.task_note, "now doing X");
         assert_eq!(updated.status, InstanceStatus::NeedsYou);
         assert_eq!(updated.last_session_id.as_deref(), Some("sess-123"));
+        assert_eq!(updated.accent.as_deref(), Some("#8b7cf6"));
+
+        // An omitted accent leaves it; an explicit `Some(None)` clears it.
+        let kept = update_instance(
+            &c,
+            &inst.id,
+            InstancePatch { task_note: Some("y".into()), ..Default::default() },
+        )
+        .unwrap();
+        assert_eq!(kept.accent.as_deref(), Some("#8b7cf6"));
+        let cleared = update_instance(
+            &c,
+            &inst.id,
+            InstancePatch { accent: Some(None), ..Default::default() },
+        )
+        .unwrap();
+        assert_eq!(cleared.accent, None);
     }
 
     #[test]

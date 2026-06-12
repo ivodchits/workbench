@@ -84,6 +84,32 @@ select {
   font-family: inherit;
 }
 
+/* CRT overlay (step 3.9, design §5.x) — a single GPU-cheap, off-by-default layer:
+   faint scanlines + a vignette, painted over the whole app. Gated on the root
+   `data-wb-crt="on"` attribute the appearance store toggles. `pointer-events:none`
+   so it never intercepts clicks; a high z-index keeps it above dockview/panels.
+   No animation, no blur filter — kept cheap so it never fights readability. */
+html[data-wb-crt="on"] body::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: 2147483000;
+  pointer-events: none;
+  background:
+    repeating-linear-gradient(
+      to bottom,
+      rgba(0, 0, 0, 0.16) 0,
+      rgba(0, 0, 0, 0.16) 1px,
+      transparent 1px,
+      transparent 3px
+    ),
+    radial-gradient(
+      ellipse at center,
+      transparent 55%,
+      rgba(0, 0, 0, 0.38) 100%
+    );
+}
+
 /* Keyboard focus on a rail row (step 1.10): a left accent bar + tinted ground, so
    the roving selection is visible without the UA's heavy default ring. Only shows
    for keyboard focus (`:focus-visible`), never on mouse click. */

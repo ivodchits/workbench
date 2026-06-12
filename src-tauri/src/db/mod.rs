@@ -148,6 +148,13 @@ const MIGRATIONS: &[&str] = &[
     ALTER TABLE instances ADD COLUMN task_note_auto INTEGER NOT NULL DEFAULT 1;
     UPDATE instances SET task_note_auto = 0 WHERE task_note <> '';
     "#,
+    // v5 -> v6: per-instance accent color (step 3.9, design §5.x / §7 "per-instance
+    // color"). An optional CSS color string that overlays the theme's structural
+    // accent on that instance's card + console; NULL ⇒ inherit the active theme's
+    // accent. New rows default to NULL so existing instances keep the theme accent.
+    r#"
+    ALTER TABLE instances ADD COLUMN accent TEXT;
+    "#,
 ];
 
 /// Apply any migrations the database hasn't seen yet, advancing

@@ -14,6 +14,7 @@ import { useCallback, useEffect } from "react";
 import type { IDockviewPanelProps } from "dockview";
 
 import { GLYPH, Spinner } from "../theme";
+import { accentVars } from "./InstanceManager/accent";
 import Console from "./Console";
 import type { Instance, Project } from "../ipc/registry";
 import type { SpawnResult } from "../ipc/pty";
@@ -58,7 +59,16 @@ function ConsolePanel(props: IDockviewPanelProps<ConsolePanelParams>) {
   // focus, and that syncs the store via onDidActivePanelChange — so the terminal
   // keeps focus and you can type.
   return (
-    <div style={{ height: "100%", display: "flex", flexDirection: "column", minHeight: 0 }}>
+    <div
+      style={{
+        height: "100%",
+        display: "flex",
+        flexDirection: "column",
+        minHeight: 0,
+        // Per-instance accent (step 3.9): tints this console's header chrome.
+        ...accentVars(instance.accent),
+      }}
+    >
       <HeaderStrip
         project={project}
         instance={instance}

@@ -50,6 +50,8 @@ export interface Instance {
   sortOrder: number;
   createdAt: number;
   lastActivityAt: number | null;
+  /** Per-instance accent color (step 3.9); null inherits the active theme accent. */
+  accent: string | null;
 }
 
 // --- inputs -----------------------------------------------------------------
@@ -107,6 +109,8 @@ export interface InstancePatch {
   costUsd?: number;
   sortOrder?: number;
   lastActivityAt?: number | null;
+  /** Set a per-instance accent (hex/CSS color), or null to clear it (step 3.9). */
+  accent?: string | null;
 }
 
 // --- groups -----------------------------------------------------------------

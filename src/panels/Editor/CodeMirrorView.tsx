@@ -10,7 +10,7 @@
 // holds a stale closure when the parent re-renders.
 
 import { useEffect, useRef } from "react";
-import { EditorState, Prec, type Extension } from "@codemirror/state";
+import { Compartment, EditorState, Prec, type Extension } from "@codemirror/state";
 import {
   EditorView,
   keymap,
@@ -25,6 +25,7 @@ import { indentOnInput, bracketMatching, foldGutter, foldKeymap } from "@codemir
 import { searchKeymap, highlightSelectionMatches } from "@codemirror/search";
 
 import { codeMirrorTheme } from "../../theme";
+import { useThemeVersion } from "../../state/appearance";
 import { persistScroll } from "./scrollMemory";
 
 interface CodeMirrorViewProps {
@@ -58,6 +59,11 @@ function CodeMirrorView({
   onCursor,
 }: CodeMirrorViewProps) {
   const hostRef = useRef<HTMLDivElement>(null);
+  // The live view + the compartment holding its theme, so a theme switch can
+  // reconfigure the editor in place (step 3.9) without rebuilding it.
+  const viewRef = useRef<EditorView | null>(null);
+  const themeCompartment = useRef(new Compartment());
+  const themeVersion = useThemeVersion();
 
   // Latest callbacks, so the view (built once per `path`) never calls a stale one.
   const onChangeRef = useRef(onChange);
@@ -117,7 +123,7 @@ function CodeMirrorView({
       EditorView.lineWrapping,
       saveKey,
       keymap.of([...defaultKeymap, ...historyKeymap, ...searchKeymap, ...foldKeymap, indentWithTab]),
-      codeMirrorTheme(),
+      themeCompartment.current.of(codeMirrorTheme()),
       ...(language ? [language] : []),
       updateListener,
     ];
@@ -126,6 +132,7 @@ function CodeMirrorView({
       parent: host,
       state: EditorState.create({ doc: initialDoc, extensions }),
     });
+    viewRef.current = view;
     view.focus();
 
     // Remember the scroll offset across tab switches — dockview detaches the panel
@@ -134,12 +141,24 @@ function CodeMirrorView({
 
     return () => {
       stopScroll?.();
+      viewRef.current = null;
       view.destroy();
     };
     // `path` keys the mount; doc/language are read at creation. Editing the same
     // file never changes these, so the view is built exactly once per open file.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [path]);
+
+  // Re-derive the editor theme in place when the app theme switches (step 3.9).
+  // The view persists; only its theme compartment is reconfigured. Skips the
+  // initial mount (the build effect already seeded the current theme).
+  useEffect(() => {
+    const view = viewRef.current;
+    if (!view) return;
+    view.dispatch({
+      effects: themeCompartment.current.reconfigure(codeMirrorTheme()),
+    });
+  }, [themeVersion]);
 
   return <div ref={hostRef} style={{ height: "100%", width: "100%", overflow: "hidden" }} />;
 }

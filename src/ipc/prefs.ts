@@ -12,6 +12,10 @@ import { load, type Store } from "@tauri-apps/plugin-store";
 export interface Prefs {
   /** Active theme token preset id (see `theme/`). */
   themeId: string;
+  /** CRT overlay on/off — off by default (step 3.9, design §5.x). */
+  crtEnabled: boolean;
+  /** Global UI font scale (1 = 100%); Ctrl+MouseWheel adjusts it (step 3.9). */
+  fontScale: number;
   /** Last-selected project id, restored on launch so you land where you left. */
   activeProjectId: string;
   /** Override for where worktrees are provisioned (step 2.4). Empty = the default

@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
-import { applyTheme, mutedDark } from "./theme/tokens";
 import InstanceManager from "./panels/InstanceManager";
+import AppearanceMenu from "./panels/AppearanceMenu";
 import Workspace from "./panels/Workspace";
 import PresetsBar from "./panels/PresetsBar";
 import TemplateLibraryHost from "./panels/TemplateLibrary";
@@ -19,6 +19,7 @@ import { getHookServerStatus, onHookEvent } from "./ipc/hooks";
 import { initStatusEngine } from "./state/status";
 import { initUsageEngine } from "./state/usage";
 import { initUsageLimits, useUsageLimits } from "./state/usageLimits";
+import { initAppearance, useFontZoomWheel } from "./state/appearance";
 import type { RateWindow } from "./ipc/usageLimits";
 import { formatCountdown, formatAgo } from "./util/format";
 
@@ -36,9 +37,14 @@ function App() {
   const [railCollapsed, setRailCollapsed] = useState(false);
   const [prefsReady, setPrefsReady] = useState(false);
 
+  // Apply the persisted theme preset, CRT toggle, and font scale on launch (step
+  // 3.9); a missing pref falls back to the default. Idempotent.
   useEffect(() => {
-    applyTheme(mutedDark);
+    void initAppearance();
   }, []);
+
+  // Ctrl + mouse wheel anywhere adjusts the global font scale (step 3.9).
+  useFontZoomWheel();
 
   // Start the status engine (hook stream → live card status, step 2.2) and the
   // usage engine (transcript stream → live token figures, step 3.1). Both are
@@ -294,7 +300,7 @@ function StatusBar({ openCount, sessionId }: { openCount: number; sessionId: str
         color: "var(--wb-textDim2)",
       }}
     >
-      <span style={{ color: "var(--wb-accent)" }}>muted dark</span>
+      <AppearanceMenu />
       <span>
         {openCount} {openCount === 1 ? "console" : "consoles"}
       </span>
