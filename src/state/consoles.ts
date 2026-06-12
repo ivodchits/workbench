@@ -18,6 +18,7 @@ import type { SpawnKind, SpawnResult } from "../ipc/pty";
 import type { Instance } from "../ipc/registry";
 import { applyInstanceUsage, updateInstance } from "./registry";
 import { clearLiveStatus } from "./status";
+import { cancelQueued } from "./queue";
 
 /** Browsers cap live WebGL contexts (~16); we reserve a margin (design §5 /
  *  decision 14). The first `WEBGL_CAP` *live* consoles render via WebGL; the rest
@@ -202,6 +203,9 @@ export function closeConsole(instanceId: string): void {
   // you" after its PTY is gone (the backend also unmaps the session, so late events
   // are filtered out — this just clears the visual immediately). (step 2.2)
   clearLiveStatus(instanceId);
+  // Drop any queued follow-up prompt (step 3.5): with the PTY gone there's nothing
+  // to send it into, and the Stop that would fire it will never come.
+  cancelQueued(instanceId);
   const open = state.open.filter((c) => c.instanceId !== instanceId);
   let activeId = state.activeId;
   if (activeId === instanceId) {

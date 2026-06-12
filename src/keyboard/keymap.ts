@@ -38,6 +38,7 @@ export type CommandId =
   | "savePreset"
   | "applyPreset" // carries a 1-based preset number in `arg`
   | "openTemplates"
+  | "openQueue"
   // rail
   | "railPrev"
   | "railNext"
@@ -52,6 +53,7 @@ export type CommandId =
   | "railDiff"
   | "railOpenDir"
   | "railInterrupt"
+  | "railQueue"
   | "railAddProject"
   | "railReturn";
 
@@ -102,6 +104,7 @@ export const BINDINGS: Binding[] = [
   { chord: "Ctrl+Shift+T", command: "newShell", scope: "global", title: "New shell in the active project" },
   { chord: "Ctrl+Shift+K", command: "killInstance", scope: "global", title: "Kill the focused instance" },
   { chord: "Ctrl+Shift+P", command: "openTemplates", scope: "global", title: "Open the prompt template library" },
+  { chord: "Ctrl+Shift+Q", command: "openQueue", scope: "global", title: "Queue a prompt for an instance" },
   // Attention navigation (wired to the status engine in Phase 2). Modifiers must
   // be written in `eventToChord`'s canonical order (Ctrl → Alt → Shift) or the
   // string match in `matchCommand` never fires — hence `Alt+Shift`, not `Shift+Alt`.
@@ -139,6 +142,7 @@ export const BINDINGS: Binding[] = [
   { chord: "D", command: "railDiff", scope: "rail", title: "Rail: review changes (diff)" },
   { chord: "O", command: "railOpenDir", scope: "rail", title: "Rail: open working dir" },
   { chord: "I", command: "railInterrupt", scope: "rail", title: "Rail: interrupt agent" },
+  { chord: "Q", command: "railQueue", scope: "rail", title: "Rail: queue a prompt" },
   { chord: "P", command: "railAddProject", scope: "rail", title: "Rail: add project" },
   { chord: "Esc", command: "railReturn", scope: "rail", title: "Rail: return focus to panel" },
 ];

@@ -4,6 +4,7 @@ import InstanceManager from "./panels/InstanceManager";
 import Workspace from "./panels/Workspace";
 import PresetsBar from "./panels/PresetsBar";
 import TemplateLibraryHost from "./panels/TemplateLibrary";
+import QueuePromptHost from "./panels/QueuePromptDialog";
 import { useConsoles } from "./state/consoles";
 import { useRegistry } from "./state/registry";
 import {
@@ -139,6 +140,10 @@ function App() {
       {/* Prompt template library (step 3.4): always mounted so Ctrl+Shift+P can
           open it; renders the modal only while open. */}
       <TemplateLibraryHost />
+
+      {/* Prompt queue (step 3.5): always mounted so Ctrl+Shift+Q (and card
+          quick-queue) can open it, and so the Stop→fire wiring is always live. */}
+      <QueuePromptHost />
     </div>
   );
 }

@@ -27,6 +27,8 @@ import { ptyWrite } from "../../ipc/pty";
 import { matchCommand } from "../../keyboard";
 import { updateInstance } from "../../state/registry";
 import { markInterrupted } from "../../state/status";
+import { cancelQueued, useQueued } from "../../state/queue";
+import { openQueueDialog } from "../queueDialogControl";
 import { mergeStatus, relativeTime } from "./status";
 import { contextWindowTokens, formatTokens, tokenBreakdown } from "../../util/format";
 import InlineEdit from "./InlineEdit";
@@ -68,6 +70,7 @@ function InstanceCard({
   const [editingNote, setEditingNote] = useState(false);
   const [editingTitle, setEditingTitle] = useState(false);
   const view = mergeStatus(consoleStatus, live, instance.status);
+  const queued = useQueued().get(instance.id) ?? null;
   const dim = !live && !consoleStatus && instance.status === "closed";
   const showActions = hover || editingNote || editingTitle;
 
@@ -106,6 +109,9 @@ function InstanceCard({
           void ptyWrite(instance.id, INTERRUPT_KEY);
           markInterrupted(instance.id); // interrupting fires no hook — update the dot ourselves
         }
+        break;
+      case "railQueue":
+        if (consoleStatus === "running") openQueueDialog(instance.id);
         break;
       default:
         return; // not a card concern
@@ -208,6 +214,30 @@ function InstanceCard({
             needs you
           </span>
         )}
+        {queued && (
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              cancelQueued(instance.id);
+            }}
+            title={`queued: ${queued.text}\n(click to cancel)`}
+            style={{
+              font: "600 9px var(--wb-mono)",
+              letterSpacing: "0.08em",
+              color: "var(--wb-accent)",
+              background: "transparent",
+              border: "1px solid var(--wb-accent)",
+              padding: "1px 5px",
+              borderRadius: 2,
+              textTransform: "uppercase",
+              cursor: "pointer",
+              flex: "0 0 auto",
+              lineHeight: 1.4,
+            }}
+          >
+            {GLYPH.queue} queued
+          </button>
+        )}
         {showActions ? (
           <span style={{ display: "flex", gap: 7, flex: "0 0 auto" }}>
             <RowAction
@@ -218,6 +248,11 @@ function InstanceCard({
             >
               {GLYPH.worktree}
             </RowAction>
+            {consoleStatus === "running" && (
+              <RowAction label="queue a prompt (sends when the agent finishes)" onClick={() => openQueueDialog(instance.id)}>
+                {GLYPH.queue}
+              </RowAction>
+            )}
             <RowAction label="review changes (diff)" onClick={onReview}>
               ±
             </RowAction>

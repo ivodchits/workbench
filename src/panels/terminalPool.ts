@@ -344,6 +344,19 @@ export function pasteIntoTerminal(instanceId: string, text: string): boolean {
   return true;
 }
 
+/**
+ * Land `text` in the instance's live terminal **and submit it** (a trailing CR) —
+ * the shared "insert & send" path. Used by the prompt queue (step 3.5) both to
+ * send a queued prompt the instant the agent finishes its turn and to send one
+ * straight away when the agent is already at rest. Returns false if the instance
+ * has no live terminal (so the caller can keep the prompt queued / surface it).
+ */
+export function submitToTerminal(instanceId: string, text: string): boolean {
+  if (!pasteIntoTerminal(instanceId, text)) return false;
+  void ptyWrite(instanceId, new TextEncoder().encode("\r"));
+  return true;
+}
+
 /** Re-measure and resize the terminal (and thus its PTY) to its container. */
 export function refit(entryOrId: TermEntry | string): void {
   const entry = typeof entryOrId === "string" ? pool.get(entryOrId) : entryOrId;
