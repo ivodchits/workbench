@@ -181,9 +181,11 @@ pub enum SpawnKind {
     Claude,
 }
 
-/// Returned to the frontend at spawn. For `Claude`, `session_id` is the UUID we
-/// minted and passed as `--session-id`, so the card↔PTY mapping is known before
-/// the first hook fires. `Shell` carries no session id.
+/// Returned to the frontend at spawn. For `Claude`, `session_id` is the session
+/// the PTY is bound to — the UUID we minted and passed as `--session-id` for a
+/// fresh session, or the `--resume`d id for a resumed one (step 3.8) — so the
+/// card↔PTY mapping is known before the first hook fires. `Shell` carries no
+/// session id.
 #[derive(Debug, Serialize)]
 pub struct SpawnResult {
     session_id: Option<String>,
@@ -194,6 +196,16 @@ pub struct SpawnResult {
 /// Spawn `kind` for `instance_id` in `cwd` inside a fresh PTY and stream its
 /// output to `on_output`. Relaunches cleanly: any existing PTY for the same
 /// instance is killed first.
+///
+/// `resume_session_id` (Claude only, step 3.8): when set, launch
+/// `claude --resume <id>` to continue that exact session instead of minting a
+/// brand-new one. A plain `--resume` reuses the same session id and appends to the
+/// same transcript, so the existing `session_id → instance_id` mapping and the
+/// transcript tailer keep working unchanged — we just register the resumed id.
+// Each parameter is part of the IPC contract the frontend invokes with (the
+// per-PTY output channel, the spawn kind, dimensions, …), so they can't be folded
+// into a struct without obscuring the boundary — over clippy's 7-arg advisory.
+#[allow(clippy::too_many_arguments)]
 #[tauri::command]
 pub fn pty_spawn(
     state: State<'_, PtyManager>,
@@ -201,6 +213,7 @@ pub fn pty_spawn(
     on_output: Channel<Vec<u8>>,
     kind: SpawnKind,
     cwd: Option<String>,
+    resume_session_id: Option<String>,
     cols: u16,
     rows: u16,
 ) -> Result<SpawnResult, String> {
@@ -213,13 +226,24 @@ pub fn pty_spawn(
     }
 
     // Build the command up front so a resolution failure (e.g. `claude` not on
-    // PATH) reports cleanly before we touch the PTY.
+    // PATH) reports cleanly before we touch the PTY. A resumed claude keeps the id
+    // it's resuming (same session, same transcript); a fresh one mints a UUID.
     let session_id = match kind {
-        SpawnKind::Claude => Some(uuid::Uuid::new_v4().to_string()),
+        SpawnKind::Claude => {
+            Some(resume_session_id.clone().unwrap_or_else(|| uuid::Uuid::new_v4().to_string()))
+        }
         SpawnKind::Shell => None,
     };
     let candidates = match kind {
-        SpawnKind::Claude => vec![claude_command(session_id.as_deref().unwrap(), &cwd)?],
+        SpawnKind::Claude => {
+            let sid = session_id.as_deref().unwrap();
+            let session_args: [&str; 2] = if resume_session_id.is_some() {
+                ["--resume", sid]
+            } else {
+                ["--session-id", sid]
+            };
+            vec![claude_command(&session_args, &cwd)?]
+        }
         SpawnKind::Shell => shell_candidates(&cwd),
     };
 
@@ -357,20 +381,40 @@ pub fn session_instance(state: State<'_, PtyManager>, session_id: String) -> Opt
     state.instance_for_session(&session_id)
 }
 
+/// Whether `instance_id` has a *live* `claude`/shell child — the truthful answer
+/// to "is something already running here?" for the resume shortcut (step 3.8). The
+/// frontend console store can't answer it: a child that exits on its own (`/exit`,
+/// Ctrl-D, crash) breaks its reader thread but never flips the store off "running"
+/// (and never removes the `PtySession`), so the card still reads as live. Here we
+/// reap with `try_wait`: `Ok(Some(_))` means the child already exited (not live);
+/// `Ok(None)` (running) or `Err` (can't tell) is treated as live so resume never
+/// stomps a session we're unsure about. No session for the instance ⇒ not live.
+#[tauri::command]
+pub fn pty_session_live(state: State<'_, PtyManager>, instance_id: String) -> bool {
+    let mut guard = state.sessions.lock().unwrap();
+    match guard.get_mut(&instance_id) {
+        Some(session) => !matches!(session.child.try_wait(), Ok(Some(_))),
+        None => false,
+    }
+}
+
 /// Default working directory offered to the launcher form (the home dir).
 #[tauri::command]
 pub fn default_working_dir() -> Option<String> {
     home_dir().map(|p| p.to_string_lossy().into_owned())
 }
 
-/// Build the command that launches interactive `claude` with a minted session id.
+/// Build the command that launches interactive `claude`. `session_args` carries
+/// the session-selecting flags — `["--session-id", <uuid>]` for a fresh session,
+/// or `["--resume", <id>]` to continue an existing one (step 3.8) — appended after
+/// the resolved `claude` path.
 ///
 /// `claude` is resolved off PATH (honoring `PATHEXT` on Windows). A native
 /// executable (`.exe`/`.com` or a Unix binary) is exec'd directly for full TUI
 /// fidelity; a `.cmd`/`.bat` shim can't be handed to `CreateProcess` directly, so
 /// it's run through `cmd.exe /c`, and a `.ps1` shim through PowerShell. We pass
 /// `TERM`/`COLORTERM` so the Ink TUI renders color under ConPTY.
-fn claude_command(session_id: &str, cwd: &Path) -> Result<CommandBuilder, String> {
+fn claude_command(session_args: &[&str], cwd: &Path) -> Result<CommandBuilder, String> {
     let exe = which::which("claude")
         .map_err(|e| format!("`claude` not found on PATH ({e}). Is Claude Code installed?"))?;
     let ext = exe
@@ -383,8 +427,6 @@ fn claude_command(session_id: &str, cwd: &Path) -> Result<CommandBuilder, String
             let mut c = CommandBuilder::new("cmd.exe");
             c.arg("/c");
             c.arg(&exe);
-            c.arg("--session-id");
-            c.arg(session_id);
             c
         }
         Some("ps1") => {
@@ -392,17 +434,13 @@ fn claude_command(session_id: &str, cwd: &Path) -> Result<CommandBuilder, String
             c.arg("-NoLogo");
             c.arg("-File");
             c.arg(&exe);
-            c.arg("--session-id");
-            c.arg(session_id);
             c
         }
-        _ => {
-            let mut c = CommandBuilder::new(&exe);
-            c.arg("--session-id");
-            c.arg(session_id);
-            c
-        }
+        _ => CommandBuilder::new(&exe),
     };
+    for arg in session_args {
+        cmd.arg(arg);
+    }
     cmd.cwd(cwd);
     cmd.env("TERM", "xterm-256color");
     cmd.env("COLORTERM", "truecolor");

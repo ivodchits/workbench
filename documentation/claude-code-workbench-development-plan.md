@@ -484,16 +484,48 @@ emit per-byte global events.
   valid frontmatter, edit + preview it in-app, invoke it via `/<name>` in a console, and delete it
   — all without leaving Workbench.
 
-### Step 3.8 — Session restore (`Ctrl+Shift+T`)
-- **Goal:** Reopen yesterday's instances in place, resumed.
-- **Depends on:** 1.6, 1.5
-- **Design refs:** `§4.5`(persistence), `§7` (session restore), decision 12.
-- **Build:** On quit, persist open instances **with layout positions**. On launch, read
-  `~/.claude/projects/` and offer to restore; `Ctrl+Shift+T` reopens them in place via
-  `claude --resume <session_id>`. Same shortcut also reopens individually-closed sessions,
-  most-recent-first (browser-tab reflex). Optional auto-offer restore prompt on launch.
-- **Done when:** Quit with 3 instances + a layout, relaunch, hit `Ctrl+Shift+T`, and they
-  return in place and resume; closing one then `Ctrl+Shift+T` reopens it.
+### Step 3.8 — Resume last session (`Ctrl+Shift+R`)
+- **Goal:** One keystroke that resumes the claude session **last run in the currently active
+  instance**, in place — without the auto-restore-everything machinery the original 3.8
+  proposed.
+- **Depends on:** 1.5, 1.10
+- **Design refs:** `§4.5`(persistence — `last_session_id`), `§7` (resume), decision 12.
+- **Design decision (2026-06-12):** The original "reopen yesterday's whole desk on launch"
+  plan was dropped — in practice the workflow is to hand-pick what to continue, and most
+  sessions start fresh. What's actually useful is a *targeted, manual* resume of the one
+  instance you're looking at, so 3.8 is rescoped to exactly that. (The old `Ctrl+Shift+T`
+  binding also collided with "new shell".)
+- **`Ctrl+Shift+R` is a WebView2 reload accelerator** — the engine consumes it in its
+  accelerator path *before* DOM dispatch, so the keymap's binding never fires from a JS
+  `keydown` (marking the accelerator Handled cancels the reload but does **not** re-dispatch
+  the key to the page — verified against the symptom: every other `Ctrl+Shift+*` works, only
+  this one was dead). So `accel.rs` emits a `resume-last-session` Tauri event from its
+  accelerator handler (suppressing the reload, skipping auto-repeat), and `useGlobalKeys`
+  routes that event to the `resumeLastSession` command. The keymap entry stays as the source
+  of truth for the palette/remap UI.
+- **Build:** `Ctrl+Shift+R` → resume the **active instance's** last session. *Active instance*
+  resolves like `Ctrl+Shift+D` (showDiff): the rail card with keyboard focus, else the active
+  console's instance. Resume = relaunch its console with
+  `claude --resume <last_session_id>` instead of minting a fresh `--session-id`. A plain
+  `--resume` **keeps the same session id**, appends the same transcript, and its hooks report
+  the original id — so the `session_id → instance_id` map and the token tailer keep working
+  with no extra wiring; tokens are *not* zeroed (the session continues). **Ignore the key when
+  a session is already genuinely live there** — checked against the backend (`pty_session_live`
+  / `child.try_wait()`), not the console store, since a self-exited `claude` (`/exit`, Ctrl-D,
+  crash) still reads "running" in the store. No `last_session_id` ⇒ no-op.
+- **Key files:** `src-tauri/src/pty/mod.rs` (`resume_session_id` param on `pty_spawn`,
+  `pty_session_live`), `src-tauri/src/accel.rs` (`Ctrl+Shift+R` → `resume-last-session` event),
+  `src-tauri/src/lib.rs`, `src/ipc/pty.ts`, `src/panels/terminalPool.ts`,
+  `src/panels/Console.tsx`, `src/panels/ConsolePanel.tsx`, `src/state/consoles.ts`
+  (`resumeConsole`, `resumeSessionId` on `ConsoleSession`), `src/keyboard/keymap.ts`,
+  `src/keyboard/useGlobalKeys.ts` (event listener), `src/panels/InstanceManager/InstanceManager.tsx`
+  (handler).
+- **Done when:** With an instance whose claude session has ended (or whose console was restored
+  dormant after a restart), `Ctrl+Shift+R` relaunches it resumed — same conversation, context
+  window intact; pressing it while a session is live there does nothing; an instance that never
+  ran is a no-op.
+- **Out of scope:** auto-restoring *all* instances + layout on launch (dropped); a
+  reopen-most-recently-closed stack (browser-tab reflex — dropped).
 
 ### Step 3.9 — Theme variants, CRT toggle, per-instance accent
 - **Goal:** Ship the look-and-feel options.
@@ -742,7 +774,8 @@ Pull these in once the relevant phase is stable; each is an independent step whe
 
 - **Broadcast + compare** — same task to 2–3 worktree instances, diff side by side (needs 2.4).
 - **Global search across sessions/transcripts** (needs 3.1's transcript access).
-- **Archive instead of kill** — park a resumable session, collapsed (needs 1.4/3.8).
+- **Archive instead of kill** — park a resumable session, collapsed (needs 1.4; can reuse
+  3.8's `claude --resume` / `resumeConsole` path to relaunch a parked session).
 - **End-of-day digest** — per-agent what/files/cost (needs 3.1).
 - **Drag-to-prompt** — drag a file path into a console; paste image into console.
 - **Pre-op snapshots** — `git stash`/checkpoint before a risky run.
@@ -790,7 +823,7 @@ Pull these in once the relevant phase is stable; each is an independent step whe
 - [x] 3.6 CLAUDE.md quick-editor
 - [x] 3.7 MCP server manager
 - [x] 3.7b Skill manager
-- [ ] 3.8 Session restore (`Ctrl+Shift+T`)
+- [x] 3.8 Resume last session (`Ctrl+Shift+R`)
 - [ ] 3.9 Theme variants, CRT toggle, per-instance accent
 - [ ] 3.10 Command palette, remappable keys, permission-mode switch
 - [ ] 3.11 Git panel (history / branches / checkout)

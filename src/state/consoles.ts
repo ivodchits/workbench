@@ -8,8 +8,8 @@
 //   • spawning/running/error — a live PTY+terminal,
 //   • dormant — a placeholder restored from a saved layout, awaiting a relaunch.
 // Dormant entries are how "reopen → same layout" works without auto-launching
-// `claude` (that's session-restore, step 3.8): the box returns in place, the PTY
-// does not. Clicking it relaunches a fresh session.
+// `claude`: the box returns in place, the PTY does not. Clicking it relaunches a
+// fresh session; `Ctrl+Shift+R` relaunches it *resumed* (`resumeConsole`, step 3.8).
 //
 // A tiny external store exposed to React via `useSyncExternalStore`.
 
@@ -19,6 +19,7 @@ import type { Instance } from "../ipc/registry";
 import { applyInstanceUsage, updateInstance } from "./registry";
 import { clearLiveStatus } from "./status";
 import { cancelQueued } from "./queue";
+import { release } from "../panels/terminalPool";
 
 /** Browsers cap live WebGL contexts (~16); we reserve a margin (design §5 /
  *  decision 14). The first `WEBGL_CAP` *live* consoles render via WebGL; the rest
@@ -37,6 +38,11 @@ export interface ConsoleSession {
   status: ConsoleStatus;
   /** Minted session UUID, known once the spawn resolves. */
   sessionId: string | null;
+  /** When set, this console was launched to *resume* that claude session
+   *  (`claude --resume <id>`, step 3.8) rather than start a fresh one — so its
+   *  spawn keeps the existing context/tokens instead of zeroing them. Null for a
+   *  normal fresh launch. */
+  resumeSessionId: string | null;
   /** Spawn failure message, when `status === "error"`. */
   error: string | null;
   /** Monotonic focus stamp; the active console has the highest. */
@@ -113,6 +119,7 @@ export function openConsole(instance: Instance): void {
     webgl: liveWebglCount() < WEBGL_CAP,
     status: "spawning",
     sessionId: null,
+    resumeSessionId: null,
     error: null,
     focusSeq: ++focusSeq,
   };
@@ -125,6 +132,41 @@ export function openConsole(instance: Instance): void {
   }
 
   const session: ConsoleSession = { instanceId: instance.id, ...live };
+  emit({ open: [...state.open, session], activeId: instance.id });
+}
+
+/**
+ * Relaunch `instance`'s console to **resume** the session it last ran
+ * (`claude --resume <lastSessionId>`, step 3.8 — the `Ctrl+Shift+R` shortcut).
+ *
+ * Always tears down any existing console+PTY for the instance first, then opens a
+ * fresh one carrying `resumeSessionId`. The full close→release→re-add (rather than
+ * an in-place status flip) is deliberate: it's the proven relaunch path (see
+ * worktree `relaunchLiveConsole`) — it disposes the old pooled terminal so the
+ * remounted panel re-`acquire`s and actually respawns, including for a console
+ * still reading "running" after its claude self-exited (no live terminal would
+ * respawn from a mere status change). `release` no-ops when there's no pooled
+ * terminal (a dormant placeholder), so the restored-layout case is covered too.
+ *
+ * The caller is responsible for the "already running → ignore" guard (the backend
+ * `pty_session_live` check); this unconditionally relaunches.
+ */
+export function resumeConsole(instance: Instance): void {
+  if (state.open.some((c) => c.instanceId === instance.id)) {
+    closeConsole(instance.id);
+    release(instance.id); // the only path that kills the PTY (see terminalPool)
+  }
+  const session: ConsoleSession = {
+    instanceId: instance.id,
+    cwd: instance.workingDir,
+    kind: "claude",
+    webgl: liveWebglCount() < WEBGL_CAP,
+    status: "spawning",
+    sessionId: null,
+    resumeSessionId: instance.lastSessionId,
+    error: null,
+    focusSeq: ++focusSeq,
+  };
   emit({ open: [...state.open, session], activeId: instance.id });
 }
 
@@ -143,6 +185,7 @@ export function hydrateDormant(instanceIds: string[]): void {
       webgl: false,
       status: "dormant",
       sessionId: null,
+      resumeSessionId: null,
       error: null,
       focusSeq: 0,
     }));
@@ -162,20 +205,27 @@ export function focusConsole(instanceId: string): void {
 
 /**
  * Record a successful spawn: flip the console to `running` and persist the minted
- * session id onto the instance row (so a later session-restore can resume it).
+ * session id onto the instance row (so a later resume can continue it).
  *
- * A (re)launch mints a brand-new, empty session (not a `--resume`), so its context
- * window starts at 0. We clear the previous session's token figures — both
- * immediately in the store and durably in the DB — so a re-launched console (after
- * closing the panel or restarting the app) never inherits last session's count; the
- * tailer then refills the window from the new session's first turn.
+ * A fresh (re)launch mints a brand-new, empty session, so its context window starts
+ * at 0. We clear the previous session's token figures — both immediately in the
+ * store and durably in the DB — so a re-launched console (after closing the panel or
+ * restarting the app) never inherits last session's count; the tailer then refills
+ * the window from the new session's first turn.
+ *
+ * A **resume** (`claude --resume`, step 3.8) is the opposite: it continues the same
+ * session and transcript, so we keep the existing tokens (the `lastSessionId` is
+ * unchanged) and skip the zeroing — the tailer keeps the window where the session
+ * left off.
  *
  * Note we deliberately do *not* update `session.cwd` here: it's a dependency of
  * the hosting terminal's effect, so mutating it would tear the PTY down and
  * respawn. The working dir is fixed for a console's lifetime.
  */
 export function markSpawned(instanceId: string, result: SpawnResult): void {
+  const resumed = state.open.find((c) => c.instanceId === instanceId)?.resumeSessionId != null;
   patchSession(instanceId, { status: "running", sessionId: result.sessionId });
+  if (resumed) return;
   const zero = {
     inputTokens: 0,
     outputTokens: 0,

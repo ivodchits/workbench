@@ -100,6 +100,7 @@ function LiveConsole({
       kind={session.kind}
       cwd={session.cwd}
       webgl={session.webgl}
+      resumeSessionId={session.resumeSessionId}
       onSpawned={onSpawned}
       onError={onError}
     />

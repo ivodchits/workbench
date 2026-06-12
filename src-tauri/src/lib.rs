@@ -64,11 +64,14 @@ pub fn run() {
             // JSONL and surface cumulative tokens on its card/console header. A
             // background thread; failures only degrade the token readout.
             transcript::init(app.handle());
-            // Suppress WebView2's built-in reload accelerators (F5 / Ctrl+R /
-            // Ctrl+Shift+R) on the main window so a stray keypress can't reload the
-            // renderer and drop every live console. DevTools keys stay enabled.
+            // Install the WebView2 accelerator handler on the main window: suppress
+            // the built-in reload chords (F5 / Ctrl+R / Ctrl+Shift+R) so a stray
+            // keypress can't reload the renderer and drop every live console, and
+            // route Ctrl+Shift+R to the resume-last-session event (the engine eats
+            // that chord before the DOM, so the keymap binding can't see it).
+            // DevTools keys stay enabled.
             if let Some(win) = app.get_webview_window("main") {
-                accel::block_reload_accelerators(&win);
+                accel::install_accelerator_handler(&win);
             }
             Ok(())
         })
@@ -82,6 +85,7 @@ pub fn run() {
             pty::pty_resize,
             pty::pty_kill,
             pty::session_instance,
+            pty::pty_session_live,
             pty::default_working_dir,
             hooks::hook_server_status,
             statusline::usage_limits,

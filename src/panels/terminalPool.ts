@@ -81,6 +81,9 @@ export interface AcquireOptions {
   kind: SpawnKind;
   cwd: string;
   webgl: boolean;
+  /** When set, resume that claude session (`claude --resume <id>`) instead of
+   *  minting a fresh one (step 3.8). Null for a normal fresh launch / shell. */
+  resumeSessionId: string | null;
   /** Called once, when the PTY spawn for a freshly created entry resolves. */
   onSpawned: (result: SpawnResult) => void;
   /** Called once, if that spawn fails (the entry is released). */
@@ -295,7 +298,15 @@ export function acquire(container: HTMLDivElement, opts: AcquireOptions): void {
     } catch {
       // not measurable yet; the ResizeObserver will fit shortly.
     }
-    ptySpawn(opts.instanceId, output, opts.kind, opts.cwd, term.cols, term.rows)
+    ptySpawn(
+      opts.instanceId,
+      output,
+      opts.kind,
+      opts.cwd,
+      opts.resumeSessionId,
+      term.cols,
+      term.rows,
+    )
       .then((result) => opts.onSpawned(result))
       .catch((e: unknown) => {
         opts.onError(e instanceof Error ? e.message : String(e));

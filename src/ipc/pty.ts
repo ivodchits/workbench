@@ -24,12 +24,17 @@ interface RawSpawnResult {
   cwd: string;
 }
 
-/** Spawn the chosen child for `instanceId` in `cwd`, routing output to `onOutput`. */
+/**
+ * Spawn the chosen child for `instanceId` in `cwd`, routing output to `onOutput`.
+ * `resumeSessionId` (claude only, step 3.8): when set, launch `claude --resume
+ * <id>` to continue that session instead of minting a fresh one; null = fresh.
+ */
 export async function ptySpawn(
   instanceId: string,
   onOutput: Channel<PtyChunk>,
   kind: SpawnKind,
   cwd: string | null,
+  resumeSessionId: string | null,
   cols: number,
   rows: number,
 ): Promise<SpawnResult> {
@@ -38,6 +43,7 @@ export async function ptySpawn(
     onOutput,
     kind,
     cwd,
+    resumeSessionId,
     cols,
     rows,
   });
@@ -62,6 +68,13 @@ export function ptyKill(instanceId: string): Promise<void> {
 /** Resolve a `session_id` to its owning `instanceId` (Phase-2 hook routing). */
 export function sessionInstance(sessionId: string): Promise<string | null> {
   return invoke("session_instance", { sessionId });
+}
+
+/** Whether `instanceId` has a live (non-exited) child process — the truthful
+ *  "is something already running here?" check for the resume shortcut (step 3.8),
+ *  which the console store can't answer once a session self-exits. */
+export function ptySessionLive(instanceId: string): Promise<boolean> {
+  return invoke("pty_session_live", { instanceId });
 }
 
 /** The home dir, used to prefill the launcher's working-dir field. */

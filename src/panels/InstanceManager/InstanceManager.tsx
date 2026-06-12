@@ -21,6 +21,7 @@ import {
   getActiveConsoleId,
   getOpenConsoles,
   openConsole,
+  resumeConsole,
   useConsoles,
 } from "../../state/consoles";
 import { closeShell, getOpenShells, newShell, openShell } from "../../state/shells";
@@ -38,6 +39,7 @@ import {
 import { mergeStatus } from "./status";
 import { getActiveProject, setActiveProject, useActiveProject } from "../../state/activeProject";
 import { activatePanel, focusActivePanel } from "../../state/dock";
+import { ptySessionLive } from "../../ipc/pty";
 import { release } from "../terminalPool";
 import {
   addInstance,
@@ -189,6 +191,26 @@ function InstanceManager({ onCollapse }: InstanceManagerProps) {
       registerCommand("killInstance", () => {
         const inst = getRegistry().instances.find((i) => i.id === getActiveConsoleId());
         if (inst) setKillTarget(inst);
+      }),
+      registerCommand("resumeLastSession", () => {
+        // Resume the active instance's last claude session (`claude --resume`).
+        // Target resolution mirrors `showDiff`: the rail card you have keyboard
+        // focus on, else the active console's instance — read fresh so this
+        // once-registered closure never goes stale.
+        const { instances } = getRegistry();
+        const focusedId = (document.activeElement as HTMLElement | null)?.dataset.wbInstanceId;
+        const inst = instances.find((i) => i.id === (focusedId ?? getActiveConsoleId() ?? ""));
+        // Nothing to resume if it never ran a session.
+        if (!inst || !inst.lastSessionId) return;
+        // Ignore when a session is already *genuinely* live there — asked of the
+        // backend, since a self-exited claude still reads "running" in the store.
+        void ptySessionLive(inst.id).then((live) => {
+          if (live) return;
+          setActiveProject(inst.projectId);
+          resumeConsole(inst);
+          // Win the focus race against the project swap-in reconcile (see dock.ts).
+          activatePanel(inst.id);
+        });
       }),
       registerCommand("showDiff", () => {
         // Review an instance vs its branch base (the rail `D` key's global

@@ -232,9 +232,10 @@ single "total" is misleading. Same file-tailing subsystem as cost tracking (§7)
 - **Registry & state:** SQLite via `rusqlite` (or `tauri-plugin-sql`) — projects,
   instances, last branch, last `session_id`, per-project layout. JSON is fine if you
   prefer.
-- **Session recovery:** persist each open instance *with its layout position*; on launch,
-  read `~/.claude/projects/` and offer to restore yesterday's agents in place
-  (`Ctrl+Shift+T`) via `claude --resume <id>`.
+- **Session recovery:** every instance row persists its `last_session_id`, so a single
+  keystroke (`Ctrl+Shift+R`) can resume the active instance's last session in place via
+  `claude --resume <id>` (see §7). (Auto-restoring *all* instances + layout on launch was
+  considered and dropped — targeted manual resume is what's actually wanted.)
 - **Prefs:** `tauri-plugin-store`.
 
 ---
@@ -496,11 +497,14 @@ manual `worktree add`/`remove` dance when you do want it.)
     servers require a trust/approval prompt before first use, and MCP "local" scope
     (`~/.claude.json`) is *not* the same file as `.claude/settings.local.json`.
 - **Session timeline/log** per instance (rendered from the transcript).
-- **Session restore (`Ctrl+Shift+T`)** *(requested)* — on quit, persist the open instances
-  *and their layout positions*. Next launch, `Ctrl+Shift+T` reopens them exactly where they
-  were and resumes each via `claude --resume <session_id>` — you're back at yesterday's desk.
-  Mirrors the browser "reopen closed tab" reflex: the same shortcut also reopens individually
-  closed sessions, most-recent-first. Can additionally auto-offer a restore prompt on launch.
+- **Resume last session (`Ctrl+Shift+R`)** *(shipped)* — resume the **active instance's** last
+  session in place via `claude --resume <session_id>`: same conversation, context window intact.
+  *Active instance* = the rail card you have focus on, else the active console's instance. The
+  key is **ignored when a session is already live** there (checked against the backend, not the
+  console store — a self-exited `claude` still reads "running"); an instance that never ran is a
+  no-op. A plain `--resume` keeps the original session id, so hooks + token tailing keep working
+  untouched. (The earlier "reopen yesterday's whole desk + layout on launch" idea, and a
+  reopen-most-recently-closed stack, were dropped in favor of this targeted resume.)
 
 **Worth considering:**
 - **Prompt queue** — line up a follow-up prompt that auto-sends when the agent finishes
@@ -556,7 +560,7 @@ manual `worktree add`/`remove` dance when you do want it.)
 - **Phase 3 — polish:** cost tracking + cumulative per-session tokens + the usage-limit
   meter (the §4.5 file-tailing + statusline side-channel subsystem), layout presets,
   prompt templates (with `{0}`/`{1}` fill-in) + queue, `CLAUDE.md` editor + MCP server
-  manager, session restore (`Ctrl+Shift+T`), theme variants + CRT toggle, the **Git panel**
+  manager, resume last session (`Ctrl+Shift+R`), theme variants + CRT toggle, the **Git panel**
   (history / branches / checkout, §5 Git — builds on the `git2` layer landed in Phase 2 for
   the diff view and worktrees).
 - **Phase 4 — power/remote:** the **PTY-multiplexing backend** (§11 Phase B) and the

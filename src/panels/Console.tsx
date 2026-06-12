@@ -18,13 +18,15 @@ interface ConsoleProps {
   cwd: string;
   /** Use the GPU (WebGL) renderer; false falls back to the DOM renderer. */
   webgl: boolean;
+  /** When set, resume that claude session instead of minting a fresh one (3.8). */
+  resumeSessionId: string | null;
   /** Reports the backend's spawn result (incl. minted session id) to the parent. */
   onSpawned?: (result: SpawnResult) => void;
   /** Surfaces a spawn failure to the parent. */
   onError?: (message: string) => void;
 }
 
-function Console({ instanceId, kind, cwd, webgl, onSpawned, onError }: ConsoleProps) {
+function Console({ instanceId, kind, cwd, webgl, resumeSessionId, onSpawned, onError }: ConsoleProps) {
   const containerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -37,6 +39,7 @@ function Console({ instanceId, kind, cwd, webgl, onSpawned, onError }: ConsolePr
       kind,
       cwd,
       webgl,
+      resumeSessionId,
       onSpawned: (r) => onSpawned?.(r),
       onError: (m) => onError?.(m),
     });
@@ -50,7 +53,7 @@ function Console({ instanceId, kind, cwd, webgl, onSpawned, onError }: ConsolePr
       // teardown happens via the pool's `release`, called when the console closes.
       detach(container, instanceId);
     };
-  }, [instanceId, kind, cwd, webgl, onSpawned, onError]);
+  }, [instanceId, kind, cwd, webgl, resumeSessionId, onSpawned, onError]);
 
   return (
     <div

@@ -9,6 +9,7 @@
 // to whichever component registered them.
 
 import { useEffect } from "react";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { matchCommand, type Match } from "./keymap";
 import { runCommand } from "./bus";
 import {
@@ -47,6 +48,7 @@ function dispatch({ command, arg }: Match): void {
     case "newInstance":
     case "newEditor":
     case "newShell":
+    case "resumeLastSession":
     case "killInstance":
     case "showDiff":
     case "jumpNeedsYou":
@@ -74,6 +76,23 @@ export function useGlobalKeys(): void {
       dispatch(match);
     };
     document.addEventListener("keydown", onKeyDown, { capture: true });
-    return () => document.removeEventListener("keydown", onKeyDown, { capture: true });
+
+    // `Ctrl+Shift+R` (resume last session) is a WebView2 reload accelerator the
+    // engine consumes before DOM dispatch, so the keymap above never sees it — the
+    // native `accel` handler suppresses the reload and emits this event instead, and
+    // we route it to the same command the binding maps to (single source of truth in
+    // the keymap; this is just an alternate input edge). See `src-tauri/src/accel.rs`.
+    let unlisten: UnlistenFn | undefined;
+    let cancelled = false;
+    void listen("resume-last-session", () => runCommand("resumeLastSession")).then((u) => {
+      if (cancelled) u();
+      else unlisten = u;
+    });
+
+    return () => {
+      document.removeEventListener("keydown", onKeyDown, { capture: true });
+      cancelled = true;
+      unlisten?.();
+    };
   }, []);
 }
