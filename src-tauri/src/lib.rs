@@ -12,6 +12,7 @@ mod layout;
 mod mcp;
 mod pty;
 mod registry;
+mod skills;
 mod statusline;
 mod sys;
 mod transcript;
@@ -106,6 +107,9 @@ pub fn run() {
             mcp::mcp_remove,
             mcp::mcp_project_file,
             mcp::mcp_save_project_file,
+            skills::skill_list,
+            skills::skill_create,
+            skills::skill_remove,
             fs::read_dir,
             fs::read_file,
             fs::write_file,

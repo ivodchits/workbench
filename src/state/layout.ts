@@ -15,6 +15,7 @@ import type { ShellDescriptor } from "./shells";
 import type { EditorDescriptor } from "./editors";
 import type { DiffDescriptor } from "./diffs";
 import type { McpDescriptor } from "./mcp";
+import type { SkillDescriptor } from "./skills";
 
 /**
  * The workspace key the MVP persists under. Layout is global for now; the schema
@@ -25,10 +26,10 @@ export const WORKSPACE_KEY = "__global__";
 
 /** Bump if the saved-payload shape changes incompatibly. (v2 added `shells`;
  *  v3 made shells project-scoped; v4 added `editors`.) `diffs` (step 2.7) and
- *  `mcps` (step 3.7) were added without a bump — every reader defaults them to
- *  `[]` when absent, so old and new blobs interoperate. Exported because layout
- *  presets (step 3.3) stamp the same version onto the `SavedLayout` snapshots
- *  they store. */
+ *  `mcps` (step 3.7) and `skills` (step 3.7b) were added without a bump — every
+ *  reader defaults them to `[]` when absent, so old and new blobs interoperate.
+ *  Exported because layout presets (step 3.3) stamp the same version onto the
+ *  `SavedLayout` snapshots they store. */
 export const SCHEMA_VERSION = 4;
 
 export interface SavedLayout {
@@ -44,6 +45,8 @@ export interface SavedLayout {
   diffs: DiffDescriptor[];
   /** MCP Server Manager panels (project binding) — re-fetched on restore. */
   mcps: McpDescriptor[];
+  /** Skill Manager panels (project binding) — re-fetched on restore. */
+  skills: SkillDescriptor[];
 }
 
 /** Load and validate the saved layout for `key`; null when absent or unreadable. */
@@ -68,6 +71,7 @@ export async function loadLayout(key: string = WORKSPACE_KEY): Promise<SavedLayo
       editors: Array.isArray(parsed.editors) ? parsed.editors : [],
       diffs: Array.isArray(parsed.diffs) ? parsed.diffs : [],
       mcps: Array.isArray(parsed.mcps) ? parsed.mcps : [],
+      skills: Array.isArray(parsed.skills) ? parsed.skills : [],
     };
   } catch {
     return null; // corrupt blob — start from an empty workspace
@@ -84,6 +88,7 @@ function write(
   editors: EditorDescriptor[],
   diffs: DiffDescriptor[],
   mcps: McpDescriptor[],
+  skills: SkillDescriptor[],
 ): Promise<void> {
   const payload: SavedLayout = {
     version: SCHEMA_VERSION,
@@ -93,6 +98,7 @@ function write(
     editors,
     diffs,
     mcps,
+    skills,
   };
   return setLayout(key, JSON.stringify(payload)).catch(() => {
     // Persisting layout is best-effort; a failed write just means the next
@@ -112,13 +118,14 @@ export function saveLayoutDebounced(
   editors: EditorDescriptor[],
   diffs: DiffDescriptor[],
   mcps: McpDescriptor[],
+  skills: SkillDescriptor[],
   key: string = WORKSPACE_KEY,
   delayMs = 400,
 ): void {
   if (saveTimer) clearTimeout(saveTimer);
   saveTimer = setTimeout(() => {
     saveTimer = null;
-    void write(key, tree, consoleInstanceIds, shells, editors, diffs, mcps);
+    void write(key, tree, consoleInstanceIds, shells, editors, diffs, mcps, skills);
   }, delayMs);
 }
 
@@ -134,11 +141,12 @@ export function saveLayoutNow(
   editors: EditorDescriptor[],
   diffs: DiffDescriptor[],
   mcps: McpDescriptor[],
+  skills: SkillDescriptor[],
   key: string,
 ): void {
   if (saveTimer) {
     clearTimeout(saveTimer);
     saveTimer = null;
   }
-  void write(key, tree, consoleInstanceIds, shells, editors, diffs, mcps);
+  void write(key, tree, consoleInstanceIds, shells, editors, diffs, mcps, skills);
 }

@@ -28,6 +28,7 @@ import { closeEditor, getOpenEditors, openEditor, openProjectFile } from "../../
 import { ensureClaudeMd } from "../../ipc/fs";
 import { closeDiff, diffIdFor, getOpenDiffs, openDiff } from "../../state/diffs";
 import { closeMcp, getOpenMcps, openMcp } from "../../state/mcp";
+import { closeSkills, getOpenSkills, openSkills } from "../../state/skills";
 import {
   getLiveStatuses,
   onStatusTransition,
@@ -372,6 +373,14 @@ function InstanceManager({ onCollapse }: InstanceManagerProps) {
     openMcp({ projectId: project.id, repoRoot: project.rootPath, title: project.name });
   };
 
+  // Open (or focus) the project's Skill Manager (step 3.7b) — view/create/edit/
+  // remove Agent Skills across user/project (and read-only plugin) scopes; switches
+  // the active workspace to it.
+  const openSkillsForProject = (project: Project) => {
+    setActiveProject(project.id);
+    openSkills({ projectId: project.id, repoRoot: project.rootPath, title: project.name });
+  };
+
   // Open the project's CLAUDE.md in its editor (step 3.6) — creating an empty one
   // if the project has none yet — with markdown preview on. Reuses the editor +
   // preview (steps 1.8/1.9) via a one-shot pending-open; the editor docks into the
@@ -618,6 +627,7 @@ function InstanceManager({ onCollapse }: InstanceManagerProps) {
                       onOpenEditor={() => openEditorForProject(p)}
                       onOpenClaudeMd={() => void openClaudeMdForProject(p)}
                       onOpenMcp={() => openMcpForProject(p)}
+                      onOpenSkills={() => openSkillsForProject(p)}
                       onEdit={() => setEditProjectTarget(p)}
                       onRemove={() => setRemoveProjectTarget(p)}
                       onNewInstance={() => void spawnInstance(p)}
@@ -696,6 +706,8 @@ interface ProjectNodeProps {
   onOpenClaudeMd: () => void;
   /** Open this project's MCP Server Manager (step 3.7). */
   onOpenMcp: () => void;
+  /** Open this project's Skill Manager (step 3.7b). */
+  onOpenSkills: () => void;
   onEdit: () => void;
   onRemove: () => void;
   onNewInstance: () => void;
@@ -719,6 +731,7 @@ function ProjectNode({
   onOpenEditor,
   onOpenClaudeMd,
   onOpenMcp,
+  onOpenSkills,
   onEdit,
   onRemove,
   onNewInstance,
@@ -850,6 +863,7 @@ function ProjectNode({
               items={[
                 { label: "edit CLAUDE.md", onClick: onOpenClaudeMd },
                 { label: "manage MCP servers", onClick: onOpenMcp },
+                { label: "manage skills", onClick: onOpenSkills },
                 { label: "edit project", onClick: onEdit },
               ]}
             />
@@ -1077,6 +1091,10 @@ function RemoveProjectConfirm({
       // MCP panels likewise hold no PTY/buffer — drop the project's manager too.
       for (const m of getOpenMcps().filter((m) => m.projectId === project.id)) {
         closeMcp(m.mcpId);
+      }
+      // Skill Manager panels too — no PTY/buffer, just drop the project's panel.
+      for (const s of getOpenSkills().filter((s) => s.projectId === project.id)) {
+        closeSkills(s.skillId);
       }
       await deleteProject(project.id);
       onClose();

@@ -789,7 +789,7 @@ Pull these in once the relevant phase is stable; each is an independent step whe
 - [x] 3.5 Prompt queue
 - [x] 3.6 CLAUDE.md quick-editor
 - [x] 3.7 MCP server manager
-- [ ] 3.7b Skill manager
+- [x] 3.7b Skill manager
 - [ ] 3.8 Session restore (`Ctrl+Shift+T`)
 - [ ] 3.9 Theme variants, CRT toggle, per-instance accent
 - [ ] 3.10 Command palette, remappable keys, permission-mode switch
