@@ -1,4 +1,5 @@
-// Keyboard layer (step 1.10) — the single binding registry for the whole app.
+// Keyboard layer (step 1.10, made remappable in 3.10) — the single binding
+// registry for the whole app.
 //
 // Design constraint that shapes everything (design §5.y, §1 keyboard-first): the
 // terminal owns the keyboard. Whenever a Console (xterm) or Editor (CodeMirror)
@@ -16,8 +17,17 @@
 //     a text field. Matched locally by the rail's own handlers, so a bare `x` can
 //     never kill an instance while you're typing in a shell.
 //
-// This file is the source of truth for *which key does what*; remap-to-file (3.10)
-// edits `BINDINGS` and nothing else has to change.
+// **Remapping (3.10).** The defaults below are the source of truth for *which key
+// does what*; the user can override any binding's chord via the keymap editor. An
+// override map (binding id → chord) persists to prefs and is layered over the
+// defaults to produce the **active** bindings, which everything reads through
+// `getBindings()` / `matchCommand()`. A binding may be **unbound** (empty chord) —
+// runnable from the command palette, awaiting a key the user assigns. Global-scope
+// chords are constrained to the "command space" the terminal won't claim (see
+// `isSafeGlobalChord`) so a remap can't swallow a control key mid-session.
+
+import { useSyncExternalStore } from "react";
+import { getPref, setPref } from "../ipc/prefs";
 
 export type Scope = "global" | "rail";
 
@@ -41,6 +51,12 @@ export type CommandId =
   | "applyPreset" // carries a 1-based preset number in `arg`
   | "openTemplates"
   | "openQueue"
+  | "openCommandPalette"
+  | "openKeymapEditor"
+  | "permissionModeDefault"
+  | "permissionModeAcceptEdits"
+  | "permissionModePlan"
+  | "cyclePermissionMode"
   // rail
   | "railPrev"
   | "railNext"
@@ -60,13 +76,19 @@ export type CommandId =
   | "railReturn";
 
 export interface Binding {
-  /** Canonical chord (see `eventToChord`), e.g. `Ctrl+Shift+W`, `Alt+1`, `J`. */
+  /** Stable identity for remap overrides (computed from command + arg + ordinal,
+   *  so alternate chords for one command stay distinct). */
+  id: string;
+  /** Active chord (see `eventToChord`), e.g. `Ctrl+Shift+W`, `Alt+1`, `J`. Empty
+   *  string = unbound (runnable from the palette, never matched by a key event). */
   chord: string;
+  /** The shipped default chord, so the editor can offer "reset to default". */
+  defaultChord: string;
   command: CommandId;
-  /** Fixed argument for parameterized commands (only `focusPanel` uses it). */
+  /** Fixed argument for parameterized commands (only `focusPanel`/`applyPreset`). */
   arg?: number;
   scope: Scope;
-  /** Human label for a future command palette / remap UI (3.10). */
+  /** Human label for the command palette / remap UI. */
   title: string;
 }
 
@@ -81,15 +103,19 @@ export interface Match {
 // token so the keymap below is written once. (Windows is the primary target.)
 const isMac = typeof navigator !== "undefined" && /mac/i.test(navigator.platform);
 
+type RawBinding = Omit<Binding, "id" | "defaultChord">;
+
 /**
- * The whole keymap. Two scopes share one table so the palette/remap UI (3.10) can
- * render every binding from a single list. `focusPanel` expands to Alt+1..9.
+ * The shipped keymap. Two scopes share one table so the palette/remap UI can
+ * render every binding from a single list. `focusPanel`/`applyPreset` expand to
+ * the digit row. Commands with `chord: ""` are unbound by default — runnable from
+ * the palette, and the obvious targets when assigning a custom key.
  */
-export const BINDINGS: Binding[] = [
+const RAW_BINDINGS: RawBinding[] = [
   // --- global: panel navigation ---------------------------------------------
   { chord: "Ctrl+Tab", command: "cyclePanelNext", scope: "global", title: "Cycle to next panel" },
   { chord: "Ctrl+Shift+Tab", command: "cyclePanelPrev", scope: "global", title: "Cycle to previous panel" },
-  ...Array.from({ length: 9 }, (_, i): Binding => ({
+  ...Array.from({ length: 9 }, (_, i): RawBinding => ({
     chord: `Alt+${i + 1}`,
     command: "focusPanel",
     arg: i + 1,
@@ -109,12 +135,22 @@ export const BINDINGS: Binding[] = [
   // Ctrl+Shift+R reload accelerator before DOM dispatch, so this binding is *not*
   // driven by a DOM keydown — `accel.rs` suppresses the reload and emits a
   // `resume-last-session` event that `useGlobalKeys` routes to this command. The
-  // entry stays here as the source of truth for the palette / remap UI (3.10).
+  // entry stays here as the source of truth for the palette / remap UI.
   { chord: "Ctrl+Shift+R", command: "resumeLastSession", scope: "global", title: "Resume the last Claude session in the active instance" },
   { chord: "Ctrl+Shift+K", command: "killInstance", scope: "global", title: "Kill the focused instance" },
   { chord: "Ctrl+Shift+D", command: "showDiff", scope: "global", title: "Review changes (diff) for the focused instance" },
   { chord: "Ctrl+Shift+P", command: "openTemplates", scope: "global", title: "Open the prompt template library" },
   { chord: "Ctrl+Shift+Q", command: "openQueue", scope: "global", title: "Queue a prompt for an instance" },
+  // Command palette (3.10) — IntelliJ-style "find action". `Ctrl+Shift+A` because the
+  // prime `Ctrl+Shift+P` slot is already the template library.
+  { chord: "Ctrl+Shift+A", command: "openCommandPalette", scope: "global", title: "Open the command palette" },
+  // The keymap editor and the permission-mode switches ship unbound — reachable from
+  // the palette / UI, and the natural things to put a custom key on.
+  { chord: "", command: "openKeymapEditor", scope: "global", title: "Edit keyboard shortcuts" },
+  { chord: "", command: "permissionModeDefault", scope: "global", title: "Permission mode: default (ask)" },
+  { chord: "", command: "permissionModeAcceptEdits", scope: "global", title: "Permission mode: accept edits" },
+  { chord: "", command: "permissionModePlan", scope: "global", title: "Permission mode: plan" },
+  { chord: "", command: "cyclePermissionMode", scope: "global", title: "Permission mode: cycle (Shift+Tab)" },
   // Attention navigation (wired to the status engine in Phase 2). Modifiers must
   // be written in `eventToChord`'s canonical order (Ctrl → Alt → Shift) or the
   // string match in `matchCommand` never fires — hence `Alt+Shift`, not `Shift+Alt`.
@@ -125,7 +161,8 @@ export const BINDINGS: Binding[] = [
   // taken by focus-panel, so presets ride the `Ctrl+Shift+<digit>` command space.
   // Saving a preset has no chord — `Ctrl+Shift+S` collides with the editor's
   // Save-All, and saving is rare enough to leave to the PresetsBar button.
-  ...Array.from({ length: 9 }, (_, i): Binding => ({
+  { chord: "", command: "savePreset", scope: "global", title: "Save the current layout as a preset" },
+  ...Array.from({ length: 9 }, (_, i): RawBinding => ({
     chord: `Ctrl+Shift+${i + 1}`,
     command: "applyPreset",
     arg: i + 1,
@@ -157,6 +194,55 @@ export const BINDINGS: Binding[] = [
   { chord: "P", command: "railAddProject", scope: "rail", title: "Rail: add project" },
   { chord: "Esc", command: "railReturn", scope: "rail", title: "Rail: return focus to panel" },
 ];
+
+/** Stable id for a binding: command, its arg, and an ordinal that disambiguates
+ *  alternate chords for the same command (e.g. the two `railPrev` rows). */
+function bindingId(command: CommandId, arg: number | undefined, ordinal: number): string {
+  const base = arg != null ? `${command}:${arg}` : command;
+  return ordinal === 0 ? base : `${base}#${ordinal}`;
+}
+
+/** The shipped defaults with computed ids — the baseline the overrides layer over. */
+export const DEFAULT_BINDINGS: Binding[] = (() => {
+  const seen = new Map<string, number>();
+  return RAW_BINDINGS.map((b) => {
+    const key = b.arg != null ? `${b.command}:${b.arg}` : b.command;
+    const ordinal = seen.get(key) ?? 0;
+    seen.set(key, ordinal + 1);
+    return { ...b, id: bindingId(b.command, b.arg, ordinal), defaultChord: b.chord };
+  });
+})();
+
+// --- active bindings (defaults + user overrides) ----------------------------
+
+let overrides: Record<string, string> = {};
+let activeBindings: Binding[] = DEFAULT_BINDINGS;
+const listeners = new Set<() => void>();
+
+function rebuild(): void {
+  activeBindings = DEFAULT_BINDINGS.map((b) =>
+    b.id in overrides ? { ...b, chord: overrides[b.id] } : b,
+  );
+  for (const l of listeners) l();
+}
+
+/** The active bindings (defaults with any user overrides applied). */
+export function getBindings(): Binding[] {
+  return activeBindings;
+}
+
+/** Subscribe to keymap changes (the palette + editor re-render on remap). */
+export function subscribeBindings(cb: () => void): () => void {
+  listeners.add(cb);
+  return () => {
+    listeners.delete(cb);
+  };
+}
+
+/** React binding for the active keymap. */
+export function useBindings(): Binding[] {
+  return useSyncExternalStore(subscribeBindings, getBindings);
+}
 
 /**
  * Normalize a key event to a canonical chord string. Letters/digits come from
@@ -214,7 +300,7 @@ function mainKey(e: KeyboardEvent): string | null {
 export function matchCommand(e: KeyboardEvent, scope: Scope): Match | null {
   const chord = eventToChord(e);
   if (chord === null) return null;
-  const b = BINDINGS.find((b) => b.scope === scope && b.chord === chord);
+  const b = activeBindings.find((b) => b.scope === scope && b.chord !== "" && b.chord === chord);
   return b ? { command: b.command, arg: b.arg } : null;
 }
 
@@ -223,4 +309,120 @@ export function isTextInput(el: EventTarget | null): boolean {
   if (!(el instanceof HTMLElement)) return false;
   const tag = el.tagName;
   return tag === "INPUT" || tag === "TEXTAREA" || el.isContentEditable;
+}
+
+// --- capture mode -----------------------------------------------------------
+
+// While the keymap editor is recording a new chord, the global key listener must
+// stand down so pressing e.g. `Ctrl+Shift+K` records the chord instead of killing
+// an instance. The editor sets this for the duration of its one-shot capture.
+let capturing = false;
+
+/** Suspend/resume global key dispatch while a chord is being recorded. */
+export function setKeymapCapturing(on: boolean): void {
+  capturing = on;
+}
+
+/** Whether a chord capture is in progress (the global listener checks this). */
+export function isKeymapCapturing(): boolean {
+  return capturing;
+}
+
+// --- remap surface ----------------------------------------------------------
+
+const NON_PRINTING = new Set([
+  "Tab", "Enter", "Esc", "Up", "Down", "Left", "Right", "Delete", "PageUp", "PageDown",
+]);
+
+/**
+ * Whether `chord` is safe to bind in the **global** scope — i.e. a combo the shell
+ * and `claude` TUI won't claim, so the capture-phase listener can swallow it without
+ * stealing a real editing key. Allowed: anything with Alt; any `Ctrl+Shift+…`; and
+ * `Ctrl+<non-printing>` (covers `Ctrl+Tab`). A bare key or a lone `Ctrl+<letter>`
+ * (a terminal control code) is rejected. Rail chords have no such limit — they only
+ * fire while the (non-text) rail is focused — so this gates global remaps only.
+ */
+export function isSafeGlobalChord(chord: string): boolean {
+  if (chord === "") return true; // unbinding is always allowed
+  const parts = chord.split("+");
+  const key = parts[parts.length - 1];
+  const mods = new Set(parts.slice(0, -1));
+  if (mods.has("Alt")) return true;
+  if (mods.has("Ctrl") && mods.has("Shift")) return true;
+  if (mods.has("Ctrl") && NON_PRINTING.has(key)) return true;
+  return false;
+}
+
+/** The binding (if any) that already uses `chord` in `scope`, excluding `exceptId`
+ *  — so the editor can warn about a collision before committing it. */
+export function chordConflict(chord: string, scope: Scope, exceptId: string): Binding | null {
+  if (chord === "") return null;
+  return (
+    activeBindings.find(
+      (b) => b.scope === scope && b.id !== exceptId && b.chord === chord,
+    ) ?? null
+  );
+}
+
+/** Override (or unbind, with `chord: ""`) a binding's chord and persist it. A chord
+ *  equal to the default clears the override instead of storing a redundant entry. */
+export function setBindingChord(id: string, chord: string): void {
+  const def = DEFAULT_BINDINGS.find((b) => b.id === id);
+  if (!def) return;
+  if (chord === def.defaultChord) {
+    if (!(id in overrides)) return;
+    delete overrides[id];
+  } else {
+    if (overrides[id] === chord) return;
+    overrides[id] = chord;
+  }
+  rebuild();
+  void persist();
+}
+
+/** Restore one binding to its shipped chord. */
+export function resetBinding(id: string): void {
+  if (!(id in overrides)) return;
+  delete overrides[id];
+  rebuild();
+  void persist();
+}
+
+/** Restore the entire keymap to the shipped defaults. */
+export function resetAllBindings(): void {
+  if (Object.keys(overrides).length === 0) return;
+  overrides = {};
+  rebuild();
+  void persist();
+}
+
+/** Whether any binding currently differs from its default. */
+export function hasOverrides(): boolean {
+  return Object.keys(overrides).length > 0;
+}
+
+function persist(): Promise<void> {
+  return setPref("keymapOverrides", { ...overrides });
+}
+
+let loaded = false;
+
+/**
+ * Load the persisted keymap overrides and apply them. Idempotent; called once from
+ * App on launch. Stale entries (an override for a binding id that no longer exists,
+ * or one that violates the global-safety rule) are dropped defensively.
+ */
+export async function loadKeymap(): Promise<void> {
+  if (loaded) return;
+  loaded = true;
+  const stored = await getPref("keymapOverrides", {} as Record<string, string>);
+  const valid: Record<string, string> = {};
+  for (const b of DEFAULT_BINDINGS) {
+    const chord = stored[b.id];
+    if (chord === undefined || chord === b.defaultChord) continue;
+    if (b.scope === "global" && !isSafeGlobalChord(chord)) continue;
+    valid[b.id] = chord;
+  }
+  overrides = valid;
+  rebuild();
 }

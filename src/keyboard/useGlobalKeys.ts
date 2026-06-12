@@ -4,71 +4,22 @@
 // (so `Ctrl+Shift+W` never lands in the terminal); anything unbound falls straight
 // through to whatever is focused. Mounted once, from App.
 //
-// Pure-dock commands call `state/dock` directly; component-owned commands
-// (`focusRail`, `newInstance`, `killInstance`, `jumpNeedsYou`) go through the bus
-// to whichever component registered them.
+// The command→action mapping lives in `commands.ts` so the palette (3.10) can run
+// the same actions; here we only translate the key event and feed it through.
 
 import { useEffect } from "react";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import { matchCommand, type Match } from "./keymap";
+import { isKeymapCapturing, matchCommand } from "./keymap";
 import { runCommand } from "./bus";
-import {
-  closeActivePanel,
-  cyclePanel,
-  focusPanelIndex,
-  splitActivePanel,
-} from "../state/dock";
-import { applyPresetByIndex } from "../state/presets";
-
-function dispatch({ command, arg }: Match): void {
-  switch (command) {
-    case "cyclePanelNext":
-      cyclePanel(1);
-      break;
-    case "cyclePanelPrev":
-      cyclePanel(-1);
-      break;
-    case "focusPanel":
-      if (arg) focusPanelIndex(arg);
-      break;
-    case "splitPanel":
-      splitActivePanel();
-      break;
-    case "closePanel":
-      closeActivePanel();
-      break;
-    // Recall a saved arrangement by number — pure store logic, no owning component.
-    case "applyPreset":
-      if (arg) applyPresetByIndex(arg);
-      break;
-    // Component-owned — dispatched to the registered handler (no-op if absent,
-    // which is how `jumpNeedsYou` stays a registered stub until Phase 2).
-    // `savePreset` is owned by the presets bar, which prompts for a name.
-    case "focusRail":
-    case "newInstance":
-    case "newEditor":
-    case "newShell":
-    case "resumeLastSession":
-    case "killInstance":
-    case "showDiff":
-    case "jumpNeedsYou":
-    case "jumpPrevNeedsYou":
-    case "savePreset":
-    case "openTemplates":
-    case "openQueue":
-      runCommand(command, arg);
-      break;
-    // Rail-scope commands never reach here (they're matched in the rail's own
-    // scope), so there's nothing to do for them globally.
-    default:
-      break;
-  }
-}
+import { dispatch } from "./commands";
 
 /** Install the global keymap listener for the lifetime of the app. */
 export function useGlobalKeys(): void {
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
+      // Stand down while the keymap editor is recording a chord, so the key being
+      // pressed is captured as a binding rather than firing its current action.
+      if (isKeymapCapturing()) return;
       const match = matchCommand(e, "global");
       if (!match) return;
       e.preventDefault();

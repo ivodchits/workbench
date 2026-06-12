@@ -7,6 +7,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { THEMES } from "../theme";
+import { runCommand } from "../keyboard/bus";
 import {
   resetFontScale,
   setFontScale,
@@ -139,6 +140,17 @@ function AppearanceMenu() {
           >
             tip: Ctrl + mouse wheel
           </div>
+
+          <Divider />
+          <Row
+            onClick={() => {
+              setOpen(false);
+              runCommand("openKeymapEditor");
+            }}
+          >
+            <span style={{ color: "var(--wb-textFaint)" }}>⌨</span>
+            <span style={{ color: "var(--wb-text)", flex: 1 }}>keyboard shortcuts…</span>
+          </Row>
         </div>
       )}
     </div>

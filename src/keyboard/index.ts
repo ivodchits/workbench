@@ -4,4 +4,5 @@
 
 export * from "./keymap";
 export { registerCommand, runCommand } from "./bus";
+export { runAction } from "./commands";
 export { useGlobalKeys } from "./useGlobalKeys";

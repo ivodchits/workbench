@@ -825,7 +825,7 @@ Pull these in once the relevant phase is stable; each is an independent step whe
 - [x] 3.7b Skill manager
 - [x] 3.8 Resume last session (`Ctrl+Shift+R`)
 - [x] 3.9 Theme variants, CRT toggle, per-instance accent (+ Ctrl+wheel font size)
-- [ ] 3.10 Command palette, remappable keys, permission-mode switch
+- [x] 3.10 Command palette, remappable keys, permission-mode switch
 - [ ] 3.11 Git panel (history / branches / checkout)
 - [ ] 3.12 Remote projects (SSH + tmux), no telemetry
 

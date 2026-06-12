@@ -5,6 +5,8 @@ import Workspace from "./panels/Workspace";
 import PresetsBar from "./panels/PresetsBar";
 import TemplateLibraryHost from "./panels/TemplateLibrary";
 import QueuePromptHost from "./panels/QueuePromptDialog";
+import CommandPaletteHost from "./panels/CommandPalette";
+import KeymapEditorHost from "./panels/KeymapEditor";
 import { useConsoles } from "./state/consoles";
 import { useRegistry } from "./state/registry";
 import {
@@ -13,7 +15,12 @@ import {
   setActiveProject,
   useActiveProject,
 } from "./state/activeProject";
+import {
+  cycleModeOnActive,
+  setModeOnActive,
+} from "./state/permissionMode";
 import { useGlobalKeys } from "./keyboard";
+import { loadKeymap } from "./keyboard/keymap";
 import { registerCommand, runCommand } from "./keyboard/bus";
 import { getHookServerStatus, onHookEvent } from "./ipc/hooks";
 import { initStatusEngine } from "./state/status";
@@ -22,6 +29,7 @@ import { initUsageLimits, useUsageLimits } from "./state/usageLimits";
 import { initAppearance, useFontZoomWheel } from "./state/appearance";
 import type { RateWindow } from "./ipc/usageLimits";
 import { formatCountdown, formatAgo } from "./util/format";
+import { GLYPH } from "./theme";
 
 // Step 1.5 turned the cockpit into its real shape: the Instance Manager rail on
 // the left drives the panel surface, where clicking an instance launches (or
@@ -41,6 +49,23 @@ function App() {
   // 3.9); a missing pref falls back to the default. Idempotent.
   useEffect(() => {
     void initAppearance();
+  }, []);
+
+  // Apply persisted keyboard remaps (step 3.10) before the first keypress.
+  useEffect(() => {
+    void loadKeymap();
+  }, []);
+
+  // Permission-mode quick switch (step 3.10): the palette / remappable commands act
+  // on the focused claude console (the header control is the per-panel mouse parity).
+  useEffect(() => {
+    const ds = [
+      registerCommand("permissionModeDefault", () => setModeOnActive("default")),
+      registerCommand("permissionModeAcceptEdits", () => setModeOnActive("acceptEdits")),
+      registerCommand("permissionModePlan", () => setModeOnActive("plan")),
+      registerCommand("cyclePermissionMode", () => cycleModeOnActive()),
+    ];
+    return () => ds.forEach((d) => d());
   }, []);
 
   // Ctrl + mouse wheel anywhere adjusts the global font scale (step 3.9).
@@ -150,6 +175,11 @@ function App() {
       {/* Prompt queue (step 3.5): always mounted so Ctrl+Shift+Q (and card
           quick-queue) can open it, and so the Stop→fire wiring is always live. */}
       <QueuePromptHost />
+
+      {/* Command palette + keymap editor (step 3.10): always mounted so their
+          open-commands (Ctrl+Shift+A / the palette / the appearance menu) work. */}
+      <CommandPaletteHost />
+      <KeymapEditorHost />
     </div>
   );
 }
@@ -244,9 +274,44 @@ function TitleBar({ context }: { context: string }) {
         <span style={{ color: "var(--wb-textFaint)", fontSize: 11 }}>╶</span>
         <span style={{ color: "var(--wb-textDim2)", fontSize: 11.5 }}>{context}</span>
       </div>
+      <PaletteButton />
       <TemplatesButton />
       <PresetsBar />
     </div>
+  );
+}
+
+/** Title-bar entry point to the command palette (step 3.10) — mouse parity for
+ *  Ctrl+Shift+A. Fires the same `openCommandPalette` command, opening the always-
+ *  mounted `CommandPaletteHost`. */
+function PaletteButton() {
+  const [hover, setHover] = useState(false);
+  return (
+    <button
+      type="button"
+      onClick={() => runCommand("openCommandPalette")}
+      onMouseEnter={() => setHover(true)}
+      onMouseLeave={() => setHover(false)}
+      aria-label="command palette"
+      title="command palette (Ctrl+Shift+A)"
+      style={{
+        display: "inline-flex",
+        alignItems: "center",
+        gap: 5,
+        background: hover ? "var(--wb-sel)" : "transparent",
+        border: "1px solid var(--wb-border)",
+        color: hover ? "var(--wb-accent)" : "var(--wb-textDim2)",
+        font: "11px var(--wb-mono)",
+        cursor: "pointer",
+        padding: "2px 8px",
+        marginRight: 6,
+        letterSpacing: "0.12em",
+        textTransform: "uppercase",
+      }}
+    >
+      <span style={{ color: "var(--wb-accent)" }}>{GLYPH.run}</span>
+      palette
+    </button>
   );
 }
 

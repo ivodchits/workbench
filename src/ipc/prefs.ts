@@ -21,6 +21,9 @@ export interface Prefs {
   /** Override for where worktrees are provisioned (step 2.4). Empty = the default
    *  sibling `.workbench/worktrees/` next to each repo (decision 7). */
   worktreeBasePath: string;
+  /** Remapped keyboard shortcuts (step 3.10): binding id → chord (empty = unbound).
+   *  Only bindings that differ from their shipped default are stored. */
+  keymapOverrides: Record<string, string>;
 }
 // Note: the hook-server port is owned by the Rust backend (it must bind before it
 // can advertise the port), persisted in the SQLite `meta` table, and read by the
