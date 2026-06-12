@@ -95,6 +95,23 @@ pub fn write_file(path: String, content: String) -> Result<(), String> {
     std::fs::write(&path, content).map_err(|e| format!("cannot save {path}: {e}"))
 }
 
+/// Resolve a project's `CLAUDE.md`, creating an empty one if it doesn't exist yet,
+/// and return its absolute path (step 3.6 — the in-app CLAUDE.md quick-editor).
+///
+/// The join happens here, in Rust, so the frontend never has to guess the path
+/// separator for a registered root (Windows `\` vs `/`). "Create if missing" makes
+/// the editor's open-then-save loop work even for a project that has no memory file
+/// yet — `write_file` refuses to create new paths, so we seed an empty file first.
+#[tauri::command]
+pub fn ensure_claude_md(root_path: String) -> Result<String, String> {
+    let path = Path::new(&root_path).join("CLAUDE.md");
+    if !path.exists() {
+        std::fs::write(&path, "")
+            .map_err(|e| format!("cannot create {}: {e}", path.display()))?;
+    }
+    Ok(path.to_string_lossy().into_owned())
+}
+
 /// The final path component for user-facing messages, falling back to the whole
 /// path if it has no file name.
 fn file_label(path: &str) -> String {

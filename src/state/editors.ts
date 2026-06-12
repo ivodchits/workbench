@@ -34,6 +34,19 @@ interface RestorePlan {
   activePath: string | null;
 }
 
+/**
+ * A one-shot request to open a specific file in an editor (step 3.6 — the CLAUDE.md
+ * quick-editor). Unlike `RestorePlan` (consumed once on mount), this fires whether
+ * the editor was just minted or is already on screen: the panel watches it, reads
+ * the file from disk, opens+focuses the tab, and clears it.
+ */
+export interface PendingOpen {
+  /** Absolute path to read and open (the panel does the IO). */
+  path: string;
+  /** Turn on the in-panel markdown/html preview after opening (best-effort). */
+  preview?: boolean;
+}
+
 export interface EditorSession {
   /** Minted, stable for the panel's life (the dock panel + reconcile key). */
   editorId: string;
@@ -49,6 +62,8 @@ export interface EditorSession {
   activePath: string | null;
   /** Tabs to re-open from disk after a restore; null once consumed. */
   restore: RestorePlan | null;
+  /** A specific file to open on next render, or null. Re-set on each request. */
+  pendingOpen: PendingOpen | null;
 }
 
 /** Where an editor points: a project's root dir, with a display label. */
@@ -137,6 +152,34 @@ export function openEditor(target: EditorTarget): void {
     files: [],
     activePath: null,
     restore: null,
+    pendingOpen: null,
+  };
+  emit({ open: [...state.open, session], activeId: editorId });
+}
+
+/**
+ * Open `file` in the editor for `target`'s project — minting the editor if needed,
+ * focusing it either way — by queuing a `pendingOpen` the panel fulfils on its next
+ * render (read the file, open the tab, optionally show preview). Used by the
+ * CLAUDE.md quick-editor (step 3.6); reusable for any "open this project file" action.
+ */
+export function openProjectFile(target: EditorTarget, file: PendingOpen): void {
+  const existing = state.open.find((e) => e.projectId === target.projectId);
+  if (existing) {
+    const open = state.open.map((e) =>
+      e.editorId === existing.editorId ? { ...e, pendingOpen: file } : e,
+    );
+    emit({ ...state, open, activeId: existing.editorId });
+    return;
+  }
+  const editorId = `editor:${crypto.randomUUID()}`;
+  const session: EditorSession = {
+    editorId,
+    ...target,
+    files: [],
+    activePath: null,
+    restore: null,
+    pendingOpen: file,
   };
   emit({ open: [...state.open, session], activeId: editorId });
 }
@@ -159,6 +202,7 @@ export function hydrateEditors(descriptors: EditorDescriptor[]): void {
       files: [],
       activePath: null,
       restore: d.openPaths.length > 0 ? { paths: d.openPaths, activePath: d.activePath } : null,
+      pendingOpen: null,
     }));
   if (additions.length === 0) return;
   emit({ ...state, open: [...state.open, ...additions] });
@@ -173,6 +217,17 @@ export function consumeRestore(editorId: string): RestorePlan | null {
   if (!session?.restore) return null;
   patchEditor(editorId, { restore: null });
   return session.restore;
+}
+
+/**
+ * Take and clear an editor's pending-open request, so the panel fulfils it exactly
+ * once. Returns null when there's nothing pending.
+ */
+export function consumePendingOpen(editorId: string): PendingOpen | null {
+  const session = state.open.find((e) => e.editorId === editorId);
+  if (!session?.pendingOpen) return null;
+  patchEditor(editorId, { pendingOpen: null });
+  return session.pendingOpen;
 }
 
 /**

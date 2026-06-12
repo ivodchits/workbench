@@ -29,3 +29,12 @@ export function readFile(path: string): Promise<string> {
 export function writeFile(path: string, content: string): Promise<void> {
   return invoke("write_file", { path, content });
 }
+
+/**
+ * Resolve a project's `CLAUDE.md`, creating an empty one if missing, and return
+ * its absolute path (step 3.6). The backend joins `rootPath` + `CLAUDE.md` so the
+ * path separator is correct on every platform.
+ */
+export function ensureClaudeMd(rootPath: string): Promise<string> {
+  return invoke("ensure_claude_md", { rootPath });
+}

@@ -787,7 +787,7 @@ Pull these in once the relevant phase is stable; each is an independent step whe
 - [x] 3.3 Layout presets
 - [x] 3.4 Prompt template library
 - [x] 3.5 Prompt queue
-- [ ] 3.6 CLAUDE.md quick-editor
+- [x] 3.6 CLAUDE.md quick-editor
 - [ ] 3.7 MCP server manager
 - [ ] 3.7b Skill manager
 - [ ] 3.8 Session restore (`Ctrl+Shift+T`)

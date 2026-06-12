@@ -24,7 +24,8 @@ import {
   useConsoles,
 } from "../../state/consoles";
 import { closeShell, getOpenShells, newShell, openShell } from "../../state/shells";
-import { closeEditor, getOpenEditors, openEditor } from "../../state/editors";
+import { closeEditor, getOpenEditors, openEditor, openProjectFile } from "../../state/editors";
+import { ensureClaudeMd } from "../../ipc/fs";
 import { closeDiff, diffIdFor, getOpenDiffs, openDiff } from "../../state/diffs";
 import {
   getLiveStatuses,
@@ -363,6 +364,25 @@ function InstanceManager({ onCollapse }: InstanceManagerProps) {
     openEditor({ projectId: project.id, rootPath: project.rootPath, label: project.name });
   };
 
+  // Open the project's CLAUDE.md in its editor (step 3.6) — creating an empty one
+  // if the project has none yet — with markdown preview on. Reuses the editor +
+  // preview (steps 1.8/1.9) via a one-shot pending-open; the editor docks into the
+  // project's workspace like any other editor tab.
+  const openClaudeMdForProject = async (project: Project) => {
+    setActiveProject(project.id);
+    try {
+      const path = await ensureClaudeMd(project.rootPath);
+      openProjectFile(
+        { projectId: project.id, rootPath: project.rootPath, label: project.name },
+        { path, preview: true },
+      );
+    } catch {
+      // Couldn't create/resolve CLAUDE.md (e.g. permissions) — still open the
+      // editor so the user lands somewhere useful rather than nothing happening.
+      openEditor({ projectId: project.id, rootPath: project.rootPath, label: project.name });
+    }
+  };
+
   // Accordion: when the active project changes, expand it and collapse the rest,
   // so the rail focuses on the workspace you're in. Manual caret toggles still
   // work afterward (this only fires on an active-project *change*, not on every
@@ -588,6 +608,7 @@ function InstanceManager({ onCollapse }: InstanceManagerProps) {
                       onReview={reviewInstance}
                       onOpenShell={() => openShellForProject(p)}
                       onOpenEditor={() => openEditorForProject(p)}
+                      onOpenClaudeMd={() => void openClaudeMdForProject(p)}
                       onEdit={() => setEditProjectTarget(p)}
                       onRemove={() => setRemoveProjectTarget(p)}
                       onNewInstance={() => void spawnInstance(p)}
@@ -662,6 +683,8 @@ interface ProjectNodeProps {
   onOpenShell: () => void;
   /** Open (or focus) this project's editor. */
   onOpenEditor: () => void;
+  /** Open this project's CLAUDE.md in the editor (create if missing), step 3.6. */
+  onOpenClaudeMd: () => void;
   onEdit: () => void;
   onRemove: () => void;
   onNewInstance: () => void;
@@ -683,6 +706,7 @@ function ProjectNode({
   onReview,
   onOpenShell,
   onOpenEditor,
+  onOpenClaudeMd,
   onEdit,
   onRemove,
   onNewInstance,
@@ -803,6 +827,9 @@ function ProjectNode({
             </ProjectAction>
             <ProjectAction label="open editor" onClick={onOpenEditor} fontSize={12.6}>
               ✎
+            </ProjectAction>
+            <ProjectAction label="edit CLAUDE.md" onClick={onOpenClaudeMd} fontSize={11.5}>
+              ≡
             </ProjectAction>
             <ProjectAction label="edit project" onClick={onEdit}>
               edit

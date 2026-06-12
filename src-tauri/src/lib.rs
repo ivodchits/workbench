@@ -103,6 +103,7 @@ pub fn run() {
             fs::read_dir,
             fs::read_file,
             fs::write_file,
+            fs::ensure_claude_md,
             sys::open_path,
             attention::notify_needs_you,
             attention::update_tray_badge,

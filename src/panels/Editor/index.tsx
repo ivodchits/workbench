@@ -16,6 +16,7 @@ import { GLYPH } from "../../theme";
 import { readFile, writeFile, type DirEntry } from "../../ipc/fs";
 import {
   closeFile,
+  consumePendingOpen,
   consumeRestore,
   focusFile,
   markSaved,
@@ -123,6 +124,26 @@ function EditorBody({
       if (plan.activePath) focusFile(editorId, plan.activePath);
     })();
   }, [editorId, openPath]);
+
+  // Fulfil a one-shot "open this file" request (e.g. the CLAUDE.md quick-editor,
+  // step 3.6): read it, open+focus the tab, and optionally turn on the in-panel
+  // preview when it's previewable. Keyed on the request object so a repeat request
+  // for an already-open file re-focuses it (and re-asserts preview).
+  const pendingOpen = session.pendingOpen;
+  useEffect(() => {
+    if (!pendingOpen) return;
+    consumePendingOpen(editorId);
+    if (pendingOpen.preview && previewKind(pendingOpen.path) !== null) setShowPreview(true);
+    void (async () => {
+      // Already open → just focus it, so re-triggering never clobbers unsaved
+      // edits with the on-disk copy (same rule as a tree click).
+      if (files.some((f) => f.path === pendingOpen.path)) focusFile(editorId, pendingOpen.path);
+      else await openPath(pendingOpen.path, basename(pendingOpen.path));
+    })();
+    // `files` is intentionally out of deps: we want the snapshot at request time,
+    // and a one-shot request shouldn't re-fire as tabs change.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pendingOpen, editorId, openPath]);
 
   // Clicking a tree file opens it — or just focuses it if already open, so a
   // stray click never clobbers unsaved edits with the on-disk copy.
