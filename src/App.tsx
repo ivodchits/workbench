@@ -13,7 +13,7 @@ import {
   useActiveProject,
 } from "./state/activeProject";
 import { useGlobalKeys } from "./keyboard";
-import { registerCommand } from "./keyboard/bus";
+import { registerCommand, runCommand } from "./keyboard/bus";
 import { getHookServerStatus, onHookEvent } from "./ipc/hooks";
 import { initStatusEngine } from "./state/status";
 import { initUsageEngine } from "./state/usage";
@@ -233,8 +233,43 @@ function TitleBar({ context }: { context: string }) {
         <span style={{ color: "var(--wb-textFaint)", fontSize: 11 }}>╶</span>
         <span style={{ color: "var(--wb-textDim2)", fontSize: 11.5 }}>{context}</span>
       </div>
+      <TemplatesButton />
       <PresetsBar />
     </div>
+  );
+}
+
+/** Title-bar entry point to the prompt template library (step 3.4) — the mouse
+ *  parity for Ctrl+Shift+P. Dispatches the same `openTemplates` command the chord
+ *  fires, so the always-mounted `TemplateLibraryHost` opens the modal. */
+function TemplatesButton() {
+  const [hover, setHover] = useState(false);
+  return (
+    <button
+      type="button"
+      onClick={() => runCommand("openTemplates")}
+      onMouseEnter={() => setHover(true)}
+      onMouseLeave={() => setHover(false)}
+      aria-label="prompt templates"
+      title="prompt templates (Ctrl+Shift+P)"
+      style={{
+        display: "inline-flex",
+        alignItems: "center",
+        gap: 5,
+        background: hover ? "var(--wb-sel)" : "transparent",
+        border: "1px solid var(--wb-border)",
+        color: hover ? "var(--wb-accent)" : "var(--wb-textDim2)",
+        font: "11px var(--wb-mono)",
+        cursor: "pointer",
+        padding: "2px 8px",
+        marginRight: 6,
+        letterSpacing: "0.12em",
+        textTransform: "uppercase",
+      }}
+    >
+      <span style={{ color: "var(--wb-accent)" }}>★</span>
+      templates
+    </button>
   );
 }
 
