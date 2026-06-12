@@ -32,6 +32,7 @@ import ConsolePanel, { type ConsolePanelParams } from "./ConsolePanel";
 import ShellPanel, { type ShellPanelParams } from "./Shell";
 import EditorPanel, { type EditorPanelParams } from "./Editor";
 import DiffPanel, { type DiffPanelParams } from "./Diff";
+import McpManagerPanel, { type McpPanelParams } from "./MCPManager";
 import PreviewPanel from "./PreviewPanel";
 import { GLYPH } from "../theme";
 import { useRegistry } from "../state/registry";
@@ -70,6 +71,15 @@ import {
   type DiffDescriptor,
   type DiffSession,
 } from "../state/diffs";
+import {
+  closeMcp,
+  getActiveMcpId,
+  getOpenMcps,
+  hydrateMcps,
+  useMcps,
+  type McpDescriptor,
+  type McpSession,
+} from "../state/mcp";
 import { useActiveProject } from "../state/activeProject";
 import {
   loadLayout,
@@ -88,6 +98,7 @@ interface LayoutSnapshot {
   shells: { shellId: string; projectId: string; cwd: string; label: string }[];
   editors: EditorDescriptor[];
   diffs: DiffDescriptor[];
+  mcps: McpDescriptor[];
 }
 
 const COMPONENTS = {
@@ -97,6 +108,9 @@ const COMPONENTS = {
   // Diff/Review panels carry only an instance binding (no PTY/buffer) and re-fetch
   // from git on mount, so the reconciler treats them like editors.
   diff: DiffPanel as React.FunctionComponent<IDockviewPanelProps>,
+  // MCP Server Manager panels carry only a project binding and re-fetch on mount,
+  // same as diffs — reconciled by project like the editor/diff panels.
+  mcpManager: McpManagerPanel as React.FunctionComponent<IDockviewPanelProps>,
   // Markdown Preview panels carry no backing store/PTY and use `ownerEditorId` (not
   // `editorId`) in params, so the reconcilers above ignore them — they persist and
   // restore purely as part of the dockview tree.
@@ -124,6 +138,12 @@ function editorPanelId(panel: { params?: Record<string, unknown> }): string | nu
 /** A diff panel carries its `diff:<instanceId>` id in params; other panels don't. */
 function diffPanelId(panel: { params?: Record<string, unknown> }): string | null {
   const id = panel.params?.diffId;
+  return typeof id === "string" ? id : null;
+}
+
+/** An MCP panel carries its `mcp:<projectId>` id in params; other panels don't. */
+function mcpPanelId(panel: { params?: Record<string, unknown> }): string | null {
+  const id = panel.params?.mcpId;
   return typeof id === "string" ? id : null;
 }
 
@@ -157,6 +177,7 @@ function Workspace() {
   const { open: shellsOpen, activeId: activeShellId } = useShells();
   const { open: editorsOpen, activeId: activeEditorId } = useEditors();
   const { open: diffsOpen, activeId: activeDiffId } = useDiffs();
+  const { open: mcpsOpen, activeId: activeMcpId } = useMcps();
   const { instances } = useRegistry();
   const activeProjectId = useActiveProject();
 
@@ -213,7 +234,9 @@ function Workspace() {
       }));
     // Diffs persist only their binding — the panel re-fetches from git on restore.
     const diffs: DiffDescriptor[] = getOpenDiffs().filter((d) => present.has(d.diffId));
-    return { tree: a.toJSON(), consoleIds, shells, editors, diffs };
+    // MCP panels persist only their binding — re-fetched from the backend on restore.
+    const mcps: McpDescriptor[] = getOpenMcps().filter((m) => present.has(m.mcpId));
+    return { tree: a.toJSON(), consoleIds, shells, editors, diffs, mcps };
   }, []);
 
   // Persist the active project's arrangement (debounced).
@@ -221,8 +244,8 @@ function Workspace() {
     (a: DockviewApi) => {
       const key = displayedProjectRef.current;
       if (!key) return; // no project on screen → nothing to persist
-      const { tree, consoleIds, shells, editors, diffs } = collect(a);
-      saveLayoutDebounced(tree, consoleIds, shells, editors, diffs, key);
+      const { tree, consoleIds, shells, editors, diffs, mcps } = collect(a);
+      saveLayoutDebounced(tree, consoleIds, shells, editors, diffs, mcps, key);
     },
     [collect],
   );
@@ -371,6 +394,40 @@ function Workspace() {
     }
   }, []);
 
+  // Same reconcile for MCP Server Manager panels (keyed by project id directly,
+  // like editors/diffs). An MCP panel holds no PTY/buffer — removal just drops it.
+  const mcpFocusRef = useRef<string | null>(null);
+  const reconcileMcps = useCallback((a: DockviewApi) => {
+    const projId = displayedProjectRef.current;
+    const openMcps = getOpenMcps();
+    const projMcps: McpSession[] = openMcps.filter((m) => m.projectId === projId);
+
+    for (const mcp of projMcps) {
+      if (a.getPanel(mcp.mcpId)) continue;
+      const params: McpPanelParams = { mcpId: mcp.mcpId };
+      const position = a.panels.length > 0 ? ({ direction: "right" } as const) : undefined;
+      a.addPanel({
+        id: mcp.mcpId,
+        component: "mcpManager",
+        title: `mcp · ${mcp.title}`,
+        params,
+        ...(position ? { position } : {}),
+      });
+    }
+    // Remove only MCP panels gone from the store entirely (closed) — never another
+    // project's (same rule as consoles/shells/editors/diffs above).
+    const allMcpIds = new Set(openMcps.map((m) => m.mcpId));
+    for (const panel of [...a.panels]) {
+      const id = mcpPanelId(panel);
+      if (id && !allMcpIds.has(id)) a.removePanel(panel);
+    }
+    const aMcp = getActiveMcpId();
+    if (aMcp && a.getPanel(aMcp) && aMcp !== mcpFocusRef.current) {
+      a.getPanel(aMcp)?.api.setActive();
+      mcpFocusRef.current = aMcp;
+    }
+  }, []);
+
   // Layout presets (step 3.3) snapshot/restore the live dock. Capturing is just
   // `collect` stamped with the schema version; applying mirrors the project-swap's
   // restore sequence but *stays on the same project* — so it hydrates the preset's
@@ -379,8 +436,8 @@ function Workspace() {
   // preset's tree didn't include and persists the result as the project's layout.
   const snapshotLayout = useCallback((): SavedLayout | null => {
     if (!api) return null;
-    const { tree, consoleIds, shells, editors, diffs } = collect(api);
-    return { version: SCHEMA_VERSION, tree, consoleInstanceIds: consoleIds, shells, editors, diffs };
+    const { tree, consoleIds, shells, editors, diffs, mcps } = collect(api);
+    return { version: SCHEMA_VERSION, tree, consoleInstanceIds: consoleIds, shells, editors, diffs, mcps };
   }, [api, collect]);
 
   const applyLayout = useCallback(
@@ -392,6 +449,7 @@ function Workspace() {
       hydrateShells(saved.shells);
       hydrateEditors(saved.editors);
       hydrateDiffs(saved.diffs);
+      hydrateMcps(saved.mcps ?? []); // presets predate `mcps` — default for old snapshots
       restoreTree(api, saved.tree);
       switchingRef.current = false;
       restoredRef.current = true;
@@ -399,9 +457,10 @@ function Workspace() {
       reconcileShells(api);
       reconcileEditors(api);
       reconcileDiffs(api);
+      reconcileMcps(api);
       persist(api); // the applied arrangement becomes the project's current layout
     },
-    [api, persist, reconcileConsoles, reconcileShells, reconcileEditors, reconcileDiffs],
+    [api, persist, reconcileConsoles, reconcileShells, reconcileEditors, reconcileDiffs, reconcileMcps],
   );
 
   // Expose snapshot/apply to the presets store for the lifetime of the dock.
@@ -445,7 +504,8 @@ function Workspace() {
         const shellId = shellPanelId(panel);
         const editorId = editorPanelId(panel);
         const diffId = diffPanelId(panel);
-        const id = consoleId ?? shellId ?? editorId ?? diffId;
+        const mcpId = mcpPanelId(panel);
+        const id = consoleId ?? shellId ?? editorId ?? diffId ?? mcpId;
         if (!id) return;
         queueMicrotask(() => {
           if (switchingRef.current) return;
@@ -454,7 +514,8 @@ function Workspace() {
           else if (shellId) closeShell(shellId);
           else if (editorId) closeEditor(editorId);
           else if (diffId) closeDiff(diffId);
-          // Editors/diffs own no pooled terminal, so only console/shell ids release one.
+          else if (mcpId) closeMcp(mcpId);
+          // Editors/diffs/mcps own no pooled terminal, so only console/shell ids release one.
           if (consoleId || shellId) release(id);
         });
       }),
@@ -478,6 +539,7 @@ function Workspace() {
       reconcileShells(api);
       reconcileEditors(api);
       reconcileDiffs(api);
+      reconcileMcps(api);
       return;
     }
 
@@ -492,8 +554,8 @@ function Workspace() {
 
       restoredRef.current = false; // suspend persist during the swap
       if (prev != null) {
-        const { tree, consoleIds, shells, editors, diffs } = collect(api);
-        saveLayoutNow(tree, consoleIds, shells, editors, diffs, prev);
+        const { tree, consoleIds, shells, editors, diffs, mcps } = collect(api);
+        saveLayoutNow(tree, consoleIds, shells, editors, diffs, mcps, prev);
       }
       switchingRef.current = true; // keep the outgoing project's PTYs alive
       if (saved) {
@@ -501,6 +563,7 @@ function Workspace() {
         hydrateShells(saved.shells);
         hydrateEditors(saved.editors);
         hydrateDiffs(saved.diffs);
+        hydrateMcps(saved.mcps);
         // `fromJSON` replaces the whole layout (removing the outgoing project's
         // panels itself) — don't `clear()` first, or it can fail and lose the
         // saved grouping (tabbed consoles would rebuild as separate columns).
@@ -518,6 +581,7 @@ function Workspace() {
       reconcileShells(api);
       reconcileEditors(api);
       reconcileDiffs(api);
+      reconcileMcps(api);
     })();
   }, [
     api,
@@ -526,16 +590,19 @@ function Workspace() {
     shellsOpen,
     editorsOpen,
     diffsOpen,
+    mcpsOpen,
     activeId,
     activeShellId,
     activeEditorId,
     activeDiffId,
+    activeMcpId,
     instances,
     collect,
     reconcileConsoles,
     reconcileShells,
     reconcileEditors,
     reconcileDiffs,
+    reconcileMcps,
   ]);
 
   return (

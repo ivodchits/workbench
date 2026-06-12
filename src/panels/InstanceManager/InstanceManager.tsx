@@ -27,6 +27,7 @@ import { closeShell, getOpenShells, newShell, openShell } from "../../state/shel
 import { closeEditor, getOpenEditors, openEditor, openProjectFile } from "../../state/editors";
 import { ensureClaudeMd } from "../../ipc/fs";
 import { closeDiff, diffIdFor, getOpenDiffs, openDiff } from "../../state/diffs";
+import { closeMcp, getOpenMcps, openMcp } from "../../state/mcp";
 import {
   getLiveStatuses,
   onStatusTransition,
@@ -364,6 +365,13 @@ function InstanceManager({ onCollapse }: InstanceManagerProps) {
     openEditor({ projectId: project.id, rootPath: project.rootPath, label: project.name });
   };
 
+  // Open (or focus) the project's MCP Server Manager (step 3.7) — view/edit MCP
+  // servers across user/project/local scopes; switches the active workspace to it.
+  const openMcpForProject = (project: Project) => {
+    setActiveProject(project.id);
+    openMcp({ projectId: project.id, repoRoot: project.rootPath, title: project.name });
+  };
+
   // Open the project's CLAUDE.md in its editor (step 3.6) — creating an empty one
   // if the project has none yet — with markdown preview on. Reuses the editor +
   // preview (steps 1.8/1.9) via a one-shot pending-open; the editor docks into the
@@ -609,6 +617,7 @@ function InstanceManager({ onCollapse }: InstanceManagerProps) {
                       onOpenShell={() => openShellForProject(p)}
                       onOpenEditor={() => openEditorForProject(p)}
                       onOpenClaudeMd={() => void openClaudeMdForProject(p)}
+                      onOpenMcp={() => openMcpForProject(p)}
                       onEdit={() => setEditProjectTarget(p)}
                       onRemove={() => setRemoveProjectTarget(p)}
                       onNewInstance={() => void spawnInstance(p)}
@@ -685,6 +694,8 @@ interface ProjectNodeProps {
   onOpenEditor: () => void;
   /** Open this project's CLAUDE.md in the editor (create if missing), step 3.6. */
   onOpenClaudeMd: () => void;
+  /** Open this project's MCP Server Manager (step 3.7). */
+  onOpenMcp: () => void;
   onEdit: () => void;
   onRemove: () => void;
   onNewInstance: () => void;
@@ -707,6 +718,7 @@ function ProjectNode({
   onOpenShell,
   onOpenEditor,
   onOpenClaudeMd,
+  onOpenMcp,
   onEdit,
   onRemove,
   onNewInstance,
@@ -714,6 +726,9 @@ function ProjectNode({
   onKill,
 }: ProjectNodeProps) {
   const [hover, setHover] = useState(false);
+  // The "⋯" overflow menu (edit CLAUDE.md / MCP servers / edit project). Kept open
+  // independent of hover so the action row doesn't vanish out from under the menu.
+  const [menuOpen, setMenuOpen] = useState(false);
 
   // Live tile summary: how many instances, how many have a running console, and
   // how many need you (the latter from the merged hook-fed status, step 2.2).
@@ -814,9 +829,10 @@ function ProjectNode({
             style={{
               marginLeft: "auto",
               display: "flex",
+              alignItems: "center",
               gap: 8,
               flex: "0 0 auto",
-              visibility: hover ? "visible" : "hidden",
+              visibility: hover || menuOpen ? "visible" : "hidden",
             }}
           >
             <ProjectAction label="new instance" onClick={onNewInstance} fontSize={15.75}>
@@ -828,12 +844,15 @@ function ProjectNode({
             <ProjectAction label="open editor" onClick={onOpenEditor} fontSize={12.6}>
               ✎
             </ProjectAction>
-            <ProjectAction label="edit CLAUDE.md" onClick={onOpenClaudeMd} fontSize={11.5}>
-              ≡
-            </ProjectAction>
-            <ProjectAction label="edit project" onClick={onEdit}>
-              edit
-            </ProjectAction>
+            <ProjectMoreMenu
+              open={menuOpen}
+              setOpen={setMenuOpen}
+              items={[
+                { label: "edit CLAUDE.md", onClick: onOpenClaudeMd },
+                { label: "manage MCP servers", onClick: onOpenMcp },
+                { label: "edit project", onClick: onEdit },
+              ]}
+            />
             <ProjectAction label="remove project" onClick={onRemove} danger>
               {GLYPH.fail}
             </ProjectAction>
@@ -931,6 +950,95 @@ function ProjectAction({
   );
 }
 
+interface MenuItem {
+  label: string;
+  onClick: () => void;
+  danger?: boolean;
+}
+
+/** The project pill's "⋯" overflow menu — the less-frequent project actions, with
+ *  readable text labels rather than cramped glyphs. Closes on outside click, Escape,
+ *  or after an item runs. */
+function ProjectMoreMenu({
+  open,
+  setOpen,
+  items,
+}: {
+  open: boolean;
+  setOpen: (v: boolean) => void;
+  items: MenuItem[];
+}) {
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setOpen(false);
+    };
+    document.addEventListener("mousedown", onDown);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDown);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [open, setOpen]);
+
+  return (
+    <div ref={ref} style={{ position: "relative", display: "flex", alignItems: "center" }}>
+      <ProjectAction label="more actions" onClick={() => setOpen(!open)} fontSize={15.75}>
+        ⋯
+      </ProjectAction>
+      {open && (
+        <div
+          onClick={(e) => e.stopPropagation()}
+          style={{
+            position: "absolute",
+            top: "100%",
+            right: 0,
+            marginTop: 5,
+            minWidth: 172,
+            background: "var(--wb-panel)",
+            border: "1px solid var(--wb-border)",
+            boxShadow: "0 5px 16px rgba(0,0,0,0.45)",
+            zIndex: 50,
+            padding: "3px 0",
+            display: "flex",
+            flexDirection: "column",
+          }}
+        >
+          {items.map((it) => (
+            <button
+              key={it.label}
+              onClick={(e) => {
+                e.stopPropagation();
+                setOpen(false);
+                it.onClick();
+              }}
+              onMouseEnter={(e) => (e.currentTarget.style.background = "var(--wb-sel)")}
+              onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
+              style={{
+                textAlign: "left",
+                background: "transparent",
+                border: "none",
+                cursor: "pointer",
+                padding: "6px 13px",
+                font: "11.5px var(--wb-mono)",
+                color: it.danger ? "var(--wb-needs)" : "var(--wb-textDim2)",
+                whiteSpace: "nowrap",
+              }}
+            >
+              {it.label}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // --- confirmations ----------------------------------------------------------
 
 function RemoveProjectConfirm({
@@ -965,6 +1073,10 @@ function RemoveProjectConfirm({
       // Diffs hold no PTY/buffer either — drop the project's review panels too.
       for (const d of getOpenDiffs().filter((d) => d.projectId === project.id)) {
         closeDiff(d.diffId);
+      }
+      // MCP panels likewise hold no PTY/buffer — drop the project's manager too.
+      for (const m of getOpenMcps().filter((m) => m.projectId === project.id)) {
+        closeMcp(m.mcpId);
       }
       await deleteProject(project.id);
       onClose();

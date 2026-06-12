@@ -44,6 +44,7 @@ export const GLYPH = {
   prompt: "›",
   agent: "▸",
   queue: "◷",
+  mcp: "◈",
   cornerTL: "╭─",
   warn: "⚠",
 } as const;

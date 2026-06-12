@@ -9,6 +9,7 @@ mod fs;
 mod git;
 mod hooks;
 mod layout;
+mod mcp;
 mod pty;
 mod registry;
 mod statusline;
@@ -100,6 +101,11 @@ pub fn run() {
             registry::remove_instance,
             layout::get_layout,
             layout::set_layout,
+            mcp::mcp_list,
+            mcp::mcp_add,
+            mcp::mcp_remove,
+            mcp::mcp_project_file,
+            mcp::mcp_save_project_file,
             fs::read_dir,
             fs::read_file,
             fs::write_file,
