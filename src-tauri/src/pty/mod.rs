@@ -22,7 +22,7 @@ use std::thread;
 use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
 use serde::{Deserialize, Serialize};
 use tauri::ipc::Channel;
-use tauri::State;
+use tauri::{AppHandle, Emitter, Manager, State};
 
 /// A live PTY child plus the handles needed to write to it, resize it, and kill
 /// it. The reader runs on its own detached thread and isn't tracked here. For a
@@ -439,6 +439,110 @@ pub fn pty_session_live(state: State<'_, PtyManager>, instance_id: String) -> bo
 #[tauri::command]
 pub fn default_working_dir() -> Option<String> {
     home_dir().map(|p| p.to_string_lossy().into_owned())
+}
+
+/// Emitted (event `remote-cmd-done`) when a [`remote_cmd_spawn`] child exits, with
+/// everything it printed — so the caller can parse a `tmux ls` listing or just learn
+/// the command finished.
+#[derive(Clone, Serialize)]
+struct RemoteCmdDone {
+    id: String,
+    output: String,
+}
+
+/// Run an **interactive** one-shot remote command in a PTY: `ssh -tt <dest> --
+/// <command>` (step 3.12). Unlike the background `ssh` the first cut used — which
+/// deadlocked under password auth because it had no terminal to prompt into — this
+/// streams to a real `xterm` the user can type their SSH password into. It's keyed
+/// by `id` in the same session map as consoles, so `pty_write` / `pty_resize` /
+/// `pty_kill` drive it unchanged. On exit it emits `remote-cmd-done` carrying the
+/// captured output (the remote-sessions sync parses a `tmux ls` listing out of it;
+/// the kill flow just waits for completion).
+///
+/// `command` is passed as a single token after `--`, so the caller pre-quotes it
+/// for the remote shell (e.g. `bash -lc 'tmux ls'`).
+#[allow(clippy::too_many_arguments)]
+#[tauri::command]
+pub fn remote_cmd_spawn(
+    app: AppHandle,
+    state: State<'_, PtyManager>,
+    id: String,
+    dest: String,
+    command: String,
+    on_output: Channel<Vec<u8>>,
+    cols: u16,
+    rows: u16,
+) -> Result<(), String> {
+    let cwd = home_dir().ok_or("no home dir to anchor the local ssh process")?;
+    let mut cmd = CommandBuilder::new("ssh");
+    for arg in ["-tt", dest.as_str(), "--", command.as_str()] {
+        cmd.arg(arg);
+    }
+    cmd.cwd(&cwd);
+    cmd.env("TERM", "xterm-256color");
+    cmd.env("COLORTERM", "truecolor");
+
+    // Tear down any prior command PTY under this id (re-run / retry).
+    kill_instance(state.inner(), &id);
+
+    let pty_system = native_pty_system();
+    let pair = pty_system
+        .openpty(PtySize {
+            rows,
+            cols,
+            pixel_width: 0,
+            pixel_height: 0,
+        })
+        .map_err(|e| format!("openpty failed: {e}"))?;
+    let child = pair
+        .slave
+        .spawn_command(cmd)
+        .map_err(|e| format!("ssh spawn failed: {e}. Is OpenSSH installed?"))?;
+    let mut reader = pair
+        .master
+        .try_clone_reader()
+        .map_err(|e| format!("clone reader failed: {e}"))?;
+    let writer = pair
+        .master
+        .take_writer()
+        .map_err(|e| format!("take writer failed: {e}"))?;
+
+    let cwd_str = cwd.to_string_lossy().into_owned();
+    state.sessions.lock().unwrap().insert(
+        id.clone(),
+        PtySession {
+            master: pair.master,
+            writer,
+            child,
+            cwd: cwd_str,
+        },
+    );
+
+    // Pump output to the terminal *and* accumulate it; on EOF (child exit / pipe
+    // close) drop the session and report what was printed.
+    thread::spawn(move || {
+        let mut buf = [0u8; 8192];
+        let mut acc: Vec<u8> = Vec::new();
+        loop {
+            match reader.read(&mut buf) {
+                Ok(0) => break,
+                Ok(n) => {
+                    acc.extend_from_slice(&buf[..n]);
+                    if on_output.send(buf[..n].to_vec()).is_err() {
+                        break; // frontend dropped the channel (modal closed)
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+        if let Some(mgr) = app.try_state::<PtyManager>() {
+            mgr.sessions.lock().unwrap().remove(&id);
+        }
+        let output = String::from_utf8_lossy(&acc).into_owned();
+        let _ = app.emit("remote-cmd-done", RemoteCmdDone { id, output });
+    });
+
+    Ok(())
 }
 
 /// Build the command that launches interactive `claude`. `session_args` carries

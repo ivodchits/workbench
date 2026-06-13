@@ -41,8 +41,8 @@ import { mergeStatus } from "./status";
 import { getActiveProject, setActiveProject, useActiveProject } from "../../state/activeProject";
 import { activatePanel, focusActivePanel } from "../../state/dock";
 import { ptySessionLive } from "../../ipc/pty";
-import { remoteKillSession, remoteTmuxSessions } from "../../ipc/remote";
 import { release } from "../terminalPool";
+import RemoteCommandTerminal from "./RemoteCommandTerminal";
 import {
   addInstance,
   deleteInstance,
@@ -1170,57 +1170,85 @@ function RemoveProjectConfirm({
   onClose: () => void;
 }) {
   const [busy, setBusy] = useState(false);
+  const [killing, setKilling] = useState(false);
   const instanceIds = instances.map((i) => i.id);
   const instanceCount = instanceIds.length;
+  const remoteDest = project.remoteSshDest ?? null;
+  const remoteSessions = remoteDest
+    ? instances.map((i) => i.remoteTmuxSession).filter((s): s is string => !!s)
+    : [];
+
+  // Tear down this project's live consoles + shells (kill their PTYs) and drop its
+  // no-PTY panels, so removing a project never leaves orphaned background agents —
+  // their panels may not even be on screen (another project's workspace is). For a
+  // remote project this only *detaches* the tmux sessions; killing them is a
+  // separate interactive ssh (below).
+  const teardownPanels = () => {
+    for (const id of instanceIds) {
+      closeConsole(id);
+      release(id);
+    }
+    for (const s of getOpenShells().filter((s) => s.projectId === project.id)) {
+      closeShell(s.shellId);
+      release(s.shellId);
+    }
+    for (const e of getOpenEditors().filter((e) => e.projectId === project.id)) {
+      closeEditor(e.editorId);
+    }
+    for (const d of getOpenDiffs().filter((d) => d.projectId === project.id)) {
+      closeDiff(d.diffId);
+    }
+    for (const m of getOpenMcps().filter((m) => m.projectId === project.id)) {
+      closeMcp(m.mcpId);
+    }
+    for (const s of getOpenSkills().filter((s) => s.projectId === project.id)) {
+      closeSkills(s.skillId);
+    }
+    for (const g of getOpenGits().filter((g) => g.projectId === project.id)) {
+      closeGit(g.gitId);
+    }
+  };
+
+  const finalize = async () => {
+    await deleteProject(project.id);
+    onClose();
+  };
+
   const confirm = async () => {
     setBusy(true);
     try {
-      // Tear down this project's live consoles + shell (kill their PTYs) before
-      // deleting, so removing a project never leaves orphaned background agents —
-      // their panels may not even be on screen (another project's workspace is).
-      for (const id of instanceIds) {
-        closeConsole(id);
-        release(id);
+      teardownPanels();
+      // Kill all the project's remote tmux sessions in one interactive ssh (one
+      // password prompt), then finalize on its completion.
+      if (remoteDest && remoteSessions.length > 0) {
+        setKilling(true);
+        return;
       }
-      // For a remote project, also end each instance's tmux session on the host —
-      // detach ≠ kill, so removal must explicitly tear them down (3.12). Best-effort.
-      if (project.remoteSshDest) {
-        for (const inst of instances) {
-          if (inst.remoteTmuxSession) {
-            await remoteKillSession(project.remoteSshDest, inst.remoteTmuxSession).catch(() => {});
-          }
-        }
-      }
-      for (const s of getOpenShells().filter((s) => s.projectId === project.id)) {
-        closeShell(s.shellId);
-        release(s.shellId);
-      }
-      // Editors hold no PTY — just drop them (unsaved buffers go with the project).
-      for (const e of getOpenEditors().filter((e) => e.projectId === project.id)) {
-        closeEditor(e.editorId);
-      }
-      // Diffs hold no PTY/buffer either — drop the project's review panels too.
-      for (const d of getOpenDiffs().filter((d) => d.projectId === project.id)) {
-        closeDiff(d.diffId);
-      }
-      // MCP panels likewise hold no PTY/buffer — drop the project's manager too.
-      for (const m of getOpenMcps().filter((m) => m.projectId === project.id)) {
-        closeMcp(m.mcpId);
-      }
-      // Skill Manager panels too — no PTY/buffer, just drop the project's panel.
-      for (const s of getOpenSkills().filter((s) => s.projectId === project.id)) {
-        closeSkills(s.skillId);
-      }
-      // Git panels too — no PTY/buffer, just drop the project's panel.
-      for (const g of getOpenGits().filter((g) => g.projectId === project.id)) {
-        closeGit(g.gitId);
-      }
-      await deleteProject(project.id);
-      onClose();
+      await finalize();
     } catch {
       setBusy(false);
     }
   };
+
+  // Terminal phase: kill every remote session, then delete the project on exit.
+  if (killing && remoteDest && remoteSessions.length > 0) {
+    return (
+      <Modal title="remove project" onClose={onClose} width={480}>
+        <div style={{ fontSize: 12, color: "var(--wb-textDim2)", lineHeight: 1.5, marginBottom: 8 }}>
+          Killing {remoteSessions.length} remote tmux session
+          {remoteSessions.length === 1 ? "" : "s"} on{" "}
+          <span style={{ fontFamily: "var(--wb-mono)" }}>{remoteDest}</span> — enter your password if
+          prompted.
+        </div>
+        <RemoteCommandTerminal
+          dest={remoteDest}
+          command={tmuxKillCommand(remoteSessions)}
+          onDone={() => void finalize()}
+        />
+      </Modal>
+    );
+  }
+
   return (
     <Modal title="remove project" onClose={onClose} width={400}>
       <div style={{ fontSize: 12.5, color: "var(--wb-text)", lineHeight: 1.5 }}>
@@ -1230,6 +1258,13 @@ function RemoveProjectConfirm({
           <div style={{ marginTop: 8, color: "var(--wb-working)" }}>
             {GLYPH.warn} {instanceCount} instance{instanceCount === 1 ? "" : "s"} will be removed
             with it.
+          </div>
+        )}
+        {remoteSessions.length > 0 && (
+          <div style={{ marginTop: 6, color: "var(--wb-working)" }}>
+            {GLYPH.remote} {remoteSessions.length} remote tmux session
+            {remoteSessions.length === 1 ? "" : "s"} will be killed (you'll be asked for your SSH
+            password).
           </div>
         )}
       </div>
@@ -1248,32 +1283,64 @@ function KillConfirm({
   onClose: () => void;
 }) {
   const [busy, setBusy] = useState(false);
+  // Once confirmed for a remote instance, we drop into a terminal phase to kill the
+  // tmux session interactively (password auth) before the row is deleted.
+  const [killing, setKilling] = useState(false);
   // For a remote instance, closing the console only *detaches* tmux — the session
   // keeps running on the host. Removing the instance must explicitly end it (3.12).
-  const remoteSession =
-    project?.remoteSshDest != null ? instance.remoteTmuxSession : null;
+  const remoteDest = project?.remoteSshDest ?? null;
+  const remoteSession = remoteDest != null ? instance.remoteTmuxSession : null;
+
+  // Drop the row + close (after any remote kill has run).
+  const finalize = async () => {
+    await deleteInstance(instance.id);
+    await renumberInstances(instance.projectId);
+    onClose();
+  };
+
   const confirm = async () => {
     setBusy(true);
     try {
       // Stop the PTY (if a console is open) before deleting the row. `release`
       // kills it directly in case the console's panel isn't currently docked
       // (another project's workspace is on screen), where panel-removal teardown
-      // wouldn't fire.
+      // wouldn't fire. For a remote instance this only detaches tmux.
       closeConsole(instance.id);
       release(instance.id);
       closeDiff(diffIdFor(instance.id)); // drop its review panel, if open
-      // Kill the remote tmux session (detach ≠ kill). Best-effort — a remote that's
-      // unreachable shouldn't block removing the local row.
-      if (project?.remoteSshDest && remoteSession) {
-        await remoteKillSession(project.remoteSshDest, remoteSession).catch(() => {});
+      // Kill the remote tmux session interactively, then finalize on its completion.
+      if (remoteDest && remoteSession) {
+        setKilling(true);
+        return;
       }
-      await deleteInstance(instance.id);
-      await renumberInstances(instance.projectId);
-      onClose();
+      await finalize();
     } catch {
       setBusy(false);
     }
   };
+
+  // Terminal phase: run `tmux kill-session` over an interactive ssh (password auth),
+  // then delete the row once it exits.
+  if (killing && remoteDest && remoteSession) {
+    return (
+      <Modal title="kill instance" onClose={onClose} width={480}>
+        <div style={{ fontSize: 12, color: "var(--wb-textDim2)", lineHeight: 1.5, marginBottom: 8 }}>
+          Killing remote session{" "}
+          <span style={{ color: "var(--wb-accent)", fontFamily: "var(--wb-mono)" }}>
+            {remoteSession}
+          </span>{" "}
+          on <span style={{ fontFamily: "var(--wb-mono)" }}>{remoteDest}</span> — enter your password
+          if prompted.
+        </div>
+        <RemoteCommandTerminal
+          dest={remoteDest}
+          command={tmuxKillCommand([remoteSession])}
+          onDone={() => void finalize()}
+        />
+      </Modal>
+    );
+  }
+
   return (
     <Modal title="kill instance" onClose={onClose} width={400}>
       <div style={{ fontSize: 12.5, color: "var(--wb-text)", lineHeight: 1.5 }}>
@@ -1285,8 +1352,8 @@ function KillConfirm({
             <span style={{ color: "var(--wb-accent)", fontFamily: "var(--wb-mono)" }}>
               {remoteSession}
             </span>{" "}
-            on <span style={{ fontFamily: "var(--wb-mono)" }}>{project?.remoteSshDest}</span> will be
-            killed.
+            on <span style={{ fontFamily: "var(--wb-mono)" }}>{remoteDest}</span> will be killed
+            (you'll be asked for your SSH password).
           </div>
         )}
       </div>
@@ -1295,11 +1362,46 @@ function KillConfirm({
   );
 }
 
-/** Reconcile a remote project's tmux sessions (step 3.12, "discover & adopt"):
- *  `ssh <dest> tmux ls`, then show which of our instances are live/detached on the
- *  host and offer to **import** any *other* live sessions as new instances (Model-A
- *  "recognise what's already running on the server"). An imported instance stores
- *  the adopted name; opening it runs `tmux new-session -A -s <name>`, which simply
+/** Remote command string that lists tmux sessions, fenced by sentinels so the
+ *  listing can be parsed out of the noisy interactive stream (banner, password
+ *  prompt). `bash -lc` puts tmux on PATH; `2>/dev/null` turns "no server running"
+ *  into an empty listing. */
+function tmuxListCommand(): string {
+  return "bash -lc 'echo __WB_BEGIN__; tmux ls 2>/dev/null; echo __WB_END__'";
+}
+
+/** Remote command string that kills one or more tmux sessions in a single ssh
+ *  (so the user authenticates once). Names are our `wb-*` / adopted names. */
+function tmuxKillCommand(names: string[]): string {
+  const inner = names.map((n) => `tmux kill-session -t "${n}"`).join("; ");
+  return `bash -lc '${inner}'`;
+}
+
+/** Parse session names out of a captured `tmux ls` interactive run: strip ANSI,
+ *  take the lines between the sentinels, and read each name (before the first `:`).
+ *  Filters anything that isn't a plausible session name (the prompt, banners). */
+function parseTmuxList(output: string): string[] {
+  const clean = output
+    // eslint-disable-next-line no-control-regex -- stripping terminal escapes is the point
+    .replace(/\[[0-9;?]*[A-Za-z]/g, "")
+    // eslint-disable-next-line no-control-regex
+    .replace(/\][^]*/g, "");
+  const lines = clean.split(/\r?\n/);
+  const begin = lines.findIndex((l) => l.includes("__WB_BEGIN__"));
+  const end = lines.findIndex((l) => l.includes("__WB_END__"));
+  if (begin === -1 || end === -1 || end < begin) return [];
+  return lines
+    .slice(begin + 1, end)
+    .map((l) => l.split(":")[0].trim())
+    .filter((n) => n.length > 0 && !n.includes(" "));
+}
+
+/** Reconcile a remote project's tmux sessions (step 3.12, "discover & adopt"). Runs
+ *  `tmux ls` in an interactive terminal (so password auth works — see
+ *  [`RemoteCommandTerminal`]), then shows which of our instances are live/detached on
+ *  the host and offers to **import** any *other* live sessions as new instances
+ *  (Model-A "recognise what's already running on the server"). An imported instance
+ *  stores the adopted name; opening it runs `tmux new-session -A -s <name>`, which
  *  attaches to the existing session. */
 function RemoteSyncDialog({
   project,
@@ -1312,58 +1414,49 @@ function RemoteSyncDialog({
 }) {
   const dest = project.remoteSshDest ?? "";
   const [sessions, setSessions] = useState<string[] | null>(null);
-  const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const [refreshKey, setRefreshKey] = useState(0);
+  // Bumped to remount the terminal for a re-list (re-authenticates).
+  const [runKey, setRunKey] = useState(0);
 
-  useEffect(() => {
-    let alive = true;
-    setError(null);
-    setSessions(null);
-    remoteTmuxSessions(dest)
-      .then((s) => alive && setSessions(s))
-      .catch((e) => alive && setError(String(e instanceof Error ? e.message : e)));
-    return () => {
-      alive = false;
-    };
-  }, [dest, refreshKey]);
-
-  // Map host session name → the instance that owns it (if any).
+  // Map host session name → the instance that owns it (if any). `instances` updates
+  // as the registry reloads after an import, so the lists recompute automatically.
   const ownedByName = new Map<string, Instance>();
   for (const i of instances) {
     if (i.remoteTmuxSession) ownedByName.set(i.remoteTmuxSession, i);
   }
   const liveSet = new Set(sessions ?? []);
-  // Foreign sessions on the host that no instance maps to — adoption candidates.
   const foreign = (sessions ?? []).filter((s) => !ownedByName.has(s));
 
   const importSession = async (name: string) => {
     setBusy(true);
     try {
       await addInstance({ projectId: project.id, title: name, remoteTmuxSession: name });
-      setRefreshKey((k) => k + 1);
-    } catch (e) {
-      setError(String(e instanceof Error ? e.message : e));
     } finally {
       setBusy(false);
     }
   };
 
   return (
-    <Modal title="remote sessions" onClose={onClose} width={460}>
+    <Modal title="remote sessions" onClose={onClose} width={480}>
       <div style={{ fontSize: 12.5, color: "var(--wb-text)", lineHeight: 1.5 }}>
         <div style={{ color: "var(--wb-textDim2)" }}>
           {GLYPH.remote} <span style={{ fontFamily: "var(--wb-mono)" }}>ssh:{dest}</span>
         </div>
 
-        {error ? (
-          <div style={{ marginTop: 10, color: "var(--wb-needs)", fontSize: 11.5 }}>
-            {GLYPH.warn} {error}
-          </div>
-        ) : sessions === null ? (
-          <div style={{ marginTop: 10, color: "var(--wb-textDim2)", fontSize: 11.5 }}>
-            listing sessions…
-          </div>
+        {sessions === null ? (
+          <>
+            <div style={{ marginTop: 8, color: "var(--wb-textFaint)", fontSize: 11 }}>
+              Listing tmux sessions over SSH — enter your password if prompted.
+            </div>
+            <div style={{ marginTop: 8 }}>
+              <RemoteCommandTerminal
+                key={runKey}
+                dest={dest}
+                command={tmuxListCommand()}
+                onDone={(out) => setSessions(parseTmuxList(out))}
+              />
+            </div>
+          </>
         ) : (
           <>
             {/* Our instances and whether their session is live on the host. */}
@@ -1418,9 +1511,17 @@ function RemoteSyncDialog({
         )}
       </div>
       <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 16 }}>
-        <button onClick={() => setRefreshKey((k) => k + 1)} style={confirmButtonStyle}>
-          refresh
-        </button>
+        {sessions !== null && (
+          <button
+            onClick={() => {
+              setSessions(null);
+              setRunKey((k) => k + 1);
+            }}
+            style={confirmButtonStyle}
+          >
+            re-list
+          </button>
+        )}
         <button onClick={onClose} style={{ ...confirmButtonStyle, borderColor: "var(--wb-borderActive)" }}>
           {GLYPH.ok} done
         </button>

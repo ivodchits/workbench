@@ -100,3 +100,29 @@ export function ptySessionLive(instanceId: string): Promise<boolean> {
 export function defaultWorkingDir(): Promise<string | null> {
   return invoke("default_working_dir");
 }
+
+/** Payload of the `remote-cmd-done` event — emitted when a `remoteCmdSpawn` child
+ *  exits, carrying everything it printed (step 3.12). */
+export interface RemoteCmdDone {
+  id: string;
+  output: string;
+}
+
+/**
+ * Run an interactive one-shot remote command in a PTY: `ssh -tt <dest> -- <command>`
+ * (step 3.12). The child streams to `onOutput` (mount it in an xterm so the user can
+ * type their SSH password); drive keystrokes/resize/kill with the normal
+ * `ptyWrite`/`ptyResize`/`ptyKill` using the same `id`. When it exits, the backend
+ * emits a `remote-cmd-done` event with the captured output. `command` is sent as one
+ * token after `--`, so pre-quote it for the remote shell (e.g. `bash -lc 'tmux ls'`).
+ */
+export function remoteCmdSpawn(
+  id: string,
+  dest: string,
+  command: string,
+  onOutput: Channel<PtyChunk>,
+  cols: number,
+  rows: number,
+): Promise<void> {
+  return invoke("remote_cmd_spawn", { id, dest, command, onOutput, cols, rows });
+}

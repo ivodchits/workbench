@@ -13,7 +13,6 @@ mod layout;
 mod mcp;
 mod pty;
 mod registry;
-mod remote;
 mod skills;
 mod statusline;
 mod sys;
@@ -88,6 +87,7 @@ pub fn run() {
             pty::session_instance,
             pty::pty_session_live,
             pty::default_working_dir,
+            pty::remote_cmd_spawn,
             hooks::hook_server_status,
             statusline::usage_limits,
             git::detect_repo,
@@ -132,8 +132,6 @@ pub fn run() {
             registry::edit_instance,
             registry::mirror_instance_task_note,
             registry::remove_instance,
-            remote::remote_tmux_sessions,
-            remote::remote_kill_session,
             layout::get_layout,
             layout::set_layout,
             mcp::mcp_list,
