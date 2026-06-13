@@ -74,7 +74,11 @@ function RemoteCommandTerminal({ dest, command, onDone, height = 200 }: RemoteCo
       } catch {
         // not measurable yet; spawn at whatever size xterm reports
       }
-      void remoteCmdSpawn(id, dest, command, output, term.cols, term.rows).catch(() => {});
+      void remoteCmdSpawn(id, dest, command, output, term.cols, term.rows).catch((e) => {
+        // Surface the failure in the terminal rather than hanging silently — e.g. a
+        // stale backend missing this command, or ssh not on PATH. \x1b[31m = red.
+        term.write(`\r\n\x1b[31m[could not start ssh: ${String(e)}]\x1b[0m\r\n`);
+      });
       term.focus();
     });
 

@@ -1209,7 +1209,10 @@ function RemoveProjectConfirm({
     }
   };
 
+  const finalizedRef = useRef(false);
   const finalize = async () => {
+    if (finalizedRef.current) return;
+    finalizedRef.current = true;
     await deleteProject(project.id);
     onClose();
   };
@@ -1245,6 +1248,21 @@ function RemoveProjectConfirm({
           command={tmuxKillCommand(remoteSessions)}
           onDone={() => void finalize()}
         />
+        <div style={{ marginTop: 8, font: "10.5px var(--wb-mono)", color: "var(--wb-textFaint)" }}>
+          This closes automatically once the sessions are killed. If it can't reach the host, remove
+          the project anyway (sessions may stay running on the host).
+        </div>
+        <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 12 }}>
+          <button onClick={onClose} style={confirmButtonStyle}>
+            cancel
+          </button>
+          <button
+            onClick={() => void finalize()}
+            style={{ ...confirmButtonStyle, borderColor: "var(--wb-needs)", color: "var(--wb-needs)" }}
+          >
+            remove anyway
+          </button>
+        </div>
       </Modal>
     );
   }
@@ -1291,8 +1309,13 @@ function KillConfirm({
   const remoteDest = project?.remoteSshDest ?? null;
   const remoteSession = remoteDest != null ? instance.remoteTmuxSession : null;
 
-  // Drop the row + close (after any remote kill has run).
+  // Drop the row + close (after any remote kill has run, or when the user removes
+  // anyway). Guarded so the auto-finalize on the kill terminal's `onDone` and a
+  // manual "remove anyway" click can't both delete.
+  const finalizedRef = useRef(false);
   const finalize = async () => {
+    if (finalizedRef.current) return;
+    finalizedRef.current = true;
     await deleteInstance(instance.id);
     await renumberInstances(instance.projectId);
     onClose();
@@ -1337,6 +1360,21 @@ function KillConfirm({
           command={tmuxKillCommand([remoteSession])}
           onDone={() => void finalize()}
         />
+        <div style={{ marginTop: 8, font: "10.5px var(--wb-mono)", color: "var(--wb-textFaint)" }}>
+          This closes automatically once the session is killed. If it can't reach the host, remove
+          the instance from Workbench anyway (the session may stay running on the host).
+        </div>
+        <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 12 }}>
+          <button onClick={onClose} style={confirmButtonStyle}>
+            cancel
+          </button>
+          <button
+            onClick={() => void finalize()}
+            style={{ ...confirmButtonStyle, borderColor: "var(--wb-needs)", color: "var(--wb-needs)" }}
+          >
+            remove anyway
+          </button>
+        </div>
       </Modal>
     );
   }
