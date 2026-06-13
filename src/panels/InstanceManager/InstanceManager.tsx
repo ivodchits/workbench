@@ -934,9 +934,13 @@ function ProjectNode({
               +
             </ProjectAction>
             {isRemote ? (
-              // Remote: only the host-aware actions. "Sync" reconciles tmux sessions
-              // (and offers adopting foreign ones); the rest is edit/remove.
+              // Remote: the host-aware actions. A Project Shell runs over SSH on the
+              // host (step 3.12). "Sync" reconciles tmux sessions (and offers adopting
+              // foreign ones). Editor/Git stay local-only. The rest is edit/remove.
               <>
+                <ProjectAction label="open project shell (SSH)" onClick={onOpenShell} fontSize={15.75}>
+                  {GLYPH.prompt}
+                </ProjectAction>
                 <ProjectAction label="sync remote sessions" onClick={onSyncRemote} fontSize={14}>
                   {GLYPH.remote}
                 </ProjectAction>

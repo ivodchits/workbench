@@ -14,13 +14,14 @@
 // short delay — early enough to feel instant, late enough that PSReadLine has
 // taken over stdin (type-ahead into a just-launched pwsh is dropped).
 
-import { useCallback, useEffect } from "react";
+import { useCallback, useEffect, useMemo } from "react";
 import type { IDockviewPanelProps } from "dockview";
 
 import { GLYPH, Spinner } from "../theme";
 import Console from "./Console";
 import { focusTerminal } from "./terminalPool";
-import { ptyWrite } from "../ipc/pty";
+import { ptyWrite, type RemoteSpawn } from "../ipc/pty";
+import { useRegistry } from "../state/registry";
 import {
   markShellError,
   markShellSpawned,
@@ -39,8 +40,22 @@ const PRESEED_DELAY_MS = 600;
 function ShellPanel(props: IDockviewPanelProps<ShellPanelParams>) {
   const { shellId } = props.params;
   const { open } = useShells();
+  const { projects } = useRegistry();
 
   const session = open.find((s) => s.shellId === shellId) ?? null;
+
+  // For a remote project, the shell runs on the host over SSH (its working dir
+  // lives there, not on this machine) — step 3.12. Derive the descriptor from the
+  // project (memoized so its reference is stable, or `Console` would respawn the PTY
+  // every render). A shell needs no tmux session, so `session` is left blank.
+  const project = session ? projects.find((p) => p.id === session.projectId) ?? null : null;
+  const remote = useMemo<RemoteSpawn | null>(
+    () =>
+      project?.remoteSshDest
+        ? { dest: project.remoteSshDest, session: "", dir: project.remoteDir ?? session?.cwd ?? "" }
+        : null,
+    [project?.remoteSshDest, project?.remoteDir, session?.cwd],
+  );
 
   // Keep the tab label in sync with the shell label.
   const title = session ? `shell · ${session.label}` : "shell";
@@ -54,10 +69,10 @@ function ShellPanel(props: IDockviewPanelProps<ShellPanelParams>) {
 
   return (
     <div style={{ height: "100%", display: "flex", flexDirection: "column", minHeight: 0 }}>
-      <HeaderStrip session={session} />
+      <HeaderStrip session={session} remote={remote} />
       <div style={{ flex: "1 1 auto", minHeight: 0 }}>
         {live ? (
-          <LiveShell shellId={shellId} cwd={session.cwd} />
+          <LiveShell shellId={shellId} cwd={session.cwd} remote={remote} />
         ) : session.status === "error" ? (
           <ErrorBody message={session.error} />
         ) : (
@@ -69,16 +84,31 @@ function ShellPanel(props: IDockviewPanelProps<ShellPanelParams>) {
   );
 }
 
-function LiveShell({ shellId, cwd }: { shellId: string; cwd: string }) {
+function LiveShell({
+  shellId,
+  cwd,
+  remote,
+}: {
+  shellId: string;
+  cwd: string;
+  remote: RemoteSpawn | null;
+}) {
   // Pre-seed `git status -sb` once the spawn resolves; respawns (retarget) fire
   // `onSpawned` again, so the new dir gets a fresh status without extra tracking.
+  // Skipped for a remote shell: at spawn the ssh child is still at the password
+  // prompt, so type-ahead would land in the password — let the user authenticate
+  // first (the git quick-buttons still work once they're in).
   const onSpawned = useCallback(() => {
     markShellSpawned(shellId);
+    if (remote) {
+      focusTerminal(shellId);
+      return;
+    }
     setTimeout(() => {
       void ptyWrite(shellId, encode("git status -sb\r"));
       focusTerminal(shellId);
     }, PRESEED_DELAY_MS);
-  }, [shellId]);
+  }, [shellId, remote]);
   const onError = useCallback((message: string) => markShellError(shellId, message), [shellId]);
   // Shells render via the DOM renderer (`webgl: false`) so they don't compete for
   // the ~10 WebGL contexts the Claude consoles want (design §5 / decision 14).
@@ -89,15 +119,15 @@ function LiveShell({ shellId, cwd }: { shellId: string; cwd: string }) {
       cwd={cwd}
       webgl={false}
       resumeSessionId={null}
-      remote={null}
+      remote={remote}
       onSpawned={onSpawned}
       onError={onError}
     />
   );
 }
 
-/** project · cwd — the shell's context line. */
-function HeaderStrip({ session }: { session: ShellSession }) {
+/** project · [remote badge] · cwd — the shell's context line. */
+function HeaderStrip({ session, remote }: { session: ShellSession; remote: RemoteSpawn | null }) {
   return (
     <div
       style={{
@@ -117,6 +147,11 @@ function HeaderStrip({ session }: { session: ShellSession }) {
       <span style={{ color: "var(--wb-text)", fontWeight: 600, flex: "0 0 auto" }}>
         {session.label || "shell"}
       </span>
+      {remote && (
+        <span style={{ color: "var(--wb-accent)", flex: "0 0 auto" }}>
+          {GLYPH.remote} ssh:{remote.dest}
+        </span>
+      )}
       <span
         title={session.cwd}
         style={{ color: "var(--wb-textFaint)", overflow: "hidden", textOverflow: "ellipsis", minWidth: 0 }}

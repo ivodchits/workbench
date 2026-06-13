@@ -268,7 +268,7 @@ pub fn pty_spawn(
         }
     };
     let candidates = if let Some(r) = &remote {
-        vec![remote_command(r, &cwd)]
+        vec![remote_command(r, &cwd, kind)]
     } else {
         match kind {
             SpawnKind::Claude => {
@@ -601,24 +601,47 @@ fn claude_command(session_args: &[&str], cwd: &Path) -> Result<CommandBuilder, S
 ///
 /// The local ssh child is just another `portable-pty` child — the reader thread,
 /// `pty_write`, `pty_resize`, and output Channel are all unchanged (design §4.2).
-fn remote_command(r: &RemoteSpawn, cwd: &Path) -> CommandBuilder {
+///
+/// A `Shell` remote launch (step 3.12 follow-up) skips tmux entirely and opens a
+/// plain interactive **login shell** in the remote dir
+/// (`ssh -tt <dest> -- bash -lc 'cd <dir>; exec $SHELL -l'`) — the Project Shell's
+/// remote counterpart, so a remote project's shell runs on the host (where its
+/// working dir actually exists) instead of a local shell that can't find it.
+fn remote_command(r: &RemoteSpawn, cwd: &Path, kind: SpawnKind) -> CommandBuilder {
     let mut cmd = CommandBuilder::new("ssh");
-    for arg in [
-        "-tt",
-        &r.dest,
-        "--",
-        "tmux",
-        "new-session",
-        "-A",
-        "-s",
-        &r.session,
-        "-c",
-        &r.dir,
-        "bash",
-        "-lc",
-        "claude",
-    ] {
-        cmd.arg(arg);
+    match kind {
+        SpawnKind::Claude => {
+            for arg in [
+                "-tt",
+                &r.dest,
+                "--",
+                "tmux",
+                "new-session",
+                "-A",
+                "-s",
+                &r.session,
+                "-c",
+                &r.dir,
+                "bash",
+                "-lc",
+                "claude",
+            ] {
+                cmd.arg(arg);
+            }
+        }
+        SpawnKind::Shell => {
+            // One pre-quoted token after `--` (ssh space-joins argv, so quoting has
+            // to survive the remote shell's re-parse): land in the dir, then replace
+            // the process with the user's login shell so it's a normal interactive
+            // session. `tmux` isn't involved — a shell needs no persistence.
+            let payload = format!(
+                "bash -lc 'cd \"{}\" 2>/dev/null; exec \"${{SHELL:-bash}}\" -l'",
+                r.dir
+            );
+            for arg in ["-tt", r.dest.as_str(), "--", payload.as_str()] {
+                cmd.arg(arg);
+            }
+        }
     }
     cmd.cwd(cwd);
     cmd.env("TERM", "xterm-256color");
