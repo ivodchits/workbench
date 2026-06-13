@@ -16,8 +16,24 @@ use std::process::Command;
 
 /// Run `ssh <dest> <args…>`, returning stdout on success. On Windows, suppress the
 /// console window the child would otherwise flash (`CREATE_NO_WINDOW`).
+///
+/// These are **non-interactive** calls: unlike the Console's `ssh -tt` (which has a
+/// PTY to answer prompts), this runs with no terminal, so any prompt ssh raises —
+/// an unknown host key, a password/passphrase ask — would block `output()` forever.
+/// `BatchMode=yes` makes ssh *fail* instead of prompting, `ConnectTimeout` bounds a
+/// dead host, and `StrictHostKeyChecking=accept-new` trusts a first-seen host key
+/// (still verifying it on later connects) so a brand-new host doesn't deadlock on
+/// the yes/no question. A failure now surfaces as an error rather than hanging.
 fn ssh(dest: &str, args: &[&str]) -> Result<std::process::Output, String> {
     let mut cmd = Command::new("ssh");
+    cmd.args([
+        "-o",
+        "BatchMode=yes",
+        "-o",
+        "ConnectTimeout=10",
+        "-o",
+        "StrictHostKeyChecking=accept-new",
+    ]);
     cmd.arg(dest);
     cmd.args(args);
     #[cfg(windows)]
