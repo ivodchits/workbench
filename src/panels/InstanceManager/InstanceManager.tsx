@@ -30,6 +30,7 @@ import { ensureClaudeMd } from "../../ipc/fs";
 import { closeDiff, diffIdFor, getOpenDiffs, openDiff } from "../../state/diffs";
 import { closeMcp, getOpenMcps, openMcp } from "../../state/mcp";
 import { closeSkills, getOpenSkills, openSkills } from "../../state/skills";
+import { closeGit, getOpenGits, openGit } from "../../state/git";
 import {
   getLiveStatuses,
   onStatusTransition,
@@ -233,6 +234,12 @@ function InstanceManager({ onCollapse }: InstanceManagerProps) {
           title: inst.title,
         });
       }),
+      registerCommand("openGit", () => {
+        // Open the Git panel for the active project (the repo-level lens). Resolve
+        // the active project fresh so this once-registered closure never goes stale.
+        const proj = getRegistry().projects.find((p) => p.id === getActiveProject());
+        if (proj) openGitForProject(proj);
+      }),
       registerCommand("jumpNeedsYou", () => doJump(1)),
       registerCommand("jumpPrevNeedsYou", () => doJump(-1)),
     ];
@@ -401,6 +408,14 @@ function InstanceManager({ onCollapse }: InstanceManagerProps) {
   const openSkillsForProject = (project: Project) => {
     setActiveProject(project.id);
     openSkills({ projectId: project.id, repoRoot: project.rootPath, title: project.name });
+  };
+
+  // Open (or focus) the project's Git panel (step 3.11) — the repo-level lens:
+  // history, branches, working tree, stash, remotes; switches the active workspace
+  // to it so the panel docks alongside the project's consoles.
+  const openGitForProject = (project: Project) => {
+    setActiveProject(project.id);
+    openGit({ projectId: project.id, repoRoot: project.rootPath, title: project.name });
   };
 
   // Open the project's CLAUDE.md in its editor (step 3.6) — creating an empty one
@@ -650,6 +665,7 @@ function InstanceManager({ onCollapse }: InstanceManagerProps) {
                       onOpenClaudeMd={() => void openClaudeMdForProject(p)}
                       onOpenMcp={() => openMcpForProject(p)}
                       onOpenSkills={() => openSkillsForProject(p)}
+                      onOpenGit={() => openGitForProject(p)}
                       onEdit={() => setEditProjectTarget(p)}
                       onRemove={() => setRemoveProjectTarget(p)}
                       onNewInstance={() => void spawnInstance(p)}
@@ -730,6 +746,8 @@ interface ProjectNodeProps {
   onOpenMcp: () => void;
   /** Open this project's Skill Manager (step 3.7b). */
   onOpenSkills: () => void;
+  /** Open this project's Git panel (step 3.11). */
+  onOpenGit: () => void;
   onEdit: () => void;
   onRemove: () => void;
   onNewInstance: () => void;
@@ -754,6 +772,7 @@ function ProjectNode({
   onOpenClaudeMd,
   onOpenMcp,
   onOpenSkills,
+  onOpenGit,
   onEdit,
   onRemove,
   onNewInstance,
@@ -879,10 +898,14 @@ function ProjectNode({
             <ProjectAction label="open editor" onClick={onOpenEditor} fontSize={12.6}>
               ✎
             </ProjectAction>
+            <ProjectAction label="open Git panel" onClick={onOpenGit} fontSize={12.6}>
+              ⎇
+            </ProjectAction>
             <ProjectMoreMenu
               open={menuOpen}
               setOpen={setMenuOpen}
               items={[
+                { label: "git panel", onClick: onOpenGit },
                 { label: "edit CLAUDE.md", onClick: onOpenClaudeMd },
                 { label: "manage MCP servers", onClick: onOpenMcp },
                 { label: "manage skills", onClick: onOpenSkills },
@@ -1117,6 +1140,10 @@ function RemoveProjectConfirm({
       // Skill Manager panels too — no PTY/buffer, just drop the project's panel.
       for (const s of getOpenSkills().filter((s) => s.projectId === project.id)) {
         closeSkills(s.skillId);
+      }
+      // Git panels too — no PTY/buffer, just drop the project's panel.
+      for (const g of getOpenGits().filter((g) => g.projectId === project.id)) {
+        closeGit(g.gitId);
       }
       await deleteProject(project.id);
       onClose();

@@ -47,6 +47,7 @@ export function runAction(command: CommandId, arg?: number): void {
     case "resumeLastSession":
     case "killInstance":
     case "showDiff":
+    case "openGit":
     case "jumpNeedsYou":
     case "jumpPrevNeedsYou":
     case "savePreset":

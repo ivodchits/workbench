@@ -34,6 +34,7 @@ import EditorPanel, { type EditorPanelParams } from "./Editor";
 import DiffPanel, { type DiffPanelParams } from "./Diff";
 import McpManagerPanel, { type McpPanelParams } from "./MCPManager";
 import SkillManagerPanel, { type SkillPanelParams } from "./SkillManager";
+import GitPanel, { type GitPanelParams } from "./Git";
 import PreviewPanel from "./PreviewPanel";
 import { GLYPH } from "../theme";
 import { useRegistry } from "../state/registry";
@@ -90,6 +91,15 @@ import {
   type SkillDescriptor,
   type SkillSession,
 } from "../state/skills";
+import {
+  closeGit,
+  getActiveGitId,
+  getOpenGits,
+  hydrateGits,
+  useGits,
+  type GitDescriptor,
+  type GitSession,
+} from "../state/git";
 import { useActiveProject } from "../state/activeProject";
 import {
   loadLayout,
@@ -110,6 +120,7 @@ interface LayoutSnapshot {
   diffs: DiffDescriptor[];
   mcps: McpDescriptor[];
   skills: SkillDescriptor[];
+  gits: GitDescriptor[];
 }
 
 const COMPONENTS = {
@@ -124,6 +135,9 @@ const COMPONENTS = {
   mcpManager: McpManagerPanel as React.FunctionComponent<IDockviewPanelProps>,
   // Skill Manager panels — same project-binding/re-fetch shape as MCP/diff panels.
   skillManager: SkillManagerPanel as React.FunctionComponent<IDockviewPanelProps>,
+  // Git panels — project-bound repo lens; re-fetches log/branches/status on mount,
+  // reconciled by project like the diff/mcp/skill panels.
+  git: GitPanel as React.FunctionComponent<IDockviewPanelProps>,
   // Markdown Preview panels carry no backing store/PTY and use `ownerEditorId` (not
   // `editorId`) in params, so the reconcilers above ignore them — they persist and
   // restore purely as part of the dockview tree.
@@ -166,6 +180,12 @@ function skillPanelId(panel: { params?: Record<string, unknown> }): string | nul
   return typeof id === "string" ? id : null;
 }
 
+/** A git panel carries its `git:<projectId>` id in params; others don't. */
+function gitPanelId(panel: { params?: Record<string, unknown> }): string | null {
+  const id = panel.params?.gitId;
+  return typeof id === "string" ? id : null;
+}
+
 /**
  * Restore a saved dock tree, resiliently. `dockview.fromJSON` restores the docked
  * grid *and* floating groups in one transaction and reverts the whole layout if
@@ -198,6 +218,7 @@ function Workspace() {
   const { open: diffsOpen, activeId: activeDiffId } = useDiffs();
   const { open: mcpsOpen, activeId: activeMcpId } = useMcps();
   const { open: skillsOpen, activeId: activeSkillId } = useSkills();
+  const { open: gitsOpen, activeId: activeGitId } = useGits();
   const { instances } = useRegistry();
   const activeProjectId = useActiveProject();
 
@@ -258,7 +279,9 @@ function Workspace() {
     const mcps: McpDescriptor[] = getOpenMcps().filter((m) => present.has(m.mcpId));
     // Skill panels likewise persist only their binding — re-fetched on restore.
     const skills: SkillDescriptor[] = getOpenSkills().filter((s) => present.has(s.skillId));
-    return { tree: a.toJSON(), consoleIds, shells, editors, diffs, mcps, skills };
+    // Git panels persist only their binding — re-fetched from git on restore.
+    const gits: GitDescriptor[] = getOpenGits().filter((g) => present.has(g.gitId));
+    return { tree: a.toJSON(), consoleIds, shells, editors, diffs, mcps, skills, gits };
   }, []);
 
   // Persist the active project's arrangement (debounced).
@@ -266,8 +289,8 @@ function Workspace() {
     (a: DockviewApi) => {
       const key = displayedProjectRef.current;
       if (!key) return; // no project on screen → nothing to persist
-      const { tree, consoleIds, shells, editors, diffs, mcps, skills } = collect(a);
-      saveLayoutDebounced(tree, consoleIds, shells, editors, diffs, mcps, skills, key);
+      const { tree, consoleIds, shells, editors, diffs, mcps, skills, gits } = collect(a);
+      saveLayoutDebounced(tree, consoleIds, shells, editors, diffs, mcps, skills, gits, key);
     },
     [collect],
   );
@@ -484,6 +507,40 @@ function Workspace() {
     }
   }, []);
 
+  // Same reconcile for Git panels (keyed by project id directly, like the editor/
+  // diff/mcp/skill panels). A git panel holds no PTY/buffer — removal just drops it.
+  const gitFocusRef = useRef<string | null>(null);
+  const reconcileGits = useCallback((a: DockviewApi) => {
+    const projId = displayedProjectRef.current;
+    const openGits = getOpenGits();
+    const projGits: GitSession[] = openGits.filter((g) => g.projectId === projId);
+
+    for (const git of projGits) {
+      if (a.getPanel(git.gitId)) continue;
+      const params: GitPanelParams = { gitId: git.gitId };
+      const position = a.panels.length > 0 ? ({ direction: "right" } as const) : undefined;
+      a.addPanel({
+        id: git.gitId,
+        component: "git",
+        title: `git · ${git.title}`,
+        params,
+        ...(position ? { position } : {}),
+      });
+    }
+    // Remove only git panels gone from the store entirely (closed) — never another
+    // project's (same rule as consoles/shells/editors/diffs/mcps/skills above).
+    const allGitIds = new Set(openGits.map((g) => g.gitId));
+    for (const panel of [...a.panels]) {
+      const id = gitPanelId(panel);
+      if (id && !allGitIds.has(id)) a.removePanel(panel);
+    }
+    const aGit = getActiveGitId();
+    if (aGit && a.getPanel(aGit) && aGit !== gitFocusRef.current) {
+      a.getPanel(aGit)?.api.setActive();
+      gitFocusRef.current = aGit;
+    }
+  }, []);
+
   // Layout presets (step 3.3) snapshot/restore the live dock. Capturing is just
   // `collect` stamped with the schema version; applying mirrors the project-swap's
   // restore sequence but *stays on the same project* — so it hydrates the preset's
@@ -492,8 +549,8 @@ function Workspace() {
   // preset's tree didn't include and persists the result as the project's layout.
   const snapshotLayout = useCallback((): SavedLayout | null => {
     if (!api) return null;
-    const { tree, consoleIds, shells, editors, diffs, mcps, skills } = collect(api);
-    return { version: SCHEMA_VERSION, tree, consoleInstanceIds: consoleIds, shells, editors, diffs, mcps, skills };
+    const { tree, consoleIds, shells, editors, diffs, mcps, skills, gits } = collect(api);
+    return { version: SCHEMA_VERSION, tree, consoleInstanceIds: consoleIds, shells, editors, diffs, mcps, skills, gits };
   }, [api, collect]);
 
   const applyLayout = useCallback(
@@ -507,6 +564,7 @@ function Workspace() {
       hydrateDiffs(saved.diffs);
       hydrateMcps(saved.mcps ?? []); // presets predate `mcps` — default for old snapshots
       hydrateSkills(saved.skills ?? []); // presets predate `skills` — default for old snapshots
+      hydrateGits(saved.gits ?? []); // presets predate `gits` — default for old snapshots
       restoreTree(api, saved.tree);
       switchingRef.current = false;
       restoredRef.current = true;
@@ -516,9 +574,10 @@ function Workspace() {
       reconcileDiffs(api);
       reconcileMcps(api);
       reconcileSkills(api);
+      reconcileGits(api);
       persist(api); // the applied arrangement becomes the project's current layout
     },
-    [api, persist, reconcileConsoles, reconcileShells, reconcileEditors, reconcileDiffs, reconcileMcps, reconcileSkills],
+    [api, persist, reconcileConsoles, reconcileShells, reconcileEditors, reconcileDiffs, reconcileMcps, reconcileSkills, reconcileGits],
   );
 
   // Expose snapshot/apply to the presets store for the lifetime of the dock.
@@ -564,7 +623,8 @@ function Workspace() {
         const diffId = diffPanelId(panel);
         const mcpId = mcpPanelId(panel);
         const skillId = skillPanelId(panel);
-        const id = consoleId ?? shellId ?? editorId ?? diffId ?? mcpId ?? skillId;
+        const gitId = gitPanelId(panel);
+        const id = consoleId ?? shellId ?? editorId ?? diffId ?? mcpId ?? skillId ?? gitId;
         if (!id) return;
         queueMicrotask(() => {
           if (switchingRef.current) return;
@@ -575,6 +635,7 @@ function Workspace() {
           else if (diffId) closeDiff(diffId);
           else if (mcpId) closeMcp(mcpId);
           else if (skillId) closeSkills(skillId);
+          else if (gitId) closeGit(gitId);
           // Editors/diffs/mcps/skills own no pooled terminal, so only console/shell ids release one.
           if (consoleId || shellId) release(id);
         });
@@ -601,6 +662,7 @@ function Workspace() {
       reconcileDiffs(api);
       reconcileMcps(api);
       reconcileSkills(api);
+      reconcileGits(api);
       return;
     }
 
@@ -615,8 +677,8 @@ function Workspace() {
 
       restoredRef.current = false; // suspend persist during the swap
       if (prev != null) {
-        const { tree, consoleIds, shells, editors, diffs, mcps, skills } = collect(api);
-        saveLayoutNow(tree, consoleIds, shells, editors, diffs, mcps, skills, prev);
+        const { tree, consoleIds, shells, editors, diffs, mcps, skills, gits } = collect(api);
+        saveLayoutNow(tree, consoleIds, shells, editors, diffs, mcps, skills, gits, prev);
       }
       switchingRef.current = true; // keep the outgoing project's PTYs alive
       if (saved) {
@@ -626,6 +688,7 @@ function Workspace() {
         hydrateDiffs(saved.diffs);
         hydrateMcps(saved.mcps);
         hydrateSkills(saved.skills);
+        hydrateGits(saved.gits);
         // `fromJSON` replaces the whole layout (removing the outgoing project's
         // panels itself) — don't `clear()` first, or it can fail and lose the
         // saved grouping (tabbed consoles would rebuild as separate columns).
@@ -645,6 +708,7 @@ function Workspace() {
       reconcileDiffs(api);
       reconcileMcps(api);
       reconcileSkills(api);
+      reconcileGits(api);
     })();
   }, [
     api,
@@ -655,12 +719,14 @@ function Workspace() {
     diffsOpen,
     mcpsOpen,
     skillsOpen,
+    gitsOpen,
     activeId,
     activeShellId,
     activeEditorId,
     activeDiffId,
     activeMcpId,
     activeSkillId,
+    activeGitId,
     instances,
     collect,
     reconcileConsoles,
@@ -669,6 +735,7 @@ function Workspace() {
     reconcileDiffs,
     reconcileMcps,
     reconcileSkills,
+    reconcileGits,
   ]);
 
   return (

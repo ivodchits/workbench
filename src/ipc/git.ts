@@ -189,3 +189,166 @@ export function instanceFileDiff(
 ): Promise<FileDiff> {
   return invoke("instance_file_diff", { workingDir, base, path, untracked });
 }
+
+// --- git panel (step 3.11) --------------------------------------------------
+// Project-scoped repo lens: history, branches, working tree, stash, remotes.
+// Reads each run a single batched git command; writes shell out. The UI gates
+// the destructive ones (branch -D, discard, clean, force-push) behind a confirm.
+
+/** One commit in the history view (step 3.11). */
+export interface Commit {
+  sha: string;
+  short: string;
+  subject: string;
+  author: string;
+  /** Author date, epoch seconds. */
+  date: number;
+  /** Parent SHAs (≥2 ⇒ a merge). */
+  parents: string[];
+  /** Ref decorations (branch tips, tags), e.g. `main`, `tag: v1`. */
+  refs: string[];
+}
+
+/** Recent history for the project's repo (HEAD's log, newest first). */
+export function gitLog(repoRoot: string, limit?: number): Promise<Commit[]> {
+  return invoke("git_log", { repoRoot, limit: limit ?? null });
+}
+
+/** One local branch with its upstream tracking (step 3.11). */
+export interface Branch {
+  name: string;
+  upstream: string | null;
+  ahead: number;
+  behind: number;
+  isHead: boolean;
+  /** Branch tip short SHA. */
+  short: string;
+}
+
+/** The project's branches: locals (with ahead/behind), current, and remotes. */
+export interface Branches {
+  current: string | null;
+  detached: boolean;
+  local: Branch[];
+  remote: string[];
+}
+
+export function gitBranches(repoRoot: string): Promise<Branches> {
+  return invoke("git_branches", { repoRoot });
+}
+
+/** One working-tree status entry — the porcelain `XY` pair (step 3.11). */
+export interface StatusEntry {
+  path: string;
+  /** Staged (index) status char: `M`/`A`/`D`/`R`/`C`/`?`/` `. */
+  index: string;
+  /** Unstaged (worktree) status char. */
+  worktree: string;
+  untracked: boolean;
+}
+
+export function gitStatusEntries(repoRoot: string): Promise<StatusEntry[]> {
+  return invoke("git_status_entries", { repoRoot });
+}
+
+/** One stash entry: its ref (`stash@{0}`) and description (step 3.11). */
+export interface Stash {
+  reference: string;
+  message: string;
+}
+
+export function gitStashList(repoRoot: string): Promise<Stash[]> {
+  return invoke("git_stash_list", { repoRoot });
+}
+
+/** The files a commit changed (reuses the DiffFile shape; `absPath` is null —
+ *  historical content isn't inline-editable). */
+export function gitCommitFiles(repoRoot: string, sha: string): Promise<DiffFile[]> {
+  return invoke("git_commit_files", { repoRoot, sha });
+}
+
+/** One file's unified diff within a commit (step 3.11). */
+export function gitCommitFileDiff(repoRoot: string, sha: string, path: string): Promise<FileDiff> {
+  return invoke("git_commit_file_diff", { repoRoot, sha, path });
+}
+
+// --- write paths ------------------------------------------------------------
+
+/** Check out a branch/tag/commit. Rejects with git's message on a dirty tree. */
+export function gitCheckout(repoRoot: string, reference: string): Promise<string> {
+  return invoke("git_checkout", { repoRoot, reference });
+}
+
+/** Create a branch, optionally from `startPoint` and optionally checking it out. */
+export function gitCreateBranch(
+  repoRoot: string,
+  name: string,
+  startPoint: string | null,
+  checkout: boolean,
+): Promise<string> {
+  return invoke("git_create_branch", { repoRoot, name, startPoint, checkout });
+}
+
+/** Rename a branch. */
+export function gitRenameBranch(repoRoot: string, oldName: string, newName: string): Promise<string> {
+  return invoke("git_rename_branch", { repoRoot, old: oldName, new: newName });
+}
+
+/** Delete a branch. `force` (`-D`) drops unmerged work — gate behind a confirm. */
+export function gitDeleteBranch(repoRoot: string, name: string, force: boolean): Promise<string> {
+  return invoke("git_delete_branch", { repoRoot, name, force });
+}
+
+/** Stage paths (`git add`). */
+export function gitStage(repoRoot: string, paths: string[]): Promise<string> {
+  return invoke("git_stage", { repoRoot, paths });
+}
+
+/** Unstage paths (`git restore --staged`). */
+export function gitUnstage(repoRoot: string, paths: string[]): Promise<string> {
+  return invoke("git_unstage", { repoRoot, paths });
+}
+
+/** Discard tracked changes to paths (revert to HEAD). Destructive. */
+export function gitDiscard(repoRoot: string, paths: string[]): Promise<string> {
+  return invoke("git_discard", { repoRoot, paths });
+}
+
+/** Remove untracked files/dirs at paths (`git clean -fd`). Destructive. */
+export function gitClean(repoRoot: string, paths: string[]): Promise<string> {
+  return invoke("git_clean", { repoRoot, paths });
+}
+
+/** Stash the working tree, optionally including untracked files + a message. */
+export function gitStashPush(
+  repoRoot: string,
+  message: string | null,
+  includeUntracked: boolean,
+): Promise<string> {
+  return invoke("git_stash_push", { repoRoot, message, includeUntracked });
+}
+
+/** Pop a stash back onto the working tree. */
+export function gitStashPop(repoRoot: string, reference: string): Promise<string> {
+  return invoke("git_stash_pop", { repoRoot, reference });
+}
+
+/** Drop a stash without applying it. Destructive. */
+export function gitStashDrop(repoRoot: string, reference: string): Promise<string> {
+  return invoke("git_stash_drop", { repoRoot, reference });
+}
+
+/** Fetch from a remote (default `origin`), pruning deleted remote branches. */
+export function gitFetch(repoRoot: string, remote?: string): Promise<string> {
+  return invoke("git_fetch", { repoRoot, remote: remote ?? null });
+}
+
+/** Pull the current branch. Rejects with git's message on conflict. */
+export function gitPull(repoRoot: string): Promise<string> {
+  return invoke("git_pull", { repoRoot });
+}
+
+/** Push the current branch. Never auto-pushes; `force` uses `--force-with-lease`. */
+export function gitPush(repoRoot: string, force: boolean): Promise<string> {
+  return invoke("git_push", { repoRoot, force });
+}

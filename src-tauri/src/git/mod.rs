@@ -871,6 +871,478 @@ fn git_run(path: &Path, args: &[&str]) -> Result<String, String> {
     Ok(String::from_utf8_lossy(&out.stdout).trim().to_owned())
 }
 
+// ---------------------------------------------------------------------------
+// Git panel (step 3.11) — design §5 "Git" / §7. A project-scoped repo lens:
+// history, branches, working tree, stash, and remote ops — the repo-level
+// counterpart to the instance-scoped Diff/Review panel (step 2.7).
+//
+// Read paths each run a *single* batched `git` command (a whole log, the whole
+// branch list, the whole status — never one invocation per row); write paths
+// shell out exactly like the worktree code above. Design §9 allows "git2 or
+// shell-out"; we stay shell-out for consistency with the rest of this module —
+// one toolchain, the same `CREATE_NO_WINDOW` + error-capture helpers, and no
+// libgit2 build dependency. Destructive ops (branch -D, discard, clean,
+// force-push) are gated behind a confirm in the UI, not here.
+
+/// Field/record separators for `git log --format` (and friends): characters that
+/// never occur in commit metadata, so a subject with spaces/commas/newlines stays
+/// in one piece. ASCII unit-separator (0x1f) between fields, record-separator
+/// (0x1e) between commits.
+const US: char = '\u{1f}';
+const RS: char = '\u{1e}';
+
+/// One commit in the history view (step 3.11).
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Commit {
+    pub sha: String,
+    pub short: String,
+    pub subject: String,
+    pub author: String,
+    /// Author date, epoch seconds (the panel formats it locally).
+    pub date: i64,
+    /// Parent SHAs (≥2 ⇒ a merge) — lets the panel draw a minimal graph gutter.
+    pub parents: Vec<String>,
+    /// Ref decorations on this commit (branch tips, tags), e.g. `main`, `tag: v1`.
+    pub refs: Vec<String>,
+}
+
+/// Recent history for a project's repo (step 3.11): HEAD's log, newest first,
+/// capped at `limit` (default 200, hard-capped at 2000 so a giant repo can't
+/// flood the UI in one call). Pure inspection.
+#[tauri::command]
+pub fn git_log(repo_root: String, limit: Option<u32>) -> Result<Vec<Commit>, String> {
+    let root = Path::new(&repo_root);
+    let n = limit.unwrap_or(200).clamp(1, 2000).to_string();
+    let fmt = format!("%H{US}%h{US}%an{US}%at{US}%P{US}%D{US}%s{RS}");
+    let out = git_stdout(root, &["log", "--no-color", "-n", &n, &format!("--format={fmt}")])
+        .unwrap_or_default();
+    let mut commits = Vec::new();
+    for rec in out.split(RS) {
+        let rec = rec.trim_matches(|c| c == '\n' || c == '\r');
+        if rec.is_empty() {
+            continue;
+        }
+        let mut f = rec.split(US);
+        let sha = f.next().unwrap_or("").to_owned();
+        if sha.is_empty() {
+            continue;
+        }
+        let short = f.next().unwrap_or("").to_owned();
+        let author = f.next().unwrap_or("").to_owned();
+        let date = f.next().unwrap_or("").trim().parse::<i64>().unwrap_or(0);
+        let parents = f
+            .next()
+            .unwrap_or("")
+            .split_whitespace()
+            .map(str::to_owned)
+            .collect();
+        let refs = f
+            .next()
+            .unwrap_or("")
+            .split(", ")
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_owned)
+            .collect();
+        let subject = f.next().unwrap_or("").to_owned();
+        commits.push(Commit { sha, short, subject, author, date, parents, refs });
+    }
+    Ok(commits)
+}
+
+/// One local branch in the branch list (step 3.11), with its upstream tracking.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Branch {
+    pub name: String,
+    /// The configured upstream (e.g. `origin/main`), or `None` if unset.
+    pub upstream: Option<String>,
+    pub ahead: u32,
+    pub behind: u32,
+    /// True for the currently checked-out branch.
+    pub is_head: bool,
+    /// The branch tip's short SHA.
+    pub short: String,
+}
+
+/// The project's branches (step 3.11): local branches with ahead/behind, the
+/// current branch (or a detached-HEAD flag), and the remote branch names.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Branches {
+    /// The checked-out branch, or `None` when HEAD is detached.
+    pub current: Option<String>,
+    pub detached: bool,
+    pub local: Vec<Branch>,
+    pub remote: Vec<String>,
+}
+
+#[tauri::command]
+pub fn git_branches(repo_root: String) -> Result<Branches, String> {
+    let root = Path::new(&repo_root);
+    let fmt = format!(
+        "%(HEAD){US}%(refname:short){US}%(upstream:short){US}%(upstream:track){US}%(objectname:short)"
+    );
+    let out = git_stdout(root, &["branch", "--format", &fmt]).unwrap_or_default();
+    let mut local = Vec::new();
+    let mut current = None;
+    for line in out.lines() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let mut f = line.split(US);
+        let head = f.next().unwrap_or("").trim();
+        let name = f.next().unwrap_or("").to_owned();
+        if name.is_empty() {
+            continue;
+        }
+        let upstream = f.next().unwrap_or("").trim();
+        let track = f.next().unwrap_or("");
+        let short = f.next().unwrap_or("").to_owned();
+        let is_head = head == "*";
+        if is_head {
+            current = Some(name.clone());
+        }
+        let (ahead, behind) = parse_track(track);
+        local.push(Branch {
+            name,
+            upstream: (!upstream.is_empty()).then(|| upstream.to_owned()),
+            ahead,
+            behind,
+            is_head,
+            short,
+        });
+    }
+    // HEAD is detached when no branch row was the current one, yet HEAD resolves.
+    let detached = current.is_none()
+        && git_output(root, &["rev-parse", "--abbrev-ref", "HEAD"]).as_deref() == Some("HEAD");
+    let remote = git_stdout(root, &["branch", "-r", "--format", "%(refname:short)"])
+        .unwrap_or_default()
+        .lines()
+        .map(str::trim)
+        .filter(|s| !s.is_empty() && !s.ends_with("/HEAD"))
+        .map(str::to_owned)
+        .collect();
+    Ok(Branches { current, detached, local, remote })
+}
+
+/// Parse git's `%(upstream:track)` token — `[ahead 1, behind 2]`, `[ahead 3]`,
+/// `[behind 4]`, `[gone]`, or empty — into `(ahead, behind)`.
+fn parse_track(track: &str) -> (u32, u32) {
+    let mut ahead = 0;
+    let mut behind = 0;
+    let inner = track.trim().trim_start_matches('[').trim_end_matches(']');
+    for part in inner.split(',') {
+        let p = part.trim();
+        if let Some(n) = p.strip_prefix("ahead ") {
+            ahead = n.trim().parse().unwrap_or(0);
+        } else if let Some(n) = p.strip_prefix("behind ") {
+            behind = n.trim().parse().unwrap_or(0);
+        }
+    }
+    (ahead, behind)
+}
+
+/// One entry in the working-tree status (step 3.11). The porcelain `XY` pair:
+/// `index` is the staged column, `worktree` the unstaged column (each `M`/`A`/
+/// `D`/`R`/`C`/`?`/` `). The panel buckets these into staged/unstaged/untracked.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StatusEntry {
+    pub path: String,
+    pub index: String,
+    pub worktree: String,
+    pub untracked: bool,
+}
+
+#[tauri::command]
+pub fn git_status_entries(repo_root: String) -> Result<Vec<StatusEntry>, String> {
+    let root = Path::new(&repo_root);
+    let out = git_stdout(
+        root,
+        &[
+            "-c",
+            "core.quotePath=false",
+            "status",
+            "--porcelain=v1",
+            "--untracked-files=all",
+        ],
+    )
+    .unwrap_or_default();
+    let mut entries = Vec::new();
+    for line in out.lines() {
+        // Each record is `XY <path>`; the first three bytes are ASCII so slicing
+        // by byte index is safe even when the path itself is non-ASCII.
+        if line.len() < 4 {
+            continue;
+        }
+        let index = &line[0..1];
+        let worktree = &line[1..2];
+        let mut path = line[3..].to_owned();
+        // Renames/copies render as `old -> new` — show the destination path.
+        if let Some(idx) = path.find(" -> ") {
+            path = path[idx + 4..].to_owned();
+        }
+        entries.push(StatusEntry {
+            path,
+            index: index.to_owned(),
+            worktree: worktree.to_owned(),
+            untracked: index == "?",
+        });
+    }
+    entries.sort_by(|a, b| a.path.cmp(&b.path));
+    Ok(entries)
+}
+
+/// One stash entry (step 3.11): its ref (`stash@{0}`) and one-line description.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Stash {
+    pub reference: String,
+    pub message: String,
+}
+
+#[tauri::command]
+pub fn git_stash_list(repo_root: String) -> Result<Vec<Stash>, String> {
+    let root = Path::new(&repo_root);
+    let fmt = format!("%gd{US}%s");
+    let out = git_stdout(root, &["stash", "list", &format!("--format={fmt}")]).unwrap_or_default();
+    let mut stashes = Vec::new();
+    for line in out.lines() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let mut f = line.split(US);
+        let reference = f.next().unwrap_or("").to_owned();
+        if reference.is_empty() {
+            continue;
+        }
+        let message = f.next().unwrap_or("").to_owned();
+        stashes.push(Stash { reference, message });
+    }
+    Ok(stashes)
+}
+
+/// The files a commit changed (step 3.11) — the per-commit changed-file list shown
+/// when you click a row in the history. Renames are *not* detected (no `-M`), so a
+/// rename shows as an add + delete and the `--numstat`/`--name-status` paths stay
+/// aligned (same simplification as `instance_diff`). `abs_path` is always `None`:
+/// this is historical content, not the working tree, so it isn't inline-editable.
+#[tauri::command]
+pub fn git_commit_files(repo_root: String, sha: String) -> Result<Vec<DiffFile>, String> {
+    let root = Path::new(&repo_root);
+    let status_by_path = parse_name_status(
+        &git_output(
+            root,
+            &["-c", "core.quotePath=false", "show", "--name-status", "--format=", &sha],
+        )
+        .unwrap_or_default(),
+    );
+    let numstat = git_output(
+        root,
+        &["-c", "core.quotePath=false", "show", "--numstat", "--format=", &sha],
+    )
+    .unwrap_or_default();
+    let mut files = Vec::new();
+    for line in numstat.lines() {
+        let mut cols = line.splitn(3, '\t');
+        let ins_raw = cols.next().unwrap_or("");
+        let del_raw = cols.next().unwrap_or("");
+        let path = match cols.next() {
+            Some(p) if !p.is_empty() => p.to_owned(),
+            _ => continue,
+        };
+        let binary = ins_raw == "-" || del_raw == "-";
+        let status = status_by_path
+            .get(&path)
+            .cloned()
+            .unwrap_or_else(|| "modified".to_owned());
+        files.push(DiffFile {
+            path,
+            abs_path: None,
+            status,
+            insertions: ins_raw.parse().unwrap_or(0),
+            deletions: del_raw.parse().unwrap_or(0),
+            binary,
+        });
+    }
+    files.sort_by(|a, b| a.path.cmp(&b.path));
+    Ok(files)
+}
+
+/// One file's unified diff within a commit (step 3.11) — fetched on demand when a
+/// changed file is selected in the history. `git show --format=` drops the commit
+/// header, leaving just the file's patch (which `git` already diffs against the
+/// commit's parent). Empty text + `binary` for a binary blob.
+#[tauri::command]
+pub fn git_commit_file_diff(
+    repo_root: String,
+    sha: String,
+    path: String,
+) -> Result<FileDiff, String> {
+    let root = Path::new(&repo_root);
+    let out = git_stdout(
+        root,
+        &["-c", "core.quotePath=false", "show", "--format=", &sha, "--", &path],
+    )
+    .unwrap_or_default();
+    let binary = out.contains("Binary files ");
+    Ok(FileDiff {
+        text: if binary { String::new() } else { out },
+        path,
+        base: sha,
+        binary,
+        untracked: false,
+    })
+}
+
+// --- write paths (each shells out; the UI gates the destructive ones) --------
+
+/// Check out a branch, tag, or commit (step 3.11). On success returns git's
+/// stdout; on a dirty-tree / unknown-ref failure returns git's stderr message.
+#[tauri::command]
+pub fn git_checkout(repo_root: String, reference: String) -> Result<String, String> {
+    git_run(Path::new(&repo_root), &["checkout", &reference])
+}
+
+/// Create a branch (step 3.11), optionally from `start_point` and optionally
+/// checking it out. With `checkout` it's `checkout -b`; otherwise `branch`.
+#[tauri::command]
+pub fn git_create_branch(
+    repo_root: String,
+    name: String,
+    start_point: Option<String>,
+    checkout: bool,
+) -> Result<String, String> {
+    let sp = start_point.map(|s| s.trim().to_owned()).filter(|s| !s.is_empty());
+    let mut args: Vec<&str> = if checkout {
+        vec!["checkout", "-b", name.as_str()]
+    } else {
+        vec!["branch", name.as_str()]
+    };
+    if let Some(s) = sp.as_deref() {
+        args.push(s);
+    }
+    git_run(Path::new(&repo_root), &args)
+}
+
+/// Rename a branch (step 3.11).
+#[tauri::command]
+pub fn git_rename_branch(repo_root: String, old: String, new: String) -> Result<String, String> {
+    git_run(Path::new(&repo_root), &["branch", "-m", &old, &new])
+}
+
+/// Delete a branch (step 3.11). `force` uses `-D` (drops unmerged work) — gated
+/// behind a confirm in the UI; the default `-d` refuses to delete unmerged work.
+#[tauri::command]
+pub fn git_delete_branch(repo_root: String, name: String, force: bool) -> Result<String, String> {
+    git_run(
+        Path::new(&repo_root),
+        &["branch", if force { "-D" } else { "-d" }, &name],
+    )
+}
+
+/// Stage paths (step 3.11) — `git add`, which also stages deletions.
+#[tauri::command]
+pub fn git_stage(repo_root: String, paths: Vec<String>) -> Result<String, String> {
+    let mut args = vec!["add", "--"];
+    args.extend(paths.iter().map(String::as_str));
+    git_run(Path::new(&repo_root), &args)
+}
+
+/// Unstage paths (step 3.11) — `git restore --staged`, leaving the working tree
+/// changes in place.
+#[tauri::command]
+pub fn git_unstage(repo_root: String, paths: Vec<String>) -> Result<String, String> {
+    let mut args = vec!["restore", "--staged", "--"];
+    args.extend(paths.iter().map(String::as_str));
+    git_run(Path::new(&repo_root), &args)
+}
+
+/// Discard tracked changes to paths (step 3.11) — revert both the staged and the
+/// working-tree copy to HEAD. Destructive (gated behind a confirm). Untracked
+/// files aren't touched here — `git_clean` removes those.
+#[tauri::command]
+pub fn git_discard(repo_root: String, paths: Vec<String>) -> Result<String, String> {
+    let mut args = vec!["restore", "--staged", "--worktree", "--source=HEAD", "--"];
+    args.extend(paths.iter().map(String::as_str));
+    git_run(Path::new(&repo_root), &args)
+}
+
+/// Remove untracked files/dirs at paths (step 3.11) — `git clean -fd`. Destructive
+/// (gated behind a confirm); the working-tree counterpart to `git_discard`.
+#[tauri::command]
+pub fn git_clean(repo_root: String, paths: Vec<String>) -> Result<String, String> {
+    let mut args = vec!["clean", "-fdq", "--"];
+    args.extend(paths.iter().map(String::as_str));
+    git_run(Path::new(&repo_root), &args)
+}
+
+/// Stash the working tree (step 3.11), optionally including untracked files and
+/// with a message.
+#[tauri::command]
+pub fn git_stash_push(
+    repo_root: String,
+    message: Option<String>,
+    include_untracked: bool,
+) -> Result<String, String> {
+    let msg = message.map(|m| m.trim().to_owned()).filter(|m| !m.is_empty());
+    let mut args = vec!["stash", "push"];
+    if include_untracked {
+        args.push("--include-untracked");
+    }
+    if let Some(m) = msg.as_deref() {
+        args.push("-m");
+        args.push(m);
+    }
+    git_run(Path::new(&repo_root), &args)
+}
+
+/// Pop a stash back onto the working tree (step 3.11). A conflict surfaces git's
+/// message for the user to resolve in the Project Shell.
+#[tauri::command]
+pub fn git_stash_pop(repo_root: String, reference: String) -> Result<String, String> {
+    git_run(Path::new(&repo_root), &["stash", "pop", &reference])
+}
+
+/// Drop a stash without applying it (step 3.11) — destructive (gated by a confirm).
+#[tauri::command]
+pub fn git_stash_drop(repo_root: String, reference: String) -> Result<String, String> {
+    git_run(Path::new(&repo_root), &["stash", "drop", &reference])
+}
+
+/// Fetch from a remote (step 3.11), pruning deleted remote branches. No remote ⇒
+/// the default (usually `origin`).
+#[tauri::command]
+pub fn git_fetch(repo_root: String, remote: Option<String>) -> Result<String, String> {
+    let r = remote.map(|s| s.trim().to_owned()).filter(|s| !s.is_empty());
+    let mut args = vec!["fetch", "--prune"];
+    if let Some(s) = r.as_deref() {
+        args.push(s);
+    }
+    git_run(Path::new(&repo_root), &args)
+}
+
+/// Pull the current branch (step 3.11). A merge conflict / non-fast-forward
+/// surfaces git's message; resolve in the Project Shell.
+#[tauri::command]
+pub fn git_pull(repo_root: String) -> Result<String, String> {
+    git_run(Path::new(&repo_root), &["pull"])
+}
+
+/// Push the current branch (step 3.11). **Never** auto-pushes — only called from an
+/// explicit button. `force` uses `--force-with-lease` (refuses to clobber remote
+/// work it hasn't seen) rather than a bare `--force`, and is gated by a confirm.
+#[tauri::command]
+pub fn git_push(repo_root: String, force: bool) -> Result<String, String> {
+    let mut args = vec!["push"];
+    if force {
+        args.push("--force-with-lease");
+    }
+    git_run(Path::new(&repo_root), &args)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1199,6 +1671,90 @@ mod tests {
         let synth = instance_file_diff(root, "HEAD".into(), "fresh.txt".into(), true).unwrap();
         assert!(synth.untracked);
         assert!(synth.text.contains("+hello") && synth.text.contains("+world"));
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn parse_track_reads_ahead_behind() {
+        assert_eq!(parse_track("[ahead 1, behind 2]"), (1, 2));
+        assert_eq!(parse_track("[ahead 3]"), (3, 0));
+        assert_eq!(parse_track("[behind 4]"), (0, 4));
+        assert_eq!(parse_track("[gone]"), (0, 0));
+        assert_eq!(parse_track(""), (0, 0));
+    }
+
+    /// The Git panel's read paths over a real repo: log lists the commit, branches
+    /// reports a current branch, status surfaces an unstaged edit + an untracked
+    /// file, and a commit's changed-file list + per-file diff come back.
+    #[test]
+    fn git_panel_reads_log_branches_status_and_commit() {
+        let dir = temp_dir("panel");
+        if !init_repo(&dir) {
+            std::fs::remove_dir_all(&dir).ok();
+            return;
+        }
+        std::fs::write(dir.join("a.txt"), "1\n").unwrap();
+        git_run(&dir, &["add", "."]).unwrap();
+        git_run(&dir, &["commit", "-q", "-m", "first commit"]).unwrap();
+        let root = dir.to_string_lossy().into_owned();
+
+        let log = git_log(root.clone(), None).unwrap();
+        let head = log.iter().find(|c| c.subject == "first commit").expect("commit in log");
+        assert!(!head.sha.is_empty());
+
+        let br = git_branches(root.clone()).unwrap();
+        assert!(br.current.is_some());
+        assert!(!br.detached);
+        assert!(br.local.iter().any(|b| b.is_head));
+
+        // The commit's file list + a per-file diff.
+        let files = git_commit_files(root.clone(), head.sha.clone()).unwrap();
+        let a = files.iter().find(|f| f.path == "a.txt").expect("a.txt in commit");
+        assert_eq!(a.status, "added");
+        let fd = git_commit_file_diff(root.clone(), head.sha.clone(), "a.txt".into()).unwrap();
+        assert!(fd.text.contains("+1"));
+
+        // An unstaged modification + an untracked file show up in status.
+        std::fs::write(dir.join("a.txt"), "1\n2\n").unwrap();
+        std::fs::write(dir.join("b.txt"), "new\n").unwrap();
+        let st = git_status_entries(root).unwrap();
+        assert!(st.iter().any(|e| e.path == "a.txt" && e.worktree == "M"));
+        assert!(st.iter().any(|e| e.path == "b.txt" && e.untracked));
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Write paths: create + checkout a branch, stage a change, stash it (which
+    /// cleans the tree), then pop it back.
+    #[test]
+    fn git_panel_branch_stage_stash_roundtrip() {
+        let dir = temp_dir("panel-write");
+        if !init_repo(&dir) {
+            std::fs::remove_dir_all(&dir).ok();
+            return;
+        }
+        std::fs::write(dir.join("a.txt"), "1\n").unwrap();
+        git_run(&dir, &["add", "."]).unwrap();
+        git_run(&dir, &["commit", "-q", "-m", "seed"]).unwrap();
+        let root = dir.to_string_lossy().into_owned();
+
+        git_create_branch(root.clone(), "feature".into(), None, true).unwrap();
+        let br = git_branches(root.clone()).unwrap();
+        assert_eq!(br.current.as_deref(), Some("feature"));
+
+        // A staged change, stashed (tree goes clean), then popped back.
+        std::fs::write(dir.join("a.txt"), "1\n2\n").unwrap();
+        git_stage(root.clone(), vec!["a.txt".into()]).unwrap();
+        git_stash_push(root.clone(), Some("wip".into()), false).unwrap();
+        assert!(git_status_entries(root.clone()).unwrap().is_empty(), "stash cleaned the tree");
+        let stashes = git_stash_list(root.clone()).unwrap();
+        assert_eq!(stashes.len(), 1);
+        git_stash_pop(root.clone(), stashes[0].reference.clone()).unwrap();
+        assert!(
+            git_status_entries(root).unwrap().iter().any(|e| e.path == "a.txt"),
+            "pop restored the change"
+        );
 
         std::fs::remove_dir_all(&dir).ok();
     }

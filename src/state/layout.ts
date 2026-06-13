@@ -16,6 +16,7 @@ import type { EditorDescriptor } from "./editors";
 import type { DiffDescriptor } from "./diffs";
 import type { McpDescriptor } from "./mcp";
 import type { SkillDescriptor } from "./skills";
+import type { GitDescriptor } from "./git";
 
 /**
  * The workspace key the MVP persists under. Layout is global for now; the schema
@@ -25,9 +26,10 @@ import type { SkillDescriptor } from "./skills";
 export const WORKSPACE_KEY = "__global__";
 
 /** Bump if the saved-payload shape changes incompatibly. (v2 added `shells`;
- *  v3 made shells project-scoped; v4 added `editors`.) `diffs` (step 2.7) and
- *  `mcps` (step 3.7) and `skills` (step 3.7b) were added without a bump — every
- *  reader defaults them to `[]` when absent, so old and new blobs interoperate.
+ *  v3 made shells project-scoped; v4 added `editors`.) `diffs` (step 2.7),
+ *  `mcps` (step 3.7), `skills` (step 3.7b), and `gits` (step 3.11) were added
+ *  without a bump — every reader defaults them to `[]` when absent, so old and
+ *  new blobs interoperate.
  *  Exported because layout presets (step 3.3) stamp the same version onto the
  *  `SavedLayout` snapshots they store. */
 export const SCHEMA_VERSION = 4;
@@ -47,6 +49,8 @@ export interface SavedLayout {
   mcps: McpDescriptor[];
   /** Skill Manager panels (project binding) — re-fetched on restore. */
   skills: SkillDescriptor[];
+  /** Git panels (project binding) — re-fetched from git on restore. */
+  gits: GitDescriptor[];
 }
 
 /** Load and validate the saved layout for `key`; null when absent or unreadable. */
@@ -72,6 +76,7 @@ export async function loadLayout(key: string = WORKSPACE_KEY): Promise<SavedLayo
       diffs: Array.isArray(parsed.diffs) ? parsed.diffs : [],
       mcps: Array.isArray(parsed.mcps) ? parsed.mcps : [],
       skills: Array.isArray(parsed.skills) ? parsed.skills : [],
+      gits: Array.isArray(parsed.gits) ? parsed.gits : [],
     };
   } catch {
     return null; // corrupt blob — start from an empty workspace
@@ -89,6 +94,7 @@ function write(
   diffs: DiffDescriptor[],
   mcps: McpDescriptor[],
   skills: SkillDescriptor[],
+  gits: GitDescriptor[],
 ): Promise<void> {
   const payload: SavedLayout = {
     version: SCHEMA_VERSION,
@@ -99,6 +105,7 @@ function write(
     diffs,
     mcps,
     skills,
+    gits,
   };
   return setLayout(key, JSON.stringify(payload)).catch(() => {
     // Persisting layout is best-effort; a failed write just means the next
@@ -119,13 +126,14 @@ export function saveLayoutDebounced(
   diffs: DiffDescriptor[],
   mcps: McpDescriptor[],
   skills: SkillDescriptor[],
+  gits: GitDescriptor[],
   key: string = WORKSPACE_KEY,
   delayMs = 400,
 ): void {
   if (saveTimer) clearTimeout(saveTimer);
   saveTimer = setTimeout(() => {
     saveTimer = null;
-    void write(key, tree, consoleInstanceIds, shells, editors, diffs, mcps, skills);
+    void write(key, tree, consoleInstanceIds, shells, editors, diffs, mcps, skills, gits);
   }, delayMs);
 }
 
@@ -142,11 +150,12 @@ export function saveLayoutNow(
   diffs: DiffDescriptor[],
   mcps: McpDescriptor[],
   skills: SkillDescriptor[],
+  gits: GitDescriptor[],
   key: string,
 ): void {
   if (saveTimer) {
     clearTimeout(saveTimer);
     saveTimer = null;
   }
-  void write(key, tree, consoleInstanceIds, shells, editors, diffs, mcps, skills);
+  void write(key, tree, consoleInstanceIds, shells, editors, diffs, mcps, skills, gits);
 }

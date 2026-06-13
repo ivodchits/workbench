@@ -45,6 +45,7 @@ export type CommandId =
   | "resumeLastSession"
   | "killInstance"
   | "showDiff"
+  | "openGit"
   | "jumpNeedsYou"
   | "jumpPrevNeedsYou"
   | "savePreset"
@@ -135,6 +136,7 @@ const RAW_BINDINGS: RawBinding[] = [
   { chord: "Ctrl+Shift+R", command: "resumeLastSession", scope: "global", title: "Resume the last Claude session in the active instance" },
   { chord: "Ctrl+Shift+K", command: "killInstance", scope: "global", title: "Kill the focused instance" },
   { chord: "Ctrl+Shift+D", command: "showDiff", scope: "global", title: "Review changes (diff) for the focused instance" },
+  { chord: "Ctrl+Shift+G", command: "openGit", scope: "global", title: "Open the Git panel for the active project" },
   { chord: "Ctrl+Shift+P", command: "openTemplates", scope: "global", title: "Open the prompt template library" },
   { chord: "Ctrl+Shift+Q", command: "openQueue", scope: "global", title: "Queue a prompt for an instance" },
   // Command palette (3.10) — IntelliJ-style "find action". `Ctrl+Shift+A` because the
