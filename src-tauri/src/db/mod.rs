@@ -155,6 +155,18 @@ const MIGRATIONS: &[&str] = &[
     r#"
     ALTER TABLE instances ADD COLUMN accent TEXT;
     "#,
+    // v6 -> v7: remote projects over SSH+tmux (step 3.12, design §3/§4.2). A remote
+    // project points at a host instead of a local folder: `remote_ssh_dest` is the
+    // SSH destination (an alias from `~/.ssh/config`, or `user@host`) — NULL flags a
+    // local project — and `remote_dir` is the working directory on that host (also
+    // mirrored into the NOT NULL `root_path` so display code that reads it keeps
+    // working). A remote instance runs as a persistent tmux session named in
+    // `remote_tmux_session` (`wb-<short id>`, or an adopted name) — NULL for local.
+    r#"
+    ALTER TABLE projects ADD COLUMN remote_ssh_dest TEXT;
+    ALTER TABLE projects ADD COLUMN remote_dir TEXT;
+    ALTER TABLE instances ADD COLUMN remote_tmux_session TEXT;
+    "#,
 ];
 
 /// Apply any migrations the database hasn't seen yet, advancing

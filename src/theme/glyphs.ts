@@ -47,6 +47,7 @@ export const GLYPH = {
   mcp: "◈",
   cornerTL: "╭─",
   warn: "⚠",
+  remote: "⇄",
 } as const;
 
 /**

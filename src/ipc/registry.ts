@@ -25,6 +25,11 @@ export interface Project {
   worktreeSetupCommand: string | null;
   /** Re-seed the repo root's `.env*` files into new worktrees (step 2.5). */
   worktreeCopyEnv: boolean;
+  /** SSH destination for a *remote* project (step 3.12) — a `~/.ssh/config` alias
+   *  or `user@host`. null ⇒ a normal local project. */
+  remoteSshDest: string | null;
+  /** Working directory on the remote host (step 3.12); null for local. */
+  remoteDir: string | null;
   sortOrder: number;
   createdAt: number;
 }
@@ -52,6 +57,9 @@ export interface Instance {
   lastActivityAt: number | null;
   /** Per-instance accent color (step 3.9); null inherits the active theme accent. */
   accent: string | null;
+  /** tmux session name on the host for a remote project's instance (step 3.12);
+   *  null for a local instance. */
+  remoteTmuxSession: string | null;
 }
 
 // --- inputs -----------------------------------------------------------------
@@ -71,6 +79,10 @@ export interface NewProject {
   groupId?: string | null;
   worktreeSetupCommand?: string | null;
   worktreeCopyEnv?: boolean;
+  /** SSH destination for a remote project (step 3.12); omit for local. */
+  remoteSshDest?: string | null;
+  /** Working directory on the remote host (step 3.12). */
+  remoteDir?: string | null;
 }
 
 export interface ProjectPatch {
@@ -80,6 +92,8 @@ export interface ProjectPatch {
   groupId?: string | null;
   worktreeSetupCommand?: string | null;
   worktreeCopyEnv?: boolean;
+  remoteSshDest?: string | null;
+  remoteDir?: string | null;
   sortOrder?: number;
 }
 
@@ -91,6 +105,9 @@ export interface NewInstance {
   branch?: string | null;
   /** Defaults to the parent project's root path when omitted. */
   workingDir?: string;
+  /** Override the tmux session name when *adopting* an existing remote session
+   *  (step 3.12); omit to default to `wb-<short id>` for a remote instance. */
+  remoteTmuxSession?: string;
 }
 
 export interface InstancePatch {
@@ -111,6 +128,8 @@ export interface InstancePatch {
   lastActivityAt?: number | null;
   /** Set a per-instance accent (hex/CSS color), or null to clear it (step 3.9). */
   accent?: string | null;
+  /** Set/clear the remote tmux session name (step 3.12). */
+  remoteTmuxSession?: string | null;
 }
 
 // --- groups -----------------------------------------------------------------

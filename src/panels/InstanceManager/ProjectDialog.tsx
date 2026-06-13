@@ -26,6 +26,13 @@ const NEW_GROUP = "__new__";
 function ProjectDialog({ project, groups, onClose }: ProjectDialogProps) {
   const editing = project !== undefined;
 
+  // A remote project points at a host over SSH instead of a local folder (step
+  // 3.12): the folder picker + git inspection are replaced by an SSH destination +
+  // remote dir, and the worktree section (local-only) is hidden.
+  const [remote, setRemote] = useState(project?.remoteSshDest != null);
+  const [sshDest, setSshDest] = useState(project?.remoteSshDest ?? "");
+  const [remoteDir, setRemoteDir] = useState(project?.remoteDir ?? "");
+
   const [path, setPath] = useState(project?.rootPath ?? "");
   const [name, setName] = useState(project?.name ?? "");
   const [branch, setBranch] = useState(project?.defaultBranch ?? "");
@@ -54,9 +61,10 @@ function ProjectDialog({ project, groups, onClose }: ProjectDialogProps) {
     [branch, name],
   );
 
-  // In edit mode, surface the git state of the existing path on open.
+  // In edit mode, surface the git state of the existing path on open — local
+  // projects only (a remote project's path lives on the host, not this disk).
   useEffect(() => {
-    if (editing && project) void inspect(project.rootPath, false);
+    if (editing && project && !remote) void inspect(project.rootPath, false);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -75,11 +83,17 @@ function ProjectDialog({ project, groups, onClose }: ProjectDialogProps) {
     }
   }, [path, inspect]);
 
-  const canSave = name.trim().length > 0 && path.trim().length > 0 && !busy;
+  const canSave = remote
+    ? name.trim().length > 0 && sshDest.trim().length > 0 && remoteDir.trim().length > 0 && !busy
+    : name.trim().length > 0 && path.trim().length > 0 && !busy;
 
   const save = useCallback(async () => {
     if (!canSave) {
-      setError("A folder and a name are required.");
+      setError(
+        remote
+          ? "An SSH destination, a remote directory, and a name are required."
+          : "A folder and a name are required.",
+      );
       return;
     }
     setBusy(true);
@@ -95,26 +109,35 @@ function ProjectDialog({ project, groups, onClose }: ProjectDialogProps) {
         groupId = groupChoice;
       }
 
-      const branchValue = branch.trim() || null;
-      const setupValue = setupCommand.trim() || null;
+      // A remote project mirrors its remote dir into `rootPath` (so display code
+      // that reads the root keeps working) and carries no local worktree config; a
+      // local project clears the remote fields. Sending the remote fields explicitly
+      // (string or null) keeps an edit that flips remote-ness consistent.
+      const fields = remote
+        ? {
+            name: name.trim(),
+            rootPath: remoteDir.trim(),
+            defaultBranch: null,
+            groupId,
+            worktreeSetupCommand: null,
+            worktreeCopyEnv: false,
+            remoteSshDest: sshDest.trim(),
+            remoteDir: remoteDir.trim(),
+          }
+        : {
+            name: name.trim(),
+            rootPath: path.trim(),
+            defaultBranch: branch.trim() || null,
+            groupId,
+            worktreeSetupCommand: setupCommand.trim() || null,
+            worktreeCopyEnv: copyEnv,
+            remoteSshDest: null,
+            remoteDir: null,
+          };
       if (editing && project) {
-        await updateProject(project.id, {
-          name: name.trim(),
-          rootPath: path.trim(),
-          defaultBranch: branchValue,
-          groupId,
-          worktreeSetupCommand: setupValue,
-          worktreeCopyEnv: copyEnv,
-        });
+        await updateProject(project.id, fields);
       } else {
-        await addProject({
-          name: name.trim(),
-          rootPath: path.trim(),
-          defaultBranch: branchValue,
-          groupId,
-          worktreeSetupCommand: setupValue,
-          worktreeCopyEnv: copyEnv,
-        });
+        await addProject(fields);
       }
       onClose();
     } catch (e) {
@@ -123,6 +146,9 @@ function ProjectDialog({ project, groups, onClose }: ProjectDialogProps) {
     }
   }, [
     canSave,
+    remote,
+    sshDest,
+    remoteDir,
     groupChoice,
     newGroupName,
     branch,
@@ -138,22 +164,68 @@ function ProjectDialog({ project, groups, onClose }: ProjectDialogProps) {
   return (
     <Modal title={editing ? "edit project" : "add project"} onClose={onClose}>
       <div style={{ display: "flex", flexDirection: "column", gap: 13 }}>
-        <Field label="folder">
-          <div style={{ display: "flex", gap: 7 }}>
-            <input
-              value={path}
-              onChange={(e) => setPath(e.target.value)}
-              onBlur={() => path.trim() && void inspect(path.trim(), false)}
-              placeholder="C:\path\to\repo"
-              spellCheck={false}
-              style={{ ...inputStyle, flex: 1 }}
-            />
-            <button onClick={browse} style={buttonStyle}>
-              browse…
-            </button>
-          </div>
-          <GitHint gitRepo={gitRepo} />
-        </Field>
+        {/* Remote (SSH) toggle (step 3.12). When on, the project lives on a host:
+            agents run as tmux sessions there and only the console crosses SSH. */}
+        <label
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 7,
+            font: "11.5px var(--wb-mono)",
+            color: "var(--wb-textDim2)",
+            cursor: "pointer",
+          }}
+        >
+          <input type="checkbox" checked={remote} onChange={(e) => setRemote(e.target.checked)} />
+          <span style={{ color: "var(--wb-accent)" }}>{GLYPH.remote}</span> remote (SSH) — run agents
+          on a host over SSH + tmux
+        </label>
+
+        {remote ? (
+          <>
+            <Field label="ssh destination">
+              <input
+                value={sshDest}
+                onChange={(e) => setSshDest(e.target.value)}
+                placeholder="myserver  (or user@host — resolved via ~/.ssh/config)"
+                spellCheck={false}
+                style={inputStyle}
+              />
+              <span
+                style={{ font: "10px var(--wb-mono)", color: "var(--wb-textFaint)", marginTop: 4 }}
+              >
+                Auth, host, port, and keys come from your SSH config — Workbench manages no
+                credentials.
+              </span>
+            </Field>
+            <Field label="remote directory">
+              <input
+                value={remoteDir}
+                onChange={(e) => setRemoteDir(e.target.value)}
+                placeholder="/home/you/project"
+                spellCheck={false}
+                style={inputStyle}
+              />
+            </Field>
+          </>
+        ) : (
+          <Field label="folder">
+            <div style={{ display: "flex", gap: 7 }}>
+              <input
+                value={path}
+                onChange={(e) => setPath(e.target.value)}
+                onBlur={() => path.trim() && void inspect(path.trim(), false)}
+                placeholder="C:\path\to\repo"
+                spellCheck={false}
+                style={{ ...inputStyle, flex: 1 }}
+              />
+              <button onClick={browse} style={buttonStyle}>
+                browse…
+              </button>
+            </div>
+            <GitHint gitRepo={gitRepo} />
+          </Field>
+        )}
 
         <Field label="name">
           <input
@@ -165,15 +237,17 @@ function ProjectDialog({ project, groups, onClose }: ProjectDialogProps) {
           />
         </Field>
 
-        <Field label="default branch">
-          <input
-            value={branch}
-            onChange={(e) => setBranch(e.target.value)}
-            placeholder="(none detected)"
-            spellCheck={false}
-            style={inputStyle}
-          />
-        </Field>
+        {!remote && (
+          <Field label="default branch">
+            <input
+              value={branch}
+              onChange={(e) => setBranch(e.target.value)}
+              placeholder="(none detected)"
+              spellCheck={false}
+              style={inputStyle}
+            />
+          </Field>
+        )}
 
         <Field label="group">
           <select
@@ -201,8 +275,10 @@ function ProjectDialog({ project, groups, onClose }: ProjectDialogProps) {
           )}
         </Field>
 
-        {/* Worktree post-create setup (step 2.5). Runs only when an instance flips
-            its worktree toggle on — worktrees don't share .env / node_modules. */}
+        {/* Worktree post-create setup (step 2.5). Local-only — hidden for remote
+            projects (no worktrees over SSH this step). Runs only when an instance
+            flips its worktree toggle on — worktrees don't share .env / node_modules. */}
+        {!remote && (
         <Field label="worktree setup">
           <label
             style={{
@@ -232,6 +308,7 @@ function ProjectDialog({ project, groups, onClose }: ProjectDialogProps) {
             Run in each new worktree before its console starts.
           </span>
         </Field>
+        )}
 
         {error && <div style={{ color: "var(--wb-needs)", fontSize: 11.5 }}>{error}</div>}
 

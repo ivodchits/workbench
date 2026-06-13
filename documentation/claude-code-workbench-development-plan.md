@@ -833,7 +833,7 @@ Pull these in once the relevant phase is stable; each is an independent step whe
 - [x] 3.9 Theme variants, CRT toggle, per-instance accent (+ Ctrl+wheel font size)
 - [x] 3.10 Command palette + remappable keys (permission-mode switch dropped — see step)
 - [x] 3.11 Git panel (history / branches / checkout)
-- [ ] 3.12 Remote projects (SSH + tmux), no telemetry
+- [x] 3.12 Remote projects (SSH + tmux), no telemetry
 
 **Phase 4 — remote & power**
 - [ ] 4.1 PTY multiplexing backend

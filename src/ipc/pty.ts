@@ -18,6 +18,21 @@ export interface SpawnResult {
   cwd: string;
 }
 
+/**
+ * Remote launch descriptor (step 3.12). When passed to `ptySpawn`, the child is a
+ * local `ssh` process that attaches-or-creates a tmux session on `dest` and runs
+ * `claude` inside it — so the TUI streams over SSH while the session persists
+ * across console close / app quit. Null for a normal local launch.
+ */
+export interface RemoteSpawn {
+  /** SSH destination — a `~/.ssh/config` alias or `user@host`. */
+  dest: string;
+  /** tmux session name on the host (`wb-<short id>`, or an adopted name). */
+  session: string;
+  /** Working directory on the host the session starts in. */
+  dir: string;
+}
+
 // The backend struct uses snake_case; map it to camelCase at the boundary.
 interface RawSpawnResult {
   session_id: string | null;
@@ -28,6 +43,8 @@ interface RawSpawnResult {
  * Spawn the chosen child for `instanceId` in `cwd`, routing output to `onOutput`.
  * `resumeSessionId` (claude only, step 3.8): when set, launch `claude --resume
  * <id>` to continue that session instead of minting a fresh one; null = fresh.
+ * `remote` (step 3.12): when set, drive a remote `claude` over SSH+tmux instead of
+ * a local child (and no session id is minted — the result's `sessionId` is null).
  */
 export async function ptySpawn(
   instanceId: string,
@@ -35,6 +52,7 @@ export async function ptySpawn(
   kind: SpawnKind,
   cwd: string | null,
   resumeSessionId: string | null,
+  remote: RemoteSpawn | null,
   cols: number,
   rows: number,
 ): Promise<SpawnResult> {
@@ -44,6 +62,7 @@ export async function ptySpawn(
     kind,
     cwd,
     resumeSessionId,
+    remote,
     cols,
     rows,
   });

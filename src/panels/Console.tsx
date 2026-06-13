@@ -7,7 +7,7 @@
 
 import { useEffect, useRef } from "react";
 import { acquire, detach, refit } from "./terminalPool";
-import type { SpawnKind, SpawnResult } from "../ipc/pty";
+import type { RemoteSpawn, SpawnKind, SpawnResult } from "../ipc/pty";
 
 interface ConsoleProps {
   /** The instance this console is bound to — the key for the pooled terminal. */
@@ -20,13 +20,15 @@ interface ConsoleProps {
   webgl: boolean;
   /** When set, resume that claude session instead of minting a fresh one (3.8). */
   resumeSessionId: string | null;
+  /** When set, drive a remote claude over SSH+tmux instead of a local child (3.12). */
+  remote: RemoteSpawn | null;
   /** Reports the backend's spawn result (incl. minted session id) to the parent. */
   onSpawned?: (result: SpawnResult) => void;
   /** Surfaces a spawn failure to the parent. */
   onError?: (message: string) => void;
 }
 
-function Console({ instanceId, kind, cwd, webgl, resumeSessionId, onSpawned, onError }: ConsoleProps) {
+function Console({ instanceId, kind, cwd, webgl, resumeSessionId, remote, onSpawned, onError }: ConsoleProps) {
   const containerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -40,6 +42,7 @@ function Console({ instanceId, kind, cwd, webgl, resumeSessionId, onSpawned, onE
       cwd,
       webgl,
       resumeSessionId,
+      remote,
       onSpawned: (r) => onSpawned?.(r),
       onError: (m) => onError?.(m),
     });
@@ -53,7 +56,7 @@ function Console({ instanceId, kind, cwd, webgl, resumeSessionId, onSpawned, onE
       // teardown happens via the pool's `release`, called when the console closes.
       detach(container, instanceId);
     };
-  }, [instanceId, kind, cwd, webgl, resumeSessionId, onSpawned, onError]);
+  }, [instanceId, kind, cwd, webgl, resumeSessionId, remote, onSpawned, onError]);
 
   return (
     <div

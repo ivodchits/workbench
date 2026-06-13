@@ -82,6 +82,12 @@ pub struct Project {
     pub worktree_setup_command: Option<String>,
     /// Re-seed the repo root's `.env*` files into new worktrees (step 2.5).
     pub worktree_copy_env: bool,
+    /// SSH destination for a *remote* project (step 3.12) — an alias from
+    /// `~/.ssh/config` or `user@host`. `None` ⇒ a normal local project.
+    pub remote_ssh_dest: Option<String>,
+    /// Working directory on the remote host (step 3.12); mirrored into
+    /// `root_path` too so display code that reads the root keeps working.
+    pub remote_dir: Option<String>,
     pub sort_order: i64,
     pub created_at: i64,
 }
@@ -112,6 +118,9 @@ pub struct Instance {
     /// Optional per-instance accent color (step 3.9). Overlays the active theme's
     /// structural accent on this instance's card + console; `None` inherits it.
     pub accent: Option<String>,
+    /// For a remote project's instance (step 3.12): the tmux session name on the
+    /// host (`wb-<short id>`, or an adopted name). `None` for a local instance.
+    pub remote_tmux_session: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -136,6 +145,10 @@ pub struct NewProject {
     pub worktree_setup_command: Option<String>,
     #[serde(default)]
     pub worktree_copy_env: bool,
+    /// SSH destination for a remote project (step 3.12); omit/None for local.
+    pub remote_ssh_dest: Option<String>,
+    /// Working directory on the remote host (step 3.12).
+    pub remote_dir: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -147,6 +160,8 @@ pub struct ProjectPatch {
     pub group_id: Option<Option<String>>,
     pub worktree_setup_command: Option<Option<String>>,
     pub worktree_copy_env: Option<bool>,
+    pub remote_ssh_dest: Option<Option<String>>,
+    pub remote_dir: Option<Option<String>>,
     pub sort_order: Option<i64>,
 }
 
@@ -160,6 +175,10 @@ pub struct NewInstance {
     pub branch: Option<String>,
     /// Defaults to the parent project's root path when omitted.
     pub working_dir: Option<String>,
+    /// Override the tmux session name (step 3.12) — used when *adopting* an existing
+    /// remote session. Omit to default to `wb-<short id>` for a remote project's
+    /// instance (and stays `None` for a local one).
+    pub remote_tmux_session: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -183,6 +202,8 @@ pub struct InstancePatch {
     /// `Some(None)` clears the accent (back to the theme default); `Some(Some(_))`
     /// sets it; `None` leaves it untouched.
     pub accent: Option<Option<String>>,
+    /// Remote tmux session name (step 3.12); `Some(None)` clears it, `None` leaves it.
+    pub remote_tmux_session: Option<Option<String>>,
 }
 
 // ---------------------------------------------------------------------------
@@ -277,19 +298,32 @@ fn row_to_project(r: &Row) -> rusqlite::Result<Project> {
         default_branch: r.get(4)?,
         worktree_setup_command: r.get(5)?,
         worktree_copy_env: r.get(6)?,
-        sort_order: r.get(7)?,
-        created_at: r.get(8)?,
+        remote_ssh_dest: r.get(7)?,
+        remote_dir: r.get(8)?,
+        sort_order: r.get(9)?,
+        created_at: r.get(10)?,
     })
 }
 
 const PROJECT_COLS: &str = "id, group_id, name, root_path, default_branch, \
-    worktree_setup_command, worktree_copy_env, sort_order, created_at";
+    worktree_setup_command, worktree_copy_env, remote_ssh_dest, remote_dir, \
+    sort_order, created_at";
 
 pub fn insert_project(conn: &Connection, input: NewProject) -> rusqlite::Result<Project> {
     // Normalize an empty/whitespace setup command to NULL so "configured" is a
     // simple `IS NOT NULL` check downstream.
     let setup_cmd = input
         .worktree_setup_command
+        .map(|s| s.trim().to_owned())
+        .filter(|s| !s.is_empty());
+    // A remote project carries no local setup; normalize its fields to a clean
+    // "remote when dest is non-empty" shape.
+    let remote_ssh_dest = input
+        .remote_ssh_dest
+        .map(|s| s.trim().to_owned())
+        .filter(|s| !s.is_empty());
+    let remote_dir = input
+        .remote_dir
         .map(|s| s.trim().to_owned())
         .filter(|s| !s.is_empty());
     let project = Project {
@@ -300,13 +334,16 @@ pub fn insert_project(conn: &Connection, input: NewProject) -> rusqlite::Result<
         default_branch: input.default_branch,
         worktree_setup_command: setup_cmd,
         worktree_copy_env: input.worktree_copy_env,
+        remote_ssh_dest,
+        remote_dir,
         sort_order: 0,
         created_at: now(),
     };
     conn.execute(
         "INSERT INTO projects (id, group_id, name, root_path, default_branch,
-            worktree_setup_command, worktree_copy_env, sort_order, created_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            worktree_setup_command, worktree_copy_env, remote_ssh_dest, remote_dir,
+            sort_order, created_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
         rusqlite::params![
             project.id,
             project.group_id,
@@ -315,6 +352,8 @@ pub fn insert_project(conn: &Connection, input: NewProject) -> rusqlite::Result<
             project.default_branch,
             project.worktree_setup_command,
             project.worktree_copy_env,
+            project.remote_ssh_dest,
+            project.remote_dir,
             project.sort_order,
             project.created_at,
         ],
@@ -359,13 +398,20 @@ pub fn update_project(
     if let Some(copy_env) = patch.worktree_copy_env {
         p.worktree_copy_env = copy_env;
     }
+    if let Some(dest) = patch.remote_ssh_dest {
+        p.remote_ssh_dest = dest.map(|s| s.trim().to_owned()).filter(|s| !s.is_empty());
+    }
+    if let Some(dir) = patch.remote_dir {
+        p.remote_dir = dir.map(|s| s.trim().to_owned()).filter(|s| !s.is_empty());
+    }
     if let Some(sort_order) = patch.sort_order {
         p.sort_order = sort_order;
     }
     conn.execute(
         "UPDATE projects
          SET group_id = ?2, name = ?3, root_path = ?4, default_branch = ?5,
-             worktree_setup_command = ?6, worktree_copy_env = ?7, sort_order = ?8
+             worktree_setup_command = ?6, worktree_copy_env = ?7,
+             remote_ssh_dest = ?8, remote_dir = ?9, sort_order = ?10
          WHERE id = ?1",
         rusqlite::params![
             p.id,
@@ -375,6 +421,8 @@ pub fn update_project(
             p.default_branch,
             p.worktree_setup_command,
             p.worktree_copy_env,
+            p.remote_ssh_dest,
+            p.remote_dir,
             p.sort_order,
         ],
     )?;
@@ -410,26 +458,41 @@ fn row_to_instance(r: &Row) -> rusqlite::Result<Instance> {
         last_activity_at: r.get(16)?,
         task_note_auto: r.get(17)?,
         accent: r.get(18)?,
+        remote_tmux_session: r.get(19)?,
     })
 }
 
 const INSTANCE_COLS: &str = "id, project_id, title, task_note, worktree_on, branch, \
     last_session_id, working_dir, status, input_tokens, output_tokens, \
     cache_creation_tokens, cache_read_tokens, cost_usd, sort_order, created_at, \
-    last_activity_at, task_note_auto, accent";
+    last_activity_at, task_note_auto, accent, remote_tmux_session";
 
 pub fn insert_instance(conn: &Connection, input: NewInstance) -> rusqlite::Result<Instance> {
-    // Default the working dir to the parent project's root when not provided.
-    let working_dir = match input.working_dir {
-        Some(dir) => dir,
-        None => get_project(conn, &input.project_id)?.root_path,
-    };
+    // Resolve the parent project once: its root path is the default working dir,
+    // and whether it's remote decides the tmux session default (step 3.12).
+    let project = get_project(conn, &input.project_id)?;
+    let working_dir = input.working_dir.unwrap_or_else(|| project.root_path.clone());
     // A note supplied at creation is the user's own text, so it isn't auto-mirrored;
     // an empty/omitted note starts in auto mode so the terminal title can fill it.
     let task_note = input.task_note.unwrap_or_default();
     let task_note_auto = task_note.trim().is_empty();
+    let id = new_id();
+    // A remote project's instance runs as a tmux session: use the caller's name when
+    // adopting an existing one, else default to `wb-<short id>`. Local instances
+    // carry no session name.
+    let remote_tmux_session = if project.remote_ssh_dest.is_some() {
+        Some(
+            input
+                .remote_tmux_session
+                .map(|s| s.trim().to_owned())
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| format!("wb-{}", &id[..8])),
+        )
+    } else {
+        None
+    };
     let instance = Instance {
-        id: new_id(),
+        id,
         project_id: input.project_id,
         title: input.title,
         task_note,
@@ -448,13 +511,14 @@ pub fn insert_instance(conn: &Connection, input: NewInstance) -> rusqlite::Resul
         created_at: now(),
         last_activity_at: None,
         accent: None,
+        remote_tmux_session,
     };
     conn.execute(
         "INSERT INTO instances (id, project_id, title, task_note, worktree_on, branch,
             last_session_id, working_dir, status, input_tokens, output_tokens,
             cache_creation_tokens, cache_read_tokens, cost_usd, sort_order, created_at,
-            last_activity_at, task_note_auto, accent)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)",
+            last_activity_at, task_note_auto, accent, remote_tmux_session)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20)",
         rusqlite::params![
             instance.id,
             instance.project_id,
@@ -475,6 +539,7 @@ pub fn insert_instance(conn: &Connection, input: NewInstance) -> rusqlite::Resul
             instance.last_activity_at,
             instance.task_note_auto,
             instance.accent,
+            instance.remote_tmux_session,
         ],
     )?;
     Ok(instance)
@@ -566,12 +631,16 @@ pub fn update_instance(
     if let Some(v) = patch.accent {
         i.accent = v;
     }
+    if let Some(v) = patch.remote_tmux_session {
+        i.remote_tmux_session = v;
+    }
     conn.execute(
         "UPDATE instances SET
             title = ?2, task_note = ?3, worktree_on = ?4, branch = ?5, last_session_id = ?6,
             working_dir = ?7, status = ?8, input_tokens = ?9, output_tokens = ?10,
             cache_creation_tokens = ?11, cache_read_tokens = ?12, cost_usd = ?13,
-            sort_order = ?14, last_activity_at = ?15, task_note_auto = ?16, accent = ?17
+            sort_order = ?14, last_activity_at = ?15, task_note_auto = ?16, accent = ?17,
+            remote_tmux_session = ?18
          WHERE id = ?1",
         rusqlite::params![
             i.id,
@@ -591,6 +660,7 @@ pub fn update_instance(
             i.last_activity_at,
             i.task_note_auto,
             i.accent,
+            i.remote_tmux_session,
         ],
     )?;
     Ok(i)
@@ -788,6 +858,8 @@ mod tests {
                 default_branch: Some("main".into()),
                 worktree_setup_command: None,
                 worktree_copy_env: false,
+                remote_ssh_dest: None,
+                remote_dir: None,
                 group_id: Some(group.id.clone()),
             },
         )
@@ -803,6 +875,7 @@ mod tests {
                 worktree_on: None,
                 branch: None,
                 working_dir: None,
+                remote_tmux_session: None,
             },
         )
         .unwrap();
@@ -832,6 +905,8 @@ mod tests {
                 default_branch: None,
                 worktree_setup_command: None,
                 worktree_copy_env: false,
+                remote_ssh_dest: None,
+                remote_dir: None,
                 group_id: None,
             },
         )
@@ -845,6 +920,7 @@ mod tests {
                 worktree_on: None,
                 branch: None,
                 working_dir: None,
+                remote_tmux_session: None,
             },
         )
         .unwrap();
@@ -895,6 +971,8 @@ mod tests {
                 default_branch: None,
                 worktree_setup_command: None,
                 worktree_copy_env: false,
+                remote_ssh_dest: None,
+                remote_dir: None,
                 group_id: None,
             },
         )
@@ -909,6 +987,7 @@ mod tests {
                 worktree_on: None,
                 branch: None,
                 working_dir: None,
+                remote_tmux_session: None,
             },
         )
         .unwrap();
@@ -951,10 +1030,96 @@ mod tests {
                 worktree_on: None,
                 branch: None,
                 working_dir: None,
+                remote_tmux_session: None,
             },
         )
         .unwrap();
         assert!(!manual.task_note_auto);
+    }
+
+    #[test]
+    fn remote_project_instance_defaults_a_tmux_session() {
+        let c = conn();
+        // A remote project: dest set, root mirrors the remote dir.
+        let remote = insert_project(
+            &c,
+            NewProject {
+                name: "srv".into(),
+                root_path: "/home/me/proj".into(),
+                default_branch: None,
+                worktree_setup_command: None,
+                worktree_copy_env: false,
+                remote_ssh_dest: Some("myserver".into()),
+                remote_dir: Some("/home/me/proj".into()),
+                group_id: None,
+            },
+        )
+        .unwrap();
+        assert_eq!(remote.remote_ssh_dest.as_deref(), Some("myserver"));
+
+        // An instance under it auto-gets a `wb-<short id>` session name.
+        let inst = insert_instance(
+            &c,
+            NewInstance {
+                project_id: remote.id.clone(),
+                title: "1".into(),
+                task_note: None,
+                worktree_on: None,
+                branch: None,
+                working_dir: None,
+                remote_tmux_session: None,
+            },
+        )
+        .unwrap();
+        let session = inst.remote_tmux_session.expect("remote instance has a session");
+        assert!(session.starts_with("wb-"), "got {session}");
+        assert_eq!(session, format!("wb-{}", &inst.id[..8]));
+
+        // Adopting an existing session keeps the supplied name.
+        let adopted = insert_instance(
+            &c,
+            NewInstance {
+                project_id: remote.id.clone(),
+                title: "legacy".into(),
+                task_note: None,
+                worktree_on: None,
+                branch: None,
+                working_dir: None,
+                remote_tmux_session: Some("old-session".into()),
+            },
+        )
+        .unwrap();
+        assert_eq!(adopted.remote_tmux_session.as_deref(), Some("old-session"));
+
+        // A local project's instance carries no session name.
+        let local = insert_project(
+            &c,
+            NewProject {
+                name: "local".into(),
+                root_path: "/p".into(),
+                default_branch: None,
+                worktree_setup_command: None,
+                worktree_copy_env: false,
+                remote_ssh_dest: None,
+                remote_dir: None,
+                group_id: None,
+            },
+        )
+        .unwrap();
+        let local_inst = insert_instance(
+            &c,
+            NewInstance {
+                project_id: local.id,
+                title: "1".into(),
+                task_note: None,
+                worktree_on: None,
+                branch: None,
+                working_dir: None,
+                remote_tmux_session: None,
+            },
+        )
+        .unwrap();
+        assert_eq!(local_inst.remote_tmux_session, None);
     }
 
     #[test]
@@ -968,6 +1133,8 @@ mod tests {
                 default_branch: None,
                 worktree_setup_command: None,
                 worktree_copy_env: false,
+                remote_ssh_dest: None,
+                remote_dir: None,
                 group_id: None,
             },
         )
@@ -981,6 +1148,7 @@ mod tests {
                 worktree_on: None,
                 branch: None,
                 working_dir: None,
+                remote_tmux_session: None,
             },
         )
         .unwrap();
@@ -1008,6 +1176,8 @@ mod tests {
                 default_branch: None,
                 worktree_setup_command: None,
                 worktree_copy_env: false,
+                remote_ssh_dest: None,
+                remote_dir: None,
                 group_id: Some(group.id.clone()),
             },
         )

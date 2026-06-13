@@ -181,6 +181,24 @@ pub enum SpawnKind {
     Claude,
 }
 
+/// Remote launch descriptor (step 3.12). When present on `pty_spawn`, the child is
+/// not a local `claude` but a local `ssh` process that attaches-or-creates a tmux
+/// session on the host and runs `claude` inside it — so the instance's TUI streams
+/// over SSH while the session persists across console close/app quit (only the
+/// `ssh` client detaches). The bridge itself (reader thread, write, resize, output
+/// Channel) is unchanged; this just changes the command. Design §4.2: the PTY is
+/// transport-agnostic bytes.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoteSpawn {
+    /// SSH destination — a `~/.ssh/config` alias or `user@host`.
+    pub dest: String,
+    /// tmux session name on the host (`wb-<short id>`, or an adopted name).
+    pub session: String,
+    /// Working directory on the host the session starts in.
+    pub dir: String,
+}
+
 /// Returned to the frontend at spawn. For `Claude`, `session_id` is the session
 /// the PTY is bound to — the UUID we minted and passed as `--session-id` for a
 /// fresh session, or the `--resume`d id for a resumed one (step 3.8) — so the
@@ -214,37 +232,56 @@ pub fn pty_spawn(
     kind: SpawnKind,
     cwd: Option<String>,
     resume_session_id: Option<String>,
+    remote: Option<RemoteSpawn>,
     cols: u16,
     rows: u16,
 ) -> Result<SpawnResult, String> {
-    let cwd = cwd
-        .map(PathBuf::from)
-        .or_else(home_dir)
-        .ok_or("no working directory given and no home dir found")?;
-    if !cwd.is_dir() {
-        return Err(format!("working directory does not exist: {}", cwd.display()));
-    }
+    // The local cwd for the child process. For a remote launch the child is a local
+    // `ssh` process (the working dir lives on the host), so the passed `cwd` is a
+    // remote path that won't exist locally — anchor the ssh client at the home dir
+    // instead and skip the local existence check.
+    let cwd = if remote.is_some() {
+        home_dir().ok_or("no home dir to anchor the local ssh process")?
+    } else {
+        let c = cwd
+            .map(PathBuf::from)
+            .or_else(home_dir)
+            .ok_or("no working directory given and no home dir found")?;
+        if !c.is_dir() {
+            return Err(format!("working directory does not exist: {}", c.display()));
+        }
+        c
+    };
 
     // Build the command up front so a resolution failure (e.g. `claude` not on
     // PATH) reports cleanly before we touch the PTY. A resumed claude keeps the id
     // it's resuming (same session, same transcript); a fresh one mints a UUID.
-    let session_id = match kind {
-        SpawnKind::Claude => {
-            Some(resume_session_id.clone().unwrap_or_else(|| uuid::Uuid::new_v4().to_string()))
+    // A remote launch mints no session id (no local hook/transcript correlation).
+    let session_id = if remote.is_some() {
+        None
+    } else {
+        match kind {
+            SpawnKind::Claude => {
+                Some(resume_session_id.clone().unwrap_or_else(|| uuid::Uuid::new_v4().to_string()))
+            }
+            SpawnKind::Shell => None,
         }
-        SpawnKind::Shell => None,
     };
-    let candidates = match kind {
-        SpawnKind::Claude => {
-            let sid = session_id.as_deref().unwrap();
-            let session_args: [&str; 2] = if resume_session_id.is_some() {
-                ["--resume", sid]
-            } else {
-                ["--session-id", sid]
-            };
-            vec![claude_command(&session_args, &cwd)?]
+    let candidates = if let Some(r) = &remote {
+        vec![remote_command(r, &cwd)]
+    } else {
+        match kind {
+            SpawnKind::Claude => {
+                let sid = session_id.as_deref().unwrap();
+                let session_args: [&str; 2] = if resume_session_id.is_some() {
+                    ["--resume", sid]
+                } else {
+                    ["--session-id", sid]
+                };
+                vec![claude_command(&session_args, &cwd)?]
+            }
+            SpawnKind::Shell => shell_candidates(&cwd),
         }
-        SpawnKind::Shell => shell_candidates(&cwd),
     };
 
     // Tear down any prior PTY for this instance only once we know we can spawn.
@@ -445,6 +482,44 @@ fn claude_command(session_args: &[&str], cwd: &Path) -> Result<CommandBuilder, S
     cmd.env("TERM", "xterm-256color");
     cmd.env("COLORTERM", "truecolor");
     Ok(cmd)
+}
+
+/// Build the local `ssh` child that drives a remote `claude` over tmux (step 3.12).
+///
+/// `ssh -tt <dest> -- tmux new-session -A -s <session> -c <dir> bash -lc claude`:
+/// - `-tt` forces a remote PTY so the Ink TUI renders (and our local PTY's
+///   window-size changes propagate through ssh to the remote PTY → tmux);
+/// - `new-session -A` is *attach-or-create* — the first launch creates the session
+///   and runs the command; a reconnect attaches the live one and ignores it (the
+///   persistence/reattach semantics this whole step rests on);
+/// - `bash -lc claude` runs `claude` under a **login** shell so `claude`/`tmux` are
+///   on PATH (a bare `ssh -- tmux …` non-login shell often isn't).
+///
+/// The local ssh child is just another `portable-pty` child — the reader thread,
+/// `pty_write`, `pty_resize`, and output Channel are all unchanged (design §4.2).
+fn remote_command(r: &RemoteSpawn, cwd: &Path) -> CommandBuilder {
+    let mut cmd = CommandBuilder::new("ssh");
+    for arg in [
+        "-tt",
+        &r.dest,
+        "--",
+        "tmux",
+        "new-session",
+        "-A",
+        "-s",
+        &r.session,
+        "-c",
+        &r.dir,
+        "bash",
+        "-lc",
+        "claude",
+    ] {
+        cmd.arg(arg);
+    }
+    cmd.cwd(cwd);
+    cmd.env("TERM", "xterm-256color");
+    cmd.env("COLORTERM", "truecolor");
+    cmd
 }
 
 /// Shell candidates to try in order, each rooted at `cwd`. On Windows we prefer

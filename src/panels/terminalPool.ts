@@ -27,6 +27,7 @@ import {
   ptySpawn,
   ptyWrite,
   type PtyChunk,
+  type RemoteSpawn,
   type SpawnKind,
   type SpawnResult,
 } from "../ipc/pty";
@@ -84,6 +85,9 @@ export interface AcquireOptions {
   /** When set, resume that claude session (`claude --resume <id>`) instead of
    *  minting a fresh one (step 3.8). Null for a normal fresh launch / shell. */
   resumeSessionId: string | null;
+  /** When set, drive a remote claude over SSH+tmux instead of a local child
+   *  (step 3.12). Null for a local launch / shell. */
+  remote: RemoteSpawn | null;
   /** Called once, when the PTY spawn for a freshly created entry resolves. */
   onSpawned: (result: SpawnResult) => void;
   /** Called once, if that spawn fails (the entry is released). */
@@ -357,6 +361,7 @@ export function acquire(container: HTMLDivElement, opts: AcquireOptions): void {
       opts.kind,
       opts.cwd,
       opts.resumeSessionId,
+      opts.remote,
       term.cols,
       term.rows,
     )

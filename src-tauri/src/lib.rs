@@ -13,6 +13,7 @@ mod layout;
 mod mcp;
 mod pty;
 mod registry;
+mod remote;
 mod skills;
 mod statusline;
 mod sys;
@@ -131,6 +132,8 @@ pub fn run() {
             registry::edit_instance,
             registry::mirror_instance_task_note,
             registry::remove_instance,
+            remote::remote_tmux_sessions,
+            remote::remote_kill_session,
             layout::get_layout,
             layout::set_layout,
             mcp::mcp_list,

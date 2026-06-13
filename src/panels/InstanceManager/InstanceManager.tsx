@@ -41,6 +41,7 @@ import { mergeStatus } from "./status";
 import { getActiveProject, setActiveProject, useActiveProject } from "../../state/activeProject";
 import { activatePanel, focusActivePanel } from "../../state/dock";
 import { ptySessionLive } from "../../ipc/pty";
+import { remoteKillSession, remoteTmuxSessions } from "../../ipc/remote";
 import { release } from "../terminalPool";
 import {
   addInstance,
@@ -117,6 +118,7 @@ function InstanceManager({ onCollapse }: InstanceManagerProps) {
   const [removeProjectTarget, setRemoveProjectTarget] = useState<Project | null>(null);
   const [killTarget, setKillTarget] = useState<Instance | null>(null);
   const [worktreeTarget, setWorktreeTarget] = useState<Instance | null>(null);
+  const [remoteSyncTarget, setRemoteSyncTarget] = useState<Project | null>(null);
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
   const [needsYouOnly, setNeedsYouOnly] = useState(false);
   const railRef = useRef<HTMLDivElement>(null);
@@ -490,7 +492,16 @@ function InstanceManager({ onCollapse }: InstanceManagerProps) {
 
   // Instances whose (toggle-off) working dir is shared with another — they get a
   // non-blocking "shared working dir" warning + one-click isolate (step 2.6).
-  const sharedInstanceIds = useMemo(() => sharedWorkingDirInstances(instances), [instances]);
+  // Remote instances are excluded: they're isolated by their own tmux session, and
+  // they all carry the same remote dir, which would otherwise flag them all (3.12).
+  const sharedInstanceIds = useMemo(() => {
+    const remoteProjectIds = new Set(
+      projects.filter((p) => p.remoteSshDest != null).map((p) => p.id),
+    );
+    return sharedWorkingDirInstances(
+      instances.filter((i) => !remoteProjectIds.has(i.projectId)),
+    );
+  }, [instances, projects]);
 
   // When the filter is active, only show instances that currently need you.
   // Projects with no matching instances are hidden from the section list.
@@ -666,6 +677,7 @@ function InstanceManager({ onCollapse }: InstanceManagerProps) {
                       onOpenMcp={() => openMcpForProject(p)}
                       onOpenSkills={() => openSkillsForProject(p)}
                       onOpenGit={() => openGitForProject(p)}
+                      onSyncRemote={() => setRemoteSyncTarget(p)}
                       onEdit={() => setEditProjectTarget(p)}
                       onRemove={() => setRemoveProjectTarget(p)}
                       onNewInstance={() => void spawnInstance(p)}
@@ -695,11 +707,24 @@ function InstanceManager({ onCollapse }: InstanceManagerProps) {
       {removeProjectTarget && (
         <RemoveProjectConfirm
           project={removeProjectTarget}
-          instanceIds={(instancesByProject.get(removeProjectTarget.id) ?? []).map((i) => i.id)}
+          instances={instancesByProject.get(removeProjectTarget.id) ?? []}
           onClose={() => setRemoveProjectTarget(null)}
         />
       )}
-      {killTarget && <KillConfirm instance={killTarget} onClose={() => setKillTarget(null)} />}
+      {killTarget && (
+        <KillConfirm
+          instance={killTarget}
+          project={projects.find((p) => p.id === killTarget.projectId) ?? null}
+          onClose={() => setKillTarget(null)}
+        />
+      )}
+      {remoteSyncTarget && (
+        <RemoteSyncDialog
+          project={remoteSyncTarget}
+          instances={instancesByProject.get(remoteSyncTarget.id) ?? []}
+          onClose={() => setRemoteSyncTarget(null)}
+        />
+      )}
       {worktreeTarget &&
         (worktreeTarget.worktreeOn ? (
           <WorktreeTeardown
@@ -748,6 +773,8 @@ interface ProjectNodeProps {
   onOpenSkills: () => void;
   /** Open this project's Git panel (step 3.11). */
   onOpenGit: () => void;
+  /** Reconcile / adopt this remote project's tmux sessions (step 3.12). */
+  onSyncRemote: () => void;
   onEdit: () => void;
   onRemove: () => void;
   onNewInstance: () => void;
@@ -773,6 +800,7 @@ function ProjectNode({
   onOpenMcp,
   onOpenSkills,
   onOpenGit,
+  onSyncRemote,
   onEdit,
   onRemove,
   onNewInstance,
@@ -783,6 +811,10 @@ function ProjectNode({
   // The "⋯" overflow menu (edit CLAUDE.md / MCP servers / edit project). Kept open
   // independent of hover so the action row doesn't vanish out from under the menu.
   const [menuOpen, setMenuOpen] = useState(false);
+
+  // A remote project (step 3.12) hides its local-only affordances: shell, editor,
+  // Git panel, CLAUDE.md/MCP/skills (no transcript/git/hooks cross the SSH boundary).
+  const isRemote = project.remoteSshDest != null;
 
   // Live tile summary: how many instances, how many have a running console, and
   // how many need you (the latter from the merged hook-fed status, step 2.2).
@@ -874,10 +906,19 @@ function ProjectNode({
           >
             {project.name}
           </span>
-          {project.defaultBranch && (
-            <span style={{ color: "var(--wb-textFaint)", fontSize: 10, flex: "0 0 auto" }}>
-              ⌥ {project.defaultBranch}
+          {isRemote ? (
+            <span
+              style={{ color: "var(--wb-accent)", fontSize: 10, flex: "0 0 auto" }}
+              title={`remote project — ssh:${project.remoteSshDest}`}
+            >
+              {GLYPH.remote} ssh:{project.remoteSshDest}
             </span>
+          ) : (
+            project.defaultBranch && (
+              <span style={{ color: "var(--wb-textFaint)", fontSize: 10, flex: "0 0 auto" }}>
+                ⌥ {project.defaultBranch}
+              </span>
+            )
           )}
           <span
             style={{
@@ -892,26 +933,43 @@ function ProjectNode({
             <ProjectAction label="new instance" onClick={onNewInstance} fontSize={15.75}>
               +
             </ProjectAction>
-            <ProjectAction label="open project shell" onClick={onOpenShell} fontSize={15.75}>
-              {GLYPH.prompt}
-            </ProjectAction>
-            <ProjectAction label="open editor" onClick={onOpenEditor} fontSize={12.6}>
-              ✎
-            </ProjectAction>
-            <ProjectAction label="open Git panel" onClick={onOpenGit} fontSize={12.6}>
-              ⎇
-            </ProjectAction>
-            <ProjectMoreMenu
-              open={menuOpen}
-              setOpen={setMenuOpen}
-              items={[
-                { label: "git panel", onClick: onOpenGit },
-                { label: "edit CLAUDE.md", onClick: onOpenClaudeMd },
-                { label: "manage MCP servers", onClick: onOpenMcp },
-                { label: "manage skills", onClick: onOpenSkills },
-                { label: "edit project", onClick: onEdit },
-              ]}
-            />
+            {isRemote ? (
+              // Remote: only the host-aware actions. "Sync" reconciles tmux sessions
+              // (and offers adopting foreign ones); the rest is edit/remove.
+              <>
+                <ProjectAction label="sync remote sessions" onClick={onSyncRemote} fontSize={14}>
+                  {GLYPH.remote}
+                </ProjectAction>
+                <ProjectMoreMenu
+                  open={menuOpen}
+                  setOpen={setMenuOpen}
+                  items={[{ label: "edit project", onClick: onEdit }]}
+                />
+              </>
+            ) : (
+              <>
+                <ProjectAction label="open project shell" onClick={onOpenShell} fontSize={15.75}>
+                  {GLYPH.prompt}
+                </ProjectAction>
+                <ProjectAction label="open editor" onClick={onOpenEditor} fontSize={12.6}>
+                  ✎
+                </ProjectAction>
+                <ProjectAction label="open Git panel" onClick={onOpenGit} fontSize={12.6}>
+                  ⎇
+                </ProjectAction>
+                <ProjectMoreMenu
+                  open={menuOpen}
+                  setOpen={setMenuOpen}
+                  items={[
+                    { label: "git panel", onClick: onOpenGit },
+                    { label: "edit CLAUDE.md", onClick: onOpenClaudeMd },
+                    { label: "manage MCP servers", onClick: onOpenMcp },
+                    { label: "manage skills", onClick: onOpenSkills },
+                    { label: "edit project", onClick: onEdit },
+                  ]}
+                />
+              </>
+            )}
             <ProjectAction label="remove project" onClick={onRemove} danger>
               {GLYPH.fail}
             </ProjectAction>
@@ -958,6 +1016,8 @@ function ProjectNode({
               consoleStatus={consoleStatusById.get(i.id) ?? null}
               live={liveStatuses.get(i.id) ?? null}
               shared={sharedInstanceIds.has(i.id)}
+              isRemote={isRemote}
+              remoteDest={project.remoteSshDest}
               onActivate={() => onActivate(i)}
               onToggleWorktree={() => onToggleWorktree(i)}
               onReview={() => onReview(i)}
@@ -1102,14 +1162,15 @@ function ProjectMoreMenu({
 
 function RemoveProjectConfirm({
   project,
-  instanceIds,
+  instances,
   onClose,
 }: {
   project: Project;
-  instanceIds: string[];
+  instances: Instance[];
   onClose: () => void;
 }) {
   const [busy, setBusy] = useState(false);
+  const instanceIds = instances.map((i) => i.id);
   const instanceCount = instanceIds.length;
   const confirm = async () => {
     setBusy(true);
@@ -1120,6 +1181,15 @@ function RemoveProjectConfirm({
       for (const id of instanceIds) {
         closeConsole(id);
         release(id);
+      }
+      // For a remote project, also end each instance's tmux session on the host —
+      // detach ≠ kill, so removal must explicitly tear them down (3.12). Best-effort.
+      if (project.remoteSshDest) {
+        for (const inst of instances) {
+          if (inst.remoteTmuxSession) {
+            await remoteKillSession(project.remoteSshDest, inst.remoteTmuxSession).catch(() => {});
+          }
+        }
       }
       for (const s of getOpenShells().filter((s) => s.projectId === project.id)) {
         closeShell(s.shellId);
@@ -1168,8 +1238,20 @@ function RemoveProjectConfirm({
   );
 }
 
-function KillConfirm({ instance, onClose }: { instance: Instance; onClose: () => void }) {
+function KillConfirm({
+  instance,
+  project,
+  onClose,
+}: {
+  instance: Instance;
+  project: Project | null;
+  onClose: () => void;
+}) {
   const [busy, setBusy] = useState(false);
+  // For a remote instance, closing the console only *detaches* tmux — the session
+  // keeps running on the host. Removing the instance must explicitly end it (3.12).
+  const remoteSession =
+    project?.remoteSshDest != null ? instance.remoteTmuxSession : null;
   const confirm = async () => {
     setBusy(true);
     try {
@@ -1180,6 +1262,11 @@ function KillConfirm({ instance, onClose }: { instance: Instance; onClose: () =>
       closeConsole(instance.id);
       release(instance.id);
       closeDiff(diffIdFor(instance.id)); // drop its review panel, if open
+      // Kill the remote tmux session (detach ≠ kill). Best-effort — a remote that's
+      // unreachable shouldn't block removing the local row.
+      if (project?.remoteSshDest && remoteSession) {
+        await remoteKillSession(project.remoteSshDest, remoteSession).catch(() => {});
+      }
       await deleteInstance(instance.id);
       await renumberInstances(instance.projectId);
       onClose();
@@ -1192,8 +1279,152 @@ function KillConfirm({ instance, onClose }: { instance: Instance; onClose: () =>
       <div style={{ fontSize: 12.5, color: "var(--wb-text)", lineHeight: 1.5 }}>
         Kill <strong style={{ color: "var(--wb-accent)" }}>{instance.title}</strong>? This stops its
         console and removes the instance from the rail.
+        {remoteSession && (
+          <div style={{ marginTop: 8, color: "var(--wb-working)" }}>
+            {GLYPH.warn} Its remote tmux session{" "}
+            <span style={{ color: "var(--wb-accent)", fontFamily: "var(--wb-mono)" }}>
+              {remoteSession}
+            </span>{" "}
+            on <span style={{ fontFamily: "var(--wb-mono)" }}>{project?.remoteSshDest}</span> will be
+            killed.
+          </div>
+        )}
       </div>
       <ConfirmButtons busy={busy} onCancel={onClose} onConfirm={() => void confirm()} label="kill" />
+    </Modal>
+  );
+}
+
+/** Reconcile a remote project's tmux sessions (step 3.12, "discover & adopt"):
+ *  `ssh <dest> tmux ls`, then show which of our instances are live/detached on the
+ *  host and offer to **import** any *other* live sessions as new instances (Model-A
+ *  "recognise what's already running on the server"). An imported instance stores
+ *  the adopted name; opening it runs `tmux new-session -A -s <name>`, which simply
+ *  attaches to the existing session. */
+function RemoteSyncDialog({
+  project,
+  instances,
+  onClose,
+}: {
+  project: Project;
+  instances: Instance[];
+  onClose: () => void;
+}) {
+  const dest = project.remoteSshDest ?? "";
+  const [sessions, setSessions] = useState<string[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [refreshKey, setRefreshKey] = useState(0);
+
+  useEffect(() => {
+    let alive = true;
+    setError(null);
+    setSessions(null);
+    remoteTmuxSessions(dest)
+      .then((s) => alive && setSessions(s))
+      .catch((e) => alive && setError(String(e instanceof Error ? e.message : e)));
+    return () => {
+      alive = false;
+    };
+  }, [dest, refreshKey]);
+
+  // Map host session name → the instance that owns it (if any).
+  const ownedByName = new Map<string, Instance>();
+  for (const i of instances) {
+    if (i.remoteTmuxSession) ownedByName.set(i.remoteTmuxSession, i);
+  }
+  const liveSet = new Set(sessions ?? []);
+  // Foreign sessions on the host that no instance maps to — adoption candidates.
+  const foreign = (sessions ?? []).filter((s) => !ownedByName.has(s));
+
+  const importSession = async (name: string) => {
+    setBusy(true);
+    try {
+      await addInstance({ projectId: project.id, title: name, remoteTmuxSession: name });
+      setRefreshKey((k) => k + 1);
+    } catch (e) {
+      setError(String(e instanceof Error ? e.message : e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Modal title="remote sessions" onClose={onClose} width={460}>
+      <div style={{ fontSize: 12.5, color: "var(--wb-text)", lineHeight: 1.5 }}>
+        <div style={{ color: "var(--wb-textDim2)" }}>
+          {GLYPH.remote} <span style={{ fontFamily: "var(--wb-mono)" }}>ssh:{dest}</span>
+        </div>
+
+        {error ? (
+          <div style={{ marginTop: 10, color: "var(--wb-needs)", fontSize: 11.5 }}>
+            {GLYPH.warn} {error}
+          </div>
+        ) : sessions === null ? (
+          <div style={{ marginTop: 10, color: "var(--wb-textDim2)", fontSize: 11.5 }}>
+            listing sessions…
+          </div>
+        ) : (
+          <>
+            {/* Our instances and whether their session is live on the host. */}
+            <div style={{ marginTop: 12, font: "600 10px var(--wb-mono)", letterSpacing: "0.1em", textTransform: "uppercase", color: "var(--wb-textDim2)" }}>
+              this project's instances
+            </div>
+            {instances.length === 0 ? (
+              <div style={{ marginTop: 4, color: "var(--wb-textFaint)", fontSize: 11.5 }}>
+                none yet
+              </div>
+            ) : (
+              instances.map((i) => (
+                <div
+                  key={i.id}
+                  style={{ marginTop: 5, display: "flex", alignItems: "center", gap: 8, font: "11.5px var(--wb-mono)" }}
+                >
+                  <span style={{ color: "var(--wb-text)" }}>{i.title}</span>
+                  <span style={{ color: "var(--wb-textFaint)" }}>{i.remoteTmuxSession}</span>
+                  <span style={{ marginLeft: "auto", color: i.remoteTmuxSession && liveSet.has(i.remoteTmuxSession) ? "var(--wb-done)" : "var(--wb-textFaint)" }}>
+                    {i.remoteTmuxSession && liveSet.has(i.remoteTmuxSession) ? "● live on host" : "○ no session"}
+                  </span>
+                </div>
+              ))
+            )}
+
+            {/* Foreign sessions on the host — offer to adopt. */}
+            <div style={{ marginTop: 14, font: "600 10px var(--wb-mono)", letterSpacing: "0.1em", textTransform: "uppercase", color: "var(--wb-textDim2)" }}>
+              other sessions on the host
+            </div>
+            {foreign.length === 0 ? (
+              <div style={{ marginTop: 4, color: "var(--wb-textFaint)", fontSize: 11.5 }}>
+                none
+              </div>
+            ) : (
+              foreign.map((name) => (
+                <div
+                  key={name}
+                  style={{ marginTop: 5, display: "flex", alignItems: "center", gap: 8, font: "11.5px var(--wb-mono)" }}
+                >
+                  <span style={{ color: "var(--wb-text)" }}>{name}</span>
+                  <button
+                    onClick={() => void importSession(name)}
+                    disabled={busy}
+                    style={{ marginLeft: "auto", ...confirmButtonStyle, padding: "3px 9px", fontSize: 10.5, borderColor: "var(--wb-borderActive)" }}
+                  >
+                    import
+                  </button>
+                </div>
+              ))
+            )}
+          </>
+        )}
+      </div>
+      <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 16 }}>
+        <button onClick={() => setRefreshKey((k) => k + 1)} style={confirmButtonStyle}>
+          refresh
+        </button>
+        <button onClick={onClose} style={{ ...confirmButtonStyle, borderColor: "var(--wb-borderActive)" }}>
+          {GLYPH.ok} done
+        </button>
+      </div>
     </Modal>
   );
 }

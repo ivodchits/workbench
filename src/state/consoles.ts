@@ -14,9 +14,9 @@
 // A tiny external store exposed to React via `useSyncExternalStore`.
 
 import { useSyncExternalStore } from "react";
-import type { SpawnKind, SpawnResult } from "../ipc/pty";
+import type { RemoteSpawn, SpawnKind, SpawnResult } from "../ipc/pty";
 import type { Instance } from "../ipc/registry";
-import { applyInstanceUsage, updateInstance } from "./registry";
+import { applyInstanceUsage, getRegistry, updateInstance } from "./registry";
 import { clearLiveStatus } from "./status";
 import { cancelQueued } from "./queue";
 import { release } from "../panels/terminalPool";
@@ -45,8 +45,24 @@ export interface ConsoleSession {
   resumeSessionId: string | null;
   /** Spawn failure message, when `status === "error"`. */
   error: string | null;
+  /** When set, this console drives a remote `claude` over SSH+tmux (step 3.12)
+   *  rather than a local child. Null for a local instance. */
+  remote: RemoteSpawn | null;
   /** Monotonic focus stamp; the active console has the highest. */
   focusSeq: number;
+}
+
+/** Build the remote launch descriptor for `instance`, or null when its project is
+ *  local (step 3.12). Reads the project from the registry store for the SSH dest +
+ *  remote dir; the instance carries its own tmux session name. */
+function remoteSpawnFor(instance: Instance): RemoteSpawn | null {
+  const project = getRegistry().projects.find((p) => p.id === instance.projectId);
+  if (!project?.remoteSshDest || !instance.remoteTmuxSession) return null;
+  return {
+    dest: project.remoteSshDest,
+    session: instance.remoteTmuxSession,
+    dir: project.remoteDir ?? instance.workingDir,
+  };
 }
 
 interface ConsolesState {
@@ -120,6 +136,7 @@ export function openConsole(instance: Instance): void {
     status: "spawning",
     sessionId: null,
     resumeSessionId: null,
+    remote: remoteSpawnFor(instance),
     error: null,
     focusSeq: ++focusSeq,
   };
@@ -164,6 +181,7 @@ export function resumeConsole(instance: Instance): void {
     status: "spawning",
     sessionId: null,
     resumeSessionId: instance.lastSessionId,
+    remote: remoteSpawnFor(instance),
     error: null,
     focusSeq: ++focusSeq,
   };
@@ -186,6 +204,7 @@ export function hydrateDormant(instanceIds: string[]): void {
       status: "dormant",
       sessionId: null,
       resumeSessionId: null,
+      remote: null,
       error: null,
       focusSeq: 0,
     }));

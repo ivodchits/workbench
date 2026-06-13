@@ -89,6 +89,7 @@ function LiveShell({ shellId, cwd }: { shellId: string; cwd: string }) {
       cwd={cwd}
       webgl={false}
       resumeSessionId={null}
+      remote={null}
       onSpawned={onSpawned}
       onError={onError}
     />

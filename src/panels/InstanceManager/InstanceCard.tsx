@@ -48,6 +48,11 @@ interface InstanceCardProps {
   /** True when this worktree-off instance shares its working dir with another
    *  (step 2.6) — shows the non-blocking ⚠ "shared" warning + one-click isolate. */
   shared: boolean;
+  /** True when the owning project is remote (step 3.12): the card badges as remote
+   *  and hides local-only affordances (worktree, diff, queue, token readout). */
+  isRemote: boolean;
+  /** The SSH destination, for the remote badge (e.g. `ssh:myserver`). */
+  remoteDest: string | null;
   /** Launch or focus this instance's console (row click / Enter). */
   onActivate: () => void;
   /** Provision (or revert) this instance's worktree — opens a confirm (step 2.4). */
@@ -62,6 +67,8 @@ function InstanceCard({
   consoleStatus,
   live,
   shared,
+  isRemote,
+  remoteDest,
   onActivate,
   onToggleWorktree,
   onReview,
@@ -98,12 +105,15 @@ function InstanceCard({
         onKill();
         break;
       case "railWorktree":
+        if (isRemote) break; // worktrees are local-only (step 3.12)
         onToggleWorktree();
         break;
       case "railDiff":
+        if (isRemote) break; // no diff/review over SSH this step
         onReview();
         break;
       case "railOpenDir":
+        if (isRemote) break; // the working dir is on the host, not this machine
         void openPath(instance.workingDir);
         break;
       case "railInterrupt":
@@ -113,7 +123,9 @@ function InstanceCard({
         }
         break;
       case "railQueue":
-        if (consoleStatus === "running") openQueueDialog(instance.id);
+        // The prompt queue auto-sends on the Stop hook, which never fires for a
+        // remote (hookless) session — so it's disabled for remote instances.
+        if (!isRemote && consoleStatus === "running") openQueueDialog(instance.id);
         break;
       default:
         return; // not a card concern
@@ -150,16 +162,18 @@ function InstanceCard({
       <div style={{ display: "flex", alignItems: "baseline", gap: 8 }}>
         <span
           style={{
-            color: view.colorVar,
+            color: isRemote ? "var(--wb-accent)" : view.colorVar,
             fontSize: 12,
             width: 12,
             flex: "0 0 12px",
             textAlign: "center",
             lineHeight: 1,
           }}
-          title={view.label}
+          title={isRemote ? `remote — ${remoteDest ?? "ssh"}` : view.label}
         >
-          {view.spinning ? <Spinner size={12} color={view.colorVar} /> : view.glyph}
+          {/* Remote sessions are hookless, so a live status dot would lie — show a
+              static remote glyph in its place (step 3.12). */}
+          {isRemote ? GLYPH.remote : view.spinning ? <Spinner size={12} color={view.colorVar} /> : view.glyph}
         </span>
         <span
           style={{
@@ -244,22 +258,28 @@ function InstanceCard({
         )}
         {showActions ? (
           <span style={{ display: "flex", gap: 7, flex: "0 0 auto" }}>
-            <RowAction
-              label={instance.worktreeOn ? "return to project root" : "isolate in a worktree"}
-              onClick={onToggleWorktree}
-              active={instance.worktreeOn}
-              fontSize={16.5}
-            >
-              {GLYPH.worktree}
-            </RowAction>
-            {consoleStatus === "running" && (
+            {/* Worktree, queue, diff, and open-dir are local-only — hidden for a
+                remote instance (step 3.12). */}
+            {!isRemote && (
+              <RowAction
+                label={instance.worktreeOn ? "return to project root" : "isolate in a worktree"}
+                onClick={onToggleWorktree}
+                active={instance.worktreeOn}
+                fontSize={16.5}
+              >
+                {GLYPH.worktree}
+              </RowAction>
+            )}
+            {!isRemote && consoleStatus === "running" && (
               <RowAction label="queue a prompt (sends when the agent finishes)" onClick={() => openQueueDialog(instance.id)}>
                 {GLYPH.queue}
               </RowAction>
             )}
-            <RowAction label="review changes (diff)" onClick={onReview}>
-              ±
-            </RowAction>
+            {!isRemote && (
+              <RowAction label="review changes (diff)" onClick={onReview}>
+                ±
+              </RowAction>
+            )}
             <RowAction
               label="accent color"
               onClick={() => setPickingAccent((v) => !v)}
@@ -270,9 +290,11 @@ function InstanceCard({
             <RowAction label="edit note" onClick={() => setEditingNote(true)}>
               ✎
             </RowAction>
-            <RowAction label="open working dir" onClick={() => void openPath(instance.workingDir)}>
-              🗀
-            </RowAction>
+            {!isRemote && (
+              <RowAction label="open working dir" onClick={() => void openPath(instance.workingDir)}>
+                🗀
+              </RowAction>
+            )}
             <RowAction label="kill instance" onClick={onKill} danger>
               {GLYPH.fail}
             </RowAction>
@@ -357,17 +379,28 @@ function InstanceCard({
         }}
       >
         <span style={{ display: "flex", alignItems: "center", gap: 4, minWidth: 0 }}>
-          {instance.worktreeOn && <span style={{ color: "var(--wb-accent)" }}>{GLYPH.worktree}</span>}
-          <span
-            style={{
-              overflow: "hidden",
-              textOverflow: "ellipsis",
-              whiteSpace: "nowrap",
-              maxWidth: 150,
-            }}
-          >
-            {instance.branch ?? "—"}
-          </span>
+          {isRemote ? (
+            // No branch over SSH this step — show the remote destination instead.
+            <span style={{ color: "var(--wb-accent)", display: "flex", alignItems: "center", gap: 4 }}>
+              {GLYPH.remote} ssh:{remoteDest ?? "?"}
+            </span>
+          ) : (
+            <>
+              {instance.worktreeOn && (
+                <span style={{ color: "var(--wb-accent)" }}>{GLYPH.worktree}</span>
+              )}
+              <span
+                style={{
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                  whiteSpace: "nowrap",
+                  maxWidth: 150,
+                }}
+              >
+                {instance.branch ?? "—"}
+              </span>
+            </>
+          )}
         </span>
         {shared && (
           <button
@@ -396,12 +429,16 @@ function InstanceCard({
             {GLYPH.warn} shared
           </button>
         )}
-        <span
-          style={{ marginLeft: "auto", color: "var(--wb-textDim2)" }}
-          title={tokenBreakdown(instance)}
-        >
-          {formatTokens(contextWindowTokens(instance))}
-        </span>
+        {/* Token readout comes from the transcript tailer, which doesn't reach a
+            remote session (its transcript lives on the host) — hidden for remote. */}
+        {!isRemote && (
+          <span
+            style={{ marginLeft: "auto", color: "var(--wb-textDim2)" }}
+            title={tokenBreakdown(instance)}
+          >
+            {formatTokens(contextWindowTokens(instance))}
+          </span>
+        )}
       </div>
     </div>
   );
