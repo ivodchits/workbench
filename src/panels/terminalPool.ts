@@ -25,6 +25,8 @@ import {
   ptyKill,
   ptyResize,
   ptySpawn,
+  ptySubscribe,
+  ptyUnsubscribe,
   ptyWrite,
   type PtyChunk,
   type RemoteSpawn,
@@ -41,6 +43,10 @@ interface TermEntry {
   fit: FitAddon;
   dataSub: { dispose(): void };
   resizeSub: { dispose(): void };
+  /** This terminal's PTY output subscription id (step 4.1), set once `ptySubscribe`
+   *  resolves after spawn. Passed to `ptyResize` (min-size arbitration) and to
+   *  `ptyUnsubscribe` in `release`. Undefined until the subscription lands. */
+  subId?: number;
   /** Listener that mirrors the agent's terminal title into the task note; only
    *  attached for claude consoles (see `acquire`). */
   titleSub?: { dispose(): void };
@@ -274,6 +280,12 @@ export function acquire(container: HTMLDivElement, opts: AcquireOptions): void {
     }
   }
 
+  // This terminal's PTY output subscription id (step 4.1), assigned once
+  // `ptySubscribe` resolves below. Held in a closure-local so `onResize` can read
+  // it without a forward reference to `entry`; mirrored onto `entry.subId` for
+  // `release` to unsubscribe.
+  let subId: number | undefined;
+
   const output = new Channel<PtyChunk>();
   output.onmessage = (chunk) => term.write(new Uint8Array(chunk));
 
@@ -288,7 +300,11 @@ export function acquire(container: HTMLDivElement, opts: AcquireOptions): void {
     }
   });
   const resizeSub = term.onResize(({ cols, rows }) => {
-    void ptyResize(opts.instanceId, cols, rows);
+    // Carry the subscription id so this terminal's size joins the PTY's min-size
+    // arbitration (step 4.1). Before the subscription lands, `subId` is undefined
+    // and the resize falls through to a direct PTY resize — harmless, and the seed
+    // resize after `ptySubscribe` re-asserts the arbitrated size.
+    void ptyResize(opts.instanceId, cols, rows, subId);
   });
 
   // Mirror the agent's terminal title into the task note (live-mirror feature).
@@ -357,7 +373,6 @@ export function acquire(container: HTMLDivElement, opts: AcquireOptions): void {
     }
     ptySpawn(
       opts.instanceId,
-      output,
       opts.kind,
       opts.cwd,
       opts.resumeSessionId,
@@ -365,7 +380,26 @@ export function acquire(container: HTMLDivElement, opts: AcquireOptions): void {
       term.cols,
       term.rows,
     )
-      .then((result) => opts.onSpawned(result))
+      .then(async (result) => {
+        opts.onSpawned(result);
+        // The PTY now exists; attach this terminal as a subscriber (step 4.1). The
+        // backend replays the ring buffer into `output` on attach, so a session
+        // that produced output between spawn and here isn't lost. Guard against a
+        // release that raced in before the spawn resolved.
+        if (pool.get(opts.instanceId) !== entry) return;
+        const id = await ptySubscribe(opts.instanceId, output);
+        if (pool.get(opts.instanceId) !== entry) {
+          // Released while subscribing — detach the just-created subscriber.
+          void ptyUnsubscribe(opts.instanceId, id);
+          return;
+        }
+        subId = id;
+        entry.subId = id;
+        // Seed this subscriber's size into the min-size arbitration now that it's
+        // registered (the initial fit's `onResize` may have fired before `subId`
+        // was set and thus resized the PTY directly rather than as a subscriber).
+        void ptyResize(opts.instanceId, term.cols, term.rows, id);
+      })
       .catch((e: unknown) => {
         opts.onError(e instanceof Error ? e.message : String(e));
         release(opts.instanceId); // failed spawn — don't leave a dead entry behind
@@ -555,6 +589,10 @@ export function release(instanceId: string): void {
   entry.resizeSub.dispose();
   entry.titleSub?.dispose();
   clearTitleMirror(instanceId);
+  // Detach this terminal's output subscription before killing the child (step 4.1).
+  // `ptyKill` tears the whole PTY (and its hub) down anyway, but unsubscribing first
+  // keeps the contract clean and avoids a late fanout into a disposed terminal.
+  if (entry.subId !== undefined) void ptyUnsubscribe(instanceId, entry.subId);
   void ptyKill(instanceId);
   entry.term.dispose();
   entry.host.remove();

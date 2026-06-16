@@ -40,15 +40,16 @@ interface RawSpawnResult {
 }
 
 /**
- * Spawn the chosen child for `instanceId` in `cwd`, routing output to `onOutput`.
- * `resumeSessionId` (claude only, step 3.8): when set, launch `claude --resume
- * <id>` to continue that session instead of minting a fresh one; null = fresh.
- * `remote` (step 3.12): when set, drive a remote `claude` over SSH+tmux instead of
- * a local child (and no session id is minted — the result's `sessionId` is null).
+ * Spawn the chosen child for `instanceId` in `cwd`. Output is **not** wired here:
+ * since step 4.1 the PTY fans out to N subscribers, so attach one with
+ * `ptySubscribe` after this resolves. `resumeSessionId` (claude only, step 3.8):
+ * when set, launch `claude --resume <id>` to continue that session instead of
+ * minting a fresh one; null = fresh. `remote` (step 3.12): when set, drive a remote
+ * `claude` over SSH+tmux instead of a local child (and no session id is minted —
+ * the result's `sessionId` is null).
  */
 export async function ptySpawn(
   instanceId: string,
-  onOutput: Channel<PtyChunk>,
   kind: SpawnKind,
   cwd: string | null,
   resumeSessionId: string | null,
@@ -58,7 +59,6 @@ export async function ptySpawn(
 ): Promise<SpawnResult> {
   const raw = await invoke<RawSpawnResult>("pty_spawn", {
     instanceId,
-    onOutput,
     kind,
     cwd,
     resumeSessionId,
@@ -69,14 +69,44 @@ export async function ptySpawn(
   return { sessionId: raw.session_id, cwd: raw.cwd };
 }
 
+/**
+ * Attach an output subscriber to a live PTY (step 4.1) and return its subscription
+ * id. The PTY's recent scrollback is replayed into `onOutput` immediately, then
+ * live output streams in alongside any other subscribers. Pass the returned id to
+ * `ptyUnsubscribe` on close and to `ptyResize` so this terminal's size joins the
+ * min-size arbitration.
+ */
+export function ptySubscribe(
+  instanceId: string,
+  onOutput: Channel<PtyChunk>,
+): Promise<number> {
+  return invoke("pty_subscribe", { instanceId, onOutput });
+}
+
+/** Detach a subscriber (`subId` from `ptySubscribe`) without killing the PTY — the
+ *  console closed but the session keeps running (step 4.1). */
+export function ptyUnsubscribe(instanceId: string, subId: number): Promise<void> {
+  return invoke("pty_unsubscribe", { instanceId, subId });
+}
+
 /** Forward keystrokes (UTF-8 bytes) to an instance's PTY. */
 export function ptyWrite(instanceId: string, data: Uint8Array): Promise<void> {
   return invoke("pty_write", { instanceId, data: Array.from(data) });
 }
 
-/** Resize an instance's PTY to match its terminal's cols/rows. */
-export function ptyResize(instanceId: string, cols: number, rows: number): Promise<void> {
-  return invoke("pty_resize", { instanceId, cols, rows });
+/**
+ * Resize an instance's PTY to match its terminal's cols/rows. `subId` (step 4.1):
+ * a console passes its subscription id so its size joins the PTY's min-size
+ * arbitration across subscribers; omit it (the remote-command modal) to resize the
+ * PTY directly.
+ */
+export function ptyResize(
+  instanceId: string,
+  cols: number,
+  rows: number,
+  subId?: number,
+): Promise<void> {
+  return invoke("pty_resize", { instanceId, subId: subId ?? null, cols, rows });
 }
 
 /** Kill an instance's PTY child. */

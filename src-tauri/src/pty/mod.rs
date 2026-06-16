@@ -12,11 +12,11 @@
 //! `instance_id → PTY` map — the lookup the Phase-2 hook server needs to route an
 //! event (which only carries `session_id`) back to its card.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::ffi::OsStr;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::thread;
 
 use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
@@ -24,8 +24,101 @@ use serde::{Deserialize, Serialize};
 use tauri::ipc::Channel;
 use tauri::{AppHandle, Emitter, Manager, State};
 
+/// Recent raw PTY output (cap [`RING_CAP`]) bytes retained for **replay on
+/// attach**. A subscriber that joins mid-session gets this replayed so it doesn't
+/// start on a blank screen — the scrollback requirement of the multiplexer
+/// (design §11, step 4.1). Bytes are stored and replayed **verbatim**, never
+/// parsed for state (guardrail: structured state comes from hooks/transcripts, not
+/// terminal output).
+const RING_CAP: usize = 1024 * 1024; // 1 MiB
+
+/// Fans one PTY child's output out to N **subscribers** and retains a ring buffer
+/// of recent bytes for replay-on-attach. This is the heart of step 4.1: the reader
+/// thread appends every chunk to `ring` and forwards it to every live subscriber;
+/// a fresh subscriber ([`OutputHub::subscribe`]) gets the ring replayed so it joins
+/// with scrollback intact. Input routing needs nothing here — `pty_write` is keyed
+/// by `instance_id`, so any subscriber's keystrokes already reach the child.
+///
+/// Until step 4.2 (OS-window tear-off) there's exactly one subscriber per PTY (the
+/// desktop console), so this behaves identically to the old single-channel path;
+/// the structure is what later lets a torn-off window or a remote phone attach as a
+/// second subscriber.
+#[derive(Default)]
+struct OutputHub {
+    /// Recent output bytes, capped at [`RING_CAP`]; replayed to a late subscriber.
+    ring: VecDeque<u8>,
+    /// Live subscribers keyed by a per-PTY monotonic id ([`OutputHub::subscribe`]).
+    subscribers: HashMap<u64, Channel<Vec<u8>>>,
+    /// Each subscriber's last-requested terminal size. The PTY is sized to the
+    /// **minimum** across subscribers (tmux's smallest-client rule) so a small
+    /// client can't force a larger one to wrap. See [`OutputHub::arbitrate_size`].
+    sizes: HashMap<u64, (u16, u16)>,
+    /// Next subscription id to hand out.
+    next_sub_id: u64,
+}
+
+impl OutputHub {
+    /// Append a chunk to the ring, evicting oldest bytes past [`RING_CAP`].
+    fn push_ring(&mut self, chunk: &[u8]) {
+        self.ring.extend(chunk.iter().copied());
+        let overflow = self.ring.len().saturating_sub(RING_CAP);
+        if overflow > 0 {
+            self.ring.drain(..overflow);
+        }
+    }
+
+    /// Forward a chunk to every subscriber, dropping any whose channel the
+    /// frontend has closed (webview gone). No subscribers is a valid transient
+    /// state — output still accrues in the ring for the next attach.
+    fn fanout(&mut self, chunk: &[u8]) {
+        if self.subscribers.is_empty() {
+            return;
+        }
+        let mut dead = Vec::new();
+        for (id, ch) in self.subscribers.iter() {
+            if ch.send(chunk.to_vec()).is_err() {
+                dead.push(*id);
+            }
+        }
+        for id in dead {
+            self.subscribers.remove(&id);
+            self.sizes.remove(&id);
+        }
+    }
+
+    /// Register a subscriber, replay the ring into it, and return its id. The
+    /// replay is one `send` of up to [`RING_CAP`] bytes so the attaching terminal
+    /// paints the recent session immediately (raw-ArrayBuffer streaming is a later
+    /// optimization — correctness first, matching the spawn path).
+    fn subscribe(&mut self, ch: Channel<Vec<u8>>) -> u64 {
+        let id = self.next_sub_id;
+        self.next_sub_id += 1;
+        if !self.ring.is_empty() {
+            let _ = ch.send(self.ring.iter().copied().collect());
+        }
+        self.subscribers.insert(id, ch);
+        id
+    }
+
+    /// Drop a subscriber and its size vote.
+    fn unsubscribe(&mut self, id: u64) {
+        self.subscribers.remove(&id);
+        self.sizes.remove(&id);
+    }
+
+    /// Record a subscriber's desired size and return the size the PTY should
+    /// actually take — the **minimum** across all subscribers. `None` only if no
+    /// sizes are recorded (can't happen right after an insert).
+    fn arbitrate_size(&mut self, id: u64, cols: u16, rows: u16) -> Option<(u16, u16)> {
+        self.sizes.insert(id, (cols, rows));
+        let cols = self.sizes.values().map(|(c, _)| *c).min()?;
+        let rows = self.sizes.values().map(|(_, r)| *r).min()?;
+        Some((cols, rows))
+    }
+}
+
 /// A live PTY child plus the handles needed to write to it, resize it, and kill
-/// it. The reader runs on its own detached thread and isn't tracked here. For a
+/// it. The reader runs on its own detached thread, fanning output through `hub`.
 /// Each child's working dir is kept so a rotated session (`/clear` / `/compact`,
 /// which mint a fresh id) can be re-correlated to this instance by cwd.
 struct PtySession {
@@ -36,6 +129,11 @@ struct PtySession {
     /// Claude Code *rotated* under us — `/clear` and `/compact` start a fresh
     /// session id that we never minted, but in the same cwd as this live instance.
     cwd: String,
+    /// Output multiplexer: the reader thread fans chunks here; consoles attach as
+    /// subscribers via `pty_subscribe`. Shared with the reader thread (`Arc`).
+    /// The remote one-shot command path (`remote_cmd_spawn`) keeps an empty hub —
+    /// it streams to its own channel directly and is never multiplexed.
+    hub: Arc<Mutex<OutputHub>>,
 }
 
 /// Tauri-managed state holding every active PTY, keyed by `instance_id`, plus the
@@ -228,7 +326,6 @@ pub struct SpawnResult {
 pub fn pty_spawn(
     state: State<'_, PtyManager>,
     instance_id: String,
-    on_output: Channel<Vec<u8>>,
     kind: SpawnKind,
     cwd: Option<String>,
     resume_session_id: Option<String>,
@@ -320,19 +417,25 @@ pub fn pty_spawn(
         .take_writer()
         .map_err(|e| format!("take writer failed: {e}"))?;
 
-    // Pump PTY output to the frontend until the child exits or the pipe closes.
-    // `Channel::send` over IPC serializes `Vec<u8>` as a JS number array; the
-    // frontend reassembles it into a Uint8Array. (Raw-ArrayBuffer streaming is a
-    // later optimization; correctness first.)
+    // Pump PTY output into the multiplexer until the child exits or the pipe
+    // closes. The reader appends each chunk to the ring (for replay-on-attach) and
+    // fans it out to every live subscriber (step 4.1). Unlike the old single-channel
+    // path, **zero subscribers is not a stop condition** — a console can detach and
+    // re-attach while the child keeps running, with output accruing in the ring.
+    // `Channel::send` serializes `Vec<u8>` as a JS number array; the frontend
+    // reassembles it into a Uint8Array. (Raw-ArrayBuffer streaming is a later
+    // optimization; correctness first.)
+    let hub = Arc::new(Mutex::new(OutputHub::default()));
+    let reader_hub = hub.clone();
     thread::spawn(move || {
         let mut buf = [0u8; 8192];
         loop {
             match reader.read(&mut buf) {
                 Ok(0) => break,
                 Ok(n) => {
-                    if on_output.send(buf[..n].to_vec()).is_err() {
-                        break; // frontend dropped the channel
-                    }
+                    let mut h = reader_hub.lock().unwrap();
+                    h.push_ring(&buf[..n]);
+                    h.fanout(&buf[..n]);
                 }
                 Err(_) => break,
             }
@@ -354,6 +457,7 @@ pub fn pty_spawn(
             writer,
             child,
             cwd: cwd_str.clone(),
+            hub,
         },
     );
 
@@ -361,6 +465,39 @@ pub fn pty_spawn(
         session_id,
         cwd: cwd_str,
     })
+}
+
+/// Attach an output subscriber to an instance's live PTY (step 4.1). The PTY's
+/// recent scrollback (the hub's ring buffer) is **replayed into `on_output`
+/// immediately** so the attaching terminal paints the in-flight session rather
+/// than a blank screen; subsequent output then fans out to it live alongside any
+/// other subscribers. Returns the subscription id, which the caller passes to
+/// `pty_unsubscribe` on close and to `pty_resize` so its size joins the
+/// min-size arbitration. Errors if the instance has no live PTY.
+#[tauri::command]
+pub fn pty_subscribe(
+    state: State<'_, PtyManager>,
+    instance_id: String,
+    on_output: Channel<Vec<u8>>,
+) -> Result<u64, String> {
+    // Clone out the hub handle and release the sessions lock before touching it,
+    // so we never hold both locks at once (the reader thread holds only the hub).
+    let hub = {
+        let guard = state.sessions.lock().unwrap();
+        guard.get(&instance_id).ok_or("no active PTY")?.hub.clone()
+    };
+    let id = hub.lock().unwrap().subscribe(on_output);
+    Ok(id)
+}
+
+/// Detach a subscriber (its `sub_id` from `pty_subscribe`) from an instance's PTY
+/// without killing the child — the console was closed but the session lives on.
+/// No-op if the instance or subscriber is already gone.
+#[tauri::command]
+pub fn pty_unsubscribe(state: State<'_, PtyManager>, instance_id: String, sub_id: u64) {
+    if let Some(session) = state.sessions.lock().unwrap().get(&instance_id) {
+        session.hub.lock().unwrap().unsubscribe(sub_id);
+    }
 }
 
 /// Forward keystrokes (UTF-8 bytes from xterm `onData`) to an instance's PTY.
@@ -383,15 +520,32 @@ pub fn pty_write(
 }
 
 /// Resize an instance's PTY so the child reflows to the new terminal dimensions.
+///
+/// `sub_id` (step 4.1): when a subscriber identifies itself, its requested size
+/// joins the hub's **min-size arbitration** — the PTY is set to the smallest size
+/// any subscriber wants, so a small client can't force a larger one to wrap. With
+/// a single subscriber (the only case until 4.2) the min is just its own size, so
+/// this matches the old behavior. `None` resizes the PTY directly to the requested
+/// size (the un-multiplexed `remote_cmd_spawn` modal, which has no hub subscriber).
 #[tauri::command]
 pub fn pty_resize(
     state: State<'_, PtyManager>,
     instance_id: String,
+    sub_id: Option<u64>,
     cols: u16,
     rows: u16,
 ) -> Result<(), String> {
     let guard = state.sessions.lock().unwrap();
     let session = guard.get(&instance_id).ok_or("no active PTY")?;
+    let (cols, rows) = match sub_id {
+        Some(id) => session
+            .hub
+            .lock()
+            .unwrap()
+            .arbitrate_size(id, cols, rows)
+            .unwrap_or((cols, rows)),
+        None => (cols, rows),
+    };
     session
         .master
         .resize(PtySize {
@@ -515,6 +669,11 @@ pub fn remote_cmd_spawn(
             writer,
             child,
             cwd: cwd_str,
+            // Unused: this one-shot SSH command streams to its own channel directly
+            // (below) and is never multiplexed, so its hub stays empty. It exists
+            // only so `remote_cmd_spawn` shares the `PtySession` map (and thus
+            // `pty_write`/`pty_resize`/`pty_kill`) with consoles.
+            hub: Arc::new(Mutex::new(OutputHub::default())),
         },
     );
 
@@ -689,5 +848,54 @@ fn kill_instance(mgr: &PtyManager, instance_id: &str) {
         // Drop any pending-rotation flag too, so a stray session in this dir can't
         // be adopted into a now-dead instance.
         mgr.pending_rotation.lock().unwrap().remove(instance_id);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The ring buffer caps at `RING_CAP`, evicting the oldest bytes so a late
+    /// subscriber replays only the most recent window (step 4.1 scrollback). Push
+    /// past the cap and assert the tail survived and the head was dropped.
+    #[test]
+    fn ring_caps_and_evicts_oldest() {
+        let mut hub = OutputHub::default();
+        // Two chunks that together exceed the cap by one chunk's worth.
+        let first = vec![b'A'; RING_CAP];
+        let second = vec![b'B'; 4096];
+        hub.push_ring(&first);
+        hub.push_ring(&second);
+        assert_eq!(hub.ring.len(), RING_CAP, "ring never grows past the cap");
+        // The oldest 4096 'A's were evicted; the newest bytes are all 'B'.
+        assert_eq!(hub.ring.back().copied(), Some(b'B'));
+        assert_eq!(hub.ring.front().copied(), Some(b'A'));
+        let b_count = hub.ring.iter().filter(|&&b| b == b'B').count();
+        assert_eq!(b_count, 4096, "exactly the newest chunk's bytes remain at the tail");
+    }
+
+    /// A push smaller than the cap is retained whole (the common case — replay
+    /// shows the live session, not a truncated one).
+    #[test]
+    fn ring_keeps_small_output_whole() {
+        let mut hub = OutputHub::default();
+        hub.push_ring(b"hello ");
+        hub.push_ring(b"world");
+        let got: Vec<u8> = hub.ring.iter().copied().collect();
+        assert_eq!(got, b"hello world");
+    }
+
+    /// Resize arbitration returns the **minimum** size across subscribers (tmux's
+    /// smallest-client rule), and a departed subscriber stops constraining it.
+    #[test]
+    fn arbitrate_size_takes_min_across_subscribers() {
+        let mut hub = OutputHub::default();
+        // One subscriber: the min is just its own size (the only case before 4.2).
+        assert_eq!(hub.arbitrate_size(0, 120, 40), Some((120, 40)));
+        // A second, smaller-in-one-axis subscriber pulls each axis to the min.
+        assert_eq!(hub.arbitrate_size(1, 80, 50), Some((80, 40)));
+        // It leaving restores the remaining subscriber's size.
+        hub.unsubscribe(1);
+        assert_eq!(hub.arbitrate_size(0, 120, 40), Some((120, 40)));
     }
 }

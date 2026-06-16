@@ -81,6 +81,8 @@ pub fn run() {
         .manage(statusline::LimitsState::default())
         .invoke_handler(tauri::generate_handler![
             pty::pty_spawn,
+            pty::pty_subscribe,
+            pty::pty_unsubscribe,
             pty::pty_write,
             pty::pty_resize,
             pty::pty_kill,
