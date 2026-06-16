@@ -965,7 +965,6 @@ function ProjectNode({
                   open={menuOpen}
                   setOpen={setMenuOpen}
                   items={[
-                    { label: "git panel", onClick: onOpenGit },
                     { label: "edit CLAUDE.md", onClick: onOpenClaudeMd },
                     { label: "manage MCP servers", onClick: onOpenMcp },
                     { label: "manage skills", onClick: onOpenSkills },
