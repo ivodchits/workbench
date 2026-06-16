@@ -6,6 +6,7 @@ import PresetsBar from "./panels/PresetsBar";
 import TemplateLibraryHost from "./panels/TemplateLibrary";
 import QueuePromptHost from "./panels/QueuePromptDialog";
 import CommandPaletteHost from "./panels/CommandPalette";
+import ResumePickerHost from "./panels/ResumePicker";
 import KeymapEditorHost from "./panels/KeymapEditor";
 import { useConsoles } from "./state/consoles";
 import { useRegistry } from "./state/registry";
@@ -168,6 +169,7 @@ function App() {
           open-commands (Ctrl+Shift+A / the palette / the appearance menu) work. */}
       <CommandPaletteHost />
       <KeymapEditorHost />
+      <ResumePickerHost />
     </div>
   );
 }

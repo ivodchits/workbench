@@ -158,8 +158,10 @@ export function openConsole(instance: Instance): void {
 }
 
 /**
- * Relaunch `instance`'s console to **resume** the session it last ran
- * (`claude --resume <lastSessionId>`, step 3.8 — the `Ctrl+Shift+R` shortcut).
+ * Relaunch `instance`'s console to **resume** a claude session (`claude --resume
+ * <id>`, step 3.8). `sessionId` selects which session to continue (the resume picker
+ * passes a chosen one); omit it to resume the instance's `lastSessionId` (the legacy
+ * `Ctrl+Shift+R` behavior).
  *
  * Always tears down any existing console+PTY for the instance first, then opens a
  * fresh one carrying `resumeSessionId`. The full close→release→re-add (rather than
@@ -170,10 +172,10 @@ export function openConsole(instance: Instance): void {
  * respawn from a mere status change). `release` no-ops when there's no pooled
  * terminal (a dormant placeholder), so the restored-layout case is covered too.
  *
- * The caller is responsible for the "already running → ignore" guard (the backend
- * `pty_session_live` check); this unconditionally relaunches.
+ * Unconditionally relaunches — the resume picker handles the "instance is busy"
+ * warning, and tearing down a live PTY to resume into it is the intended behavior.
  */
-export function resumeConsole(instance: Instance): void {
+export function resumeConsole(instance: Instance, sessionId?: string): void {
   if (state.open.some((c) => c.instanceId === instance.id)) {
     closeConsole(instance.id);
     release(instance.id); // the only path that kills the PTY (see terminalPool)
@@ -185,7 +187,7 @@ export function resumeConsole(instance: Instance): void {
     webgl: liveWebglCount() < WEBGL_CAP,
     status: "spawning",
     sessionId: null,
-    resumeSessionId: instance.lastSessionId,
+    resumeSessionId: sessionId ?? instance.lastSessionId,
     remote: remoteSpawnFor(instance),
     error: null,
     focusSeq: ++focusSeq,

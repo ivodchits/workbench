@@ -28,9 +28,10 @@
 //!    so a long session isn't re-parsed from the top every tick.
 
 use std::collections::{HashMap, HashSet};
-use std::io::{Read, Seek, SeekFrom};
+use std::fs::File;
+use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, UNIX_EPOCH};
 
 use serde::Serialize;
 use serde_json::Value;
@@ -212,6 +213,188 @@ fn home_dir() -> Option<PathBuf> {
         .map(PathBuf::from)
 }
 
+// --- session enumeration for the resume picker (step 4.x) -------------------
+// Lists every Claude session whose working dir is a given directory, so the UI
+// can offer them for `claude --resume`. This is read-only file inspection,
+// separate from the live tailer above.
+
+/// One resumable session, surfaced to the resume picker. Metadata is read from the
+/// transcript JSONL: the id (its file stem), when it was last touched, and the first
+/// human prompt as a recognizable label.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionSummary {
+    /// The session UUID — what gets passed to `claude --resume`.
+    pub session_id: String,
+    /// File mtime (epoch seconds) — "last active", used for sort + relative time.
+    pub modified_at: i64,
+    /// First human prompt in the session, cleaned + truncated; empty if none found.
+    pub first_prompt: String,
+    /// The session's working directory (as recorded in the transcript).
+    pub cwd: String,
+}
+
+/// Normalize a directory path for comparison — mirrors `pty::norm_dir` (unify
+/// separators, drop a trailing slash, case-fold on Windows) so a session's recorded
+/// `cwd` matches the instance's `working_dir` regardless of slash/case differences.
+fn norm_dir(p: &str) -> String {
+    let s = p.replace('\\', "/");
+    let s = s.trim_end_matches('/');
+    if cfg!(windows) {
+        s.to_lowercase()
+    } else {
+        s.to_string()
+    }
+}
+
+/// Reproduce Claude Code's cwd→folder encoding (every non-`[A-Za-z0-9_-]` char
+/// becomes `-`), e.g. `C:\Users\me\repo` → `C--Users-me-repo`. Used only as a fast
+/// path to the right `~/.claude/projects` subfolder; the per-file `cwd` check below
+/// is the real authority, so an encoding quirk just falls back to a full scan.
+fn encode_cwd_to_folder(cwd: &str) -> String {
+    cwd.chars()
+        .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '-' })
+        .collect()
+}
+
+/// Pull the first human prompt out of a transcript line, or `None` if this record
+/// isn't a user text message. Handles both string content and the content-block
+/// array form, taking the first `text` block.
+fn user_text(v: &Value) -> Option<String> {
+    let content = v.get("message")?.get("content")?;
+    match content {
+        Value::String(s) => Some(s.clone()),
+        Value::Array(arr) => arr.iter().find_map(|b| {
+            (b.get("type").and_then(Value::as_str) == Some("text"))
+                .then(|| b.get("text").and_then(Value::as_str))
+                .flatten()
+                .map(str::to_string)
+        }),
+        _ => None,
+    }
+}
+
+/// Collapse whitespace / strip control chars and truncate to a label length.
+fn clean_prompt(raw: &str) -> String {
+    let collapsed = raw
+        .chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .collect::<String>();
+    let trimmed = collapsed.split_whitespace().collect::<Vec<_>>().join(" ");
+    trimmed.chars().take(160).collect()
+}
+
+/// True for the slash-command / tool-result wrapper prompts we'd rather skip past in
+/// favor of a real human prompt (e.g. `<local-command-caveat>…`, `<command-name>…`).
+fn is_wrapper_prompt(s: &str) -> bool {
+    let t = s.trim_start();
+    t.starts_with("<local-command") || t.starts_with("<command-") || t.starts_with("Caveat:")
+}
+
+/// Read one transcript file's summary if its recorded `cwd` matches `target` (already
+/// normalized). Streams just far enough to learn the cwd and a good first prompt, so
+/// a non-matching file is rejected after a few lines. Returns `None` for a mismatch,
+/// unreadable file, or one with no `cwd` record.
+fn read_session_summary(path: &Path, target_norm: &str) -> Option<SessionSummary> {
+    let session_id = path.file_stem()?.to_str()?.to_string();
+    let modified_at = path
+        .metadata()
+        .ok()?
+        .modified()
+        .ok()?
+        .duration_since(UNIX_EPOCH)
+        .ok()?
+        .as_secs() as i64;
+
+    let reader = BufReader::new(File::open(path).ok()?);
+    let mut cwd: Option<String> = None;
+    // Prefer a real human prompt; fall back to the first wrapper line if that's all.
+    let mut best_prompt: Option<String> = None;
+    let mut fallback_prompt: Option<String> = None;
+
+    for line in reader.lines().map_while(Result::ok) {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let Ok(v) = serde_json::from_str::<Value>(&line) else {
+            continue;
+        };
+        if cwd.is_none() {
+            if let Some(c) = v.get("cwd").and_then(Value::as_str) {
+                if norm_dir(c) != target_norm {
+                    return None; // different directory — not this instance's session
+                }
+                cwd = Some(c.to_string());
+            }
+        }
+        if best_prompt.is_none() {
+            if let Some(text) = user_text(&v) {
+                let cleaned = clean_prompt(&text);
+                if !cleaned.is_empty() {
+                    if is_wrapper_prompt(&cleaned) {
+                        fallback_prompt.get_or_insert(cleaned);
+                    } else {
+                        best_prompt = Some(cleaned);
+                    }
+                }
+            }
+        }
+        if cwd.is_some() && best_prompt.is_some() {
+            break;
+        }
+    }
+
+    Some(SessionSummary {
+        session_id,
+        modified_at,
+        first_prompt: best_prompt.or(fallback_prompt).unwrap_or_default(),
+        cwd: cwd?,
+    })
+}
+
+/// List every Claude session whose working directory is `working_dir` — the original
+/// session plus every `/clear` rotation child (they share the cwd) — newest first.
+/// Backs the resume picker. Scans the encoded `~/.claude/projects` subfolder when it
+/// exists, else falls back to every subfolder; either way each file's recorded `cwd`
+/// is the real filter, so worktree/encoding quirks can't leak foreign sessions.
+#[tauri::command]
+pub fn list_project_sessions(working_dir: String) -> Result<Vec<SessionSummary>, String> {
+    let projects_dir = claude_projects_dir().ok_or("no home directory found")?;
+    let target_norm = norm_dir(&working_dir);
+
+    // Fast path: the directory's own encoded folder. Fall back to scanning every
+    // project folder if it's absent (e.g. an encoding edge case).
+    let encoded = projects_dir.join(encode_cwd_to_folder(&working_dir));
+    let folders: Vec<PathBuf> = if encoded.is_dir() {
+        vec![encoded]
+    } else {
+        std::fs::read_dir(&projects_dir)
+            .map_err(|e| format!("reading {}: {e}", projects_dir.display()))?
+            .flatten()
+            .filter(|e| e.file_type().map(|t| t.is_dir()).unwrap_or(false))
+            .map(|e| e.path())
+            .collect()
+    };
+
+    let mut out: Vec<SessionSummary> = Vec::new();
+    for folder in folders {
+        let Ok(entries) = std::fs::read_dir(&folder) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
+                continue;
+            }
+            if let Some(summary) = read_session_summary(&path, &target_norm) {
+                out.push(summary);
+            }
+        }
+    }
+    out.sort_by(|a, b| b.modified_at.cmp(&a.modified_at));
+    Ok(out)
+}
+
 /// Start the transcript tailer on a background thread. Polls live sessions, tails
 /// their transcripts, persists the token figures to the instance row, and emits a
 /// `usage-updated` event for the live UI. A failure here only degrades the token
@@ -290,6 +473,109 @@ fn persist(app: &AppHandle, instance_id: &str, usage: Usage) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // --- resume-picker session enumeration -----------------------------------
+
+    /// The cwd→folder encoding matches Claude Code's: every non-`[A-Za-z0-9_-]`
+    /// char (drive colon, separators) becomes `-`.
+    #[test]
+    fn encodes_cwd_like_claude() {
+        assert_eq!(
+            encode_cwd_to_folder(r"C:\Users\mrsha\repos\workbench"),
+            "C--Users-mrsha-repos-workbench"
+        );
+        // Unix-style path, and an existing underscore/hyphen are preserved.
+        assert_eq!(encode_cwd_to_folder("/home/me/my_repo-x"), "-home-me-my_repo-x");
+    }
+
+    /// `cwd` comparison is slash- and (on Windows) case-insensitive, with a trailing
+    /// slash ignored — so a session's recorded cwd matches the instance's dir.
+    #[test]
+    fn norm_dir_unifies_separators_and_trailing_slash() {
+        assert_eq!(norm_dir("C:/a/b"), norm_dir(r"C:\a\b\"));
+        if cfg!(windows) {
+            assert_eq!(norm_dir(r"C:\A\B"), norm_dir(r"c:\a\b"));
+        }
+    }
+
+    /// The first prompt is pulled from both the string and content-block forms, and
+    /// wrapper/caveat prompts are recognized so a real human prompt can win.
+    #[test]
+    fn extracts_and_classifies_user_text() {
+        let s: Value =
+            serde_json::from_str(r#"{"message":{"content":"hello there"}}"#).unwrap();
+        assert_eq!(user_text(&s).as_deref(), Some("hello there"));
+
+        let blocks: Value = serde_json::from_str(
+            r#"{"message":{"content":[{"type":"text","text":"do the thing"}]}}"#,
+        )
+        .unwrap();
+        assert_eq!(user_text(&blocks).as_deref(), Some("do the thing"));
+
+        // A tool-result-only user turn has no text block.
+        let tool: Value = serde_json::from_str(
+            r#"{"message":{"content":[{"type":"tool_result","content":"x"}]}}"#,
+        )
+        .unwrap();
+        assert_eq!(user_text(&tool), None);
+
+        assert!(is_wrapper_prompt("<local-command-caveat>foo"));
+        assert!(is_wrapper_prompt("Caveat: blah"));
+        assert!(!is_wrapper_prompt("continue working on phase 4"));
+    }
+
+    /// Control chars collapse to spaces and the label is length-capped.
+    #[test]
+    fn clean_prompt_collapses_and_truncates() {
+        assert_eq!(clean_prompt("  a\tb\n c  "), "a b c");
+        assert_eq!(clean_prompt(&"x".repeat(200)).chars().count(), 160);
+    }
+
+    /// A summary is read only when the file's recorded `cwd` matches the target; a
+    /// different cwd is rejected, and the first non-wrapper prompt becomes the label.
+    #[test]
+    fn read_session_summary_filters_by_cwd_and_labels() {
+        use std::io::Write;
+        let nanos = std::time::SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("wb-sessions-{nanos}"));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let target = "/proj/a";
+        let match_path = dir.join("11111111-1111-1111-1111-111111111111.jsonl");
+        let mut f = File::create(&match_path).unwrap();
+        // mode line (no cwd), a wrapper user turn, then the real prompt.
+        writeln!(f, r#"{{"type":"mode","mode":"normal"}}"#).unwrap();
+        writeln!(
+            f,
+            r#"{{"type":"user","cwd":"/proj/a","message":{{"content":"<local-command-caveat>x"}}}}"#
+        )
+        .unwrap();
+        writeln!(
+            f,
+            r#"{{"type":"user","cwd":"/proj/a","message":{{"content":"build the picker"}}}}"#
+        )
+        .unwrap();
+        drop(f);
+
+        let got = read_session_summary(&match_path, &norm_dir(target)).unwrap();
+        assert_eq!(got.session_id, "11111111-1111-1111-1111-111111111111");
+        assert_eq!(got.cwd, "/proj/a");
+        assert_eq!(got.first_prompt, "build the picker");
+
+        // A session in a different cwd is rejected.
+        let other_path = dir.join("22222222-2222-2222-2222-222222222222.jsonl");
+        std::fs::write(
+            &other_path,
+            r#"{"type":"user","cwd":"/proj/b","message":{"content":"nope"}}"#,
+        )
+        .unwrap();
+        assert!(read_session_summary(&other_path, &norm_dir(target)).is_none());
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
 
     /// The context window is the *latest* turn's prompt size, not a sum: a newer
     /// assistant turn replaces the previous figures (the real numbers from the

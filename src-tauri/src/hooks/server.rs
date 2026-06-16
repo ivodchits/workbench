@@ -153,7 +153,30 @@ async fn handle(State(ctx): State<Arc<HookContext>>, body: Bytes) -> StatusCode 
         // A dropped event may be from a session Claude rotated under us (`/clear`):
         // adopt it by cwd into the instance flagged pending-rotation, otherwise it's
         // genuinely foreign and stays dropped.
-        Decision::Drop(event) => adopt(&pty, *event).map(Box::new),
+        Decision::Drop(event) => {
+            // DIAGNOSTIC (resume/status investigation): log the id+cwd of an event
+            // that the session-id filter rejected, distinguishing "arrived but not
+            // ours" (this fires) from "never arrived" (nothing logged, agent idle).
+            // The `[hooks] drop`/`adopt` lines are visible in the `tauri dev` console.
+            let sid = event.session_id.clone();
+            let cwd = event.cwd.clone();
+            let name = event.hook_event_name.clone().unwrap_or_default();
+            match adopt(&pty, *event) {
+                Some(env) => {
+                    eprintln!(
+                        "[hooks] adopt: session={sid} cwd={cwd:?} event={name} -> instance={}",
+                        env.instance_id
+                    );
+                    Some(Box::new(env))
+                }
+                None => {
+                    eprintln!(
+                        "[hooks] drop: session={sid} cwd={cwd:?} event={name} (no Workbench instance owns this session id)"
+                    );
+                    None
+                }
+            }
+        }
         Decision::Ignore => None,
     };
     match envelope {

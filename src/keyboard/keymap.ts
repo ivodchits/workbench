@@ -127,13 +127,13 @@ const RAW_BINDINGS: RawBinding[] = [
   { chord: "Ctrl+Shift+N", command: "newInstance", scope: "global", title: "New instance in the active project" },
   { chord: "Ctrl+Shift+E", command: "newEditor", scope: "global", title: "Open the editor for the active project" },
   { chord: "Ctrl+Shift+T", command: "newShell", scope: "global", title: "New shell in the active project" },
-  // Resume the active instance's last claude session (`claude --resume`); ignored
-  // when a session is already live there (step 3.8). NOTE: WebView2 consumes the
-  // Ctrl+Shift+R reload accelerator before DOM dispatch, so this binding is *not*
-  // driven by a DOM keydown — `accel.rs` suppresses the reload and emits a
-  // `resume-last-session` event that `useGlobalKeys` routes to this command. The
-  // entry stays here as the source of truth for the palette / remap UI.
-  { chord: "Ctrl+Shift+R", command: "resumeLastSession", scope: "global", title: "Resume the last Claude session in the active instance" },
+  // Open the resume-session picker for the active project (step 4.x): choose a
+  // target instance and one of its Claude sessions to `claude --resume`. NOTE:
+  // WebView2 consumes the Ctrl+Shift+R reload accelerator before DOM dispatch, so
+  // this binding is *not* driven by a DOM keydown — `accel.rs` suppresses the reload
+  // and emits a `resume-last-session` event that `useGlobalKeys` routes to this
+  // command. The entry stays here as the source of truth for the palette / remap UI.
+  { chord: "Ctrl+Shift+R", command: "resumeLastSession", scope: "global", title: "Resume a Claude session…" },
   { chord: "Ctrl+Shift+K", command: "killInstance", scope: "global", title: "Kill the focused instance" },
   { chord: "Ctrl+Shift+D", command: "showDiff", scope: "global", title: "Review changes (diff) for the focused instance" },
   { chord: "Ctrl+Shift+G", command: "openGit", scope: "global", title: "Open the Git panel for the active project" },

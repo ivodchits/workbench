@@ -134,6 +134,7 @@ pub fn run() {
             registry::edit_instance,
             registry::mirror_instance_task_note,
             registry::remove_instance,
+            transcript::list_project_sessions,
             layout::get_layout,
             layout::set_layout,
             mcp::mcp_list,
