@@ -110,6 +110,7 @@ import {
 } from "../state/layout";
 import { routePanelFocus, setDockApi } from "../state/dock";
 import { registerLayoutController } from "../state/presets";
+import { tearOff } from "../state/tearoff";
 import { release } from "./terminalPool";
 
 interface LayoutSnapshot {
@@ -281,7 +282,28 @@ function Workspace() {
     const skills: SkillDescriptor[] = getOpenSkills().filter((s) => present.has(s.skillId));
     // Git panels persist only their binding — re-fetched from git on restore.
     const gits: GitDescriptor[] = getOpenGits().filter((g) => present.has(g.gitId));
-    return { tree: a.toJSON(), consoleIds, shells, editors, diffs, mcps, skills, gits };
+    // Torn-off console/shell panels (step 4.2) have no panel in this dock, but they
+    // belong to the displayed project and must survive a restart — persist their ids
+    // so they return as ordinary dormant placeholders in the main dock on relaunch
+    // (tear-off itself is runtime-only and not restored). Scope to this project.
+    const projId = displayedProjectRef.current;
+    const inst = instancesRef.current;
+    const tornConsoleIds = getOpenConsoles()
+      .filter((c) => c.tornOff && inst.find((i) => i.id === c.instanceId)?.projectId === projId)
+      .map((c) => c.instanceId);
+    const tornShells = getOpenShells()
+      .filter((s) => s.tornOff && s.projectId === projId)
+      .map((s) => ({ shellId: s.shellId, projectId: s.projectId, cwd: s.cwd, label: s.label }));
+    return {
+      tree: a.toJSON(),
+      consoleIds: [...consoleIds, ...tornConsoleIds],
+      shells: [...shells, ...tornShells],
+      editors,
+      diffs,
+      mcps,
+      skills,
+      gits,
+    };
   }, []);
 
   // Persist the active project's arrangement (debounced).
@@ -304,8 +326,11 @@ function Workspace() {
     const openConsoles = getOpenConsoles();
     const projectOf = (instanceId: string) =>
       inst.find((i) => i.id === instanceId)?.projectId ?? null;
+    // A torn-off console (step 4.2) lives in its own OS window, not the main dock —
+    // exclude it here so no main-dock panel is added/kept for it (it docks back when
+    // `tornOff` clears).
     const projConsoles: ConsoleSession[] = openConsoles.filter(
-      (c) => projectOf(c.instanceId) === projId,
+      (c) => projectOf(c.instanceId) === projId && !c.tornOff,
     );
     for (const session of projConsoles) {
       if (a.getPanel(session.instanceId)) continue;
@@ -325,7 +350,10 @@ function Workspace() {
     // another project" or "instance not loaded yet": a correct swap never leaves
     // a foreign panel docked, and removing one here would tear down a background
     // agent's PTY or wipe a restored panel before the registry finishes loading.
-    const openIds = new Set(openConsoles.map((c) => c.instanceId));
+    // Drop panels for closed consoles *and* for ones just torn off (excluded from
+    // `openIds`) — the removal is harmless for a torn-off one because the
+    // onDidRemovePanel handler skips teardown while `tornOff` is set.
+    const openIds = new Set(openConsoles.filter((c) => !c.tornOff).map((c) => c.instanceId));
     for (const panel of [...a.panels]) {
       const id = consoleInstanceId(panel);
       if (id && !openIds.has(id)) a.removePanel(panel);
@@ -342,7 +370,10 @@ function Workspace() {
   const reconcileShells = useCallback((a: DockviewApi) => {
     const projId = displayedProjectRef.current;
     const openShells = getOpenShells();
-    const projShells: ShellSession[] = openShells.filter((s) => s.projectId === projId);
+    // Exclude torn-off shells (step 4.2) — they live in their own OS window.
+    const projShells: ShellSession[] = openShells.filter(
+      (s) => s.projectId === projId && !s.tornOff,
+    );
 
     for (const shell of projShells) {
       if (a.getPanel(shell.shellId)) continue;
@@ -358,7 +389,7 @@ function Workspace() {
     }
     // Remove only shells gone from the store entirely (closed) — never another
     // project's shell, which would kill its PTY (same rule as consoles above).
-    const allShellIds = new Set(openShells.map((s) => s.shellId));
+    const allShellIds = new Set(openShells.filter((s) => !s.tornOff).map((s) => s.shellId));
     for (const panel of [...a.panels]) {
       const id = shellPanelId(panel);
       if (id && !allShellIds.has(id)) a.removePanel(panel);
@@ -629,6 +660,11 @@ function Workspace() {
         queueMicrotask(() => {
           if (switchingRef.current) return;
           if (a.getPanel(id)) return; // it was a move, not a close
+          // A console/shell torn off into its own OS window (step 4.2) keeps its PTY
+          // and store entry; its main-dock panel was removed by the reconciler, not
+          // closed — so don't tear it down here.
+          if (consoleId && getOpenConsoles().find((c) => c.instanceId === consoleId)?.tornOff) return;
+          if (shellId && getOpenShells().find((s) => s.shellId === shellId)?.tornOff) return;
           if (consoleId) closeConsole(consoleId);
           else if (shellId) closeShell(shellId);
           else if (editorId) closeEditor(editorId);
@@ -768,6 +804,17 @@ function HeaderActions({ containerApi, activePanel, panels }: IDockviewHeaderAct
     activePanel.api.moveTo({ group, position: "center" });
   };
 
+  // Only PTY-backed panels (Console / Project Shell) can tear off into their own OS
+  // window (step 4.2) — they attach to the live PTY via the multiplexer. Other panel
+  // types hold no shareable backing, so they get no tear-off button.
+  const params = activePanel.params as Record<string, unknown> | undefined;
+  const tearConsoleId = typeof params?.instanceId === "string" ? params.instanceId : null;
+  const tearShellId = typeof params?.shellId === "string" ? params.shellId : null;
+  const tearOffActive = () => {
+    if (tearConsoleId) tearOff("console", tearConsoleId, activePanel.title ?? "console");
+    else if (tearShellId) tearOff("shell", tearShellId, activePanel.title ?? "shell");
+  };
+
   return (
     <div style={{ display: "flex", alignItems: "center", gap: 2, padding: "0 6px" }}>
       {floating ? (
@@ -787,6 +834,11 @@ function HeaderActions({ containerApi, activePanel, panels }: IDockviewHeaderAct
           >
             ⧉
           </HeaderButton>
+          {(tearConsoleId || tearShellId) && (
+            <HeaderButton label="tear off into its own window" onClick={tearOffActive}>
+              ⇱
+            </HeaderButton>
+          )}
           <HeaderButton
             label="maximize panel"
             onClick={() =>

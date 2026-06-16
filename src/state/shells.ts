@@ -37,6 +37,10 @@ export interface ShellSession {
   status: ShellStatus;
   /** Spawn failure message, when `status === "error"`. */
   error: string | null;
+  /** When true, this shell has been torn off into its own OS window (step 4.2):
+   *  its PTY stays live but the panel is gone from the main dock. The Workspace
+   *  reconciler skips it until it docks back. */
+  tornOff?: boolean;
 }
 
 /** Where a shell points: a project's root dir, with a display label. */
@@ -157,6 +161,25 @@ export function markShellSpawned(shellId: string): void {
   patchShell(shellId, { status: "running" });
 }
 
+/**
+ * Flag/unflag a shell as torn off into its own OS window (step 4.2). Mirrors
+ * `setConsoleTornOff`: true drops its main-dock panel without killing the PTY,
+ * false (dock-back) lets the reconciler re-add the panel and re-attach.
+ */
+export function setShellTornOff(shellId: string, tornOff: boolean): void {
+  if (!state.open.some((s) => s.shellId === shellId)) return;
+  patchShell(shellId, { tornOff });
+}
+
+/** Closer for a torn-off shell window, wired by `registerShellTornCloser` (avoids
+ *  an import cycle with state/tearoff). */
+let tornCloser: ((shellId: string) => void) | null = null;
+
+/** Wire the torn-off-window closer (called once from the main window's init). */
+export function registerShellTornCloser(fn: ((shellId: string) => void) | null): void {
+  tornCloser = fn;
+}
+
 /** Record a spawn failure so the shell can surface it in place. */
 export function markShellError(shellId: string, message: string): void {
   patchShell(shellId, { status: "error", error: message });
@@ -167,7 +190,11 @@ export function markShellError(shellId: string, message: string): void {
  * panel and releases the pooled terminal, which kills the PTY).
  */
 export function closeShell(shellId: string): void {
-  if (!state.open.some((s) => s.shellId === shellId)) return;
+  const session = state.open.find((s) => s.shellId === shellId);
+  if (!session) return;
+  // A torn-off shell's panel isn't in the main dock, so close its OS window here
+  // (the dock's remove-handler won't fire). The caller kills the PTY via `release`.
+  if (session.tornOff) tornCloser?.(shellId);
   const open = state.open.filter((s) => s.shellId !== shellId);
   const activeId = state.activeId === shellId ? null : state.activeId;
   emit({ open, activeId });

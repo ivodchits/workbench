@@ -48,6 +48,11 @@ export interface ConsoleSession {
   /** When set, this console drives a remote `claude` over SSH+tmux (step 3.12)
    *  rather than a local child. Null for a local instance. */
   remote: RemoteSpawn | null;
+  /** When true, this console has been torn off into its own OS window (step 4.2):
+   *  its PTY stays live but the panel is gone from the main dock and the dock's
+   *  terminal was released without killing the child. The Workspace reconciler skips
+   *  it (no main-dock panel) until it docks back. */
+  tornOff?: boolean;
   /** Monotonic focus stamp; the active console has the highest. */
   focusSeq: number;
 }
@@ -212,6 +217,27 @@ export function hydrateDormant(instanceIds: string[]): void {
   emit({ ...state, open: [...state.open, ...additions] });
 }
 
+/**
+ * Flag/unflag a console as torn off into its own OS window (step 4.2). Setting it
+ * true makes the Workspace reconciler drop its main-dock panel without killing the
+ * PTY; setting it false (dock-back) lets the reconciler re-add the panel, which
+ * re-attaches to the still-live PTY. No-op if the console isn't open.
+ */
+export function setConsoleTornOff(instanceId: string, tornOff: boolean): void {
+  if (!state.open.some((c) => c.instanceId === instanceId)) return;
+  patchSession(instanceId, { tornOff });
+}
+
+/** Invoked when a *torn-off* console is closed from the rail, so the orchestrator
+ *  (state/tearoff) can close its OS window. Registered by `registerConsoleTornCloser`
+ *  to avoid an import cycle (tearoff imports this store). */
+let tornCloser: ((instanceId: string) => void) | null = null;
+
+/** Wire the torn-off-window closer (called once from the main window's init). */
+export function registerConsoleTornCloser(fn: ((instanceId: string) => void) | null): void {
+  tornCloser = fn;
+}
+
 /** Make `instanceId` the focused console (no-op if not open or already active). */
 export function focusConsole(instanceId: string): void {
   if (state.activeId === instanceId) return;
@@ -267,7 +293,12 @@ export function markError(instanceId: string, message: string): void {
  * falls back to the most-recently-focused remaining console.
  */
 export function closeConsole(instanceId: string): void {
-  if (!state.open.some((c) => c.instanceId === instanceId)) return;
+  const session = state.open.find((c) => c.instanceId === instanceId);
+  if (!session) return;
+  // If this console lives in a torn-off OS window (step 4.2), close that window —
+  // its panel isn't in the main dock, so the dock's remove-handler won't fire. The
+  // caller is responsible for killing the PTY (the rail's kill paths call `release`).
+  if (session.tornOff) tornCloser?.(instanceId);
   // Drop any live hook-fed status so the row doesn't hold a stale "working"/"needs
   // you" after its PTY is gone (the backend also unmaps the session, so late events
   // are filtered out — this just clears the visual immediately). (step 2.2)

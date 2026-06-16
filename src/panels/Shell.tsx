@@ -72,7 +72,12 @@ function ShellPanel(props: IDockviewPanelProps<ShellPanelParams>) {
       <HeaderStrip session={session} remote={remote} />
       <div style={{ flex: "1 1 auto", minHeight: 0 }}>
         {live ? (
-          <LiveShell shellId={shellId} cwd={session.cwd} remote={remote} />
+          <LiveShell
+            shellId={shellId}
+            cwd={session.cwd}
+            remote={remote}
+            attach={session.status === "running"}
+          />
         ) : session.status === "error" ? (
           <ErrorBody message={session.error} />
         ) : (
@@ -88,10 +93,14 @@ function LiveShell({
   shellId,
   cwd,
   remote,
+  attach,
 }: {
   shellId: string;
   cwd: string;
   remote: RemoteSpawn | null;
+  /** Docking a torn-off shell back into the main dock (step 4.2): attach to the
+   *  live PTY instead of spawning a second shell. */
+  attach: boolean;
 }) {
   // Pre-seed `git status -sb` once the spawn resolves; respawns (retarget) fire
   // `onSpawned` again, so the new dir gets a fresh status without extra tracking.
@@ -120,6 +129,7 @@ function LiveShell({
       webgl={false}
       resumeSessionId={null}
       remote={remote}
+      attach={attach}
       onSpawned={onSpawned}
       onError={onError}
     />

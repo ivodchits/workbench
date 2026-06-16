@@ -836,8 +836,8 @@ Pull these in once the relevant phase is stable; each is an independent step whe
 - [x] 3.12 Remote projects (SSH + tmux), no telemetry
 
 **Phase 4 — remote & power**
-- [ ] 4.1 PTY multiplexing backend
-- [ ] 4.2 OS-window tear-off
+- [x] 4.1 PTY multiplexing backend
+- [x] 4.2 OS-window tear-off (consoles + shells; restart → dormant in main dock)
 - [ ] 4.3 Remote API + auth (tailnet)
 - [ ] 4.4 Dashboard PWA (Phase A)
 - [ ] 4.5 Live terminal in companion (Phase B)

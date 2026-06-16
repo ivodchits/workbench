@@ -104,6 +104,9 @@ function LiveConsole({
     (message: string) => markError(instanceId, message),
     [instanceId],
   );
+  // A console mounting while already `running` is a torn-off panel docking back
+  // (step 4.2): its PTY is still live, so attach rather than spawn a second child.
+  // A fresh/relaunched/resumed console mounts as `spawning`, so this is false then.
   return (
     <Console
       instanceId={instanceId}
@@ -112,6 +115,7 @@ function LiveConsole({
       webgl={session.webgl}
       resumeSessionId={session.resumeSessionId}
       remote={session.remote}
+      attach={session.status === "running"}
       onSpawned={onSpawned}
       onError={onError}
     />

@@ -22,20 +22,24 @@ interface ConsoleProps {
   resumeSessionId: string | null;
   /** When set, drive a remote claude over SSH+tmux instead of a local child (3.12). */
   remote: RemoteSpawn | null;
+  /** Attach to an already-live PTY instead of spawning (step 4.2 — a torn-off
+   *  window, or a torn-off panel docking back into the main dock). */
+  attach?: boolean;
   /** Reports the backend's spawn result (incl. minted session id) to the parent. */
   onSpawned?: (result: SpawnResult) => void;
-  /** Surfaces a spawn failure to the parent. */
+  /** Surfaces a spawn (or attach) failure to the parent. */
   onError?: (message: string) => void;
 }
 
-function Console({ instanceId, kind, cwd, webgl, resumeSessionId, remote, onSpawned, onError }: ConsoleProps) {
+function Console({ instanceId, kind, cwd, webgl, resumeSessionId, remote, attach, onSpawned, onError }: ConsoleProps) {
   const containerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     const container = containerRef.current;
     if (!container) return;
 
-    // Parent the pooled terminal here (creating + spawning it on first acquire).
+    // Parent the pooled terminal here. On first acquire this spawns the child —
+    // unless `attach` is set, in which case it subscribes to the already-live PTY.
     acquire(container, {
       instanceId,
       kind,
@@ -43,6 +47,7 @@ function Console({ instanceId, kind, cwd, webgl, resumeSessionId, remote, onSpaw
       webgl,
       resumeSessionId,
       remote,
+      attach,
       onSpawned: (r) => onSpawned?.(r),
       onError: (m) => onError?.(m),
     });
@@ -56,7 +61,7 @@ function Console({ instanceId, kind, cwd, webgl, resumeSessionId, remote, onSpaw
       // teardown happens via the pool's `release`, called when the console closes.
       detach(container, instanceId);
     };
-  }, [instanceId, kind, cwd, webgl, resumeSessionId, remote, onSpawned, onError]);
+  }, [instanceId, kind, cwd, webgl, resumeSessionId, remote, attach, onSpawned, onError]);
 
   return (
     <div

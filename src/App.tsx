@@ -23,6 +23,7 @@ import { initStatusEngine } from "./state/status";
 import { initUsageEngine } from "./state/usage";
 import { initUsageLimits, useUsageLimits } from "./state/usageLimits";
 import { initAppearance, useFontZoomWheel } from "./state/appearance";
+import { initTearOff } from "./state/tearoff";
 import type { RateWindow } from "./ipc/usageLimits";
 import { formatCountdown, formatAgo } from "./util/format";
 import { GLYPH } from "./theme";
@@ -62,6 +63,9 @@ function App() {
     initStatusEngine();
     initUsageEngine();
     initUsageLimits();
+    // Wire the tear-off store→window closers (step 4.2), so killing a torn-off
+    // console/shell from the rail also closes its OS window.
+    initTearOff();
   }, []);
 
   // The global keymap listener (Ctrl+Shift / Alt / Ctrl+Tab chords). Rail single
@@ -172,24 +176,44 @@ function App() {
  *  of accepted events. Confirms at a glance that the Phase-2 bridge is up and that
  *  a focused agent's hooks are landing (the count ticks as it works). */
 function HookIndicator() {
-  const [status, setStatus] = useState<{ port: number; accepted: number } | null>(null);
+  const [status, setStatus] = useState<{
+    port: number;
+    received: number;
+    accepted: number;
+    dropped: number;
+  } | null>(null);
 
   useEffect(() => {
     let mounted = true;
-    void getHookServerStatus()
-      .then((s) => {
-        if (mounted) setStatus({ port: s.port, accepted: s.accepted });
-      })
-      .catch(() => {
-        /* server failed to start; leave the indicator dim */
-      });
+    const refresh = () =>
+      void getHookServerStatus()
+        .then((s) => {
+          if (mounted)
+            setStatus({
+              port: s.port,
+              received: s.received,
+              accepted: s.accepted,
+              dropped: s.dropped,
+            });
+        })
+        .catch(() => {
+          /* server failed to start; leave the indicator dim */
+        });
+    refresh();
 
-    // Bump the count reactively rather than polling.
-    const unlisten = onHookEvent(() => {
-      setStatus((prev) => (prev ? { ...prev, accepted: prev.accepted + 1 } : prev));
-    });
+    // `accepted` bumps reactively (only accepted events emit `hook-event`); poll for
+    // `received`/`dropped` so a frozen-`accepted`-but-climbing-`received` shows up —
+    // the signature of a resumed session whose events arrive but aren't ours. (Added
+    // for the resume/status diagnostic; cheap, can be reverted later.)
+    const unlisten = onHookEvent(() =>
+      setStatus((prev) =>
+        prev ? { ...prev, accepted: prev.accepted + 1, received: prev.received + 1 } : prev,
+      ),
+    );
+    const poll = setInterval(refresh, 2000);
     return () => {
       mounted = false;
+      clearInterval(poll);
       void unlisten.then((off) => off());
     };
   }, []);
@@ -197,9 +221,16 @@ function HookIndicator() {
   if (!status) {
     return <span style={{ color: "var(--wb-textFaint)" }}>hooks ○</span>;
   }
+  // `acc/recv` makes a drop visible at a glance: if recv climbs while acc stays put,
+  // events are arriving but being filtered out (not ours); if neither moves while an
+  // agent works, they aren't firing/arriving at all.
   return (
-    <span title="local hook server (Phase 2 status bridge)">
-      <span style={{ color: "var(--wb-done)" }}>●</span> hooks :{status.port} · {status.accepted}
+    <span
+      title={`local hook server · received ${status.received} / accepted ${status.accepted} / dropped ${status.dropped}`}
+    >
+      <span style={{ color: status.dropped > 0 ? "var(--wb-needs)" : "var(--wb-done)" }}>●</span>{" "}
+      hooks :{status.port} · {status.accepted}/{status.received}
+      {status.dropped > 0 ? ` ·${status.dropped}✕` : ""}
     </span>
   );
 }

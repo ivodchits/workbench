@@ -94,9 +94,19 @@ export interface AcquireOptions {
   /** When set, drive a remote claude over SSH+tmux instead of a local child
    *  (step 3.12). Null for a local launch / shell. */
   remote: RemoteSpawn | null;
+  /**
+   * Attach to an **already-live** PTY instead of spawning a new child (step 4.2 —
+   * OS-window tear-off). True for a torn-off window's terminal and for docking a
+   * torn-off panel back into the main dock: in both cases the PTY is already running
+   * (keyed by `instanceId`), so we only `pty_subscribe` to it and replay its ring
+   * buffer rather than launch `claude`/the shell again. False = the normal spawn path.
+   */
+  attach?: boolean;
   /** Called once, when the PTY spawn for a freshly created entry resolves. */
   onSpawned: (result: SpawnResult) => void;
-  /** Called once, if that spawn fails (the entry is released). */
+  /** Called once, after `attach` mode successfully subscribes to the live PTY. */
+  onAttached?: () => void;
+  /** Called once, if that spawn (or attach) fails (the entry is released). */
   onError: (message: string) => void;
 }
 
@@ -371,6 +381,28 @@ export function acquire(container: HTMLDivElement, opts: AcquireOptions): void {
     } catch {
       // not measurable yet; the ResizeObserver will fit shortly.
     }
+    if (opts.attach) {
+      // Step 4.2: the PTY is already live (a torn-off window, or a panel being
+      // docked back into the main dock). Don't spawn — just attach as another
+      // multiplexer subscriber (step 4.1), which replays the ring buffer so this
+      // terminal paints the in-flight session. A failure means the child is gone.
+      ptySubscribe(opts.instanceId, output)
+        .then((id) => {
+          if (pool.get(opts.instanceId) !== entry) {
+            void ptyUnsubscribe(opts.instanceId, id); // released while subscribing
+            return;
+          }
+          subId = id;
+          entry.subId = id;
+          void ptyResize(opts.instanceId, term.cols, term.rows, id);
+          opts.onAttached?.();
+        })
+        .catch((e: unknown) => {
+          opts.onError(e instanceof Error ? e.message : String(e));
+          release(opts.instanceId); // no live PTY to attach to — drop the dead entry
+        });
+      return;
+    }
     ptySpawn(
       opts.instanceId,
       opts.kind,
@@ -577,10 +609,16 @@ function showTermContextMenu(cx: number, cy: number, term: Terminal): void {
 }
 
 /**
- * Permanently close the instance's terminal: kill the PTY, dispose the terminal,
- * drop the pool entry. Idempotent. This is the *only* path that stops a PTY.
+ * Dispose the instance's terminal and drop the pool entry. Idempotent.
+ *
+ * By default this also **kills the PTY** — the usual "console closed" teardown, and
+ * the only path that stops a child. Pass `{ keepPty: true }` to dispose only the
+ * terminal (unsubscribing this webview from the multiplexer) while leaving the child
+ * running: that's the OS-window tear-off case (step 4.2) — the main dock's terminal
+ * goes away but the PTY lives on with the torn-off window as its subscriber, and a
+ * later dock-back re-`acquire`s in `attach` mode.
  */
-export function release(instanceId: string): void {
+export function release(instanceId: string, opts?: { keepPty?: boolean }): void {
   const entry = pool.get(instanceId);
   if (!entry) return;
   pool.delete(instanceId);
@@ -589,11 +627,13 @@ export function release(instanceId: string): void {
   entry.resizeSub.dispose();
   entry.titleSub?.dispose();
   clearTitleMirror(instanceId);
-  // Detach this terminal's output subscription before killing the child (step 4.1).
-  // `ptyKill` tears the whole PTY (and its hub) down anyway, but unsubscribing first
-  // keeps the contract clean and avoids a late fanout into a disposed terminal.
+  // Detach this terminal's output subscription. When killing, `ptyKill` tears the
+  // whole PTY (and its hub) down anyway, but unsubscribing first keeps the contract
+  // clean and avoids a late fanout into a disposed terminal. When keeping the PTY
+  // (tear-off), this is essential — it removes the now-gone terminal's size vote from
+  // the min-size arbitration (step 4.1) so it can't constrain the torn-off window.
   if (entry.subId !== undefined) void ptyUnsubscribe(instanceId, entry.subId);
-  void ptyKill(instanceId);
+  if (!opts?.keepPty) void ptyKill(instanceId);
   entry.term.dispose();
   entry.host.remove();
 }
