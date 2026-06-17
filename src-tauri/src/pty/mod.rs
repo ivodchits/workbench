@@ -23,6 +23,7 @@ use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize}
 use serde::{Deserialize, Serialize};
 use tauri::ipc::Channel;
 use tauri::{AppHandle, Emitter, Manager, State};
+use tokio::sync::mpsc::UnboundedSender;
 
 /// Recent raw PTY output (cap [`RING_CAP`]) bytes retained for **replay on
 /// attach**. A subscriber that joins mid-session gets this replayed so it doesn't
@@ -31,6 +32,30 @@ use tauri::{AppHandle, Emitter, Manager, State};
 /// parsed for state (guardrail: structured state comes from hooks/transcripts, not
 /// terminal output).
 const RING_CAP: usize = 1024 * 1024; // 1 MiB
+
+/// One subscriber's output sink. The multiplexer fans identical bytes to every sink
+/// regardless of transport: a desktop console or torn-off window reads a Tauri IPC
+/// `Channel<Vec<u8>>`; a remote phone (step 4.5) reads an `mpsc` channel that the
+/// axum WebSocket handler drains to its socket. Keeping both behind one enum means
+/// the ring buffer, fan-out, and eviction logic are written once.
+enum Sink {
+    /// A webview subscriber over a Tauri IPC channel (desktop console / torn-off).
+    Channel(Channel<Vec<u8>>),
+    /// A remote WS subscriber (step 4.5). `send` is non-blocking, so it works from
+    /// the sync reader thread just like the channel.
+    Remote(UnboundedSender<Vec<u8>>),
+}
+
+impl Sink {
+    /// Forward a chunk; `false` means the far end is gone (channel closed / WS
+    /// dropped) so the hub should evict this subscriber.
+    fn send(&self, chunk: Vec<u8>) -> bool {
+        match self {
+            Sink::Channel(c) => c.send(chunk).is_ok(),
+            Sink::Remote(tx) => tx.send(chunk).is_ok(),
+        }
+    }
+}
 
 /// Fans one PTY child's output out to N **subscribers** and retains a ring buffer
 /// of recent bytes for replay-on-attach. This is the heart of step 4.1: the reader
@@ -48,13 +73,19 @@ struct OutputHub {
     /// Recent output bytes, capped at [`RING_CAP`]; replayed to a late subscriber.
     ring: VecDeque<u8>,
     /// Live subscribers keyed by a per-PTY monotonic id ([`OutputHub::subscribe`]).
-    subscribers: HashMap<u64, Channel<Vec<u8>>>,
+    subscribers: HashMap<u64, Sink>,
     /// Each subscriber's last-requested terminal size. The PTY is sized to the
     /// **minimum** across subscribers (tmux's smallest-client rule) so a small
     /// client can't force a larger one to wrap. See [`OutputHub::arbitrate_size`].
     sizes: HashMap<u64, (u16, u16)>,
     /// Next subscription id to hand out.
     next_sub_id: u64,
+    /// The size last applied to the PTY — the spawn dimensions, then each arbitrated
+    /// resize. Reported to a remote subscriber on attach (step 4.5) so the phone can
+    /// render the TUI at the source terminal's width instead of reflowing it. A
+    /// remote subscriber deliberately does **not** record a size of its own (it never
+    /// calls `arbitrate_size`), so a small phone can't shrink the desktop console.
+    applied: Option<(u16, u16)>,
 }
 
 impl OutputHub {
@@ -75,8 +106,8 @@ impl OutputHub {
             return;
         }
         let mut dead = Vec::new();
-        for (id, ch) in self.subscribers.iter() {
-            if ch.send(chunk.to_vec()).is_err() {
+        for (id, sink) in self.subscribers.iter() {
+            if !sink.send(chunk.to_vec()) {
                 dead.push(*id);
             }
         }
@@ -90,13 +121,13 @@ impl OutputHub {
     /// replay is one `send` of up to [`RING_CAP`] bytes so the attaching terminal
     /// paints the recent session immediately (raw-ArrayBuffer streaming is a later
     /// optimization — correctness first, matching the spawn path).
-    fn subscribe(&mut self, ch: Channel<Vec<u8>>) -> u64 {
+    fn subscribe(&mut self, sink: Sink) -> u64 {
         let id = self.next_sub_id;
         self.next_sub_id += 1;
         if !self.ring.is_empty() {
-            let _ = ch.send(self.ring.iter().copied().collect());
+            let _ = sink.send(self.ring.iter().copied().collect());
         }
-        self.subscribers.insert(id, ch);
+        self.subscribers.insert(id, sink);
         id
     }
 
@@ -113,6 +144,7 @@ impl OutputHub {
         self.sizes.insert(id, (cols, rows));
         let cols = self.sizes.values().map(|(c, _)| *c).min()?;
         let rows = self.sizes.values().map(|(_, r)| *r).min()?;
+        self.applied = Some((cols, rows));
         Some((cols, rows))
     }
 }
@@ -255,6 +287,56 @@ impl PtyManager {
         map.retain(|_, v| v != &instance_id);
         map.insert(session_id.to_string(), instance_id.clone());
         Some(instance_id)
+    }
+
+    /// Attach a **remote** WS subscriber (step 4.5) to an instance's live PTY. The
+    /// hub replays its ring buffer into `tx` immediately (scrollback on attach), then
+    /// fans subsequent output to it alongside any desktop subscribers. Returns the
+    /// subscription id (passed to [`Self::unsubscribe`] on disconnect) and the PTY's
+    /// current size, which the phone uses to render the TUI at the source width.
+    /// `None` when the instance has no live PTY — the WS handler then tells the client
+    /// the session isn't running. The remote subscriber never joins resize
+    /// arbitration, so it can't shrink the desktop console (the §11 caveat).
+    pub fn subscribe_remote(
+        &self,
+        instance_id: &str,
+        tx: UnboundedSender<Vec<u8>>,
+    ) -> Option<(u64, (u16, u16))> {
+        // Clone the hub handle out from under the sessions lock before touching it,
+        // mirroring `pty_subscribe`: never hold both locks at once.
+        let hub = {
+            let guard = self.sessions.lock().unwrap();
+            guard.get(instance_id)?.hub.clone()
+        };
+        let mut h = hub.lock().unwrap();
+        let size = h.applied.unwrap_or((80, 24));
+        let id = h.subscribe(Sink::Remote(tx));
+        Some((id, size))
+    }
+
+    /// Detach a subscriber (`sub_id`) from an instance's PTY without killing the
+    /// child. No-op if either is already gone. Shared by the `pty_unsubscribe`
+    /// command and the remote WS handler's cleanup.
+    pub fn unsubscribe(&self, instance_id: &str, sub_id: u64) {
+        if let Some(session) = self.sessions.lock().unwrap().get(instance_id) {
+            session.hub.lock().unwrap().unsubscribe(sub_id);
+        }
+    }
+
+    /// Write input bytes to an instance's PTY. Shared by the `pty_write` command and
+    /// the remote terminal's raw-keyboard path (step 4.5), so remote keystrokes reach
+    /// the child through the same single write path as the desktop console.
+    pub fn write_input(&self, instance_id: &str, data: &[u8]) -> Result<(), String> {
+        let mut guard = self.sessions.lock().unwrap();
+        let session = guard.get_mut(instance_id).ok_or("no active PTY")?;
+        session
+            .writer
+            .write_all(data)
+            .map_err(|e| format!("pty write failed: {e}"))?;
+        session
+            .writer
+            .flush()
+            .map_err(|e| format!("pty flush failed: {e}"))
     }
 }
 
@@ -426,6 +508,10 @@ pub fn pty_spawn(
     // reassembles it into a Uint8Array. (Raw-ArrayBuffer streaming is a later
     // optimization; correctness first.)
     let hub = Arc::new(Mutex::new(OutputHub::default()));
+    // Seed the applied size with the spawn dimensions so a remote subscriber that
+    // attaches before any desktop console resizes the PTY still learns its real width
+    // (step 4.5), not the 80×24 fallback.
+    hub.lock().unwrap().applied = Some((cols, rows));
     let reader_hub = hub.clone();
     thread::spawn(move || {
         let mut buf = [0u8; 8192];
@@ -486,7 +572,7 @@ pub fn pty_subscribe(
         let guard = state.sessions.lock().unwrap();
         guard.get(&instance_id).ok_or("no active PTY")?.hub.clone()
     };
-    let id = hub.lock().unwrap().subscribe(on_output);
+    let id = hub.lock().unwrap().subscribe(Sink::Channel(on_output));
     Ok(id)
 }
 
@@ -495,9 +581,7 @@ pub fn pty_subscribe(
 /// No-op if the instance or subscriber is already gone.
 #[tauri::command]
 pub fn pty_unsubscribe(state: State<'_, PtyManager>, instance_id: String, sub_id: u64) {
-    if let Some(session) = state.sessions.lock().unwrap().get(&instance_id) {
-        session.hub.lock().unwrap().unsubscribe(sub_id);
-    }
+    state.unsubscribe(&instance_id, sub_id);
 }
 
 /// Forward keystrokes (UTF-8 bytes from xterm `onData`) to an instance's PTY.
@@ -507,16 +591,7 @@ pub fn pty_write(
     instance_id: String,
     data: Vec<u8>,
 ) -> Result<(), String> {
-    let mut guard = state.sessions.lock().unwrap();
-    let session = guard.get_mut(&instance_id).ok_or("no active PTY")?;
-    session
-        .writer
-        .write_all(&data)
-        .map_err(|e| format!("pty write failed: {e}"))?;
-    session
-        .writer
-        .flush()
-        .map_err(|e| format!("pty flush failed: {e}"))
+    state.write_input(&instance_id, &data)
 }
 
 /// Resize an instance's PTY so the child reflows to the new terminal dimensions.
@@ -883,6 +958,26 @@ mod tests {
         hub.push_ring(b"world");
         let got: Vec<u8> = hub.ring.iter().copied().collect();
         assert_eq!(got, b"hello world");
+    }
+
+    /// A remote subscriber (step 4.5) gets the scrollback ring replayed on attach,
+    /// receives subsequent fan-out, and is evicted once its receiver is dropped — the
+    /// same contract as a webview channel subscriber, just over an mpsc sink.
+    #[test]
+    fn remote_sink_replays_ring_and_evicts_on_drop() {
+        let mut hub = OutputHub::default();
+        hub.push_ring(b"hello");
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
+        let id = hub.subscribe(Sink::Remote(tx));
+        // Attach replays the whole ring as one chunk so the phone paints scrollback.
+        assert_eq!(rx.try_recv().expect("ring replayed on attach"), b"hello");
+        // Live output then fans out to the remote sink.
+        hub.fanout(b" world");
+        assert_eq!(rx.try_recv().unwrap(), b" world");
+        // A dropped receiver (phone disconnected) is evicted on the next fan-out.
+        drop(rx);
+        hub.fanout(b"!");
+        assert!(!hub.subscribers.contains_key(&id));
     }
 
     /// Resize arbitration returns the **minimum** size across subscribers (tmux's

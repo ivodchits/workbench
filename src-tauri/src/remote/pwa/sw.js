@@ -12,8 +12,12 @@
 //     cache so the app opens with no connection.
 // Bump CACHE when any shell asset changes so old caches are dropped on activate.
 
-const CACHE = "wb-remote-v1";
-const SHELL = ["/", "/manifest.webmanifest", "/icon-192.png", "/icon-512.png"];
+const CACHE = "wb-remote-v2";
+const SHELL = [
+  "/", "/manifest.webmanifest", "/icon-192.png", "/icon-512.png",
+  // The mirrored terminal's vendored assets (step 4.5) — part of the offline shell.
+  "/xterm.js", "/xterm.css",
+];
 
 self.addEventListener("install", (event) => {
   event.waitUntil(caches.open(CACHE).then((c) => c.addAll(SHELL)).then(() => self.skipWaiting()));

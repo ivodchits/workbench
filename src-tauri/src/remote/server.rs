@@ -17,6 +17,11 @@
 //!   on a `WebSocket`).
 //! - `POST /api/action` — submit one action over plain HTTP (auth: bearer). Same effect
 //!   as a WS action: forwarded to the webview as `remote-action`.
+//! - `GET /api/term` — WebSocket: mirrors one instance's live PTY (step 4.5). Attaches
+//!   as a multiplexer subscriber (step 4.1), streams raw output down (with scrollback
+//!   replayed on connect) and routes raw keystrokes up (auth: `?token=`, `?instance=`).
+//! - `GET /xterm.js`, `GET /xterm.css` — the vendored terminal emulator the mirror
+//!   renders into. Static shell assets, unauthenticated like the icons.
 //!
 //! Auth is pure set-membership against the parent's token set (`token_ok`); a hit also
 //! refreshes the device's `last_seen`. As a submodule of `remote`, this file can reach
@@ -35,10 +40,11 @@ use axum::{Json, Router};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use tauri::async_runtime::JoinHandle;
-use tauri::Emitter;
+use tauri::{Emitter, Manager};
 use tokio::sync::broadcast;
 
 use super::{token_ok, touch_device, try_pair, RemoteState};
+use crate::pty::PtyManager;
 
 /// Spawn the server on Tauri's runtime and return its task handle. The parent aborts
 /// the handle to stop the server (dropping the listener frees the port immediately).
@@ -61,10 +67,15 @@ async fn run(listener: std::net::TcpListener, state: Arc<RemoteState>) -> std::i
         .route("/icon-192.png", get(icon_192))
         .route("/icon-512.png", get(icon_512))
         .route("/icon-maskable-512.png", get(icon_maskable))
+        // Vendored xterm.js + css — static shell assets for the mirrored terminal
+        // (step 4.5). Unauthenticated like the icons; the live bytes ride `/api/term`.
+        .route("/xterm.js", get(xterm_js))
+        .route("/xterm.css", get(xterm_css))
         .route("/pair", post(pair))
         .route("/api/state", get(api_state))
         .route("/api/ws", get(api_ws))
         .route("/api/action", post(api_action))
+        .route("/api/term", get(api_term))
         .with_state(state);
     axum::serve(listener, router).await
 }
@@ -119,6 +130,32 @@ async fn icon_512() -> Response {
 }
 async fn icon_maskable() -> Response {
     png(include_bytes!("pwa/icon-maskable-512.png"))
+}
+
+/// The vendored xterm.js UMD bundle (step 4.5), `include_str!`'d into the binary like
+/// every other shell asset so there's nothing to ship alongside it. Long-lived cache:
+/// it changes only with a new build.
+async fn xterm_js() -> Response {
+    (
+        [
+            (header::CONTENT_TYPE, "application/javascript"),
+            (header::CACHE_CONTROL, "public, max-age=604800"),
+        ],
+        include_str!("pwa/vendor/xterm.js"),
+    )
+        .into_response()
+}
+
+/// xterm's stylesheet (step 4.5).
+async fn xterm_css() -> Response {
+    (
+        [
+            (header::CONTENT_TYPE, "text/css"),
+            (header::CACHE_CONTROL, "public, max-age=604800"),
+        ],
+        include_str!("pwa/vendor/xterm.css"),
+    )
+        .into_response()
 }
 
 #[derive(Deserialize)]
@@ -254,4 +291,86 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<RemoteState>) {
             },
         }
     }
+}
+
+#[derive(Deserialize)]
+struct TermAuth {
+    #[serde(default)]
+    token: String,
+    /// The instance whose console to mirror.
+    #[serde(default)]
+    instance: String,
+}
+
+/// Upgrade to the **terminal-mirror** WebSocket (step 4.5, design §11 Phase B): one
+/// instance's live PTY bytes stream down, its raw keystrokes go back up. Auth via
+/// `?token=` like `/api/ws`; `?instance=` selects the console.
+///
+/// This carries *only* raw bytes. Structured approve/deny stay on the action channel
+/// (`/api/ws` → the webview's one action handler), so the keystroke mapping lives in
+/// exactly one place (the §11 caveat) and the desktop status machine is untouched.
+async fn api_term(
+    ws: WebSocketUpgrade,
+    State(state): State<Arc<RemoteState>>,
+    Query(q): Query<TermAuth>,
+) -> Response {
+    if !authed(&state, Some(q.token.as_str())) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    ws.on_upgrade(move |socket| handle_term(socket, state, q.instance))
+}
+
+/// Per-terminal loop: subscribe to the instance's PTY multiplexer (step 4.1) — which
+/// replays the scrollback ring on attach — send the source size, then relay live
+/// output to the socket while forwarding the phone's raw keystrokes to the PTY's
+/// single write path. The phone is just another multiplexer subscriber, so its
+/// keystrokes already interleave correctly with the desktop's. Ends on either side
+/// closing or the PTY being torn down (its sender drops, so `rx.recv()` yields `None`).
+async fn handle_term(mut socket: WebSocket, state: Arc<RemoteState>, instance_id: String) {
+    let mgr = state.app.state::<PtyManager>();
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
+    let (sub_id, (cols, rows)) = match mgr.subscribe_remote(&instance_id, tx) {
+        Some(v) => v,
+        None => {
+            // No live PTY — tell the client so it can show "not running" and offer to
+            // start the instance (a structured `start` action over `/api/ws`).
+            let _ = socket
+                .send(Message::Text(r#"{"type":"notrunning"}"#.into()))
+                .await;
+            return;
+        }
+    };
+    // Announce the source terminal's dimensions before the replayed ring arrives, so
+    // the phone resizes its xterm to match and renders the TUI at the right width
+    // rather than reflowing desktop-width lines. Same socket → ordered ahead of the
+    // ring bytes queued in `rx`.
+    let size = format!(r#"{{"type":"size","cols":{cols},"rows":{rows}}}"#);
+    if socket.send(Message::Text(size.into())).await.is_err() {
+        mgr.unsubscribe(&instance_id, sub_id);
+        return;
+    }
+    loop {
+        tokio::select! {
+            // Outbound: a chunk of live (or replayed) PTY output.
+            out = rx.recv() => match out {
+                Some(bytes) => {
+                    if socket.send(Message::Binary(bytes.into())).await.is_err() {
+                        break;
+                    }
+                }
+                None => break, // PTY torn down — the hub dropped our sender.
+            },
+            // Inbound: raw keystroke bytes from the phone keyboard.
+            incoming = socket.recv() => match incoming {
+                Some(Ok(Message::Binary(b))) => {
+                    let _ = mgr.write_input(&instance_id, &b);
+                }
+                Some(Ok(Message::Close(_))) | None => break,
+                Some(Err(_)) => break,
+                // Text frames are reserved for future control messages; ignore for now.
+                _ => {}
+            },
+        }
+    }
+    mgr.unsubscribe(&instance_id, sub_id);
 }

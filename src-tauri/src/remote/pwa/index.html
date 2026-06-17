@@ -13,6 +13,8 @@
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
     <meta name="apple-mobile-web-app-title" content="Workbench" />
     <title>Workbench Remote</title>
+    <!-- Vendored xterm, served by the Rust core (step 4.5) — the mirrored console. -->
+    <link rel="stylesheet" href="/xterm.css" />
     <style>
       /* Phone-first dashboard, mono + dark to match the desktop app's retro console
          look. No framework — served raw by the Rust core, so it stays a single file. */
@@ -108,6 +110,32 @@
       footer { margin-top: 20px; text-align: center; }
       footer button { background: transparent; border: none; color: var(--dim); font-size: 12px; }
       .hidden { display: none; }
+
+      /* ── mirrored terminal overlay (step 4.5) ──────────────── */
+      #term-overlay {
+        position: fixed; inset: 0; z-index: 50; background: var(--bg);
+        display: flex; flex-direction: column;
+        padding: calc(8px + var(--safe-t)) 8px calc(8px + var(--safe-b));
+      }
+      #term-head { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
+      #term-head .title {
+        flex: 1; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+      }
+      #term-head button { min-height: 38px; padding: 6px 12px; }
+      #term-wrap {
+        flex: 1; overflow: auto; background: #000; border: 1px solid var(--line);
+        border-radius: 6px; -webkit-overflow-scrolling: touch;
+      }
+      /* xterm mounts here; sized to the source terminal's width then zoom-fit to the
+         viewport so the whole TUI is visible without horizontal scrolling. */
+      #term-host { width: 100%; }
+      #term-msg { color: var(--dim); padding: 18px 14px; text-align: center; font-size: 14px; }
+      #term-bar { display: flex; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
+      #term-bar button { flex: 1 1 0; min-height: 44px; min-width: 72px; font-weight: 600; }
+      #term-bar .ok { color: var(--done); border-color: var(--done); }
+      #term-bar .no { color: var(--needs); border-color: var(--needs); }
+      #term-bar .plain { color: var(--dim); font-weight: 400; }
+      #kbBtn.on { border-color: var(--accent); color: var(--accent); }
     </style>
   </head>
   <body>
@@ -144,6 +172,27 @@
       <footer><button id="unpair">forget this device</button></footer>
     </div>
 
+    <!-- Mirrored live console (step 4.5, design §11 Phase B). Hidden until opened from
+         a card. Output is read-mostly; raw keyboard is opt-in; approve/deny/interrupt
+         ride the structured action channel so the keystroke mapping stays server-side. -->
+    <div id="term-overlay" class="hidden">
+      <div id="term-head">
+        <span class="title" id="term-title">console</span>
+        <span id="term-conn" class="muted" style="font-size:12px"></span>
+        <button id="term-close">✕ close</button>
+      </div>
+      <div id="term-msg" class="hidden"></div>
+      <div id="term-wrap"><div id="term-host"></div></div>
+      <div id="term-bar">
+        <button id="term-approve" class="ok">✓ approve</button>
+        <button id="term-deny" class="no">✗ deny</button>
+        <button id="term-interrupt" class="plain">interrupt</button>
+        <button id="kbBtn" class="plain">keyboard</button>
+      </div>
+    </div>
+
+    <!-- xterm UMD (exposes window.Terminal); vendored + served by the Rust core. -->
+    <script src="/xterm.js"></script>
     <script>
       const TOKEN_KEY = "wb-remote-token";
       const $ = (id) => document.getElementById(id);
@@ -269,6 +318,11 @@
 
         const sec = document.createElement("div");
         sec.className = "secondary";
+        // Open the mirrored live console for this instance (step 4.5).
+        const consoleBtn = document.createElement("button");
+        consoleBtn.textContent = "console";
+        consoleBtn.onclick = () => openTerminal(it.id);
+        sec.appendChild(consoleBtn);
         for (const [label, type] of [["interrupt", "interrupt"], ["start", "start"], ["stop", "stop"]]) {
           const b = document.createElement("button");
           b.textContent = label;
@@ -372,8 +426,127 @@
         return "in " + parts;
       }
 
+      // ── mirrored terminal (step 4.5) ───────────────────────
+      // A second WebSocket (`/api/term`) carries raw PTY bytes both ways: the backend
+      // attaches us as another multiplexer subscriber (step 4.1), replays scrollback on
+      // every (re)connect, and routes our keystrokes to the child. Structured
+      // approve/deny/interrupt stay on the dashboard socket via action(), so the
+      // keystroke mapping lives in one place server-side (design §11 caveat).
+      let term = null, termWs = null, termInstance = null, termOpen = false;
+      let termReconnect = null, kbOn = false;
+
+      function ensureTerm() {
+        if (term) return term;
+        term = new Terminal({
+          fontFamily: 'ui-monospace, "JetBrains Mono", "Cascadia Code", Menlo, Consolas, monospace',
+          fontSize: 13, cursorBlink: true, disableStdin: true, scrollback: 5000,
+          theme: { background: "#000000", foreground: "#d7dbe0", cursor: "#7daea3" },
+        });
+        term.open($("term-host"));
+        // Raw keyboard: fires only when stdin is enabled (the keyboard toggle) and the
+        // terminal has focus. Send keystrokes as raw bytes — no client-side mapping.
+        term.onData((d) => {
+          if (termWs && termWs.readyState === WebSocket.OPEN) {
+            termWs.send(new TextEncoder().encode(d));
+          }
+        });
+        return term;
+      }
+
+      function openTerminal(id) {
+        termInstance = id;
+        termOpen = true;
+        const it = ((lastSnap && lastSnap.instances) || []).find((x) => x.id === id);
+        $("term-title").textContent = (it && it.title) || "console";
+        $("term-overlay").classList.remove("hidden");
+        setTermMsg("");
+        setKeyboard(false);
+        ensureTerm();
+        term.reset();
+        connectTerm();
+      }
+
+      function closeTerminal() {
+        termOpen = false;
+        if (termReconnect) { clearTimeout(termReconnect); termReconnect = null; }
+        if (termWs) { try { termWs.close(); } catch (e) {} termWs = null; }
+        $("term-overlay").classList.add("hidden");
+        setKeyboard(false);
+      }
+
+      function connectTerm() {
+        if (!termOpen) return;
+        const proto = location.protocol === "https:" ? "wss" : "ws";
+        const url = `${proto}://${location.host}/api/term` +
+          `?token=${encodeURIComponent(token)}&instance=${encodeURIComponent(termInstance)}`;
+        const ws = new WebSocket(url);
+        ws.binaryType = "arraybuffer";
+        termWs = ws;
+        setTermConn("connecting…");
+        ws.onopen = () => { setTermConn("● live"); setTermMsg(""); if (term) term.reset(); };
+        ws.onmessage = (ev) => {
+          if (typeof ev.data === "string") { handleTermControl(ev.data); return; }
+          term.write(new Uint8Array(ev.data));
+        };
+        ws.onerror = () => { try { ws.close(); } catch (e) {} };
+        ws.onclose = () => {
+          if (termWs !== ws) return; // superseded by a newer connection
+          termWs = null;
+          if (!termOpen) return;
+          setTermConn("○ reconnecting…");
+          // The backend replays the scrollback ring on reattach, so a dropped link
+          // recovers the full view (we term.reset() in onopen to avoid stacking it).
+          termReconnect = setTimeout(connectTerm, 1500);
+        };
+      }
+
+      function handleTermControl(data) {
+        let msg;
+        try { msg = JSON.parse(data); } catch (e) { return; }
+        if (msg.type === "notrunning") {
+          setTermMsg('Session not running. Tap "start", then reopen the console.');
+        } else if (msg.type === "size") {
+          fitTerm(msg.cols, msg.rows);
+        }
+      }
+
+      // Render at the source terminal's dimensions, then zoom-fit to the phone width so
+      // the whole TUI is visible without reflowing it (the phone never resizes the PTY,
+      // so it can't shrink the desktop console — design §11 smallest-client caveat).
+      function fitTerm(cols, rows) {
+        if (!term) return;
+        term.resize(cols, rows);
+        requestAnimationFrame(() => {
+          const screen = $("term-overlay").querySelector(".xterm-screen");
+          const natW = (screen && screen.offsetWidth) || cols * 9;
+          const host = $("term-host");
+          host.style.width = natW + "px";
+          const avail = $("term-wrap").clientWidth;
+          host.style.zoom = Math.min(1, avail / natW).toFixed(4);
+        });
+      }
+
+      function setTermMsg(text) {
+        const m = $("term-msg");
+        m.textContent = text;
+        m.classList.toggle("hidden", !text);
+      }
+      function setTermConn(text) { $("term-conn").textContent = text; }
+
+      function setKeyboard(on) {
+        kbOn = on;
+        if (term) { term.options.disableStdin = !on; if (on) term.focus(); }
+        $("kbBtn").classList.toggle("on", on);
+        $("kbBtn").textContent = on ? "keyboard ✓" : "keyboard";
+      }
+
       // ── wiring ─────────────────────────────────────────────
       $("pairBtn").onclick = pair;
+      $("term-close").onclick = closeTerminal;
+      $("kbBtn").onclick = () => setKeyboard(!kbOn);
+      $("term-approve").onclick = () => termInstance && action({ type: "approve", instanceId: termInstance });
+      $("term-deny").onclick = () => termInstance && action({ type: "deny", instanceId: termInstance });
+      $("term-interrupt").onclick = () => termInstance && action({ type: "interrupt", instanceId: termInstance });
       $("code").addEventListener("keydown", (e) => { if (e.key === "Enter") pair(); });
       $("unpair").onclick = () => { localStorage.removeItem(TOKEN_KEY); location.reload(); };
       $("filterBtn").onclick = () => {
