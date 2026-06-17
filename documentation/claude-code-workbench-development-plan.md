@@ -852,16 +852,20 @@ Pull these in once the relevant phase is stable; each is an independent step whe
 - [x] 3.11 Git panel (history / branches / checkout)
 - [x] 3.12 Remote projects (SSH + tmux), no telemetry
 
-**Phase 4 — remote & power**
+**Phase 4 — remote & power** — *mandatory scope complete (4.1–4.6); shipped as
+**v1.0.0** on 2026-06-17.*
 - [x] 4.1 PTY multiplexing backend
 - [x] 4.2 OS-window tear-off (consoles + shells; restart → dormant in main dock)
 - [x] 4.3 Remote API + auth (tailnet)
 - [x] 4.4 Dashboard PWA (Phase A)
 - [x] 4.5 Live terminal in companion (Phase B)
 - [x] 4.6 Notification routing & escalation (desktop + phone routing + escalation/stuck engine; Discord route deferred — see step note)
-- [ ] 4.7 Android app via Tauri Mobile (Phase C)
+- [ ] 4.7 Android app via Tauri Mobile (Phase C) — **postponed indefinitely (2026-06-17):**
+  the optional native-app phase; the tailnet PWA (4.4/4.5) covers the phone use case.
 
-**Phase 5 — Linux**
+**Phase 5 — Linux** — **deferred (2026-06-17):** not needed at present; Windows is the
+shipped target. Code stayed platform-agnostic throughout, so this can be picked up later
+without a rewrite (verify/package only).
 - [ ] 5.1 Linux PTY & shell parity
 - [ ] 5.2 Linux notifications & integration
 - [ ] 5.3 Linux packaging & path audit

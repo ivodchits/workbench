@@ -1,6 +1,6 @@
 [package]
 name = "workbench"
-version = "0.1.0"
+version = "1.0.0"
 description = "A cockpit for supervising multiple Claude Code agents across projects."
 authors = ["Workbench"]
 edition = "2021"
