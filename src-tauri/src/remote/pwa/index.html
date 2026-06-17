@@ -1,0 +1,396 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1" />
+    <meta name="color-scheme" content="dark" />
+    <meta name="theme-color" content="#14161a" />
+    <!-- Installable companion (step 4.4, design §11 Phase A). -->
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <link rel="icon" href="/icon-192.png" />
+    <link rel="apple-touch-icon" href="/icon-192.png" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="Workbench" />
+    <title>Workbench Remote</title>
+    <style>
+      /* Phone-first dashboard, mono + dark to match the desktop app's retro console
+         look. No framework — served raw by the Rust core, so it stays a single file. */
+      :root {
+        --bg: #14161a; --panel: #1b1e24; --fg: #d7dbe0; --dim: #8a929c; --line: #2a2f37;
+        --working: #d8a657; --needs: #e06c9a; --done: #89b482; --idle: #6a737d; --ended: #4a5058;
+        --accent: #7daea3;
+        --safe-t: env(safe-area-inset-top, 0px);
+        --safe-b: env(safe-area-inset-bottom, 0px);
+      }
+      * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+      html, body { height: 100%; }
+      body {
+        margin: 0; background: var(--bg); color: var(--fg);
+        font: 15px/1.5 ui-monospace, "JetBrains Mono", "Cascadia Code", Menlo, Consolas, monospace;
+        padding: calc(12px + var(--safe-t)) 12px calc(16px + var(--safe-b));
+        max-width: 760px; margin-inline: auto; overscroll-behavior-y: contain;
+      }
+      h1 { font-size: 16px; font-weight: 600; margin: 0; }
+      .muted { color: var(--dim); }
+      input, button, textarea {
+        font: inherit; background: var(--panel); color: var(--fg);
+        border: 1px solid var(--line); border-radius: 6px; padding: 10px 12px;
+      }
+      button { cursor: pointer; min-height: 44px; } /* comfortable touch target */
+      button:active { border-color: #3a4049; }
+      button:disabled { opacity: 0.5; }
+      .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+
+      /* ── pairing ───────────────────────────────────────────── */
+      #pair { margin-top: 8px; }
+      #pair p { margin: 6px 0 12px; }
+      #pair input { flex: 1 1 160px; min-height: 44px; }
+      #pairBtn { flex: 1 1 100%; }
+
+      /* ── header / attention banner ─────────────────────────── */
+      header { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+      #conn { font-size: 12px; white-space: nowrap; }
+      #conn.live { color: var(--done); }
+      #conn.off { color: var(--needs); }
+      .attention {
+        margin: 12px 0 4px; padding: 12px 14px; border: 1px solid var(--line);
+        border-radius: 8px; font-size: 15px; font-weight: 600;
+        display: flex; align-items: center; gap: 10px;
+      }
+      .attention.alert { border-color: var(--needs); color: var(--needs); }
+      .attention.calm { color: var(--dim); font-weight: 400; }
+      .attention .big { font-size: 22px; }
+      #offline {
+        margin: 12px 0; padding: 12px 14px; border: 1px solid var(--ended);
+        border-radius: 8px; color: var(--dim); background: #181a1f;
+      }
+
+      /* ── usage meter ───────────────────────────────────────── */
+      #usage { margin: 8px 0 4px; }
+      .meter { display: flex; align-items: center; gap: 8px; margin: 6px 0; font-size: 12px; }
+      .meter .lbl { color: var(--dim); width: 28px; }
+      .bar { flex: 1; height: 8px; background: var(--panel); border: 1px solid var(--line); border-radius: 5px; overflow: hidden; }
+      .bar > span { display: block; height: 100%; background: var(--accent); }
+      .bar.warn > span { background: var(--working); }
+      .bar.hot > span { background: var(--needs); }
+      .meter .pct { width: 38px; text-align: right; color: var(--fg); }
+      .meter .reset { color: var(--dim); white-space: nowrap; }
+
+      /* ── filter ────────────────────────────────────────────── */
+      #filter { margin: 8px 0; }
+      #filter button { min-height: 38px; padding: 6px 12px; font-size: 13px; }
+      #filter button.on { border-color: var(--needs); color: var(--needs); }
+
+      /* ── instance cards ────────────────────────────────────── */
+      .card { border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; margin: 10px 0; }
+      .card.attn { border-color: var(--needs); }
+      .card h2 { font-size: 15px; font-weight: 600; margin: 0; display: flex; align-items: center; gap: 9px; }
+      .card h2 .title { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .dot { font-size: 17px; line-height: 1; }
+      .badge { font-size: 11px; font-weight: 600; color: var(--needs); border: 1px solid var(--needs); border-radius: 4px; padding: 1px 6px; }
+      .badge.hidden { display: none; }
+      .working { color: var(--working); } .needs { color: var(--needs); }
+      .done { color: var(--done); } .idle { color: var(--idle); } .ended { color: var(--ended); }
+      .note { color: var(--dim); font-size: 13px; margin: 4px 0 6px; }
+      .note:empty { display: none; }
+      .meta { color: var(--dim); font-size: 12px; }
+      .approve { display: flex; gap: 8px; margin-top: 10px; }
+      .approve.hidden { display: none; }
+      .approve button { flex: 1; font-weight: 600; }
+      .approve .ok { color: var(--done); border-color: var(--done); }
+      .approve .no { color: var(--needs); border-color: var(--needs); }
+      .prompt { display: flex; gap: 8px; margin-top: 8px; }
+      .prompt textarea { flex: 1; resize: vertical; min-height: 44px; }
+      .secondary { display: flex; gap: 8px; margin-top: 8px; }
+      .secondary button { flex: 1; min-height: 38px; padding: 6px 8px; font-size: 13px; color: var(--dim); }
+
+      footer { margin-top: 20px; text-align: center; }
+      footer button { background: transparent; border: none; color: var(--dim); font-size: 12px; }
+      .hidden { display: none; }
+    </style>
+  </head>
+  <body>
+    <!-- Pairing view (shown until a device token is stored). -->
+    <div id="pair">
+      <h1>Workbench Remote</h1>
+      <p class="muted">Enter the pairing code shown in Workbench → remote access.</p>
+      <div class="row">
+        <input id="code" placeholder="XXXX-XXXX" autocomplete="off" autocapitalize="characters" inputmode="text" />
+        <input id="name" placeholder="device name" autocomplete="off" />
+        <button id="pairBtn">Pair this device</button>
+      </div>
+    </div>
+
+    <!-- Dashboard view. -->
+    <div id="app" class="hidden">
+      <header>
+        <h1>Workbench</h1>
+        <span id="conn" class="muted">connecting…</span>
+      </header>
+
+      <div id="offline" class="hidden">
+        <strong>Workbench offline.</strong>
+        <span class="muted">The desktop app is unreachable — reconnecting…</span>
+      </div>
+
+      <div id="attention" class="attention calm">all quiet</div>
+      <div id="usage"></div>
+      <div id="filter" class="hidden">
+        <button id="filterBtn" type="button">show only needs-you</button>
+      </div>
+      <div id="list"></div>
+
+      <footer><button id="unpair">forget this device</button></footer>
+    </div>
+
+    <script>
+      const TOKEN_KEY = "wb-remote-token";
+      const $ = (id) => document.getElementById(id);
+      let token = localStorage.getItem(TOKEN_KEY);
+      let ws = null;
+      let everConnected = false;
+      let lastSnap = null;
+      let needsYouOnly = false;
+
+      const GLYPH = {
+        working: ["◐", "working"], needs_you: ["●", "needs"], done: ["○", "done"],
+        idle: ["▸", "idle"], ended: ["✗", "ended"],
+      };
+      const phaseOf = (it) => it.phase || it.status || "idle";
+
+      // ── pairing ────────────────────────────────────────────
+      async function pair() {
+        const code = $("code").value.trim().toUpperCase();
+        const name = $("name").value.trim() || "device";
+        $("pairBtn").disabled = true;
+        try {
+          const res = await fetch("/pair", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ code, name }),
+          });
+          if (!res.ok) { alert("Pairing failed — code wrong or expired."); return; }
+          token = (await res.json()).token;
+          localStorage.setItem(TOKEN_KEY, token);
+          showApp();
+        } catch (e) {
+          alert("Could not reach Workbench: " + e);
+        } finally {
+          $("pairBtn").disabled = false;
+        }
+      }
+
+      function showApp() {
+        $("pair").classList.add("hidden");
+        $("app").classList.remove("hidden");
+        connect();
+      }
+
+      // ── live connection ────────────────────────────────────
+      function connect() {
+        const proto = location.protocol === "https:" ? "wss" : "ws";
+        ws = new WebSocket(`${proto}://${location.host}/api/ws?token=${encodeURIComponent(token)}`);
+        ws.onopen = () => { everConnected = true; setConn(true); };
+        ws.onclose = () => { setConn(false); setTimeout(connect, 2000); };
+        ws.onerror = () => ws.close();
+        ws.onmessage = (ev) => { lastSnap = JSON.parse(ev.data); render(lastSnap); };
+      }
+
+      function setConn(live) {
+        const c = $("conn");
+        c.textContent = live ? "● live" : "○ offline";
+        c.className = live ? "live" : "off";
+        // The §11 "just shows offline" state: a clear banner once we've lost the desktop.
+        $("offline").classList.toggle("hidden", live || !everConnected);
+      }
+
+      function action(obj) {
+        if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(obj));
+        else fetch("/api/action", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Authorization: "Bearer " + token },
+          body: JSON.stringify(obj),
+        });
+      }
+
+      // ── cards: reconcile in place (never rebuild innerHTML) ─
+      // Snapshots arrive every couple of seconds (token ticks); blowing away the DOM
+      // would blur a textarea mid-prompt and close the on-screen keyboard. Reparenting a
+      // live element with appendChild keeps focus, so reordering is safe.
+      const cards = new Map();
+
+      function buildCard(it) {
+        const card = document.createElement("div");
+        card.className = "card";
+
+        const h2 = document.createElement("h2");
+        const dot = document.createElement("span");
+        const title = document.createElement("span");
+        title.className = "title";
+        const badge = document.createElement("span");
+        badge.className = "badge hidden";
+        badge.textContent = "needs you";
+        h2.append(dot, title, badge);
+
+        const note = document.createElement("div");
+        note.className = "note";
+        const meta = document.createElement("div");
+        meta.className = "meta";
+        card.append(h2, note, meta);
+
+        // Prominent approve / deny — the one thing a phone is really for. Shown only
+        // when this instance is actually waiting on you.
+        const approve = document.createElement("div");
+        approve.className = "approve hidden";
+        const ok = document.createElement("button");
+        ok.className = "ok"; ok.textContent = "✓ approve";
+        ok.onclick = () => action({ type: "approve", instanceId: it.id });
+        const no = document.createElement("button");
+        no.className = "no"; no.textContent = "✗ deny";
+        no.onclick = () => action({ type: "deny", instanceId: it.id });
+        approve.append(ok, no);
+        card.appendChild(approve);
+
+        const pr = document.createElement("div");
+        pr.className = "prompt";
+        const ta = document.createElement("textarea");
+        ta.placeholder = "send a prompt…"; ta.rows = 1;
+        const send = document.createElement("button");
+        send.textContent = "send";
+        send.onclick = () => {
+          const text = ta.value.trim();
+          if (!text) return;
+          action({ type: "prompt", instanceId: it.id, text });
+          ta.value = "";
+        };
+        pr.append(ta, send);
+        card.appendChild(pr);
+
+        const sec = document.createElement("div");
+        sec.className = "secondary";
+        for (const [label, type] of [["interrupt", "interrupt"], ["start", "start"], ["stop", "stop"]]) {
+          const b = document.createElement("button");
+          b.textContent = label;
+          b.onclick = () => action({ type, instanceId: it.id });
+          sec.appendChild(b);
+        }
+        card.appendChild(sec);
+
+        return { card, dot, title, badge, note, meta, approve };
+      }
+
+      function updateCard(c, it) {
+        const phase = phaseOf(it);
+        const [glyph, cls] = GLYPH[phase] || GLYPH.idle;
+        const attn = phase === "needs_you";
+        c.dot.className = "dot " + cls;
+        c.dot.textContent = glyph;
+        c.title.textContent = it.title || "(untitled)";
+        c.badge.classList.toggle("hidden", !attn);
+        c.card.classList.toggle("attn", attn);
+        c.approve.classList.toggle("hidden", !attn);
+        c.note.textContent = it.taskNote || "";
+        const sub = it.subagents ? ` · ${it.subagents} subagent(s)` : "";
+        const cmp = it.compacting ? " · compacting…" : "";
+        const ctx = it.ctxTokens ? ` · ctx ${Math.round(it.ctxTokens / 1000)}k` : "";
+        const rmt = it.remote ? " · ⇄ remote" : "";
+        c.meta.textContent =
+          (it.projectName || "") + (it.branch ? " · " + it.branch : "") +
+          ctx + rmt + sub + cmp + (it.live ? "" : " · (not running)");
+      }
+
+      function render(snap) {
+        const all = (snap && snap.instances) || [];
+        // Needs-you first, then working, then the rest — the attention ordering that
+        // makes a small screen useful.
+        const order = { needs_you: 0, working: 1, done: 2, idle: 3, ended: 4 };
+        const sorted = all.slice().sort((a, b) => (order[phaseOf(a)] ?? 9) - (order[phaseOf(b)] ?? 9));
+        const visible = needsYouOnly ? sorted.filter((it) => phaseOf(it) === "needs_you") : sorted;
+
+        renderAttention(all);
+        renderUsage(snap && snap.usageLimits);
+
+        const list = $("list");
+        const seen = new Set();
+        for (const it of visible) {
+          seen.add(it.id);
+          let c = cards.get(it.id);
+          if (!c) { c = buildCard(it); cards.set(it.id, c); }
+          updateCard(c, it);
+          list.appendChild(c.card); // append/move into order; keeps focus & text
+        }
+        // Drop cards no longer visible (gone, or filtered out). When nothing's left the
+        // attention line above already communicates the state ("all quiet" / "no
+        // instances yet"), so an empty list needs no placeholder.
+        for (const [id, c] of cards) {
+          if (!seen.has(id)) { c.card.remove(); cards.delete(id); }
+        }
+      }
+
+      function renderAttention(all) {
+        const needs = all.filter((it) => phaseOf(it) === "needs_you").length;
+        const el = $("attention");
+        if (needs > 0) {
+          el.className = "attention alert";
+          el.innerHTML = `<span class="big">●</span> ${needs} agent${needs === 1 ? "" : "s"} need${needs === 1 ? "s" : ""} you`;
+        } else {
+          el.className = "attention calm";
+          el.textContent = all.length ? "all quiet" : "no instances yet";
+        }
+        // Reveal the needs-you filter only when there's something to filter.
+        $("filter").classList.toggle("hidden", all.length === 0);
+      }
+
+      function renderUsage(limits) {
+        const el = $("usage");
+        if (!limits || (!limits.fiveHour && !limits.sevenDay)) { el.innerHTML = ""; return; }
+        el.innerHTML = "";
+        for (const [lbl, w] of [["5h", limits.fiveHour], ["wk", limits.sevenDay]]) {
+          if (!w) continue;
+          const pct = Math.max(0, Math.min(100, w.usedPercentage || 0));
+          const klass = pct >= 90 ? "hot" : pct >= 70 ? "warn" : "";
+          const row = document.createElement("div");
+          row.className = "meter";
+          row.innerHTML =
+            `<span class="lbl">${lbl}</span>` +
+            `<span class="bar ${klass}"><span style="width:${pct}%"></span></span>` +
+            `<span class="pct">${Math.round(pct)}%</span>` +
+            `<span class="reset">${w.resetsAt ? "· " + countdown(w.resetsAt) : ""}</span>`;
+          el.appendChild(row);
+        }
+      }
+
+      // Compact "resets in 2h13m" / "3d" countdown from an epoch-seconds instant.
+      function countdown(epoch) {
+        let s = epoch - Math.floor(Date.now() / 1000);
+        if (s <= 0) return "now";
+        const d = Math.floor(s / 86400); s -= d * 86400;
+        const h = Math.floor(s / 3600); s -= h * 3600;
+        const m = Math.floor(s / 60);
+        const parts = d ? `${d}d ${h}h` : h ? `${h}h ${m}m` : `${m}m`;
+        return "in " + parts;
+      }
+
+      // ── wiring ─────────────────────────────────────────────
+      $("pairBtn").onclick = pair;
+      $("code").addEventListener("keydown", (e) => { if (e.key === "Enter") pair(); });
+      $("unpair").onclick = () => { localStorage.removeItem(TOKEN_KEY); location.reload(); };
+      $("filterBtn").onclick = () => {
+        needsYouOnly = !needsYouOnly;
+        $("filterBtn").classList.toggle("on", needsYouOnly);
+        $("filterBtn").textContent = needsYouOnly ? "show all" : "show only needs-you";
+        if (lastSnap) render(lastSnap);
+      };
+
+      // Keep usage countdowns ticking even between snapshots.
+      setInterval(() => { if (lastSnap) renderUsage(lastSnap.usageLimits); }, 1000);
+
+      if ("serviceWorker" in navigator) {
+        window.addEventListener("load", () => navigator.serviceWorker.register("/sw.js").catch(() => {}));
+      }
+
+      if (token) showApp();
+    </script>
+  </body>
+</html>

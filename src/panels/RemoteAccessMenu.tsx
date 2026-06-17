@@ -193,7 +193,8 @@ function RemoteAccessMenu() {
                 </Row>
               ) : (
                 <Note>
-                  Open the url on the device, then generate a code to enter there.
+                  Open the url on the device, then generate a code to enter there. The
+                  page installs as an app — use “Add to Home Screen”.
                 </Note>
               )}
               <Row>

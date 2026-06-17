@@ -1,10 +1,14 @@
-//! The axum router for the remote access server (step 4.3).
+//! The axum router for the remote access server (steps 4.3, 4.4).
 //!
 //! Runs on Tauri's async runtime, bound to the Tailscale interface by the parent
-//! module. Five routes:
+//! module. Routes split into the **PWA shell** (unauthenticated static assets, served so
+//! the companion can install + load offline) and the **data plane** (bearer-gated):
 //!
-//! - `GET /` — a minimal connectivity/test page (the manual-verification harness now,
-//!   the seed for the 4.4 PWA). Unauthenticated.
+//! - `GET /` — the phone-optimized dashboard PWA (step 4.4). Unauthenticated.
+//! - `GET /manifest.webmanifest`, `GET /sw.js`, `GET /icon-*.png` — the PWA shell: web
+//!   app manifest, service worker, and icons. Unauthenticated — the browser fetches them
+//!   before any token exists, and the service worker needs them to make the app
+//!   installable + show "offline" when the desktop is down (design §11).
 //! - `POST /pair` — exchange a one-time pairing code for a device bearer token.
 //!   Unauthenticated (the code *is* the gate).
 //! - `GET /api/state` — the latest webview snapshot (auth: `Authorization: Bearer`).
@@ -16,7 +20,8 @@
 //!
 //! Auth is pure set-membership against the parent's token set (`token_ok`); a hit also
 //! refreshes the device's `last_seen`. As a submodule of `remote`, this file can reach
-//! the parent's private state and helpers directly.
+//! the parent's private state and helpers directly. All PWA assets are `include_*!`'d
+//! into the binary so there's nothing to ship alongside it.
 
 use std::sync::Arc;
 
@@ -50,6 +55,12 @@ async fn run(listener: std::net::TcpListener, state: Arc<RemoteState>) -> std::i
     let listener = tokio::net::TcpListener::from_std(listener)?;
     let router = Router::new()
         .route("/", get(index))
+        // PWA shell — static, unauthenticated, installable + offline-capable.
+        .route("/manifest.webmanifest", get(manifest))
+        .route("/sw.js", get(service_worker))
+        .route("/icon-192.png", get(icon_192))
+        .route("/icon-512.png", get(icon_512))
+        .route("/icon-maskable-512.png", get(icon_maskable))
         .route("/pair", post(pair))
         .route("/api/state", get(api_state))
         .route("/api/ws", get(api_ws))
@@ -58,9 +69,56 @@ async fn run(listener: std::net::TcpListener, state: Arc<RemoteState>) -> std::i
     axum::serve(listener, router).await
 }
 
-/// The connectivity/test page (replaced by the real PWA in step 4.4).
+/// The phone-optimized dashboard PWA (step 4.4).
 async fn index() -> Html<&'static str> {
-    Html(include_str!("index.html"))
+    Html(include_str!("pwa/index.html"))
+}
+
+/// The web app manifest that makes the dashboard installable (Add to Home Screen).
+async fn manifest() -> Response {
+    (
+        [(header::CONTENT_TYPE, "application/manifest+json")],
+        include_str!("pwa/manifest.webmanifest"),
+    )
+        .into_response()
+}
+
+/// The service worker. `Service-Worker-Allowed: /` lets a script served from `/sw.js`
+/// claim the whole-origin scope it declares; the no-store header keeps the browser from
+/// pinning a stale worker (updates ride the `CACHE` version inside the script instead).
+async fn service_worker() -> Response {
+    (
+        [
+            (header::CONTENT_TYPE, "application/javascript"),
+            (header::HeaderName::from_static("service-worker-allowed"), "/"),
+            (header::CACHE_CONTROL, "no-cache"),
+        ],
+        include_str!("pwa/sw.js"),
+    )
+        .into_response()
+}
+
+/// Serve one embedded PNG icon with a long-lived cache (icons are content-addressed by
+/// name and never change within a build).
+fn png(bytes: &'static [u8]) -> Response {
+    (
+        [
+            (header::CONTENT_TYPE, "image/png"),
+            (header::CACHE_CONTROL, "public, max-age=604800"),
+        ],
+        bytes,
+    )
+        .into_response()
+}
+
+async fn icon_192() -> Response {
+    png(include_bytes!("pwa/icon-192.png"))
+}
+async fn icon_512() -> Response {
+    png(include_bytes!("pwa/icon-512.png"))
+}
+async fn icon_maskable() -> Response {
+    png(include_bytes!("pwa/icon-maskable-512.png"))
 }
 
 #[derive(Deserialize)]
