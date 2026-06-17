@@ -391,7 +391,7 @@ pub fn list_project_sessions(working_dir: String) -> Result<Vec<SessionSummary>,
             }
         }
     }
-    out.sort_by(|a, b| b.modified_at.cmp(&a.modified_at));
+    out.sort_by_key(|s| std::cmp::Reverse(s.modified_at));
     Ok(out)
 }
 

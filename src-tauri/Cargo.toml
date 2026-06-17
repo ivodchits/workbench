@@ -31,9 +31,15 @@ uuid = { version = "1", features = ["v4"] }
 which = "7"
 # Phase 2: the local hook bridge (design §4.4). axum on 127.0.0.1 receives the
 # `http` hooks Claude Code POSTs; tokio supplies the listener axum serves on (we
-# run it on Tauri's own async runtime).
-axum = "0.8"
-tokio = { version = "1", features = ["net"] }
+# run it on Tauri's own async runtime). Phase 4 (step 4.3) reuses both for the
+# remote access server: `axum`'s `ws` feature for the live-status WebSocket, and
+# tokio `sync` for the broadcast/oneshot channels that fan snapshots to clients and
+# stop the server gracefully.
+axum = { version = "0.8", features = ["ws"] }
+tokio = { version = "1", features = ["net", "sync", "macros"] }
+# Step 4.3: enumerate local network interfaces to find the Tailscale address
+# (100.64.0.0/10) the remote server binds to — we never bind broader than the tailnet.
+if-addrs = "0.13"
 
 # Windows-only: intercept WebView2 accelerator keys so we can suppress the engine's
 # built-in reload shortcuts (F5 / Ctrl+R / Ctrl+Shift+R), which would otherwise

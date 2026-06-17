@@ -1,0 +1,229 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="color-scheme" content="dark" />
+    <title>Workbench Remote</title>
+    <style>
+      /* Deliberately minimal — this is the step-4.3 connectivity/test harness and the
+         seed for the 4.4 PWA, not the polished dashboard. Mono + dark to match the app. */
+      :root {
+        --bg: #14161a; --fg: #d7dbe0; --dim: #8a929c; --line: #2a2f37;
+        --working: #d8a657; --needs: #e06c9a; --done: #89b482; --idle: #6a737d; --ended: #4a5058;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0; background: var(--bg); color: var(--fg);
+        font: 14px/1.5 ui-monospace, "JetBrains Mono", "Cascadia Code", Menlo, Consolas, monospace;
+        padding: 16px; max-width: 760px; margin-inline: auto;
+      }
+      h1 { font-size: 16px; font-weight: 600; margin: 0 0 12px; }
+      .muted { color: var(--dim); }
+      input, button, textarea {
+        font: inherit; background: #1b1e24; color: var(--fg);
+        border: 1px solid var(--line); border-radius: 4px; padding: 8px 10px;
+      }
+      button { cursor: pointer; }
+      button:hover { border-color: #3a4049; }
+      button:disabled { opacity: 0.5; cursor: default; }
+      .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+      #pair input { flex: 1 1 160px; }
+      #status { margin: 8px 0 16px; min-height: 1.4em; }
+      .card { border: 1px solid var(--line); border-radius: 6px; padding: 10px 12px; margin: 8px 0; }
+      .card h2 { font-size: 14px; font-weight: 600; margin: 0; display: flex; align-items: center; gap: 8px; }
+      .dot { font-size: 16px; line-height: 1; }
+      .working { color: var(--working); } .needs { color: var(--needs); }
+      .done { color: var(--done); } .idle { color: var(--idle); } .ended { color: var(--ended); }
+      .note { color: var(--dim); font-size: 13px; margin: 2px 0 8px; }
+      .meta { color: var(--dim); font-size: 12px; }
+      .actions { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
+      .actions button { padding: 5px 9px; font-size: 13px; }
+      .prompt { display: flex; gap: 6px; margin-top: 8px; }
+      .prompt textarea { flex: 1; resize: vertical; min-height: 38px; }
+      .hidden { display: none; }
+    </style>
+  </head>
+  <body>
+    <h1>Workbench Remote</h1>
+
+    <div id="pair">
+      <p class="muted">Enter the pairing code shown in Workbench → Remote Access.</p>
+      <div class="row">
+        <input id="code" placeholder="XXXX-XXXX" autocomplete="off" autocapitalize="characters" />
+        <input id="name" placeholder="device name" autocomplete="off" />
+        <button id="pairBtn">Pair</button>
+      </div>
+    </div>
+
+    <div id="app" class="hidden">
+      <div class="row" style="justify-content: space-between">
+        <span class="muted" id="conn">connecting…</span>
+        <button id="unpair">Forget device</button>
+      </div>
+      <div id="status"></div>
+      <div id="list"></div>
+    </div>
+
+    <script>
+      const TOKEN_KEY = "wb-remote-token";
+      const $ = (id) => document.getElementById(id);
+      let token = localStorage.getItem(TOKEN_KEY);
+      let ws = null;
+
+      const GLYPH = {
+        working: ["◐", "working"], needs_you: ["●", "needs"], done: ["○", "done"],
+        idle: ["▸", "idle"], ended: ["✗", "ended"],
+      };
+
+      async function pair() {
+        const code = $("code").value.trim().toUpperCase();
+        const name = $("name").value.trim() || "device";
+        $("pairBtn").disabled = true;
+        try {
+          const res = await fetch("/pair", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ code, name }),
+          });
+          if (!res.ok) { alert("Pairing failed — code wrong or expired."); return; }
+          token = (await res.json()).token;
+          localStorage.setItem(TOKEN_KEY, token);
+          showApp();
+        } catch (e) {
+          alert("Could not reach Workbench: " + e);
+        } finally {
+          $("pairBtn").disabled = false;
+        }
+      }
+
+      function showApp() {
+        $("pair").classList.add("hidden");
+        $("app").classList.remove("hidden");
+        connect();
+      }
+
+      function connect() {
+        const proto = location.protocol === "https:" ? "wss" : "ws";
+        ws = new WebSocket(`${proto}://${location.host}/api/ws?token=${encodeURIComponent(token)}`);
+        ws.onopen = () => ($("conn").textContent = "● live");
+        ws.onclose = () => { $("conn").textContent = "○ disconnected"; setTimeout(connect, 2000); };
+        ws.onerror = () => ws.close();
+        ws.onmessage = (ev) => render(JSON.parse(ev.data));
+      }
+
+      function action(obj) {
+        if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(obj));
+        else fetch("/api/action", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Authorization: "Bearer " + token },
+          body: JSON.stringify(obj),
+        });
+      }
+
+      // Persistent card DOM keyed by instance id. We reconcile in place rather than
+      // rebuilding `list.innerHTML` on every snapshot, because snapshots arrive every
+      // couple of seconds (token ticks) and blowing away the DOM would destroy the
+      // textarea a user is typing into — on a touch keyboard that blurs the field and
+      // closes the on-screen keyboard mid-prompt. Reparenting a live element with
+      // appendChild keeps focus, so reordering is safe.
+      const cards = new Map();
+
+      function buildCard(it) {
+        const card = document.createElement("div");
+        card.className = "card";
+
+        const h2 = document.createElement("h2");
+        const dot = document.createElement("span");
+        const title = document.createElement("span");
+        h2.append(dot, title);
+
+        const note = document.createElement("div");
+        note.className = "note";
+        const meta = document.createElement("div");
+        meta.className = "meta";
+        card.append(h2, note, meta);
+
+        const acts = document.createElement("div");
+        acts.className = "actions";
+        for (const [label, type] of [
+          ["approve", "approve"], ["deny", "deny"], ["interrupt", "interrupt"],
+          ["start", "start"], ["stop", "stop"],
+        ]) {
+          const b = document.createElement("button");
+          b.textContent = label;
+          b.onclick = () => action({ type, instanceId: it.id });
+          acts.appendChild(b);
+        }
+        card.appendChild(acts);
+
+        const pr = document.createElement("div");
+        pr.className = "prompt";
+        const ta = document.createElement("textarea");
+        ta.placeholder = "send a prompt…";
+        const send = document.createElement("button");
+        send.textContent = "send";
+        send.onclick = () => {
+          const text = ta.value.trim();
+          if (!text) return;
+          action({ type: "prompt", instanceId: it.id, text });
+          ta.value = "";
+        };
+        pr.append(ta, send);
+        card.appendChild(pr);
+
+        return { card, dot, title, note, meta };
+      }
+
+      function updateCard(c, it) {
+        const phase = it.phase || it.status || "idle";
+        const [glyph, cls] = GLYPH[phase] || GLYPH.idle;
+        c.dot.className = "dot " + cls;
+        c.dot.textContent = glyph;
+        c.title.textContent = it.title || "(untitled)";
+        c.note.textContent = it.taskNote || "";
+        const sub = it.subagents ? ` · ${it.subagents} subagent(s)` : "";
+        const cmp = it.compacting ? " · compacting…" : "";
+        const ctx = it.ctxTokens ? ` · ctx ${Math.round(it.ctxTokens / 1000)}k` : "";
+        c.meta.textContent =
+          (it.projectName || "") + (it.branch ? " · " + it.branch : "") +
+          ctx + sub + cmp + (it.live ? "" : " · (not running)");
+      }
+
+      function render(snap) {
+        const instances = (snap && snap.instances) || [];
+        $("status").textContent = instances.length
+          ? `${instances.length} instance(s)`
+          : "no instances yet";
+        const list = $("list");
+
+        const seen = new Set();
+        for (const it of instances) {
+          seen.add(it.id);
+          let c = cards.get(it.id);
+          if (!c) {
+            c = buildCard(it);
+            cards.set(it.id, c);
+          }
+          updateCard(c, it);
+          // Append/move into the snapshot's order; appendChild keeps focus & text.
+          list.appendChild(c.card);
+        }
+
+        // Drop cards for instances that disappeared.
+        for (const [id, c] of cards) {
+          if (!seen.has(id)) {
+            c.card.remove();
+            cards.delete(id);
+          }
+        }
+      }
+
+      $("pairBtn").onclick = pair;
+      $("code").addEventListener("keydown", (e) => { if (e.key === "Enter") pair(); });
+      $("unpair").onclick = () => { localStorage.removeItem(TOKEN_KEY); location.reload(); };
+
+      if (token) showApp();
+    </script>
+  </body>
+</html>

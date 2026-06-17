@@ -13,6 +13,7 @@ mod layout;
 mod mcp;
 mod pty;
 mod registry;
+mod remote;
 mod skills;
 mod statusline;
 mod sys;
@@ -57,6 +58,11 @@ pub fn run() {
             if let Err(e) = hooks::init(app.handle()) {
                 eprintln!("[hooks] init failed: {e}");
             }
+            // Start the remote access subsystem (step 4.3, design §11): an
+            // authenticated API + WebSocket server on the tailnet, off by default and
+            // auto-started only if previously enabled. Never fails the app — a bind
+            // failure just leaves remote access off until re-enabled.
+            remote::init(app.handle());
             // Set up the system tray icon (step 2.3). Failures are logged;
             // the tray badge commands degrade gracefully when unavailable.
             attention::setup_tray(app.handle());
@@ -91,6 +97,13 @@ pub fn run() {
             pty::default_working_dir,
             pty::remote_cmd_spawn,
             hooks::hook_server_status,
+            remote::remote_start,
+            remote::remote_stop,
+            remote::remote_status,
+            remote::remote_new_pairing_code,
+            remote::remote_push_snapshot,
+            remote::remote_devices_list,
+            remote::remote_revoke_device,
             statusline::usage_limits,
             git::detect_repo,
             git::provision_worktree,

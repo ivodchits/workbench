@@ -24,7 +24,7 @@ import type { Instance } from "../../ipc/registry";
 import type { ConsoleStatus } from "../../state/consoles";
 import type { LiveStatus } from "../../state/status";
 import { openPath } from "../../ipc/os";
-import { ptyWrite } from "../../ipc/pty";
+import { INTERRUPT_KEY, ptyWrite } from "../../ipc/pty";
 import { matchCommand } from "../../keyboard";
 import { updateInstance } from "../../state/registry";
 import { markInterrupted } from "../../state/status";
@@ -33,11 +33,6 @@ import { openQueueDialog } from "../queueDialogControl";
 import { mergeStatus, relativeTime } from "./status";
 import { contextWindowTokens, formatTokens, tokenBreakdown } from "../../util/format";
 import InlineEdit from "./InlineEdit";
-
-// The keystroke that interrupts a running agent: ESC stops the current generation
-// in the claude TUI. Sent straight to the PTY (works without focusing the console).
-// Keep this as the single source for the interrupt key (design §11 caveat).
-const INTERRUPT_KEY = new Uint8Array([0x1b]);
 
 interface InstanceCardProps {
   instance: Instance;

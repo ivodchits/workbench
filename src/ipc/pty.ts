@@ -94,6 +94,16 @@ export function ptyWrite(instanceId: string, data: Uint8Array): Promise<void> {
   return invoke("pty_write", { instanceId, data: Array.from(data) });
 }
 
+/** The keystroke that interrupts a running agent: ESC stops the current generation in
+ *  the claude TUI. The **single source** for this key (design §11 caveat — keep the
+ *  approve/deny/interrupt mapping in one place so a TUI change is a one-line fix); the
+ *  rail interrupt action and the remote-action handler both send it. */
+export const INTERRUPT_KEY = new Uint8Array([0x1b]);
+
+/** Carriage return — submits the current TUI line (approve a permission prompt, send
+ *  a typed prompt). The other half of the §11 keystroke mapping. */
+export const ENTER_KEY = new Uint8Array([0x0d]);
+
 /**
  * Resize an instance's PTY to match its terminal's cols/rows. `subId` (step 4.1):
  * a console passes its subscription id so its size joins the PTY's min-size

@@ -167,6 +167,20 @@ const MIGRATIONS: &[&str] = &[
     ALTER TABLE projects ADD COLUMN remote_dir TEXT;
     ALTER TABLE instances ADD COLUMN remote_tmux_session TEXT;
     "#,
+    // v7 -> v8: paired devices for the remote access server (step 4.3, design §11).
+    // Each row is a device that paired over the tailnet: `token` is the long-lived
+    // bearer secret it presents on every API/WS call (minted as a UUID on a
+    // successful `/pair`), `name` is the user-facing label it sent, and `last_seen`
+    // tracks the most recent authenticated use (NULL until first use after pairing).
+    // Revoking a device deletes its row (and drops it from the in-memory token set).
+    r#"
+    CREATE TABLE remote_devices (
+        token      TEXT PRIMARY KEY,
+        name       TEXT NOT NULL,
+        paired_at  INTEGER NOT NULL,
+        last_seen  INTEGER
+    );
+    "#,
 ];
 
 /// Apply any migrations the database hasn't seen yet, advancing

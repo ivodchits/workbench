@@ -1,6 +1,8 @@
 import { useEffect, useState } from "react";
 import InstanceManager from "./panels/InstanceManager";
 import AppearanceMenu from "./panels/AppearanceMenu";
+import RemoteAccessMenu from "./panels/RemoteAccessMenu";
+import RemoteMirror from "./panels/RemoteMirror";
 import Workspace from "./panels/Workspace";
 import PresetsBar from "./panels/PresetsBar";
 import TemplateLibraryHost from "./panels/TemplateLibrary";
@@ -25,6 +27,8 @@ import { initUsageEngine } from "./state/usage";
 import { initUsageLimits, useUsageLimits } from "./state/usageLimits";
 import { initAppearance, useFontZoomWheel } from "./state/appearance";
 import { initTearOff } from "./state/tearoff";
+import { initRemoteActions } from "./state/remoteActions";
+import { refreshRemoteStatus } from "./state/remoteServer";
 import type { RateWindow } from "./ipc/usageLimits";
 import { formatCountdown, formatAgo } from "./util/format";
 import { GLYPH } from "./theme";
@@ -67,6 +71,10 @@ function App() {
     // Wire the tear-off store→window closers (step 4.2), so killing a torn-off
     // console/shell from the rail also closes its OS window.
     initTearOff();
+    // Remote access (step 4.3): start consuming actions from paired clients and load
+    // the server's current status (it auto-starts if it was enabled last run).
+    initRemoteActions();
+    void refreshRemoteStatus();
   }, []);
 
   // The global keymap listener (Ctrl+Shift / Alt / Ctrl+Tab chords). Rail single
@@ -170,6 +178,10 @@ function App() {
       <CommandPaletteHost />
       <KeymapEditorHost />
       <ResumePickerHost />
+
+      {/* Remote access (step 4.3): mirrors live state to the backend for paired
+          tailnet clients. Renders nothing; pushes only while the server is running. */}
+      <RemoteMirror />
     </div>
   );
 }
@@ -387,6 +399,7 @@ function StatusBar({ openCount, sessionId }: { openCount: number; sessionId: str
         {openCount} {openCount === 1 ? "console" : "consoles"}
       </span>
       <HookIndicator />
+      <RemoteAccessMenu />
       <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 16 }}>
         <UsageMeters />
         {sessionId && (
