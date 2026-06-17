@@ -30,12 +30,7 @@ import { closeDiff, diffIdFor, getOpenDiffs, openDiff } from "../../state/diffs"
 import { closeMcp, getOpenMcps, openMcp } from "../../state/mcp";
 import { closeSkills, getOpenSkills, openSkills } from "../../state/skills";
 import { closeGit, getOpenGits, openGit } from "../../state/git";
-import {
-  getLiveStatuses,
-  onStatusTransition,
-  useLiveStatuses,
-  type LiveStatus,
-} from "../../state/status";
+import { getLiveStatuses, useLiveStatuses, type LiveStatus } from "../../state/status";
 import { mergeStatus } from "./status";
 import { getActiveProject, setActiveProject, useActiveProject } from "../../state/activeProject";
 import { activatePanel, focusActivePanel } from "../../state/dock";
@@ -60,7 +55,7 @@ import {
 import { worktreeTeardownInfo, type SetupResult, type TeardownInfo } from "../../ipc/git";
 import { isTextInput, matchCommand } from "../../keyboard";
 import { registerCommand } from "../../keyboard/bus";
-import { notifyNeedsYou, updateTrayBadge } from "../../ipc/attention";
+import { updateTrayBadge } from "../../ipc/attention";
 import ProjectDialog from "./ProjectDialog";
 import InstanceCard from "./InstanceCard";
 import Modal from "./Modal";
@@ -230,25 +225,9 @@ function InstanceManager({ onCollapse }: InstanceManagerProps) {
     };
   }, []);
 
-  // Fire an OS notification when an instance transitions into "needs you".
-  // Reads the registry inside the callback so we always get the current title
-  // even if the component re-rendered since subscription was set up.
-  useEffect(
-    () =>
-      onStatusTransition((instanceId, phase) => {
-        if (phase !== "needs_you") return;
-        const reg = getRegistry();
-        const inst = reg.instances.find((i) => i.id === instanceId);
-        if (!inst) return;
-        const project = reg.projects.find((p) => p.id === inst.projectId);
-        void notifyNeedsYou(
-          project?.name ?? "",
-          inst.title,
-          inst.taskNote ?? undefined,
-        ).catch(() => {});
-      }),
-    [],
-  );
+  // (Needs-you OS notifications moved to the routing+escalation engine in step 4.6 —
+  // `state/notifications.ts` — so desktop/phone routing and escalation live in one
+  // place. The rail still owns the tray badge count below.)
 
   // Move roving focus between rail rows (project tiles + instance cards). `delta`
   // is +1 (down) / -1 (up); wraps from an unfocused state to the first/last row.

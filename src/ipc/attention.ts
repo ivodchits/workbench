@@ -19,6 +19,13 @@ export function notifyNeedsYou(
   });
 }
 
+/** Fire a generic OS toast with a composed title/body (step 4.6) — used for
+ *  escalation re-pings ("still waiting") and stuck-working flags, which need
+ *  different wording from the fixed `notifyNeedsYou` headline. Fire-and-forget. */
+export function notifyAlert(title: string, body: string): Promise<void> {
+  return invoke("notify_alert", { title, body });
+}
+
 /** Update the tray icon tooltip to reflect the current needs-you count.
  *  Pass 0 to clear the badge (tooltip reverts to "Workbench"). */
 export function updateTrayBadge(count: number): Promise<void> {

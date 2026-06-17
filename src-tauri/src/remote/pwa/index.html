@@ -87,6 +87,11 @@
       /* ── instance cards ────────────────────────────────────── */
       .card { border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; margin: 10px 0; }
       .card.attn { border-color: var(--needs); }
+      /* Escalated (waited past the desktop threshold, step 4.6): a brighter, filled
+         badge + a tinted card edge so it stands out from an ordinary needs-you. */
+      .card.escalated { border-color: var(--needs); box-shadow: 0 0 0 1px var(--needs) inset; }
+      .badge.hot { background: var(--needs); color: var(--bg); }
+      .stuck { color: var(--working); }
       .card h2 { font-size: 15px; font-weight: 600; margin: 0; display: flex; align-items: center; gap: 9px; }
       .card h2 .title { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
       .dot { font-size: 17px; line-height: 1; }
@@ -287,9 +292,13 @@
 
         const note = document.createElement("div");
         note.className = "note";
+        // Possibly-stuck flag (step 4.6): a working card past the desktop threshold.
+        const stuck = document.createElement("div");
+        stuck.className = "stuck note hidden";
+        stuck.textContent = "⚠ possibly stuck — working longer than usual";
         const meta = document.createElement("div");
         meta.className = "meta";
-        card.append(h2, note, meta);
+        card.append(h2, note, stuck, meta);
 
         // Prominent approve / deny — the one thing a phone is really for. Shown only
         // when this instance is actually waiting on you.
@@ -334,7 +343,22 @@
         }
         card.appendChild(sec);
 
-        return { card, dot, title, badge, note, meta, approve };
+        return { card, dot, title, badge, note, stuck, meta, approve };
+      }
+
+      // Whole minutes a needs-you has been waiting, from its epoch-seconds start.
+      function waitMins(since) {
+        if (!since) return null;
+        return Math.max(0, Math.floor((Date.now() / 1000 - since) / 60));
+      }
+
+      // Paint the needs-you badge with its live "waiting Nm" + escalation emphasis.
+      // Split out so the 1s ticker can refresh the elapsed time between snapshots.
+      function paintBadge(c) {
+        if (!c._attn) return;
+        const m = waitMins(c._needsSince);
+        c.badge.textContent = m != null ? `needs you · ${m}m` : "needs you";
+        c.badge.classList.toggle("hot", !!c._escalated);
       }
 
       function updateCard(c, it) {
@@ -344,10 +368,17 @@
         c.dot.className = "dot " + cls;
         c.dot.textContent = glyph;
         c.title.textContent = it.title || "(untitled)";
+        // Stash the 4.6 cues so the ticker can repaint the badge without a snapshot.
+        c._attn = attn;
+        c._needsSince = it.needsSince || null;
+        c._escalated = !!it.escalated;
         c.badge.classList.toggle("hidden", !attn);
         c.card.classList.toggle("attn", attn);
+        c.card.classList.toggle("escalated", attn && !!it.escalated);
         c.approve.classList.toggle("hidden", !attn);
+        paintBadge(c);
         c.note.textContent = it.taskNote || "";
+        c.stuck.classList.toggle("hidden", !it.stuck);
         const sub = it.subagents ? ` · ${it.subagents} subagent(s)` : "";
         const cmp = it.compacting ? " · compacting…" : "";
         const ctx = it.ctxTokens ? ` · ctx ${Math.round(it.ctxTokens / 1000)}k` : "";
@@ -387,10 +418,12 @@
 
       function renderAttention(all) {
         const needs = all.filter((it) => phaseOf(it) === "needs_you").length;
+        const esc = all.filter((it) => phaseOf(it) === "needs_you" && it.escalated).length;
         const el = $("attention");
         if (needs > 0) {
           el.className = "attention alert";
-          el.innerHTML = `<span class="big">●</span> ${needs} agent${needs === 1 ? "" : "s"} need${needs === 1 ? "s" : ""} you`;
+          const escTxt = esc > 0 ? ` · ${esc} escalated` : "";
+          el.innerHTML = `<span class="big">●</span> ${needs} agent${needs === 1 ? "" : "s"} need${needs === 1 ? "s" : ""} you${escTxt}`;
         } else {
           el.className = "attention calm";
           el.textContent = all.length ? "all quiet" : "no instances yet";
@@ -564,8 +597,13 @@
         if (lastSnap) render(lastSnap);
       };
 
-      // Keep usage countdowns ticking even between snapshots.
-      setInterval(() => { if (lastSnap) renderUsage(lastSnap.usageLimits); }, 1000);
+      // Keep usage countdowns — and the needs-you "waiting Nm" badges (step 4.6) —
+      // ticking even between snapshots (a held prompt emits no new state to push).
+      setInterval(() => {
+        if (!lastSnap) return;
+        renderUsage(lastSnap.usageLimits);
+        for (const c of cards.values()) paintBadge(c);
+      }, 1000);
 
       if ("serviceWorker" in navigator) {
         window.addEventListener("load", () => navigator.serviceWorker.register("/sw.js").catch(() => {}));

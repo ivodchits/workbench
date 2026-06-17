@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import InstanceManager from "./panels/InstanceManager";
 import AppearanceMenu from "./panels/AppearanceMenu";
 import RemoteAccessMenu from "./panels/RemoteAccessMenu";
+import NotificationsMenu from "./panels/NotificationsMenu";
 import RemoteMirror from "./panels/RemoteMirror";
 import Workspace from "./panels/Workspace";
 import PresetsBar from "./panels/PresetsBar";
@@ -28,6 +29,7 @@ import { initUsageLimits, useUsageLimits } from "./state/usageLimits";
 import { initAppearance, useFontZoomWheel } from "./state/appearance";
 import { initTearOff } from "./state/tearoff";
 import { initRemoteActions } from "./state/remoteActions";
+import { initNotifications } from "./state/notifications";
 import { refreshRemoteStatus } from "./state/remoteServer";
 import type { RateWindow } from "./ipc/usageLimits";
 import { formatCountdown, formatAgo } from "./util/format";
@@ -75,6 +77,9 @@ function App() {
     // the server's current status (it auto-starts if it was enabled last run).
     initRemoteActions();
     void refreshRemoteStatus();
+    // Notification routing + escalation (step 4.6): route needs-you to the configured
+    // destinations and watch for held/stuck cards. App-lifetime, idempotent.
+    initNotifications();
   }, []);
 
   // The global keymap listener (Ctrl+Shift / Alt / Ctrl+Tab chords). Rail single
@@ -400,6 +405,7 @@ function StatusBar({ openCount, sessionId }: { openCount: number; sessionId: str
       </span>
       <HookIndicator />
       <RemoteAccessMenu />
+      <NotificationsMenu />
       <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 16 }}>
         <UsageMeters />
         {sessionId && (

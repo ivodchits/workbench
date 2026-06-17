@@ -18,6 +18,7 @@ import { useConsoles } from "../state/consoles";
 import { useLiveStatuses } from "../state/status";
 import { useUsageLimits } from "../state/usageLimits";
 import { useRemoteServer } from "../state/remoteServer";
+import { useAlerts, useNotificationConfig } from "../state/notifications";
 import { contextWindowTokens } from "../util/format";
 
 /** One push per this window, to coalesce bursts of token/status updates. */
@@ -29,6 +30,8 @@ export default function RemoteMirror(): null {
   const statuses = useLiveStatuses();
   const limits = useUsageLimits();
   const server = useRemoteServer();
+  const alerts = useAlerts();
+  const notif = useNotificationConfig();
   const running = server?.running ?? false;
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -45,6 +48,9 @@ export default function RemoteMirror(): null {
       const liveIds = new Set(
         consoles.open.filter((c) => c.status === "running").map((c) => c.instanceId),
       );
+      // Escalation cues (step 4.6) ride the snapshot only when the phone route is on;
+      // off, the dashboard still shows live status without the extra 4.6 emphasis.
+      const withAlerts = notif.phone;
       const snapshot = {
         updatedAt: Math.floor(Date.now() / 1000),
         usageLimits: limits,
@@ -66,6 +72,11 @@ export default function RemoteMirror(): null {
             status: i.status, // persisted fallback for a card with no live status
             ctxTokens: contextWindowTokens(i),
             live: liveIds.has(i.id),
+            // Step 4.6 attention cues: when this needs-you began (live "waiting Nm"),
+            // whether it has escalated, and whether a working card looks stuck.
+            needsSince: withAlerts ? alerts.needsSince.get(i.id) ?? null : null,
+            escalated: withAlerts && alerts.escalated.has(i.id),
+            stuck: withAlerts && alerts.stuck.has(i.id),
           };
         }),
       };
@@ -77,7 +88,7 @@ export default function RemoteMirror(): null {
         timer.current = null;
       }
     };
-  }, [running, registry, consoles, statuses, limits]);
+  }, [running, registry, consoles, statuses, limits, alerts, notif]);
 
   return null;
 }

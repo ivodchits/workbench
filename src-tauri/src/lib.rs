@@ -164,6 +164,7 @@ pub fn run() {
             fs::ensure_claude_md,
             sys::open_path,
             attention::notify_needs_you,
+            attention::notify_alert,
             attention::update_tray_badge,
             attention::update_tray_usage,
         ])

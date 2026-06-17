@@ -117,6 +117,21 @@ pub fn update_tray_badge(state: State<'_, Mutex<TrayState>>, count: u32) {
     s.refresh();
 }
 
+/// Fire a generic OS toast for an escalation or a stuck-working flag (step 4.6).
+/// Unlike [`notify_needs_you`], whose headline format is fixed, this is a thin
+/// title/body passthrough: the frontend composes the wording (it owns the registry
+/// and the elapsed-time figures), and Rust just shows it. Fire-and-forget like the
+/// rest of the notification path.
+#[tauri::command]
+pub fn notify_alert(app: AppHandle, title: String, body: String) -> Result<(), String> {
+    app.notification()
+        .builder()
+        .title(title)
+        .body(body)
+        .show()
+        .map_err(|e| e.to_string())
+}
+
 /// Update the tray tooltip's account-wide usage clause (step 3.2). Called by the
 /// usage-limit engine on each fresh snapshot; either window may be `None` (absent or
 /// not reported yet). A snapshot with no windows clears the clause.

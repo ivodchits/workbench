@@ -732,6 +732,23 @@ emit per-byte global events.
 - **Build:** Choose destination: desktop / phone dashboard / Discord (existing MCP). Escalate if
   an instance is "needs you" > N minutes (louder ping / push); flag instances "working" far
   longer than usual as possibly stuck.
+- **Design decision (2026-06-17):** **Discord route deferred.** Workbench (a Tauri app) can't
+  route through the user's Discord *MCP* — MCP servers are tools the *agent* invokes inside a
+  session, not an API another app can call. The natively-feasible path is a **webhook URL**
+  (HTTPS POST from the Rust core), but the user chose to ship 4.6 without it for now and add the
+  webhook route later. The code leaves a clean seam: `NotificationPrefs` notes where a
+  `webhookUrl` slots in, and `state/notifications.ts:deliver*` is where a webhook POST would go —
+  a contained addition that touches nothing else.
+- **Implemented:** routing + escalation centralized in `src/state/notifications.ts` (the sole
+  owner of the needs-you → notification path; the rail's old direct OS-toast call moved here).
+  Two routes: **desktop** (OS toast on fresh needs-you; a louder re-ping on escalation; a
+  possibly-stuck flag) and **phone dashboard** (escalation cues — `needsSince` / `escalated` /
+  `stuck` — ride the existing remote snapshot, gated by the phone toggle; the PWA shows a live
+  "waiting Nm" badge, an escalated card emphasis, an "N escalated" banner clause, and a
+  possibly-stuck note). A 15 s background tick watches every live card; "far longer than usual"
+  is a fixed, user-configurable threshold (learned per-agent baseline = future refinement).
+  Config + thresholds live in a new status-bar **alerts** menu (`NotificationsMenu.tsx`),
+  persisted in prefs. New backend command `attention::notify_alert` (generic title/body toast).
 - **Done when:** A configured route delivers a needs-you alert to Discord/phone; escalation
   fires after the threshold.
 
@@ -841,7 +858,7 @@ Pull these in once the relevant phase is stable; each is an independent step whe
 - [x] 4.3 Remote API + auth (tailnet)
 - [x] 4.4 Dashboard PWA (Phase A)
 - [x] 4.5 Live terminal in companion (Phase B)
-- [ ] 4.6 Notification routing & escalation
+- [x] 4.6 Notification routing & escalation (desktop + phone routing + escalation/stuck engine; Discord route deferred — see step note)
 - [ ] 4.7 Android app via Tauri Mobile (Phase C)
 
 **Phase 5 — Linux**

@@ -24,6 +24,24 @@ export interface Prefs {
   /** Remapped keyboard shortcuts (step 3.10): binding id → chord (empty = unbound).
    *  Only bindings that differ from their shipped default are stored. */
   keymapOverrides: Record<string, string>;
+  /** Notification routing + escalation thresholds (step 4.6). */
+  notifications: NotificationPrefs;
+}
+
+/** Where "needs you" alerts go, and when a waiting/working card escalates (step
+ *  4.6, design §7). Persisted here so the routing survives restarts; the live
+ *  engine + UI live in `state/notifications.ts`. (A webhook route — Discord/Slack/
+ *  ntfy — is a planned future addition; this shape grows a `webhookUrl` then.) */
+export interface NotificationPrefs {
+  /** Desktop OS toast on a fresh needs-you and on escalation. */
+  desktop: boolean;
+  /** Surface escalation/stuck emphasis on the phone dashboard snapshot (step 4.4).
+   *  The phone always shows live status; this gates the extra 4.6 attention cues. */
+  phone: boolean;
+  /** Minutes a card may sit in ● needs-you before a louder escalation re-ping. */
+  escalateAfterMin: number;
+  /** Minutes a card may run in ◐ working before it's flagged possibly-stuck. */
+  stuckAfterMin: number;
 }
 // Note: the hook-server port is owned by the Rust backend (it must bind before it
 // can advertise the port), persisted in the SQLite `meta` table, and read by the
