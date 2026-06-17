@@ -117,6 +117,9 @@
         display: flex; flex-direction: column;
         padding: calc(8px + var(--safe-t)) 8px calc(8px + var(--safe-b));
       }
+      /* Must out-specify the id rule above, or `.hidden` (a bare class) loses to it
+         and the overlay can never be hidden. */
+      #term-overlay.hidden { display: none; }
       #term-head { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
       #term-head .title {
         flex: 1; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
@@ -504,7 +507,9 @@
         let msg;
         try { msg = JSON.parse(data); } catch (e) { return; }
         if (msg.type === "notrunning") {
-          setTermMsg('Session not running. Tap "start", then reopen the console.');
+          // We keep reconnecting, so it attaches automatically once the instance is
+          // started (from its card's "start", or on the desktop).
+          setTermMsg("Session not running — it will appear here once started.");
         } else if (msg.type === "size") {
           fitTerm(msg.cols, msg.rows);
         }
@@ -530,6 +535,9 @@
         const m = $("term-msg");
         m.textContent = text;
         m.classList.toggle("hidden", !text);
+        // Swap the black terminal box for the message, so a not-running instance
+        // shows a clear note instead of an empty screen.
+        $("term-wrap").classList.toggle("hidden", !!text);
       }
       function setTermConn(text) { $("term-conn").textContent = text; }
 
