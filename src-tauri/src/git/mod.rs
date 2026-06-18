@@ -1059,6 +1059,11 @@ pub struct StatusEntry {
 #[tauri::command]
 pub fn git_status_entries(repo_root: String) -> Result<Vec<StatusEntry>, String> {
     let root = Path::new(&repo_root);
+    // `-z` (NUL-terminated) is essential: without it, porcelain C-quotes any path
+    // with a space/quote/control char (e.g. `"Art/Impacted2.0 SDF.asset"`), and
+    // `core.quotePath=false` only suppresses quoting of non-ASCII bytes, not those.
+    // We'd then hand the literal quotes to `git add` and it would reject the
+    // pathspec. With `-z`, paths come through verbatim and records are NUL-split.
     let out = git_stdout(
         root,
         &[
@@ -1066,23 +1071,27 @@ pub fn git_status_entries(repo_root: String) -> Result<Vec<StatusEntry>, String>
             "core.quotePath=false",
             "status",
             "--porcelain=v1",
+            "-z",
             "--untracked-files=all",
         ],
     )
     .unwrap_or_default();
     let mut entries = Vec::new();
-    for line in out.lines() {
+    let mut fields = out.split('\0');
+    while let Some(record) = fields.next() {
         // Each record is `XY <path>`; the first three bytes are ASCII so slicing
         // by byte index is safe even when the path itself is non-ASCII.
-        if line.len() < 4 {
+        if record.len() < 4 {
             continue;
         }
-        let index = &line[0..1];
-        let worktree = &line[1..2];
-        let mut path = line[3..].to_owned();
-        // Renames/copies render as `old -> new` — show the destination path.
-        if let Some(idx) = path.find(" -> ") {
-            path = path[idx + 4..].to_owned();
+        let index = &record[0..1];
+        let worktree = &record[1..2];
+        let path = record[3..].to_owned();
+        // Renames/copies emit the new path here and the old path as the *next*
+        // NUL-separated field — consume and discard it so it isn't mis-parsed as
+        // its own record.
+        if index == "R" || index == "C" || worktree == "R" || worktree == "C" {
+            fields.next();
         }
         entries.push(StatusEntry {
             path,
@@ -1755,6 +1764,30 @@ mod tests {
             git_status_entries(root).unwrap().iter().any(|e| e.path == "a.txt"),
             "pop restored the change"
         );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A path with a space must come back unquoted from the status (porcelain would
+    /// otherwise C-quote it) so it round-trips straight into `git add`.
+    #[test]
+    fn git_status_unquotes_paths_with_spaces() {
+        let dir = temp_dir("panel-spaces");
+        if !init_repo(&dir) {
+            std::fs::remove_dir_all(&dir).ok();
+            return;
+        }
+        let root = dir.to_string_lossy().into_owned();
+        let name = "Impacted2.0 SDF.asset";
+        std::fs::write(dir.join(name), "x\n").unwrap();
+
+        let entries = git_status_entries(root.clone()).unwrap();
+        let entry = entries.iter().find(|e| e.path == name);
+        assert!(entry.is_some(), "spaced path returned verbatim (no surrounding quotes), got {entries:?}");
+        // The path is usable as a pathspec: staging it succeeds and clears untracked.
+        git_stage(root.clone(), vec![name.into()]).unwrap();
+        let staged = git_status_entries(root).unwrap();
+        assert!(staged.iter().any(|e| e.path == name && e.index == "A"), "staged via add: {staged:?}");
 
         std::fs::remove_dir_all(&dir).ok();
     }
