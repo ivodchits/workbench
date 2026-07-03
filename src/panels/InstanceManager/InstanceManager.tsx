@@ -11,7 +11,14 @@
 // Out of scope (later steps): live hook-fed status (2.2), real worktree
 // provisioning (2.4), and the dockview arrangement of consoles (1.6).
 
-import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import {
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+} from "react";
 import Panel from "../../theme/Panel";
 import { GLYPH } from "../../theme";
 import type { Group, Instance, Project } from "../../ipc/registry";
@@ -831,7 +838,11 @@ function ProjectNode({
         onMouseEnter={() => setHover(true)}
         onMouseLeave={() => setHover(false)}
         style={{
-          padding: "12px 15px 13px 15px",
+          position: "relative",
+          // ~15% taller than before (was 12/13 top/bottom) so the name + branch
+          // each get their own full-width line, with the action row tucked into
+          // the top-right corner instead of stealing space from the name.
+          padding: "15px 15px 16px 15px",
           margin: "5px 8px",
           borderRadius: 4,
           border: `1px solid ${active ? "var(--wb-borderActive)" : "var(--wb-border)"}`,
@@ -841,54 +852,24 @@ function ProjectNode({
         }}
         title={`${project.rootPath}\n(click to open this project's workspace)`}
       >
-        {/* Row 1 — caret · name · branch · actions */}
-        <div style={{ display: "flex", alignItems: "center", gap: 7, font: "15px var(--wb-mono)" }}>
-          <button
-            onClick={(e) => {
-              e.stopPropagation();
-              onToggle();
-            }}
-            aria-label={collapsed ? "expand project" : "collapse project"}
-            style={caretButtonStyle}
-          >
-            <span style={{ color: "var(--wb-textFaint)" }}>{collapsed ? "▸" : "▾"}</span>
-          </button>
-          <span
-            style={{
-              color: active ? "var(--wb-accent)" : "var(--wb-text)",
-              fontWeight: 600,
-              minWidth: 0,
-              overflow: "hidden",
-              textOverflow: "ellipsis",
-              whiteSpace: "nowrap",
-            }}
-          >
-            {project.name}
-          </span>
-          {isRemote ? (
-            <span
-              style={{ color: "var(--wb-accent)", fontSize: 10, flex: "0 0 auto" }}
-              title={`remote project — ssh:${project.remoteSshDest}`}
-            >
-              {GLYPH.remote} ssh:{project.remoteSshDest}
-            </span>
-          ) : (
-            project.defaultBranch && (
-              <span style={{ color: "var(--wb-textFaint)", fontSize: 10, flex: "0 0 auto" }}>
-                ⌥ {project.defaultBranch}
-              </span>
-            )
-          )}
-          <span
-            style={{
-              marginLeft: "auto",
-              display: "flex",
-              alignItems: "center",
-              gap: 8,
-              flex: "0 0 auto",
-              visibility: hover || menuOpen ? "visible" : "hidden",
-            }}
-          >
+        {/* Action row — pinned to the top-right corner so the name below can use the
+            full tile width. Carries the tile's (hovered/active) background so it
+            stays legible when it overlaps the tail of a long name. */}
+        <span
+          style={{
+            position: "absolute",
+            top: 7,
+            right: 9,
+            display: "flex",
+            alignItems: "center",
+            gap: 8,
+            zIndex: 1,
+            padding: "3px 3px 3px 10px",
+            borderRadius: 4,
+            background: "var(--wb-sel)",
+            visibility: hover || menuOpen ? "visible" : "hidden",
+          }}
+        >
             <ProjectAction label="new instance" onClick={onNewInstance} fontSize={15.75}>
               +
             </ProjectAction>
@@ -936,9 +917,49 @@ function ProjectNode({
               {GLYPH.fail}
             </ProjectAction>
           </span>
+
+        {/* Row 1 — caret · name (full tile width; auto-shrinks to show as much of a
+            long name as possible). */}
+        <div style={{ display: "flex", alignItems: "center", gap: 7 }}>
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              onToggle();
+            }}
+            aria-label={collapsed ? "expand project" : "collapse project"}
+            style={caretButtonStyle}
+          >
+            <span style={{ color: "var(--wb-textFaint)", font: "15px var(--wb-mono)" }}>
+              {collapsed ? "▸" : "▾"}
+            </span>
+          </button>
+          <FitText
+            title={project.name}
+            style={{ color: active ? "var(--wb-accent)" : "var(--wb-text)", fontWeight: 600 }}
+          >
+            {project.name}
+          </FitText>
         </div>
 
-        {/* Row 2 — instance summary */}
+        {/* Row 2 — branch / remote, on its own full-width line. */}
+        {isRemote ? (
+          <div
+            style={{ marginLeft: 21, marginTop: 3, font: "10px var(--wb-mono)", color: "var(--wb-accent)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
+            title={`remote project — ssh:${project.remoteSshDest}`}
+          >
+            {GLYPH.remote} ssh:{project.remoteSshDest}
+          </div>
+        ) : (
+          project.defaultBranch && (
+            <div
+              style={{ marginLeft: 21, marginTop: 3, font: "10px var(--wb-mono)", color: "var(--wb-textFaint)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
+            >
+              ⌥ {project.defaultBranch}
+            </div>
+          )
+        )}
+
+        {/* Row 3 — instance summary */}
         <div
           style={{
             display: "flex",
@@ -992,6 +1013,66 @@ function ProjectNode({
         </div>
       )}
     </div>
+  );
+}
+
+/** A single-line label that shrinks its font size to fit the available width.
+ *  When even the smallest size overflows it clips (no ellipsis) — clipping shows
+ *  a few more characters than an ellipsis would. Used for the project name so a
+ *  long name reveals as much of itself as the tile allows. */
+function FitText({
+  children,
+  max = 15,
+  min = 10.5,
+  style,
+  title,
+}: {
+  children: string;
+  max?: number;
+  min?: number;
+  style?: CSSProperties;
+  title?: string;
+}) {
+  const ref = useRef<HTMLSpanElement>(null);
+
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const fit = () => {
+      let size = max;
+      el.style.fontSize = `${size}px`;
+      while (size > min && el.scrollWidth > el.clientWidth + 0.5) {
+        size = Math.max(min, size - 0.5);
+        el.style.fontSize = `${size}px`;
+      }
+    };
+    fit();
+    // Re-fit when the rail (and thus the available width) is resized. We observe
+    // the parent because the element's own flex width tracks it.
+    const parent = el.parentElement;
+    if (!parent) return;
+    const ro = new ResizeObserver(fit);
+    ro.observe(parent);
+    return () => ro.disconnect();
+  }, [children, max, min]);
+
+  return (
+    <span
+      ref={ref}
+      title={title}
+      style={{
+        flex: 1,
+        minWidth: 0,
+        display: "block",
+        whiteSpace: "nowrap",
+        overflow: "hidden",
+        fontFamily: "var(--wb-mono)",
+        fontSize: max,
+        ...style,
+      }}
+    >
+      {children}
+    </span>
   );
 }
 
