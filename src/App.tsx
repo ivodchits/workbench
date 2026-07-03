@@ -9,6 +9,7 @@ import PresetsBar from "./panels/PresetsBar";
 import TemplateLibraryHost from "./panels/TemplateLibrary";
 import QueuePromptHost from "./panels/QueuePromptDialog";
 import CommandPaletteHost from "./panels/CommandPalette";
+import { speakFocusedSelection } from "./panels/terminalPool";
 import ResumePickerHost from "./panels/ResumePicker";
 import KeymapEditorHost from "./panels/KeymapEditor";
 import { useConsoles } from "./state/consoles";
@@ -107,6 +108,11 @@ function App() {
       }),
     [],
   );
+
+  // Read the focused terminal's selection aloud (Ctrl+Shift+L / command palette).
+  // Registered here so the command is live app-wide; the pool tracks which terminal
+  // was last focused and toggles speech on/off.
+  useEffect(() => registerCommand("speakSelection", speakFocusedSelection), []);
 
   // Restore the last-selected project from prefs before we consider a default.
   useEffect(() => {

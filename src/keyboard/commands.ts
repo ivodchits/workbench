@@ -55,6 +55,7 @@ export function runAction(command: CommandId, arg?: number): void {
     case "openQueue":
     case "openCommandPalette":
     case "openKeymapEditor":
+    case "speakSelection":
       runCommand(command, arg);
       break;
     // Rail-scope commands never reach here (matched in the rail's own scope).

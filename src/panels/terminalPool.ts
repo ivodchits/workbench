@@ -35,6 +35,7 @@ import {
 } from "../ipc/pty";
 import { markInterrupted } from "../state/status";
 import { mirrorInstanceTaskNote } from "../state/registry";
+import { isSpeaking, speak, stopSpeaking } from "../util/speech";
 
 interface TermEntry {
   /** The element xterm renders into; re-parented across mounts, never recreated. */
@@ -111,6 +112,29 @@ export interface AcquireOptions {
 }
 
 const pool = new Map<string, TermEntry>();
+
+// The instance whose terminal most recently held focus — the target for the
+// `speakSelection` command (Ctrl+Shift+L / command palette). Tracked here rather
+// than read from `document.activeElement` at call time because the command can be
+// invoked from the palette overlay, which has since taken DOM focus; the terminal
+// selection itself lives in xterm's buffer and survives the focus move.
+let lastFocusedInstanceId: string | null = null;
+
+/**
+ * Read the last-focused terminal's selection aloud, or stop an in-progress read
+ * (a toggle, so the same key silences a long one). The `speakSelection` command's
+ * action — see `keyboard/commands`. No-op if nothing was ever focused or the
+ * focused terminal has no selection.
+ */
+export function speakFocusedSelection(): void {
+  if (isSpeaking()) {
+    stopSpeaking();
+    return;
+  }
+  const entry = lastFocusedInstanceId ? pool.get(lastFocusedInstanceId) : null;
+  const sel = entry?.term.getSelection();
+  if (sel) speak(sel);
+}
 
 // --- live theme + font-size re-application (step 3.9) ------------------------
 // The appearance store (`state/appearance`) drives both: switching a theme preset
@@ -250,6 +274,13 @@ export function acquire(container: HTMLDivElement, opts: AcquireOptions): void {
   // `applyScale`); the matching `fontSize` below gives the visual scale.
   host.style.zoom = String(1 / currentScale);
   container.appendChild(host);
+
+  // Record this terminal as the speak-selection target whenever it takes focus
+  // (clicking into it to select, or a programmatic focus). `focusin` bubbles from
+  // xterm's helper textarea, so one listener on the host covers every focus path.
+  host.addEventListener("focusin", () => {
+    lastFocusedInstanceId = opts.instanceId;
+  });
 
   const term = new Terminal({
     fontFamily: mono,
@@ -583,6 +614,13 @@ function showTermContextMenu(cx: number, cy: number, term: Terminal): void {
   addItem("Paste", true, () => {
     void navigator.clipboard.readText().then((t) => term.paste(t));
   });
+  // Read the selection aloud (Ctrl+Shift+L), or stop an in-progress read. Enabled
+  // when there's a selection to speak or something is already speaking.
+  const speaking = isSpeaking();
+  addItem(speaking ? "Stop speaking" : "Speak selection", speaking || selection.length > 0, () => {
+    if (speaking) stopSpeaking();
+    else speak(selection);
+  });
 
   const onOutside = (e: MouseEvent) => {
     if (!menu.contains(e.target as Node)) dismiss();
@@ -622,6 +660,7 @@ export function release(instanceId: string, opts?: { keepPty?: boolean }): void 
   const entry = pool.get(instanceId);
   if (!entry) return;
   pool.delete(instanceId);
+  if (lastFocusedInstanceId === instanceId) lastFocusedInstanceId = null;
   entry.visSub?.disconnect();
   entry.dataSub.dispose();
   entry.resizeSub.dispose();

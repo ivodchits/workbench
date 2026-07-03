@@ -54,6 +54,7 @@ export type CommandId =
   | "openQueue"
   | "openCommandPalette"
   | "openKeymapEditor"
+  | "speakSelection"
   // rail
   | "railPrev"
   | "railNext"
@@ -145,6 +146,10 @@ const RAW_BINDINGS: RawBinding[] = [
   // The keymap editor ships unbound — reachable from the palette / appearance menu,
   // and a natural thing to put a custom key on.
   { chord: "", command: "openKeymapEditor", scope: "global", title: "Edit keyboard shortcuts" },
+  // Read the focused terminal's selection aloud (or stop an in-progress read) via
+  // the WebView2 speech synth. `L` = "read aLoud" — free (S/R are Save-All/resume)
+  // and, as a Ctrl+Shift chord, a safe global binding that reaches past the terminal.
+  { chord: "Ctrl+Shift+L", command: "speakSelection", scope: "global", title: "Speak: read the selection aloud (or stop)" },
   // Attention navigation (wired to the status engine in Phase 2). Modifiers must
   // be written in `eventToChord`'s canonical order (Ctrl → Alt → Shift) or the
   // string match in `matchCommand` never fires — hence `Alt+Shift`, not `Shift+Alt`.
