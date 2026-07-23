@@ -1321,6 +1321,87 @@ pub fn git_stash_drop(repo_root: String, reference: String) -> Result<String, St
     git_run(Path::new(&repo_root), &["stash", "drop", &reference])
 }
 
+/// Apply a stash but *keep* it in the list (G3). The non-destructive half of
+/// `git_stash_pop`, which until now was the only way to get a stash back: apply
+/// lets the same stash be tried on more than one branch, and leaves it recoverable
+/// if the result isn't what you wanted. A conflict surfaces git's message.
+#[tauri::command]
+pub fn git_stash_apply(repo_root: String, reference: String) -> Result<String, String> {
+    git_run(Path::new(&repo_root), &["stash", "apply", &reference])
+}
+
+/// One stash's patch (G3) — pure inspection, so a stash can be read before you
+/// decide to pop, apply, or drop it. Untracked files stashed with
+/// `--include-untracked` don't appear: `git stash show`'s flag for them is too new
+/// to rely on, and a missing patch reads better than a hard error on older git.
+#[tauri::command]
+pub fn git_stash_show(repo_root: String, reference: String) -> Result<String, String> {
+    git_run(
+        Path::new(&repo_root),
+        &["-c", "core.quotePath=false", "stash", "show", "-p", "--no-color", &reference],
+    )
+}
+
+/// Branch off a stash (G3) — `git stash branch`, which checks out a new branch at
+/// the commit the stash was made on, applies the stash there, and drops it if that
+/// succeeded. The escape hatch for a stash that no longer applies to HEAD. Moves
+/// HEAD, so the UI runs it through the §6 shared-working-dir warning.
+#[tauri::command]
+pub fn git_stash_branch(
+    repo_root: String,
+    name: String,
+    reference: String,
+) -> Result<String, String> {
+    git_run(Path::new(&repo_root), &["stash", "branch", &name, &reference])
+}
+
+/// Append patterns to the repo's `.gitignore` (G3 — the file row's "add to
+/// .gitignore"), creating the file when it doesn't exist yet and skipping any
+/// pattern it already lists verbatim. The path join happens here so the frontend
+/// never has to guess the separator, and `fs::write_file` refuses to create new
+/// files, so this can't route through the editor's write path.
+///
+/// Returns a short summary for the panel's notice line.
+#[tauri::command]
+pub fn git_ignore_add(repo_root: String, patterns: Vec<String>) -> Result<String, String> {
+    let file = Path::new(&repo_root).join(".gitignore");
+    let existing = std::fs::read_to_string(&file).unwrap_or_default();
+    let present: std::collections::HashSet<&str> =
+        existing.lines().map(str::trim).filter(|l| !l.is_empty()).collect();
+
+    let mut added: Vec<String> = Vec::new();
+    for p in patterns {
+        let p = p.trim().to_owned();
+        if p.is_empty() || present.contains(p.as_str()) || added.contains(&p) {
+            continue;
+        }
+        added.push(p);
+    }
+    if added.is_empty() {
+        return Ok("already in .gitignore".to_owned());
+    }
+
+    // Keep the file's own line ending habit rather than forcing `\n` into a CRLF
+    // .gitignore — this is a tracked file, and a wholesale line-ending flip would
+    // show up as every line changed in the very panel that wrote it.
+    let crlf = existing.contains("\r\n");
+    let eol = if crlf { "\r\n" } else { "\n" };
+    let mut next = existing;
+    if !next.is_empty() && !next.ends_with('\n') {
+        next.push_str(eol);
+    }
+    for p in &added {
+        next.push_str(p);
+        next.push_str(eol);
+    }
+    std::fs::write(&file, next).map_err(|e| format!("cannot write .gitignore: {e}"))?;
+    Ok(if added.len() == 1 {
+        format!("added {} to .gitignore", added[0])
+    } else {
+        format!("added {} patterns to .gitignore", added.len())
+    })
+}
+
 /// Fetch from a remote (step 3.11), pruning deleted remote branches. No remote ⇒
 /// the default (usually `origin`).
 #[tauri::command]

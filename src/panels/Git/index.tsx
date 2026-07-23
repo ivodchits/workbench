@@ -18,6 +18,13 @@
 // ~560px it stacks list-over-diff, folds the header to glyphs + an overflow menu,
 // and shows the tab bar as glyph + count, so it stays usable docked in a narrow
 // column. Above it, the side-by-side layout is the one it always had.
+//
+// G3 gave every row type a right-click menu (`components/ContextMenu`, the app's
+// first). The hover glyphs stay as the fast path for the one or two things you do
+// most; the menu is where everything else lives, including the items whose
+// backends land in later steps — present, disabled, and carrying the reason. What
+// each menu holds is in `menus.ts`; the actions they call are the same ones the
+// hover buttons call, so nothing routes around an existing confirm.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { IDockviewPanelProps } from "dockview";
@@ -35,15 +42,19 @@ import {
   gitDiscard,
   gitFetch,
   gitHeadCommit,
+  gitIgnoreAdd,
   gitLog,
   gitPull,
   gitPush,
   gitRenameBranch,
   gitStage,
+  gitStashApply,
+  gitStashBranch,
   gitStashDrop,
   gitStashList,
   gitStashPop,
   gitStashPush,
+  gitStashShow,
   gitStatusEntries,
   gitUnstage,
   instanceFileDiff,
@@ -55,13 +66,26 @@ import {
   type Stash,
   type StatusEntry,
 } from "../../ipc/git";
+import { revealPath } from "../../ipc/os";
 import { useGits, type GitSession } from "../../state/git";
 import { getRegistry } from "../../state/registry";
 import { getOpenConsoles } from "../../state/consoles";
+import { openProjectFile } from "../../state/editors";
+import ContextMenu from "../../components/ContextMenu";
+import { useContextMenu } from "../../components/useContextMenu";
 import Modal from "../InstanceManager/Modal";
 import UnifiedDiff from "../Diff/UnifiedDiff";
 import CommitBox, { type CommitRequest } from "./CommitBox";
 import { clearDraft } from "./draft";
+import {
+  commitFileRowMenu,
+  commitRowMenu,
+  fileRowMenu,
+  localBranchMenu,
+  remoteBranchMenu,
+  stashRowMenu,
+  type FileActions,
+} from "./menus";
 import {
   confirmButtonStyle,
   inputStyle,
@@ -105,6 +129,40 @@ interface RepoData {
   head: HeadCommit | null;
 }
 
+/**
+ * What the row context menus (G3) need from the panel shell: the clipboard and OS
+ * shims, plus the same confirm/dialog plumbing the hover actions already go
+ * through. Built once in `GitBody` and handed to each tab, so a menu item and the
+ * glyph button beside it can't drift into two different code paths — in
+ * particular, the destructive ones stay behind the confirms that already exist.
+ */
+interface PanelActions {
+  busy: boolean;
+  /** Copy to the clipboard and say so on the notice line. */
+  copy: (text: string, what: string) => void;
+  /** Repo-relative path → absolute, forward-slashed. */
+  abs: (rel: string) => string;
+  openInEditor: (rel: string) => void;
+  reveal: (rel: string) => void;
+  ignore: (rel: string) => void;
+  checkout: (reference: string) => void;
+  branchFrom: (startPoint: string) => void;
+  rename: (branch: Branch) => void;
+  deleteBranch: (name: string) => void;
+  push: () => void;
+  pull: () => void;
+  stashApply: (reference: string) => void;
+  stashShow: (stash: Stash) => void;
+  stashBranch: (stash: Stash) => void;
+}
+
+/** A repo-relative path made absolute. Forward slashes throughout (Windows-first
+ *  guardrail): every consumer is either git, which speaks `/` on all platforms, or
+ *  a Rust `Path::join`, which is happy with either. */
+function absoluteIn(repoRoot: string, rel: string): string {
+  return `${repoRoot.replace(/\\/g, "/").replace(/\/+$/, "")}/${rel}`;
+}
+
 /** A pending state-rewriting action awaiting confirmation (design: read-first). */
 type Confirm =
   | { kind: "checkout"; reference: string; warnLive: boolean }
@@ -130,6 +188,10 @@ function GitBody({ session }: { session: GitSession }) {
   const [renaming, setRenaming] = useState<Branch | null>(null);
   // Bumped on every landed commit; the commit box watches it to clear itself.
   const [committedAt, setCommittedAt] = useState(0);
+  // G3 stash extras: the read-only "what's in this stash" viewer, and the
+  // name prompt for branching off one.
+  const [stashDiff, setStashDiff] = useState<{ stash: Stash; text: string | null; error: string | null } | null>(null);
+  const [stashBranching, setStashBranching] = useState<{ stash: Stash; warnLive: boolean } | null>(null);
 
   // The panel measures itself, not the window — the same window can hold a wide
   // Git panel and a narrow one, and each lays out for the box it's actually in.
@@ -175,6 +237,7 @@ function GitBody({ session }: { session: GitSession }) {
         setConfirm(null);
         setCreating(null);
         setRenaming(null);
+        setStashBranching(null);
         await load();
         if (okText) setNotice({ kind: "ok", text: typeof okText === "function" ? okText(out) : okText });
       } catch (err) {
@@ -239,6 +302,59 @@ function GitBody({ session }: { session: GitSession }) {
     else doCommit(req, false);
   };
 
+  // Read a stash's patch into the viewer. Not a `run()` — it changes nothing, so
+  // it neither refreshes the repo nor blocks the panel; the guard on the reference
+  // drops a slow read whose modal has already been replaced or closed.
+  const showStash = (stash: Stash) => {
+    setStashDiff({ stash, text: null, error: null });
+    const settle = (patch: Partial<{ text: string; error: string }>) =>
+      setStashDiff((prev) => (prev && prev.stash.reference === stash.reference ? { ...prev, ...patch } : prev));
+    void gitStashShow(repoRoot, stash.reference)
+      .then((text) => settle({ text }))
+      .catch((err) => settle({ error: String(err instanceof Error ? err.message : err) }));
+  };
+
+  // A plain object, rebuilt each render: the tabs aren't memoised, so a stable
+  // identity would buy nothing and cost a dependency list that has to be kept
+  // honest as menu items are added.
+  const actions: PanelActions = {
+    busy,
+    copy: (text, what) => {
+      void navigator.clipboard
+        .writeText(text)
+        .then(() => setNotice({ kind: "ok", text: `copied ${what}` }))
+        .catch((err) => setNotice({ kind: "err", text: `couldn't copy: ${String(err)}` }));
+    },
+    abs: (rel) => absoluteIn(repoRoot, rel),
+    // The project's Editor panel, minted if it isn't open — the same door the
+    // instance rail's "open editor" uses, so the file lands in one editor per
+    // project rather than a new panel per click.
+    openInEditor: (rel) =>
+      openProjectFile(
+        { projectId: session.projectId, rootPath: repoRoot, label: session.title },
+        { path: absoluteIn(repoRoot, rel) },
+      ),
+    reveal: (rel) => {
+      void revealPath(absoluteIn(repoRoot, rel)).catch((err) =>
+        setNotice({ kind: "err", text: String(err instanceof Error ? err.message : err) }),
+      );
+    },
+    // Through `run` so the status list refreshes: ignoring an untracked file is
+    // supposed to make it leave the panel, and it should do that on its own.
+    ignore: (rel) => void run(() => gitIgnoreAdd(repoRoot, [rel]), (out) => out),
+    checkout: requestCheckout,
+    branchFrom: (startPoint) => setCreating({ startPoint }),
+    rename: setRenaming,
+    deleteBranch: (name) => setConfirm({ kind: "deleteBranch", name }),
+    push: requestPush,
+    pull: () => void run(() => gitPull(repoRoot), "pulled"),
+    stashApply: (reference) => void run(() => gitStashApply(repoRoot, reference), "applied (stash kept)"),
+    stashShow: showStash,
+    // Creates *and checks out* a branch, so it moves HEAD — the §6 shared-working-
+    // dir warning belongs on it just as much as on a checkout.
+    stashBranch: (stash) => setStashBranching({ stash, warnLive: liveRootInstances() > 0 }),
+  };
+
   return (
     <div
       ref={rootRef}
@@ -284,11 +400,12 @@ function GitBody({ session }: { session: GitSession }) {
             reading repo…
           </div>
         ) : tab === "history" ? (
-          <HistoryTab repoRoot={repoRoot} commits={data.log} orientation={orientation} />
+          <HistoryTab repoRoot={repoRoot} commits={data.log} orientation={orientation} actions={actions} />
         ) : tab === "branches" ? (
           <BranchesTab
             branches={data.branches}
             busy={busy}
+            actions={actions}
             onCheckout={requestCheckout}
             onCreate={(startPoint) => setCreating({ startPoint })}
             onRename={setRenaming}
@@ -298,6 +415,7 @@ function GitBody({ session }: { session: GitSession }) {
           <StatusTab
             repoRoot={repoRoot}
             orientation={orientation}
+            actions={actions}
             status={data.status}
             stashes={data.stashes}
             head={data.head}
@@ -372,6 +490,30 @@ function GitBody({ session }: { session: GitSession }) {
           busy={busy}
           onClose={() => setRenaming(null)}
           onRename={(next) => void run(() => gitRenameBranch(repoRoot, renaming.name, next))}
+        />
+      )}
+
+      {stashDiff && (
+        <StashDiffDialog
+          stash={stashDiff.stash}
+          text={stashDiff.text}
+          error={stashDiff.error}
+          onClose={() => setStashDiff(null)}
+        />
+      )}
+
+      {stashBranching && (
+        <StashBranchDialog
+          stash={stashBranching.stash}
+          warnLive={stashBranching.warnLive}
+          busy={busy}
+          onClose={() => setStashBranching(null)}
+          onCreate={(name) =>
+            void run(
+              () => gitStashBranch(repoRoot, name, stashBranching.stash.reference),
+              `branched ${name} from ${stashBranching.stash.reference}`,
+            )
+          }
         />
       )}
     </div>
@@ -612,11 +754,14 @@ function HistoryTab({
   repoRoot,
   commits,
   orientation,
+  actions,
 }: {
   repoRoot: string;
   commits: Commit[];
   orientation: Orientation;
+  actions: PanelActions;
 }) {
+  const { anchor, openMenu, closeMenu } = useContextMenu();
   const [selected, setSelected] = useState<string | null>(commits[0]?.sha ?? null);
   const [files, setFiles] = useState<DiffFile[] | null>(null);
   const [selectedFile, setSelectedFile] = useState<string | null>(null);
@@ -670,6 +815,7 @@ function HistoryTab({
   const narrow = orientation === "narrow";
 
   return (
+    <>
     <Splitter
       id="history.log"
       orientation={orientation}
@@ -680,7 +826,19 @@ function HistoryTab({
       first={
         <div style={{ flex: 1, minHeight: 0, overflow: "auto", background: "var(--wb-panel)" }}>
           {commits.map((c) => (
-            <CommitRow key={c.sha} commit={c} active={c.sha === selected} onSelect={() => setSelected(c.sha)} />
+            <CommitRow
+              key={c.sha}
+              commit={c}
+              active={c.sha === selected}
+              onSelect={() => setSelected(c.sha)}
+              // Right-click selects too: the menu's checkout / branch-from read
+              // better next to the commit's own file list than against whatever
+              // was selected before.
+              onMenu={(e) => {
+                setSelected(c.sha);
+                openMenu(e, commitRowMenu(c, actions));
+              }}
+            />
           ))}
         </div>
       }
@@ -696,7 +854,14 @@ function HistoryTab({
           minSecond={90}
           collapsible
           secondLabel="diff"
-          first={<CommitFileList files={files} selected={selectedFile} onSelect={setSelectedFile} />}
+          first={
+            <CommitFileList
+              files={files}
+              selected={selectedFile}
+              onSelect={setSelectedFile}
+              onMenu={(path, e) => openMenu(e, commitFileRowMenu(path, actions))}
+            />
+          }
           second={
             !selectedFile ? (
               <Empty>select a file</Empty>
@@ -711,14 +876,27 @@ function HistoryTab({
         />
       }
     />
+    {anchor && <ContextMenu {...anchor} onClose={closeMenu} />}
+    </>
   );
 }
 
-function CommitRow({ commit, active, onSelect }: { commit: Commit; active: boolean; onSelect: () => void }) {
+function CommitRow({
+  commit,
+  active,
+  onSelect,
+  onMenu,
+}: {
+  commit: Commit;
+  active: boolean;
+  onSelect: () => void;
+  onMenu: (e: React.MouseEvent) => void;
+}) {
   const merge = commit.parents.length > 1;
   return (
     <button
       onClick={onSelect}
+      onContextMenu={onMenu}
       title={commit.sha}
       style={{
         display: "flex",
@@ -782,10 +960,12 @@ function CommitFileList({
   files,
   selected,
   onSelect,
+  onMenu,
 }: {
   files: DiffFile[] | null;
   selected: string | null;
   onSelect: (path: string) => void;
+  onMenu: (path: string, e: React.MouseEvent) => void;
 }) {
   // Sized by its splitter now, not a `maxHeight: 140` cap — a 30-file commit used
   // to be read four rows at a time no matter how much room the panel had.
@@ -802,6 +982,10 @@ function CommitFileList({
             <button
               key={f.path}
               onClick={() => onSelect(f.path)}
+              onContextMenu={(e) => {
+                onSelect(f.path);
+                onMenu(f.path, e);
+              }}
               title={f.path}
               style={{
                 display: "flex",
@@ -837,6 +1021,7 @@ function CommitFileList({
 function BranchesTab({
   branches,
   busy,
+  actions,
   onCheckout,
   onCreate,
   onRename,
@@ -844,11 +1029,13 @@ function BranchesTab({
 }: {
   branches: Branches;
   busy: boolean;
+  actions: PanelActions;
   onCheckout: (reference: string) => void;
   onCreate: (startPoint: string | null) => void;
   onRename: (branch: Branch) => void;
   onDelete: (name: string) => void;
 }) {
+  const { anchor, openMenu, closeMenu } = useContextMenu();
   return (
     <div style={{ flex: 1, overflow: "auto", minHeight: 0 }}>
       <SectionHead>
@@ -865,6 +1052,7 @@ function BranchesTab({
           onCheckout={() => onCheckout(b.name)}
           onRename={() => onRename(b)}
           onDelete={() => onDelete(b.name)}
+          onMenu={(e) => openMenu(e, localBranchMenu(b, actions))}
         />
       ))}
 
@@ -872,10 +1060,18 @@ function BranchesTab({
         <>
           <SectionHead>remote</SectionHead>
           {branches.remote.map((r) => (
-            <RemoteBranchRow key={r} name={r} busy={busy} onCheckout={() => onCheckout(r)} />
+            <RemoteBranchRow
+              key={r}
+              name={r}
+              busy={busy}
+              onCheckout={() => onCheckout(r)}
+              onMenu={(e) => openMenu(e, remoteBranchMenu(r, actions))}
+            />
           ))}
         </>
       )}
+
+      {anchor && <ContextMenu {...anchor} onClose={closeMenu} />}
     </div>
   );
 }
@@ -886,12 +1082,14 @@ function LocalBranchRow({
   onCheckout,
   onRename,
   onDelete,
+  onMenu,
 }: {
   branch: Branch;
   busy: boolean;
   onCheckout: () => void;
   onRename: () => void;
   onDelete: () => void;
+  onMenu: (e: React.MouseEvent) => void;
 }) {
   const [hover, setHover] = useState(false);
   return (
@@ -899,6 +1097,7 @@ function LocalBranchRow({
       onMouseEnter={() => setHover(true)}
       onMouseLeave={() => setHover(false)}
       onDoubleClick={() => !branch.isHead && !busy && onCheckout()}
+      onContextMenu={onMenu}
       style={{ display: "flex", alignItems: "center", gap: 9, padding: "4px 14px", font: "12px var(--wb-mono)" }}
     >
       <span style={{ flex: "0 0 auto", width: 10, color: branch.isHead ? "var(--wb-done)" : "transparent" }}>●</span>
@@ -942,13 +1141,24 @@ function LocalBranchRow({
   );
 }
 
-function RemoteBranchRow({ name, busy, onCheckout }: { name: string; busy: boolean; onCheckout: () => void }) {
+function RemoteBranchRow({
+  name,
+  busy,
+  onCheckout,
+  onMenu,
+}: {
+  name: string;
+  busy: boolean;
+  onCheckout: () => void;
+  onMenu: (e: React.MouseEvent) => void;
+}) {
   const [hover, setHover] = useState(false);
   return (
     <div
       onMouseEnter={() => setHover(true)}
       onMouseLeave={() => setHover(false)}
       onDoubleClick={() => !busy && onCheckout()}
+      onContextMenu={onMenu}
       style={{ display: "flex", alignItems: "center", gap: 9, padding: "4px 14px 4px 24px", font: "12px var(--wb-mono)" }}
     >
       <span style={{ minWidth: 0, flex: 1, color: "var(--wb-textDim2)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
@@ -979,6 +1189,7 @@ interface StatusRowItem {
 function StatusTab({
   repoRoot,
   orientation,
+  actions,
   status,
   stashes,
   head,
@@ -995,6 +1206,7 @@ function StatusTab({
 }: {
   repoRoot: string;
   orientation: Orientation;
+  actions: PanelActions;
   status: StatusEntry[];
   stashes: Stash[];
   head: HeadCommit | null;
@@ -1009,6 +1221,9 @@ function StatusTab({
   onStashPop: (reference: string) => void;
   onStashDrop: (stash: Stash) => void;
 }) {
+  // `menu` is the open context menu; the `anchor` below is the *selection* pivot,
+  // an older and entirely separate thing.
+  const { anchor: menu, openMenu, closeMenu } = useContextMenu();
   // The lead row drives the diff pane (the last-clicked file). `selected` holds the
   // multi-selection (rowIds); `anchor` is the pivot for Shift-range.
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -1090,6 +1305,57 @@ function StatusTab({
   const untrackedSet = new Set(selUntracked);
   const selTracked = selPaths.filter((p) => !untrackedSet.has(p));
 
+  // The menu's file items go through the tab's own callbacks, which are the ones
+  // the hover glyphs and the selection bar already use — so "discard" from a menu
+  // is the same confirmed operation as "discard" from the row.
+  const fileActions: FileActions = {
+    busy,
+    stage: onStage,
+    unstage: onUnstage,
+    discard: onDiscard,
+    copy: actions.copy,
+    abs: actions.abs,
+    openInEditor: actions.openInEditor,
+    reveal: actions.reveal,
+    ignore: actions.ignore,
+  };
+
+  // Right-clicking *inside* the selection acts on all of it; right-clicking
+  // outside replaces the selection with that one row first, so what the menu is
+  // about to touch is always what's highlighted when it opens.
+  const onRowMenu = (rowId: string, e: React.MouseEvent) => {
+    const row = rows.find((r) => r.rowId === rowId);
+    if (!row) return;
+    const inSelection = selected.has(rowId);
+    if (!inSelection) {
+      setSelected(new Set([rowId]));
+      setAnchor(rowId);
+    }
+    setLead(rowId);
+
+    const target = inSelection ? rows.filter((r) => selected.has(r.rowId)) : [row];
+    const paths = [...new Set(target.map((r) => r.entry.path))];
+    const untracked = [...new Set(target.filter((r) => r.entry.untracked).map((r) => r.entry.path))];
+    const untrackedInTarget = new Set(untracked);
+    const { entry } = row;
+    openMenu(
+      e,
+      fileRowMenu(
+        {
+          path: entry.path,
+          paths,
+          staged: [...new Set(target.filter((r) => r.group === "staged").map((r) => r.entry.path))],
+          tracked: paths.filter((p) => !untrackedInTarget.has(p)),
+          untracked,
+          deleted: !entry.untracked && (entry.index === "D" || entry.worktree === "D"),
+          isUntracked: entry.untracked,
+          conflicted: entry.index === "U" || entry.worktree === "U",
+        },
+        fileActions,
+      ),
+    );
+  };
+
   const narrow = orientation === "narrow";
 
   // `minWidth: 0` on the column: without it the diff pane's min-content width
@@ -1137,6 +1403,7 @@ function StatusTab({
                       selected={selected}
                       lead={lead}
                       onRowClick={onRowClick}
+                      onRowMenu={onRowMenu}
                       busy={busy}
                       actionLabel="unstage"
                       onAction={(e) => onUnstage([e.path])}
@@ -1151,6 +1418,7 @@ function StatusTab({
                       selected={selected}
                       lead={lead}
                       onRowClick={onRowClick}
+                      onRowMenu={onRowMenu}
                       busy={busy}
                       actionLabel="stage"
                       onAction={(e) => onStage([e.path])}
@@ -1166,6 +1434,7 @@ function StatusTab({
                       selected={selected}
                       lead={lead}
                       onRowClick={onRowClick}
+                      onRowMenu={onRowMenu}
                       busy={busy}
                       actionLabel="stage"
                       onAction={(e) => onStage([e.path])}
@@ -1182,6 +1451,20 @@ function StatusTab({
                 onStashPush={onStashPush}
                 onStashPop={onStashPop}
                 onStashDrop={onStashDrop}
+                onStashMenu={(stash, e) =>
+                  openMenu(
+                    e,
+                    stashRowMenu(stash, {
+                      busy,
+                      pop: onStashPop,
+                      apply: actions.stashApply,
+                      show: actions.stashShow,
+                      branch: actions.stashBranch,
+                      drop: onStashDrop,
+                      copy: actions.copy,
+                    }),
+                  )
+                }
               />
             </div>
           </>
@@ -1211,6 +1494,7 @@ function StatusTab({
         committedAt={committedAt}
         onCommit={onCommit}
       />
+      {menu && <ContextMenu {...menu} onClose={closeMenu} />}
     </div>
   );
 }
@@ -1274,6 +1558,7 @@ function StatusGroup({
   selected,
   lead,
   onRowClick,
+  onRowMenu,
   busy,
   actionLabel,
   onAction,
@@ -1286,6 +1571,7 @@ function StatusGroup({
   selected: Set<string>;
   lead: string | null;
   onRowClick: (rowId: string, e: React.MouseEvent) => void;
+  onRowMenu: (rowId: string, e: React.MouseEvent) => void;
   busy: boolean;
   actionLabel: string;
   onAction: (entry: StatusEntry) => void;
@@ -1309,6 +1595,7 @@ function StatusGroup({
             picked={selected.has(rowId)}
             lead={rowId === lead}
             onClick={(ev) => onRowClick(rowId, ev)}
+            onMenu={(ev) => onRowMenu(rowId, ev)}
             busy={busy}
             actionLabel={actionLabel}
             onAction={() => onAction(e)}
@@ -1325,6 +1612,7 @@ function StatusRow({
   picked,
   lead,
   onClick,
+  onMenu,
   busy,
   actionLabel,
   onAction,
@@ -1336,6 +1624,7 @@ function StatusRow({
   /** The lead row driving the diff pane (highlighted left bar). */
   lead: boolean;
   onClick: (e: React.MouseEvent) => void;
+  onMenu: (e: React.MouseEvent) => void;
   busy: boolean;
   actionLabel: string;
   onAction: () => void;
@@ -1349,6 +1638,7 @@ function StatusRow({
       onMouseEnter={() => setHover(true)}
       onMouseLeave={() => setHover(false)}
       onClick={onClick}
+      onContextMenu={onMenu}
       style={{
         display: "flex",
         alignItems: "center",
@@ -1387,6 +1677,7 @@ function StashSection({
   onStashPush,
   onStashPop,
   onStashDrop,
+  onStashMenu,
 }: {
   stashes: Stash[];
   busy: boolean;
@@ -1394,6 +1685,7 @@ function StashSection({
   onStashPush: (message: string | null, includeUntracked: boolean) => void;
   onStashPop: (reference: string) => void;
   onStashDrop: (stash: Stash) => void;
+  onStashMenu: (stash: Stash, e: React.MouseEvent) => void;
 }) {
   // A real collapsible section (G2) instead of the old `marginTop: auto`, which
   // pinned it to the bottom of the scroll box and fought the file list for height.
@@ -1415,18 +1707,40 @@ function StashSection({
         (stashes.length === 0 ? (
           <div style={{ padding: "3px 14px 8px", font: "10px var(--wb-mono)", color: "var(--wb-textFaint)" }}>no stashes</div>
         ) : (
-          stashes.map((s) => <StashRow key={s.reference} stash={s} busy={busy} onPop={() => onStashPop(s.reference)} onDrop={() => onStashDrop(s)} />)
+          stashes.map((s) => (
+            <StashRow
+              key={s.reference}
+              stash={s}
+              busy={busy}
+              onPop={() => onStashPop(s.reference)}
+              onDrop={() => onStashDrop(s)}
+              onMenu={(e) => onStashMenu(s, e)}
+            />
+          ))
         ))}
     </div>
   );
 }
 
-function StashRow({ stash, busy, onPop, onDrop }: { stash: Stash; busy: boolean; onPop: () => void; onDrop: () => void }) {
+function StashRow({
+  stash,
+  busy,
+  onPop,
+  onDrop,
+  onMenu,
+}: {
+  stash: Stash;
+  busy: boolean;
+  onPop: () => void;
+  onDrop: () => void;
+  onMenu: (e: React.MouseEvent) => void;
+}) {
   const [hover, setHover] = useState(false);
   return (
     <div
       onMouseEnter={() => setHover(true)}
       onMouseLeave={() => setHover(false)}
+      onContextMenu={onMenu}
       style={{ display: "flex", alignItems: "center", gap: 7, padding: "3px 12px", font: "10.5px var(--wb-mono)" }}
     >
       <span style={{ flex: "0 0 auto", color: "var(--wb-accent)" }}>{stash.reference}</span>
@@ -1689,6 +2003,118 @@ function BranchRenameDialog({
           style={{ ...confirmButtonStyle, borderColor: "var(--wb-borderActive)" }}
         >
           {busy ? "working…" : "rename"}
+        </button>
+      </div>
+    </Modal>
+  );
+}
+
+/**
+ * A stash's patch, read-only (G3). Until now the only way to find out what a
+ * stash held was to pop it and look at the damage — which is exactly the move
+ * you'd want to avoid making blind.
+ */
+function StashDiffDialog({
+  stash,
+  text,
+  error,
+  onClose,
+}: {
+  stash: Stash;
+  /** The patch, or null while it's still being read. */
+  text: string | null;
+  error: string | null;
+  onClose: () => void;
+}) {
+  return (
+    <Modal title={`${stash.reference} · ${stash.message}`} onClose={onClose} width={760}>
+      <div
+        style={{
+          height: "min(56vh, 520px)",
+          display: "flex",
+          flexDirection: "column",
+          minHeight: 0,
+          border: "1px solid var(--wb-border)",
+          background: "var(--wb-bg)",
+        }}
+      >
+        {error ? (
+          <Empty>
+            {GLYPH.warn} {error}
+          </Empty>
+        ) : text === null ? (
+          <Empty>reading stash…</Empty>
+        ) : text.trim() === "" ? (
+          // `git stash show -p` says nothing about untracked files it stashed
+          // alongside, so an "empty" stash here usually isn't one.
+          <Empty>no textual diff — an untracked-only stash reads as empty here</Empty>
+        ) : (
+          <UnifiedDiff text={text} />
+        )}
+      </div>
+      <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 12 }}>
+        <button onClick={onClose} style={confirmButtonStyle}>
+          close
+        </button>
+      </div>
+    </Modal>
+  );
+}
+
+/** Name the branch `git stash branch` will create, check out, and apply the stash
+ *  on (G3). It moves HEAD, so it carries the §6 shared-working-dir warning. */
+function StashBranchDialog({
+  stash,
+  warnLive,
+  busy,
+  onClose,
+  onCreate,
+}: {
+  stash: Stash;
+  warnLive: boolean;
+  busy: boolean;
+  onClose: () => void;
+  onCreate: (name: string) => void;
+}) {
+  const [name, setName] = useState("");
+  const trimmed = name.trim();
+  return (
+    <Modal title="branch from stash" onClose={onClose} width={420}>
+      <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+        <div style={{ font: "11px var(--wb-mono)", color: "var(--wb-textFaint)", lineHeight: 1.5 }}>
+          <span style={{ color: "var(--wb-accent)" }}>{stash.reference}</span> — {stash.message}
+          <div style={{ marginTop: 6 }}>
+            Checks out a new branch at the commit this stash was made on, applies it there, and drops
+            the stash if that succeeds.
+          </div>
+        </div>
+        <input
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && trimmed && !busy) onCreate(trimmed);
+          }}
+          placeholder="branch name"
+          autoFocus
+          spellCheck={false}
+          style={inputStyle}
+        />
+        {warnLive && (
+          <div style={{ font: "11px var(--wb-mono)", color: "var(--wb-working)", lineHeight: 1.5 }}>
+            {GLYPH.warn} A live agent is running in this project's root — this moves HEAD under it.
+          </div>
+        )}
+      </div>
+      <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 16 }}>
+        <button onClick={onClose} style={confirmButtonStyle}>
+          cancel
+        </button>
+        <button
+          onClick={() => onCreate(trimmed)}
+          disabled={busy || !trimmed}
+          style={{ ...confirmButtonStyle, borderColor: "var(--wb-borderActive)" }}
+        >
+          {busy ? "working…" : "create + apply"}
         </button>
       </div>
     </Modal>

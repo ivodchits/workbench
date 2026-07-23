@@ -10,3 +10,12 @@ import { invoke } from "@tauri-apps/api/core";
 export function openPath(path: string): Promise<void> {
   return invoke("open_path", { path });
 }
+
+/**
+ * Reveal a path in the OS file manager with the item itself selected (step G3 —
+ * the Git panel's "reveal in Explorer"). Prefer this over `openPath` for a *file*:
+ * `openPath` would launch it in its default application instead of showing it.
+ */
+export function revealPath(path: string): Promise<void> {
+  return invoke("reveal_path", { path });
+}

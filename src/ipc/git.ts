@@ -338,6 +338,32 @@ export function gitStashDrop(repoRoot: string, reference: string): Promise<strin
   return invoke("git_stash_drop", { repoRoot, reference });
 }
 
+/** Apply a stash but keep it in the list (G3) — the non-destructive `pop`. */
+export function gitStashApply(repoRoot: string, reference: string): Promise<string> {
+  return invoke("git_stash_apply", { repoRoot, reference });
+}
+
+/** One stash's patch, for reading before you pop/apply/drop it (G3). Untracked
+ *  files stashed alongside aren't included — see the backend's note. */
+export function gitStashShow(repoRoot: string, reference: string): Promise<string> {
+  return invoke("git_stash_show", { repoRoot, reference });
+}
+
+/** Branch off a stash and apply it there (G3). Moves HEAD. */
+export function gitStashBranch(
+  repoRoot: string,
+  name: string,
+  reference: string,
+): Promise<string> {
+  return invoke("git_stash_branch", { repoRoot, name, reference });
+}
+
+/** Append patterns to the repo's `.gitignore` (G3), creating it if absent and
+ *  skipping any it already lists. Resolves with a summary for the notice line. */
+export function gitIgnoreAdd(repoRoot: string, patterns: string[]): Promise<string> {
+  return invoke("git_ignore_add", { repoRoot, patterns });
+}
+
 /** Fetch from a remote (default `origin`), pruning deleted remote branches. */
 export function gitFetch(repoRoot: string, remote?: string): Promise<string> {
   return invoke("git_fetch", { repoRoot, remote: remote ?? null });

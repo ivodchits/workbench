@@ -18,3 +18,14 @@ pub fn open_path(app: AppHandle, path: String) -> Result<(), String> {
         .open_path(path, None::<&str>)
         .map_err(|e| e.to_string())
 }
+
+/// Reveal `path` in the OS file manager with the item itself *selected* (G3 — the
+/// Git panel's "reveal in Explorer" on a file row). Distinct from `open_path`,
+/// which would launch a file in its default application rather than show it in
+/// place; for a directory the two land in much the same spot.
+#[tauri::command]
+pub fn reveal_path(app: AppHandle, path: String) -> Result<(), String> {
+    app.opener()
+        .reveal_item_in_dir(path)
+        .map_err(|e| e.to_string())
+}

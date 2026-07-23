@@ -185,7 +185,7 @@ and should be preserved.
 
 ---
 
-### Step G3 — Context menus everywhere
+### Step G3 — Context menus everywhere ✅ *(landed)*
 
 - **Goal:** Right-click actions on every row type. Highest breadth-per-line in the plan —
   most of the "more options" ask is this one step.
@@ -216,6 +216,28 @@ and should be preserved.
 - **Done when:** Every row type has a right-click menu; every item either performs its action
   or is visibly disabled with a reason; destructive items confirm.
 - **Out of scope:** a global app-wide menu system.
+- **As built:** one pass, five row types (working-tree file, a commit's changed-file,
+  commit, local branch, remote branch, stash). `components/ContextMenu.tsx` portals onto
+  `document.body` — every row it opens from sits inside a `Splitter` pane that clips its
+  overflow, so a menu drawn in the tree would be cut off at the pane edge — clamps into the
+  viewport after measuring, and dismisses on Escape / Tab / outside press / scroll / resize /
+  window blur. Its state half is `components/useContextMenu.ts`, split for the same
+  fast-refresh reason `format.ts` is split from `rows.tsx`. Menu *contents* went to
+  `src/panels/Git/menus.ts` as pure builders (target + callbacks in, `MenuEntry[]` out) rather
+  than into `index.tsx`, and every item routes through the callback its hover glyph already
+  used, so no destructive action gained a second, unconfirmed path. Right-clicking a
+  working-tree row inside the selection acts on the whole selection; outside it, the
+  right-click replaces the selection first, so what the menu will touch is always what's
+  highlighted. New backend: the three stash commands this step owns, plus `git_ignore_add`
+  (appends + creates `.gitignore`, keeping the file's own line endings — `fs::write_file`
+  refuses to create files) and `sys::reveal_path` (`reveal_item_in_dir`, which *selects* the
+  file; `open_path` would have launched it in its default app). Disabled-with-a-reason
+  covers merge / rebase / fast-forward / set-upstream (G4), revert / cherry-pick / reset /
+  tag / compare / full commit body / file history (G7), and mark-resolved (G6) — the last of
+  which appears only on a conflicted row, since anywhere else it's a permanent dead item for
+  a state the file isn't in. Tooltips name what's missing in plain words, not step codes.
+  Per-branch push/pull are offered only on the checked-out branch: `git push` acts on HEAD,
+  and offering it elsewhere would quietly act on a different branch than the one clicked.
 
 ---
 
@@ -398,6 +420,8 @@ and should be preserved.
 | `git_revert`, `git_cherry_pick`, `git_reset` | G7 | all behind confirms |
 | `git_tags`, `git_tag_create`, `git_tag_delete` | G7 | tags absent today |
 | `git_stash_apply`, `git_stash_show`, `git_stash_branch` | G3 | pop is currently the only option |
+| `git_ignore_add` | G3 | appends/creates `.gitignore`; `fs::write_file` won't create files |
+| `sys::reveal_path` | G3 | `reveal_item_in_dir` — selects the file, unlike `open_path` |
 
 Every one: registered in `src-tauri/src/lib.rs`, typed in `src/ipc/git.ts` with a doc
 comment matching the existing style, `-z` + `core.quotePath=false` on any path-carrying read.
@@ -420,6 +444,7 @@ src/panels/Git/
   useOrientation.ts  G2
   Splitter.tsx       G2   two-pane draggable split, collapsible second pane
   layout.ts          G2   persisted splitter positions + section open/closed
+  menus.ts           G3   per-row-type context-menu contents (pure builders)
   draft.ts           G1   per-repo commit-message drafts
   rows.tsx           shared row primitives
   format.ts          shared glyph/colour maps + style objects (value half of rows.tsx)
@@ -451,7 +476,7 @@ provisional wide-layout commit box, then let G2 place it properly.
 
 - [x] G1 — Commit composer + publish branch
 - [x] G2 — Responsive layout (vertical/narrow)
-- [ ] G3 — Context menus
+- [x] G3 — Context menus
 - [ ] G4 — Branch operations (merge / rebase / upstream)
 - [ ] G5 — Selection flexibility + keyboard-first
 - [ ] G6 — Merge conflicts
