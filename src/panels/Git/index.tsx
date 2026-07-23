@@ -7,12 +7,13 @@
 // Three tabs: History (commit log → click a commit for its changed files + diff),
 // Branches (local with ahead/behind + remotes; checkout / create / rename / delete),
 // and Working tree (staged / unstaged / untracked with stage / unstage / discard,
-// plus the stash list). The header shows the current branch + ahead/behind and the
-// fetch / pull / push controls. Read-first; every state-rewriting op (force-push,
-// branch delete, discard, clean, stash drop) sits behind an explicit confirm, and
+// the stash list, and — since G1 — the commit composer). The header shows the
+// current branch + ahead/behind and the fetch / pull / push (or *publish*) controls.
+// Read-first; every state-rewriting op (force-push, branch delete, discard, clean,
+// stash drop, amending a pushed commit) sits behind an explicit confirm, and
 // checking out under a live root instance surfaces the §6 shared-working-dir warning.
 
-import { useCallback, useEffect, useMemo, useState, type CSSProperties } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import type { IDockviewPanelProps } from "dockview";
 
 import { GLYPH } from "../../theme";
@@ -20,12 +21,14 @@ import {
   gitBranches,
   gitCheckout,
   gitClean,
+  gitCommit,
   gitCommitFileDiff,
   gitCommitFiles,
   gitCreateBranch,
   gitDeleteBranch,
   gitDiscard,
   gitFetch,
+  gitHeadCommit,
   gitLog,
   gitPull,
   gitPush,
@@ -42,6 +45,7 @@ import {
   type Branches,
   type Commit,
   type DiffFile,
+  type HeadCommit,
   type Stash,
   type StatusEntry,
 } from "../../ipc/git";
@@ -50,6 +54,18 @@ import { getRegistry } from "../../state/registry";
 import { getOpenConsoles } from "../../state/consoles";
 import Modal from "../InstanceManager/Modal";
 import UnifiedDiff from "../Diff/UnifiedDiff";
+import CommitBox, { type CommitRequest } from "./CommitBox";
+import { clearDraft } from "./draft";
+import {
+  confirmButtonStyle,
+  inputStyle,
+  miniActionStyle,
+  relativeDate,
+  statusCharColor,
+  statusColor,
+  STATUS_GLYPH,
+} from "./format";
+import { Empty, HeaderButton, RowAction, SectionHead } from "./rows";
 
 export interface GitPanelParams {
   gitId: string;
@@ -75,6 +91,8 @@ interface RepoData {
   log: Commit[];
   status: StatusEntry[];
   stashes: Stash[];
+  /** HEAD's commit — the amend prefill; null in a repo with no commits yet. */
+  head: HeadCommit | null;
 }
 
 /** A pending state-rewriting action awaiting confirmation (design: read-first). */
@@ -83,7 +101,9 @@ type Confirm =
   | { kind: "deleteBranch"; name: string }
   | { kind: "discard"; tracked: string[]; untracked: string[] }
   | { kind: "stashDrop"; stash: Stash }
-  | { kind: "push"; force: boolean };
+  | { kind: "push"; force: boolean }
+  | { kind: "publish"; branch: string }
+  | { kind: "amendPushed"; req: CommitRequest; head: HeadCommit };
 
 function GitBody({ session }: { session: GitSession }) {
   const { repoRoot } = session;
@@ -98,17 +118,20 @@ function GitBody({ session }: { session: GitSession }) {
   const [confirm, setConfirm] = useState<Confirm | null>(null);
   const [creating, setCreating] = useState<{ startPoint: string | null } | null>(null);
   const [renaming, setRenaming] = useState<Branch | null>(null);
+  // Bumped on every landed commit; the commit box watches it to clear itself.
+  const [committedAt, setCommittedAt] = useState(0);
 
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const [branches, log, status, stashes] = await Promise.all([
+      const [branches, log, status, stashes, head] = await Promise.all([
         gitBranches(repoRoot),
         gitLog(repoRoot),
         gitStatusEntries(repoRoot),
         gitStashList(repoRoot),
+        gitHeadCommit(repoRoot),
       ]);
-      setData({ branches, log, status, stashes });
+      setData({ branches, log, status, stashes, head });
       setLoadError(null);
     } catch (err) {
       setLoadError(String(err));
@@ -123,18 +146,19 @@ function GitBody({ session }: { session: GitSession }) {
   }, [load]);
 
   // Run a write op, then refresh. A failure surfaces git's message and leaves the
-  // view as-is; success reloads (and clears any open confirm/dialog).
+  // view as-is; success reloads (and clears any open confirm/dialog). `okText` may
+  // be a function so a notice can quote what git returned (e.g. the new short SHA).
   const run = useCallback(
-    async (op: () => Promise<string>, okText?: string) => {
+    async (op: () => Promise<string>, okText?: string | ((out: string) => string)) => {
       setBusy(true);
       setNotice(null);
       try {
-        await op();
+        const out = await op();
         setConfirm(null);
         setCreating(null);
         setRenaming(null);
         await load();
-        if (okText) setNotice({ kind: "ok", text: okText });
+        if (okText) setNotice({ kind: "ok", text: typeof okText === "function" ? okText(out) : okText });
       } catch (err) {
         setNotice({ kind: "err", text: String(err instanceof Error ? err.message : err) });
       } finally {
@@ -159,6 +183,44 @@ function GitBody({ session }: { session: GitSession }) {
   const requestCheckout = (reference: string) =>
     setConfirm({ kind: "checkout", reference, warnLive: liveRootInstances() > 0 });
 
+  // The checked-out branch, when HEAD isn't detached — its `upstream` decides
+  // whether pushing is a push or a *publish* (`push -u`).
+  const headBranch = data?.branches.local.find((b) => b.isHead) ?? null;
+  const canPublish = headBranch != null && headBranch.upstream == null;
+
+  const requestPush = () =>
+    setConfirm(
+      canPublish && headBranch ? { kind: "publish", branch: headBranch.name } : { kind: "push", force: false },
+    );
+
+  // Commit (+ an optional explicit push), then refresh. `amendPushed` means we're
+  // rewriting a commit the upstream already has, so the follow-up push must be
+  // forced — with lease, and only after the confirm the user just cleared.
+  const doCommit = useCallback(
+    (req: CommitRequest, amendPushed: boolean) => {
+      void run(
+        async () => {
+          const short = await gitCommit(repoRoot, req.message, {
+            amend: req.amend,
+            stageAll: req.stageAll,
+          });
+          setCommittedAt((n) => n + 1);
+          clearDraft(repoRoot);
+          if (req.push) await gitPush(repoRoot, amendPushed, canPublish);
+          return short;
+        },
+        (short) => `committed ${short}${req.push ? (canPublish ? " · published" : " · pushed") : ""}`,
+      );
+    },
+    [run, repoRoot, canPublish],
+  );
+
+  const requestCommit = (req: CommitRequest) => {
+    const head = data?.head ?? null;
+    if (req.amend && head?.pushed) setConfirm({ kind: "amendPushed", req, head });
+    else doCommit(req, false);
+  };
+
   return (
     <div style={{ height: "100%", display: "flex", flexDirection: "column", minHeight: 0, background: "var(--wb-bg)" }}>
       <Header
@@ -167,7 +229,8 @@ function GitBody({ session }: { session: GitSession }) {
         busy={busy}
         onFetch={() => void run(() => gitFetch(repoRoot), "fetched")}
         onPull={() => void run(() => gitPull(repoRoot), "pulled")}
-        onPush={() => setConfirm({ kind: "push", force: false })}
+        onPush={requestPush}
+        canPublish={canPublish}
         onRefresh={() => void load()}
       />
 
@@ -214,6 +277,10 @@ function GitBody({ session }: { session: GitSession }) {
             repoRoot={repoRoot}
             status={data.status}
             stashes={data.stashes}
+            head={data.head}
+            hasUpstream={headBranch?.upstream != null}
+            committedAt={committedAt}
+            onCommit={requestCommit}
             busy={busy}
             onStage={(paths) => void run(() => gitStage(repoRoot, paths))}
             onUnstage={(paths) => void run(() => gitUnstage(repoRoot, paths))}
@@ -254,6 +321,12 @@ function GitBody({ session }: { session: GitSession }) {
               case "push":
                 void run(() => gitPush(repoRoot, confirm.force), "pushed");
                 break;
+              case "publish":
+                void run(() => gitPush(repoRoot, false, true), `published ${confirm.branch}`);
+                break;
+              case "amendPushed":
+                doCommit(confirm.req, true);
+                break;
             }
           }}
         />
@@ -291,6 +364,7 @@ function Header({
   onFetch,
   onPull,
   onPush,
+  canPublish,
   onRefresh,
 }: {
   branches: Branches | null;
@@ -299,6 +373,8 @@ function Header({
   onFetch: () => void;
   onPull: () => void;
   onPush: () => void;
+  /** The current branch has no upstream — pushing it *publishes* it (`push -u`). */
+  canPublish: boolean;
   onRefresh: () => void;
 }) {
   const current = branches?.detached ? "detached HEAD" : branches?.current ?? "—";
@@ -334,8 +410,13 @@ function Header({
         <HeaderButton onClick={onPull} disabled={busy}>
           ⇣ pull
         </HeaderButton>
-        <HeaderButton onClick={onPush} disabled={busy} accent>
-          ⇡ push
+        <HeaderButton
+          onClick={onPush}
+          disabled={busy}
+          accent
+          title={canPublish ? "no upstream yet — push -u to publish this branch" : "push to the upstream"}
+        >
+          {canPublish ? "⇡ publish" : "⇡ push"}
         </HeaderButton>
         <HeaderButton onClick={onRefresh} disabled={loading}>
           ↻ refresh
@@ -742,6 +823,10 @@ function StatusTab({
   repoRoot,
   status,
   stashes,
+  head,
+  hasUpstream,
+  committedAt,
+  onCommit,
   busy,
   onStage,
   onUnstage,
@@ -753,6 +838,10 @@ function StatusTab({
   repoRoot: string;
   status: StatusEntry[];
   stashes: Stash[];
+  head: HeadCommit | null;
+  hasUpstream: boolean;
+  committedAt: number;
+  onCommit: (req: CommitRequest) => void;
   busy: boolean;
   onStage: (paths: string[]) => void;
   onUnstage: (paths: string[]) => void;
@@ -842,97 +931,114 @@ function StatusTab({
   const untrackedSet = new Set(selUntracked);
   const selTracked = selPaths.filter((p) => !untrackedSet.has(p));
 
+  // `minWidth: 0` on both the column and the row below: without it the diff pane's
+  // min-content width inflates the column, and the commit box — sized to it — runs
+  // its buttons off the right edge of a narrow panel.
   return (
-    <div style={{ flex: 1, display: "flex", minHeight: 0 }}>
-      <div style={{ flex: "0 0 280px", borderRight: "1px solid var(--wb-border)", background: "var(--wb-panel)", display: "flex", flexDirection: "column", minHeight: 0 }}>
-        {selected.size > 0 && (
-          <SelectionBar
-            count={selected.size}
-            busy={busy}
-            canUnstage={selStaged.length > 0}
-            onStage={() => onStage(selPaths)}
-            onUnstage={() => onUnstage(selStaged)}
-            onDiscard={() => onDiscard(selTracked, selUntracked)}
-            onClear={() => {
-              setSelected(new Set());
-              setAnchor(null);
-            }}
-          />
-        )}
-        <div style={{ flex: 1, overflow: "auto", minHeight: 0, display: "flex", flexDirection: "column" }}>
-          {status.length === 0 ? (
-            <div style={{ padding: "10px 12px", font: "11px var(--wb-mono)", color: "var(--wb-done)" }}>
-              {GLYPH.ok} working tree clean
-            </div>
-          ) : (
-            <>
-              {staged.length > 0 && (
-                <StatusGroup
-                  label="staged"
-                  group="staged"
-                  entries={staged}
-                  selected={selected}
-                  lead={lead}
-                  onRowClick={onRowClick}
-                  busy={busy}
-                  actionLabel="unstage"
-                  onAction={(e) => onUnstage([e.path])}
-                  onBulk={() => onUnstage(staged.map((e) => e.path))}
-                />
-              )}
-              {unstaged.length > 0 && (
-                <StatusGroup
-                  label="unstaged"
-                  group="unstaged"
-                  entries={unstaged}
-                  selected={selected}
-                  lead={lead}
-                  onRowClick={onRowClick}
-                  busy={busy}
-                  actionLabel="stage"
-                  onAction={(e) => onStage([e.path])}
-                  onBulk={() => onStage(unstaged.map((e) => e.path))}
-                  onDiscardEntry={(e) => onDiscard([e.path], [])}
-                />
-              )}
-              {untracked.length > 0 && (
-                <StatusGroup
-                  label="untracked"
-                  group="untracked"
-                  entries={untracked}
-                  selected={selected}
-                  lead={lead}
-                  onRowClick={onRowClick}
-                  busy={busy}
-                  actionLabel="stage"
-                  onAction={(e) => onStage([e.path])}
-                  onBulk={() => onStage(untracked.map((e) => e.path))}
-                  onDiscardEntry={(e) => onDiscard([], [e.path])}
-                />
-              )}
-            </>
+    <div style={{ flex: 1, display: "flex", flexDirection: "column", minHeight: 0, minWidth: 0 }}>
+      <div style={{ flex: 1, display: "flex", minHeight: 0, minWidth: 0 }}>
+        <div style={{ flex: "0 0 280px", borderRight: "1px solid var(--wb-border)", background: "var(--wb-panel)", display: "flex", flexDirection: "column", minHeight: 0 }}>
+          {selected.size > 0 && (
+            <SelectionBar
+              count={selected.size}
+              busy={busy}
+              canUnstage={selStaged.length > 0}
+              onStage={() => onStage(selPaths)}
+              onUnstage={() => onUnstage(selStaged)}
+              onDiscard={() => onDiscard(selTracked, selUntracked)}
+              onClear={() => {
+                setSelected(new Set());
+                setAnchor(null);
+              }}
+            />
           )}
-          <StashSection
-            stashes={stashes}
-            busy={busy}
-            hasChanges={status.length > 0}
-            onStashPush={onStashPush}
-            onStashPop={onStashPop}
-            onStashDrop={onStashDrop}
-          />
+          <div style={{ flex: 1, overflow: "auto", minHeight: 0, display: "flex", flexDirection: "column" }}>
+            {status.length === 0 ? (
+              <div style={{ padding: "10px 12px", font: "11px var(--wb-mono)", color: "var(--wb-done)" }}>
+                {GLYPH.ok} working tree clean
+              </div>
+            ) : (
+              <>
+                {staged.length > 0 && (
+                  <StatusGroup
+                    label="staged"
+                    group="staged"
+                    entries={staged}
+                    selected={selected}
+                    lead={lead}
+                    onRowClick={onRowClick}
+                    busy={busy}
+                    actionLabel="unstage"
+                    onAction={(e) => onUnstage([e.path])}
+                    onBulk={() => onUnstage(staged.map((e) => e.path))}
+                  />
+                )}
+                {unstaged.length > 0 && (
+                  <StatusGroup
+                    label="unstaged"
+                    group="unstaged"
+                    entries={unstaged}
+                    selected={selected}
+                    lead={lead}
+                    onRowClick={onRowClick}
+                    busy={busy}
+                    actionLabel="stage"
+                    onAction={(e) => onStage([e.path])}
+                    onBulk={() => onStage(unstaged.map((e) => e.path))}
+                    onDiscardEntry={(e) => onDiscard([e.path], [])}
+                  />
+                )}
+                {untracked.length > 0 && (
+                  <StatusGroup
+                    label="untracked"
+                    group="untracked"
+                    entries={untracked}
+                    selected={selected}
+                    lead={lead}
+                    onRowClick={onRowClick}
+                    busy={busy}
+                    actionLabel="stage"
+                    onAction={(e) => onStage([e.path])}
+                    onBulk={() => onStage(untracked.map((e) => e.path))}
+                    onDiscardEntry={(e) => onDiscard([], [e.path])}
+                  />
+                )}
+              </>
+            )}
+            <StashSection
+              stashes={stashes}
+              busy={busy}
+              hasChanges={status.length > 0}
+              onStashPush={onStashPush}
+              onStashPop={onStashPop}
+              onStashDrop={onStashDrop}
+            />
+          </div>
+        </div>
+        <div style={{ flex: 1, minWidth: 0, minHeight: 0 }}>
+          {!lead ? (
+            <Empty>select a file</Empty>
+          ) : diff === null ? (
+            <Empty>reading diff…</Empty>
+          ) : diff.trim() === "" ? (
+            <Empty>{GLYPH.warn} no textual diff</Empty>
+          ) : (
+            <UnifiedDiff text={diff} />
+          )}
         </div>
       </div>
-      <div style={{ flex: 1, minWidth: 0, minHeight: 0 }}>
-        {!lead ? (
-          <Empty>select a file</Empty>
-        ) : diff === null ? (
-          <Empty>reading diff…</Empty>
-        ) : diff.trim() === "" ? (
-          <Empty>{GLYPH.warn} no textual diff</Empty>
-        ) : (
-          <UnifiedDiff text={diff} />
-        )}
-      </div>
+      {/* Docked full-width under both panes: at 280px the file column is far too
+          narrow to write a commit message in. G2 places it per orientation. */}
+      <CommitBox
+        repoRoot={repoRoot}
+        stagedCount={new Set(staged.map((e) => e.path)).size}
+        trackedDirtyCount={new Set(unstaged.map((e) => e.path)).size}
+        head={head}
+        hasUpstream={hasUpstream}
+        busy={busy}
+        committedAt={committedAt}
+        onCommit={onCommit}
+      />
     </div>
   );
 }
@@ -1275,6 +1381,39 @@ function describeConfirm(c: Confirm): { title: string; body: React.ReactNode; la
           <>Push the current branch to its upstream?</>
         ),
       };
+    case "publish":
+      return {
+        title: "publish branch",
+        label: "⇡ publish",
+        danger: false,
+        body: (
+          <>
+            <strong style={{ color: "var(--wb-accent)", fontFamily: "var(--wb-mono)" }}>{c.branch}</strong> has
+            no upstream yet. Push it and set one (<span style={{ fontFamily: "var(--wb-mono)" }}>push -u</span>),
+            so future pushes and pulls know where it lives?
+          </>
+        ),
+      };
+    case "amendPushed":
+      return {
+        title: "amend a pushed commit",
+        label: `${GLYPH.warn} amend anyway`,
+        danger: true,
+        body: (
+          <>
+            <strong style={{ color: "var(--wb-accent)", fontFamily: "var(--wb-mono)" }}>{c.head.short}</strong> is
+            already on{" "}
+            <strong style={{ color: "var(--wb-accent)", fontFamily: "var(--wb-mono)" }}>{c.head.upstream}</strong>.
+            Amending replaces it with a new commit, so the branch will only push again with a force-push
+            (with lease) — and anyone who already pulled it will have to reconcile.
+            {c.req.push && (
+              <div style={{ marginTop: 8, color: "var(--wb-working)" }}>
+                {GLYPH.warn} This action force-pushes right after the amend.
+              </div>
+            )}
+          </>
+        ),
+      };
   }
 }
 
@@ -1375,120 +1514,8 @@ function BranchRenameDialog({
 }
 
 // --- shared bits ------------------------------------------------------------
-
-const STATUS_GLYPH: Record<string, string> = {
-  added: "A",
-  modified: "M",
-  deleted: "D",
-  typechange: "T",
-  untracked: "?",
-};
-
-function statusColor(status: string): string {
-  if (status === "added" || status === "untracked") return "var(--wb-done)";
-  if (status === "deleted") return "var(--wb-needs)";
-  if (status === "modified") return "var(--wb-working)";
-  return "var(--wb-textDim2)";
-}
-
-function statusCharColor(ch: string): string {
-  if (ch === "A" || ch === "?") return "var(--wb-done)";
-  if (ch === "D") return "var(--wb-needs)";
-  if (ch === "M" || ch === "R" || ch === "C") return "var(--wb-working)";
-  return "var(--wb-textDim2)";
-}
-
-/** Compact relative date from an epoch-seconds timestamp ("3d", "2h", "5m", "now"). */
-function relativeDate(epochSeconds: number): string {
-  if (!epochSeconds) return "";
-  const secs = Math.max(0, Math.floor(Date.now() / 1000) - epochSeconds);
-  if (secs < 60) return "now";
-  const mins = Math.floor(secs / 60);
-  if (mins < 60) return `${mins}m`;
-  const hours = Math.floor(mins / 60);
-  if (hours < 24) return `${hours}h`;
-  const days = Math.floor(hours / 24);
-  if (days < 30) return `${days}d`;
-  const months = Math.floor(days / 30);
-  if (months < 12) return `${months}mo`;
-  return `${Math.floor(months / 12)}y`;
-}
-
-function SectionHead({ children }: { children: React.ReactNode }) {
-  return (
-    <div
-      style={{
-        display: "flex",
-        alignItems: "center",
-        gap: 7,
-        padding: "7px 14px 4px",
-        font: "600 10px var(--wb-mono)",
-        letterSpacing: "0.1em",
-        textTransform: "uppercase",
-        color: "var(--wb-accent)",
-      }}
-    >
-      {children}
-    </div>
-  );
-}
-
-function RowAction({
-  children,
-  onClick,
-  label,
-  disabled,
-  danger,
-}: {
-  children: React.ReactNode;
-  onClick: (e?: React.MouseEvent) => void;
-  label: string;
-  disabled?: boolean;
-  danger?: boolean;
-}) {
-  return (
-    <button
-      onClick={(e) => {
-        if (disabled) return;
-        onClick(e);
-      }}
-      aria-label={label}
-      title={label}
-      disabled={disabled}
-      style={{
-        background: "transparent",
-        border: "none",
-        cursor: disabled ? "default" : "pointer",
-        padding: 0,
-        lineHeight: 1,
-        font: "12px var(--wb-mono)",
-        color: disabled ? "var(--wb-textFaint)" : danger ? "var(--wb-needs)" : "var(--wb-accent)",
-      }}
-    >
-      {children}
-    </button>
-  );
-}
-
-function Empty({ children }: { children: React.ReactNode }) {
-  return (
-    <div
-      style={{
-        height: "100%",
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-        color: "var(--wb-textFaint)",
-        font: "12px var(--wb-mono)",
-        padding: 24,
-        textAlign: "center",
-        background: "var(--wb-bg)",
-      }}
-    >
-      {children}
-    </div>
-  );
-}
+// (the row/section/button primitives and the status glyph + colour maps live in
+// `rows.tsx`, shared with the commit box)
 
 function Missing() {
   return (
@@ -1508,75 +1535,5 @@ function Missing() {
     </div>
   );
 }
-
-function HeaderButton({
-  children,
-  onClick,
-  accent,
-  danger,
-  disabled,
-}: {
-  children: React.ReactNode;
-  onClick: () => void;
-  accent?: boolean;
-  danger?: boolean;
-  disabled?: boolean;
-}) {
-  const color = disabled
-    ? "var(--wb-textFaint)"
-    : danger
-      ? "var(--wb-needs)"
-      : accent
-        ? "var(--wb-accent)"
-        : "var(--wb-textDim2)";
-  return (
-    <button
-      onClick={onClick}
-      disabled={disabled}
-      style={{
-        background: "transparent",
-        border: "none",
-        cursor: disabled ? "default" : "pointer",
-        color,
-        font: "11px var(--wb-mono)",
-        padding: 0,
-      }}
-    >
-      {children}
-    </button>
-  );
-}
-
-const miniActionStyle: CSSProperties = {
-  marginLeft: "auto",
-  background: "transparent",
-  border: "none",
-  cursor: "pointer",
-  color: "var(--wb-textDim2)",
-  font: "9.5px var(--wb-mono)",
-  textTransform: "none",
-  letterSpacing: 0,
-  padding: 0,
-};
-
-const inputStyle: CSSProperties = {
-  background: "var(--wb-bg)",
-  color: "var(--wb-text)",
-  border: "1px solid var(--wb-borderActive)",
-  padding: "7px 9px",
-  fontFamily: "var(--wb-mono)",
-  fontSize: 12.5,
-  outline: "none",
-};
-
-const confirmButtonStyle: CSSProperties = {
-  background: "var(--wb-titlebar)",
-  color: "var(--wb-text)",
-  border: "1px solid var(--wb-border)",
-  padding: "6px 12px",
-  fontFamily: "var(--wb-mono)",
-  fontSize: 11.5,
-  cursor: "pointer",
-};
 
 export default GitPanel;

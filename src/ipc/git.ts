@@ -348,7 +348,74 @@ export function gitPull(repoRoot: string): Promise<string> {
   return invoke("git_pull", { repoRoot });
 }
 
-/** Push the current branch. Never auto-pushes; `force` uses `--force-with-lease`. */
-export function gitPush(repoRoot: string, force: boolean): Promise<string> {
-  return invoke("git_push", { repoRoot, force });
+/**
+ * Push the current branch. Never auto-pushes; `force` uses `--force-with-lease`.
+ * `setUpstream` is the *publish* path for a branch with no upstream — `push -u`
+ * against `remote` (default `origin`, else the first configured remote) and
+ * `branch` (default the checked-out branch). Without it, pushing an unpublished
+ * branch just fails.
+ */
+export function gitPush(
+  repoRoot: string,
+  force: boolean,
+  setUpstream = false,
+  remote: string | null = null,
+  branch: string | null = null,
+): Promise<string> {
+  return invoke("git_push", { repoRoot, force, setUpstream, remote, branch });
+}
+
+// --- commit composer (G1) ---------------------------------------------------
+
+/** Modifiers for `gitCommit` — all default to off. */
+export interface CommitOptions {
+  /** Rewrite HEAD's commit instead of adding one. Needs a force-push if pushed. */
+  amend?: boolean;
+  /** Append a `Signed-off-by` trailer. */
+  signoff?: boolean;
+  /** Permit a commit that changes nothing. */
+  allowEmpty?: boolean;
+  /** `commit -a`: also take every *tracked* modification (never untracked files). */
+  stageAll?: boolean;
+}
+
+/**
+ * Commit the index (G1). The message goes to git verbatim via `-m`, so no editor
+ * ever opens; hooks still run. Rejects with git's own message when nothing is
+ * staged, the identity is unconfigured, or a hook fails. Resolves to the new
+ * commit's short SHA.
+ */
+export function gitCommit(
+  repoRoot: string,
+  message: string,
+  opts: CommitOptions = {},
+): Promise<string> {
+  return invoke("git_commit", {
+    repoRoot,
+    message,
+    amend: opts.amend ?? false,
+    signoff: opts.signoff ?? false,
+    allowEmpty: opts.allowEmpty ?? false,
+    stageAll: opts.stageAll ?? false,
+  });
+}
+
+/** HEAD's commit (G1) — the amend prefill plus its published state. */
+export interface HeadCommit {
+  sha: string;
+  short: string;
+  /** Full message: subject, blank line, body. */
+  message: string;
+  /** The first line. */
+  subject: string;
+  /** Everything past the subject's blank separator; `""` when there's no body. */
+  body: string;
+  upstream: string | null;
+  /** HEAD is already in its upstream — amending it rewrites published history. */
+  pushed: boolean;
+}
+
+/** Read HEAD's commit; null in a repo with no commits yet (G1). */
+export function gitHeadCommit(repoRoot: string): Promise<HeadCommit | null> {
+  return invoke("git_head_commit", { repoRoot });
 }

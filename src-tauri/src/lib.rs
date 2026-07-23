@@ -133,6 +133,8 @@ pub fn run() {
             git::git_fetch,
             git::git_pull,
             git::git_push,
+            git::git_commit,
+            git::git_head_commit,
             registry::create_group,
             registry::get_groups,
             registry::edit_group,

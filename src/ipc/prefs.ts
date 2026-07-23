@@ -26,6 +26,16 @@ export interface Prefs {
   keymapOverrides: Record<string, string>;
   /** Notification routing + escalation thresholds (step 4.6). */
   notifications: NotificationPrefs;
+  /** Half-written Git-panel commit messages, keyed by repo root (G1). */
+  commitDrafts: Record<string, CommitDraft>;
+}
+
+/** An unsent commit message (G1). Persisted per repo root so a half-written
+ *  message survives a tab switch, a panel close/reopen, and a restart — losing one
+ *  to a mis-click is the kind of thing you only forgive a text editor once. */
+export interface CommitDraft {
+  subject: string;
+  body: string;
 }
 
 /** Where "needs you" alerts go, and when a waiting/working card escalates (step

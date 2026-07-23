@@ -1340,16 +1340,165 @@ pub fn git_pull(repo_root: String) -> Result<String, String> {
     git_run(Path::new(&repo_root), &["pull"])
 }
 
-/// Push the current branch (step 3.11). **Never** auto-pushes — only called from an
-/// explicit button. `force` uses `--force-with-lease` (refuses to clobber remote
-/// work it hasn't seen) rather than a bare `--force`, and is gated by a confirm.
+/// Push the current branch (step 3.11; `set_upstream` added in G1). **Never**
+/// auto-pushes — only called from an explicit button. `force` uses
+/// `--force-with-lease` (refuses to clobber remote work it hasn't seen) rather than
+/// a bare `--force`, and is gated by a confirm.
+///
+/// `set_upstream` is the *publish* path for a branch that has no upstream yet:
+/// `push -u <remote> <branch>`, defaulting to `origin` (else the first configured
+/// remote) and the checked-out branch. Without it a bare `push` on such a branch
+/// just fails, which is the confusing shape the panel used to surface.
 #[tauri::command]
-pub fn git_push(repo_root: String, force: bool) -> Result<String, String> {
-    let mut args = vec!["push"];
+pub fn git_push(
+    repo_root: String,
+    force: bool,
+    set_upstream: bool,
+    remote: Option<String>,
+    branch: Option<String>,
+) -> Result<String, String> {
+    let root = Path::new(&repo_root);
+    let mut args: Vec<String> = vec!["push".to_owned()];
     if force {
-        args.push("--force-with-lease");
+        args.push("--force-with-lease".to_owned());
     }
-    git_run(Path::new(&repo_root), &args)
+    if set_upstream {
+        let remote = remote
+            .map(|s| s.trim().to_owned())
+            .filter(|s| !s.is_empty())
+            .or_else(|| default_remote(root))
+            .ok_or_else(|| "no remote configured to publish to".to_owned())?;
+        let branch = branch
+            .map(|s| s.trim().to_owned())
+            .filter(|s| !s.is_empty())
+            .or_else(|| current_branch(root))
+            .ok_or_else(|| "HEAD is detached — check out a branch to publish it".to_owned())?;
+        args.push("-u".to_owned());
+        args.push(remote);
+        args.push(branch);
+    }
+    let argv: Vec<&str> = args.iter().map(String::as_str).collect();
+    git_run(root, &argv)
+}
+
+/// The repo's default push remote: `origin` when it exists, else the first
+/// configured remote. `None` for a repo with no remotes at all.
+fn default_remote(root: &Path) -> Option<String> {
+    let out = git_output(root, &["remote"])?;
+    let names: Vec<&str> = out.lines().map(str::trim).filter(|s| !s.is_empty()).collect();
+    if names.contains(&"origin") {
+        return Some("origin".to_owned());
+    }
+    names.first().map(|s| (*s).to_owned())
+}
+
+/// The checked-out branch's name, or `None` when HEAD is detached.
+fn current_branch(root: &Path) -> Option<String> {
+    git_output(root, &["rev-parse", "--abbrev-ref", "HEAD"]).filter(|b| b != "HEAD")
+}
+
+// --- commit composer (step G1) ----------------------------------------------
+
+/// Commit the index (step G1) — the one operation the panel used to have no path
+/// for at all. The message is handed to git via `-m`, so an editor never opens
+/// (with no terminal attached that would hang the call forever). `stage_all` maps
+/// to `commit -a`, which picks up *tracked* modifications only and never untracked
+/// files. Returns the new commit's short SHA.
+///
+/// Everything that can go wrong — nothing staged, an unconfigured `user.email`, a
+/// failing `pre-commit` hook — comes back as git's own stderr for the panel to show.
+/// Hooks deliberately still run; this is not a `--no-verify` path.
+#[tauri::command]
+pub fn git_commit(
+    repo_root: String,
+    message: String,
+    amend: bool,
+    signoff: bool,
+    allow_empty: bool,
+    stage_all: bool,
+) -> Result<String, String> {
+    let msg = message.trim().to_owned();
+    if msg.is_empty() {
+        return Err("commit message is empty".to_owned());
+    }
+    let root = Path::new(&repo_root);
+    let mut args = vec!["commit", "-m", msg.as_str()];
+    if amend {
+        args.push("--amend");
+    }
+    if signoff {
+        args.push("--signoff");
+    }
+    if allow_empty {
+        args.push("--allow-empty");
+    }
+    if stage_all {
+        args.push("--all");
+    }
+    git_run(root, &args)?;
+    Ok(git_output(root, &["rev-parse", "--short", "HEAD"]).unwrap_or_default())
+}
+
+/// HEAD's commit (step G1): its identity, full message, and *published* state —
+/// what the commit box needs to prefill an amend and to warn that amending an
+/// already-pushed commit will require a force-push.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HeadCommit {
+    pub sha: String,
+    pub short: String,
+    /// The full message: subject, blank line, body — exactly as stored.
+    pub message: String,
+    /// The first line.
+    pub subject: String,
+    /// Everything after the subject's blank separator; empty when there's no body.
+    pub body: String,
+    /// The current branch's upstream (e.g. `origin/main`), or `None` if unset.
+    pub upstream: Option<String>,
+    /// True when HEAD is already contained in its upstream — amending it rewrites
+    /// published history.
+    pub pushed: bool,
+}
+
+/// Read HEAD's commit (step G1). `Ok(None)` for a repo with no commits yet — a
+/// fresh repo is a normal state here, not an error. Three fixed scalar reads, not
+/// one per row.
+#[tauri::command]
+pub fn git_head_commit(repo_root: String) -> Result<Option<HeadCommit>, String> {
+    let root = Path::new(&repo_root);
+    let fmt = format!("%H{US}%h{US}%B");
+    let Some(out) = git_output(root, &["log", "-1", "--no-color", &format!("--format={fmt}")]) else {
+        return Ok(None);
+    };
+    let mut f = out.split(US);
+    let sha = f.next().unwrap_or("").trim().to_owned();
+    if sha.is_empty() {
+        return Ok(None);
+    }
+    let short = f.next().unwrap_or("").trim().to_owned();
+    let message = f.next().unwrap_or("").trim().to_owned();
+    let (subject, body) = split_message(&message);
+    // `@{u}` fails outright when the branch has no upstream — that's "unpublished",
+    // not an error worth surfacing.
+    let upstream = git_output(root, &["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"]);
+    let pushed = upstream.is_some()
+        && git_output(root, &["rev-list", "--count", "@{u}..HEAD"])
+            .and_then(|n| n.parse::<u32>().ok())
+            == Some(0);
+    Ok(Some(HeadCommit { sha, short, message, subject, body, upstream, pushed }))
+}
+
+/// Split a commit message into subject (first line) and body (everything past the
+/// blank separator line), the way git's own `%s` / `%b` do.
+fn split_message(message: &str) -> (String, String) {
+    let mut lines = message.lines();
+    let subject = lines.next().unwrap_or("").trim_end().to_owned();
+    let rest: Vec<&str> = lines.collect();
+    let body = match rest.iter().position(|l| !l.trim().is_empty()) {
+        Some(i) => rest[i..].join("\n").trim_end().to_owned(),
+        None => String::new(),
+    };
+    (subject, body)
 }
 
 #[cfg(test)]
@@ -1789,6 +1938,125 @@ mod tests {
         let staged = git_status_entries(root).unwrap();
         assert!(staged.iter().any(|e| e.path == name && e.index == "A"), "staged via add: {staged:?}");
 
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    // --- commit composer (G1) ------------------------------------------------
+
+    #[test]
+    fn split_message_separates_subject_from_body() {
+        assert_eq!(split_message("just a subject"), ("just a subject".into(), String::new()));
+        assert_eq!(
+            split_message("subject line\n\nbody line one\nbody line two"),
+            ("subject line".into(), "body line one\nbody line two".into())
+        );
+        // Extra blank separators collapse; trailing whitespace is dropped.
+        assert_eq!(
+            split_message("subject\n\n\n  body  \n\n"),
+            ("subject".into(), "  body".into())
+        );
+        assert_eq!(split_message(""), (String::new(), String::new()));
+    }
+
+    /// Staging then committing produces a commit whose short SHA is returned and
+    /// whose full message round-trips through `git_head_commit`.
+    #[test]
+    fn commits_the_index_and_reads_head_back() {
+        let dir = temp_dir("panel-commit");
+        if !init_repo(&dir) {
+            std::fs::remove_dir_all(&dir).ok();
+            return;
+        }
+        let root = dir.to_string_lossy().into_owned();
+        std::fs::write(dir.join("a.txt"), "one\n").unwrap();
+        git_stage(root.clone(), vec!["a.txt".into()]).unwrap();
+
+        let short = git_commit(
+            root.clone(),
+            "add a.txt\n\nwhy it matters".into(),
+            false,
+            false,
+            false,
+            false,
+        )
+        .unwrap();
+        assert!(!short.is_empty(), "commit returns the new short SHA");
+
+        let head = git_head_commit(root.clone()).unwrap().expect("a commit exists");
+        assert_eq!(head.short, short);
+        assert_eq!(head.subject, "add a.txt");
+        assert_eq!(head.body, "why it matters");
+        // No remote in a bare temp repo ⇒ unpublished, so an amend needs no warning.
+        assert_eq!(head.upstream, None);
+        assert!(!head.pushed);
+        assert!(git_status_entries(root).unwrap().is_empty(), "working tree is clean after commit");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// `--amend` replaces HEAD rather than adding a commit, and `commit -a` picks up
+    /// a tracked modification without a prior `add` (but never an untracked file).
+    #[test]
+    fn amend_rewrites_head_and_commit_all_skips_untracked() {
+        let dir = temp_dir("panel-amend");
+        if !init_repo(&dir) {
+            std::fs::remove_dir_all(&dir).ok();
+            return;
+        }
+        let root = dir.to_string_lossy().into_owned();
+        std::fs::write(dir.join("a.txt"), "one\n").unwrap();
+        git_stage(root.clone(), vec!["a.txt".into()]).unwrap();
+        git_commit(root.clone(), "first".into(), false, false, false, false).unwrap();
+        let before = git_log(root.clone(), None).unwrap().len();
+
+        git_commit(root.clone(), "first, reworded".into(), true, false, false, false).unwrap();
+        let log = git_log(root.clone(), None).unwrap();
+        assert_eq!(log.len(), before, "amend replaces HEAD, it doesn't add a commit");
+        assert_eq!(log[0].subject, "first, reworded");
+
+        // A tracked edit + an untracked file: `commit -a` takes only the former.
+        std::fs::write(dir.join("a.txt"), "two\n").unwrap();
+        std::fs::write(dir.join("b.txt"), "new\n").unwrap();
+        git_commit(root.clone(), "edit a".into(), false, false, false, true).unwrap();
+        let left = git_status_entries(root).unwrap();
+        assert_eq!(left.len(), 1, "only the untracked file is left: {left:?}");
+        assert_eq!(left[0].path, "b.txt");
+        assert!(left[0].untracked);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn commit_rejects_an_empty_message_instead_of_opening_an_editor() {
+        let dir = temp_dir("panel-emptymsg");
+        if !init_repo(&dir) {
+            std::fs::remove_dir_all(&dir).ok();
+            return;
+        }
+        let err = git_commit(
+            dir.to_string_lossy().into_owned(),
+            "   \n  ".into(),
+            false,
+            false,
+            false,
+            false,
+        )
+        .unwrap_err();
+        assert!(err.contains("empty"), "got {err}");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn publish_without_a_remote_reports_it_plainly() {
+        let dir = temp_dir("panel-publish");
+        if !init_repo(&dir) {
+            std::fs::remove_dir_all(&dir).ok();
+            return;
+        }
+        let root = dir.to_string_lossy().into_owned();
+        assert_eq!(default_remote(&dir), None);
+        let err = git_push(root, false, true, None, None).unwrap_err();
+        assert!(err.contains("no remote"), "got {err}");
         std::fs::remove_dir_all(&dir).ok();
     }
 }
