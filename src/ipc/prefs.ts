@@ -28,6 +28,26 @@ export interface Prefs {
   notifications: NotificationPrefs;
   /** Half-written Git-panel commit messages, keyed by repo root (G1). */
   commitDrafts: Record<string, CommitDraft>;
+  /** Git-panel splitter positions + collapsed sections (G2). */
+  gitLayout: GitLayout;
+}
+
+/** Where the Git panel's draggable splits sit, and which sections are open (G2).
+ *  Global rather than per repo: it's a shape-of-the-window preference, and the
+ *  same panel is re-bound to different repos as you move between projects. */
+export interface GitLayout {
+  /** First-pane size in px, keyed `<split id>:<orientation>` — a split has an
+   *  independent position wide vs narrow, since one is a width and one a height. */
+  splits: Record<string, GitSplitState>;
+  /** Collapsible sections, keyed by section id; `true` = open. */
+  sections: Record<string, boolean>;
+}
+
+export interface GitSplitState {
+  /** First pane's size along the split axis, in px. */
+  size: number;
+  /** The second pane is collapsed away — the first takes the whole box. */
+  collapsed: boolean;
 }
 
 /** An unsent commit message (G1). Persisted per repo root so a half-written

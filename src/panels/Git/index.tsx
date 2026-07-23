@@ -12,8 +12,14 @@
 // Read-first; every state-rewriting op (force-push, branch delete, discard, clean,
 // stash drop, amending a pushed commit) sits behind an explicit confirm, and
 // checking out under a live root instance surfaces the §6 shared-working-dir warning.
+//
+// Since G2 every split is a draggable, persisted `Splitter` rather than a fixed
+// pixel pane, and the whole panel reads its own width (`useOrientation`): below
+// ~560px it stacks list-over-diff, folds the header to glyphs + an overflow menu,
+// and shows the tab bar as glyph + count, so it stays usable docked in a narrow
+// column. Above it, the side-by-side layout is the one it always had.
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { IDockviewPanelProps } from "dockview";
 
 import { GLYPH } from "../../theme";
@@ -59,6 +65,7 @@ import { clearDraft } from "./draft";
 import {
   confirmButtonStyle,
   inputStyle,
+  menuItemStyle,
   miniActionStyle,
   relativeDate,
   statusCharColor,
@@ -66,6 +73,9 @@ import {
   STATUS_GLYPH,
 } from "./format";
 import { Empty, HeaderButton, RowAction, SectionHead } from "./rows";
+import Splitter from "./Splitter";
+import { hydrateGitLayout, readSection, writeSection } from "./layout";
+import { useOrientation, type Orientation } from "./useOrientation";
 
 export interface GitPanelParams {
   gitId: string;
@@ -121,15 +131,23 @@ function GitBody({ session }: { session: GitSession }) {
   // Bumped on every landed commit; the commit box watches it to clear itself.
   const [committedAt, setCommittedAt] = useState(0);
 
+  // The panel measures itself, not the window — the same window can hold a wide
+  // Git panel and a narrow one, and each lays out for the box it's actually in.
+  const rootRef = useRef<HTMLDivElement>(null);
+  const orientation = useOrientation(rootRef);
+
   const load = useCallback(async () => {
     setLoading(true);
     try {
+      // The stored splitter positions ride along with the first read, so the tabs
+      // mount at the right sizes instead of snapping a beat after they appear.
       const [branches, log, status, stashes, head] = await Promise.all([
         gitBranches(repoRoot),
         gitLog(repoRoot),
         gitStatusEntries(repoRoot),
         gitStashList(repoRoot),
         gitHeadCommit(repoRoot),
+        hydrateGitLayout(),
       ]);
       setData({ branches, log, status, stashes, head });
       setLoadError(null);
@@ -222,11 +240,15 @@ function GitBody({ session }: { session: GitSession }) {
   };
 
   return (
-    <div style={{ height: "100%", display: "flex", flexDirection: "column", minHeight: 0, background: "var(--wb-bg)" }}>
+    <div
+      ref={rootRef}
+      style={{ height: "100%", display: "flex", flexDirection: "column", minHeight: 0, minWidth: 0, background: "var(--wb-bg)" }}
+    >
       <Header
         branches={data?.branches ?? null}
         loading={loading}
         busy={busy}
+        orientation={orientation}
         onFetch={() => void run(() => gitFetch(repoRoot), "fetched")}
         onPull={() => void run(() => gitPull(repoRoot), "pulled")}
         onPush={requestPush}
@@ -234,7 +256,7 @@ function GitBody({ session }: { session: GitSession }) {
         onRefresh={() => void load()}
       />
 
-      <TabBar tab={tab} onTab={setTab} counts={data} />
+      <TabBar tab={tab} onTab={setTab} counts={data} orientation={orientation} />
 
       {notice && (
         <div
@@ -252,7 +274,7 @@ function GitBody({ session }: { session: GitSession }) {
         </div>
       )}
 
-      <div style={{ flex: 1, minHeight: 0, display: "flex" }}>
+      <div style={{ flex: 1, minHeight: 0, minWidth: 0, display: "flex" }}>
         {loadError ? (
           <div style={{ padding: "12px 14px", color: "var(--wb-needs)", font: "11.5px var(--wb-mono)" }}>
             {GLYPH.warn} {loadError}
@@ -262,7 +284,7 @@ function GitBody({ session }: { session: GitSession }) {
             reading repo…
           </div>
         ) : tab === "history" ? (
-          <HistoryTab repoRoot={repoRoot} commits={data.log} />
+          <HistoryTab repoRoot={repoRoot} commits={data.log} orientation={orientation} />
         ) : tab === "branches" ? (
           <BranchesTab
             branches={data.branches}
@@ -275,6 +297,7 @@ function GitBody({ session }: { session: GitSession }) {
         ) : (
           <StatusTab
             repoRoot={repoRoot}
+            orientation={orientation}
             status={data.status}
             stashes={data.stashes}
             head={data.head}
@@ -361,6 +384,7 @@ function Header({
   branches,
   loading,
   busy,
+  orientation,
   onFetch,
   onPull,
   onPush,
@@ -370,6 +394,7 @@ function Header({
   branches: Branches | null;
   loading: boolean;
   busy: boolean;
+  orientation: Orientation;
   onFetch: () => void;
   onPull: () => void;
   onPush: () => void;
@@ -379,13 +404,17 @@ function Header({
 }) {
   const current = branches?.detached ? "detached HEAD" : branches?.current ?? "—";
   const head = branches?.local.find((b) => b.isHead) ?? null;
+  const narrow = orientation === "narrow";
+  const pushTitle = canPublish
+    ? "no upstream yet — push -u to publish this branch"
+    : "push to the upstream";
   return (
     <div
       style={{
         flex: "0 0 auto",
         display: "flex",
         alignItems: "center",
-        gap: 10,
+        gap: narrow ? 7 : 10,
         padding: "5px 12px",
         borderBottom: "1px solid var(--wb-border)",
         background: "var(--wb-titlebar)",
@@ -395,7 +424,9 @@ function Header({
     >
       <span style={{ color: "var(--wb-accent)", display: "flex", alignItems: "center", gap: 6, minWidth: 0 }}>
         ⎇{" "}
-        <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{current}</span>
+        <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={current}>
+          {current}
+        </span>
       </span>
       {head && (head.ahead > 0 || head.behind > 0) && (
         <span style={{ flex: "0 0 auto", display: "flex", gap: 6 }}>
@@ -403,30 +434,131 @@ function Header({
           {head.behind > 0 && <span style={{ color: "var(--wb-working)" }}>↓{head.behind}</span>}
         </span>
       )}
-      <span style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 10 }}>
-        <HeaderButton onClick={onFetch} disabled={busy}>
-          ↡ fetch
+      {/* Narrow keeps only push (the one gesture you can't undo by waiting) and
+          refresh as glyphs; fetch and pull keep their words inside the overflow,
+          so nothing loses its name — it just moves one click away. */}
+      <span style={{ marginLeft: "auto", flex: "0 0 auto", display: "flex", alignItems: "center", gap: narrow ? 9 : 10 }}>
+        {!narrow && (
+          <>
+            <HeaderButton onClick={onFetch} disabled={busy}>
+              ↡ fetch
+            </HeaderButton>
+            <HeaderButton onClick={onPull} disabled={busy}>
+              ⇣ pull
+            </HeaderButton>
+          </>
+        )}
+        <HeaderButton onClick={onPush} disabled={busy} accent title={pushTitle}>
+          {narrow ? "⇡" : canPublish ? "⇡ publish" : "⇡ push"}
         </HeaderButton>
-        <HeaderButton onClick={onPull} disabled={busy}>
-          ⇣ pull
+        <HeaderButton onClick={onRefresh} disabled={loading} title={narrow ? "re-read the repo" : undefined}>
+          {narrow ? "↻" : "↻ refresh"}
         </HeaderButton>
-        <HeaderButton
-          onClick={onPush}
-          disabled={busy}
-          accent
-          title={canPublish ? "no upstream yet — push -u to publish this branch" : "push to the upstream"}
-        >
-          {canPublish ? "⇡ publish" : "⇡ push"}
-        </HeaderButton>
-        <HeaderButton onClick={onRefresh} disabled={loading}>
-          ↻ refresh
-        </HeaderButton>
+        {narrow && (
+          <OverflowMenu
+            items={[
+              { label: "↡ fetch", onClick: onFetch, disabled: busy },
+              { label: "⇣ pull", onClick: onPull, disabled: busy },
+              {
+                label: canPublish ? "⇡ publish branch" : "⇡ push",
+                onClick: onPush,
+                disabled: busy,
+                title: pushTitle,
+              },
+            ]}
+          />
+        )}
       </span>
     </div>
   );
 }
 
-function TabBar({ tab, onTab, counts }: { tab: Tab; onTab: (t: Tab) => void; counts: RepoData | null }) {
+/** The `⋯` menu that holds the header actions there's no room to spell out. Not
+ *  the shared right-click `ContextMenu` — that's G3, and this is a button menu. */
+function OverflowMenu({
+  items,
+}: {
+  items: { label: string; onClick: () => void; disabled?: boolean; title?: string }[];
+}) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLSpanElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: MouseEvent) => {
+      if (!ref.current?.contains(e.target as Node)) setOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setOpen(false);
+    };
+    document.addEventListener("mousedown", onDown);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDown);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [open]);
+
+  return (
+    <span ref={ref} style={{ position: "relative", display: "flex" }}>
+      <HeaderButton onClick={() => setOpen((v) => !v)} title="more git actions">
+        ⋯
+      </HeaderButton>
+      {open && (
+        <span
+          style={{
+            position: "absolute",
+            top: "calc(100% + 6px)",
+            right: 0,
+            zIndex: 30,
+            minWidth: 140,
+            display: "flex",
+            flexDirection: "column",
+            background: "var(--wb-panel)",
+            border: "1px solid var(--wb-borderActive)",
+            boxShadow: "0 4px 14px rgba(0,0,0,0.45)",
+          }}
+        >
+          {items.map((item) => (
+            <button
+              key={item.label}
+              onClick={() => {
+                if (item.disabled) return;
+                setOpen(false);
+                item.onClick();
+              }}
+              disabled={item.disabled}
+              title={item.title}
+              style={{
+                ...menuItemStyle,
+                color: item.disabled ? "var(--wb-textFaint)" : "var(--wb-textDim2)",
+                cursor: item.disabled ? "default" : "pointer",
+              }}
+            >
+              {item.label}
+            </button>
+          ))}
+        </span>
+      )}
+    </span>
+  );
+}
+
+/** Tab identity at a glance when there's no room for the word (§5.x vocabulary). */
+const TAB_GLYPH: Record<Tab, string> = { history: "≡", branches: "⎇", status: "±" };
+
+function TabBar({
+  tab,
+  onTab,
+  counts,
+  orientation,
+}: {
+  tab: Tab;
+  onTab: (t: Tab) => void;
+  counts: RepoData | null;
+  orientation: Orientation;
+}) {
+  const narrow = orientation === "narrow";
   const dirty = counts?.status.length ?? 0;
   const tabs: { id: Tab; label: string; badge?: number }[] = [
     { id: "history", label: "history" },
@@ -449,6 +581,7 @@ function TabBar({ tab, onTab, counts }: { tab: Tab; onTab: (t: Tab) => void; cou
           <button
             key={t.id}
             onClick={() => onTab(t.id)}
+            title={narrow ? t.label : undefined}
             style={{
               background: active ? "var(--wb-sel)" : "transparent",
               border: "none",
@@ -456,13 +589,13 @@ function TabBar({ tab, onTab, counts }: { tab: Tab; onTab: (t: Tab) => void; cou
               cursor: "pointer",
               color: active ? "var(--wb-text)" : "var(--wb-textDim2)",
               font: "11px var(--wb-mono)",
-              padding: "6px 13px",
+              padding: narrow ? "6px 14px" : "6px 13px",
               display: "flex",
               alignItems: "center",
               gap: 6,
             }}
           >
-            {t.label}
+            {narrow ? TAB_GLYPH[t.id] : t.label}
             {t.badge != null && t.badge > 0 && (
               <span style={{ color: "var(--wb-textFaint)", font: "10px var(--wb-mono)" }}>{t.badge}</span>
             )}
@@ -475,7 +608,15 @@ function TabBar({ tab, onTab, counts }: { tab: Tab; onTab: (t: Tab) => void; cou
 
 // --- history tab ------------------------------------------------------------
 
-function HistoryTab({ repoRoot, commits }: { repoRoot: string; commits: Commit[] }) {
+function HistoryTab({
+  repoRoot,
+  commits,
+  orientation,
+}: {
+  repoRoot: string;
+  commits: Commit[];
+  orientation: Orientation;
+}) {
   const [selected, setSelected] = useState<string | null>(commits[0]?.sha ?? null);
   const [files, setFiles] = useState<DiffFile[] | null>(null);
   const [selectedFile, setSelectedFile] = useState<string | null>(null);
@@ -526,28 +667,50 @@ function HistoryTab({ repoRoot, commits }: { repoRoot: string; commits: Commit[]
     return <Empty>no commits yet</Empty>;
   }
 
+  const narrow = orientation === "narrow";
+
   return (
-    <div style={{ flex: 1, display: "flex", minHeight: 0 }}>
-      <div style={{ flex: "0 0 300px", borderRight: "1px solid var(--wb-border)", overflow: "auto", background: "var(--wb-panel)" }}>
-        {commits.map((c) => (
-          <CommitRow key={c.sha} commit={c} active={c.sha === selected} onSelect={() => setSelected(c.sha)} />
-        ))}
-      </div>
-      <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", minHeight: 0 }}>
-        <CommitFileList files={files} selected={selectedFile} onSelect={setSelectedFile} />
-        <div style={{ flex: 1, minHeight: 0 }}>
-          {!selectedFile ? (
-            <Empty>select a file</Empty>
-          ) : diff === null ? (
-            <Empty>reading diff…</Empty>
-          ) : diff.trim() === "" ? (
-            <Empty>{GLYPH.warn} binary file — no textual diff</Empty>
-          ) : (
-            <UnifiedDiff text={diff} />
-          )}
+    <Splitter
+      id="history.log"
+      orientation={orientation}
+      direction={narrow ? "column" : "row"}
+      defaultSize={narrow ? 200 : 300}
+      minFirst={narrow ? 80 : 170}
+      minSecond={narrow ? 120 : 220}
+      first={
+        <div style={{ flex: 1, minHeight: 0, overflow: "auto", background: "var(--wb-panel)" }}>
+          {commits.map((c) => (
+            <CommitRow key={c.sha} commit={c} active={c.sha === selected} onSelect={() => setSelected(c.sha)} />
+          ))}
         </div>
-      </div>
-    </div>
+      }
+      second={
+        // Always stacked: the commit's file list reads as a header over its diff at
+        // any width. Collapsible so a big commit's file list can take the whole box.
+        <Splitter
+          id="history.files"
+          orientation={orientation}
+          direction="column"
+          defaultSize={140}
+          minFirst={52}
+          minSecond={90}
+          collapsible
+          secondLabel="diff"
+          first={<CommitFileList files={files} selected={selectedFile} onSelect={setSelectedFile} />}
+          second={
+            !selectedFile ? (
+              <Empty>select a file</Empty>
+            ) : diff === null ? (
+              <Empty>reading diff…</Empty>
+            ) : diff.trim() === "" ? (
+              <Empty>{GLYPH.warn} binary file — no textual diff</Empty>
+            ) : (
+              <UnifiedDiff text={diff} />
+            )
+          }
+        />
+      }
+    />
   );
 }
 
@@ -624,16 +787,10 @@ function CommitFileList({
   selected: string | null;
   onSelect: (path: string) => void;
 }) {
+  // Sized by its splitter now, not a `maxHeight: 140` cap — a 30-file commit used
+  // to be read four rows at a time no matter how much room the panel had.
   return (
-    <div
-      style={{
-        flex: "0 0 auto",
-        maxHeight: 140,
-        overflow: "auto",
-        borderBottom: "1px solid var(--wb-border)",
-        background: "var(--wb-titlebar)",
-      }}
-    >
+    <div style={{ flex: 1, minHeight: 0, overflow: "auto", background: "var(--wb-titlebar)" }}>
       {files == null ? (
         <div style={{ padding: "6px 12px", font: "10.5px var(--wb-mono)", color: "var(--wb-textFaint)" }}>reading…</div>
       ) : files.length === 0 ? (
@@ -821,6 +978,7 @@ interface StatusRowItem {
 
 function StatusTab({
   repoRoot,
+  orientation,
   status,
   stashes,
   head,
@@ -836,6 +994,7 @@ function StatusTab({
   onStashDrop,
 }: {
   repoRoot: string;
+  orientation: Orientation;
   status: StatusEntry[];
   stashes: Stash[];
   head: HeadCommit | null;
@@ -931,92 +1090,104 @@ function StatusTab({
   const untrackedSet = new Set(selUntracked);
   const selTracked = selPaths.filter((p) => !untrackedSet.has(p));
 
-  // `minWidth: 0` on both the column and the row below: without it the diff pane's
-  // min-content width inflates the column, and the commit box — sized to it — runs
-  // its buttons off the right edge of a narrow panel.
+  const narrow = orientation === "narrow";
+
+  // `minWidth: 0` on the column: without it the diff pane's min-content width
+  // inflates it, and the commit box — sized to it — runs its buttons off the right
+  // edge of a narrow panel.
   return (
     <div style={{ flex: 1, display: "flex", flexDirection: "column", minHeight: 0, minWidth: 0 }}>
-      <div style={{ flex: 1, display: "flex", minHeight: 0, minWidth: 0 }}>
-        <div style={{ flex: "0 0 280px", borderRight: "1px solid var(--wb-border)", background: "var(--wb-panel)", display: "flex", flexDirection: "column", minHeight: 0 }}>
-          {selected.size > 0 && (
-            <SelectionBar
-              count={selected.size}
-              busy={busy}
-              canUnstage={selStaged.length > 0}
-              onStage={() => onStage(selPaths)}
-              onUnstage={() => onUnstage(selStaged)}
-              onDiscard={() => onDiscard(selTracked, selUntracked)}
-              onClear={() => {
-                setSelected(new Set());
-                setAnchor(null);
-              }}
-            />
-          )}
-          <div style={{ flex: 1, overflow: "auto", minHeight: 0, display: "flex", flexDirection: "column" }}>
-            {status.length === 0 ? (
-              <div style={{ padding: "10px 12px", font: "11px var(--wb-mono)", color: "var(--wb-done)" }}>
-                {GLYPH.ok} working tree clean
-              </div>
-            ) : (
-              <>
-                {staged.length > 0 && (
-                  <StatusGroup
-                    label="staged"
-                    group="staged"
-                    entries={staged}
-                    selected={selected}
-                    lead={lead}
-                    onRowClick={onRowClick}
-                    busy={busy}
-                    actionLabel="unstage"
-                    onAction={(e) => onUnstage([e.path])}
-                    onBulk={() => onUnstage(staged.map((e) => e.path))}
-                  />
-                )}
-                {unstaged.length > 0 && (
-                  <StatusGroup
-                    label="unstaged"
-                    group="unstaged"
-                    entries={unstaged}
-                    selected={selected}
-                    lead={lead}
-                    onRowClick={onRowClick}
-                    busy={busy}
-                    actionLabel="stage"
-                    onAction={(e) => onStage([e.path])}
-                    onBulk={() => onStage(unstaged.map((e) => e.path))}
-                    onDiscardEntry={(e) => onDiscard([e.path], [])}
-                  />
-                )}
-                {untracked.length > 0 && (
-                  <StatusGroup
-                    label="untracked"
-                    group="untracked"
-                    entries={untracked}
-                    selected={selected}
-                    lead={lead}
-                    onRowClick={onRowClick}
-                    busy={busy}
-                    actionLabel="stage"
-                    onAction={(e) => onStage([e.path])}
-                    onBulk={() => onStage(untracked.map((e) => e.path))}
-                    onDiscardEntry={(e) => onDiscard([], [e.path])}
-                  />
-                )}
-              </>
+      <Splitter
+        id="status.files"
+        orientation={orientation}
+        direction={narrow ? "column" : "row"}
+        defaultSize={narrow ? 190 : 280}
+        minFirst={narrow ? 70 : 160}
+        minSecond={narrow ? 90 : 200}
+        collapsible
+        secondLabel="diff"
+        first={
+          <>
+            {selected.size > 0 && (
+              <SelectionBar
+                count={selected.size}
+                busy={busy}
+                canUnstage={selStaged.length > 0}
+                onStage={() => onStage(selPaths)}
+                onUnstage={() => onUnstage(selStaged)}
+                onDiscard={() => onDiscard(selTracked, selUntracked)}
+                onClear={() => {
+                  setSelected(new Set());
+                  setAnchor(null);
+                }}
+              />
             )}
-            <StashSection
-              stashes={stashes}
-              busy={busy}
-              hasChanges={status.length > 0}
-              onStashPush={onStashPush}
-              onStashPop={onStashPop}
-              onStashDrop={onStashDrop}
-            />
-          </div>
-        </div>
-        <div style={{ flex: 1, minWidth: 0, minHeight: 0 }}>
-          {!lead ? (
+            <div style={{ flex: 1, overflow: "auto", minHeight: 0, background: "var(--wb-panel)" }}>
+              {status.length === 0 ? (
+                <div style={{ padding: "10px 12px", font: "11px var(--wb-mono)", color: "var(--wb-done)" }}>
+                  {GLYPH.ok} working tree clean
+                </div>
+              ) : (
+                <>
+                  {staged.length > 0 && (
+                    <StatusGroup
+                      label="staged"
+                      group="staged"
+                      entries={staged}
+                      selected={selected}
+                      lead={lead}
+                      onRowClick={onRowClick}
+                      busy={busy}
+                      actionLabel="unstage"
+                      onAction={(e) => onUnstage([e.path])}
+                      onBulk={() => onUnstage(staged.map((e) => e.path))}
+                    />
+                  )}
+                  {unstaged.length > 0 && (
+                    <StatusGroup
+                      label="unstaged"
+                      group="unstaged"
+                      entries={unstaged}
+                      selected={selected}
+                      lead={lead}
+                      onRowClick={onRowClick}
+                      busy={busy}
+                      actionLabel="stage"
+                      onAction={(e) => onStage([e.path])}
+                      onBulk={() => onStage(unstaged.map((e) => e.path))}
+                      onDiscardEntry={(e) => onDiscard([e.path], [])}
+                    />
+                  )}
+                  {untracked.length > 0 && (
+                    <StatusGroup
+                      label="untracked"
+                      group="untracked"
+                      entries={untracked}
+                      selected={selected}
+                      lead={lead}
+                      onRowClick={onRowClick}
+                      busy={busy}
+                      actionLabel="stage"
+                      onAction={(e) => onStage([e.path])}
+                      onBulk={() => onStage(untracked.map((e) => e.path))}
+                      onDiscardEntry={(e) => onDiscard([], [e.path])}
+                    />
+                  )}
+                </>
+              )}
+              <StashSection
+                stashes={stashes}
+                busy={busy}
+                hasChanges={status.length > 0}
+                onStashPush={onStashPush}
+                onStashPop={onStashPop}
+                onStashDrop={onStashDrop}
+              />
+            </div>
+          </>
+        }
+        second={
+          !lead ? (
             <Empty>select a file</Empty>
           ) : diff === null ? (
             <Empty>reading diff…</Empty>
@@ -1024,11 +1195,12 @@ function StatusTab({
             <Empty>{GLYPH.warn} no textual diff</Empty>
           ) : (
             <UnifiedDiff text={diff} />
-          )}
-        </div>
-      </div>
-      {/* Docked full-width under both panes: at 280px the file column is far too
-          narrow to write a commit message in. G2 places it per orientation. */}
+          )
+        }
+      />
+      {/* Docked full-width under both panes at every width: even wide, the file
+          column is too narrow to write a commit message in, and stacking it under
+          the diff would put it below the fold in a narrow column. */}
       <CommitBox
         repoRoot={repoRoot}
         stagedCount={new Set(staged.map((e) => e.path)).size}
@@ -1069,6 +1241,7 @@ function SelectionBar({
         display: "flex",
         alignItems: "center",
         gap: 8,
+        flexWrap: "wrap",
         padding: "5px 12px",
         borderBottom: "1px solid var(--wb-border)",
         background: "var(--wb-titlebar)",
@@ -1222,19 +1395,28 @@ function StashSection({
   onStashPop: (reference: string) => void;
   onStashDrop: (stash: Stash) => void;
 }) {
+  // A real collapsible section (G2) instead of the old `marginTop: auto`, which
+  // pinned it to the bottom of the scroll box and fought the file list for height.
+  // Until you toggle it, it follows its contents: open when there's a stash to see.
+  const [open, setOpen] = useState(() => readSection("stash", stashes.length > 0));
+  const toggle = () => {
+    setOpen(!open);
+    writeSection("stash", !open);
+  };
   return (
-    <div style={{ marginTop: "auto", borderTop: "1px solid var(--wb-border)" }}>
-      <SectionHead>
+    <div style={{ borderTop: "1px solid var(--wb-border)" }}>
+      <SectionHead open={open} onToggle={toggle}>
         stashes <span style={{ color: "var(--wb-textFaint)" }}>{stashes.length}</span>
         <button onClick={() => onStashPush(null, true)} disabled={busy || !hasChanges} style={miniActionStyle} title="stash all changes (incl. untracked)">
           stash
         </button>
       </SectionHead>
-      {stashes.length === 0 ? (
-        <div style={{ padding: "3px 14px 8px", font: "10px var(--wb-mono)", color: "var(--wb-textFaint)" }}>no stashes</div>
-      ) : (
-        stashes.map((s) => <StashRow key={s.reference} stash={s} busy={busy} onPop={() => onStashPop(s.reference)} onDrop={() => onStashDrop(s)} />)
-      )}
+      {open &&
+        (stashes.length === 0 ? (
+          <div style={{ padding: "3px 14px 8px", font: "10px var(--wb-mono)", color: "var(--wb-textFaint)" }}>no stashes</div>
+        ) : (
+          stashes.map((s) => <StashRow key={s.reference} stash={s} busy={busy} onPop={() => onStashPop(s.reference)} onDrop={() => onStashDrop(s)} />)
+        ))}
     </div>
   );
 }

@@ -7,9 +7,30 @@
 
 import { useState } from "react";
 
-export function SectionHead({ children }: { children: React.ReactNode }) {
+/**
+ * A section label. Pass `open` + `onToggle` to make it a collapsible section's
+ * header — it grows a twisty and the whole strip becomes the hit target, except
+ * for any real `<button>` inside it (the "stage all" / "stash" mini-actions),
+ * which keep their own click.
+ */
+export function SectionHead({
+  children,
+  open,
+  onToggle,
+}: {
+  children: React.ReactNode;
+  open?: boolean;
+  onToggle?: () => void;
+}) {
   return (
     <div
+      onClick={
+        onToggle &&
+        ((e: React.MouseEvent) => {
+          if ((e.target as HTMLElement).closest("button")) return;
+          onToggle();
+        })
+      }
       style={{
         display: "flex",
         alignItems: "center",
@@ -19,8 +40,17 @@ export function SectionHead({ children }: { children: React.ReactNode }) {
         letterSpacing: "0.1em",
         textTransform: "uppercase",
         color: "var(--wb-accent)",
+        cursor: onToggle ? "pointer" : undefined,
+        userSelect: onToggle ? "none" : undefined,
       }}
     >
+      {/* A span, not a button: the container's own handler covers it, and a real
+          button here would be excluded by the `closest("button")` guard above. */}
+      {onToggle && (
+        <span aria-hidden style={{ width: 7, color: "var(--wb-textDim2)", font: "8px var(--wb-mono)" }}>
+          {open ? "▾" : "▸"}
+        </span>
+      )}
       {children}
     </div>
   );

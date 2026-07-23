@@ -137,7 +137,7 @@ and should be preserved.
 
 ---
 
-### Step G2 — Responsive layout: vertical/narrow windows **(may need 2 passes)**
+### Step G2 — Responsive layout: vertical/narrow windows ✅ *(landed)*
 
 - **Goal:** The panel is fully usable in a tall, narrow window (~500-700px wide) — the
   primary reported failure mode. Commit, review, and stage without horizontal squeeze.
@@ -167,6 +167,21 @@ and should be preserved.
   it, write a message and commit without horizontal scrolling or a squeezed diff; splitter
   positions survive a restart; the wide layout is visually unchanged from today.
 - **Out of scope:** re-theming; the diff renderer itself.
+- **As built:** one pass. No reusable splitter existed (dockview owns the *panel* splitters,
+  which isn't the same concern), so `Splitter.tsx` is new: a two-pane split whose bar carries
+  a grip, double-click-to-reset, and — where `collapsible` is set — a chevron pill that
+  collapses the second pane to a 17px rail. Positions persist via `layout.ts` (same
+  sync-cache + debounced-flush shape as `draft.ts`) under a new `gitLayout` pref, keyed
+  `<split id>:<orientation>`; the shell folds `hydrateGitLayout()` into its first read so
+  splits mount in place rather than snapping. Three splits: `history.log`,
+  `history.files` (replacing `maxHeight: 140`), `status.files`. The first pane is
+  `flex: 0 1 <size>px` with a floor on the second — a *fixed* pane reintroduces the exact
+  bug this step removes as soon as the dock is dragged narrower than the stored split.
+  The commit box stays docked full-width below both panes in **both** orientations: even
+  wide, the file column is too narrow to write in, and stacking it under the diff in a
+  narrow column puts it below the fold. Narrow header keeps ⇡ push + ↻ refresh as glyphs
+  and moves fetch/pull (labelled) into a `⋯` menu — a button menu, not the shared
+  right-click `ContextMenu`, which is still G3's to build.
 
 ---
 
@@ -403,7 +418,11 @@ src/panels/Git/
   CommitBox.tsx      G1
   Graph.tsx          G7
   useOrientation.ts  G2
-  rows.tsx           shared row primitives, status glyph/colour maps
+  Splitter.tsx       G2   two-pane draggable split, collapsible second pane
+  layout.ts          G2   persisted splitter positions + section open/closed
+  draft.ts           G1   per-repo commit-message drafts
+  rows.tsx           shared row primitives
+  format.ts          shared glyph/colour maps + style objects (value half of rows.tsx)
 ```
 
 Don't do the split as its own refactor step — do it incrementally, inside the step that
@@ -431,7 +450,7 @@ provisional wide-layout commit box, then let G2 place it properly.
 ## Progress tracker
 
 - [x] G1 — Commit composer + publish branch
-- [ ] G2 — Responsive layout (vertical/narrow)
+- [x] G2 — Responsive layout (vertical/narrow)
 - [ ] G3 — Context menus
 - [ ] G4 — Branch operations (merge / rebase / upstream)
 - [ ] G5 — Selection flexibility + keyboard-first

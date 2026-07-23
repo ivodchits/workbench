@@ -60,6 +60,18 @@ export const miniActionStyle: CSSProperties = {
   padding: 0,
 };
 
+/** A row in the header's `⋯` overflow menu (G2). Left-aligned and full-width so
+ *  the labels line up as a list rather than sitting like buttons in a box. */
+export const menuItemStyle: CSSProperties = {
+  background: "transparent",
+  border: "none",
+  textAlign: "left",
+  padding: "6px 12px",
+  fontFamily: "var(--wb-mono)",
+  fontSize: 11,
+  whiteSpace: "nowrap",
+};
+
 export const inputStyle: CSSProperties = {
   background: "var(--wb-bg)",
   color: "var(--wb-text)",
