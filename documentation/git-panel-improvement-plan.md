@@ -241,7 +241,7 @@ and should be preserved.
 
 ---
 
-### Step G4 — Branch operations: merge, rebase, upstream
+### Step G4 — Branch operations: merge, rebase, upstream ✅ *(landed)*
 
 - **Goal:** Close the branch-tab parity gap. §5 Git already promises "fast-forward/merge from
   the panel" and it was never built.
@@ -269,6 +269,37 @@ and should be preserved.
   upstream, and delete a remote branch; a conflicting merge leaves the panel in a clear
   conflicted state with abort available; worktree-held branches are marked and un-checkout-able.
 - **Out of scope:** interactive rebase.
+- **As built:** the branch tab moved to `BranchesTab.tsx` on the way through, and gained the
+  filter, the recent/name sort (persisted through `layout.ts` like the section flags), a
+  collapsible group *per remote*, and each branch's tip subject + age. Branches another worktree
+  holds are marked `⧉ worktree`, and both actions git would refuse there — checkout and delete —
+  are withheld rather than offered and then rejected; the mark comes from one
+  `git worktree list --porcelain` folded into `git_branches`, and a branch is "held elsewhere"
+  precisely when it appears in that map and *isn't* `isHead`, which needs no path comparison at
+  all. `git_remotes` folded into `git_branches` for the same reason: it's the same read, and a
+  second round trip would buy nothing.
+
+  Three deviations worth naming. **`git_merge` takes one `mode`** (`merge` / `noFf` / `squash` /
+  `ffOnly`) rather than two booleans — it makes the invalid `noFf + squash` pair unrepresentable
+  and gives fast-forward somewhere to live. The choice is made in the merge dialog rather than in
+  three near-identical menu items. **`git_repo_state` landed here, not in G6**: this step's
+  definition of done needs an abort that survives a panel remount, and a banner fed only by the
+  result of the command you just ran would claim a clean repo while it sat mid-merge. G6 still
+  owns the conflicted-file grouping that goes beside it. **A new `git_run_full`** backs every one
+  of these commands: a conflicting merge writes its `CONFLICT` lines to *stdout* and exits
+  non-zero, so `git_run` — stderr-only — would have reported an empty error for the single most
+  informative failure in the step. It also forces `GIT_EDITOR=true`, without which a merge or
+  rebase wanting a message would block forever against a process with no terminal.
+
+  Those failures don't go to the one-line notice: they reload the repo (the tree *changed* on the
+  way to failing) and open a scrollable output dialog with git's whole message — the stand-in for
+  G8's expandable error surface. A rebase banner offers continue / skip / abort, a merge banner
+  offers abort (its "continue" is an ordinary commit, which the commit box below already is), and
+  a cherry-pick or revert started elsewhere says so rather than offering half a set of buttons.
+  Two honest gaps: a conflicting **squash** merge records no `MERGE_HEAD`, so there's nothing for
+  `--abort` to undo and no banner — the dialog says so before you pick that mode; and a
+  conflicted file still lands in both the staged and unstaged groups, which is **G6**'s
+  classification bug, now much easier to reach from inside the panel.
 
 ---
 
@@ -318,10 +349,11 @@ and should be preserved.
     unstaged groups, uncoloured (`statusCharColor`, `:1394`, has no `U` case), and staging it
     silently marks it resolved with no indication that's what happened. Add an explicit
     `conflicted` group that takes precedence over both, with its own colour.
-  - **Repo-state banner** — detect mid-merge / mid-rebase / mid-cherry-pick / mid-revert
-    (`.git/MERGE_HEAD`, `REBASE_HEAD`, `CHERRY_PICK_HEAD`, `REVERT_HEAD`; expose via a
-    `git_repo_state` command) and show a persistent banner with **continue** / **abort** /
-    **skip**. There is currently *no* indication the repo is mid-operation.
+  - ~~**Repo-state banner**~~ — *landed in G4*, which needed an abort that survives a panel
+    remount: `git_repo_state` reads the git dir for `MERGE_HEAD` / `rebase-merge` /
+    `CHERRY_PICK_HEAD` / `REVERT_HEAD` and the banner offers continue / skip / abort. What's left
+    here is extending it with the conflicted-file detail below, and giving cherry-pick / revert
+    their controls once **G7** lands the commands that start them.
   - **Resolution actions** per conflicted file: *use ours* / *use theirs*
     (`checkout --ours/--theirs` + `add`), *mark resolved*, *open in Editor*.
   - Conflict markers highlighted in the diff view.
@@ -407,12 +439,12 @@ and should be preserved.
 | `git_commit` | G1 | message, amend, signoff, allowEmpty, stageAll |
 | `git_head_commit` | G1 | prefill + pushed-state for amend |
 | `git_push` *(extend)* | G1 | `setUpstream` → publish branch |
-| `git_merge`, `git_merge_abort` | G4 | noFf / squash |
+| `git_merge`, `git_merge_abort` | G4 | one `mode`: merge / noFf / squash / ffOnly |
 | `git_rebase`, `git_rebase_control` | G4 | continue / abort / skip |
-| `git_set_upstream`, `git_remotes`, `git_delete_remote_branch` | G4 | |
-| `git_worktree_list` | G4 | display-only; mark un-checkout-able branches |
+| `git_set_upstream`, `git_delete_remote_branch` | G4 | |
+| ~~`git_remotes`~~, ~~`git_worktree_list`~~ | G4 | folded into `git_branches` — same read, no extra round trip |
 | `git_apply_patch` | G5 | hunk stage/unstage/discard via `--cached` / `--reverse` |
-| `git_repo_state` | G6 | mid-merge / rebase / cherry-pick / revert |
+| `git_repo_state` | ~~G6~~ G4 | mid-merge / rebase / cherry-pick / revert; G4's abort needs it |
 | `git_resolve` | G6 | `checkout --ours/--theirs` + `add` |
 | `git_log` *(extend)* | G7 | search, path filter, date range, ref, skip/pagination |
 | `git_commit_detail` | G7 | full body, committer, parents |
@@ -477,7 +509,7 @@ provisional wide-layout commit box, then let G2 place it properly.
 - [x] G1 — Commit composer + publish branch
 - [x] G2 — Responsive layout (vertical/narrow)
 - [x] G3 — Context menus
-- [ ] G4 — Branch operations (merge / rebase / upstream)
+- [x] G4 — Branch operations (merge / rebase / upstream)
 - [ ] G5 — Selection flexibility + keyboard-first
 - [ ] G6 — Merge conflicts
 - [ ] G7 — History parity (graph / search / rewrite ops)

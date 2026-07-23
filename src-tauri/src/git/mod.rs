@@ -964,6 +964,14 @@ pub struct Branch {
     pub is_head: bool,
     /// The branch tip's short SHA.
     pub short: String,
+    /// The tip commit's subject (G4) — a branch name alone rarely says what's on it.
+    pub subject: String,
+    /// The tip's committer date, epoch seconds (G4); 0 when git didn't give one.
+    pub date: i64,
+    /// The path of *another* worktree that has this branch checked out (G4), or
+    /// `None`. Git refuses to check such a branch out here, so the panel marks the
+    /// row instead of letting the click fail.
+    pub worktree: Option<String>,
 }
 
 /// The project's branches (step 3.11): local branches with ahead/behind, the
@@ -976,15 +984,23 @@ pub struct Branches {
     pub detached: bool,
     pub local: Vec<Branch>,
     pub remote: Vec<String>,
+    /// Configured remote *names* (`origin`, …) — G4, so the branch tab can group
+    /// `remote` per remote instead of under one flat heading. Carried here rather
+    /// than in a separate `git_remotes` command: it's the same read the panel
+    /// already makes, and a second round trip would buy nothing.
+    pub remotes: Vec<String>,
 }
 
 #[tauri::command]
 pub fn git_branches(repo_root: String) -> Result<Branches, String> {
     let root = Path::new(&repo_root);
+    // Subject stays last: it's the only field that could plausibly carry something
+    // odd, and anything trailing it would shift if it ever did.
     let fmt = format!(
-        "%(HEAD){US}%(refname:short){US}%(upstream:short){US}%(upstream:track){US}%(objectname:short)"
+        "%(HEAD){US}%(refname:short){US}%(upstream:short){US}%(upstream:track){US}%(objectname:short){US}%(committerdate:unix){US}%(contents:subject)"
     );
     let out = git_stdout(root, &["branch", "--format", &fmt]).unwrap_or_default();
+    let held = worktree_branches(root);
     let mut local = Vec::new();
     let mut current = None;
     for line in out.lines() {
@@ -1000,11 +1016,17 @@ pub fn git_branches(repo_root: String) -> Result<Branches, String> {
         let upstream = f.next().unwrap_or("").trim();
         let track = f.next().unwrap_or("");
         let short = f.next().unwrap_or("").to_owned();
+        let date = f.next().unwrap_or("").trim().parse::<i64>().unwrap_or(0);
+        let subject = f.next().unwrap_or("").trim().to_owned();
         let is_head = head == "*";
         if is_head {
             current = Some(name.clone());
         }
         let (ahead, behind) = parse_track(track);
+        // The current worktree is in that map too, under the branch it has checked
+        // out — which is this one when `is_head`. Skipping it there is what makes
+        // the flag mean "held *somewhere else*" without comparing any paths.
+        let worktree = (!is_head).then(|| held.get(&name).cloned()).flatten();
         local.push(Branch {
             name,
             upstream: (!upstream.is_empty()).then(|| upstream.to_owned()),
@@ -1012,6 +1034,9 @@ pub fn git_branches(repo_root: String) -> Result<Branches, String> {
             behind,
             is_head,
             short,
+            subject,
+            date,
+            worktree,
         });
     }
     // HEAD is detached when no branch row was the current one, yet HEAD resolves.
@@ -1024,7 +1049,44 @@ pub fn git_branches(repo_root: String) -> Result<Branches, String> {
         .filter(|s| !s.is_empty() && !s.ends_with("/HEAD"))
         .map(str::to_owned)
         .collect();
-    Ok(Branches { current, detached, local, remote })
+    let remotes = git_stdout(root, &["remote"])
+        .unwrap_or_default()
+        .lines()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_owned)
+        .collect();
+    Ok(Branches { current, detached, local, remote, remotes })
+}
+
+/// Branch name → the path of the worktree holding it (G4), read from a single
+/// `git worktree list --porcelain`. Git refuses to check out a branch that's
+/// already checked out in another worktree; until now that surfaced as a raw error
+/// string *after* the click. Display-only — the worktree lifecycle itself stays an
+/// instance-card action (steps 2.4 / 2.5).
+fn worktree_branches(root: &Path) -> std::collections::HashMap<String, String> {
+    let mut map = std::collections::HashMap::new();
+    let Some(out) = git_stdout(root, &["worktree", "list", "--porcelain"]) else {
+        return map;
+    };
+    // Records are blank-line separated, `worktree <path>` first and an optional
+    // `branch <ref>` later; a detached worktree has no branch line at all.
+    let mut path: Option<&str> = None;
+    for line in out.lines() {
+        let line = line.trim_end();
+        if let Some(p) = line.strip_prefix("worktree ") {
+            path = Some(p.trim());
+        } else if let Some(b) = line.strip_prefix("branch ") {
+            let b = b.trim();
+            let name = b.strip_prefix("refs/heads/").unwrap_or(b);
+            if let Some(p) = path {
+                map.insert(name.to_owned(), p.to_owned());
+            }
+        } else if line.is_empty() {
+            path = None;
+        }
+    }
+    map
 }
 
 /// Parse git's `%(upstream:track)` token — `[ahead 1, behind 2]`, `[ahead 3]`,
@@ -1580,6 +1642,185 @@ fn split_message(message: &str) -> (String, String) {
         None => String::new(),
     };
     (subject, body)
+}
+
+// --- branch operations (step G4) --------------------------------------------
+// Merge, rebase, fast-forward, upstream, remote-branch delete: the §5 "Git"
+// promise of "fast-forward/merge from the panel" that step 3.11 never built. All
+// of these can *fail informatively* — a conflicting merge is a normal outcome, not
+// a broken call — so they run through `git_run_full` and hand the whole message
+// back for the panel to show in full.
+
+/// `git_run`, but for commands whose failure is worth reading in full.
+///
+/// Two differences. It returns **stdout as well as stderr** on failure: a merge
+/// that conflicts exits non-zero having written `CONFLICT (content): …` and
+/// `Automatic merge failed` to *stdout*, so `git_run` would report an empty error
+/// for the single most interesting case. And it forces `GIT_EDITOR=true`, because
+/// a merge or rebase that wants a commit message would otherwise launch an editor
+/// against a process with no terminal attached and block this call forever; `true`
+/// exits 0 immediately and git keeps the message it composed itself.
+fn git_run_full(path: &Path, args: &[&str]) -> Result<String, String> {
+    let mut cmd = Command::new("git");
+    cmd.arg("-C").arg(path).args(args).env("GIT_EDITOR", "true");
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    let out = cmd.output().map_err(|e| format!("failed to run git: {e}"))?;
+    let stdout = String::from_utf8_lossy(&out.stdout).trim().to_owned();
+    let stderr = String::from_utf8_lossy(&out.stderr).trim().to_owned();
+    if out.status.success() {
+        // Rebase reports progress on stderr and says nothing on stdout; merge is
+        // the other way round. Prefer whichever spoke.
+        return Ok(if stdout.is_empty() { stderr } else { stdout });
+    }
+    // stderr first — it carries the *reason* ("not something we can merge"); stdout
+    // carries the detail (which files conflicted).
+    let joined = [stderr, stdout]
+        .into_iter()
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n");
+    Err(if joined.is_empty() {
+        format!("git {} failed", args.first().copied().unwrap_or("command"))
+    } else {
+        joined
+    })
+}
+
+/// Merge `reference` into the current branch (G4). `mode` picks the shape:
+///
+/// * `merge` — the default: fast-forward when it can, merge commit otherwise.
+/// * `noFf` — always record a merge commit, even when a fast-forward was possible.
+/// * `squash` — apply the changes and *stage* them without committing, so the
+///   commit box writes the message.
+/// * `ffOnly` — the branch-tab "fast-forward" item: advance the current branch
+///   only if it's a strict ancestor, and refuse rather than merge if it isn't.
+///
+/// A conflict comes back as `Err` holding git's whole message; the working tree is
+/// left mid-merge for the panel's banner (abort) and the user's editor.
+#[tauri::command]
+pub fn git_merge(repo_root: String, reference: String, mode: String) -> Result<String, String> {
+    let mut args = vec!["merge"];
+    match mode.as_str() {
+        "merge" => args.push("--no-edit"),
+        "noFf" => {
+            args.push("--no-edit");
+            args.push("--no-ff");
+        }
+        // No `--no-edit` beside these two: neither writes a commit message here
+        // (squash doesn't commit at all), and git rejects the combination.
+        "squash" => args.push("--squash"),
+        "ffOnly" => args.push("--ff-only"),
+        other => return Err(format!("unknown merge mode: {other}")),
+    }
+    args.push(&reference);
+    git_run_full(Path::new(&repo_root), &args)
+}
+
+/// Abandon a conflicted merge and restore the pre-merge state (G4).
+#[tauri::command]
+pub fn git_merge_abort(repo_root: String) -> Result<String, String> {
+    git_run_full(Path::new(&repo_root), &["merge", "--abort"])
+}
+
+/// Rebase the current branch onto `onto` (G4). Non-interactive by design — the
+/// plan puts todo-list editing out of scope, and an interactive rebase would need
+/// a terminal this process doesn't have.
+#[tauri::command]
+pub fn git_rebase(repo_root: String, onto: String) -> Result<String, String> {
+    git_run_full(Path::new(&repo_root), &["rebase", &onto])
+}
+
+/// Drive a rebase that stopped (G4): `continue` after resolving, `skip` to drop
+/// the offending commit, `abort` to put the branch back where it started.
+#[tauri::command]
+pub fn git_rebase_control(repo_root: String, action: String) -> Result<String, String> {
+    let flag = match action.as_str() {
+        "continue" => "--continue",
+        "skip" => "--skip",
+        "abort" => "--abort",
+        other => return Err(format!("unknown rebase action: {other}")),
+    };
+    git_run_full(Path::new(&repo_root), &["rebase", flag])
+}
+
+/// Point a branch at an upstream (G4), or clear it when `upstream` is `None`.
+/// Purely a config write — it moves nothing and fetches nothing.
+#[tauri::command]
+pub fn git_set_upstream(
+    repo_root: String,
+    branch: String,
+    upstream: Option<String>,
+) -> Result<String, String> {
+    let root = Path::new(&repo_root);
+    match upstream.map(|s| s.trim().to_owned()).filter(|s| !s.is_empty()) {
+        Some(u) => {
+            let flag = format!("--set-upstream-to={u}");
+            git_run(root, &["branch", &flag, &branch])
+        }
+        None => git_run(root, &["branch", "--unset-upstream", &branch]),
+    }
+}
+
+/// Delete a branch **on the remote** (G4) — `git push <remote> --delete <branch>`.
+/// Destructive and irreversible from here, so the UI confirms it; `git_run_full`
+/// because a rejected delete (protected branch, no permission) explains itself
+/// across several lines.
+#[tauri::command]
+pub fn git_delete_remote_branch(
+    repo_root: String,
+    remote: String,
+    branch: String,
+) -> Result<String, String> {
+    git_run_full(Path::new(&repo_root), &["push", &remote, "--delete", &branch])
+}
+
+/// Whether the repo is in the middle of something (G4's half of what the plan
+/// files under G6).
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RepoState {
+    /// `merge` / `rebase` / `cherry-pick` / `revert`, or `None` when idle.
+    pub operation: Option<String>,
+}
+
+/// Detect a half-finished merge / rebase / cherry-pick / revert (G4).
+///
+/// The plan files `git_repo_state` under G6, but G4's own definition of done asks
+/// for "a conflicting merge leaves the panel in a clear conflicted state with abort
+/// available", and a banner driven only by the result of the command you just ran
+/// would evaporate the moment the panel remounted — claiming the repo was clean
+/// while it sat mid-merge. So the narrow half lands here: *which* operation is in
+/// flight. G6 adds the conflicted-file grouping that goes beside it.
+///
+/// Read from the git dir rather than by parsing `git status`, because that's where
+/// the state actually is; `--absolute-git-dir` resolves it correctly inside a
+/// worktree, where `.git` is a file rather than a directory.
+#[tauri::command]
+pub fn git_repo_state(repo_root: String) -> Result<RepoState, String> {
+    let Some(dir) = git_output(Path::new(&repo_root), &["rev-parse", "--absolute-git-dir"]) else {
+        return Ok(RepoState { operation: None });
+    };
+    let dir = Path::new(&dir);
+    // Rebase first: `rebase --continue` on a conflicted pick leaves both a
+    // `REBASE_HEAD` and (for a merge-backend rebase) a `CHERRY_PICK_HEAD`, and
+    // calling that a cherry-pick would offer the wrong controls.
+    let operation = if dir.join("rebase-merge").is_dir() || dir.join("rebase-apply").is_dir() {
+        Some("rebase")
+    } else if dir.join("MERGE_HEAD").is_file() {
+        Some("merge")
+    } else if dir.join("CHERRY_PICK_HEAD").is_file() {
+        Some("cherry-pick")
+    } else if dir.join("REVERT_HEAD").is_file() {
+        Some("revert")
+    } else {
+        None
+    };
+    Ok(RepoState { operation: operation.map(str::to_owned) })
 }
 
 #[cfg(test)]
@@ -2138,6 +2379,177 @@ mod tests {
         assert_eq!(default_remote(&dir), None);
         let err = git_push(root, false, true, None, None).unwrap_err();
         assert!(err.contains("no remote"), "got {err}");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    // --- branch operations (G4) ----------------------------------------------
+
+    /// A repo with a seeded base branch and a `feature` branch one commit ahead
+    /// of it, both touching `a.txt`, left checked out on base. Returns the base
+    /// branch's name: `git init` calls it `master` on some installs and `main` on
+    /// others, and none of these tests may assume either.
+    fn diverged_repo(dir: &Path) -> Option<String> {
+        if !init_repo(dir) {
+            return None;
+        }
+        let root = dir.to_string_lossy().into_owned();
+        std::fs::write(dir.join("a.txt"), "base\n").ok()?;
+        git_run(dir, &["add", "."]).ok()?;
+        git_run(dir, &["commit", "-qm", "seed"]).ok()?;
+        let base = git_branches(root.clone()).ok()?.current?;
+        git_create_branch(root.clone(), "feature".into(), None, true).ok()?;
+        std::fs::write(dir.join("a.txt"), "feature\n").ok()?;
+        git_run(dir, &["commit", "-aqm", "on feature"]).ok()?;
+        git_checkout(root, base.clone()).ok()?;
+        Some(base)
+    }
+
+    #[test]
+    fn merge_fast_forwards_when_it_can_and_commits_when_told_not_to() {
+        let dir = temp_dir("g4-merge");
+        let Some(base) = diverged_repo(&dir) else {
+            std::fs::remove_dir_all(&dir).ok();
+            return;
+        };
+        let root = dir.to_string_lossy().into_owned();
+
+        // base is a strict ancestor of feature, so --ff-only is allowed to move it.
+        git_merge(root.clone(), "feature".into(), "ffOnly".into()).unwrap();
+        // Trimmed: a checkout under `core.autocrlf` writes CRLF, and which
+        // *version* of the file landed is the whole point of the assertion.
+        assert_eq!(std::fs::read_to_string(dir.join("a.txt")).unwrap().trim_end(), "feature");
+        assert_eq!(
+            git_output(&dir, &["rev-parse", "HEAD"]),
+            git_output(&dir, &["rev-parse", "feature"]),
+            "a fast-forward lands *on* the branch — no merge commit"
+        );
+
+        // The same shape merged with --no-ff must record one anyway.
+        git_create_branch(root.clone(), "second".into(), None, true).unwrap();
+        std::fs::write(dir.join("b.txt"), "b\n").unwrap();
+        git_run(&dir, &["add", "."]).unwrap();
+        git_run(&dir, &["commit", "-qm", "on second"]).unwrap();
+        git_checkout(root.clone(), base).unwrap();
+        git_merge(root, "second".into(), "noFf".into()).unwrap();
+        let parents = git_output(&dir, &["rev-list", "--parents", "-n", "1", "HEAD"]).unwrap();
+        assert_eq!(
+            parents.split_whitespace().count(),
+            3,
+            "commit + two parents, i.e. a merge commit: {parents}"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// The case `git_run` couldn't report: a conflicting merge writes its
+    /// `CONFLICT` lines to *stdout* and exits non-zero, so the old helper would
+    /// have surfaced an empty error for the most informative failure there is.
+    #[test]
+    fn a_conflicting_merge_reports_its_output_and_abort_restores_the_tree() {
+        let dir = temp_dir("g4-conflict");
+        let Some(_base) = diverged_repo(&dir) else {
+            std::fs::remove_dir_all(&dir).ok();
+            return;
+        };
+        let root = dir.to_string_lossy().into_owned();
+        std::fs::write(dir.join("a.txt"), "base changed\n").unwrap();
+        git_run(&dir, &["commit", "-aqm", "on base"]).unwrap();
+
+        assert!(git_repo_state(root.clone()).unwrap().operation.is_none(), "idle to begin with");
+        let err = git_merge(root.clone(), "feature".into(), "merge".into()).unwrap_err();
+        // Assert on the path rather than on git's wording, which is translated.
+        assert!(err.contains("a.txt"), "the message names the conflicted file: {err}");
+        assert_eq!(
+            git_repo_state(root.clone()).unwrap().operation.as_deref(),
+            Some("merge"),
+            "and the repo is left mid-merge for the panel's banner"
+        );
+
+        git_merge_abort(root.clone()).unwrap();
+        assert!(git_repo_state(root).unwrap().operation.is_none(), "abort cleared it");
+        assert_eq!(
+            std::fs::read_to_string(dir.join("a.txt")).unwrap().trim_end(),
+            "base changed",
+            "and put the file back"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn rebase_replays_the_branch_onto_another() {
+        let dir = temp_dir("g4-rebase");
+        let Some(base) = diverged_repo(&dir) else {
+            std::fs::remove_dir_all(&dir).ok();
+            return;
+        };
+        let root = dir.to_string_lossy().into_owned();
+        // base moves on a *different* file, so the replay applies cleanly.
+        std::fs::write(dir.join("c.txt"), "c\n").unwrap();
+        git_run(&dir, &["add", "."]).unwrap();
+        git_run(&dir, &["commit", "-qm", "on base"]).unwrap();
+
+        git_checkout(root.clone(), "feature".into()).unwrap();
+        git_rebase(root, base.clone()).unwrap();
+        assert_eq!(
+            git_output(&dir, &["rev-parse", "HEAD^"]),
+            git_output(&dir, &["rev-parse", &base]),
+            "feature now sits directly on base's tip"
+        );
+        assert!(dir.join("c.txt").exists(), "and the working tree carries base's commit");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn set_upstream_points_a_branch_and_clears_it() {
+        let dir = temp_dir("g4-upstream");
+        let Some(base) = diverged_repo(&dir) else {
+            std::fs::remove_dir_all(&dir).ok();
+            return;
+        };
+        let root = dir.to_string_lossy().into_owned();
+        // Tracking a *local* branch exercises the same config write; a bare repo
+        // in the fixture would only add moving parts.
+        git_set_upstream(root.clone(), "feature".into(), Some(base.clone())).unwrap();
+        let feature = |b: Branches| b.local.into_iter().find(|b| b.name == "feature").unwrap();
+
+        let tracked = feature(git_branches(root.clone()).unwrap());
+        assert_eq!(tracked.upstream.as_deref(), Some(base.as_str()));
+        assert_eq!(tracked.ahead, 1, "and ahead/behind finally has something to count");
+
+        git_set_upstream(root.clone(), "feature".into(), None).unwrap();
+        assert!(feature(git_branches(root).unwrap()).upstream.is_none(), "cleared");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Git refuses to check out a branch another worktree holds; the branch list
+    /// has to say so before the click, not after it fails.
+    #[test]
+    fn branches_mark_one_checked_out_in_another_worktree() {
+        let dir = temp_dir("g4-held");
+        let Some(_base) = diverged_repo(&dir) else {
+            std::fs::remove_dir_all(&dir).ok();
+            return;
+        };
+        let root = dir.to_string_lossy().into_owned();
+        let wt = dir.join("wt").to_string_lossy().into_owned();
+        if git_run(&dir, &["worktree", "add", "-q", &wt, "feature"]).is_err() {
+            std::fs::remove_dir_all(&dir).ok();
+            return;
+        }
+
+        let branches = git_branches(root).unwrap();
+        let feature = branches.local.iter().find(|b| b.name == "feature").unwrap();
+        assert!(feature.worktree.is_some(), "held elsewhere: {feature:?}");
+        let head = branches.local.iter().find(|b| b.is_head).unwrap();
+        assert!(
+            head.worktree.is_none(),
+            "but the branch *this* worktree has out isn't 'held elsewhere': {head:?}"
+        );
+        assert!(!head.subject.is_empty(), "and every row carries its tip subject");
+
         std::fs::remove_dir_all(&dir).ok();
     }
 }

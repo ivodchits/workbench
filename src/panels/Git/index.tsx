@@ -25,6 +25,15 @@
 // backends land in later steps — present, disabled, and carrying the reason. What
 // each menu holds is in `menus.ts`; the actions they call are the same ones the
 // hover buttons call, so nothing routes around an existing confirm.
+//
+// G4 filled in the branch operations §5 always promised: merge (plain / no-ff /
+// squash), fast-forward, rebase-onto, set-upstream, and delete-on-remote, all
+// from the branch tab's menu and all behind a confirm. Because those are the
+// commands that *fail productively* — a conflict is an outcome, not a bug — their
+// failure doesn't go to the one-line notice: it opens a scrollable output dialog
+// with git's whole message, and the panel picks up a banner (fed by
+// `git_repo_state`) offering continue / skip / abort until the repo is idle again.
+// The branch tab itself moved to `BranchesTab.tsx` on the way through.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { IDockviewPanelProps } from "dockview";
@@ -39,14 +48,21 @@ import {
   gitCommitFiles,
   gitCreateBranch,
   gitDeleteBranch,
+  gitDeleteRemoteBranch,
   gitDiscard,
   gitFetch,
   gitHeadCommit,
   gitIgnoreAdd,
   gitLog,
+  gitMerge,
+  gitMergeAbort,
   gitPull,
   gitPush,
+  gitRebase,
+  gitRebaseControl,
   gitRenameBranch,
+  gitRepoState,
+  gitSetUpstream,
   gitStage,
   gitStashApply,
   gitStashBranch,
@@ -63,6 +79,8 @@ import {
   type Commit,
   type DiffFile,
   type HeadCommit,
+  type MergeMode,
+  type RepoState,
   type Stash,
   type StatusEntry,
 } from "../../ipc/git";
@@ -75,15 +93,15 @@ import ContextMenu from "../../components/ContextMenu";
 import { useContextMenu } from "../../components/useContextMenu";
 import Modal from "../InstanceManager/Modal";
 import UnifiedDiff from "../Diff/UnifiedDiff";
+import BranchesTab from "./BranchesTab";
 import CommitBox, { type CommitRequest } from "./CommitBox";
 import { clearDraft } from "./draft";
 import {
   commitFileRowMenu,
   commitRowMenu,
   fileRowMenu,
-  localBranchMenu,
-  remoteBranchMenu,
   stashRowMenu,
+  type BranchActions,
   type FileActions,
 } from "./menus";
 import {
@@ -127,6 +145,8 @@ interface RepoData {
   stashes: Stash[];
   /** HEAD's commit — the amend prefill; null in a repo with no commits yet. */
   head: HeadCommit | null;
+  /** Mid-merge / mid-rebase / … (G4) — what the operation banner reads. */
+  state: RepoState;
 }
 
 /**
@@ -136,8 +156,7 @@ interface RepoData {
  * glyph button beside it can't drift into two different code paths — in
  * particular, the destructive ones stay behind the confirms that already exist.
  */
-interface PanelActions {
-  busy: boolean;
+interface PanelActions extends BranchActions {
   /** Copy to the clipboard and say so on the notice line. */
   copy: (text: string, what: string) => void;
   /** Repo-relative path → absolute, forward-slashed. */
@@ -145,12 +164,6 @@ interface PanelActions {
   openInEditor: (rel: string) => void;
   reveal: (rel: string) => void;
   ignore: (rel: string) => void;
-  checkout: (reference: string) => void;
-  branchFrom: (startPoint: string) => void;
-  rename: (branch: Branch) => void;
-  deleteBranch: (name: string) => void;
-  push: () => void;
-  pull: () => void;
   stashApply: (reference: string) => void;
   stashShow: (stash: Stash) => void;
   stashBranch: (stash: Stash) => void;
@@ -171,7 +184,12 @@ type Confirm =
   | { kind: "stashDrop"; stash: Stash }
   | { kind: "push"; force: boolean }
   | { kind: "publish"; branch: string }
-  | { kind: "amendPushed"; req: CommitRequest; head: HeadCommit };
+  | { kind: "amendPushed"; req: CommitRequest; head: HeadCommit }
+  // G4. Rebase rewrites the current branch's commits, so it's a confirm even
+  // though nothing is destroyed; `rebaseSkip` throws one commit away outright.
+  | { kind: "rebase"; onto: string; head: string; warnLive: boolean }
+  | { kind: "rebaseSkip" }
+  | { kind: "deleteRemoteBranch"; remote: string; branch: string };
 
 function GitBody({ session }: { session: GitSession }) {
   const { repoRoot } = session;
@@ -192,6 +210,11 @@ function GitBody({ session }: { session: GitSession }) {
   // name prompt for branching off one.
   const [stashDiff, setStashDiff] = useState<{ stash: Stash; text: string | null; error: string | null } | null>(null);
   const [stashBranching, setStashBranching] = useState<{ stash: Stash; warnLive: boolean } | null>(null);
+  // G4: the merge composer (ref + how to merge it), the upstream picker, and the
+  // full-output surface a conflicting merge/rebase lands in.
+  const [merging, setMerging] = useState<{ reference: string; mode: MergeMode; warnLive: boolean } | null>(null);
+  const [upstreaming, setUpstreaming] = useState<Branch | null>(null);
+  const [output, setOutput] = useState<{ title: string; text: string } | null>(null);
 
   // The panel measures itself, not the window — the same window can hold a wide
   // Git panel and a narrow one, and each lays out for the box it's actually in.
@@ -203,15 +226,16 @@ function GitBody({ session }: { session: GitSession }) {
     try {
       // The stored splitter positions ride along with the first read, so the tabs
       // mount at the right sizes instead of snapping a beat after they appear.
-      const [branches, log, status, stashes, head] = await Promise.all([
+      const [branches, log, status, stashes, head, state] = await Promise.all([
         gitBranches(repoRoot),
         gitLog(repoRoot),
         gitStatusEntries(repoRoot),
         gitStashList(repoRoot),
         gitHeadCommit(repoRoot),
+        gitRepoState(repoRoot),
         hydrateGitLayout(),
       ]);
-      setData({ branches, log, status, stashes, head });
+      setData({ branches, log, status, stashes, head, state });
       setLoadError(null);
     } catch (err) {
       setLoadError(String(err));
@@ -225,28 +249,55 @@ function GitBody({ session }: { session: GitSession }) {
     void load();
   }, [load]);
 
-  // Run a write op, then refresh. A failure surfaces git's message and leaves the
-  // view as-is; success reloads (and clears any open confirm/dialog). `okText` may
-  // be a function so a notice can quote what git returned (e.g. the new short SHA).
+  /** Dismiss every open confirm/dialog. Once an op has actually run, whatever
+   *  asked for it is answered — leaving it on screen behind the result is how a
+   *  panel ends up offering to do the thing it just did. */
+  const closeDialogs = useCallback(() => {
+    setConfirm(null);
+    setCreating(null);
+    setRenaming(null);
+    setStashBranching(null);
+    setMerging(null);
+    setUpstreaming(null);
+  }, []);
+
+  // Run a write op, then refresh. Success reloads and clears any open
+  // confirm/dialog; `okText` may be a function so a notice can quote what git
+  // returned (e.g. the new short SHA).
+  //
+  // A failure normally surfaces git's message on the one-line banner and leaves
+  // the view as-is. `failTitle` (G4) is for the commands whose failure is a real
+  // outcome rather than a rejected call — a conflicting merge or rebase has
+  // *changed the working tree* on its way to failing — so those reload as well
+  // and put git's whole multi-line message in a scrollable dialog, where the
+  // banner would have shown one line of it.
   const run = useCallback(
-    async (op: () => Promise<string>, okText?: string | ((out: string) => string)) => {
+    async (
+      op: () => Promise<string>,
+      okText?: string | ((out: string) => string),
+      failTitle?: string,
+    ) => {
       setBusy(true);
       setNotice(null);
       try {
         const out = await op();
-        setConfirm(null);
-        setCreating(null);
-        setRenaming(null);
-        setStashBranching(null);
+        closeDialogs();
         await load();
         if (okText) setNotice({ kind: "ok", text: typeof okText === "function" ? okText(out) : okText });
       } catch (err) {
-        setNotice({ kind: "err", text: String(err instanceof Error ? err.message : err) });
+        const text = String(err instanceof Error ? err.message : err);
+        if (failTitle) {
+          closeDialogs();
+          await load();
+          setOutput({ title: failTitle, text });
+        } else {
+          setNotice({ kind: "err", text });
+        }
       } finally {
         setBusy(false);
       }
     },
-    [load],
+    [load, closeDialogs],
   );
 
   // Instances of this project running live in the repo root (not a worktree) —
@@ -319,6 +370,7 @@ function GitBody({ session }: { session: GitSession }) {
   // honest as menu items are added.
   const actions: PanelActions = {
     busy,
+    head: data?.branches.detached ? null : data?.branches.current ?? null,
     copy: (text, what) => {
       void navigator.clipboard
         .writeText(text)
@@ -348,6 +400,31 @@ function GitBody({ session }: { session: GitSession }) {
     deleteBranch: (name) => setConfirm({ kind: "deleteBranch", name }),
     push: requestPush,
     pull: () => void run(() => gitPull(repoRoot), "pulled"),
+    // Merge, fast-forward and rebase all rewrite the working tree under whatever
+    // is running in it, so each carries the §6 shared-working-dir warning. Merge
+    // opens a dialog rather than a plain confirm: the choice between a merge
+    // commit, a forced one, and a squash belongs at the moment you merge.
+    merge: (reference, mode) => setMerging({ reference, mode, warnLive: liveRootInstances() > 0 }),
+    rebase: (onto) =>
+      setConfirm({
+        kind: "rebase",
+        onto,
+        head: headBranch?.name ?? "HEAD",
+        warnLive: liveRootInstances() > 0,
+      }),
+    setUpstream: setUpstreaming,
+    deleteRemote: (remoteBranch) => {
+      // `origin/topic` → remote `origin`, branch `topic`. Longest name first, so a
+      // remote called `origin` can't claim a branch on `origin2`.
+      const remote = [...(data?.branches.remotes ?? [])]
+        .sort((a, b) => b.length - a.length)
+        .find((r) => remoteBranch.startsWith(`${r}/`));
+      if (!remote) {
+        setNotice({ kind: "err", text: `can't tell which remote ${remoteBranch} belongs to` });
+        return;
+      }
+      setConfirm({ kind: "deleteRemoteBranch", remote, branch: remoteBranch.slice(remote.length + 1) });
+    },
     stashApply: (reference) => void run(() => gitStashApply(repoRoot, reference), "applied (stash kept)"),
     stashShow: showStash,
     // Creates *and checks out* a branch, so it moves HEAD — the §6 shared-working-
@@ -373,6 +450,22 @@ function GitBody({ session }: { session: GitSession }) {
       />
 
       <TabBar tab={tab} onTab={setTab} counts={data} orientation={orientation} />
+
+      {data?.state.operation && (
+        <OperationBanner
+          operation={data.state.operation}
+          busy={busy}
+          onContinue={() =>
+            void run(() => gitRebaseControl(repoRoot, "continue"), "rebase continued", "rebase")
+          }
+          onSkip={() => setConfirm({ kind: "rebaseSkip" })}
+          onAbort={() =>
+            data.state.operation === "rebase"
+              ? void run(() => gitRebaseControl(repoRoot, "abort"), "rebase aborted", "rebase")
+              : void run(() => gitMergeAbort(repoRoot), "merge aborted", "merge")
+          }
+        />
+      )}
 
       {notice && (
         <div
@@ -404,12 +497,8 @@ function GitBody({ session }: { session: GitSession }) {
         ) : tab === "branches" ? (
           <BranchesTab
             branches={data.branches}
-            busy={busy}
             actions={actions}
-            onCheckout={requestCheckout}
-            onCreate={(startPoint) => setCreating({ startPoint })}
-            onRename={setRenaming}
-            onDelete={(name) => setConfirm({ kind: "deleteBranch", name })}
+            onNewBranch={() => setCreating({ startPoint: null })}
           />
         ) : (
           <StatusTab
@@ -468,9 +557,69 @@ function GitBody({ session }: { session: GitSession }) {
               case "amendPushed":
                 doCommit(confirm.req, true);
                 break;
+              case "rebase": {
+                const { onto } = confirm;
+                void run(() => gitRebase(repoRoot, onto), `rebased onto ${onto}`, `rebase onto ${onto}`);
+                break;
+              }
+              case "rebaseSkip":
+                void run(() => gitRebaseControl(repoRoot, "skip"), "commit skipped", "rebase");
+                break;
+              case "deleteRemoteBranch": {
+                const { remote, branch } = confirm;
+                void run(
+                  () => gitDeleteRemoteBranch(repoRoot, remote, branch),
+                  `deleted ${remote}/${branch}`,
+                  `delete ${remote}/${branch}`,
+                );
+                break;
+              }
             }
           }}
         />
+      )}
+
+      {merging && (
+        <MergeDialog
+          reference={merging.reference}
+          into={headBranch?.name ?? null}
+          mode={merging.mode}
+          warnLive={merging.warnLive}
+          busy={busy}
+          onClose={() => setMerging(null)}
+          onMerge={(mode) =>
+            void run(
+              () => gitMerge(repoRoot, merging.reference, mode),
+              mode === "squash"
+                ? `squashed ${merging.reference} into the index — commit to finish`
+                : mode === "ffOnly"
+                  ? `fast-forwarded to ${merging.reference}`
+                  : `merged ${merging.reference}`,
+              `merge ${merging.reference}`,
+            )
+          }
+        />
+      )}
+
+      {upstreaming && (
+        <SetUpstreamDialog
+          branch={upstreaming}
+          candidates={data?.branches.remote ?? []}
+          busy={busy}
+          onClose={() => setUpstreaming(null)}
+          onSet={(upstream) =>
+            void run(
+              () => gitSetUpstream(repoRoot, upstreaming.name, upstream),
+              upstream
+                ? `${upstreaming.name} now tracks ${upstream}`
+                : `${upstreaming.name} no longer tracks anything`,
+            )
+          }
+        />
+      )}
+
+      {output && (
+        <OutputDialog title={output.title} text={output.text} onClose={() => setOutput(null)} />
       )}
 
       {creating && (
@@ -1012,163 +1161,6 @@ function CommitFileList({
           );
         })
       )}
-    </div>
-  );
-}
-
-// --- branches tab -----------------------------------------------------------
-
-function BranchesTab({
-  branches,
-  busy,
-  actions,
-  onCheckout,
-  onCreate,
-  onRename,
-  onDelete,
-}: {
-  branches: Branches;
-  busy: boolean;
-  actions: PanelActions;
-  onCheckout: (reference: string) => void;
-  onCreate: (startPoint: string | null) => void;
-  onRename: (branch: Branch) => void;
-  onDelete: (name: string) => void;
-}) {
-  const { anchor, openMenu, closeMenu } = useContextMenu();
-  return (
-    <div style={{ flex: 1, overflow: "auto", minHeight: 0 }}>
-      <SectionHead>
-        local
-        <button onClick={() => onCreate(null)} disabled={busy} style={miniActionStyle}>
-          + new branch
-        </button>
-      </SectionHead>
-      {branches.local.map((b) => (
-        <LocalBranchRow
-          key={b.name}
-          branch={b}
-          busy={busy}
-          onCheckout={() => onCheckout(b.name)}
-          onRename={() => onRename(b)}
-          onDelete={() => onDelete(b.name)}
-          onMenu={(e) => openMenu(e, localBranchMenu(b, actions))}
-        />
-      ))}
-
-      {branches.remote.length > 0 && (
-        <>
-          <SectionHead>remote</SectionHead>
-          {branches.remote.map((r) => (
-            <RemoteBranchRow
-              key={r}
-              name={r}
-              busy={busy}
-              onCheckout={() => onCheckout(r)}
-              onMenu={(e) => openMenu(e, remoteBranchMenu(r, actions))}
-            />
-          ))}
-        </>
-      )}
-
-      {anchor && <ContextMenu {...anchor} onClose={closeMenu} />}
-    </div>
-  );
-}
-
-function LocalBranchRow({
-  branch,
-  busy,
-  onCheckout,
-  onRename,
-  onDelete,
-  onMenu,
-}: {
-  branch: Branch;
-  busy: boolean;
-  onCheckout: () => void;
-  onRename: () => void;
-  onDelete: () => void;
-  onMenu: (e: React.MouseEvent) => void;
-}) {
-  const [hover, setHover] = useState(false);
-  return (
-    <div
-      onMouseEnter={() => setHover(true)}
-      onMouseLeave={() => setHover(false)}
-      onDoubleClick={() => !branch.isHead && !busy && onCheckout()}
-      onContextMenu={onMenu}
-      style={{ display: "flex", alignItems: "center", gap: 9, padding: "4px 14px", font: "12px var(--wb-mono)" }}
-    >
-      <span style={{ flex: "0 0 auto", width: 10, color: branch.isHead ? "var(--wb-done)" : "transparent" }}>●</span>
-      <span style={{ minWidth: 0, flex: 1, display: "flex", flexDirection: "column", gap: 1 }}>
-        <span style={{ display: "flex", alignItems: "baseline", gap: 7 }}>
-          <span
-            style={{
-              color: branch.isHead ? "var(--wb-text)" : "var(--wb-textDim2)",
-              fontWeight: branch.isHead ? 600 : 400,
-              overflow: "hidden",
-              textOverflow: "ellipsis",
-              whiteSpace: "nowrap",
-            }}
-          >
-            {branch.name}
-          </span>
-          {branch.ahead > 0 && <span style={{ font: "9.5px var(--wb-mono)", color: "var(--wb-done)" }}>↑{branch.ahead}</span>}
-          {branch.behind > 0 && <span style={{ font: "9.5px var(--wb-mono)", color: "var(--wb-working)" }}>↓{branch.behind}</span>}
-        </span>
-        {branch.upstream && (
-          <span style={{ font: "9.5px var(--wb-mono)", color: "var(--wb-textFaint)" }}>→ {branch.upstream}</span>
-        )}
-      </span>
-      <span style={{ flex: "0 0 auto", font: "9.5px var(--wb-mono)", color: "var(--wb-textFaint)" }}>{branch.short}</span>
-      <span style={{ flex: "0 0 auto", display: "flex", gap: 9, visibility: hover ? "visible" : "hidden" }}>
-        {!branch.isHead && (
-          <RowAction onClick={onCheckout} label="checkout" disabled={busy}>
-            ⇄
-          </RowAction>
-        )}
-        <RowAction onClick={onRename} label="rename branch" disabled={busy}>
-          ✎
-        </RowAction>
-        {!branch.isHead && (
-          <RowAction onClick={onDelete} label="delete branch" disabled={busy} danger>
-            {GLYPH.fail}
-          </RowAction>
-        )}
-      </span>
-    </div>
-  );
-}
-
-function RemoteBranchRow({
-  name,
-  busy,
-  onCheckout,
-  onMenu,
-}: {
-  name: string;
-  busy: boolean;
-  onCheckout: () => void;
-  onMenu: (e: React.MouseEvent) => void;
-}) {
-  const [hover, setHover] = useState(false);
-  return (
-    <div
-      onMouseEnter={() => setHover(true)}
-      onMouseLeave={() => setHover(false)}
-      onDoubleClick={() => !busy && onCheckout()}
-      onContextMenu={onMenu}
-      style={{ display: "flex", alignItems: "center", gap: 9, padding: "4px 14px 4px 24px", font: "12px var(--wb-mono)" }}
-    >
-      <span style={{ minWidth: 0, flex: 1, color: "var(--wb-textDim2)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-        {name}
-      </span>
-      <span style={{ flex: "0 0 auto", visibility: hover ? "visible" : "hidden" }}>
-        <RowAction onClick={onCheckout} label="checkout (detached / tracking)" disabled={busy}>
-          ⇄
-        </RowAction>
-      </span>
     </div>
   );
 }
@@ -1910,7 +1902,139 @@ function describeConfirm(c: Confirm): { title: string; body: React.ReactNode; la
           </>
         ),
       };
+    case "rebase":
+      return {
+        title: "rebase",
+        label: "↳ rebase",
+        danger: false,
+        body: (
+          <>
+            Replay <Ref>{c.head}</Ref>'s commits on top of <Ref>{c.onto}</Ref>? Every commit that
+            isn't already on <Ref>{c.onto}</Ref> is rewritten, so anyone who has pulled this branch
+            will have to reconcile — and a conflict stops the rebase partway for you to resolve.
+            {c.warnLive && <LiveWarning />}
+          </>
+        ),
+      };
+    case "rebaseSkip":
+      return {
+        title: "skip this commit",
+        label: `${GLYPH.warn} skip`,
+        danger: true,
+        body: (
+          <>
+            Drop the commit the rebase stopped on and carry on with the rest? Its changes won't be
+            in the rebased branch at all.
+          </>
+        ),
+      };
+    case "deleteRemoteBranch":
+      return {
+        title: "delete on remote",
+        label: `${GLYPH.fail} delete`,
+        danger: true,
+        body: (
+          <>
+            Delete <Ref>{c.branch}</Ref> on <Ref>{c.remote}</Ref>? This deletes it for everyone
+            using that remote; the local branch, if you have one, stays.
+          </>
+        ),
+      };
   }
+}
+
+/** A ref name in dialog prose — the panel's accent + monospace, in one place
+ *  because half the confirms name one. */
+function Ref({ children }: { children: React.ReactNode }) {
+  return (
+    <strong style={{ color: "var(--wb-accent)", fontFamily: "var(--wb-mono)" }}>{children}</strong>
+  );
+}
+
+/** The §6 shared-working-dir warning, shown by every dialog that moves HEAD or
+ *  rewrites the working tree under a live agent. */
+function LiveWarning() {
+  return (
+    <div style={{ marginTop: 8, color: "var(--wb-working)" }}>
+      {GLYPH.warn} A live agent is running in this project's root — this rewrites the working tree
+      under it. Consider isolating it in a worktree first.
+    </div>
+  );
+}
+
+/**
+ * The repo is mid-merge / mid-rebase / mid-cherry-pick / mid-revert (G4). Until
+ * now the panel gave no sign of this at all: a conflicted merge just looked like
+ * a working tree with odd files in it, and the way out was to leave for a shell.
+ *
+ * Rebase gets the full set of controls, since a stopped rebase is *only*
+ * escapable through them. A merge gets abort — its "continue" is an ordinary
+ * commit, which the commit box below already is. Cherry-pick and revert can't be
+ * started from the panel yet (G7), so if one is in flight it came from elsewhere
+ * and the banner says so rather than offering half a set of buttons.
+ */
+function OperationBanner({
+  operation,
+  busy,
+  onContinue,
+  onSkip,
+  onAbort,
+}: {
+  operation: string;
+  busy: boolean;
+  onContinue: () => void;
+  onSkip: () => void;
+  onAbort: () => void;
+}) {
+  const rebase = operation === "rebase";
+  const merge = operation === "merge";
+  const what = rebase
+    ? "rebase in progress — resolve the conflicts and stage them, then continue"
+    : merge
+      ? "merge in progress — resolve the conflicts, stage them, and commit"
+      : `${operation} in progress — started outside the panel; finish it in the Project Shell`;
+  return (
+    <div
+      style={{
+        flex: "0 0 auto",
+        display: "flex",
+        alignItems: "center",
+        gap: 12,
+        flexWrap: "wrap",
+        padding: "5px 12px",
+        borderBottom: "1px solid var(--wb-border)",
+        background: "var(--wb-titlebar)",
+        font: "11px var(--wb-mono)",
+        color: "var(--wb-working)",
+      }}
+    >
+      <span style={{ minWidth: 0 }}>
+        {GLYPH.warn} {what}
+      </span>
+      <span style={{ marginLeft: "auto", flex: "0 0 auto", display: "flex", gap: 12 }}>
+        {rebase && (
+          <>
+            <HeaderButton onClick={onContinue} disabled={busy} accent title="git rebase --continue">
+              ▸ continue
+            </HeaderButton>
+            <HeaderButton onClick={onSkip} disabled={busy} title="drop the stopped commit and carry on">
+              ↷ skip
+            </HeaderButton>
+          </>
+        )}
+        {(rebase || merge) && (
+          <HeaderButton
+            onClick={onAbort}
+            disabled={busy}
+            danger
+            title={rebase ? "put the branch back where the rebase started" : "restore the pre-merge state"}
+          >
+            ⨯ abort
+          </HeaderButton>
+        )}
+      </span>
+    </div>
+  );
 }
 
 function BranchCreateDialog({
@@ -2115,6 +2239,212 @@ function StashBranchDialog({
           style={{ ...confirmButtonStyle, borderColor: "var(--wb-borderActive)" }}
         >
           {busy ? "working…" : "create + apply"}
+        </button>
+      </div>
+    </Modal>
+  );
+}
+
+/**
+ * How to merge a ref into the current branch (G4). A confirm with a choice: the
+ * difference between a merge commit, a forced one, and a squash is a decision
+ * you make *at* the merge, and burying it in three near-identical menu items
+ * would make the menu longer without making the choice any clearer.
+ *
+ * "fast-forward" arrives here too, with `ffOnly` preselected — it's the same
+ * command with a mode that refuses to create a merge commit.
+ */
+function MergeDialog({
+  reference,
+  into,
+  mode: initial,
+  warnLive,
+  busy,
+  onClose,
+  onMerge,
+}: {
+  reference: string;
+  /** The current branch, or null when HEAD is detached (the menu blocks that). */
+  into: string | null;
+  mode: MergeMode;
+  warnLive: boolean;
+  busy: boolean;
+  onClose: () => void;
+  onMerge: (mode: MergeMode) => void;
+}) {
+  const [mode, setMode] = useState<MergeMode>(initial);
+  const options: { id: MergeMode; label: string; note: string }[] = [
+    { id: "merge", label: "merge", note: "fast-forward if it can, merge commit otherwise" },
+    { id: "noFf", label: "no fast-forward", note: "always record a merge commit" },
+    { id: "squash", label: "squash", note: "stage the changes as one, don't commit" },
+    { id: "ffOnly", label: "fast-forward only", note: "advance, or refuse if that isn't possible" },
+  ];
+  return (
+    <Modal title="merge" onClose={onClose} width={440}>
+      <div style={{ fontSize: 12.5, color: "var(--wb-text)", lineHeight: 1.5 }}>
+        Merge <Ref>{reference}</Ref> into <Ref>{into ?? "HEAD"}</Ref>?
+      </div>
+      <div style={{ display: "flex", flexDirection: "column", gap: 6, marginTop: 12 }}>
+        {options.map((o) => (
+          <label
+            key={o.id}
+            style={{
+              display: "flex",
+              alignItems: "baseline",
+              gap: 8,
+              font: "11.5px var(--wb-mono)",
+              color: mode === o.id ? "var(--wb-text)" : "var(--wb-textDim2)",
+              cursor: "pointer",
+            }}
+          >
+            <input
+              type="radio"
+              name="merge-mode"
+              checked={mode === o.id}
+              onChange={() => setMode(o.id)}
+              style={{ margin: 0, cursor: "pointer" }}
+            />
+            <span>{o.label}</span>
+            <span style={{ font: "10px var(--wb-mono)", color: "var(--wb-textFaint)" }}>{o.note}</span>
+          </label>
+        ))}
+      </div>
+      <div style={{ marginTop: 10, font: "11px var(--wb-mono)", color: "var(--wb-textFaint)", lineHeight: 1.5 }}>
+        A conflict stops here and leaves the files marked up for you to resolve — the panel keeps an
+        abort within reach until it's finished.
+        {mode === "squash" && (
+          // A squash records no MERGE_HEAD, so there's no merge for `--abort` to
+          // undo and no banner to hang it on. Say so before, not after.
+          <> Not for a squash, though: git records no merge to abort, so a conflict there is
+          resolved or discarded by hand.</>
+        )}
+      </div>
+      {warnLive && (
+        <div style={{ fontSize: 12.5, lineHeight: 1.5 }}>
+          <LiveWarning />
+        </div>
+      )}
+      <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 16 }}>
+        <button onClick={onClose} style={confirmButtonStyle}>
+          cancel
+        </button>
+        <button
+          onClick={() => onMerge(mode)}
+          disabled={busy}
+          style={{ ...confirmButtonStyle, borderColor: "var(--wb-borderActive)" }}
+        >
+          {busy ? "working…" : "⎇ merge"}
+        </button>
+      </div>
+    </Modal>
+  );
+}
+
+/** Pick the remote branch a local branch tracks (G4) — config only, so there's no
+ *  confirm: nothing is pushed, fetched, or moved, and it's reversible from the
+ *  same dialog. */
+function SetUpstreamDialog({
+  branch,
+  candidates,
+  busy,
+  onClose,
+  onSet,
+}: {
+  branch: Branch;
+  candidates: string[];
+  busy: boolean;
+  onClose: () => void;
+  onSet: (upstream: string | null) => void;
+}) {
+  // Prefer a same-named remote branch when the branch has no upstream yet: that's
+  // the one it almost always wants, and it saves reading a list of forty.
+  const [pick, setPick] = useState(
+    () => branch.upstream ?? candidates.find((c) => c.endsWith(`/${branch.name}`)) ?? "",
+  );
+  return (
+    <Modal title="set upstream" onClose={onClose} width={420}>
+      <div style={{ fontSize: 12.5, color: "var(--wb-text)", lineHeight: 1.5 }}>
+        What should <Ref>{branch.name}</Ref> track?
+      </div>
+      {candidates.length === 0 ? (
+        <div style={{ marginTop: 10, font: "11px var(--wb-mono)", color: "var(--wb-textFaint)", lineHeight: 1.5 }}>
+          No remote branches are known yet. Fetch first, or publish this branch from the header —
+          that sets an upstream on its way past.
+        </div>
+      ) : (
+        <select
+          value={pick}
+          onChange={(e) => setPick(e.target.value)}
+          style={{ ...inputStyle, width: "100%", marginTop: 10 }}
+        >
+          <option value="">— none (stop tracking) —</option>
+          {candidates.map((c) => (
+            <option key={c} value={c}>
+              {c}
+            </option>
+          ))}
+        </select>
+      )}
+      <div style={{ marginTop: 10, font: "11px var(--wb-mono)", color: "var(--wb-textFaint)", lineHeight: 1.5 }}>
+        Config only — this pushes and fetches nothing. It's what makes ahead/behind, plain{" "}
+        <span style={{ fontFamily: "var(--wb-mono)" }}>push</span> and{" "}
+        <span style={{ fontFamily: "var(--wb-mono)" }}>pull</span> know where to look.
+      </div>
+      <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 16 }}>
+        <button onClick={onClose} style={confirmButtonStyle}>
+          cancel
+        </button>
+        <button
+          onClick={() => onSet(pick === "" ? null : pick)}
+          disabled={busy || (pick === "" && branch.upstream == null)}
+          title={pick === "" && branch.upstream == null ? "this branch already tracks nothing" : undefined}
+          style={{ ...confirmButtonStyle, borderColor: "var(--wb-borderActive)" }}
+        >
+          {busy ? "working…" : pick === "" ? "clear" : "set"}
+        </button>
+      </div>
+    </Modal>
+  );
+}
+
+/**
+ * Git's whole output from an operation that failed productively (G4) — a merge
+ * that conflicted, a rebase that stopped, a rejected remote delete. The panel's
+ * notice line is one row of text; these messages are ten, and the important part
+ * (*which files conflicted*) is never the first line. G8 replaces this with a
+ * permanent expandable error surface plus a scrollback; until then this is the
+ * one place output isn't truncated.
+ */
+function OutputDialog({
+  title,
+  text,
+  onClose,
+}: {
+  title: string;
+  text: string;
+  onClose: () => void;
+}) {
+  return (
+    <Modal title={title} onClose={onClose} width={680}>
+      <pre
+        style={{
+          margin: 0,
+          maxHeight: "min(50vh, 440px)",
+          overflow: "auto",
+          padding: "9px 11px",
+          border: "1px solid var(--wb-border)",
+          background: "var(--wb-bg)",
+          color: "var(--wb-text)",
+          font: "11.5px var(--wb-mono)",
+          whiteSpace: "pre-wrap",
+          wordBreak: "break-word",
+        }}
+      >
+        {text}
+      </pre>
+      <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 12 }}>
+        <button onClick={onClose} style={confirmButtonStyle}>
+          close
         </button>
       </div>
     </Modal>

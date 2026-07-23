@@ -16,7 +16,7 @@
 // `title` — there are no silent dead rows.
 
 import type { MenuEntry } from "../../components/ContextMenu";
-import type { Branch, Commit, Stash } from "../../ipc/git";
+import type { Branch, Commit, MergeMode, Stash } from "../../ipc/git";
 
 /** Hover text for an item whose backend hasn't landed. Names what's missing in
  *  plain words: the tooltip is product text, not a reference to the plan. */
@@ -247,6 +247,9 @@ export function commitRowMenu(c: Commit, a: CommitActions): MenuEntry[] {
 
 export interface BranchActions {
   busy: boolean;
+  /** The checked-out branch, or null when HEAD is detached. Merge, rebase and
+   *  fast-forward all act *on* it, so they name it and refuse without one. */
+  head: string | null;
   copy: (text: string, what: string) => void;
   checkout: (reference: string) => void;
   branchFrom: (startPoint: string) => void;
@@ -255,6 +258,22 @@ export interface BranchActions {
   /** Repo-level push/pull — they act on HEAD, so they're only offered on it. */
   push: () => void;
   pull: () => void;
+  /** Opens the merge dialog with this ref and a starting mode (G4). */
+  merge: (reference: string, mode: MergeMode) => void;
+  rebase: (onto: string) => void;
+  setUpstream: (branch: Branch) => void;
+  /** `origin/topic` — split into remote + branch by the panel. */
+  deleteRemote: (remoteBranch: string) => void;
+}
+
+/** Why merge / rebase / fast-forward can't run against this row, or null when
+ *  they can. All three move the *current* branch onto or over another ref, so
+ *  they need one — and pointing them at the branch you're already on is a no-op
+ *  git would reject anyway. */
+function noIntegration(b: Branch | null, head: string | null): string | null {
+  if (!head) return "HEAD is detached — check out a branch first";
+  if (b?.isHead) return `${b.name} is the current branch`;
+  return null;
 }
 
 export function localBranchMenu(b: Branch, a: BranchActions): MenuEntry[] {
@@ -262,30 +281,37 @@ export function localBranchMenu(b: Branch, a: BranchActions): MenuEntry[] {
   // branch. Offering them on a branch that isn't checked out would quietly act on
   // a different one, so they're disabled there and say so.
   const notHead = "only the checked-out branch can be pushed or pulled from here";
+  // Git refuses to check out — or delete — a branch another worktree holds. The
+  // row says so up front rather than letting the click come back with a raw error.
+  const held = b.worktree ? `checked out in another worktree: ${b.worktree}` : null;
+  const blocked = noIntegration(b, a.head);
+  const into = a.head ? ` into ${a.head}` : "";
   return [
     {
       label: "⇄ checkout",
       onClick: () => a.checkout(b.name),
-      disabled: a.busy || b.isHead,
-      title: b.isHead ? "already checked out" : "switch HEAD to this branch — asks first",
+      disabled: a.busy || b.isHead || held != null,
+      title: b.isHead ? "already checked out" : held ?? "switch HEAD to this branch — asks first",
     },
     {
       label: "⎇ merge into current",
-      onClick: () => undefined,
-      disabled: true,
-      title: soon("merging from the panel"),
+      hint: a.head ?? undefined,
+      onClick: () => a.merge(b.name, "merge"),
+      disabled: a.busy || blocked != null,
+      title: blocked ?? `merge ${b.name}${into} — asks first, and offers no-ff / squash`,
     },
     {
       label: "↳ rebase current onto",
-      onClick: () => undefined,
-      disabled: true,
-      title: soon("rebasing from the panel"),
+      hint: a.head ?? undefined,
+      onClick: () => a.rebase(b.name),
+      disabled: a.busy || blocked != null,
+      title: blocked ?? `replay ${a.head ?? "the current branch"}'s commits on top of ${b.name} — asks first`,
     },
     {
-      label: "⇉ fast-forward",
-      onClick: () => undefined,
-      disabled: true,
-      title: soon("fast-forwarding a branch"),
+      label: "⇉ fast-forward current to here",
+      onClick: () => a.merge(b.name, "ffOnly"),
+      disabled: a.busy || blocked != null,
+      title: blocked ?? `advance ${a.head ?? "the current branch"} to ${b.name}, or refuse if that isn't a fast-forward`,
     },
     SEP,
     {
@@ -305,9 +331,9 @@ export function localBranchMenu(b: Branch, a: BranchActions): MenuEntry[] {
     {
       label: "→ set upstream",
       hint: b.upstream ?? undefined,
-      onClick: () => undefined,
-      disabled: true,
-      title: soon("choosing a branch's upstream"),
+      onClick: () => a.setUpstream(b),
+      disabled: a.busy,
+      title: "choose which remote branch this one tracks — config only, nothing is pushed",
     },
     SEP,
     {
@@ -320,8 +346,10 @@ export function localBranchMenu(b: Branch, a: BranchActions): MenuEntry[] {
       label: "✗ delete",
       danger: true,
       onClick: () => a.deleteBranch(b.name),
-      disabled: a.busy || b.isHead,
-      title: b.isHead ? "can't delete the branch you're on" : "force-delete this branch — asks first",
+      disabled: a.busy || b.isHead || held != null,
+      title: b.isHead
+        ? "can't delete the branch you're on"
+        : held ?? "force-delete this branch — asks first",
     },
     {
       label: "⎇ create branch from",
@@ -341,6 +369,7 @@ export function localBranchMenu(b: Branch, a: BranchActions): MenuEntry[] {
 }
 
 export function remoteBranchMenu(name: string, a: BranchActions): MenuEntry[] {
+  const blocked = noIntegration(null, a.head);
   return [
     {
       label: "⇄ checkout",
@@ -357,16 +386,32 @@ export function remoteBranchMenu(name: string, a: BranchActions): MenuEntry[] {
     SEP,
     {
       label: "⎇ merge into current",
-      onClick: () => undefined,
-      disabled: true,
-      title: soon("merging from the panel"),
+      hint: a.head ?? undefined,
+      onClick: () => a.merge(name, "merge"),
+      disabled: a.busy || blocked != null,
+      title: blocked ?? `merge ${name} into ${a.head} — asks first, and offers no-ff / squash`,
+    },
+    {
+      label: "⇉ fast-forward current to here",
+      onClick: () => a.merge(name, "ffOnly"),
+      disabled: a.busy || blocked != null,
+      title:
+        blocked ??
+        `advance ${a.head} to ${name} — the fetch-then-catch-up move, without a merge commit`,
+    },
+    {
+      label: "↳ rebase current onto",
+      hint: a.head ?? undefined,
+      onClick: () => a.rebase(name),
+      disabled: a.busy || blocked != null,
+      title: blocked ?? `replay ${a.head}'s commits on top of ${name} — asks first`,
     },
     {
       label: "✗ delete on remote",
-      onClick: () => undefined,
-      disabled: true,
+      onClick: () => a.deleteRemote(name),
+      disabled: a.busy,
       danger: true,
-      title: soon("deleting a remote branch"),
+      title: "delete this branch on the remote — asks first, and can't be undone from here",
     },
     SEP,
     { label: "⎘ copy name", onClick: () => a.copy(name, "branch name") },

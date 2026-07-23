@@ -223,6 +223,13 @@ export interface Branch {
   isHead: boolean;
   /** Branch tip short SHA. */
   short: string;
+  /** The tip commit's subject (G4). */
+  subject: string;
+  /** The tip's committer date, epoch seconds (G4); 0 when unknown. */
+  date: number;
+  /** Path of *another* worktree holding this branch (G4) — git won't let it be
+   *  checked out here while that's true. Null when it's free. */
+  worktree: string | null;
 }
 
 /** The project's branches: locals (with ahead/behind), current, and remotes. */
@@ -230,7 +237,10 @@ export interface Branches {
   current: string | null;
   detached: boolean;
   local: Branch[];
+  /** Remote-tracking branch names, e.g. `origin/main`. */
   remote: string[];
+  /** Configured remote *names* (G4) — what `remote` is grouped by. */
+  remotes: string[];
 }
 
 export function gitBranches(repoRoot: string): Promise<Branches> {
@@ -444,4 +454,75 @@ export interface HeadCommit {
 /** Read HEAD's commit; null in a repo with no commits yet (G1). */
 export function gitHeadCommit(repoRoot: string): Promise<HeadCommit | null> {
   return invoke("git_head_commit", { repoRoot });
+}
+
+// --- branch operations (G4) -------------------------------------------------
+// Each of these can fail *informatively* — a conflicting merge is an outcome, not
+// a broken call — so they reject with git's whole message (stdout included, which
+// is where the CONFLICT lines are), for the panel to show in full rather than
+// truncate into its one-line banner.
+
+/** How a merge should be shaped. */
+export type MergeMode =
+  /** Fast-forward when possible, merge commit otherwise. */
+  | "merge"
+  /** Always record a merge commit. */
+  | "noFf"
+  /** Apply and stage the changes without committing. */
+  | "squash"
+  /** Only advance if the current branch is a strict ancestor; refuse otherwise. */
+  | "ffOnly";
+
+/** Merge a branch/ref into the current branch (G4). Rejects with git's full
+ *  output on conflict, leaving the tree mid-merge for `gitMergeAbort`. */
+export function gitMerge(repoRoot: string, reference: string, mode: MergeMode): Promise<string> {
+  return invoke("git_merge", { repoRoot, reference, mode });
+}
+
+/** Abandon a conflicted merge and restore the pre-merge state (G4). */
+export function gitMergeAbort(repoRoot: string): Promise<string> {
+  return invoke("git_merge_abort", { repoRoot });
+}
+
+/** Rebase the current branch onto another ref (G4). Never interactive. */
+export function gitRebase(repoRoot: string, onto: string): Promise<string> {
+  return invoke("git_rebase", { repoRoot, onto });
+}
+
+/** Drive a stopped rebase (G4). */
+export function gitRebaseControl(
+  repoRoot: string,
+  action: "continue" | "skip" | "abort",
+): Promise<string> {
+  return invoke("git_rebase_control", { repoRoot, action });
+}
+
+/** Set a branch's upstream, or clear it with `null` (G4). Config only — nothing
+ *  is fetched, pushed, or moved. */
+export function gitSetUpstream(
+  repoRoot: string,
+  branch: string,
+  upstream: string | null,
+): Promise<string> {
+  return invoke("git_set_upstream", { repoRoot, branch, upstream });
+}
+
+/** Delete a branch on the remote (G4). Destructive — gate behind a confirm. */
+export function gitDeleteRemoteBranch(
+  repoRoot: string,
+  remote: string,
+  branch: string,
+): Promise<string> {
+  return invoke("git_delete_remote_branch", { repoRoot, remote, branch });
+}
+
+/** Whether the repo is mid-operation (G4; G6 extends it with conflict detail). */
+export interface RepoState {
+  /** `merge` / `rebase` / `cherry-pick` / `revert`, or null when idle. */
+  operation: string | null;
+}
+
+/** Detect a half-finished merge / rebase / cherry-pick / revert (G4). */
+export function gitRepoState(repoRoot: string): Promise<RepoState> {
+  return invoke("git_repo_state", { repoRoot });
 }
