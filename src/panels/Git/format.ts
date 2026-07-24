@@ -76,6 +76,20 @@ export function relativeDate(epochSeconds: number): string {
   return `${Math.floor(months / 12)}y`;
 }
 
+/** A readable absolute date for the commit-detail pane (G7). Relative ages are
+ *  right on a list of two hundred rows; the one commit you've opened is the place
+ *  the actual date belongs — "3mo" is not an answer to "when did this land". */
+export function absoluteDate(epochSeconds: number): string {
+  if (!epochSeconds) return "";
+  return new Date(epochSeconds * 1000).toLocaleString(undefined, {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
 /** The small right-aligned action on a `SectionHead`. */
 export const miniActionStyle: CSSProperties = {
   marginLeft: "auto",

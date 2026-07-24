@@ -3,6 +3,7 @@
 // what its default branch is, so the Add-Project form can prefill name + branch.
 
 import { invoke } from "@tauri-apps/api/core";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
 export interface RepoInfo {
   /** True when the folder contains a `.git` entry. */
@@ -209,9 +210,31 @@ export interface Commit {
   refs: string[];
 }
 
-/** Recent history for the project's repo (HEAD's log, newest first). */
-export function gitLog(repoRoot: string, limit?: number): Promise<Commit[]> {
-  return invoke("git_log", { repoRoot, limit: limit ?? null });
+/**
+ * Which slice of history to read (G7). Every field becomes a `git log` argument,
+ * so a search is a search of the *repo* — not of the 200 commits the panel
+ * happened to have fetched.
+ */
+export interface LogQuery {
+  /** Default 200, hard-capped at 2000. */
+  limit?: number;
+  /** Commits to skip — the *load more* cursor. */
+  skip?: number;
+  /** A branch / tag / SHA, the literal `--all`, or omitted for HEAD. */
+  reference?: string | null;
+  /** Message text. Matched literally and case-insensitively. */
+  search?: string | null;
+  author?: string | null;
+  /** Only commits touching this path. */
+  path?: string | null;
+  /** git's own date parser — `2 weeks ago` works as well as a date. */
+  since?: string | null;
+  until?: string | null;
+}
+
+/** History for the project's repo (newest first), filtered and paged by `query`. */
+export function gitLog(repoRoot: string, query?: LogQuery): Promise<Commit[]> {
+  return invoke("git_log", { repoRoot, query: query ?? null });
 }
 
 /** One local branch with its upstream tracking (step 3.11). */
@@ -590,4 +613,204 @@ export function gitResolve(
   side: "ours" | "theirs",
 ): Promise<string> {
   return invoke("git_resolve", { repoRoot, paths, side });
+}
+
+// --- history parity (G7) ----------------------------------------------------
+// The reads a history browser needs beyond a list of subjects, plus the four ops
+// that rewrite where a branch points or what's on it. Like G4's, the rewrite ops
+// reject with git's *whole* output — a conflicting cherry-pick or revert is an
+// outcome, and which files conflicted is never the first line.
+
+/** One commit in full (G7) — the detail pane's read. */
+export interface CommitDetail {
+  sha: string;
+  short: string;
+  subject: string;
+  /** Everything past the subject's blank separator; `""` when there's no body. */
+  body: string;
+  author: string;
+  authorEmail: string;
+  /** Author date, epoch seconds — when the work was written. */
+  authorDate: number;
+  committer: string;
+  committerEmail: string;
+  /** Committer date, epoch seconds — when it last landed. A rebase or amend moves
+   *  this and leaves the author date alone. */
+  committerDate: number;
+  parents: string[];
+  refs: string[];
+}
+
+/** Read one commit in full (G7): body, both identities, parents, decorations. */
+export function gitCommitDetail(repoRoot: string, sha: string): Promise<CommitDetail> {
+  return invoke("git_commit_detail", { repoRoot, sha });
+}
+
+/** The log for a single path (G7). Uses `--follow`, so it tracks the file back
+ *  through renames — which is why it isn't `gitLog` with a path filter. */
+export function gitFileHistory(
+  repoRoot: string,
+  path: string,
+  limit?: number,
+): Promise<Commit[]> {
+  return invoke("git_file_history", { repoRoot, path, limit: limit ?? null });
+}
+
+/** The files changed between two points (G7). `to === null` means the working
+ *  tree — "compare with working tree". */
+export function gitRangeFiles(
+  repoRoot: string,
+  from: string,
+  to: string | null,
+): Promise<DiffFile[]> {
+  return invoke("git_range_files", { repoRoot, from, to });
+}
+
+/** One file's diff between two points (G7). */
+export function gitRangeFileDiff(
+  repoRoot: string,
+  from: string,
+  to: string | null,
+  path: string,
+): Promise<FileDiff> {
+  return invoke("git_range_file_diff", { repoRoot, from, to, path });
+}
+
+/** One tag (G7) — absent from the model until now; a tagged commit only ever
+ *  showed up as a `tag: v1` decoration on a log row. */
+export interface Tag {
+  name: string;
+  /** The *commit* it resolves to, short — dereferenced for an annotated tag. */
+  short: string;
+  /** The commit's subject. */
+  subject: string;
+  /** Tagger date for an annotated tag, commit date for a lightweight one. */
+  date: number;
+  annotated: boolean;
+  /** The annotation's subject; `""` for a lightweight tag. */
+  message: string;
+}
+
+/** Every tag in the repo, newest first (G7). */
+export function gitTags(repoRoot: string): Promise<Tag[]> {
+  return invoke("git_tags", { repoRoot });
+}
+
+/** Create a tag (G7). With a `message` it's annotated; without, lightweight. */
+export function gitTagCreate(
+  repoRoot: string,
+  name: string,
+  reference: string | null,
+  message: string | null,
+): Promise<string> {
+  return invoke("git_tag_create", { repoRoot, name, reference, message });
+}
+
+/** Delete a tag locally (G7). The remote's copy, if any, stays. */
+export function gitTagDelete(repoRoot: string, name: string): Promise<string> {
+  return invoke("git_tag_delete", { repoRoot, name });
+}
+
+/** Apply a commit's inverse (G7). `noCommit` stages it without committing. */
+export function gitRevert(repoRoot: string, sha: string, noCommit = false): Promise<string> {
+  return invoke("git_revert", { repoRoot, sha, noCommit });
+}
+
+/** Apply a commit onto the current branch (G7). `noCommit` stops at the index. */
+export function gitCherryPick(repoRoot: string, sha: string, noCommit = false): Promise<string> {
+  return invoke("git_cherry_pick", { repoRoot, sha, noCommit });
+}
+
+/** Drive a stopped cherry-pick or revert (G7) — `gitRebaseControl`'s pair. */
+export function gitSequencerControl(
+  repoRoot: string,
+  operation: "cherry-pick" | "revert",
+  action: "continue" | "skip" | "abort",
+): Promise<string> {
+  return invoke("git_sequencer_control", { repoRoot, operation, action });
+}
+
+/**
+ * Move the current branch to `reference` (G7).
+ *
+ * | mode | tip | index | working tree |
+ * |---|---|---|---|
+ * | `soft` | moved | kept | kept |
+ * | `mixed` | moved | reset | kept |
+ * | `hard` | moved | reset | **reset — uncommitted work is destroyed** |
+ */
+export function gitReset(
+  repoRoot: string,
+  reference: string,
+  mode: "soft" | "mixed" | "hard",
+): Promise<string> {
+  return invoke("git_reset", { repoRoot, reference, mode });
+}
+
+// --- freshness and robustness (G8) -------------------------------------------
+
+/**
+ * Which slices of the panel's state a change invalidated. The backend's watcher
+ * speaks this vocabulary and so does the panel's own targeted refresh, so a
+ * write and a filesystem event can be handled by exactly the same code path.
+ */
+export type GitSlice = "status" | "refs" | "history" | "state" | "stashes" | "tags";
+
+/** Everything — the shape a caller passes when it genuinely doesn't know. */
+export const ALL_SLICES: GitSlice[] = ["status", "refs", "history", "state", "stashes", "tags"];
+
+/** What changed under a watched repo. */
+export interface GitChanged {
+  /** The repo root exactly as it was passed to `gitWatchStart`. */
+  repoRoot: string;
+  slices: GitSlice[];
+}
+
+/**
+ * Start watching a repo for outside changes (G8). Reference-counted per root, so
+ * two panels on one repo share a watch and each must call `gitWatchStop`.
+ *
+ * Rejects when the path can't be watched; treat that as "no auto-refresh here"
+ * rather than an error worth showing — manual refresh still works.
+ */
+export function gitWatchStart(repoRoot: string): Promise<void> {
+  return invoke("git_watch_start", { repoRoot });
+}
+
+/** Drop this panel's reference to a repo's watch. */
+export function gitWatchStop(repoRoot: string): Promise<void> {
+  return invoke("git_watch_stop", { repoRoot });
+}
+
+/** Subscribe to watcher notifications. Returns an unlisten function. */
+export function onGitChanged(cb: (change: GitChanged) => void): Promise<UnlistenFn> {
+  return listen<GitChanged>("git-changed", (event) => cb(event.payload));
+}
+
+/**
+ * Kill the in-flight fetch/pull/push for a repo (G8). Resolves with how many
+ * processes were signalled — zero means it had already finished, which is a race
+ * worth reporting calmly rather than as a failure.
+ */
+export function gitCancel(repoRoot: string): Promise<number> {
+  return invoke("git_cancel", { repoRoot });
+}
+
+/** One git invocation, as the panel's scrollback shows it (G8). */
+export interface GitCommandRecord {
+  /** Monotonic id — stable React key, and how "new since last look" is decided. */
+  id: number;
+  repo: string;
+  /** The command as run, e.g. `git push --force-with-lease`. */
+  argv: string;
+  ok: boolean;
+  /** Wall-clock duration in milliseconds. */
+  ms: number;
+  /** Combined output, tail-capped. Empty for a quiet success. */
+  output: string;
+}
+
+/** The recent git commands run against a repo, oldest first (G8). */
+export function gitCommandLog(repoRoot: string): Promise<GitCommandRecord[]> {
+  return invoke("git_command_log", { repoRoot });
 }

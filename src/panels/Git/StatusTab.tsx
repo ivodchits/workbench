@@ -78,6 +78,8 @@ export interface StatusPanelActions {
   openInEditor: (rel: string) => void;
   reveal: (rel: string) => void;
   ignore: (rel: string) => void;
+  /** Show this file's history in the History tab (G7). */
+  fileHistory: (rel: string) => void;
   stashApply: (reference: string) => void;
   stashShow: (stash: Stash) => void;
   stashBranch: (stash: Stash) => void;
@@ -432,6 +434,7 @@ export default function StatusTab({
     openInEditor: actions.openInEditor,
     reveal: actions.reveal,
     ignore: actions.ignore,
+    fileHistory: actions.fileHistory,
   };
 
   // Right-clicking *inside* the selection acts on all of it; right-clicking

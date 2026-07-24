@@ -40,6 +40,13 @@ tokio = { version = "1", features = ["net", "sync", "macros"] }
 # Step 4.3: enumerate local network interfaces to find the Tailscale address
 # (100.64.0.0/10) the remote server binds to — we never bind broader than the tailnet.
 if-addrs = "0.13"
+# Step G8: watch a repo's git dir + working tree so the Git panel refreshes itself
+# when an agent commits or edits under it (design §4 — the app supervises processes
+# that mutate the repo concurrently, so a panel that only updates when *you* click
+# is showing you the past). `default-features = false` drops the crossbeam channel
+# and the debouncer's serde support; we do our own coalescing in the watcher module
+# and send events over Tauri's event bus, not a channel we'd have to poll.
+notify = { version = "8", default-features = false, features = ["macos_fsevent"] }
 
 # Windows-only: intercept WebView2 accelerator keys so we can suppress the engine's
 # built-in reload shortcuts (F5 / Ctrl+R / Ctrl+Shift+R), which would otherwise

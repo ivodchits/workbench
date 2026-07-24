@@ -444,7 +444,7 @@ and should be preserved.
 
 ---
 
-### Step G7 — History parity: graph, search, navigation, rewrite ops
+### Step G7 — History parity: graph, search, navigation, rewrite ops ✅ *(landed)*
 
 - **Goal:** Make History a real history browser rather than a fixed list of the last 200
   subjects.
@@ -475,10 +475,43 @@ and should be preserved.
   author and by path; *load more* pages past 200; a commit's full body and parents are
   visible and navigable; revert / cherry-pick / reset / tag work behind confirms.
 - **Out of scope:** blame (its own step if wanted), bisect, reflog.
+- **As built:** the tab took the **log read with it**. The shell's `load()` used to fetch the
+  log alongside branches / status / stashes, so staging one file re-read two hundred commits;
+  now `gitLog` isn't in `load()` at all and `HistoryTab` owns the query, the page and the
+  refresh, with the shell bumping a `reloadKey` when a write moved a ref. That's a down
+  payment on G8's targeted refresh, made here because the query belongs to whoever is looking
+  at history.
+
+  **Filtering happens in git, not over the fetched page.** Searching the 200 commits you
+  happen to hold is a search of the *window*, not of the repo, so every field is a `git log`
+  argument: `--grep` / `--author` with `--fixed-strings --regexp-ignore-case` (so `alpha: (`
+  is a search string, not a broken regex), `--since` / `--until` through git's own date
+  parser (so "2 weeks ago" works), `-- <path>`, `--skip=N`, and a ref. That last one is the
+  only injection surface in the set: the filters all reach git *inside* a single
+  `--flag=value` argument and can't be mistaken for options, but a ref stands alone — hence
+  `safe_ref()`, refusing anything starting with `-` (not a legal ref name anyway), with
+  `--all` as the one deliberate exception and a test asserting `reference: "--exec=boom"` is
+  rejected. `--follow` takes only a single pathspec, which is why file history is its own
+  command rather than `git_log` with a path.
+
+  **The graph was verified, not assumed.** `lanes.ts` (named for a case-insensitive
+  filesystem that can't tell `graph.ts` from `Graph.tsx`) was transpiled and run against this
+  repo's real log — width 1, all linear, matching `git log --graph` — and against a synthetic
+  merge, which produced the right node/through/merge/parent assignment and width 2. The fixed
+  `ROW_H` is a *requirement*, not a style choice: the gutter draws one cell per row and joins
+  neighbours edge to edge, which is also why a row's ref chips sit inline (max 2, ellipsised)
+  rather than wrapping onto a third line.
+
+  Two shape decisions. **Reset is three menu items**, not one plus a mode dialog: `--soft`
+  keeps your work and `--hard` destroys it, and burying that choice a click deeper hides the
+  difference exactly where it matters most (`ContextMenu` has no submenus either). And
+  `ShellHistoryActions` exists because **comparison changes what the tab is showing, not what
+  the repo holds** — the tab fills in `compareBase` / `compareWorkingTree` / `compareWith`
+  itself, since the base is its own selection and the shell can't see it.
 
 ---
 
-### Step G8 — Freshness, targeted refresh, robustness
+### Step G8 — Freshness, targeted refresh, robustness ✅ *(landed)*
 
 - **Goal:** The panel stops going stale, stops re-reading the world on every click, and stops
   being able to hang.
@@ -507,6 +540,55 @@ and should be preserved.
   unreachable/auth-required remote fails or cancels within the timeout instead of hanging;
   a multi-line git error is readable in full.
 - **Out of scope:** a general-purpose app-wide fs-watcher service.
+- **As built:** the hardening turned out to be **one runner, not a patch to `git_run`**. All
+  five helpers built their own `Command` and called `.output()`, so a timeout added to one of
+  them would have left four ways to hang; `src-tauri/src/git/run.rs` is now the single
+  `exec()` every one of them delegates to, and it does four things none of them did.
+
+  It **refuses to prompt** — `GIT_TERMINAL_PROMPT=0`, both askpass variables pointed at a
+  program that doesn't exist, `GCM_INTERACTIVE=never` (a Credential Manager *dialog* behind a
+  hidden console is the worst case, because it blocks with nothing on screen to answer), and
+  `credential.interactive=false` passed as config-via-env so it doesn't clutter every argv in
+  the scrollback. Verified: a credential lookup now ends in `could not read Username …:
+  terminal prompts disabled` in about a second. A nonexistent askpass rather than a no-op one
+  is deliberate — `echo` would hand git an *empty password*, so the failure would come back as
+  a rejected credential and read like the user's password was wrong.
+
+  It **has a deadline** (60s local, 180s network), with reader threads draining both pipes so
+  a child that fills one can't deadlock us. The subtlety that only showed up under test:
+  killing git does **not** close a pipe a *grandchild* still holds, so joining the reader
+  threads after a kill waits out the very hang the deadline just escaped — the first version
+  of the timeout test took the full 30s. The readers write into a shared buffer instead, and a
+  killed command reads what arrived and walks away.
+
+  It **can be cancelled** — network children register under the repo root and `git_cancel`
+  kills them; the poll loop holds the child's lock only for the instant it takes to check on
+  it, so the kill lands promptly. And it **remembers**: a 120-entry ring of argv / ok / ms /
+  output, which is what the panel's footer scrollback shows. Failures keep more of their
+  output than successes, because a successful read's stdout is the data already on screen.
+
+  `GIT_EDITOR=true` moved here from G4's merge-only helper — the hazard was never specific to
+  merges — and `git_run_stdin`'s comment admitting it "would deadlock against a child that
+  filled its stdout pipe first" is now simply not true of it.
+
+  **Targeted refresh** made `load(slices)` a merge rather than a replace, with the first read
+  ignoring the request (nothing to merge into yet) and a *narrow* failure surfacing as a
+  notice instead of emptying the panel — a blip while git holds a lock mid-rebase shouldn't
+  cost you the view. The watcher speaks the same six-slice vocabulary the writes do, so an
+  outside commit and a local one take identical code paths.
+
+  Two things sit between a filesystem event and a re-read, and both are load-bearing. Our own
+  writes trip the same watch, so a reload that just happened makes the next one redundant —
+  hence a 600ms grace. And an event landing mid-write **waits** rather than being dropped: an
+  outside change during our own push still has to be read. On the backend the coalescer has
+  three clocks (`due()`, unit-tested): quiet for 250ms, forced at 1500ms so a build churning
+  in the tree can't starve the panel by resetting the quiet timer forever, and never more
+  often than 750ms. `.git/objects` is dropped in `classify` rather than excluded from the
+  watch, because no backend supports excluding it — it costs a string comparison and produces
+  no refresh.
+- **Not built:** `GIT_SSH_COMMAND=… BatchMode=yes`. Setting it would clobber a user's own
+  `core.sshCommand`, and the deadline already covers the case it would catch — the done
+  criterion is "fails *or cancels* within the timeout", which it does.
 
 ---
 
@@ -531,6 +613,11 @@ and should be preserved.
 | `git_file_history` | G7 | log for one path |
 | `git_revert`, `git_cherry_pick`, `git_reset` | G7 | all behind confirms |
 | `git_tags`, `git_tag_create`, `git_tag_delete` | G7 | tags absent today |
+| `git_range_files`, `git_range_file_diff` | G7 | two selected commits; `to: null` ⇒ the working tree |
+| `git_sequencer_control` | G7 | cherry-pick / revert continue / skip / abort — `git_rebase_control`'s pair |
+| `git_watch_start`, `git_watch_stop` | G8 | ref-counted fs watch → a `git-changed` event naming the stale slices |
+| `git_cancel` | G8 | kills the in-flight fetch/pull/push for a repo; returns how many it signalled |
+| `git_command_log` | G8 | the recent invocations + their output — backs the footer scrollback |
 | `git_stash_apply`, `git_stash_show`, `git_stash_branch` | G3 | pop is currently the only option |
 | `git_ignore_add` | G3 | appends/creates `.gitignore`; `fs::write_file` won't create files |
 | `sys::reveal_path` | G3 | `reveal_item_in_dir` — selects the file, unlike `open_path` |
@@ -556,6 +643,7 @@ src/panels/Git/
   useOrientation.ts  G2
   Splitter.tsx       G2   two-pane draggable split, collapsible second pane
   layout.ts          G2   persisted splitter positions + section open/closed
+  lanes.ts           G7   graph lane assignment (value half of Graph.tsx)
   menus.ts           G3   per-row-type context-menu contents (pure builders)
   draft.ts           G1   per-repo commit-message drafts
   rows.tsx           shared row primitives
@@ -592,8 +680,8 @@ provisional wide-layout commit box, then let G2 place it properly.
 - [x] G4 — Branch operations (merge / rebase / upstream)
 - [x] G5 — Selection flexibility + keyboard-first
 - [x] G6 — Merge conflicts
-- [ ] G7 — History parity (graph / search / rewrite ops)
-- [ ] G8 — Freshness, targeted refresh, robustness
+- [x] G7 — History parity (graph / search / rewrite ops)
+- [x] G8 — Freshness, targeted refresh, robustness
 
 Suggested commit messages: `git: commit composer (G1)`, `git: responsive vertical layout
 (G2)`, `git: context menus (G3)`, … matching the repo's existing `<area>: <what>` style.

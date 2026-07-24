@@ -49,19 +49,51 @@
 // staged *and* unstaged ones at once), G4's banner counts what's still unmerged
 // and says what the next step is, and taking a side of the merge — the only
 // resolution that throws work away — is a confirm here beside the others.
+//
+// G7 finished the last tab (`HistoryTab.tsx`), and took the log read with it: the
+// tab owns its own query, paging and refresh, so the shell no longer re-reads two
+// hundred commits every time a file is staged. What stayed here is what the shell
+// has always owned — the confirms. Revert, cherry-pick, the three resets, tag
+// delete and every stopped-sequencer control are dialogs in this file, and the
+// banner learned to drive a cherry-pick or revert now that there's something
+// behind those buttons.
+//
+// G8 is about the panel's own upkeep, and it changes three habits.
+//
+// It *watches*. `git_watch_start` puts a filesystem watch on the repo and the
+// backend says which slices went stale; an agent committing in a terminal now
+// shows up here within about a second, unasked. Workbench exists to supervise
+// things that write to this repo, so a panel that only updated on click was
+// wrong by construction.
+//
+// It refreshes *narrowly*. `load` takes the slices it should re-read and merges
+// them into what's already on screen, and every write says what it invalidated —
+// staging a file re-reads the status and nothing else. The old `run()` reloaded
+// the world after every click, which is also what made the history read
+// expensive enough for G7 to move out.
+//
+// And it can be *got out of*. Every git invocation now goes through a hardened
+// runner (`src-tauri/src/git/run.rs`) that refuses to prompt, has a deadline, and
+// registers network children so Cancel can kill them — plus a command log this
+// panel shows as a scrollback, which is where a multi-line git error is readable
+// in full rather than clipped to a banner line.
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { IDockviewPanelProps } from "dockview";
 
 import { GLYPH } from "../../theme";
+import Spinner from "../../theme/Spinner";
 import {
+  ALL_SLICES,
   gitApplyPatch,
   gitBranches,
+  gitCancel,
+  gitCommandLog,
   gitCheckout,
+  gitCherryPick,
   gitClean,
   gitCommit,
-  gitCommitFileDiff,
-  gitCommitFiles,
+  gitCommitDetail,
   gitCreateBranch,
   gitDeleteBranch,
   gitDeleteRemoteBranch,
@@ -69,7 +101,6 @@ import {
   gitFetch,
   gitHeadCommit,
   gitIgnoreAdd,
-  gitLog,
   gitMerge,
   gitMergeAbort,
   gitPull,
@@ -79,6 +110,9 @@ import {
   gitRenameBranch,
   gitRepoState,
   gitResolve,
+  gitReset,
+  gitRevert,
+  gitSequencerControl,
   gitSetUpstream,
   gitStage,
   gitStashApply,
@@ -89,46 +123,41 @@ import {
   gitStashPush,
   gitStashShow,
   gitStatusEntries,
+  gitTagCreate,
+  gitTagDelete,
+  gitTags,
   gitUnstage,
+  gitWatchStart,
+  gitWatchStop,
+  onGitChanged,
   type Branch,
   type Branches,
   type Commit,
-  type DiffFile,
+  type GitCommandRecord,
+  type GitSlice,
   type HeadCommit,
   type MergeMode,
   type RepoState,
   type Stash,
   type StatusEntry,
+  type Tag,
 } from "../../ipc/git";
 import { revealPath } from "../../ipc/os";
 import { useGits, type GitSession } from "../../state/git";
 import { getRegistry } from "../../state/registry";
 import { getOpenConsoles } from "../../state/consoles";
 import { openProjectFile } from "../../state/editors";
-import ContextMenu from "../../components/ContextMenu";
-import { useContextMenu } from "../../components/useContextMenu";
 import { registerCommand } from "../../keyboard/bus";
 import Modal from "../InstanceManager/Modal";
 import UnifiedDiff from "../Diff/UnifiedDiff";
 import BranchesTab from "./BranchesTab";
 import type { CommitRequest } from "./CommitBox";
+import HistoryTab, { type HistoryCommand } from "./HistoryTab";
 import StatusTab, { type StatusCommand } from "./StatusTab";
 import { clearDraft } from "./draft";
-import {
-  commitFileRowMenu,
-  commitRowMenu,
-  type BranchActions,
-} from "./menus";
-import {
-  confirmButtonStyle,
-  inputStyle,
-  menuItemStyle,
-  relativeDate,
-  statusColor,
-  STATUS_GLYPH,
-} from "./format";
+import type { BranchActions, ShellHistoryActions } from "./menus";
+import { confirmButtonStyle, inputStyle, menuItemStyle } from "./format";
 import { Empty, HeaderButton } from "./rows";
-import Splitter from "./Splitter";
 import { hydrateGitLayout } from "./layout";
 import { useOrientation, type Orientation } from "./useOrientation";
 
@@ -164,9 +193,11 @@ type Tab = "history" | "branches" | "status";
 
 interface RepoData {
   branches: Branches;
-  log: Commit[];
   status: StatusEntry[];
   stashes: Stash[];
+  /** Every tag (G7) — the History tab's ref selector, and the model's first
+   *  acquaintance with tags at all. */
+  tags: Tag[];
   /** HEAD's commit — the amend prefill; null in a repo with no commits yet. */
   head: HeadCommit | null;
   /** Mid-merge / mid-rebase / … (G4) — what the operation banner reads. */
@@ -180,7 +211,7 @@ interface RepoData {
  * glyph button beside it can't drift into two different code paths — in
  * particular, the destructive ones stay behind the confirms that already exist.
  */
-interface PanelActions extends BranchActions {
+interface PanelActions extends BranchActions, ShellHistoryActions {
   /** Copy to the clipboard and say so on the notice line. */
   copy: (text: string, what: string) => void;
   /** Repo-relative path → absolute, forward-slashed. */
@@ -236,6 +267,16 @@ type Confirm =
   // G5. Staging and unstaging a hunk are reversible from the panel; discarding one
   // throws away work that was never committed anywhere, so it asks.
   | { kind: "discardHunks"; patch: string; count: number }
+  // G7. Revert and cherry-pick *add* a commit, so neither destroys anything — but
+  // both can stop half-applied on a conflict, and that's worth saying first.
+  // Reset is the sharp one: `--hard` is the only action in the panel that can
+  // delete uncommitted work without naming a file.
+  | { kind: "revert"; commit: Commit }
+  | { kind: "cherryPick"; commit: Commit }
+  | { kind: "reset"; commit: Commit; mode: "soft" | "mixed" | "hard"; head: string; warnLive: boolean }
+  | { kind: "deleteTag"; name: string }
+  | { kind: "sequencerAbort"; operation: "cherry-pick" | "revert" }
+  | { kind: "sequencerSkip"; operation: "cherry-pick" | "revert" }
   // G6. Taking a side of a merge throws the other side's version of the file away
   // — and once it's staged, the index no longer holds the stages `checkout -m`
   // would need to put the conflict back. *Marking* resolved isn't here: it keeps
@@ -281,39 +322,170 @@ function GitBody({
   // showing runs as that tab mounts.
   const [statusCommand, setStatusCommand] = useState<StatusCommand | null>(null);
   const clearStatusCommand = useCallback(() => setStatusCommand(null), []);
+  // G7: the same one-shot channel for the history tab — "show this file's history",
+  // "compare these two" — both of which are asked for from a *different* tab.
+  const [historyCommand, setHistoryCommand] = useState<HistoryCommand | null>(null);
+  const clearHistoryCommand = useCallback(() => setHistoryCommand(null), []);
+  // Bumped by every completed load. The History tab owns its own log read now, so
+  // this is how it hears that the repo moved under it.
+  const [reloadKey, setReloadKey] = useState(0);
+  // The tag dialog (G7): which commit is about to be tagged.
+  const [tagging, setTagging] = useState<{ commit: Commit } | null>(null);
+  // G8: the network op in flight (its label), and whether the command scrollback
+  // is open. `netOp` is what makes fetch/pull/push cancellable — everything else
+  // is fast enough that `busy` disabling the buttons is the whole story.
+  const [netOp, setNetOp] = useState<string | null>(null);
+  const [logOpen, setLogOpen] = useState(false);
+  // Bumped whenever a git command has probably just run, so the scrollback
+  // re-reads without polling.
+  const [cmdTick, setCmdTick] = useState(0);
 
   // The panel measures itself, not the window — the same window can hold a wide
   // Git panel and a narrow one, and each lays out for the box it's actually in.
   const rootRef = useRef<HTMLDivElement>(null);
   const orientation = useOrientation(rootRef);
 
-  const load = useCallback(async () => {
-    setLoading(true);
-    try {
-      // The stored splitter positions ride along with the first read, so the tabs
-      // mount at the right sizes instead of snapping a beat after they appear.
-      const [branches, log, status, stashes, head, state] = await Promise.all([
-        gitBranches(repoRoot),
-        gitLog(repoRoot),
-        gitStatusEntries(repoRoot),
-        gitStashList(repoRoot),
-        gitHeadCommit(repoRoot),
-        gitRepoState(repoRoot),
-        hydrateGitLayout(),
-      ]);
-      setData({ branches, log, status, stashes, head, state });
-      setLoadError(null);
-    } catch (err) {
-      setLoadError(String(err));
-      setData(null);
-    } finally {
-      setLoading(false);
-    }
-  }, [repoRoot]);
+  // `load` reads a *subset*, so it needs to know whether there's anything to
+  // merge into without taking `data` as a dependency (which would re-create it —
+  // and re-fire the mount effect — on every refresh).
+  const dataRef = useRef<RepoData | null>(null);
+  dataRef.current = data;
+  /** When the last read finished — the clock G8's refresh grace runs against. */
+  const lastLoadRef = useRef(0);
+
+  /**
+   * Re-read the named slices and merge them into what's on screen (G8).
+   *
+   * The default is everything, which is what a manual refresh and an unscoped
+   * write both want. Everything else says less: staging a file invalidates the
+   * status and the in-progress state, and nothing at all about the branch list,
+   * the tags, or the stash. The first read ignores the request and takes the lot
+   * — there's nothing to merge into yet.
+   */
+  const load = useCallback(
+    async (slices: GitSlice[] = ALL_SLICES) => {
+      const first = dataRef.current == null;
+      const full = first || slices.length === ALL_SLICES.length;
+      const want = (s: GitSlice) => first || slices.includes(s);
+      // A background refresh doesn't flash the header's spinner: it wasn't asked
+      // for, and a light blinking on its own reads as an error.
+      if (full) setLoading(true);
+      try {
+        // The stored splitter positions ride along with the first read, so the
+        // tabs mount at the right sizes instead of snapping a beat after they
+        // appear.
+        //
+        // The *log* is conspicuously absent (G7): the History tab reads it
+        // itself, with whatever query and page it's on, so staging a file no
+        // longer costs two hundred commits. `reloadKey` below is how it learns
+        // to re-read.
+        const [branches, status, stashes, tags, head, state] = await Promise.all([
+          want("refs") ? gitBranches(repoRoot) : null,
+          want("status") ? gitStatusEntries(repoRoot) : null,
+          want("stashes") ? gitStashList(repoRoot) : null,
+          want("tags") ? gitTags(repoRoot) : null,
+          // HEAD's commit follows the refs — and the history, since committing is
+          // the usual way it moves.
+          want("refs") || want("history") ? gitHeadCommit(repoRoot) : null,
+          want("state") ? gitRepoState(repoRoot) : null,
+          first ? hydrateGitLayout() : null,
+        ]);
+        setData((prev) =>
+          prev == null
+            ? // Only reachable on the first read, where every slice was fetched.
+              { branches: branches!, status: status!, stashes: stashes!, tags: tags!, head: head!, state: state! }
+            : {
+                branches: branches ?? prev.branches,
+                status: status ?? prev.status,
+                stashes: stashes ?? prev.stashes,
+                tags: tags ?? prev.tags,
+                head: head ?? prev.head,
+                state: state ?? prev.state,
+              },
+        );
+        if (want("refs") || want("history")) setReloadKey((n) => n + 1);
+        setLoadError(null);
+      } catch (err) {
+        const text = String(err instanceof Error ? err.message : err);
+        // A *full* read that fails means we have nothing trustworthy to show. A
+        // targeted one that fails is a blip against a repo we're already showing
+        // — git briefly holding a lock mid-rebase, say — and throwing the whole
+        // view away over it would be a worse answer than a stale row.
+        if (full) {
+          setLoadError(text);
+          setData(null);
+        } else {
+          setNotice({ kind: "err", text });
+        }
+      } finally {
+        if (full) setLoading(false);
+        lastLoadRef.current = Date.now();
+        setCmdTick((n) => n + 1);
+      }
+    },
+    [repoRoot],
+  );
 
   useEffect(() => {
     void load();
   }, [load]);
+
+  // --- staying fresh (G8) ----------------------------------------------------
+  // The backend watches the repo and names the slices that went stale. Two things
+  // stand between that event and a re-read. Our *own* writes trip the same watch,
+  // so a reload that just happened makes the next one redundant — hence the grace
+  // period. And a write in flight is about to reload what it invalidated anyway,
+  // so we wait it out rather than reading the repo mid-operation.
+
+  /** Slices seen since the last read, waiting for the timer below to fire. */
+  const pendingRef = useRef<Set<GitSlice>>(new Set());
+  const timerRef = useRef<number | null>(null);
+  const busyRef = useRef(false);
+  busyRef.current = busy;
+
+  const scheduleRefresh = useCallback(
+    (slices: GitSlice[]) => {
+      for (const s of slices) pendingRef.current.add(s);
+      if (timerRef.current != null) return;
+      const wait = Math.max(0, 600 - (Date.now() - lastLoadRef.current));
+      const fire = () => {
+        timerRef.current = null;
+        // Deliberately *not* dropped: an outside change that lands during our own
+        // write still has to be read, so it waits for the write instead.
+        if (busyRef.current) {
+          timerRef.current = window.setTimeout(fire, 300);
+          return;
+        }
+        const slices = [...pendingRef.current];
+        pendingRef.current.clear();
+        if (slices.length > 0) void load(slices);
+      };
+      timerRef.current = window.setTimeout(fire, wait);
+    },
+    [load],
+  );
+
+  useEffect(() => {
+    let unlisten: (() => void) | null = null;
+    let live = true;
+    // A repo we can't watch (a network share, an exotic filesystem) just doesn't
+    // auto-refresh. That's a quieter panel, not a broken one, so it isn't an
+    // error worth putting on screen.
+    void gitWatchStart(repoRoot).catch(() => {});
+    void onGitChanged((change) => {
+      if (change.repoRoot === repoRoot) scheduleRefresh(change.slices);
+    }).then((fn) => {
+      if (live) unlisten = fn;
+      else fn();
+    });
+    return () => {
+      live = false;
+      unlisten?.();
+      if (timerRef.current != null) window.clearTimeout(timerRef.current);
+      timerRef.current = null;
+      void gitWatchStop(repoRoot).catch(() => {});
+    };
+  }, [repoRoot, scheduleRefresh]);
 
   /** Dismiss every open confirm/dialog. Once an op has actually run, whatever
    *  asked for it is answered — leaving it on screen behind the result is how a
@@ -325,6 +497,7 @@ function GitBody({
     setStashBranching(null);
     setMerging(null);
     setUpstreaming(null);
+    setTagging(null);
   }, []);
 
   // Run a write op, then refresh. Success reloads and clears any open
@@ -337,34 +510,76 @@ function GitBody({
   // *changed the working tree* on its way to failing — so those reload as well
   // and put git's whole multi-line message in a scrollable dialog, where the
   // banner would have shown one line of it.
+  //
+  // `slices` (G8) is the op declaring what it invalidated. Leave it off and the
+  // panel re-reads everything, which is the right default for anything that
+  // moves HEAD; pass a narrower set and staging a file stops re-reading the
+  // branch list, the tags and the stash to learn that one file is staged.
   const run = useCallback(
     async (
       op: () => Promise<string>,
       okText?: string | ((out: string) => string),
       failTitle?: string,
+      slices: GitSlice[] = ALL_SLICES,
     ) => {
       setBusy(true);
       setNotice(null);
       try {
         const out = await op();
         closeDialogs();
-        await load();
+        await load(slices);
         if (okText) setNotice({ kind: "ok", text: typeof okText === "function" ? okText(out) : okText });
       } catch (err) {
         const text = String(err instanceof Error ? err.message : err);
         if (failTitle) {
           closeDialogs();
-          await load();
+          await load(slices);
           setOutput({ title: failTitle, text });
         } else {
           setNotice({ kind: "err", text });
         }
       } finally {
         setBusy(false);
+        setCmdTick((n) => n + 1);
       }
     },
     [load, closeDialogs],
   );
+
+  /**
+   * `run` for the three ops that talk to a remote (G8).
+   *
+   * They're the only ones that can take long enough to need saying so, and the
+   * only ones that can fail to finish at all. `label` drives a progress strip
+   * with a Cancel on it — the backend registered the child process under this
+   * repo, so Cancel kills the git that's actually hanging rather than just
+   * abandoning the promise and leaving it running.
+   */
+  const runNet = useCallback(
+    async (
+      label: string,
+      op: () => Promise<string>,
+      okText?: string | ((out: string) => string),
+      failTitle?: string,
+      slices: GitSlice[] = ALL_SLICES,
+    ) => {
+      setNetOp(label);
+      try {
+        await run(op, okText, failTitle, slices);
+      } finally {
+        setNetOp(null);
+      }
+    },
+    [run],
+  );
+
+  const cancelNet = useCallback(() => {
+    void gitCancel(repoRoot)
+      .then((n) => {
+        if (n === 0) setNotice({ kind: "ok", text: "it had already finished" });
+      })
+      .catch((err) => setNotice({ kind: "err", text: String(err instanceof Error ? err.message : err) }));
+  }, [repoRoot]);
 
   // Instances of this project running live in the repo root (not a worktree) —
   // checking out moves HEAD under them (design §6 shared-working-dir warning).
@@ -381,6 +596,14 @@ function GitBody({
   const requestCheckout = (reference: string) =>
     setConfirm({ kind: "checkout", reference, warnLive: liveRootInstances() > 0 });
 
+  /** Show the History tab and hand it a one-shot instruction (G7). The nonce is
+   *  what makes the same request twice run twice — and what lets a request made
+   *  from another tab run as History mounts. */
+  const inHistory = (cmd: Omit<HistoryCommand, "n">) => {
+    setTab("history");
+    setHistoryCommand((prev) => ({ ...cmd, n: (prev?.n ?? 0) + 1 }));
+  };
+
   // The checked-out branch, when HEAD isn't detached — its `upstream` decides
   // whether pushing is a push or a *publish* (`push -u`).
   const headBranch = data?.branches.local.find((b) => b.isHead) ?? null;
@@ -394,9 +617,15 @@ function GitBody({
   // Commit (+ an optional explicit push), then refresh. `amendPushed` means we're
   // rewriting a commit the upstream already has, so the follow-up push must be
   // forced — with lease, and only after the confirm the user just cleared.
+  //
+  // Commit-and-push goes through `runNet` (G8) — the push is the half that can
+  // sit there waiting on a remote, and it's the half worth being able to cancel.
   const doCommit = useCallback(
     (req: CommitRequest, amendPushed: boolean) => {
-      void run(
+      const go: typeof run = req.push
+        ? (op, ok, fail, slices) => runNet(canPublish ? "publishing" : "pushing", op, ok, fail, slices)
+        : run;
+      void go(
         async () => {
           const short = await gitCommit(repoRoot, req.message, {
             amend: req.amend,
@@ -410,7 +639,7 @@ function GitBody({
         (short) => `committed ${short}${req.push ? (canPublish ? " · published" : " · pushed") : ""}`,
       );
     },
-    [run, repoRoot, canPublish],
+    [run, runNet, repoRoot, canPublish],
   );
 
   const requestCommit = (req: CommitRequest) => {
@@ -459,13 +688,39 @@ function GitBody({
     },
     // Through `run` so the status list refreshes: ignoring an untracked file is
     // supposed to make it leave the panel, and it should do that on its own.
-    ignore: (rel) => void run(() => gitIgnoreAdd(repoRoot, [rel]), (out) => out),
+    ignore: (rel) => void run(() => gitIgnoreAdd(repoRoot, [rel]), (out) => out, undefined, ["status"]),
+    // G7 cross-tab jumps: both of these are asked for from a row in one tab and
+    // answered by another, so they switch tabs and hand over a one-shot command.
+    fileHistory: (rel) => inHistory({ kind: "fileHistory", path: rel }),
+    compare: (reference) =>
+      inHistory({ kind: "compare", from: reference, to: headBranch?.name ?? "HEAD" }),
+    // A commit's body isn't in the log read — the detail command is the only
+    // place it exists, so copying it is a fetch first.
+    copyMessage: (c) => {
+      void gitCommitDetail(repoRoot, c.sha)
+        .then((d) => actions.copy(d.body.trim() === "" ? d.subject : `${d.subject}\n\n${d.body}`, "message"))
+        .catch((err) => setNotice({ kind: "err", text: String(err instanceof Error ? err.message : err) }));
+    },
+    revert: (commit) => setConfirm({ kind: "revert", commit }),
+    cherryPick: (commit) => setConfirm({ kind: "cherryPick", commit }),
+    reset: (commit, mode) =>
+      setConfirm({
+        kind: "reset",
+        commit,
+        mode,
+        head: headBranch?.name ?? "HEAD",
+        // Only `--hard` rewrites the working tree; the other two leave whatever a
+        // live agent is editing exactly where it is.
+        warnLive: mode === "hard" && liveRootInstances() > 0,
+      }),
+    tagAt: (commit) => setTagging({ commit }),
+    deleteTag: (name) => setConfirm({ kind: "deleteTag", name }),
     checkout: requestCheckout,
     branchFrom: (startPoint) => setCreating({ startPoint }),
     rename: setRenaming,
     deleteBranch: (name) => setConfirm({ kind: "deleteBranch", name }),
     push: requestPush,
-    pull: () => void run(() => gitPull(repoRoot), "pulled"),
+    pull: () => void runNet("pulling", () => gitPull(repoRoot), "pulled"),
     // Merge, fast-forward and rebase all rewrite the working tree under whatever
     // is running in it, so each carries the §6 shared-working-dir warning. Merge
     // opens a dialog rather than a plain confirm: the choice between a merge
@@ -491,7 +746,11 @@ function GitBody({
       }
       setConfirm({ kind: "deleteRemoteBranch", remote, branch: remoteBranch.slice(remote.length + 1) });
     },
-    stashApply: (reference) => void run(() => gitStashApply(repoRoot, reference), "applied (stash kept)"),
+    stashApply: (reference) =>
+      void run(() => gitStashApply(repoRoot, reference), "applied (stash kept)", undefined, [
+        "status",
+        "stashes",
+      ]),
     stashShow: showStash,
     // Creates *and checks out* a branch, so it moves HEAD — the §6 shared-working-
     // dir warning belongs on it just as much as on a checkout.
@@ -515,18 +774,20 @@ function GitBody({
     const paths = (entries: StatusEntry[]) => [...new Set(entries.map((e) => e.path))];
     portRef.current = {
       refresh: () => void load(),
-      fetch: () => void run(() => gitFetch(repoRoot), "fetched"),
-      pull: () => void run(() => gitPull(repoRoot), "pulled"),
+      // A fetch only moves remote-tracking refs — it can't touch the working
+      // tree, the stash or the tags you have.
+      fetch: () => void runNet("fetching", () => gitFetch(repoRoot), "fetched", undefined, ["refs", "history"]),
+      pull: () => void runNet("pulling", () => gitPull(repoRoot), "pulled"),
       push: requestPush,
       stageAll: () => {
         const dirty = paths(data?.status.filter((e) => e.worktree !== " " || e.untracked) ?? []);
         if (dirty.length === 0) setNotice({ kind: "ok", text: "nothing to stage" });
-        else void run(() => gitStage(repoRoot, dirty));
+        else void run(() => gitStage(repoRoot, dirty), undefined, undefined, ["status", "state"]);
       },
       unstageAll: () => {
         const staged = paths(data?.status.filter((e) => e.index !== " " && e.index !== "?") ?? []);
         if (staged.length === 0) setNotice({ kind: "ok", text: "nothing staged" });
-        else void run(() => gitUnstage(repoRoot, staged));
+        else void run(() => gitUnstage(repoRoot, staged), undefined, undefined, ["status", "state"]);
       },
       status: inStatus,
     };
@@ -573,8 +834,8 @@ function GitBody({
         loading={loading}
         busy={busy}
         orientation={orientation}
-        onFetch={() => void run(() => gitFetch(repoRoot), "fetched")}
-        onPull={() => void run(() => gitPull(repoRoot), "pulled")}
+        onFetch={() => void runNet("fetching", () => gitFetch(repoRoot), "fetched", undefined, ["refs", "history"])}
+        onPull={() => void runNet("pulling", () => gitPull(repoRoot), "pulled")}
         onPush={requestPush}
         canPublish={canPublish}
         onRefresh={() => void load()}
@@ -587,31 +848,85 @@ function GitBody({
           operation={data.state.operation}
           conflicts={data.status.filter((e) => e.conflicted).length}
           busy={busy}
-          onContinue={() =>
-            void run(() => gitRebaseControl(repoRoot, "continue"), "rebase continued", "rebase")
-          }
-          onSkip={() => setConfirm({ kind: "rebaseSkip" })}
-          onAbort={() =>
-            data.state.operation === "rebase"
-              ? void run(() => gitRebaseControl(repoRoot, "abort"), "rebase aborted", "rebase")
-              : void run(() => gitMergeAbort(repoRoot), "merge aborted", "merge")
-          }
+          onContinue={() => {
+            const op = data.state.operation;
+            if (op === "rebase")
+              void run(() => gitRebaseControl(repoRoot, "continue"), "rebase continued", "rebase");
+            else if (op === "cherry-pick" || op === "revert")
+              void run(() => gitSequencerControl(repoRoot, op, "continue"), `${op} continued`, op);
+          }}
+          onSkip={() => {
+            const op = data.state.operation;
+            if (op === "cherry-pick" || op === "revert")
+              setConfirm({ kind: "sequencerSkip", operation: op });
+            else setConfirm({ kind: "rebaseSkip" });
+          }}
+          onAbort={() => {
+            const op = data.state.operation;
+            if (op === "rebase")
+              void run(() => gitRebaseControl(repoRoot, "abort"), "rebase aborted", "rebase");
+            else if (op === "cherry-pick" || op === "revert")
+              setConfirm({ kind: "sequencerAbort", operation: op });
+            else void run(() => gitMergeAbort(repoRoot), "merge aborted", "merge");
+          }}
         />
       )}
+
+      {netOp && <NetProgress label={netOp} onCancel={cancelNet} />}
 
       {notice && (
         <div
           style={{
             flex: "0 0 auto",
+            display: "flex",
+            alignItems: "flex-start",
+            gap: 8,
             padding: "5px 12px",
             font: "11px var(--wb-mono)",
             color: notice.kind === "ok" ? "var(--wb-done)" : "var(--wb-needs)",
             borderBottom: "1px solid var(--wb-border)",
-            whiteSpace: "pre-wrap",
-            wordBreak: "break-word",
           }}
         >
-          {notice.kind === "ok" ? GLYPH.ok : GLYPH.fail} {notice.text}
+          {/* A long error scrolls in place rather than pushing the tabs off the
+              panel; the whole message, and what led to it, is one click away in
+              the scrollback below. */}
+          <div style={{ flex: 1, minWidth: 0, maxHeight: 66, overflowY: "auto", whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
+            {notice.kind === "ok" ? GLYPH.ok : GLYPH.fail} {notice.text}
+          </div>
+          {notice.kind === "err" && !logOpen && (
+            <button
+              type="button"
+              onClick={() => setLogOpen(true)}
+              style={{
+                flex: "0 0 auto",
+                background: "none",
+                border: "1px solid var(--wb-border)",
+                borderRadius: 2,
+                color: "var(--wb-textDim2)",
+                font: "10px var(--wb-mono)",
+                padding: "1px 6px",
+                cursor: "pointer",
+              }}
+            >
+              details
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={() => setNotice(null)}
+            aria-label="dismiss"
+            style={{
+              flex: "0 0 auto",
+              background: "none",
+              border: "none",
+              color: "var(--wb-textFaint)",
+              font: "11px var(--wb-mono)",
+              cursor: "pointer",
+              padding: 0,
+            }}
+          >
+            ×
+          </button>
         </div>
       )}
 
@@ -625,7 +940,18 @@ function GitBody({
             reading repo…
           </div>
         ) : tab === "history" ? (
-          <HistoryTab repoRoot={repoRoot} commits={data.log} orientation={orientation} actions={actions} />
+          <HistoryTab
+            repoRoot={repoRoot}
+            orientation={orientation}
+            actions={actions}
+            branches={data.branches}
+            tags={data.tags}
+            dirtyCount={data.status.length}
+            onWorkingTree={() => setTab("status")}
+            reloadKey={reloadKey}
+            command={historyCommand}
+            onCommandDone={clearHistoryCommand}
+          />
         ) : tab === "branches" ? (
           <BranchesTab
             branches={data.branches}
@@ -644,17 +970,28 @@ function GitBody({
             committedAt={committedAt}
             onCommit={requestCommit}
             busy={busy}
-            onStage={(paths) => void run(() => gitStage(repoRoot, paths))}
-            onUnstage={(paths) => void run(() => gitUnstage(repoRoot, paths))}
+            // The file-level ops all declare what they touched (G8): the index
+            // and, because staging the last conflicted file ends a merge, the
+            // in-progress state. Never the branch list, the tags or the log.
+            onStage={(paths) => void run(() => gitStage(repoRoot, paths), undefined, undefined, ["status", "state"])}
+            onUnstage={(paths) => void run(() => gitUnstage(repoRoot, paths), undefined, undefined, ["status", "state"])}
             onDiscard={(tracked, untracked) => setConfirm({ kind: "discard", tracked, untracked })}
-            onStashPush={(msg, untracked) => void run(() => gitStashPush(repoRoot, msg, untracked), "stashed")}
-            onStashPop={(ref) => void run(() => gitStashPop(repoRoot, ref), "popped")}
+            onStashPush={(msg, untracked) =>
+              void run(() => gitStashPush(repoRoot, msg, untracked), "stashed", undefined, ["status", "stashes"])
+            }
+            onStashPop={(ref) =>
+              void run(() => gitStashPop(repoRoot, ref), "popped", undefined, ["status", "stashes"])
+            }
             onStashDrop={(stash) => setConfirm({ kind: "stashDrop", stash })}
             onStageHunks={(patch, n) =>
-              void run(() => gitApplyPatch(repoRoot, patch, true, false), hunkNotice("staged", n))
+              void run(() => gitApplyPatch(repoRoot, patch, true, false), hunkNotice("staged", n), undefined, [
+                "status",
+              ])
             }
             onUnstageHunks={(patch, n) =>
-              void run(() => gitApplyPatch(repoRoot, patch, true, true), hunkNotice("unstaged", n))
+              void run(() => gitApplyPatch(repoRoot, patch, true, true), hunkNotice("unstaged", n), undefined, [
+                "status",
+              ])
             }
             onDiscardHunks={(patch, count) => setConfirm({ kind: "discardHunks", patch, count })}
             onResolve={(paths, side) => setConfirm({ kind: "resolve", paths, side })}
@@ -662,6 +999,8 @@ function GitBody({
               void run(
                 () => gitStage(repoRoot, paths),
                 `marked ${paths.length} ${paths.length === 1 ? "file" : "files"} resolved`,
+                undefined,
+                ["status", "state"],
               )
             }
             command={statusCommand}
@@ -669,6 +1008,13 @@ function GitBody({
           />
         )}
       </div>
+
+      <CommandConsole
+        repoRoot={repoRoot}
+        open={logOpen}
+        onToggle={() => setLogOpen((v) => !v)}
+        tick={cmdTick}
+      />
 
       {confirm && (
         <ConfirmDialog
@@ -690,17 +1036,19 @@ function GitBody({
                   if (tracked.length) parts.push(await gitDiscard(repoRoot, tracked));
                   if (untracked.length) parts.push(await gitClean(repoRoot, untracked));
                   return parts.join("\n");
-                });
+                }, undefined, undefined, ["status"]);
                 break;
               }
               case "stashDrop":
-                void run(() => gitStashDrop(repoRoot, confirm.stash.reference));
+                void run(() => gitStashDrop(repoRoot, confirm.stash.reference), undefined, undefined, [
+                  "stashes",
+                ]);
                 break;
               case "push":
-                void run(() => gitPush(repoRoot, confirm.force), "pushed");
+                void runNet("pushing", () => gitPush(repoRoot, confirm.force), "pushed", undefined, ["refs"]);
                 break;
               case "publish":
-                void run(() => gitPush(repoRoot, false, true), `published ${confirm.branch}`);
+                void runNet("publishing", () => gitPush(repoRoot, false, true), `published ${confirm.branch}`, undefined, ["refs"]);
                 break;
               case "amendPushed":
                 doCommit(confirm.req, true);
@@ -718,6 +1066,8 @@ function GitBody({
                 void run(
                   () => gitApplyPatch(repoRoot, patch, false, true),
                   hunkNotice("discarded", count),
+                  undefined,
+                  ["status"],
                 );
                 break;
               }
@@ -726,15 +1076,69 @@ function GitBody({
                 // The backend's own summary — it knows which paths it checked out
                 // and which it removed, and a stale row silently dropping out of
                 // the batch is exactly the thing worth reading back.
-                void run(() => gitResolve(repoRoot, paths, side), (out) => out);
+                void run(() => gitResolve(repoRoot, paths, side), (out) => out, undefined, ["status", "state"]);
                 break;
               }
               case "deleteRemoteBranch": {
                 const { remote, branch } = confirm;
-                void run(
+                void runNet(
+                  "deleting on remote",
                   () => gitDeleteRemoteBranch(repoRoot, remote, branch),
                   `deleted ${remote}/${branch}`,
                   `delete ${remote}/${branch}`,
+                  ["refs"],
+                );
+                break;
+              }
+              case "revert": {
+                const { commit } = confirm;
+                // `failTitle`, like G4's: a conflicting revert has already touched
+                // the tree, and which files it stopped on is the whole message.
+                void run(
+                  () => gitRevert(repoRoot, commit.sha),
+                  `reverted ${commit.short}`,
+                  `revert ${commit.short}`,
+                );
+                break;
+              }
+              case "cherryPick": {
+                const { commit } = confirm;
+                void run(
+                  () => gitCherryPick(repoRoot, commit.sha),
+                  `cherry-picked ${commit.short}`,
+                  `cherry-pick ${commit.short}`,
+                );
+                break;
+              }
+              case "reset": {
+                const { commit, mode } = confirm;
+                void run(
+                  () => gitReset(repoRoot, commit.sha, mode),
+                  `reset ${mode} to ${commit.short}`,
+                  `reset ${mode}`,
+                );
+                break;
+              }
+              case "deleteTag": {
+                const { name } = confirm;
+                void run(() => gitTagDelete(repoRoot, name), `deleted tag ${name}`, undefined, ["tags"]);
+                break;
+              }
+              case "sequencerAbort": {
+                const { operation } = confirm;
+                void run(
+                  () => gitSequencerControl(repoRoot, operation, "abort"),
+                  `${operation} aborted`,
+                  operation,
+                );
+                break;
+              }
+              case "sequencerSkip": {
+                const { operation } = confirm;
+                void run(
+                  () => gitSequencerControl(repoRoot, operation, "skip"),
+                  "commit skipped",
+                  operation,
                 );
                 break;
               }
@@ -777,6 +1181,20 @@ function GitBody({
               upstream
                 ? `${upstreaming.name} now tracks ${upstream}`
                 : `${upstreaming.name} no longer tracks anything`,
+            )
+          }
+        />
+      )}
+
+      {tagging && (
+        <TagDialog
+          commit={tagging.commit}
+          busy={busy}
+          onClose={() => setTagging(null)}
+          onCreate={(name, message) =>
+            void run(
+              () => gitTagCreate(repoRoot, name, tagging.commit.sha, message),
+              `tagged ${tagging.commit.short} as ${name}`,
             )
           }
         />
@@ -1061,274 +1479,6 @@ function TabBar({
   );
 }
 
-// --- history tab ------------------------------------------------------------
-
-function HistoryTab({
-  repoRoot,
-  commits,
-  orientation,
-  actions,
-}: {
-  repoRoot: string;
-  commits: Commit[];
-  orientation: Orientation;
-  actions: PanelActions;
-}) {
-  const { anchor, openMenu, closeMenu } = useContextMenu();
-  const [selected, setSelected] = useState<string | null>(commits[0]?.sha ?? null);
-  const [files, setFiles] = useState<DiffFile[] | null>(null);
-  const [selectedFile, setSelectedFile] = useState<string | null>(null);
-  const [diff, setDiff] = useState<string | null>(null);
-
-  // Keep a valid selection as the log refreshes.
-  useEffect(() => {
-    if (selected && commits.some((c) => c.sha === selected)) return;
-    setSelected(commits[0]?.sha ?? null);
-  }, [commits, selected]);
-
-  // Load the selected commit's changed-file list; auto-pick the first file.
-  useEffect(() => {
-    if (!selected) {
-      setFiles(null);
-      setSelectedFile(null);
-      return;
-    }
-    let alive = true;
-    void gitCommitFiles(repoRoot, selected)
-      .then((f) => {
-        if (!alive) return;
-        setFiles(f);
-        setSelectedFile(f[0]?.path ?? null);
-      })
-      .catch(() => alive && setFiles([]));
-    return () => {
-      alive = false;
-    };
-  }, [repoRoot, selected]);
-
-  // Load the selected file's diff within the commit.
-  useEffect(() => {
-    if (!selected || !selectedFile) {
-      setDiff(null);
-      return;
-    }
-    let alive = true;
-    void gitCommitFileDiff(repoRoot, selected, selectedFile)
-      .then((d) => alive && setDiff(d.binary ? "" : d.text))
-      .catch((err) => alive && setDiff(String(err)));
-    return () => {
-      alive = false;
-    };
-  }, [repoRoot, selected, selectedFile]);
-
-  if (commits.length === 0) {
-    return <Empty>no commits yet</Empty>;
-  }
-
-  const narrow = orientation === "narrow";
-
-  return (
-    <>
-    <Splitter
-      id="history.log"
-      orientation={orientation}
-      direction={narrow ? "column" : "row"}
-      defaultSize={narrow ? 200 : 300}
-      minFirst={narrow ? 80 : 170}
-      minSecond={narrow ? 120 : 220}
-      first={
-        <div style={{ flex: 1, minHeight: 0, overflow: "auto", background: "var(--wb-panel)" }}>
-          {commits.map((c) => (
-            <CommitRow
-              key={c.sha}
-              commit={c}
-              active={c.sha === selected}
-              onSelect={() => setSelected(c.sha)}
-              // Right-click selects too: the menu's checkout / branch-from read
-              // better next to the commit's own file list than against whatever
-              // was selected before.
-              onMenu={(e) => {
-                setSelected(c.sha);
-                openMenu(e, commitRowMenu(c, actions));
-              }}
-            />
-          ))}
-        </div>
-      }
-      second={
-        // Always stacked: the commit's file list reads as a header over its diff at
-        // any width. Collapsible so a big commit's file list can take the whole box.
-        <Splitter
-          id="history.files"
-          orientation={orientation}
-          direction="column"
-          defaultSize={140}
-          minFirst={52}
-          minSecond={90}
-          collapsible
-          secondLabel="diff"
-          first={
-            <CommitFileList
-              files={files}
-              selected={selectedFile}
-              onSelect={setSelectedFile}
-              onMenu={(path, e) => openMenu(e, commitFileRowMenu(path, actions))}
-            />
-          }
-          second={
-            !selectedFile ? (
-              <Empty>select a file</Empty>
-            ) : diff === null ? (
-              <Empty>reading diff…</Empty>
-            ) : diff.trim() === "" ? (
-              <Empty>{GLYPH.warn} binary file — no textual diff</Empty>
-            ) : (
-              <UnifiedDiff text={diff} />
-            )
-          }
-        />
-      }
-    />
-    {anchor && <ContextMenu {...anchor} onClose={closeMenu} />}
-    </>
-  );
-}
-
-function CommitRow({
-  commit,
-  active,
-  onSelect,
-  onMenu,
-}: {
-  commit: Commit;
-  active: boolean;
-  onSelect: () => void;
-  onMenu: (e: React.MouseEvent) => void;
-}) {
-  const merge = commit.parents.length > 1;
-  return (
-    <button
-      onClick={onSelect}
-      onContextMenu={onMenu}
-      title={commit.sha}
-      style={{
-        display: "flex",
-        flexDirection: "column",
-        gap: 2,
-        width: "100%",
-        textAlign: "left",
-        padding: "6px 11px",
-        border: "none",
-        borderLeft: `2px solid ${active ? "var(--wb-selBar)" : "transparent"}`,
-        background: active ? "var(--wb-sel)" : "transparent",
-        cursor: "pointer",
-      }}
-    >
-      <span style={{ display: "flex", alignItems: "baseline", gap: 7, minWidth: 0 }}>
-        <span style={{ color: merge ? "var(--wb-working)" : "var(--wb-textFaint)", flex: "0 0 auto", font: "10px var(--wb-mono)" }}>
-          {merge ? "⑃" : "●"}
-        </span>
-        <span
-          style={{
-            flex: 1,
-            minWidth: 0,
-            font: "11.5px var(--wb-mono)",
-            color: active ? "var(--wb-text)" : "var(--wb-textDim2)",
-            overflow: "hidden",
-            textOverflow: "ellipsis",
-            whiteSpace: "nowrap",
-          }}
-        >
-          {commit.subject}
-        </span>
-      </span>
-      <span style={{ display: "flex", alignItems: "center", gap: 7, paddingLeft: 17, font: "9.5px var(--wb-mono)", color: "var(--wb-textFaint)" }}>
-        <span style={{ color: "var(--wb-accent)" }}>{commit.short}</span>
-        <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{commit.author}</span>
-        <span style={{ flex: "0 0 auto" }}>{relativeDate(commit.date)}</span>
-      </span>
-      {commit.refs.length > 0 && (
-        <span style={{ display: "flex", flexWrap: "wrap", gap: 4, paddingLeft: 17, marginTop: 1 }}>
-          {commit.refs.map((r) => (
-            <span
-              key={r}
-              style={{
-                font: "9px var(--wb-mono)",
-                color: "var(--wb-accent)",
-                border: "1px solid var(--wb-border)",
-                borderRadius: 3,
-                padding: "0 4px",
-              }}
-            >
-              {r.replace(/^HEAD -> /, "")}
-            </span>
-          ))}
-        </span>
-      )}
-    </button>
-  );
-}
-
-function CommitFileList({
-  files,
-  selected,
-  onSelect,
-  onMenu,
-}: {
-  files: DiffFile[] | null;
-  selected: string | null;
-  onSelect: (path: string) => void;
-  onMenu: (path: string, e: React.MouseEvent) => void;
-}) {
-  // Sized by its splitter now, not a `maxHeight: 140` cap — a 30-file commit used
-  // to be read four rows at a time no matter how much room the panel had.
-  return (
-    <div style={{ flex: 1, minHeight: 0, overflow: "auto", background: "var(--wb-titlebar)" }}>
-      {files == null ? (
-        <div style={{ padding: "6px 12px", font: "10.5px var(--wb-mono)", color: "var(--wb-textFaint)" }}>reading…</div>
-      ) : files.length === 0 ? (
-        <div style={{ padding: "6px 12px", font: "10.5px var(--wb-mono)", color: "var(--wb-textFaint)" }}>no file changes</div>
-      ) : (
-        files.map((f) => {
-          const active = f.path === selected;
-          return (
-            <button
-              key={f.path}
-              onClick={() => onSelect(f.path)}
-              onContextMenu={(e) => {
-                onSelect(f.path);
-                onMenu(f.path, e);
-              }}
-              title={f.path}
-              style={{
-                display: "flex",
-                alignItems: "baseline",
-                gap: 7,
-                width: "100%",
-                textAlign: "left",
-                padding: "3px 12px",
-                border: "none",
-                background: active ? "var(--wb-sel)" : "transparent",
-                cursor: "pointer",
-                font: "10.5px var(--wb-mono)",
-              }}
-            >
-              <span style={{ color: statusColor(f.status), flex: "0 0 auto", width: 9 }}>{STATUS_GLYPH[f.status] ?? "•"}</span>
-              <span style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: active ? "var(--wb-text)" : "var(--wb-textDim2)" }}>
-                {f.path}
-              </span>
-              <span style={{ flex: "0 0 auto", font: "9.5px var(--wb-mono)" }}>
-                {f.insertions > 0 && <span style={{ color: "var(--wb-done)" }}>+{f.insertions} </span>}
-                {f.deletions > 0 && <span style={{ color: "var(--wb-needs)" }}>−{f.deletions}</span>}
-              </span>
-            </button>
-          );
-        })
-      )}
-    </div>
-  );
-}
-
 // --- dialogs ----------------------------------------------------------------
 
 function ConfirmDialog({
@@ -1550,6 +1700,102 @@ function describeConfirm(c: Confirm): { title: string; body: React.ReactNode; la
           </>
         ),
       };
+    case "revert":
+      return {
+        title: "revert",
+        label: "↶ revert",
+        danger: false,
+        body: (
+          <>
+            Add a commit that undoes <Ref>{c.commit.short}</Ref> — “{c.commit.subject}”? The
+            original stays in the history; this is the undo that doesn't rewrite anything. If it
+            can't apply cleanly it stops with the conflicts marked up, the same as a merge.
+          </>
+        ),
+      };
+    case "cherryPick":
+      return {
+        title: "cherry-pick",
+        label: "⑃ cherry-pick",
+        danger: false,
+        body: (
+          <>
+            Apply <Ref>{c.commit.short}</Ref> — “{c.commit.subject}” — on top of the current
+            branch as a new commit? The original is untouched, and a conflict stops it partway
+            for you to resolve.
+          </>
+        ),
+      };
+    case "reset": {
+      const { mode, commit, head } = c;
+      // The three modes differ in exactly one way that matters — what happens to
+      // work you haven't committed — so each says that, in that many words.
+      const what =
+        mode === "soft" ? (
+          <>
+            Everything that was in the index and the working tree stays exactly where it is, so
+            the commits between here and there come back as staged changes.
+          </>
+        ) : mode === "mixed" ? (
+          <>
+            The index is reset too, so those changes come back as <em>unstaged</em> edits. Nothing
+            on disk is touched.
+          </>
+        ) : (
+          <>
+            The index <strong>and the working tree</strong> are reset with it. Anything
+            uncommitted — staged or not — is gone, and it isn't in the history for you to get
+            back.
+          </>
+        );
+      return {
+        title: `reset ${mode}`,
+        label: `↺ reset ${mode}`,
+        danger: mode === "hard",
+        body: (
+          <>
+            Move <Ref>{head}</Ref> to <Ref>{commit.short}</Ref> — “{commit.subject}”? {what}
+            {c.warnLive && <LiveWarning />}
+          </>
+        ),
+      };
+    }
+    case "deleteTag":
+      return {
+        title: "delete tag",
+        label: `${GLYPH.fail} delete`,
+        danger: true,
+        body: (
+          <>
+            Delete the tag <Ref>{c.name}</Ref>? Only locally — if it's been pushed, the remote
+            keeps its copy and a fetch will bring it back.
+          </>
+        ),
+      };
+    case "sequencerAbort":
+      return {
+        title: `abort ${c.operation}`,
+        label: "⨯ abort",
+        danger: true,
+        body: (
+          <>
+            Stop the {c.operation} and put the branch back where it started? Anything it has
+            applied so far is undone.
+          </>
+        ),
+      };
+    case "sequencerSkip":
+      return {
+        title: "skip this commit",
+        label: `${GLYPH.warn} skip`,
+        danger: true,
+        body: (
+          <>
+            Drop the commit the {c.operation} stopped on and carry on with the rest? Its changes
+            won't be applied at all.
+          </>
+        ),
+      };
   }
 }
 
@@ -1573,20 +1819,205 @@ function LiveWarning() {
 }
 
 /**
+ * A network op is in flight (G8) — the strip that makes "waiting" visible and,
+ * more to the point, escapable.
+ *
+ * Disabled buttons were the panel's only sign that a fetch or push was running,
+ * which conveys that something is happening but not *what*, and offers no way
+ * out of a push to a remote that will never answer. Cancel kills the git process
+ * itself (the backend registered it against this repo), so the wait ends in a
+ * reported failure rather than a panel that stays greyed out until it's closed.
+ */
+function NetProgress({ label, onCancel }: { label: string; onCancel: () => void }) {
+  return (
+    <div
+      style={{
+        flex: "0 0 auto",
+        display: "flex",
+        alignItems: "center",
+        gap: 8,
+        padding: "4px 12px",
+        font: "11px var(--wb-mono)",
+        color: "var(--wb-working)",
+        borderBottom: "1px solid var(--wb-border)",
+        background: "var(--wb-panel)",
+      }}
+    >
+      <Spinner size={11} />
+      <span style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+        {GLYPH.remote} {label}…
+      </span>
+      <button
+        type="button"
+        onClick={onCancel}
+        style={{
+          flex: "0 0 auto",
+          background: "none",
+          border: "1px solid var(--wb-border)",
+          borderRadius: 2,
+          color: "var(--wb-textDim2)",
+          font: "10px var(--wb-mono)",
+          padding: "1px 8px",
+          cursor: "pointer",
+        }}
+      >
+        cancel
+      </button>
+    </div>
+  );
+}
+
+/**
+ * The scrollback of git commands this panel ran (G8).
+ *
+ * The panel used to report failures as one line of stderr on a banner, which is
+ * fine for "branch already exists" and useless for the multi-line messages git
+ * reserves for the situations you most need to read: a rejected push naming the
+ * ref and the fix, an apply that says which line of the patch didn't fit. And
+ * the *sequence* matters too — an error is often explained by the command
+ * before it, which the panel simply never showed.
+ *
+ * So: a permanent footer showing the last command, expanding to the recent ones
+ * with their output. It's deliberately a console, not a log viewer — the point
+ * is to see that this panel is a thing that runs `git` commands, and which.
+ */
+function CommandConsole({
+  repoRoot,
+  open,
+  onToggle,
+  tick,
+}: {
+  repoRoot: string;
+  open: boolean;
+  onToggle: () => void;
+  /** Bumped when a command has probably run, so this re-reads without polling. */
+  tick: number;
+}) {
+  const [entries, setEntries] = useState<GitCommandRecord[]>([]);
+  const scrollRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    let live = true;
+    void gitCommandLog(repoRoot)
+      .then((e) => {
+        if (live) setEntries(e);
+      })
+      .catch(() => {});
+    return () => {
+      live = false;
+    };
+  }, [repoRoot, tick]);
+
+  // Newest at the bottom, like every other console: follow it.
+  useEffect(() => {
+    if (open && scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+  }, [open, entries]);
+
+  const last = entries.length > 0 ? entries[entries.length - 1] : null;
+  const failed = entries.filter((e) => !e.ok).length;
+
+  return (
+    <div style={{ flex: "0 0 auto", borderTop: "1px solid var(--wb-border)", background: "var(--wb-panel)" }}>
+      {open && (
+        <div
+          ref={scrollRef}
+          style={{ maxHeight: 168, overflowY: "auto", padding: "4px 0", borderBottom: "1px solid var(--wb-border)" }}
+        >
+          {entries.length === 0 ? (
+            <div style={{ padding: "3px 12px", font: "10.5px var(--wb-mono)", color: "var(--wb-textFaint)" }}>
+              nothing run yet
+            </div>
+          ) : (
+            entries.map((e) => (
+              <div key={e.id} style={{ padding: "2px 12px", font: "10.5px var(--wb-mono)" }}>
+                <div style={{ display: "flex", gap: 6, color: e.ok ? "var(--wb-textDim2)" : "var(--wb-needs)" }}>
+                  <span style={{ flex: "0 0 auto" }}>{e.ok ? GLYPH.ok : GLYPH.fail}</span>
+                  <span style={{ flex: 1, minWidth: 0, wordBreak: "break-all" }}>{e.argv}</span>
+                  <span style={{ flex: "0 0 auto", color: "var(--wb-textFaint)" }}>{formatMs(e.ms)}</span>
+                </div>
+                {e.output !== "" && (
+                  <div
+                    style={{
+                      margin: "1px 0 2px 16px",
+                      whiteSpace: "pre-wrap",
+                      wordBreak: "break-word",
+                      color: e.ok ? "var(--wb-textFaint)" : "var(--wb-needs)",
+                    }}
+                  >
+                    {e.output}
+                  </div>
+                )}
+              </div>
+            ))
+          )}
+        </div>
+      )}
+      <button
+        type="button"
+        onClick={onToggle}
+        title={open ? "hide the git command log" : "show the git command log"}
+        style={{
+          width: "100%",
+          display: "flex",
+          alignItems: "center",
+          gap: 6,
+          background: "none",
+          border: "none",
+          padding: "3px 12px",
+          font: "10.5px var(--wb-mono)",
+          color: "var(--wb-textFaint)",
+          cursor: "pointer",
+          textAlign: "left",
+        }}
+      >
+        <span style={{ flex: "0 0 auto" }}>{open ? "▾" : "▸"}</span>
+        <span
+          style={{
+            flex: 1,
+            minWidth: 0,
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+            whiteSpace: "nowrap",
+            color: last && !last.ok ? "var(--wb-needs)" : "var(--wb-textFaint)",
+          }}
+        >
+          {last ? `${last.ok ? GLYPH.ok : GLYPH.fail} ${last.argv}` : "git"}
+        </span>
+        {failed > 0 && !open && (
+          <span style={{ flex: "0 0 auto", color: "var(--wb-needs)" }}>
+            {failed} failed
+          </span>
+        )}
+      </button>
+    </div>
+  );
+}
+
+/** Durations as a console shows them: milliseconds until they stop being small. */
+function formatMs(ms: number): string {
+  return ms < 1000 ? `${ms}ms` : `${(ms / 1000).toFixed(1)}s`;
+}
+
+/**
  * The repo is mid-merge / mid-rebase / mid-cherry-pick / mid-revert (G4). Until
  * now the panel gave no sign of this at all: a conflicted merge just looked like
  * a working tree with odd files in it, and the way out was to leave for a shell.
  *
  * Rebase gets the full set of controls, since a stopped rebase is *only*
  * escapable through them. A merge gets abort — its "continue" is an ordinary
- * commit, which the commit box below already is. Cherry-pick and revert can't be
- * started from the panel yet (G7), so if one is in flight it came from elsewhere
- * and the banner says so rather than offering half a set of buttons.
+ * commit, which the commit box below already is.
  *
  * G6 gave it the conflict count, which turns it from a label into an instruction:
  * *how many files are still unmerged* is the difference between "go resolve them"
  * and "you're done, commit" — and once it reaches zero the banner says so instead
  * of leaving you to work out that the next step changed.
+ *
+ * G7 gave cherry-pick and revert their buttons. Until now the banner could name
+ * them and nothing else: they could only have been started from outside the
+ * panel, and there was no command here to finish or undo one. Now the panel
+ * starts them, and `git_sequencer_control` is the rebase controls' counterpart —
+ * so they get the same three, and the "started elsewhere" wording is left for
+ * whatever genuinely was.
  */
 function OperationBanner({
   operation,
@@ -1606,18 +2037,21 @@ function OperationBanner({
 }) {
   const rebase = operation === "rebase";
   const merge = operation === "merge";
+  // Cherry-pick and revert are sequencer operations: same three controls as a
+  // rebase, driven by `git_sequencer_control` instead (G7).
+  const sequencer = operation === "cherry-pick" || operation === "revert";
   const left =
     conflicts === 0
       ? null
       : `${conflicts} ${conflicts === 1 ? "file is" : "files are"} still conflicted`;
-  const what = rebase
+  const what = merge
     ? left
-      ? `rebase stopped — ${left}; resolve and stage them, then continue`
-      : "rebase stopped — nothing is conflicted any more, so continue"
-    : merge
+      ? `merge stopped — ${left}; resolve and stage them, then commit`
+      : "merge stopped — nothing is conflicted any more, so commit to finish it"
+    : rebase || sequencer
       ? left
-        ? `merge stopped — ${left}; resolve and stage them, then commit`
-        : "merge stopped — nothing is conflicted any more, so commit to finish it"
+        ? `${operation} stopped — ${left}; resolve and stage them, then continue`
+        : `${operation} stopped — nothing is conflicted any more, so continue`
       : `${operation} in progress — started outside the panel; finish it in the Project Shell`;
   return (
     <div
@@ -1638,9 +2072,9 @@ function OperationBanner({
         {GLYPH.warn} {what}
       </span>
       <span style={{ marginLeft: "auto", flex: "0 0 auto", display: "flex", gap: 12 }}>
-        {rebase && (
+        {(rebase || sequencer) && (
           <>
-            <HeaderButton onClick={onContinue} disabled={busy} accent title="git rebase --continue">
+            <HeaderButton onClick={onContinue} disabled={busy} accent title={`git ${operation} --continue`}>
               ▸ continue
             </HeaderButton>
             <HeaderButton onClick={onSkip} disabled={busy} title="drop the stopped commit and carry on">
@@ -1648,12 +2082,12 @@ function OperationBanner({
             </HeaderButton>
           </>
         )}
-        {(rebase || merge) && (
+        {(rebase || merge || sequencer) && (
           <HeaderButton
             onClick={onAbort}
             disabled={busy}
             danger
-            title={rebase ? "put the branch back where the rebase started" : "restore the pre-merge state"}
+            title={merge ? "restore the pre-merge state" : `put the branch back where the ${operation} started`}
           >
             ⨯ abort
           </HeaderButton>
@@ -1753,6 +2187,76 @@ function BranchRenameDialog({
           style={{ ...confirmButtonStyle, borderColor: "var(--wb-borderActive)" }}
         >
           {busy ? "working…" : "rename"}
+        </button>
+      </div>
+    </Modal>
+  );
+}
+
+/**
+ * Name a tag for a commit (G7). Not a confirm: nothing is destroyed or moved, and
+ * the choice that matters — lightweight ref or annotated object — is made by
+ * whether you write a message, which is the same rule `git tag` itself uses.
+ */
+function TagDialog({
+  commit,
+  busy,
+  onClose,
+  onCreate,
+}: {
+  commit: Commit;
+  busy: boolean;
+  onClose: () => void;
+  onCreate: (name: string, message: string | null) => void;
+}) {
+  const [name, setName] = useState("");
+  const [message, setMessage] = useState("");
+  const trimmed = name.trim();
+  const note = message.trim();
+  const create = () => onCreate(trimmed, note === "" ? null : note);
+  return (
+    <Modal title="tag" onClose={onClose} width={420}>
+      <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+        <div style={{ font: "11px var(--wb-mono)", color: "var(--wb-textFaint)", lineHeight: 1.5 }}>
+          on <span style={{ color: "var(--wb-accent)" }}>{commit.short}</span> — {commit.subject}
+        </div>
+        <input
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && trimmed && !busy) create();
+          }}
+          placeholder="tag name (v1.2.0)"
+          autoFocus
+          spellCheck={false}
+          style={inputStyle}
+        />
+        <input
+          value={message}
+          onChange={(e) => setMessage(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && trimmed && !busy) create();
+          }}
+          placeholder="message (optional)"
+          spellCheck={false}
+          style={inputStyle}
+        />
+        <div style={{ font: "10.5px var(--wb-mono)", color: "var(--wb-textFaint)", lineHeight: 1.5 }}>
+          {note === ""
+            ? "no message — a lightweight tag, which is just a name pointing at the commit"
+            : "with a message it's an annotated tag: its own object, carrying you and the date"}
+        </div>
+      </div>
+      <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 16 }}>
+        <button onClick={onClose} style={confirmButtonStyle}>
+          cancel
+        </button>
+        <button
+          onClick={create}
+          disabled={busy || !trimmed}
+          style={{ ...confirmButtonStyle, borderColor: "var(--wb-borderActive)" }}
+        >
+          {busy ? "working…" : "⌂ tag"}
         </button>
       </div>
     </Modal>

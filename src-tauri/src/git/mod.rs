@@ -15,7 +15,12 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
+
+mod run;
+mod watch;
+
+use run::Spec;
 
 /// What `detect_repo` learns about a candidate project folder.
 #[derive(Debug, Serialize)]
@@ -75,22 +80,16 @@ fn detect_default_branch(path: &Path) -> Option<String> {
 }
 
 /// Run `git -C <path> <args>` and return trimmed stdout on success, or `None` if
-/// git is missing, errors, or prints nothing. On Windows, suppress the console
-/// window that `CreateProcess` would otherwise flash.
+/// git is missing, errors, or prints nothing. Goes through `run::exec` (G8), so
+/// it inherits the no-prompt environment, the deadline, and the scrollback — and
+/// on Windows the suppressed console window that spawning git would otherwise
+/// flash.
 fn git_output(path: &Path, args: &[&str]) -> Option<String> {
-    let mut cmd = Command::new("git");
-    cmd.arg("-C").arg(path).args(args);
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        cmd.creation_flags(CREATE_NO_WINDOW);
-    }
-    let out = cmd.output().ok()?;
-    if !out.status.success() {
+    let out = run::exec(path, Spec::local(args)).ok()?;
+    if !out.ok {
         return None;
     }
-    let s = String::from_utf8_lossy(&out.stdout).trim().to_owned();
+    let s = out.stdout.trim().to_owned();
     if s.is_empty() {
         None
     } else {
@@ -832,43 +831,55 @@ fn same_path(a: &Path, b: &Path) -> bool {
 /// Like `git_output` but returns stdout **untrimmed** — diff text must keep its
 /// leading/trailing whitespace and newlines intact. `None` on a missing/erroring git.
 fn git_stdout(path: &Path, args: &[&str]) -> Option<String> {
-    let mut cmd = Command::new("git");
-    cmd.arg("-C").arg(path).args(args);
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        cmd.creation_flags(CREATE_NO_WINDOW);
-    }
-    let out = cmd.output().ok()?;
-    if !out.status.success() {
+    let out = run::exec(path, Spec::local(args)).ok()?;
+    if !out.ok {
         return None;
     }
-    Some(String::from_utf8_lossy(&out.stdout).into_owned())
+    Some(out.stdout)
 }
 
 /// Run `git -C <path> <args>`, returning trimmed stdout on success or the captured
 /// stderr on failure. Unlike `git_output` (which swallows errors into `None`), this
 /// surfaces *why* a command failed so provisioning can report it to the user.
 fn git_run(path: &Path, args: &[&str]) -> Result<String, String> {
-    let mut cmd = Command::new("git");
-    cmd.arg("-C").arg(path).args(args);
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        cmd.creation_flags(CREATE_NO_WINDOW);
+    finish(run::exec(path, Spec::local(args))?, args, false)
+}
+
+/// A cancellable `git_run` for commands that talk to a remote (G8): a longer
+/// deadline, and the child registered under `path` so `git_cancel` can end it.
+/// Reports the full output on failure the way `git_run_full` does — an auth
+/// failure's useful half ("could not read Username for …") is often on stdout.
+fn git_run_net(path: &Path, args: &[&str]) -> Result<String, String> {
+    let key = path.to_string_lossy().into_owned();
+    finish(run::exec(path, Spec::network(args, &key))?, args, true)
+}
+
+/// Turn a completed invocation into the `Result<String, String>` the commands
+/// hand the frontend. `full` picks how much of a failure to report: stderr only
+/// (the concise shape most write paths want), or stderr *and* stdout for the
+/// commands whose interesting half lands on stdout.
+fn finish(out: run::Output, args: &[&str], full: bool) -> Result<String, String> {
+    let stdout = out.stdout.trim().to_owned();
+    let stderr = out.stderr.trim().to_owned();
+    if out.ok {
+        // Rebase and fetch report progress on stderr and say nothing on stdout;
+        // merge is the other way round. Prefer whichever spoke.
+        return Ok(if full && stdout.is_empty() { stderr } else { stdout });
     }
-    let out = cmd.output().map_err(|e| format!("failed to run git: {e}"))?;
-    if !out.status.success() {
-        let err = String::from_utf8_lossy(&out.stderr).trim().to_owned();
-        return Err(if err.is_empty() {
-            format!("git {} failed", args.first().copied().unwrap_or("command"))
-        } else {
-            err
-        });
-    }
-    Ok(String::from_utf8_lossy(&out.stdout).trim().to_owned())
+    let joined = if full {
+        [stderr, stdout]
+            .into_iter()
+            .filter(|s| !s.is_empty())
+            .collect::<Vec<_>>()
+            .join("\n")
+    } else {
+        stderr
+    };
+    Err(if joined.is_empty() {
+        format!("git {} failed", args.first().copied().unwrap_or("command"))
+    } else {
+        joined
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -907,16 +918,39 @@ pub struct Commit {
     pub refs: Vec<String>,
 }
 
-/// Recent history for a project's repo (step 3.11): HEAD's log, newest first,
-/// capped at `limit` (default 200, hard-capped at 2000 so a giant repo can't
-/// flood the UI in one call). Pure inspection.
-#[tauri::command]
-pub fn git_log(repo_root: String, limit: Option<u32>) -> Result<Vec<Commit>, String> {
-    let root = Path::new(&repo_root);
-    let n = limit.unwrap_or(200).clamp(1, 2000).to_string();
-    let fmt = format!("%H{US}%h{US}%an{US}%at{US}%P{US}%D{US}%s{RS}");
-    let out = git_stdout(root, &["log", "--no-color", "-n", &n, &format!("--format={fmt}")])
-        .unwrap_or_default();
+/// Which slice of history to read (G7). Every field maps to a `git log` argument,
+/// so the filtering happens *in git*: the panel used to fetch a fixed 200 commits
+/// and had no way to look past them, and sieving those 200 client-side would have
+/// been a search of the window rather than of the repo.
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct LogQuery {
+    /// How many commits to read (default 200, hard-capped at 2000).
+    pub limit: Option<u32>,
+    /// How many to skip first — the *load more* cursor.
+    pub skip: Option<u32>,
+    /// What to walk: a branch / tag / SHA, the literal `--all`, or `None` for HEAD.
+    pub reference: Option<String>,
+    /// Commit-message text. Matched literally and case-insensitively, so a typed
+    /// `(` is a bracket rather than a regex error.
+    pub search: Option<String>,
+    pub author: Option<String>,
+    /// Only commits touching this path.
+    pub path: Option<String>,
+    /// `--since` / `--until`, parsed by git — `2 weeks ago` works as well as a date.
+    pub since: Option<String>,
+    pub until: Option<String>,
+}
+
+/// The `git log --format` string every history read shares. Field order is fixed
+/// by `parse_log`; the subject stays last because it's the one field that could
+/// carry something odd.
+fn log_format() -> String {
+    format!("--format=%H{US}%h{US}%an{US}%at{US}%P{US}%D{US}%s{RS}")
+}
+
+/// Parse `log_format()` output into commits, newest first.
+fn parse_log(out: &str) -> Vec<Commit> {
     let mut commits = Vec::new();
     for rec in out.split(RS) {
         let rec = rec.trim_matches(|c| c == '\n' || c == '\r');
@@ -948,7 +982,84 @@ pub fn git_log(repo_root: String, limit: Option<u32>) -> Result<Vec<Commit>, Str
         let subject = f.next().unwrap_or("").to_owned();
         commits.push(Commit { sha, short, subject, author, date, parents, refs });
     }
-    Ok(commits)
+    commits
+}
+
+/// A ref about to reach git as a bare argument (G7). Everything else the panel
+/// sends — search text, author, dates — is embedded in a single `--flag=value`
+/// argument and can't be mistaken for an option, but a ref stands alone: one that
+/// starts with `-` would arrive as a flag. Names starting with `-` aren't legal
+/// refs anyway, so refusing them costs nothing.
+fn safe_ref(reference: &str) -> Result<&str, String> {
+    let r = reference.trim();
+    if r.is_empty() {
+        return Err("no ref given".into());
+    }
+    if r.starts_with('-') {
+        return Err(format!("not a ref: {r}"));
+    }
+    Ok(r)
+}
+
+/// History for a project's repo (step 3.11, extended in G7): commits newest first,
+/// filtered and paged by `query`. Pure inspection, and still a single invocation
+/// however many filters are set.
+#[tauri::command]
+pub fn git_log(repo_root: String, query: Option<LogQuery>) -> Result<Vec<Commit>, String> {
+    let q = query.unwrap_or_default();
+    let root = Path::new(&repo_root);
+    let mut args: Vec<String> = vec![
+        "-c".into(),
+        "core.quotePath=false".into(),
+        "log".into(),
+        "--no-color".into(),
+        "-n".into(),
+        q.limit.unwrap_or(200).clamp(1, 2000).to_string(),
+        format!("--skip={}", q.skip.unwrap_or(0)),
+        log_format(),
+    ];
+
+    let text = |v: &Option<String>| -> Option<String> {
+        v.as_deref().map(str::trim).filter(|s| !s.is_empty()).map(str::to_owned)
+    };
+
+    // `--all` is a flag, not a ref, and it's the one bare argument here that's
+    // allowed to start with a dash.
+    if let Some(r) = text(&q.reference) {
+        if r == "--all" || r == "all" {
+            args.push("--all".into());
+        } else {
+            args.push(safe_ref(&r)?.to_owned());
+        }
+    }
+    let search = text(&q.search);
+    let author = text(&q.author);
+    if let Some(s) = &search {
+        args.push(format!("--grep={s}"));
+    }
+    if let Some(a) = &author {
+        args.push(format!("--author={a}"));
+    }
+    if search.is_some() || author.is_some() {
+        // Both limiting patterns are typed into a search box, not written as
+        // regexes: `-F` keeps an unbalanced bracket a character rather than an
+        // error, and `-i` is what anyone typing lowercase into a filter expects.
+        args.push("--fixed-strings".into());
+        args.push("--regexp-ignore-case".into());
+    }
+    if let Some(s) = text(&q.since) {
+        args.push(format!("--since={s}"));
+    }
+    if let Some(u) = text(&q.until) {
+        args.push(format!("--until={u}"));
+    }
+    if let Some(p) = text(&q.path) {
+        args.push("--".into());
+        args.push(p);
+    }
+
+    let argv: Vec<&str> = args.iter().map(String::as_str).collect();
+    Ok(parse_log(&git_stdout(root, &argv).unwrap_or_default()))
 }
 
 /// One local branch in the branch list (step 3.11), with its upstream tracking.
@@ -1493,14 +1604,14 @@ pub fn git_fetch(repo_root: String, remote: Option<String>) -> Result<String, St
     if let Some(s) = r.as_deref() {
         args.push(s);
     }
-    git_run(Path::new(&repo_root), &args)
+    git_run_net(Path::new(&repo_root), &args)
 }
 
 /// Pull the current branch (step 3.11). A merge conflict / non-fast-forward
 /// surfaces git's message; resolve in the Project Shell.
 #[tauri::command]
 pub fn git_pull(repo_root: String) -> Result<String, String> {
-    git_run(Path::new(&repo_root), &["pull"])
+    git_run_net(Path::new(&repo_root), &["pull"])
 }
 
 /// Push the current branch (step 3.11; `set_upstream` added in G1). **Never**
@@ -1541,7 +1652,7 @@ pub fn git_push(
         args.push(branch);
     }
     let argv: Vec<&str> = args.iter().map(String::as_str).collect();
-    git_run(root, &argv)
+    git_run_net(root, &argv)
 }
 
 /// The repo's default push remote: `origin` when it exists, else the first
@@ -1673,42 +1784,17 @@ fn split_message(message: &str) -> (String, String) {
 
 /// `git_run`, but for commands whose failure is worth reading in full.
 ///
-/// Two differences. It returns **stdout as well as stderr** on failure: a merge
-/// that conflicts exits non-zero having written `CONFLICT (content): …` and
-/// `Automatic merge failed` to *stdout*, so `git_run` would report an empty error
-/// for the single most interesting case. And it forces `GIT_EDITOR=true`, because
-/// a merge or rebase that wants a commit message would otherwise launch an editor
-/// against a process with no terminal attached and block this call forever; `true`
-/// exits 0 immediately and git keeps the message it composed itself.
+/// It returns **stdout as well as stderr** on failure: a merge that conflicts
+/// exits non-zero having written `CONFLICT (content): …` and `Automatic merge
+/// failed` to *stdout*, so `git_run` would report an empty error for the single
+/// most interesting case.
+///
+/// It used to also force `GIT_EDITOR=true` (a merge that wants a commit message
+/// would otherwise launch an editor against a process with no terminal and block
+/// forever). G8 moved that to `run::harden`, where it covers every invocation —
+/// the hazard was never specific to merges.
 fn git_run_full(path: &Path, args: &[&str]) -> Result<String, String> {
-    let mut cmd = Command::new("git");
-    cmd.arg("-C").arg(path).args(args).env("GIT_EDITOR", "true");
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        cmd.creation_flags(CREATE_NO_WINDOW);
-    }
-    let out = cmd.output().map_err(|e| format!("failed to run git: {e}"))?;
-    let stdout = String::from_utf8_lossy(&out.stdout).trim().to_owned();
-    let stderr = String::from_utf8_lossy(&out.stderr).trim().to_owned();
-    if out.status.success() {
-        // Rebase reports progress on stderr and says nothing on stdout; merge is
-        // the other way round. Prefer whichever spoke.
-        return Ok(if stdout.is_empty() { stderr } else { stdout });
-    }
-    // stderr first — it carries the *reason* ("not something we can merge"); stdout
-    // carries the detail (which files conflicted).
-    let joined = [stderr, stdout]
-        .into_iter()
-        .filter(|s| !s.is_empty())
-        .collect::<Vec<_>>()
-        .join("\n");
-    Err(if joined.is_empty() {
-        format!("git {} failed", args.first().copied().unwrap_or("command"))
-    } else {
-        joined
-    })
+    finish(run::exec(path, Spec::local(args))?, args, true)
 }
 
 /// Merge `reference` into the current branch (G4). `mode` picks the shape:
@@ -1796,7 +1882,8 @@ pub fn git_delete_remote_branch(
     remote: String,
     branch: String,
 ) -> Result<String, String> {
-    git_run_full(Path::new(&repo_root), &["push", &remote, "--delete", &branch])
+    // A push, so it goes down the cancellable network path like the others.
+    git_run_net(Path::new(&repo_root), &["push", &remote, "--delete", &branch])
 }
 
 /// Whether the repo is in the middle of something (G4's half of what the plan
@@ -1859,55 +1946,13 @@ pub fn git_repo_state(repo_root: String) -> Result<RepoState, String> {
 /// failure the way `git_run_full` does — `git apply` says which line of the patch
 /// it choked on, and that's the only useful thing to show when it does.
 ///
-/// The write completes before we read, which would deadlock against a child that
-/// filled its stdout pipe first. Safe for `git apply`: the patch is one file's
-/// diff and the reply is a line or two of error.
+/// G5 wrote the patch and *then* read the reply, which would have deadlocked
+/// against a child that filled its stdout pipe first — safe for `git apply` (one
+/// file's diff in, a line or two of error out) but only by luck. G8's `run::exec`
+/// writes stdin and drains both output pipes on their own threads, so the size of
+/// the patch no longer has anything to do with whether this returns.
 fn git_run_stdin(path: &Path, args: &[&str], input: &str) -> Result<String, String> {
-    use std::io::Write;
-    use std::process::Stdio;
-
-    let mut cmd = Command::new("git");
-    cmd.arg("-C")
-        .arg(path)
-        .args(args)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        cmd.creation_flags(CREATE_NO_WINDOW);
-    }
-    let mut child = cmd.spawn().map_err(|e| format!("failed to run git: {e}"))?;
-    {
-        let mut stdin = child
-            .stdin
-            .take()
-            .ok_or_else(|| "git took no stdin".to_owned())?;
-        stdin
-            .write_all(input.as_bytes())
-            .map_err(|e| format!("failed to send the patch to git: {e}"))?;
-        // Dropped here — git waits for EOF before it starts applying.
-    }
-    let out = child
-        .wait_with_output()
-        .map_err(|e| format!("failed to run git: {e}"))?;
-    let stdout = String::from_utf8_lossy(&out.stdout).trim().to_owned();
-    let stderr = String::from_utf8_lossy(&out.stderr).trim().to_owned();
-    if out.status.success() {
-        return Ok(if stdout.is_empty() { stderr } else { stdout });
-    }
-    let joined = [stderr, stdout]
-        .into_iter()
-        .filter(|s| !s.is_empty())
-        .collect::<Vec<_>>()
-        .join("\n");
-    Err(if joined.is_empty() {
-        format!("git {} failed", args.first().copied().unwrap_or("command"))
-    } else {
-        joined
-    })
+    finish(run::exec(path, Spec::local(args).with_stdin(input))?, args, true)
 }
 
 /// One working-tree file's diff for **one side** (G5).
@@ -2083,6 +2128,426 @@ pub fn git_resolve(repo_root: String, paths: Vec<String>, side: String) -> Resul
         "resolved {n} {} with {side}",
         if n == 1 { "file" } else { "files" }
     ))
+}
+
+// --- history parity (step G7) ------------------------------------------------
+// Everything the History tab needs to stop being a fixed list of the last 200
+// subjects: a commit's whole story (`git_commit_detail`), one file's story
+// (`git_file_history`), the comparison pair (`git_range_*`), tags — absent from
+// the model entirely until now — and the four ops that *rewrite* where a branch
+// points or what's on it.
+//
+// The rewrite ops all go through `git_run_full` for the same reason G4's do: a
+// cherry-pick or revert that conflicts is an outcome, not a broken call, and the
+// part worth reading (which files conflicted) is on stdout, which plain `git_run`
+// throws away.
+
+/// One commit, in full (G7) — what the history tab's detail pane reads. `git_log`
+/// deliberately doesn't carry this: a body can be forty lines, and multiplying
+/// that by 200 rows to show one is the wrong trade.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CommitDetail {
+    pub sha: String,
+    pub short: String,
+    pub subject: String,
+    /// Everything past the subject's blank separator; `""` when there's no body.
+    pub body: String,
+    pub author: String,
+    pub author_email: String,
+    /// Author date, epoch seconds — when the work was written.
+    pub author_date: i64,
+    pub committer: String,
+    pub committer_email: String,
+    /// Committer date, epoch seconds — when it last landed. A rebase or amend
+    /// moves this and leaves the author date alone, which is usually the question
+    /// being asked when someone opens a commit's detail.
+    pub committer_date: i64,
+    pub parents: Vec<String>,
+    pub refs: Vec<String>,
+}
+
+/// Read one commit in full (G7).
+#[tauri::command]
+pub fn git_commit_detail(repo_root: String, sha: String) -> Result<CommitDetail, String> {
+    let root = Path::new(&repo_root);
+    let sha = safe_ref(&sha)?;
+    // `%B` (the raw message) goes last: it's the only multi-line field, so nothing
+    // can shift behind it.
+    let fmt = format!(
+        "--format=%H{US}%h{US}%an{US}%ae{US}%at{US}%cn{US}%ce{US}%ct{US}%P{US}%D{US}%B"
+    );
+    let out = git_stdout(root, &["show", "-s", "--no-color", &fmt, sha])
+        .ok_or_else(|| format!("no such commit: {sha}"))?;
+    let mut f = out.split(US);
+    let mut next = || f.next().unwrap_or("").to_owned();
+    let full = next();
+    let short = next();
+    let author = next();
+    let author_email = next();
+    let author_date = next().trim().parse::<i64>().unwrap_or(0);
+    let committer = next();
+    let committer_email = next();
+    let committer_date = next().trim().parse::<i64>().unwrap_or(0);
+    let parents: Vec<String> = next().split_whitespace().map(str::to_owned).collect();
+    let refs: Vec<String> = next()
+        .split(", ")
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_owned)
+        .collect();
+    let message = next();
+    let (subject, body) = split_message(message.trim_end_matches('\n'));
+    if full.is_empty() {
+        return Err(format!("no such commit: {sha}"));
+    }
+    Ok(CommitDetail {
+        sha: full,
+        short,
+        subject,
+        body,
+        author,
+        author_email,
+        author_date,
+        committer,
+        committer_email,
+        committer_date,
+        parents,
+        refs,
+    })
+}
+
+/// The log for a single path (G7) — the file-row menu's "file history".
+///
+/// Not `git_log` with a path filter: `--follow` tracks the file back through
+/// renames, which is the whole point of asking for one file's history, and git
+/// only accepts it for a single pathspec.
+#[tauri::command]
+pub fn git_file_history(
+    repo_root: String,
+    path: String,
+    limit: Option<u32>,
+) -> Result<Vec<Commit>, String> {
+    let root = Path::new(&repo_root);
+    let n = limit.unwrap_or(100).clamp(1, 1000).to_string();
+    let out = git_stdout(
+        root,
+        &[
+            "-c",
+            "core.quotePath=false",
+            "log",
+            "--no-color",
+            "--follow",
+            "-n",
+            &n,
+            &log_format(),
+            "--",
+            &path,
+        ],
+    )
+    .unwrap_or_default();
+    Ok(parse_log(&out))
+}
+
+/// The changed files between two points (G7) — `to = None` means the working
+/// tree, which is what "compare with working tree" asks for.
+///
+/// Same two-invocation shape as `git_commit_files` (`--numstat` for the counts,
+/// `--name-status` for the letters) and the same rename simplification: `-M` is
+/// off, so a rename reads as an add plus a delete and the two reads stay aligned.
+#[tauri::command]
+pub fn git_range_files(
+    repo_root: String,
+    from: String,
+    to: Option<String>,
+) -> Result<Vec<DiffFile>, String> {
+    let root = Path::new(&repo_root);
+    let mut ends: Vec<String> = vec![safe_ref(&from)?.to_owned()];
+    if let Some(t) = to.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        ends.push(safe_ref(t)?.to_owned());
+    }
+    let head: Vec<&str> = vec!["-c", "core.quotePath=false", "diff"];
+    let tail: Vec<&str> = ends.iter().map(String::as_str).collect();
+
+    let mut name_args = head.clone();
+    name_args.push("--name-status");
+    name_args.extend(tail.iter().copied());
+    let status_by_path = parse_name_status(&git_output(root, &name_args).unwrap_or_default());
+
+    let mut stat_args = head;
+    stat_args.push("--numstat");
+    stat_args.extend(tail.iter().copied());
+    let numstat = git_output(root, &stat_args).unwrap_or_default();
+
+    let mut files = Vec::new();
+    for line in numstat.lines() {
+        let mut cols = line.splitn(3, '\t');
+        let ins_raw = cols.next().unwrap_or("");
+        let del_raw = cols.next().unwrap_or("");
+        let path = match cols.next() {
+            Some(p) if !p.is_empty() => p.to_owned(),
+            _ => continue,
+        };
+        let binary = ins_raw == "-" || del_raw == "-";
+        let status = status_by_path
+            .get(&path)
+            .cloned()
+            .unwrap_or_else(|| "modified".to_owned());
+        files.push(DiffFile {
+            path,
+            abs_path: None,
+            status,
+            insertions: ins_raw.parse().unwrap_or(0),
+            deletions: del_raw.parse().unwrap_or(0),
+            binary,
+        });
+    }
+    files.sort_by(|a, b| a.path.cmp(&b.path));
+    Ok(files)
+}
+
+/// One file's diff between two points (G7). `base` comes back as the range the
+/// panel asked for, so the pane can label what it's showing.
+#[tauri::command]
+pub fn git_range_file_diff(
+    repo_root: String,
+    from: String,
+    to: Option<String>,
+    path: String,
+) -> Result<FileDiff, String> {
+    let root = Path::new(&repo_root);
+    let from = safe_ref(&from)?.to_owned();
+    let to = match to.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        Some(t) => Some(safe_ref(t)?.to_owned()),
+        None => None,
+    };
+    let mut args: Vec<&str> = vec!["-c", "core.quotePath=false", "diff", &from];
+    if let Some(t) = &to {
+        args.push(t);
+    }
+    args.push("--");
+    args.push(&path);
+    let out = git_stdout(root, &args).unwrap_or_default();
+    let binary = out.contains("Binary files ");
+    Ok(FileDiff {
+        text: if binary { String::new() } else { out },
+        path,
+        base: match &to {
+            Some(t) => format!("{from}..{t}"),
+            None => format!("{from}..working tree"),
+        },
+        binary,
+        untracked: false,
+    })
+}
+
+/// One tag (G7). Tags were absent from the model entirely — a tagged commit only
+/// ever showed up as a `tag: v1` decoration on a log row.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Tag {
+    pub name: String,
+    /// The *commit* the tag resolves to, short — dereferenced for an annotated tag,
+    /// which points at a tag object rather than straight at the commit.
+    pub short: String,
+    /// The commit's subject.
+    pub subject: String,
+    /// Tagger date for an annotated tag, commit date for a lightweight one.
+    pub date: i64,
+    /// An annotated tag is its own object with a message and a tagger; a
+    /// lightweight one is just a ref, and `message` is empty for it.
+    pub annotated: bool,
+    pub message: String,
+}
+
+/// Every tag in the repo (G7), newest first — one `for-each-ref`, not one read
+/// per tag.
+#[tauri::command]
+pub fn git_tags(repo_root: String) -> Result<Vec<Tag>, String> {
+    let root = Path::new(&repo_root);
+    // The `*` fields dereference an annotated tag to the commit under it and are
+    // empty for a lightweight one, which is exactly how the two are told apart.
+    let fmt = format!(
+        "%(refname:short){US}%(objecttype){US}%(objectname:short){US}%(*objectname:short){US}%(creatordate:unix){US}%(contents:subject){US}%(*contents:subject)"
+    );
+    let out = git_stdout(root, &["for-each-ref", "--format", &fmt, "refs/tags"])
+        .unwrap_or_default();
+    let mut tags = Vec::new();
+    for line in out.lines() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let mut f = line.split(US);
+        let name = f.next().unwrap_or("").trim().to_owned();
+        if name.is_empty() {
+            continue;
+        }
+        let kind = f.next().unwrap_or("").trim();
+        let own = f.next().unwrap_or("").trim().to_owned();
+        let deref = f.next().unwrap_or("").trim().to_owned();
+        let date = f.next().unwrap_or("").trim().parse::<i64>().unwrap_or(0);
+        let own_subject = f.next().unwrap_or("").trim().to_owned();
+        let deref_subject = f.next().unwrap_or("").trim().to_owned();
+        let annotated = kind == "tag";
+        tags.push(Tag {
+            name,
+            short: if annotated && !deref.is_empty() { deref } else { own },
+            subject: if annotated { deref_subject } else { own_subject.clone() },
+            date,
+            annotated,
+            message: if annotated { own_subject } else { String::new() },
+        });
+    }
+    tags.sort_by(|a, b| b.date.cmp(&a.date).then_with(|| a.name.cmp(&b.name)));
+    Ok(tags)
+}
+
+/// Create a tag (G7). With a `message` it's annotated (its own object, carrying a
+/// tagger and that text); without, it's a lightweight ref at `reference`.
+#[tauri::command]
+pub fn git_tag_create(
+    repo_root: String,
+    name: String,
+    reference: Option<String>,
+    message: Option<String>,
+) -> Result<String, String> {
+    let name = safe_ref(&name)?.to_owned();
+    let message = message.map(|m| m.trim().to_owned()).filter(|m| !m.is_empty());
+    let reference = match reference.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        Some(r) => Some(safe_ref(r)?.to_owned()),
+        None => None,
+    };
+    let mut args: Vec<&str> = vec!["tag"];
+    if let Some(m) = &message {
+        args.push("-a");
+        args.push("-m");
+        args.push(m);
+    }
+    args.push(&name);
+    if let Some(r) = &reference {
+        args.push(r);
+    }
+    git_run(Path::new(&repo_root), &args)?;
+    Ok(format!("tagged {}", reference.as_deref().unwrap_or("HEAD")))
+}
+
+/// Delete a tag locally (G7). The remote's copy, if it has one, stays — deleting
+/// that is a push, and the panel doesn't quietly turn one gesture into two.
+#[tauri::command]
+pub fn git_tag_delete(repo_root: String, name: String) -> Result<String, String> {
+    let name = safe_ref(&name)?;
+    git_run(Path::new(&repo_root), &["tag", "-d", name])
+}
+
+/// Revert a commit (G7): apply its inverse. `no_commit` stages the inverse without
+/// committing, for reverting several at once or editing the result first.
+#[tauri::command]
+pub fn git_revert(repo_root: String, sha: String, no_commit: bool) -> Result<String, String> {
+    let sha = safe_ref(&sha)?;
+    let mut args = vec!["revert"];
+    if no_commit {
+        args.push("-n");
+    } else {
+        args.push("--no-edit");
+    }
+    args.push(sha);
+    git_run_full(Path::new(&repo_root), &args)
+}
+
+/// Cherry-pick a commit onto the current branch (G7). `no_commit` applies it to
+/// the index and stops there.
+#[tauri::command]
+pub fn git_cherry_pick(repo_root: String, sha: String, no_commit: bool) -> Result<String, String> {
+    let sha = safe_ref(&sha)?;
+    let mut args = vec!["cherry-pick"];
+    if no_commit {
+        args.push("-n");
+    } else {
+        args.push("--no-edit");
+    }
+    args.push(sha);
+    git_run_full(Path::new(&repo_root), &args)
+}
+
+/// Drive a stopped cherry-pick or revert (G7) — the pair `git_rebase_control` is
+/// for rebases. `git_repo_state` already reported these two operations; until now
+/// the banner could only name them, because nothing here could finish or undo one.
+#[tauri::command]
+pub fn git_sequencer_control(
+    repo_root: String,
+    operation: String,
+    action: String,
+) -> Result<String, String> {
+    let cmd = match operation.as_str() {
+        "cherry-pick" => "cherry-pick",
+        "revert" => "revert",
+        other => return Err(format!("unknown operation: {other}")),
+    };
+    let flag = match action.as_str() {
+        "continue" => "--continue",
+        "skip" => "--skip",
+        "abort" => "--abort",
+        other => return Err(format!("unknown action: {other}")),
+    };
+    git_run_full(Path::new(&repo_root), &[cmd, flag])
+}
+
+/// Move the current branch to `reference` (G7).
+///
+/// * `soft` — move the tip, keep the index and working tree (the "uncommit" move).
+/// * `mixed` — move the tip and reset the index; changes survive as unstaged edits.
+/// * `hard` — move all three. **Destroys uncommitted work**, which is why the UI
+///   puts it behind its own confirm with that sentence in it.
+#[tauri::command]
+pub fn git_reset(repo_root: String, reference: String, mode: String) -> Result<String, String> {
+    let reference = safe_ref(&reference)?;
+    let flag = match mode.as_str() {
+        "soft" => "--soft",
+        "mixed" => "--mixed",
+        "hard" => "--hard",
+        other => return Err(format!("unknown reset mode: {other}")),
+    };
+    git_run_full(Path::new(&repo_root), &["reset", flag, reference])
+}
+
+// --- freshness and robustness (step G8) -------------------------------------
+// The panel's own upkeep: a filesystem watch that tells it when the repo moved
+// underneath it, a way out of a network op that won't finish, and the record of
+// what was actually run — the three things that separate "a view of the repo"
+// from "a view of the repo as it was when you last clicked".
+
+/// Start watching `repo_root` for changes; the frontend gets a `git-changed`
+/// event naming which slices went stale. Reference-counted, so two panels on the
+/// same repo share one watch. Errors are worth surfacing but not worth failing
+/// over — the panel keeps working with manual refresh.
+#[tauri::command]
+pub fn git_watch_start(app: tauri::AppHandle, repo_root: String) -> Result<(), String> {
+    watch::start(&app, &repo_root)
+}
+
+/// Drop this panel's reference to the watch on `repo_root`.
+#[tauri::command]
+pub fn git_watch_stop(repo_root: String) {
+    watch::stop(&repo_root);
+}
+
+/// Kill whatever network op is in flight for `repo_root` (G8).
+///
+/// Returns the number of processes signalled: zero means it had already
+/// finished, which is a normal race — the button and the command's own
+/// completion are two ways of ending the same wait, and either may win.
+#[tauri::command]
+pub fn git_cancel(repo_root: String) -> usize {
+    run::cancel(&repo_root)
+}
+
+/// The recent git commands run against `repo_root`, oldest first — what the
+/// panel's expandable output area shows. This is the whole reason a multi-line
+/// error is readable: the banner shows a summary, and the scrollback holds the
+/// message git actually printed, along with everything that led up to it.
+#[tauri::command]
+pub fn git_command_log(repo_root: String) -> Vec<run::CommandRecord> {
+    run::history(&repo_root)
 }
 
 #[cfg(test)]
@@ -3040,6 +3505,185 @@ mod tests {
         // And a stale selection (or a bad side) says so rather than doing something.
         assert!(git_resolve(root.clone(), vec!["a.txt".into()], "ours".into()).is_err());
         assert!(git_resolve(root, vec!["a.txt".into()], "base".into()).is_err());
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    // --- history parity (step G7) -------------------------------------------
+
+    /// Three commits by two authors touching two files, so every `LogQuery` field
+    /// has something to select *and* something to leave out.
+    fn history_repo(dir: &Path) -> bool {
+        if !init_repo(dir) {
+            return false;
+        }
+        let commit = |name: &str, file: &str, body: &str, msg: &str| {
+            std::fs::write(dir.join(file), body).unwrap();
+            git_run(dir, &["add", "-A"]).unwrap();
+            git_run(dir, &["-c", &format!("user.name={name}"), "commit", "-qm", msg]).unwrap();
+        };
+        commit("Ada", "alpha.txt", "one\n", "alpha: first");
+        commit("Bob", "beta.txt", "two\n", "beta: second");
+        commit("Ada", "alpha.txt", "one\ntwo\n", "alpha: third");
+        true
+    }
+
+    #[test]
+    fn log_query_filters_and_pages_in_git() {
+        let dir = temp_dir("g7-log");
+        if !history_repo(&dir) {
+            std::fs::remove_dir_all(&dir).ok();
+            return;
+        }
+        let root = dir.to_string_lossy().into_owned();
+        let subjects = |q: LogQuery| -> Vec<String> {
+            git_log(root.clone(), Some(q))
+                .unwrap()
+                .into_iter()
+                .map(|c| c.subject)
+                .collect()
+        };
+
+        let all = subjects(LogQuery::default());
+        assert_eq!(all.len(), 4, "three commits plus the fixture's `init`: {all:?}");
+
+        // Paging: the cursor is git's, so page two is the rest of the repo and not
+        // the tail of a window the panel happened to have.
+        let page = subjects(LogQuery { limit: Some(2), skip: Some(2), ..Default::default() });
+        assert_eq!(page, all[2..].to_vec());
+
+        assert_eq!(
+            subjects(LogQuery { author: Some("Ada".into()), ..Default::default() }).len(),
+            2
+        );
+        assert_eq!(
+            subjects(LogQuery { path: Some("beta.txt".into()), ..Default::default() }),
+            vec!["beta: second"]
+        );
+        // Literal and case-insensitive: a search box isn't a regex field.
+        assert_eq!(
+            subjects(LogQuery { search: Some("ALPHA:".into()), ..Default::default() }).len(),
+            2
+        );
+        assert!(
+            subjects(LogQuery { search: Some("alpha: (".into()), ..Default::default() }).is_empty(),
+            "an unbalanced bracket is a character, not an error"
+        );
+        // A ref is the one argument that reaches git bare.
+        assert!(git_log(root, Some(LogQuery {
+            reference: Some("--exec=boom".into()),
+            ..Default::default()
+        }))
+        .is_err());
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn commit_detail_separates_body_from_subject_and_keeps_both_dates() {
+        let dir = temp_dir("g7-detail");
+        if !init_repo(&dir) {
+            std::fs::remove_dir_all(&dir).ok();
+            return;
+        }
+        std::fs::write(dir.join("f.txt"), "x\n").unwrap();
+        git_run(&dir, &["add", "-A"]).unwrap();
+        git_run(&dir, &["commit", "-qm", "subject line", "-m", "body one\nbody two"]).unwrap();
+
+        let root = dir.to_string_lossy().into_owned();
+        let head = git_log(root.clone(), None).unwrap().remove(0);
+        let d = git_commit_detail(root.clone(), head.sha.clone()).unwrap();
+        assert_eq!(d.subject, "subject line");
+        assert_eq!(d.body, "body one\nbody two");
+        assert_eq!(d.parents.len(), 1);
+        assert!(d.author_date > 0 && d.committer_date > 0);
+        assert!(d.author_email.contains('@'));
+
+        assert!(git_commit_detail(root, "--not-a-ref".into()).is_err());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn tags_dereference_annotated_ones_to_their_commit() {
+        let dir = temp_dir("g7-tags");
+        if !init_repo(&dir) {
+            std::fs::remove_dir_all(&dir).ok();
+            return;
+        }
+        let root = dir.to_string_lossy().into_owned();
+        git_tag_create(root.clone(), "light".into(), None, None).unwrap();
+        git_tag_create(root.clone(), "heavy".into(), None, Some("a release".into())).unwrap();
+
+        let tags = git_tags(root.clone()).unwrap();
+        let at = |n: &str| tags.iter().find(|t| t.name == n).unwrap();
+        assert!(!at("light").annotated && at("light").message.is_empty());
+        assert!(at("heavy").annotated && at("heavy").message == "a release");
+        // Both must name the *commit*, not the tag object the annotated one wraps.
+        assert_eq!(at("light").short, at("heavy").short);
+        assert_eq!(at("light").subject, "init");
+
+        git_tag_delete(root.clone(), "light".into()).unwrap();
+        assert!(git_tags(root).unwrap().iter().all(|t| t.name != "light"));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn revert_undoes_a_commit_and_reset_moves_the_tip() {
+        let dir = temp_dir("g7-rewrite");
+        if !history_repo(&dir) {
+            std::fs::remove_dir_all(&dir).ok();
+            return;
+        }
+        let root = dir.to_string_lossy().into_owned();
+        let log = git_log(root.clone(), None).unwrap();
+        let head = log[0].sha.clone();
+        // Read through a normalizer: `core.autocrlf` is on by default on Windows,
+        // so what git checks out isn't byte-for-byte what the fixture wrote.
+        let alpha = || std::fs::read_to_string(dir.join("alpha.txt")).unwrap().replace("\r\n", "\n");
+        let before = alpha();
+
+        git_revert(root.clone(), head.clone(), false).unwrap();
+        assert_eq!(alpha(), "one\n");
+        assert_eq!(git_repo_state(root.clone()).unwrap().operation, None, "a clean revert commits");
+
+        // `--soft` moves the tip and leaves the tree alone: the revert's changes
+        // are still on disk, just uncommitted again.
+        git_reset(root.clone(), head.clone(), "soft".into()).unwrap();
+        assert_eq!(git_log(root.clone(), None).unwrap()[0].sha, head);
+        assert_eq!(alpha(), "one\n");
+
+        git_reset(root.clone(), head.clone(), "hard".into()).unwrap();
+        assert_eq!(alpha(), before);
+        assert!(git_reset(root, head, "sideways".into()).is_err());
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn a_range_reads_both_ends_and_the_working_tree() {
+        let dir = temp_dir("g7-range");
+        if !history_repo(&dir) {
+            std::fs::remove_dir_all(&dir).ok();
+            return;
+        }
+        let root = dir.to_string_lossy().into_owned();
+        let log = git_log(root.clone(), None).unwrap();
+        let (head, base) = (log[0].sha.clone(), log[2].sha.clone());
+
+        let files = git_range_files(root.clone(), base.clone(), Some(head.clone())).unwrap();
+        let paths: Vec<&str> = files.iter().map(|f| f.path.as_str()).collect();
+        assert_eq!(paths, vec!["alpha.txt", "beta.txt"]);
+
+        // `to = None` is "compare with working tree" — an uncommitted edit shows up
+        // there and nowhere else.
+        std::fs::write(dir.join("beta.txt"), "two\nthree\n").unwrap();
+        let vs_tree = git_range_files(root.clone(), head.clone(), None).unwrap();
+        assert_eq!(vs_tree.len(), 1);
+        assert_eq!(vs_tree[0].path, "beta.txt");
+
+        let d = git_range_file_diff(root, head, None, "beta.txt".into()).unwrap();
+        assert!(d.text.contains("+three"), "{}", d.text);
+        assert!(d.base.ends_with("working tree"));
 
         std::fs::remove_dir_all(&dir).ok();
     }

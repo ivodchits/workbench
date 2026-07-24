@@ -9,18 +9,15 @@
 // action is the one that already exists (`Confirm` in `index.tsx`) rather than a
 // second, quieter one that skips it.
 //
-// Several items are present but disabled. That's the shape this step was asked to
-// land in: the menu is the discoverable surface for what the panel *will* do, and
-// an item that names itself and says why it can't run yet is more useful than one
-// that appears out of nowhere three steps later. Each carries its reason in
-// `title` — there are no silent dead rows.
+// G3 landed several items present but disabled, each carrying in `title` the
+// reason its backend hadn't arrived yet. **G7 was the last of those steps** — the
+// commit menu's revert / cherry-pick / reset / tag / compare, the file menu's
+// history, and the branch menu's compare are all live now, and no item in this
+// file is a placeholder any more. An item that can't run says why in terms of
+// *this repo's state* (detached HEAD, nothing selected), never in terms of a step.
 
 import type { MenuEntry } from "../../components/ContextMenu";
 import type { Branch, Commit, MergeMode, Stash } from "../../ipc/git";
-
-/** Hover text for an item whose backend hasn't landed. Names what's missing in
- *  plain words: the tooltip is product text, not a reference to the plan. */
-const soon = (what: string) => `${what} isn't wired up yet — it lands in a later Git step`;
 
 const SEP: MenuEntry = { kind: "separator" };
 
@@ -71,6 +68,8 @@ export interface FileActions {
   openInEditor: (rel: string) => void;
   reveal: (rel: string) => void;
   ignore: (rel: string) => void;
+  /** Show this one file's history in the History tab (G7). */
+  fileHistory: (rel: string) => void;
 }
 
 export function fileRowMenu(t: FileTarget, a: FileActions): MenuEntry[] {
@@ -182,9 +181,8 @@ export function fileRowMenu(t: FileTarget, a: FileActions): MenuEntry[] {
     SEP,
     {
       label: "≡ file history",
-      onClick: () => undefined,
-      disabled: true,
-      title: soon("history for a single file"),
+      onClick: () => a.fileHistory(t.path),
+      title: "every commit that touched this file, followed through renames",
     },
   ];
 }
@@ -195,7 +193,7 @@ export function fileRowMenu(t: FileTarget, a: FileActions): MenuEntry[] {
  *  commit that already happened — so they get the navigation half of the menu. */
 export function commitFileRowMenu(
   path: string,
-  a: Pick<FileActions, "copy" | "abs" | "openInEditor" | "reveal">,
+  a: Pick<FileActions, "copy" | "abs" | "openInEditor" | "reveal" | "fileHistory">,
 ): MenuEntry[] {
   return [
     { label: "⎘ copy path", onClick: () => a.copy(path, "path") },
@@ -210,9 +208,8 @@ export function commitFileRowMenu(
     SEP,
     {
       label: "≡ file history",
-      onClick: () => undefined,
-      disabled: true,
-      title: soon("history for a single file"),
+      onClick: () => a.fileHistory(path),
+      title: "every commit that touched this file, followed through renames",
     },
   ];
 }
@@ -221,22 +218,50 @@ export function commitFileRowMenu(
 
 export interface CommitActions {
   busy: boolean;
+  /** The checked-out branch, or null when HEAD is detached. Revert, cherry-pick
+   *  and reset all move *it*, so each names it and refuses without one. */
+  head: string | null;
   copy: (text: string, what: string) => void;
   /** Detached checkout of a SHA — routed through the panel's confirm. */
   checkout: (reference: string) => void;
   /** Open the new-branch dialog with this commit as the start point. */
   branchFrom: (startPoint: string) => void;
+  /** Read the commit's whole message and copy it (G7) — the log row only holds
+   *  the subject, so this is a fetch rather than a clipboard write. */
+  copyMessage: (c: Commit) => void;
+  /** The three rewrite ops (G7). Each opens its own confirm in the shell. */
+  revert: (c: Commit) => void;
+  cherryPick: (c: Commit) => void;
+  reset: (c: Commit, mode: "soft" | "mixed" | "hard") => void;
+  /** Open the tag dialog with this commit as the target (G7). */
+  tagAt: (c: Commit) => void;
+  /** Comparison (G7), owned by the History tab rather than the shell — it changes
+   *  what the tab is *showing*, not what the repo holds. */
+  compareWorkingTree: (c: Commit) => void;
+  compareWith: (c: Commit) => void;
+  /** The commit a "compare with selected" would measure against, or null when the
+   *  clicked row *is* the selection and there's nothing to compare it to. */
+  compareBase: Commit | null;
 }
 
+/**
+ * A commit's menu. The plan lists reset's three modes as one item; they're three
+ * here because `ContextMenu` has no submenus and the modes aren't variations on a
+ * theme — `--soft` keeps your work and `--hard` destroys it, and a menu that
+ * makes you pick that in a second dialog hides the difference at the moment it
+ * matters most.
+ */
 export function commitRowMenu(c: Commit, a: CommitActions): MenuEntry[] {
+  const head = a.head;
+  const detached = head == null;
+  const onHead = detached ? "HEAD is detached — check out a branch first" : undefined;
   return [
     { label: "⎘ copy sha", hint: c.short, onClick: () => a.copy(c.sha, "sha") },
     { label: "⎘ copy subject", onClick: () => a.copy(c.subject, "subject") },
     {
       label: "⎘ copy full message",
-      onClick: () => undefined,
-      disabled: true,
-      title: soon("reading a commit's full body"),
+      onClick: () => a.copyMessage(c),
+      title: "read this commit's whole message and copy it",
     },
     SEP,
     {
@@ -251,28 +276,95 @@ export function commitRowMenu(c: Commit, a: CommitActions): MenuEntry[] {
       disabled: a.busy,
       title: "create a branch starting at this commit",
     },
-    { label: "⌂ tag here", onClick: () => undefined, disabled: true, title: soon("tagging") },
-    SEP,
-    { label: "↶ revert", onClick: () => undefined, disabled: true, title: soon("revert") },
-    { label: "⑃ cherry-pick", onClick: () => undefined, disabled: true, title: soon("cherry-pick") },
     {
-      label: "↺ reset — soft / mixed / hard",
-      onClick: () => undefined,
-      disabled: true,
-      title: soon("moving the branch tip with reset"),
+      label: "⌂ tag here",
+      onClick: () => a.tagAt(c),
+      disabled: a.busy,
+      title: "put a tag on this commit — lightweight, or annotated with a message",
+    },
+    SEP,
+    {
+      label: "↶ revert",
+      onClick: () => a.revert(c),
+      disabled: a.busy || detached,
+      title: onHead ?? "commit this commit's inverse — the undo that keeps the history",
+    },
+    {
+      label: "⑃ cherry-pick",
+      onClick: () => a.cherryPick(c),
+      disabled: a.busy || detached,
+      title: onHead ?? `apply this commit on top of ${head}`,
+    },
+    SEP,
+    {
+      label: "↺ reset soft — keep everything",
+      onClick: () => a.reset(c, "soft"),
+      disabled: a.busy || detached,
+      title: onHead ?? `move ${head} here; the index and working tree are untouched`,
+    },
+    {
+      label: "↺ reset mixed — unstage",
+      onClick: () => a.reset(c, "mixed"),
+      disabled: a.busy || detached,
+      title: onHead ?? `move ${head} here and reset the index; your edits stay on disk`,
+    },
+    {
+      label: "↺ reset hard — discard",
+      danger: true,
+      onClick: () => a.reset(c, "hard"),
+      disabled: a.busy || detached,
+      title: onHead ?? `move ${head} here and throw away everything uncommitted`,
     },
     SEP,
     {
       label: "± compare with working tree",
-      onClick: () => undefined,
-      disabled: true,
-      title: soon("comparing a commit against the working tree"),
+      onClick: () => a.compareWorkingTree(c),
+      title: "everything that changed between this commit and what's on disk now",
     },
     {
       label: "± compare with selected commit",
-      onClick: () => undefined,
-      disabled: true,
-      title: soon("comparing two commits"),
+      hint: a.compareBase?.short,
+      onClick: () => a.compareWith(c),
+      disabled: a.compareBase == null,
+      title:
+        a.compareBase == null
+          ? "select another commit first — this one is the selection"
+          : `diff ${a.compareBase.short} → ${c.short}`,
+    },
+  ];
+}
+
+/** Everything the History tab hands its menus (G7). `head` and `busy` come from
+ *  `BranchActions`, which the shell already builds. */
+export interface HistoryActions
+  extends CommitActions,
+    Pick<FileActions, "copy" | "abs" | "openInEditor" | "reveal" | "fileHistory"> {
+  deleteTag: (name: string) => void;
+}
+
+/**
+ * The half of `HistoryActions` the panel *shell* supplies. Comparison is the
+ * exception: it changes what the History tab is showing rather than what the repo
+ * holds, so the tab fills those three in itself — including `compareBase`, which
+ * is its own selection and something the shell can't see.
+ */
+export type ShellHistoryActions = Omit<
+  HistoryActions,
+  "compareBase" | "compareWorkingTree" | "compareWith"
+>;
+
+/** A tag chip in the commit-detail pane (G7). Small on purpose: creating one is a
+ *  commit action, and this is the only place the tag you're looking at *is* the
+ *  subject. */
+export function tagMenu(name: string, a: Pick<HistoryActions, "busy" | "copy" | "deleteTag">): MenuEntry[] {
+  return [
+    { label: "⎘ copy tag name", onClick: () => a.copy(name, "tag name") },
+    {
+      label: "✗ delete tag",
+      danger: true,
+      onClick: () => a.deleteTag(name),
+      disabled: a.busy,
+      title: "delete it locally — asks first; the remote's copy, if any, stays",
     },
   ];
 }
@@ -298,6 +390,8 @@ export interface BranchActions {
   setUpstream: (branch: Branch) => void;
   /** `origin/topic` — split into remote + branch by the panel. */
   deleteRemote: (remoteBranch: string) => void;
+  /** Show the diff from this ref to the current branch in the History tab (G7). */
+  compare: (reference: string) => void;
 }
 
 /** Why merge / rebase / fast-forward can't run against this row, or null when
@@ -394,9 +488,10 @@ export function localBranchMenu(b: Branch, a: BranchActions): MenuEntry[] {
     SEP,
     {
       label: "± compare against current",
-      onClick: () => undefined,
-      disabled: true,
-      title: soon("comparing two branches"),
+      hint: a.head ?? undefined,
+      onClick: () => a.compare(b.name),
+      disabled: blocked != null,
+      title: blocked ?? `everything that differs between ${b.name} and ${a.head}`,
     },
     { label: "⎘ copy name", onClick: () => a.copy(b.name, "branch name") },
   ];
@@ -448,6 +543,13 @@ export function remoteBranchMenu(name: string, a: BranchActions): MenuEntry[] {
       title: "delete this branch on the remote — asks first, and can't be undone from here",
     },
     SEP,
+    {
+      label: "± compare against current",
+      hint: a.head ?? undefined,
+      onClick: () => a.compare(name),
+      disabled: blocked != null,
+      title: blocked ?? `everything that differs between ${name} and ${a.head}`,
+    },
     { label: "⎘ copy name", onClick: () => a.copy(name, "branch name") },
   ];
 }
