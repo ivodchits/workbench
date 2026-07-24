@@ -370,7 +370,7 @@ and should be preserved.
 
 ---
 
-### Step G6 — Merge conflicts
+### Step G6 — Merge conflicts ✅ *(landed)*
 
 - **Goal:** Fix a genuine mishandling and make conflicts resolvable in-panel.
 - **Depends on:** G4 (merge/rebase are the main producers of conflicts).
@@ -397,6 +397,50 @@ and should be preserved.
   group), a state banner with working continue/abort, and per-file ours/theirs/resolved that
   drive the repo to a clean state.
 - **Out of scope:** a three-way merge editor.
+- **As built:** the classification rule moved to the **backend** rather than staying in the
+  `groups` memo. `StatusEntry` gained a `conflicted` flag computed by `is_conflicted`, an
+  explicit list of the seven unmerged pairs — because "either column is `U`" is *itself* half
+  the bug: `AA` (both added) and `DD` (both deleted) carry no `U` at all, and both were being
+  filed under staged *and* unstaged with no colour and no sign that staging one would mark it
+  resolved. One rule, one place, and a Rust test that names the two cases the shortcut misses.
+
+  **`git_resolve` needed the index stages, not just the flags the plan named.**
+  `checkout --ours/--theirs` reads stages 2 and 3, and the conflicts that hurt most are the
+  ones where the side you're choosing *has no stage*: on a modify/delete, `git checkout
+  --theirs -- b.txt` fails outright with "path 'b.txt' does not have their version". Taking
+  theirs there means *deleting the file*. So the command reads `ls-files -u -z` first and
+  splits the batch — `checkout` + `add` for the paths with that stage, `rm -f` for the ones
+  without — in at most three git invocations however many files are selected. Paths that are
+  no longer unmerged are skipped rather than failing the batch, since a stale selection after
+  a background refresh is an ordinary way to arrive here.
+
+  **The diff pane needed no new command.** A conflicted row isn't in the staged group, so it
+  already goes down the `staged: false` path, and `git diff` on an unmerged path answers with
+  a *combined* `diff --cc` — the one view that shows the markers in context. (`--cached`
+  would have answered `* Unmerged path …`, which is also what plain `diff` says for the
+  shapes with nothing to merge; the panel detects that one line and explains the conflict in
+  words instead of repeating git's shorthand back.) Combined diffs are why conflicted rows
+  have **no hunk layer**: `@@@ … @@@` with two prefix columns is not something `git apply`
+  takes, and the unit of action here is a whole file and a side.
+
+  `UnifiedDiff` grew a second additive prop beside G5's `hunks`: `conflict`, which bands the
+  `<<<<<<<` / `|||||||` / `=======` / `>>>>>>>` rows. It's opt-in rather than always-on
+  because the marker regex has to tolerate the combined diff's two prefix columns
+  (`++<<<<<<< HEAD`), and a loose enough pattern for that would band a `+=======` under a
+  markdown heading in the Diff/Review panel, where there is no conflict to explain.
+
+  Three judgement calls. **Only *ours* / *theirs* confirm** — they throw the other side away,
+  and once the result is staged the index no longer holds the stages `checkout -m` would need
+  to put the conflict back; *mark resolved* keeps what's on disk and an unstage undoes it, so
+  it's as unconfirmed as staging is everywhere else. **A conflicted row shows `!`**, not one
+  of its two chars: `AA`/`DD` have no `U` to borrow and picking half of a pair names one side
+  of a two-sided state, so the glyph is an alarm and the *words* ("deleted by them") are in
+  the row title and the conflict bar. **Discard is withheld, not offered and rejected** —
+  `git restore` refuses an unmerged path, and conflicted paths are held out of a mixed
+  selection's discard so one conflict can't take the whole batch down; the tooltip points at
+  the banner's abort, which is the real "undo everything" here. The banner itself now counts
+  what's still unmerged, which turns it from a label into an instruction — at zero it stops
+  saying "resolve the conflicts" and says to commit.
 
 ---
 
@@ -409,12 +453,12 @@ and should be preserved.
   `§5.x`.
 - **Build:**
   - **Graph gutter.** `Commit.parents` is already fetched for exactly this
-    (`mod.rs:900-906`) and is unused. A minimal lane renderer in the box-drawing aesthetic —
+    (`mod.rs:905`) and is unused. A minimal lane renderer in the box-drawing aesthetic —
     "where it helps", not a full railway diagram.
   - **Search / filter:** by message, author, path, and date range — a `git log` argument
     passthrough on the backend, not client-side filtering of the fetched 200.
   - **Pagination:** `gitLog` already takes a `limit` the panel never passes
-    (`index.tsx:398`). Add *load more* / infinite scroll, plus a **ref selector**
+    (`index.tsx:297`). Add *load more* / infinite scroll, plus a **ref selector**
     (current branch / `--all` / a specific branch or tag).
   - **Commit detail pane:** full body, author *and* committer with dates, clickable parent
     SHAs for navigation, ref decorations. Today you get subject + file list only.
@@ -446,14 +490,14 @@ and should be preserved.
     (debounced, ignoring `.git/objects` churn) → auto-refresh. This matters *more here than
     in a normal git client*: agents commit and mutate files under you continuously, and today
     the panel silently shows stale state until you hit ↻.
-  - **Targeted refresh.** `run()` (`index.tsx:127-145`) currently reloads log + branches +
+  - **Targeted refresh.** `run()` (`index.tsx:340`) currently reloads log + branches +
     status + stashes after *every* write — staging one file re-reads 200 commits. Each action
     declares which slices it invalidates.
-  - **`git_run` hardening** (`mod.rs:851-862`): set `GIT_TERMINAL_PROMPT=0` and a no-op
+  - **`git_run` hardening** (`mod.rs:853`): set `GIT_TERMINAL_PROMPT=0` and a no-op
     `GIT_ASKPASS`, add a timeout, and make network ops (fetch/pull/push) **cancellable**.
     Today `cmd.output()` on a credential-needing push blocks forever with the panel pinned at
     `busy: true` and no way out.
-  - **Error surface:** replace the one-line banner (`index.tsx:176`) with an expandable
+  - **Error surface:** replace the one-line banner (`index.tsx:602`) with an expandable
     output area, plus a small scrollback of recent git commands and their output — the
     honesty the §5 "keep the panel honest" note asks for.
   - **Progress affordance** on network ops beyond disabling buttons.
@@ -480,7 +524,8 @@ and should be preserved.
 | `git_apply_patch` | G5 | hunk stage/unstage/discard via `--cached` / `--reverse`, patch on stdin |
 | `git_file_diff` | G5 | one file, **one side** (index→worktree or HEAD→index) — what makes a hunk applyable |
 | `git_repo_state` | ~~G6~~ G4 | mid-merge / rebase / cherry-pick / revert; G4's abort needs it |
-| `git_resolve` | G6 | `checkout --ours/--theirs` + `add` |
+| `git_resolve` | G6 | reads `ls-files -u` first: `checkout --ours/--theirs` + `add`, or `rm -f` where that side has no stage |
+| `git_status_entries` *(extend)* | G6 | `conflicted` flag — the seven unmerged `XY` pairs, incl. `AA`/`DD`, which carry no `U` |
 | `git_log` *(extend)* | G7 | search, path filter, date range, ref, skip/pagination |
 | `git_commit_detail` | G7 | full body, committer, parents |
 | `git_file_history` | G7 | log for one path |
@@ -546,7 +591,7 @@ provisional wide-layout commit box, then let G2 place it properly.
 - [x] G3 — Context menus
 - [x] G4 — Branch operations (merge / rebase / upstream)
 - [x] G5 — Selection flexibility + keyboard-first
-- [ ] G6 — Merge conflicts
+- [x] G6 — Merge conflicts
 - [ ] G7 — History parity (graph / search / rewrite ops)
 - [ ] G8 — Freshness, targeted refresh, robustness
 

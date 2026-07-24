@@ -1108,7 +1108,8 @@ fn parse_track(track: &str) -> (u32, u32) {
 
 /// One entry in the working-tree status (step 3.11). The porcelain `XY` pair:
 /// `index` is the staged column, `worktree` the unstaged column (each `M`/`A`/
-/// `D`/`R`/`C`/`?`/` `). The panel buckets these into staged/unstaged/untracked.
+/// `D`/`R`/`C`/`U`/`?`/` `). The panel buckets these into conflicted/staged/
+/// unstaged/untracked.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StatusEntry {
@@ -1116,6 +1117,24 @@ pub struct StatusEntry {
     pub index: String,
     pub worktree: String,
     pub untracked: bool,
+    /// The file is unmerged (G6) — it belongs to *neither* the staged nor the
+    /// unstaged bucket, whatever its two chars would otherwise suggest.
+    pub conflicted: bool,
+}
+
+/// True for the porcelain `XY` pairs that mean **unmerged** (G6): `DD`, `AU`,
+/// `UD`, `UA`, `DU`, `AA`, `UU`.
+///
+/// An explicit list rather than "either column is `U`", because `AA` (both added)
+/// and `DD` (both deleted) carry no `U` at all — and missing those is half of the
+/// bug this fixes: a conflicted file satisfied the panel's staged *and* unstaged
+/// filters and rendered in two groups at once, where staging it silently marked
+/// it resolved with nothing on screen saying so.
+fn is_conflicted(index: &str, worktree: &str) -> bool {
+    matches!(
+        (index, worktree),
+        ("D", "D") | ("A", "U") | ("U", "D") | ("U", "A") | ("D", "U") | ("A", "A") | ("U", "U")
+    )
 }
 
 #[tauri::command]
@@ -1157,6 +1176,7 @@ pub fn git_status_entries(repo_root: String) -> Result<Vec<StatusEntry>, String>
         }
         entries.push(StatusEntry {
             path,
+            conflicted: is_conflicted(index, worktree),
             index: index.to_owned(),
             worktree: worktree.to_owned(),
             untracked: index == "?",
@@ -1974,6 +1994,95 @@ pub fn git_apply_patch(
         text.push('\n');
     }
     git_run_stdin(Path::new(&repo_root), &args, &text)
+}
+
+// --- merge conflicts (step G6) ----------------------------------------------
+// `checkout --ours/--theirs` is only half the story, and the half that's wrong on
+// its own. Those flags read the index's *stages* — 1 base, 2 ours, 3 theirs — and
+// a conflict where one side deleted the file has no stage for that side at all:
+// `git checkout --theirs -- b.txt` on a modify/delete conflict fails outright with
+// "path 'b.txt' does not have their version". "Take theirs" there means *delete
+// the file*, so the resolve below reads the stages first and splits the paths into
+// the ones it checks out and the ones it removes.
+
+/// Resolve conflicted files by taking one side of the merge wholesale (G6).
+///
+/// `side` is `ours` (stage 2, the branch you're on) or `theirs` (stage 3, the one
+/// being merged in). Per path:
+///
+/// * that side has a stage → `checkout --ours/--theirs` + `add` (the plan's shape)
+/// * it doesn't → `rm -f`, because that side deleted the file and "take it" means
+///   the deletion, not an error
+///
+/// Paths that aren't unmerged are skipped rather than failing the batch: a stale
+/// selection after a background refresh is a normal way to get here.
+///
+/// Three git invocations at most, whatever the number of files — the same
+/// batched-write shape the rest of the panel keeps.
+#[tauri::command]
+pub fn git_resolve(repo_root: String, paths: Vec<String>, side: String) -> Result<String, String> {
+    let root = Path::new(&repo_root);
+    let (want, flag) = match side.as_str() {
+        "ours" => ('2', "--ours"),
+        "theirs" => ('3', "--theirs"),
+        other => return Err(format!("unknown side `{other}` — expected ours or theirs")),
+    };
+    if paths.is_empty() {
+        return Err("nothing to resolve".into());
+    }
+
+    // One read for the whole batch. `ls-files -u -z` emits `<mode> <sha> <stage>\t
+    // <path>` per stage, NUL-terminated — `-z` for the same reason status uses it,
+    // and because without it a path with a tab in it would be unsplittable.
+    let mut read: Vec<&str> = vec!["-c", "core.quotePath=false", "ls-files", "-u", "-z", "--"];
+    read.extend(paths.iter().map(String::as_str));
+    let out = git_stdout(root, &read).unwrap_or_default();
+    let mut stages: std::collections::HashMap<String, Vec<char>> =
+        std::collections::HashMap::new();
+    for record in out.split('\0') {
+        let Some((meta, path)) = record.split_once('\t') else {
+            continue;
+        };
+        let Some(stage) = meta.split_whitespace().nth(2).and_then(|s| s.chars().next()) else {
+            continue;
+        };
+        stages.entry(path.to_owned()).or_default().push(stage);
+    }
+
+    let mut take: Vec<&str> = Vec::new();
+    let mut remove: Vec<&str> = Vec::new();
+    for path in &paths {
+        match stages.get(path.as_str()) {
+            None => continue,
+            Some(present) if present.contains(&want) => take.push(path),
+            Some(_) => remove.push(path),
+        }
+    }
+    if take.is_empty() && remove.is_empty() {
+        return Err("nothing to resolve — none of those files are conflicted any more".into());
+    }
+
+    if !take.is_empty() {
+        let mut args = vec!["checkout", flag, "--"];
+        args.extend(take.iter().copied());
+        git_run(root, &args)?;
+        let mut args = vec!["add", "--"];
+        args.extend(take.iter().copied());
+        git_run(root, &args)?;
+    }
+    if !remove.is_empty() {
+        // `-f` isn't optional: git refuses to remove a path whose content differs
+        // from HEAD, and an unmerged path always does.
+        let mut args = vec!["rm", "-f", "-q", "--"];
+        args.extend(remove.iter().copied());
+        git_run(root, &args)?;
+    }
+
+    let n = take.len() + remove.len();
+    Ok(format!(
+        "resolved {n} {} with {side}",
+        if n == 1 { "file" } else { "files" }
+    ))
 }
 
 #[cfg(test)]
@@ -2827,6 +2936,110 @@ mod tests {
             staged.contains("+elsewhere") && !staged.contains("+changed"),
             "and nothing was half-applied over it: {staged}"
         );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn unmerged_pairs_without_a_u_still_count_as_conflicts() {
+        // The two the "either column is U" shortcut misses.
+        assert!(is_conflicted("A", "A"));
+        assert!(is_conflicted("D", "D"));
+        assert!(is_conflicted("U", "U"));
+        assert!(is_conflicted("U", "D"));
+        // And the ordinary states it must not claim.
+        assert!(!is_conflicted("M", "M"));
+        assert!(!is_conflicted("A", "M"));
+        assert!(!is_conflicted("D", " "));
+        assert!(!is_conflicted("?", "?"));
+    }
+
+    /// A repo stopped mid-merge with one conflict of each shape that matters (G6):
+    /// `a.txt` both-modified, `b.txt` modified by us and deleted by them, `c.txt`
+    /// added on both sides. Returns false (skip) when git is missing.
+    fn conflicted_repo(dir: &Path) -> bool {
+        if !init_repo(dir) {
+            return false;
+        }
+        std::fs::write(dir.join("a.txt"), "one\ntwo\nthree\n").unwrap();
+        std::fs::write(dir.join("b.txt"), "keep\n").unwrap();
+        git_run(dir, &["add", "-A"]).unwrap();
+        git_run(dir, &["commit", "-qm", "base"]).unwrap();
+        let ours = current_branch(dir).unwrap_or_else(|| "master".into());
+
+        git_run(dir, &["checkout", "-qb", "topic"]).unwrap();
+        std::fs::write(dir.join("a.txt"), "one\nTHEIRS\nthree\n").unwrap();
+        std::fs::remove_file(dir.join("b.txt")).unwrap();
+        std::fs::write(dir.join("c.txt"), "theirs-only\n").unwrap();
+        git_run(dir, &["add", "-A"]).unwrap();
+        git_run(dir, &["commit", "-qm", "theirs"]).unwrap();
+
+        git_run(dir, &["checkout", "-q", &ours]).unwrap();
+        std::fs::write(dir.join("a.txt"), "one\nOURS\nthree\n").unwrap();
+        std::fs::write(dir.join("b.txt"), "keep\nours\n").unwrap();
+        std::fs::write(dir.join("c.txt"), "ours-only\n").unwrap();
+        git_run(dir, &["add", "-A"]).unwrap();
+        git_run(dir, &["commit", "-qm", "ours"]).unwrap();
+
+        // Expected to fail — the conflict *is* the fixture.
+        git_run(dir, &["merge", "topic"]).ok();
+        true
+    }
+
+    #[test]
+    fn conflicted_files_are_marked_whatever_their_two_chars_are() {
+        let dir = temp_dir("g6-status");
+        if !conflicted_repo(&dir) {
+            std::fs::remove_dir_all(&dir).ok();
+            return;
+        }
+        std::fs::write(dir.join("d.txt"), "unrelated\n").unwrap();
+        let entries = git_status_entries(dir.to_string_lossy().into_owned()).unwrap();
+        let at = |p: &str| entries.iter().find(|e| e.path == p).unwrap();
+
+        assert!(at("a.txt").conflicted, "UU");
+        assert!(at("b.txt").conflicted, "UD — modified by us, deleted by them");
+        // The one the old rule couldn't see: `AA` has no `U` in it at all, so the
+        // panel filed it under staged *and* unstaged at once.
+        assert_eq!((at("c.txt").index.as_str(), at("c.txt").worktree.as_str()), ("A", "A"));
+        assert!(at("c.txt").conflicted, "AA");
+        assert!(!at("d.txt").conflicted && at("d.txt").untracked);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn resolving_takes_a_side_and_deletes_where_that_side_did() {
+        let dir = temp_dir("g6-resolve");
+        if !conflicted_repo(&dir) {
+            std::fs::remove_dir_all(&dir).ok();
+            return;
+        }
+        let root = dir.to_string_lossy().into_owned();
+        assert_eq!(git_repo_state(root.clone()).unwrap().operation.as_deref(), Some("merge"));
+
+        // Two mechanisms in one batch: `a.txt`/`c.txt` have a stage 2 to check out,
+        // `b.txt` has none on the theirs side because that side deleted it.
+        git_resolve(root.clone(), vec!["a.txt".into(), "c.txt".into()], "ours".into()).unwrap();
+        git_resolve(root.clone(), vec!["b.txt".into()], "theirs".into()).unwrap();
+
+        let a = std::fs::read_to_string(dir.join("a.txt")).unwrap();
+        assert!(a.contains("OURS") && !a.contains("<<<<<<<"), "our side, markers gone: {a}");
+        assert!(
+            !dir.join("b.txt").exists(),
+            "taking theirs on a modify/delete means taking the delete, not erroring"
+        );
+
+        let entries = git_status_entries(root.clone()).unwrap();
+        assert!(entries.iter().all(|e| !e.conflicted), "nothing unmerged is left: {entries:?}");
+        // Resolved, so the merge is an ordinary commit away — which is exactly what
+        // the panel's banner tells you to do next.
+        git_run(&dir, &["commit", "-qm", "resolved"]).unwrap();
+        assert_eq!(git_repo_state(root.clone()).unwrap().operation, None);
+
+        // And a stale selection (or a bad side) says so rather than doing something.
+        assert!(git_resolve(root.clone(), vec!["a.txt".into()], "ours".into()).is_err());
+        assert!(git_resolve(root, vec!["a.txt".into()], "base".into()).is_err());
 
         std::fs::remove_dir_all(&dir).ok();
     }

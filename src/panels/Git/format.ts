@@ -23,12 +23,41 @@ export function statusColor(status: string): string {
   return "var(--wb-textDim2)";
 }
 
-/** Colour for a porcelain `XY` status char. */
+/** Colour for a porcelain `XY` status char. `U` is the conflict marker (G6), and
+ *  gets the "needs you" token — an unmerged file is the one thing in the working
+ *  tree that can't be left alone. */
 export function statusCharColor(ch: string): string {
+  if (ch === "U" || ch === "!") return "var(--wb-needs)";
   if (ch === "A" || ch === "?") return "var(--wb-done)";
   if (ch === "D") return "var(--wb-needs)";
   if (ch === "M" || ch === "R" || ch === "C") return "var(--wb-working)";
   return "var(--wb-textDim2)";
+}
+
+/**
+ * A porcelain unmerged `XY` pair in plain words (G6). The pair is the only place
+ * the *shape* of a conflict is recorded — whether there's even a "theirs" side to
+ * take — so the panel says it out loud instead of showing two cryptic chars.
+ */
+export function conflictLabel(index: string, worktree: string): string {
+  switch (`${index}${worktree}`) {
+    case "UU":
+      return "both modified";
+    case "AA":
+      return "both added";
+    case "DD":
+      return "both deleted";
+    case "AU":
+      return "added by us";
+    case "UA":
+      return "added by them";
+    case "DU":
+      return "deleted by us";
+    case "UD":
+      return "deleted by them";
+    default:
+      return "conflicted";
+  }
 }
 
 /** Compact relative date from an epoch-seconds timestamp ("3d", "2h", "5m", "now"). */

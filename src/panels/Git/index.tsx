@@ -43,6 +43,12 @@
 // command-palette registration: the panel claims the `git…` commands on mount and
 // again whenever it's activated, so the most recently focused Git panel is the one
 // the palette talks to.
+//
+// G6 made conflicts a first-class state rather than a mis-classification. A
+// conflicted file now has its own group in `StatusTab` (it used to render in the
+// staged *and* unstaged ones at once), G4's banner counts what's still unmerged
+// and says what the next step is, and taking a side of the merge — the only
+// resolution that throws work away — is a confirm here beside the others.
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { IDockviewPanelProps } from "dockview";
@@ -72,6 +78,7 @@ import {
   gitRebaseControl,
   gitRenameBranch,
   gitRepoState,
+  gitResolve,
   gitSetUpstream,
   gitStage,
   gitStashApply,
@@ -228,7 +235,12 @@ type Confirm =
   | { kind: "deleteRemoteBranch"; remote: string; branch: string }
   // G5. Staging and unstaging a hunk are reversible from the panel; discarding one
   // throws away work that was never committed anywhere, so it asks.
-  | { kind: "discardHunks"; patch: string; count: number };
+  | { kind: "discardHunks"; patch: string; count: number }
+  // G6. Taking a side of a merge throws the other side's version of the file away
+  // — and once it's staged, the index no longer holds the stages `checkout -m`
+  // would need to put the conflict back. *Marking* resolved isn't here: it keeps
+  // what's on disk and an unstage undoes it.
+  | { kind: "resolve"; paths: string[]; side: "ours" | "theirs" };
 
 function GitBody({
   session,
@@ -573,6 +585,7 @@ function GitBody({
       {data?.state.operation && (
         <OperationBanner
           operation={data.state.operation}
+          conflicts={data.status.filter((e) => e.conflicted).length}
           busy={busy}
           onContinue={() =>
             void run(() => gitRebaseControl(repoRoot, "continue"), "rebase continued", "rebase")
@@ -644,6 +657,13 @@ function GitBody({
               void run(() => gitApplyPatch(repoRoot, patch, true, true), hunkNotice("unstaged", n))
             }
             onDiscardHunks={(patch, count) => setConfirm({ kind: "discardHunks", patch, count })}
+            onResolve={(paths, side) => setConfirm({ kind: "resolve", paths, side })}
+            onMarkResolved={(paths) =>
+              void run(
+                () => gitStage(repoRoot, paths),
+                `marked ${paths.length} ${paths.length === 1 ? "file" : "files"} resolved`,
+              )
+            }
             command={statusCommand}
             onCommandDone={clearStatusCommand}
           />
@@ -699,6 +719,14 @@ function GitBody({
                   () => gitApplyPatch(repoRoot, patch, false, true),
                   hunkNotice("discarded", count),
                 );
+                break;
+              }
+              case "resolve": {
+                const { paths, side } = confirm;
+                // The backend's own summary — it knows which paths it checked out
+                // and which it removed, and a stale row silently dropping out of
+                // the batch is exactly the thing worth reading back.
+                void run(() => gitResolve(repoRoot, paths, side), (out) => out);
                 break;
               }
               case "deleteRemoteBranch": {
@@ -1384,6 +1412,25 @@ function describeConfirm(c: Confirm): { title: string; body: React.ReactNode; la
           </>
         ),
       };
+    case "resolve": {
+      const only = c.paths.length === 1 ? c.paths[0] : null;
+      const kept = c.side === "ours" ? "this branch's" : "the incoming";
+      const lost = c.side === "ours" ? "the incoming" : "this branch's";
+      return {
+        title: `use ${c.side}`,
+        label: `${c.side === "ours" ? "◧" : "◨"} use ${c.side}`,
+        danger: true,
+        body: (
+          <>
+            Take {kept} version of{" "}
+            {only ? <Ref>{only}</Ref> : <Ref>{c.paths.length} conflicted files</Ref>} whole?{" "}
+            {lost.charAt(0).toUpperCase() + lost.slice(1)} version is discarded, and where that
+            side deleted the file, taking it deletes the file. Once it's staged the index no
+            longer holds both sides, so this isn't undoable short of aborting the merge.
+          </>
+        ),
+      };
+    }
     case "discard": {
       const total = c.tracked.length + c.untracked.length;
       const only = total === 1 ? [...c.tracked, ...c.untracked][0] : null;
@@ -1535,15 +1582,23 @@ function LiveWarning() {
  * commit, which the commit box below already is. Cherry-pick and revert can't be
  * started from the panel yet (G7), so if one is in flight it came from elsewhere
  * and the banner says so rather than offering half a set of buttons.
+ *
+ * G6 gave it the conflict count, which turns it from a label into an instruction:
+ * *how many files are still unmerged* is the difference between "go resolve them"
+ * and "you're done, commit" — and once it reaches zero the banner says so instead
+ * of leaving you to work out that the next step changed.
  */
 function OperationBanner({
   operation,
+  conflicts,
   busy,
   onContinue,
   onSkip,
   onAbort,
 }: {
   operation: string;
+  /** Files still unmerged (G6) — 0 means the operation is ready to finish. */
+  conflicts: number;
   busy: boolean;
   onContinue: () => void;
   onSkip: () => void;
@@ -1551,10 +1606,18 @@ function OperationBanner({
 }) {
   const rebase = operation === "rebase";
   const merge = operation === "merge";
+  const left =
+    conflicts === 0
+      ? null
+      : `${conflicts} ${conflicts === 1 ? "file is" : "files are"} still conflicted`;
   const what = rebase
-    ? "rebase in progress — resolve the conflicts and stage them, then continue"
+    ? left
+      ? `rebase stopped — ${left}; resolve and stage them, then continue`
+      : "rebase stopped — nothing is conflicted any more, so continue"
     : merge
-      ? "merge in progress — resolve the conflicts, stage them, and commit"
+      ? left
+        ? `merge stopped — ${left}; resolve and stage them, then commit`
+        : "merge stopped — nothing is conflicted any more, so commit to finish it"
       : `${operation} in progress — started outside the panel; finish it in the Project Shell`;
   return (
     <div

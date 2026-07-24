@@ -26,6 +26,13 @@
 //
 // Group headers act on the selection when there is one and on the whole group when
 // there isn't, so "stage all" never quietly ignores what you just picked.
+//
+// G6 added the conflicted group and the resolution actions beside it. Until now a
+// conflicted file was filed under staged *and* unstaged at once — it satisfies
+// both filters — so it appeared twice, uncoloured, and staging one of the two
+// copies silently marked it resolved with nothing on screen saying that's what
+// happened. It's now its own group, first, in the "needs you" colour, and the only
+// group whose rows offer *use ours* / *use theirs* / *mark resolved*.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
@@ -37,16 +44,18 @@ import UnifiedDiff, { type HunkControls } from "../Diff/UnifiedDiff";
 import { buildPatch, parseDiff } from "../Diff/patch";
 import CommitBox, { type CommitRequest } from "./CommitBox";
 import { fileRowMenu, stashRowMenu, type FileActions } from "./menus";
-import { inputStyle, miniActionStyle, statusCharColor } from "./format";
+import { conflictLabel, inputStyle, miniActionStyle, statusCharColor } from "./format";
 import { Empty, HeaderButton, RowAction, SectionHead } from "./rows";
 import Splitter from "./Splitter";
 import { readSection, writeSection } from "./layout";
 import type { Orientation } from "./useOrientation";
 
-/** The three buckets a status entry can appear in (a file can be in two). */
-type Grp = "staged" | "unstaged" | "untracked";
+/** The buckets a status entry can appear in. `conflicted` is exclusive (G6); a
+ *  file can otherwise be in both `staged` and `unstaged` at once. */
+type Grp = "conflicted" | "staged" | "unstaged" | "untracked";
 
-const GROUP_ORDER: Grp[] = ["staged", "unstaged", "untracked"];
+/** Conflicts lead: they're the only rows that stop a commit from happening. */
+const GROUP_ORDER: Grp[] = ["conflicted", "staged", "unstaged", "untracked"];
 
 /** A displayed status row: its `rowId` is `<group>:<path>` so a file modified both
  *  staged and unstaged is two distinct selectable rows (and Shift-range stays in
@@ -102,6 +111,8 @@ export default function StatusTab({
   onStageHunks,
   onUnstageHunks,
   onDiscardHunks,
+  onResolve,
+  onMarkResolved,
   command,
   onCommandDone,
 }: {
@@ -125,6 +136,10 @@ export default function StatusTab({
   onStageHunks: (patch: string, count: number) => void;
   onUnstageHunks: (patch: string, count: number) => void;
   onDiscardHunks: (patch: string, count: number) => void;
+  /** Take one side of a merge whole (G6) — the shell confirms it. */
+  onResolve: (paths: string[], side: "ours" | "theirs") => void;
+  /** Accept the files as they stand and clear the conflict (G6) — `git add`. */
+  onMarkResolved: (paths: string[]) => void;
   command: StatusCommand | null;
   /** Called once `command` has been carried out, so it isn't replayed on remount. */
   onCommandDone: () => void;
@@ -147,12 +162,15 @@ export default function StatusTab({
   const listRef = useRef<HTMLDivElement>(null);
   const filterRef = useRef<HTMLInputElement>(null);
 
-  // The three groups, before filtering. Same membership rules as 3.11 — a
-  // conflicted file still satisfies two of them, which is G6's bug to fix.
+  // The groups, before filtering. `conflicted` is checked *first and excluded from
+  // the other two* (G6): an unmerged file's `XY` pair satisfies both of the older
+  // filters, which is how it used to appear twice, and neither of them is true of
+  // it in any sense that matters — nothing about it is staged or ready to be.
   const groups = useMemo(
     () => ({
-      staged: status.filter((e) => e.index !== " " && e.index !== "?"),
-      unstaged: status.filter((e) => e.worktree !== " " && e.index !== "?"),
+      conflicted: status.filter((e) => e.conflicted),
+      staged: status.filter((e) => !e.conflicted && e.index !== " " && e.index !== "?"),
+      unstaged: status.filter((e) => !e.conflicted && e.worktree !== " " && e.index !== "?"),
       untracked: status.filter((e) => e.untracked),
     }),
     [status],
@@ -207,10 +225,16 @@ export default function StatusTab({
   const leadPath = leadRow?.entry.path ?? null;
   const leadStaged = leadRow?.group === "staged";
   const leadUntracked = leadRow?.entry.untracked ?? false;
+  const leadConflicted = leadRow?.entry.conflicted ?? false;
 
   // The lead file's diff for *its own side*. Not `diff HEAD` any more (G5): a hunk
   // is only applyable against the side it came from, and a row in the staged group
   // is asking about the index, not the working tree.
+  //
+  // A conflicted row goes down the unstaged path (`leadStaged` is false — it isn't
+  // in that group), and git answers with a **combined** `diff --cc` against both
+  // parents, which is the one view that shows the conflict markers in context.
+  // `--cached` on an unmerged path would have answered `* Unmerged path …`.
   useEffect(() => {
     if (!leadPath) {
       setDiff(null);
@@ -351,7 +375,9 @@ export default function StatusTab({
         const target = targetRows();
         if (target.length === 0) break;
         // Everything picked is already staged → unstage it. Otherwise stage the
-        // part that isn't, which is what a mixed selection means.
+        // part that isn't, which is what a mixed selection means. On a conflicted
+        // row that stage *is* "mark resolved" — same `git add`, and the one
+        // resolution that needs no decision, so it's the one the keyboard gets.
         if (target.every((r) => r.group === "staged")) {
           onUnstage(uniquePaths(target));
         } else {
@@ -384,8 +410,12 @@ export default function StatusTab({
   const selPaths = uniquePaths(selRows);
   const selStaged = uniquePaths(selRows.filter((r) => r.group === "staged"));
   const selUntracked = uniquePaths(selRows.filter((r) => r.entry.untracked));
+  const selConflicted = uniquePaths(selRows.filter((r) => r.entry.conflicted));
   const untrackedSet = new Set(selUntracked);
-  const selTracked = selPaths.filter((p) => !untrackedSet.has(p));
+  const conflictedSet = new Set(selConflicted);
+  // Conflicted paths are held out of the discard target: `git restore` refuses an
+  // unmerged path, so passing one would fail the whole batch on its behalf.
+  const selTracked = selPaths.filter((p) => !untrackedSet.has(p) && !conflictedSet.has(p));
 
   // The menu's file items go through this tab's own callbacks, which are the ones
   // the hover glyphs and the selection bar already use — so "discard" from a menu
@@ -395,6 +425,8 @@ export default function StatusTab({
     stage: onStage,
     unstage: onUnstage,
     discard: onDiscard,
+    resolve: onResolve,
+    markResolved: onMarkResolved,
     copy: actions.copy,
     abs: actions.abs,
     openInEditor: actions.openInEditor,
@@ -426,9 +458,10 @@ export default function StatusTab({
           staged: uniquePaths(target.filter((r) => r.group === "staged")),
           tracked: paths.filter((p) => !untrackedInTarget.has(p)),
           untracked,
+          conflicted: uniquePaths(target.filter((r) => r.entry.conflicted)),
           deleted: isDeleted(entry),
           isUntracked: entry.untracked,
-          conflicted: entry.index === "U" || entry.worktree === "U",
+          isConflicted: entry.conflicted,
         },
         fileActions,
       ),
@@ -456,6 +489,7 @@ export default function StatusTab({
       pick("▣ all deleted", (r) => r.entry.index === "D" || r.entry.worktree === "D"),
       pick("▣ all untracked", (r) => r.entry.untracked),
       pick("▣ all staged", (r) => r.group === "staged"),
+      pick("▣ all conflicted", (r) => r.entry.conflicted),
       { kind: "separator" },
       {
         label: "⇄ invert selection",
@@ -475,6 +509,12 @@ export default function StatusTab({
 
   const hunkCount = useMemo(() => (diff ? parseDiff(diff).hunks.length : 0), [diff]);
 
+  // Whether a conflicted file actually has a merge to read. `git diff` on an
+  // unmerged path it can't produce a combined diff for — one side deleted it, or
+  // only one side ever had it — answers with the single line `* Unmerged path x`.
+  const hasConflictText =
+    diff !== null && diff.trim() !== "" && !diff.startsWith("* Unmerged path");
+
   const applyHunks = (picked: ReadonlySet<number>, what: "stage" | "unstage" | "discard") => {
     if (!diff) return;
     const patch = buildPatch(diff, picked);
@@ -486,10 +526,12 @@ export default function StatusTab({
     setPickedHunks(new Set());
   };
 
-  // An untracked file's "diff" is a synthesis with no blob for git to match, so it
-  // has no hunk layer at all — staging it is a whole-file gesture.
+  // Two files have no hunk layer. An untracked one's "diff" is a synthesis with no
+  // blob for git to match. A conflicted one's is a *combined* diff — `@@@ … @@@`
+  // with two prefix columns — which `git apply` can't take at all; its unit of
+  // action is the whole file and a side, not a hunk.
   const hunks: HunkControls | undefined =
-    leadRow && !leadUntracked && hunkCount > 0
+    leadRow && !leadUntracked && !leadConflicted && hunkCount > 0
       ? {
           selected: pickedHunks,
           busy,
@@ -568,6 +610,8 @@ export default function StatusTab({
                 count={selected.size}
                 busy={busy}
                 canUnstage={selStaged.length > 0}
+                canDiscard={selTracked.length + selUntracked.length > 0}
+                conflicted={selConflicted.length}
                 onStage={() => onStage(selPaths)}
                 onUnstage={() => onUnstage(selStaged)}
                 onDiscard={() => onDiscard(selTracked, selUntracked)}
@@ -628,6 +672,8 @@ export default function StatusTab({
                       onStage={onStage}
                       onUnstage={onUnstage}
                       onDiscard={onDiscard}
+                      onResolve={onResolve}
+                      onMarkResolved={onMarkResolved}
                     />
                   ),
                 )
@@ -659,6 +705,16 @@ export default function StatusTab({
         }
         second={
           <div style={{ height: "100%", display: "flex", flexDirection: "column", minHeight: 0 }}>
+            {leadRow && leadConflicted && (
+              <ConflictBar
+                entry={leadRow.entry}
+                busy={busy}
+                onOurs={() => onResolve([leadRow.entry.path], "ours")}
+                onTheirs={() => onResolve([leadRow.entry.path], "theirs")}
+                onResolved={() => onMarkResolved([leadRow.entry.path])}
+                onOpen={() => actions.openInEditor(leadRow.entry.path)}
+              />
+            )}
             {pickedHunks.size > 0 && (
               <HunkBar
                 count={pickedHunks.size}
@@ -675,10 +731,19 @@ export default function StatusTab({
                 <Empty>select a file</Empty>
               ) : diff === null ? (
                 <Empty>reading diff…</Empty>
+              ) : leadConflicted && !hasConflictText ? (
+                // A delete-vs-modify (or add-on-one-side) conflict has no text to
+                // merge, and git says so in one line: `* Unmerged path x`. Showing
+                // that verbatim would be the panel repeating git's shorthand back
+                // at you instead of answering the question you asked it.
+                <Empty>
+                  {GLYPH.warn} {conflictLabel(leadRow.entry.index, leadRow.entry.worktree)} — no
+                  text to merge, only a side to pick. The buttons above take one whole.
+                </Empty>
               ) : diff.trim() === "" ? (
                 <Empty>{GLYPH.warn} no textual diff</Empty>
               ) : (
-                <UnifiedDiff text={diff} hunks={hunks} />
+                <UnifiedDiff text={diff} hunks={hunks} conflict={leadConflicted} />
               )}
             </div>
           </div>
@@ -782,6 +847,8 @@ function SelectionBar({
   count,
   busy,
   canUnstage,
+  canDiscard,
+  conflicted,
   onStage,
   onUnstage,
   onDiscard,
@@ -790,6 +857,11 @@ function SelectionBar({
   count: number;
   busy: boolean;
   canUnstage: boolean;
+  /** Something in the selection can actually be discarded (G6: conflicts can't). */
+  canDiscard: boolean;
+  /** How many of the selected rows are unmerged — named on the bar, since they're
+   *  the reason the counts here won't add up to the actions available. */
+  conflicted: number;
   onStage: () => void;
   onUnstage: () => void;
   onDiscard: () => void;
@@ -810,6 +882,11 @@ function SelectionBar({
       }}
     >
       <span style={{ color: "var(--wb-text)" }}>{count} selected</span>
+      {conflicted > 0 && (
+        <span style={{ color: "var(--wb-needs)" }}>
+          {conflicted} conflicted — stage marks {conflicted === 1 ? "it" : "them"} resolved
+        </span>
+      )}
       <span style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 11 }}>
         <HeaderButton onClick={onStage} disabled={busy} accent>
           + stage
@@ -817,11 +894,92 @@ function SelectionBar({
         <HeaderButton onClick={onUnstage} disabled={busy || !canUnstage}>
           − unstage
         </HeaderButton>
-        <HeaderButton onClick={onDiscard} disabled={busy} danger>
+        <HeaderButton
+          onClick={onDiscard}
+          disabled={busy || !canDiscard}
+          danger
+          title={
+            canDiscard
+              ? undefined
+              : "a conflicted file can't be discarded — resolve it, or abort the merge from the banner"
+          }
+        >
           ⨯ discard
         </HeaderButton>
         <HeaderButton onClick={onClear} disabled={busy}>
           clear
+        </HeaderButton>
+      </span>
+    </div>
+  );
+}
+
+/**
+ * The resolution actions for the conflicted file in the diff pane (G6) — the
+ * counterpart to `HunkBar`, in the same place for the same reason: this is where
+ * you're reading the conflict, so it's where the decision gets made.
+ *
+ * Only *ours* and *theirs* are confirmed. Marking resolved keeps whatever's on
+ * disk (the merge editor's work, usually) and is undone by unstaging; taking a
+ * side throws the other one away.
+ */
+function ConflictBar({
+  entry,
+  busy,
+  onOurs,
+  onTheirs,
+  onResolved,
+  onOpen,
+}: {
+  entry: StatusEntry;
+  busy: boolean;
+  onOurs: () => void;
+  onTheirs: () => void;
+  onResolved: () => void;
+  onOpen: () => void;
+}) {
+  return (
+    <div
+      style={{
+        flex: "0 0 auto",
+        display: "flex",
+        alignItems: "center",
+        gap: 11,
+        flexWrap: "wrap",
+        padding: "4px 12px",
+        borderBottom: "1px solid var(--wb-border)",
+        background: "var(--wb-titlebar)",
+        font: "10.5px var(--wb-mono)",
+      }}
+    >
+      <span style={{ color: "var(--wb-needs)", minWidth: 0 }}>
+        {GLYPH.warn} {conflictLabel(entry.index, entry.worktree)}
+      </span>
+      <span style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 11 }}>
+        <HeaderButton
+          onClick={onOurs}
+          disabled={busy}
+          title="take this branch's version whole, discarding the incoming one — asks first"
+        >
+          ◧ ours
+        </HeaderButton>
+        <HeaderButton
+          onClick={onTheirs}
+          disabled={busy}
+          title="take the incoming version whole, discarding this branch's — asks first"
+        >
+          ◨ theirs
+        </HeaderButton>
+        <HeaderButton
+          onClick={onResolved}
+          disabled={busy}
+          accent
+          title="accept the file as it stands on disk and clear the conflict"
+        >
+          ✓ resolved
+        </HeaderButton>
+        <HeaderButton onClick={onOpen} title="edit the markers by hand in the Editor panel">
+          ✎ edit
         </HeaderButton>
       </span>
     </div>
@@ -889,6 +1047,7 @@ function HunkBar({
 // --- groups + rows ----------------------------------------------------------
 
 const GROUP_LABEL: Record<Grp, string> = {
+  conflicted: "conflicted",
   staged: "staged",
   unstaged: "unstaged",
   untracked: "untracked",
@@ -910,6 +1069,8 @@ function StatusGroup({
   onStage,
   onUnstage,
   onDiscard,
+  onResolve,
+  onMarkResolved,
 }: {
   group: Grp;
   rows: StatusRowItem[];
@@ -926,6 +1087,8 @@ function StatusGroup({
   onStage: (paths: string[]) => void;
   onUnstage: (paths: string[]) => void;
   onDiscard: (tracked: string[], untracked: string[]) => void;
+  onResolve: (paths: string[], side: "ours" | "theirs") => void;
+  onMarkResolved: (paths: string[]) => void;
 }) {
   // A group header acts on the selection *within this group* when there is one,
   // and on the whole group when there isn't — so "stage all" beside a live
@@ -938,31 +1101,66 @@ function StatusGroup({
   const tracked = paths.filter((p) => !untrackedSet.has(p));
   const scope = picked.length > 0 ? String(picked.length) : "all";
   const primary = group === "staged" ? "unstage" : "stage";
+  const count = `${paths.length} ${paths.length === 1 ? "file" : "files"}`;
 
   return (
     <div>
       <SectionHead>
         {GROUP_LABEL[group]} <span style={{ color: "var(--wb-textFaint)" }}>{rows.length}</span>
-        <button
-          onClick={() => (group === "staged" ? onUnstage(paths) : onStage(paths))}
-          disabled={busy}
-          style={miniActionStyle}
-          title={`${primary} ${paths.length} ${paths.length === 1 ? "file" : "files"}`}
-        >
-          {primary} {scope}
-        </button>
-        <button
-          onClick={() => onDiscard(tracked, untracked)}
-          disabled={busy}
-          style={{ ...miniActionStyle, marginLeft: 10, color: "var(--wb-needs)" }}
-          title={
-            tracked.length === 0
-              ? "delete these untracked files — asks first"
-              : "revert these files to HEAD (untracked ones are deleted) — asks first"
-          }
-        >
-          {tracked.length === 0 ? "delete" : "discard"} {scope}
-        </button>
+        {/* The conflicted group gets the resolution set instead of stage/discard:
+            git refuses to discard an unmerged path, and "stage" here means
+            *mark resolved*, which is worth calling by its name. */}
+        {group === "conflicted" ? (
+          <>
+            <button
+              onClick={() => onResolve(paths, "ours")}
+              disabled={busy}
+              style={miniActionStyle}
+              title={`take this branch's version of ${count} — asks first`}
+            >
+              ◧ ours {scope}
+            </button>
+            <button
+              onClick={() => onResolve(paths, "theirs")}
+              disabled={busy}
+              style={{ ...miniActionStyle, marginLeft: 10 }}
+              title={`take the incoming version of ${count} — asks first`}
+            >
+              ◨ theirs {scope}
+            </button>
+            <button
+              onClick={() => onMarkResolved(paths)}
+              disabled={busy}
+              style={{ ...miniActionStyle, marginLeft: 10, color: "var(--wb-accent)" }}
+              title={`accept ${count} as they stand on disk`}
+            >
+              ✓ resolved {scope}
+            </button>
+          </>
+        ) : (
+          <>
+            <button
+              onClick={() => (group === "staged" ? onUnstage(paths) : onStage(paths))}
+              disabled={busy}
+              style={miniActionStyle}
+              title={`${primary} ${count}`}
+            >
+              {primary} {scope}
+            </button>
+            <button
+              onClick={() => onDiscard(tracked, untracked)}
+              disabled={busy}
+              style={{ ...miniActionStyle, marginLeft: 10, color: "var(--wb-needs)" }}
+              title={
+                tracked.length === 0
+                  ? "delete these untracked files — asks first"
+                  : "revert these files to HEAD (untracked ones are deleted) — asks first"
+              }
+            >
+              {tracked.length === 0 ? "delete" : "discard"} {scope}
+            </button>
+          </>
+        )}
       </SectionHead>
       {tree ? (
         <TreeLevel
@@ -980,6 +1178,7 @@ function StatusGroup({
           onStage={onStage}
           onUnstage={onUnstage}
           onDiscard={onDiscard}
+          onMarkResolved={onMarkResolved}
         />
       ) : (
         rows.map((r) => (
@@ -996,6 +1195,7 @@ function StatusGroup({
             onStage={onStage}
             onUnstage={onUnstage}
             onDiscard={onDiscard}
+            onMarkResolved={onMarkResolved}
           />
         ))
       )}
@@ -1021,6 +1221,7 @@ function TreeLevel({
   onStage,
   onUnstage,
   onDiscard,
+  onMarkResolved,
 }: {
   nodes: TreeNode[];
   depth: number;
@@ -1036,6 +1237,7 @@ function TreeLevel({
   onStage: (paths: string[]) => void;
   onUnstage: (paths: string[]) => void;
   onDiscard: (tracked: string[], untracked: string[]) => void;
+  onMarkResolved: (paths: string[]) => void;
 }) {
   return (
     <>
@@ -1055,6 +1257,7 @@ function TreeLevel({
             onStage={onStage}
             onUnstage={onUnstage}
             onDiscard={onDiscard}
+            onMarkResolved={onMarkResolved}
             label={node.name}
           />
         ) : (
@@ -1068,6 +1271,7 @@ function TreeLevel({
             busy={busy}
             onStage={onStage}
             onUnstage={onUnstage}
+            onMarkResolved={onMarkResolved}
           >
             <TreeLevel
               nodes={node.children}
@@ -1084,6 +1288,7 @@ function TreeLevel({
               onStage={onStage}
               onUnstage={onUnstage}
               onDiscard={onDiscard}
+              onMarkResolved={onMarkResolved}
             />
           </FolderRow>
         );
@@ -1101,6 +1306,7 @@ function FolderRow({
   busy,
   onStage,
   onUnstage,
+  onMarkResolved,
   children,
 }: {
   node: TreeNode;
@@ -1111,12 +1317,17 @@ function FolderRow({
   busy: boolean;
   onStage: (paths: string[]) => void;
   onUnstage: (paths: string[]) => void;
+  onMarkResolved: (paths: string[]) => void;
   children: React.ReactNode;
 }) {
   const [hover, setHover] = useState(false);
   const under = leavesUnder(node);
   const paths = uniquePaths(under);
-  const label = group === "staged" ? "unstage" : "stage";
+  // In the conflicted group the folder action is *mark resolved*: it's the same
+  // `git add`, but calling it "stage" here would name the mechanism rather than
+  // what it does, which is the thing G6 exists to stop doing.
+  const conflicted = group === "conflicted";
+  const label = conflicted ? "mark resolved" : group === "staged" ? "unstage" : "stage";
   return (
     <>
       <div
@@ -1148,13 +1359,14 @@ function FolderRow({
           <RowAction
             onClick={(ev) => {
               ev?.stopPropagation();
-              if (group === "staged") onUnstage(paths);
+              if (conflicted) onMarkResolved(paths);
+              else if (group === "staged") onUnstage(paths);
               else onStage(paths);
             }}
             label={`${label} the ${paths.length} ${paths.length === 1 ? "file" : "files"} under ${node.path}`}
             disabled={busy}
           >
-            {group === "staged" ? "−" : "+"}
+            {conflicted ? GLYPH.ok : group === "staged" ? "−" : "+"}
           </RowAction>
         </span>
       </div>
@@ -1175,6 +1387,7 @@ function StatusRow({
   onStage,
   onUnstage,
   onDiscard,
+  onMarkResolved,
   label,
 }: {
   row: StatusRowItem;
@@ -1190,6 +1403,7 @@ function StatusRow({
   onStage: (paths: string[]) => void;
   onUnstage: (paths: string[]) => void;
   onDiscard: (tracked: string[], untracked: string[]) => void;
+  onMarkResolved: (paths: string[]) => void;
   /** Tree mode shows the basename; the flat list shows the whole path. */
   label?: string;
 }) {
@@ -1197,6 +1411,7 @@ function StatusRow({
   const { entry, group } = row;
   const ch = charOf(entry);
   const staged = group === "staged";
+  const conflicted = entry.conflicted;
   return (
     <div
       data-rowid={row.rowId}
@@ -1243,7 +1458,12 @@ function StatusRow({
       >
         {picked ? "▣" : "▢"}
       </button>
-      <span style={{ flex: "0 0 auto", width: 9, color: statusCharColor(ch) }}>{ch}</span>
+      <span
+        style={{ flex: "0 0 auto", width: 9, color: statusCharColor(ch) }}
+        title={conflicted ? conflictLabel(entry.index, entry.worktree) : undefined}
+      >
+        {ch}
+      </span>
       <span
         style={{
           flex: 1,
@@ -1257,19 +1477,29 @@ function StatusRow({
       >
         {label ?? entry.path}
       </span>
+      {/* A conflicted row's fast path is *mark resolved* and nothing else: taking a
+          side is a decision worth the diff pane's bar (and its confirm), and there
+          is no discard — git refuses to restore an unmerged path. */}
       <span style={{ flex: "0 0 auto", display: "flex", gap: 8, visibility: hover ? "visible" : "hidden" }}>
         <RowAction
           onClick={(ev) => {
             ev?.stopPropagation();
-            if (staged) onUnstage([entry.path]);
+            if (conflicted) onMarkResolved([entry.path]);
+            else if (staged) onUnstage([entry.path]);
             else onStage([entry.path]);
           }}
-          label={staged ? "unstage" : "stage"}
+          label={
+            conflicted
+              ? "mark resolved — accepts the file as it stands on disk"
+              : staged
+                ? "unstage"
+                : "stage"
+          }
           disabled={busy}
         >
-          {staged ? "−" : "+"}
+          {conflicted ? GLYPH.ok : staged ? "−" : "+"}
         </RowAction>
-        {!staged && (
+        {!staged && !conflicted && (
           <RowAction
             onClick={(ev) => {
               ev?.stopPropagation();
@@ -1465,12 +1695,22 @@ function uniquePaths(rows: StatusRowItem[]): string[] {
   return [...new Set(rows.map((r) => r.entry.path))];
 }
 
-/** The most telling status char for the glyph: staged side if present, else worktree. */
+/**
+ * The most telling status char for the glyph: staged side if present, else
+ * worktree. A conflict gets `!` rather than one of its two chars (G6) — `AA` and
+ * `DD` have no `U` to borrow, and picking either half of the pair would name one
+ * side of a two-sided state. The row's `title` spells the shape out in words.
+ */
 function charOf(entry: StatusEntry): string {
+  if (entry.conflicted) return "!";
   return entry.untracked ? "?" : entry.index !== " " ? entry.index : entry.worktree;
 }
 
 /** There's no file on disk to open or reveal. */
 function isDeleted(entry: StatusEntry): boolean {
+  // Git leaves *a* version in the tree for every conflict shape but both-deleted,
+  // so a `D` inside an unmerged pair doesn't mean there's nothing to open — and a
+  // "deleted by them" conflict is one you very much want to be able to read.
+  if (entry.conflicted) return entry.index === "D" && entry.worktree === "D";
   return !entry.untracked && (entry.index === "D" || entry.worktree === "D");
 }

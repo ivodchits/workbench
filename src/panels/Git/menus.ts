@@ -46,12 +46,14 @@ export interface FileTarget {
   /** Discard splits: tracked revert to HEAD, untracked get deleted. */
   tracked: string[];
   untracked: string[];
+  /** Of `paths`, those that are unmerged (G6) — all the resolve items can touch. */
+  conflicted: string[];
   /** The clicked row is a deletion — there's no file on disk to open or reveal. */
   deleted: boolean;
   /** The clicked row is untracked, so ignoring it would actually take effect. */
   isUntracked: boolean;
-  /** The clicked row is a conflict (`U` on either side). */
-  conflicted: boolean;
+  /** The clicked row is unmerged (G6) — the resolve items lead the menu. */
+  isConflicted: boolean;
 }
 
 export interface FileActions {
@@ -59,6 +61,10 @@ export interface FileActions {
   stage: (paths: string[]) => void;
   unstage: (paths: string[]) => void;
   discard: (tracked: string[], untracked: string[]) => void;
+  /** Take one whole side of the merge (G6) — confirmed by the panel. */
+  resolve: (paths: string[], side: "ours" | "theirs") => void;
+  /** Accept the file as it stands on disk (G6) — `git add` on an unmerged path. */
+  markResolved: (paths: string[]) => void;
   copy: (text: string, what: string) => void;
   /** Repo-relative → absolute, forward-slashed. */
   abs: (rel: string) => string;
@@ -72,8 +78,38 @@ export function fileRowMenu(t: FileTarget, a: FileActions): MenuEntry[] {
   const folder = cut > 0 ? t.path.slice(0, cut) : null;
   const n = many(t.paths.length);
   const gone = t.deleted ? "the file was deleted — there's nothing on disk to open" : undefined;
+  const stuck = many(t.conflicted.length);
 
   return [
+    // The resolve block leads on a conflict and is absent everywhere else: these
+    // items only mean anything against a file with three stages in the index, and
+    // a permanently disabled trio on every ordinary row would be noise.
+    ...(t.isConflicted
+      ? [
+          {
+            label: "◧ use ours",
+            hint: stuck,
+            onClick: () => a.resolve(t.conflicted, "ours"),
+            disabled: a.busy,
+            title: "take this branch's version whole — asks first",
+          } satisfies MenuEntry,
+          {
+            label: "◨ use theirs",
+            hint: stuck,
+            onClick: () => a.resolve(t.conflicted, "theirs"),
+            disabled: a.busy,
+            title: "take the incoming version whole — asks first",
+          } satisfies MenuEntry,
+          {
+            label: "✓ mark resolved",
+            hint: stuck,
+            onClick: () => a.markResolved(t.conflicted),
+            disabled: a.busy,
+            title: "accept the file as it stands on disk and clear the conflict",
+          } satisfies MenuEntry,
+          SEP,
+        ]
+      : []),
     {
       // Offered even on a staged row: a file can be staged *and* modified again
       // since, and `git add` on it stages the newer contents. Disabling it there
@@ -95,9 +131,19 @@ export function fileRowMenu(t: FileTarget, a: FileActions): MenuEntry[] {
       label: t.tracked.length === 0 ? "⨯ delete untracked" : "⨯ discard changes",
       hint: n,
       danger: true,
-      onClick: () => a.discard(t.tracked, t.untracked),
-      disabled: a.busy,
-      title: "revert tracked files to HEAD, delete untracked ones — asks first",
+      // The conflicted paths are held out rather than passed and rejected: `git
+      // restore` refuses an unmerged path outright ("path 'x' is unmerged"), and
+      // one conflict in a wide selection would take the whole discard down with it.
+      onClick: () =>
+        a.discard(
+          t.tracked.filter((p) => !t.conflicted.includes(p)),
+          t.untracked,
+        ),
+      disabled: a.busy || t.tracked.length + t.untracked.length === t.conflicted.length,
+      title:
+        t.conflicted.length > 0
+          ? "a conflicted file can't be discarded — resolve it, or abort the merge from the banner"
+          : "revert tracked files to HEAD, delete untracked ones — asks first",
     },
     SEP,
     {
@@ -140,18 +186,6 @@ export function fileRowMenu(t: FileTarget, a: FileActions): MenuEntry[] {
       disabled: true,
       title: soon("history for a single file"),
     },
-    // Only on a conflict: on every other row it would be a permanent dead item
-    // for a state the file isn't in.
-    ...(t.conflicted
-      ? [
-          {
-            label: "✓ mark resolved",
-            onClick: () => undefined,
-            disabled: true,
-            title: soon("conflict resolution"),
-          } satisfies MenuEntry,
-        ]
-      : []),
   ];
 }
 

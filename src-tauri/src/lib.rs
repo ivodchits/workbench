@@ -148,6 +148,7 @@ pub fn run() {
             git::git_repo_state,
             git::git_file_diff,
             git::git_apply_patch,
+            git::git_resolve,
             registry::create_group,
             registry::get_groups,
             registry::edit_group,

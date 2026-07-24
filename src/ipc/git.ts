@@ -250,11 +250,14 @@ export function gitBranches(repoRoot: string): Promise<Branches> {
 /** One working-tree status entry — the porcelain `XY` pair (step 3.11). */
 export interface StatusEntry {
   path: string;
-  /** Staged (index) status char: `M`/`A`/`D`/`R`/`C`/`?`/` `. */
+  /** Staged (index) status char: `M`/`A`/`D`/`R`/`C`/`U`/`?`/` `. */
   index: string;
   /** Unstaged (worktree) status char. */
   worktree: string;
   untracked: boolean;
+  /** Unmerged (G6) — `UU`/`AA`/`DD`/`AU`/`UA`/`DU`/`UD`. Its own group in the
+   *  panel: it belongs to neither the staged nor the unstaged side. */
+  conflicted: boolean;
 }
 
 export function gitStatusEntries(repoRoot: string): Promise<StatusEntry[]> {
@@ -566,4 +569,25 @@ export function gitApplyPatch(
   reverse: boolean,
 ): Promise<string> {
   return invoke("git_apply_patch", { repoRoot, patch, cached, reverse });
+}
+
+// --- merge conflicts (G6) ---------------------------------------------------
+
+/**
+ * Resolve conflicted files by taking one side of the merge whole (G6).
+ *
+ * `ours` is stage 2 (the branch you're on), `theirs` stage 3 (the one coming in).
+ * Where the chosen side *deleted* the file it has no stage at all, and taking it
+ * means the deletion — the backend splits the batch accordingly rather than
+ * failing, which is what `git checkout --theirs` alone would do.
+ *
+ * Marking a file resolved without picking a side is just `gitStage` — `git add`
+ * on an unmerged path is what clears it.
+ */
+export function gitResolve(
+  repoRoot: string,
+  paths: string[],
+  side: "ours" | "theirs",
+): Promise<string> {
+  return invoke("git_resolve", { repoRoot, paths, side });
 }

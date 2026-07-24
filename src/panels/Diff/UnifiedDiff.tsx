@@ -8,8 +8,10 @@
 
 // G5 added the optional hunk layer: pass `hunks` and every `@@` line becomes a
 // selectable header with its own actions (stage / unstage / discard this hunk).
-// Additive by design — the Diff/Review panel passes nothing and renders exactly
-// what it always did.
+// G6 added the optional conflict layer: pass `conflict` and the `<<<<<<<` /
+// `=======` / `>>>>>>>` lines a merge left behind are banded so the three sides
+// are separable at a glance. Both are additive — the Diff/Review panel passes
+// neither and renders exactly what it always did.
 
 import { useMemo, type CSSProperties } from "react";
 
@@ -18,7 +20,18 @@ import { parseDiff, hunkStat } from "./patch";
 /** Hard cap on rendered lines — a pathological diff shouldn't freeze the webview. */
 const MAX_LINES = 4000;
 
-type LineKind = "add" | "del" | "hunk" | "meta" | "context";
+type LineKind = "add" | "del" | "hunk" | "meta" | "context" | "conflict";
+
+/**
+ * A merge marker (G6). The leading `[+\- ]{0,2}` is for combined diffs: `git diff`
+ * on an unmerged path emits `diff --cc` with *two* prefix columns, so a marker
+ * arrives as `++<<<<<<< HEAD`, not `<<<<<<< HEAD`.
+ *
+ * Only consulted when the caller says the file is conflicted. `=======` under a
+ * markdown heading would match this too, and false-positive banding in the review
+ * panel is worse than no banding at all.
+ */
+const MARKER = /^[+\- ]{0,2}(<{7}|={7}|>{7}|\|{7})(?:[ \t]|$)/;
 
 function classify(line: string): LineKind {
   if (
@@ -47,6 +60,13 @@ const STYLE: Record<LineKind, CSSProperties> = {
   hunk: { color: "var(--wb-accent)", background: "var(--wb-titlebar)" },
   meta: { color: "var(--wb-textFaint)" },
   context: { color: "var(--wb-textDim2)" },
+  // Louder than an added line on purpose: the marker rows are the structure of
+  // the conflict, and they have to win against the +/- banding they sit inside.
+  conflict: {
+    color: "var(--wb-needs)",
+    background: "color-mix(in srgb, var(--wb-needs) 22%, transparent)",
+    fontWeight: 600,
+  },
 };
 
 /** One inline action on a hunk header. */
@@ -72,7 +92,16 @@ export interface HunkControls {
   busy?: boolean;
 }
 
-function UnifiedDiff({ text, hunks }: { text: string; hunks?: HunkControls }) {
+function UnifiedDiff({
+  text,
+  hunks,
+  conflict,
+}: {
+  text: string;
+  hunks?: HunkControls;
+  /** The file is unmerged (G6) — band its `<<<<<<<` / `=======` / `>>>>>>>` rows. */
+  conflict?: boolean;
+}) {
   const { lines, truncated } = useMemo(() => {
     const all = text.replace(/\n$/, "").split("\n");
     return { lines: all.slice(0, MAX_LINES), truncated: all.length > MAX_LINES };
@@ -117,7 +146,7 @@ function UnifiedDiff({ text, hunks }: { text: string; hunks?: HunkControls }) {
           <div
             key={i}
             style={{
-              ...STYLE[classify(line)],
+              ...STYLE[conflict && MARKER.test(line) ? "conflict" : classify(line)],
               padding: "0 12px",
               whiteSpace: "pre",
               minWidth: "max-content",
