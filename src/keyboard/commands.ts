@@ -39,7 +39,9 @@ export function runAction(command: CommandId, arg?: number): void {
       if (arg) applyPresetByIndex(arg);
       break;
     // Component/host-owned — dispatched to the registered handler (no-op if absent,
-    // which is how `jumpNeedsYou` stayed a registered stub until Phase 2).
+    // which is how `jumpNeedsYou` stayed a registered stub until Phase 2). The
+    // `git…` commands (G5) belong to the most recently activated Git panel, and
+    // are the same no-op when none is open.
     case "focusRail":
     case "newInstance":
     case "newEditor":
@@ -56,6 +58,15 @@ export function runAction(command: CommandId, arg?: number): void {
     case "openCommandPalette":
     case "openKeymapEditor":
     case "speakSelection":
+    case "gitRefresh":
+    case "gitFetch":
+    case "gitPull":
+    case "gitPush":
+    case "gitStageAll":
+    case "gitUnstageAll":
+    case "gitCommitFocus":
+    case "gitFilterFiles":
+    case "gitToggleTree":
       runCommand(command, arg);
       break;
     // Rail-scope commands never reach here (matched in the rail's own scope).

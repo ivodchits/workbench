@@ -55,6 +55,16 @@ export type CommandId =
   | "openCommandPalette"
   | "openKeymapEditor"
   | "speakSelection"
+  // git panel (G5) — handled by the most recently activated Git panel
+  | "gitRefresh"
+  | "gitFetch"
+  | "gitPull"
+  | "gitPush"
+  | "gitStageAll"
+  | "gitUnstageAll"
+  | "gitCommitFocus"
+  | "gitFilterFiles"
+  | "gitToggleTree"
   // rail
   | "railPrev"
   | "railNext"
@@ -168,6 +178,26 @@ const RAW_BINDINGS: RawBinding[] = [
     scope: "global",
     title: `Recall layout preset ${i + 1}`,
   })),
+  // --- global: git panel (G5) -----------------------------------------------
+  // The Git panel's palette surface (design §5 Git → keyboard-first). Each runs
+  // against the Git panel you last had focused, bringing it forward first.
+  //
+  // Two carry a chord; the rest ship unbound on purpose. Global chords are a
+  // scarce shared resource here — the terminal owns everything that isn't
+  // `Ctrl+Shift+…`, and half of that space is already spoken for (`Ctrl+Shift+C`
+  // is the terminal's copy, `Ctrl+Shift+S` the editor's save-all) — so the panel
+  // claims only the two gestures you repeat, and leaves the rest to the palette
+  // and to whatever key you'd rather give them. Inside the panel, the keyboard
+  // that matters is local: ↑/↓, Space, Enter, Ctrl+A on the file list.
+  { chord: "Ctrl+Shift+M", command: "gitCommitFocus", scope: "global", title: "Git: write a commit message" },
+  { chord: "Ctrl+Shift+F", command: "gitFilterFiles", scope: "global", title: "Git: filter the working-tree files" },
+  { chord: "", command: "gitRefresh", scope: "global", title: "Git: re-read the repo" },
+  { chord: "", command: "gitFetch", scope: "global", title: "Git: fetch" },
+  { chord: "", command: "gitPull", scope: "global", title: "Git: pull" },
+  { chord: "", command: "gitPush", scope: "global", title: "Git: push (or publish the branch)" },
+  { chord: "", command: "gitStageAll", scope: "global", title: "Git: stage every change" },
+  { chord: "", command: "gitUnstageAll", scope: "global", title: "Git: unstage everything" },
+  { chord: "", command: "gitToggleTree", scope: "global", title: "Git: toggle the folder tree" },
 
   // --- rail: navigation (TUI single keys) -----------------------------------
   { chord: "Up", command: "railPrev", scope: "rail", title: "Rail: move up" },

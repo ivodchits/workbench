@@ -146,6 +146,8 @@ pub fn run() {
             git::git_set_upstream,
             git::git_delete_remote_branch,
             git::git_repo_state,
+            git::git_file_diff,
+            git::git_apply_patch,
             registry::create_group,
             registry::get_groups,
             registry::edit_group,

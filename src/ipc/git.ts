@@ -526,3 +526,44 @@ export interface RepoState {
 export function gitRepoState(repoRoot: string): Promise<RepoState> {
   return invoke("git_repo_state", { repoRoot });
 }
+
+// --- working tree: one side at a time + hunk staging (G5) -------------------
+// The working-tree tab reads the staged and unstaged sides *separately* rather
+// than one combined `diff HEAD`, because a hunk is only applyable against the
+// side it was cut from: staging one means feeding it back to the index, which
+// has to be the side the diff's old half describes.
+
+/**
+ * One file's diff for a single side (G5): `staged` reads HEAD → index, otherwise
+ * index → working tree. `untracked` files have no side, so they come back as the
+ * same all-added synthesis the review panel shows (and can't be applied from).
+ */
+export function gitFileDiff(
+  repoRoot: string,
+  path: string,
+  staged: boolean,
+  untracked: boolean,
+): Promise<FileDiff> {
+  return invoke("git_file_diff", { repoRoot, path, staged, untracked });
+}
+
+/**
+ * Apply a patch built from selected hunks (G5) — `git apply` over stdin.
+ *
+ * | intent | `cached` | `reverse` |
+ * |---|---|---|
+ * | stage a hunk | true | false |
+ * | unstage a hunk | true | true |
+ * | discard a hunk | false | true |
+ *
+ * Rejects with git's own message (which names the patch line it failed on) when
+ * the file moved between the read and the click.
+ */
+export function gitApplyPatch(
+  repoRoot: string,
+  patch: string,
+  cached: boolean,
+  reverse: boolean,
+): Promise<string> {
+  return invoke("git_apply_patch", { repoRoot, patch, cached, reverse });
+}

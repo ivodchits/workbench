@@ -34,12 +34,22 @@
 // with git's whole message, and the panel picks up a banner (fed by
 // `git_repo_state`) offering continue / skip / abort until the repo is idle again.
 // The branch tab itself moved to `BranchesTab.tsx` on the way through.
+//
+// G5 did the same for the working tree (`StatusTab.tsx`), which is where the
+// keyboard-first requirement and the selection work landed: a focusable file list
+// with real arrow/Space/Enter navigation, checkboxes, a filter, a folder tree, and
+// hunk-level staging. Two things it needed from the shell are here — the confirm
+// on *discarding* a hunk (it's the one hunk action that destroys work), and the
+// command-palette registration: the panel claims the `git…` commands on mount and
+// again whenever it's activated, so the most recently focused Git panel is the one
+// the palette talks to.
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { IDockviewPanelProps } from "dockview";
 
 import { GLYPH } from "../../theme";
 import {
+  gitApplyPatch,
   gitBranches,
   gitCheckout,
   gitClean,
@@ -73,7 +83,6 @@ import {
   gitStashShow,
   gitStatusEntries,
   gitUnstage,
-  instanceFileDiff,
   type Branch,
   type Branches,
   type Commit,
@@ -91,32 +100,29 @@ import { getOpenConsoles } from "../../state/consoles";
 import { openProjectFile } from "../../state/editors";
 import ContextMenu from "../../components/ContextMenu";
 import { useContextMenu } from "../../components/useContextMenu";
+import { registerCommand } from "../../keyboard/bus";
 import Modal from "../InstanceManager/Modal";
 import UnifiedDiff from "../Diff/UnifiedDiff";
 import BranchesTab from "./BranchesTab";
-import CommitBox, { type CommitRequest } from "./CommitBox";
+import type { CommitRequest } from "./CommitBox";
+import StatusTab, { type StatusCommand } from "./StatusTab";
 import { clearDraft } from "./draft";
 import {
   commitFileRowMenu,
   commitRowMenu,
-  fileRowMenu,
-  stashRowMenu,
   type BranchActions,
-  type FileActions,
 } from "./menus";
 import {
   confirmButtonStyle,
   inputStyle,
   menuItemStyle,
-  miniActionStyle,
   relativeDate,
-  statusCharColor,
   statusColor,
   STATUS_GLYPH,
 } from "./format";
-import { Empty, HeaderButton, RowAction, SectionHead } from "./rows";
+import { Empty, HeaderButton } from "./rows";
 import Splitter from "./Splitter";
-import { hydrateGitLayout, readSection, writeSection } from "./layout";
+import { hydrateGitLayout } from "./layout";
 import { useOrientation, type Orientation } from "./useOrientation";
 
 export interface GitPanelParams {
@@ -132,8 +138,19 @@ export function GitPanel(props: IDockviewPanelProps<GitPanelParams>) {
   const setTitle = props.api.setTitle.bind(props.api);
   useEffect(() => setTitle(title), [setTitle, title]);
 
+  // Which Git panel the palette's `git…` commands talk to (G5). The command bus
+  // holds one handler per command, so "most recently activated wins" is the rule
+  // that makes two open Git panels behave the way you'd expect.
+  const { api } = props;
+  const [active, setActive] = useState(api.isActive);
+  useEffect(() => {
+    const sub = api.onDidActiveChange((e) => setActive(e.isActive));
+    return () => sub.dispose();
+  }, [api]);
+  const activate = useCallback(() => api.setActive(), [api]);
+
   if (!session) return <Missing />;
-  return <GitBody session={session} />;
+  return <GitBody session={session} active={active} activate={activate} />;
 }
 
 type Tab = "history" | "branches" | "status";
@@ -169,6 +186,25 @@ interface PanelActions extends BranchActions {
   stashBranch: (stash: Stash) => void;
 }
 
+/** The notice a hunk action leaves behind — the panel refreshes under you, so
+ *  without a word saying what happened it can be hard to tell that it did (G5). */
+function hunkNotice(what: string, n: number): string {
+  return `${what} ${n} ${n === 1 ? "hunk" : "hunks"}`;
+}
+
+/** What a palette command can ask this panel to do (G5) — panel-level actions
+ *  only, since the palette can't see (or mean) a row selection. */
+interface GitCommandPort {
+  refresh: () => void;
+  fetch: () => void;
+  pull: () => void;
+  push: () => void;
+  stageAll: () => void;
+  unstageAll: () => void;
+  /** Show the working tree and run a one-shot instruction there. */
+  status: (kind: StatusCommand["kind"]) => void;
+}
+
 /** A repo-relative path made absolute. Forward slashes throughout (Windows-first
  *  guardrail): every consumer is either git, which speaks `/` on all platforms, or
  *  a Rust `Path::join`, which is happy with either. */
@@ -189,9 +225,22 @@ type Confirm =
   // though nothing is destroyed; `rebaseSkip` throws one commit away outright.
   | { kind: "rebase"; onto: string; head: string; warnLive: boolean }
   | { kind: "rebaseSkip" }
-  | { kind: "deleteRemoteBranch"; remote: string; branch: string };
+  | { kind: "deleteRemoteBranch"; remote: string; branch: string }
+  // G5. Staging and unstaging a hunk are reversible from the panel; discarding one
+  // throws away work that was never committed anywhere, so it asks.
+  | { kind: "discardHunks"; patch: string; count: number };
 
-function GitBody({ session }: { session: GitSession }) {
+function GitBody({
+  session,
+  active,
+  activate,
+}: {
+  session: GitSession;
+  /** This panel has the dock's focus — it re-claims the palette's git commands. */
+  active: boolean;
+  /** Bring this panel forward, for a command run from somewhere else. */
+  activate: () => void;
+}) {
   const { repoRoot } = session;
   const [data, setData] = useState<RepoData | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -215,6 +264,11 @@ function GitBody({ session }: { session: GitSession }) {
   const [merging, setMerging] = useState<{ reference: string; mode: MergeMode; warnLive: boolean } | null>(null);
   const [upstreaming, setUpstreaming] = useState<Branch | null>(null);
   const [output, setOutput] = useState<{ title: string; text: string } | null>(null);
+  // G5: a one-shot instruction for the working-tree tab, carried as a nonce so the
+  // same command twice runs twice — and so one issued while another tab was
+  // showing runs as that tab mounts.
+  const [statusCommand, setStatusCommand] = useState<StatusCommand | null>(null);
+  const clearStatusCommand = useCallback(() => setStatusCommand(null), []);
 
   // The panel measures itself, not the window — the same window can hold a wide
   // Git panel and a narrow one, and each lays out for the box it's actually in.
@@ -432,6 +486,71 @@ function GitBody({ session }: { session: GitSession }) {
     stashBranch: (stash) => setStashBranching({ stash, warnLive: liveRootInstances() > 0 }),
   };
 
+  // --- command palette (G5) --------------------------------------------------
+  // §5 asks for the git actions to be reachable from the palette with their
+  // bindings. The commands the palette can sensibly run are the *panel-level*
+  // ones — the ones that don't depend on what happens to be selected in a list it
+  // can't see; per-row work is what the in-panel keyboard is for.
+
+  /** The current render's handlers, read by the (stable) bus registration below. */
+  const portRef = useRef<GitCommandPort | null>(null);
+  useEffect(() => {
+    /** Switch to the working tree and hand it a one-shot instruction. */
+    const inStatus = (kind: StatusCommand["kind"]) => {
+      setTab("status");
+      setStatusCommand((prev) => ({ kind, n: (prev?.n ?? 0) + 1 }));
+    };
+    const paths = (entries: StatusEntry[]) => [...new Set(entries.map((e) => e.path))];
+    portRef.current = {
+      refresh: () => void load(),
+      fetch: () => void run(() => gitFetch(repoRoot), "fetched"),
+      pull: () => void run(() => gitPull(repoRoot), "pulled"),
+      push: requestPush,
+      stageAll: () => {
+        const dirty = paths(data?.status.filter((e) => e.worktree !== " " || e.untracked) ?? []);
+        if (dirty.length === 0) setNotice({ kind: "ok", text: "nothing to stage" });
+        else void run(() => gitStage(repoRoot, dirty));
+      },
+      unstageAll: () => {
+        const staged = paths(data?.status.filter((e) => e.index !== " " && e.index !== "?") ?? []);
+        if (staged.length === 0) setNotice({ kind: "ok", text: "nothing staged" });
+        else void run(() => gitUnstage(repoRoot, staged));
+      },
+      status: inStatus,
+    };
+  });
+
+  useEffect(() => {
+    // A command run from elsewhere brings this panel forward first — the result of
+    // a fetch or a filter is only useful if you can see it. Re-registering when
+    // `active` flips is what makes the Git panel you last touched the one the
+    // palette drives; the bus keeps a single handler per command, and the mount
+    // registration means one unfocused Git panel still answers.
+    const surface = () => {
+      if (!active) activate();
+    };
+    const on = (id: Parameters<typeof registerCommand>[0], go: (p: GitCommandPort) => void) =>
+      registerCommand(id, () => {
+        surface();
+        const port = portRef.current;
+        if (port) go(port);
+      });
+    const disposers = [
+      on("gitRefresh", (p) => p.refresh()),
+      on("gitFetch", (p) => p.fetch()),
+      on("gitPull", (p) => p.pull()),
+      on("gitPush", (p) => p.push()),
+      on("gitStageAll", (p) => p.stageAll()),
+      on("gitUnstageAll", (p) => p.unstageAll()),
+      on("gitCommitFocus", (p) => p.status("commit")),
+      on("gitFilterFiles", (p) => p.status("filter")),
+      on("gitToggleTree", (p) => p.status("tree")),
+    ];
+    return () => {
+      for (const dispose of disposers) dispose();
+    };
+  }, [active, activate]);
+
   return (
     <div
       ref={rootRef}
@@ -518,6 +637,15 @@ function GitBody({ session }: { session: GitSession }) {
             onStashPush={(msg, untracked) => void run(() => gitStashPush(repoRoot, msg, untracked), "stashed")}
             onStashPop={(ref) => void run(() => gitStashPop(repoRoot, ref), "popped")}
             onStashDrop={(stash) => setConfirm({ kind: "stashDrop", stash })}
+            onStageHunks={(patch, n) =>
+              void run(() => gitApplyPatch(repoRoot, patch, true, false), hunkNotice("staged", n))
+            }
+            onUnstageHunks={(patch, n) =>
+              void run(() => gitApplyPatch(repoRoot, patch, true, true), hunkNotice("unstaged", n))
+            }
+            onDiscardHunks={(patch, count) => setConfirm({ kind: "discardHunks", patch, count })}
+            command={statusCommand}
+            onCommandDone={clearStatusCommand}
           />
         )}
       </div>
@@ -565,6 +693,14 @@ function GitBody({ session }: { session: GitSession }) {
               case "rebaseSkip":
                 void run(() => gitRebaseControl(repoRoot, "skip"), "commit skipped", "rebase");
                 break;
+              case "discardHunks": {
+                const { patch, count } = confirm;
+                void run(
+                  () => gitApplyPatch(repoRoot, patch, false, true),
+                  hunkNotice("discarded", count),
+                );
+                break;
+              }
               case "deleteRemoteBranch": {
                 const { remote, branch } = confirm;
                 void run(
@@ -1165,592 +1301,6 @@ function CommitFileList({
   );
 }
 
-// --- working tree tab -------------------------------------------------------
-
-type Grp = "staged" | "unstaged" | "untracked";
-
-/** A displayed status row: its `rowId` is `<group>:<path>` so a file modified both
- *  staged and unstaged is two distinct selectable rows (and Shift-range stays in
- *  visual order). Selection is over these ids; actions resolve them back to paths. */
-interface StatusRowItem {
-  rowId: string;
-  entry: StatusEntry;
-  group: Grp;
-}
-
-function StatusTab({
-  repoRoot,
-  orientation,
-  actions,
-  status,
-  stashes,
-  head,
-  hasUpstream,
-  committedAt,
-  onCommit,
-  busy,
-  onStage,
-  onUnstage,
-  onDiscard,
-  onStashPush,
-  onStashPop,
-  onStashDrop,
-}: {
-  repoRoot: string;
-  orientation: Orientation;
-  actions: PanelActions;
-  status: StatusEntry[];
-  stashes: Stash[];
-  head: HeadCommit | null;
-  hasUpstream: boolean;
-  committedAt: number;
-  onCommit: (req: CommitRequest) => void;
-  busy: boolean;
-  onStage: (paths: string[]) => void;
-  onUnstage: (paths: string[]) => void;
-  onDiscard: (tracked: string[], untracked: string[]) => void;
-  onStashPush: (message: string | null, includeUntracked: boolean) => void;
-  onStashPop: (reference: string) => void;
-  onStashDrop: (stash: Stash) => void;
-}) {
-  // `menu` is the open context menu; the `anchor` below is the *selection* pivot,
-  // an older and entirely separate thing.
-  const { anchor: menu, openMenu, closeMenu } = useContextMenu();
-  // The lead row drives the diff pane (the last-clicked file). `selected` holds the
-  // multi-selection (rowIds); `anchor` is the pivot for Shift-range.
-  const [selected, setSelected] = useState<Set<string>>(new Set());
-  const [anchor, setAnchor] = useState<string | null>(null);
-  const [lead, setLead] = useState<string | null>(null);
-  const [diff, setDiff] = useState<string | null>(null);
-
-  const { staged, unstaged, untracked, rows } = useMemo(() => {
-    const staged = status.filter((e) => e.index !== " " && e.index !== "?");
-    const unstaged = status.filter((e) => e.worktree !== " " && e.index !== "?");
-    const untracked = status.filter((e) => e.untracked);
-    const rows: StatusRowItem[] = [];
-    for (const e of staged) rows.push({ rowId: `staged:${e.path}`, entry: e, group: "staged" });
-    for (const e of unstaged) rows.push({ rowId: `unstaged:${e.path}`, entry: e, group: "unstaged" });
-    for (const e of untracked) rows.push({ rowId: `untracked:${e.path}`, entry: e, group: "untracked" });
-    return { staged, unstaged, untracked, rows };
-  }, [status]);
-
-  // As status refreshes (e.g. after staging), prune the selection/anchor/lead to
-  // rows that still exist; default the lead to the first row so the diff pane fills.
-  useEffect(() => {
-    const ids = new Set(rows.map((r) => r.rowId));
-    setSelected((prev) => new Set([...prev].filter((id) => ids.has(id))));
-    setAnchor((prev) => (prev && ids.has(prev) ? prev : null));
-    setLead((prev) => (prev && ids.has(prev) ? prev : rows[0]?.rowId ?? null));
-  }, [rows]);
-
-  const leadEntry = rows.find((r) => r.rowId === lead)?.entry ?? null;
-  const leadPath = leadEntry?.path ?? null;
-  const leadUntracked = leadEntry?.untracked ?? false;
-
-  // The lead file's diff vs HEAD (combined staged+unstaged — the review view).
-  useEffect(() => {
-    if (!leadPath) {
-      setDiff(null);
-      return;
-    }
-    let alive = true;
-    void instanceFileDiff(repoRoot, "HEAD", leadPath, leadUntracked)
-      .then((d) => alive && setDiff(d.binary ? "" : d.text))
-      .catch((err) => alive && setDiff(String(err)));
-    return () => {
-      alive = false;
-    };
-  }, [repoRoot, leadPath, leadUntracked]);
-
-  // Click selection with Ctrl (toggle one) / Shift (range from the anchor) / plain
-  // (select just this row). All three set the lead to the clicked row.
-  const onRowClick = (rowId: string, e: React.MouseEvent) => {
-    const ids = rows.map((r) => r.rowId);
-    if (e.shiftKey && anchor && ids.includes(anchor)) {
-      const a = ids.indexOf(anchor);
-      const b = ids.indexOf(rowId);
-      const [lo, hi] = a < b ? [a, b] : [b, a];
-      setSelected(new Set(ids.slice(lo, hi + 1)));
-      setLead(rowId);
-    } else if (e.ctrlKey || e.metaKey) {
-      setSelected((prev) => {
-        const next = new Set(prev);
-        if (next.has(rowId)) next.delete(rowId);
-        else next.add(rowId);
-        return next;
-      });
-      setAnchor(rowId);
-      setLead(rowId);
-    } else {
-      setSelected(new Set([rowId]));
-      setAnchor(rowId);
-      setLead(rowId);
-    }
-  };
-
-  // The selection resolved to paths, bucketed for the action bar. Unstage only
-  // targets staged rows; discard splits tracked (→ revert) from untracked (→ clean).
-  const selRows = rows.filter((r) => selected.has(r.rowId));
-  const selPaths = [...new Set(selRows.map((r) => r.entry.path))];
-  const selStaged = [...new Set(selRows.filter((r) => r.group === "staged").map((r) => r.entry.path))];
-  const selUntracked = [...new Set(selRows.filter((r) => r.entry.untracked).map((r) => r.entry.path))];
-  const untrackedSet = new Set(selUntracked);
-  const selTracked = selPaths.filter((p) => !untrackedSet.has(p));
-
-  // The menu's file items go through the tab's own callbacks, which are the ones
-  // the hover glyphs and the selection bar already use — so "discard" from a menu
-  // is the same confirmed operation as "discard" from the row.
-  const fileActions: FileActions = {
-    busy,
-    stage: onStage,
-    unstage: onUnstage,
-    discard: onDiscard,
-    copy: actions.copy,
-    abs: actions.abs,
-    openInEditor: actions.openInEditor,
-    reveal: actions.reveal,
-    ignore: actions.ignore,
-  };
-
-  // Right-clicking *inside* the selection acts on all of it; right-clicking
-  // outside replaces the selection with that one row first, so what the menu is
-  // about to touch is always what's highlighted when it opens.
-  const onRowMenu = (rowId: string, e: React.MouseEvent) => {
-    const row = rows.find((r) => r.rowId === rowId);
-    if (!row) return;
-    const inSelection = selected.has(rowId);
-    if (!inSelection) {
-      setSelected(new Set([rowId]));
-      setAnchor(rowId);
-    }
-    setLead(rowId);
-
-    const target = inSelection ? rows.filter((r) => selected.has(r.rowId)) : [row];
-    const paths = [...new Set(target.map((r) => r.entry.path))];
-    const untracked = [...new Set(target.filter((r) => r.entry.untracked).map((r) => r.entry.path))];
-    const untrackedInTarget = new Set(untracked);
-    const { entry } = row;
-    openMenu(
-      e,
-      fileRowMenu(
-        {
-          path: entry.path,
-          paths,
-          staged: [...new Set(target.filter((r) => r.group === "staged").map((r) => r.entry.path))],
-          tracked: paths.filter((p) => !untrackedInTarget.has(p)),
-          untracked,
-          deleted: !entry.untracked && (entry.index === "D" || entry.worktree === "D"),
-          isUntracked: entry.untracked,
-          conflicted: entry.index === "U" || entry.worktree === "U",
-        },
-        fileActions,
-      ),
-    );
-  };
-
-  const narrow = orientation === "narrow";
-
-  // `minWidth: 0` on the column: without it the diff pane's min-content width
-  // inflates it, and the commit box — sized to it — runs its buttons off the right
-  // edge of a narrow panel.
-  return (
-    <div style={{ flex: 1, display: "flex", flexDirection: "column", minHeight: 0, minWidth: 0 }}>
-      <Splitter
-        id="status.files"
-        orientation={orientation}
-        direction={narrow ? "column" : "row"}
-        defaultSize={narrow ? 190 : 280}
-        minFirst={narrow ? 70 : 160}
-        minSecond={narrow ? 90 : 200}
-        collapsible
-        secondLabel="diff"
-        first={
-          <>
-            {selected.size > 0 && (
-              <SelectionBar
-                count={selected.size}
-                busy={busy}
-                canUnstage={selStaged.length > 0}
-                onStage={() => onStage(selPaths)}
-                onUnstage={() => onUnstage(selStaged)}
-                onDiscard={() => onDiscard(selTracked, selUntracked)}
-                onClear={() => {
-                  setSelected(new Set());
-                  setAnchor(null);
-                }}
-              />
-            )}
-            <div style={{ flex: 1, overflow: "auto", minHeight: 0, background: "var(--wb-panel)" }}>
-              {status.length === 0 ? (
-                <div style={{ padding: "10px 12px", font: "11px var(--wb-mono)", color: "var(--wb-done)" }}>
-                  {GLYPH.ok} working tree clean
-                </div>
-              ) : (
-                <>
-                  {staged.length > 0 && (
-                    <StatusGroup
-                      label="staged"
-                      group="staged"
-                      entries={staged}
-                      selected={selected}
-                      lead={lead}
-                      onRowClick={onRowClick}
-                      onRowMenu={onRowMenu}
-                      busy={busy}
-                      actionLabel="unstage"
-                      onAction={(e) => onUnstage([e.path])}
-                      onBulk={() => onUnstage(staged.map((e) => e.path))}
-                    />
-                  )}
-                  {unstaged.length > 0 && (
-                    <StatusGroup
-                      label="unstaged"
-                      group="unstaged"
-                      entries={unstaged}
-                      selected={selected}
-                      lead={lead}
-                      onRowClick={onRowClick}
-                      onRowMenu={onRowMenu}
-                      busy={busy}
-                      actionLabel="stage"
-                      onAction={(e) => onStage([e.path])}
-                      onBulk={() => onStage(unstaged.map((e) => e.path))}
-                      onDiscardEntry={(e) => onDiscard([e.path], [])}
-                    />
-                  )}
-                  {untracked.length > 0 && (
-                    <StatusGroup
-                      label="untracked"
-                      group="untracked"
-                      entries={untracked}
-                      selected={selected}
-                      lead={lead}
-                      onRowClick={onRowClick}
-                      onRowMenu={onRowMenu}
-                      busy={busy}
-                      actionLabel="stage"
-                      onAction={(e) => onStage([e.path])}
-                      onBulk={() => onStage(untracked.map((e) => e.path))}
-                      onDiscardEntry={(e) => onDiscard([], [e.path])}
-                    />
-                  )}
-                </>
-              )}
-              <StashSection
-                stashes={stashes}
-                busy={busy}
-                hasChanges={status.length > 0}
-                onStashPush={onStashPush}
-                onStashPop={onStashPop}
-                onStashDrop={onStashDrop}
-                onStashMenu={(stash, e) =>
-                  openMenu(
-                    e,
-                    stashRowMenu(stash, {
-                      busy,
-                      pop: onStashPop,
-                      apply: actions.stashApply,
-                      show: actions.stashShow,
-                      branch: actions.stashBranch,
-                      drop: onStashDrop,
-                      copy: actions.copy,
-                    }),
-                  )
-                }
-              />
-            </div>
-          </>
-        }
-        second={
-          !lead ? (
-            <Empty>select a file</Empty>
-          ) : diff === null ? (
-            <Empty>reading diff…</Empty>
-          ) : diff.trim() === "" ? (
-            <Empty>{GLYPH.warn} no textual diff</Empty>
-          ) : (
-            <UnifiedDiff text={diff} />
-          )
-        }
-      />
-      {/* Docked full-width under both panes at every width: even wide, the file
-          column is too narrow to write a commit message in, and stacking it under
-          the diff would put it below the fold in a narrow column. */}
-      <CommitBox
-        repoRoot={repoRoot}
-        stagedCount={new Set(staged.map((e) => e.path)).size}
-        trackedDirtyCount={new Set(unstaged.map((e) => e.path)).size}
-        head={head}
-        hasUpstream={hasUpstream}
-        busy={busy}
-        committedAt={committedAt}
-        onCommit={onCommit}
-      />
-      {menu && <ContextMenu {...menu} onClose={closeMenu} />}
-    </div>
-  );
-}
-
-/** The bulk-action bar shown above the file list once ≥1 file is selected — the
- *  obvious path for acting on a Ctrl/Shift multi-selection. */
-function SelectionBar({
-  count,
-  busy,
-  canUnstage,
-  onStage,
-  onUnstage,
-  onDiscard,
-  onClear,
-}: {
-  count: number;
-  busy: boolean;
-  canUnstage: boolean;
-  onStage: () => void;
-  onUnstage: () => void;
-  onDiscard: () => void;
-  onClear: () => void;
-}) {
-  return (
-    <div
-      style={{
-        flex: "0 0 auto",
-        display: "flex",
-        alignItems: "center",
-        gap: 8,
-        flexWrap: "wrap",
-        padding: "5px 12px",
-        borderBottom: "1px solid var(--wb-border)",
-        background: "var(--wb-titlebar)",
-        font: "10.5px var(--wb-mono)",
-      }}
-    >
-      <span style={{ color: "var(--wb-text)" }}>{count} selected</span>
-      <span style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 11 }}>
-        <HeaderButton onClick={onStage} disabled={busy} accent>
-          + stage
-        </HeaderButton>
-        <HeaderButton onClick={onUnstage} disabled={busy || !canUnstage}>
-          − unstage
-        </HeaderButton>
-        <HeaderButton onClick={onDiscard} disabled={busy} danger>
-          ⨯ discard
-        </HeaderButton>
-        <HeaderButton onClick={onClear} disabled={busy}>
-          clear
-        </HeaderButton>
-      </span>
-    </div>
-  );
-}
-
-function StatusGroup({
-  label,
-  group,
-  entries,
-  selected,
-  lead,
-  onRowClick,
-  onRowMenu,
-  busy,
-  actionLabel,
-  onAction,
-  onBulk,
-  onDiscardEntry,
-}: {
-  label: string;
-  group: Grp;
-  entries: StatusEntry[];
-  selected: Set<string>;
-  lead: string | null;
-  onRowClick: (rowId: string, e: React.MouseEvent) => void;
-  onRowMenu: (rowId: string, e: React.MouseEvent) => void;
-  busy: boolean;
-  actionLabel: string;
-  onAction: (entry: StatusEntry) => void;
-  onBulk: () => void;
-  onDiscardEntry?: (entry: StatusEntry) => void;
-}) {
-  return (
-    <div>
-      <SectionHead>
-        {label} <span style={{ color: "var(--wb-textFaint)" }}>{entries.length}</span>
-        <button onClick={onBulk} disabled={busy} style={miniActionStyle}>
-          {actionLabel} all
-        </button>
-      </SectionHead>
-      {entries.map((e) => {
-        const rowId = `${group}:${e.path}`;
-        return (
-          <StatusRow
-            key={rowId}
-            entry={e}
-            picked={selected.has(rowId)}
-            lead={rowId === lead}
-            onClick={(ev) => onRowClick(rowId, ev)}
-            onMenu={(ev) => onRowMenu(rowId, ev)}
-            busy={busy}
-            actionLabel={actionLabel}
-            onAction={() => onAction(e)}
-            onDiscard={onDiscardEntry ? () => onDiscardEntry(e) : undefined}
-          />
-        );
-      })}
-    </div>
-  );
-}
-
-function StatusRow({
-  entry,
-  picked,
-  lead,
-  onClick,
-  onMenu,
-  busy,
-  actionLabel,
-  onAction,
-  onDiscard,
-}: {
-  entry: StatusEntry;
-  /** In the multi-selection (highlighted background). */
-  picked: boolean;
-  /** The lead row driving the diff pane (highlighted left bar). */
-  lead: boolean;
-  onClick: (e: React.MouseEvent) => void;
-  onMenu: (e: React.MouseEvent) => void;
-  busy: boolean;
-  actionLabel: string;
-  onAction: () => void;
-  onDiscard?: () => void;
-}) {
-  const [hover, setHover] = useState(false);
-  // The most telling status char for the glyph: staged side if present, else worktree.
-  const ch = entry.untracked ? "?" : entry.index !== " " ? entry.index : entry.worktree;
-  return (
-    <div
-      onMouseEnter={() => setHover(true)}
-      onMouseLeave={() => setHover(false)}
-      onClick={onClick}
-      onContextMenu={onMenu}
-      style={{
-        display: "flex",
-        alignItems: "center",
-        gap: 7,
-        padding: "3px 12px",
-        borderLeft: `2px solid ${lead ? "var(--wb-selBar)" : "transparent"}`,
-        background: picked ? "var(--wb-sel)" : "transparent",
-        cursor: "pointer",
-        font: "11px var(--wb-mono)",
-        // Stop Shift-click from text-selecting the file names as a range is picked.
-        userSelect: "none",
-      }}
-    >
-      <span style={{ flex: "0 0 auto", width: 9, color: statusCharColor(ch) }}>{ch}</span>
-      <span style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: picked || lead ? "var(--wb-text)" : "var(--wb-textDim2)" }} title={entry.path}>
-        {entry.path}
-      </span>
-      <span style={{ flex: "0 0 auto", display: "flex", gap: 8, visibility: hover ? "visible" : "hidden" }}>
-        <RowAction onClick={(ev) => { ev?.stopPropagation(); onAction(); }} label={actionLabel} disabled={busy}>
-          {actionLabel === "stage" ? "+" : "−"}
-        </RowAction>
-        {onDiscard && (
-          <RowAction onClick={(ev) => { ev?.stopPropagation(); onDiscard(); }} label="discard changes" disabled={busy} danger>
-            ⨯
-          </RowAction>
-        )}
-      </span>
-    </div>
-  );
-}
-
-function StashSection({
-  stashes,
-  busy,
-  hasChanges,
-  onStashPush,
-  onStashPop,
-  onStashDrop,
-  onStashMenu,
-}: {
-  stashes: Stash[];
-  busy: boolean;
-  hasChanges: boolean;
-  onStashPush: (message: string | null, includeUntracked: boolean) => void;
-  onStashPop: (reference: string) => void;
-  onStashDrop: (stash: Stash) => void;
-  onStashMenu: (stash: Stash, e: React.MouseEvent) => void;
-}) {
-  // A real collapsible section (G2) instead of the old `marginTop: auto`, which
-  // pinned it to the bottom of the scroll box and fought the file list for height.
-  // Until you toggle it, it follows its contents: open when there's a stash to see.
-  const [open, setOpen] = useState(() => readSection("stash", stashes.length > 0));
-  const toggle = () => {
-    setOpen(!open);
-    writeSection("stash", !open);
-  };
-  return (
-    <div style={{ borderTop: "1px solid var(--wb-border)" }}>
-      <SectionHead open={open} onToggle={toggle}>
-        stashes <span style={{ color: "var(--wb-textFaint)" }}>{stashes.length}</span>
-        <button onClick={() => onStashPush(null, true)} disabled={busy || !hasChanges} style={miniActionStyle} title="stash all changes (incl. untracked)">
-          stash
-        </button>
-      </SectionHead>
-      {open &&
-        (stashes.length === 0 ? (
-          <div style={{ padding: "3px 14px 8px", font: "10px var(--wb-mono)", color: "var(--wb-textFaint)" }}>no stashes</div>
-        ) : (
-          stashes.map((s) => (
-            <StashRow
-              key={s.reference}
-              stash={s}
-              busy={busy}
-              onPop={() => onStashPop(s.reference)}
-              onDrop={() => onStashDrop(s)}
-              onMenu={(e) => onStashMenu(s, e)}
-            />
-          ))
-        ))}
-    </div>
-  );
-}
-
-function StashRow({
-  stash,
-  busy,
-  onPop,
-  onDrop,
-  onMenu,
-}: {
-  stash: Stash;
-  busy: boolean;
-  onPop: () => void;
-  onDrop: () => void;
-  onMenu: (e: React.MouseEvent) => void;
-}) {
-  const [hover, setHover] = useState(false);
-  return (
-    <div
-      onMouseEnter={() => setHover(true)}
-      onMouseLeave={() => setHover(false)}
-      onContextMenu={onMenu}
-      style={{ display: "flex", alignItems: "center", gap: 7, padding: "3px 12px", font: "10.5px var(--wb-mono)" }}
-    >
-      <span style={{ flex: "0 0 auto", color: "var(--wb-accent)" }}>{stash.reference}</span>
-      <span style={{ flex: 1, minWidth: 0, color: "var(--wb-textDim2)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={stash.message}>
-        {stash.message}
-      </span>
-      <span style={{ flex: "0 0 auto", display: "flex", gap: 8, visibility: hover ? "visible" : "hidden" }}>
-        <RowAction onClick={onPop} label="pop stash" disabled={busy}>
-          ⇣
-        </RowAction>
-        <RowAction onClick={onDrop} label="drop stash" disabled={busy} danger>
-          {GLYPH.fail}
-        </RowAction>
-      </span>
-    </div>
-  );
-}
-
 // --- dialogs ----------------------------------------------------------------
 
 function ConfirmDialog({
@@ -1818,6 +1368,19 @@ function describeConfirm(c: Confirm): { title: string; body: React.ReactNode; la
             Force-delete branch{" "}
             <strong style={{ color: "var(--wb-accent)", fontFamily: "var(--wb-mono)" }}>{c.name}</strong>? Unmerged
             commits on it will be lost.
+          </>
+        ),
+      };
+    case "discardHunks":
+      return {
+        title: "discard hunks",
+        label: `${GLYPH.fail} discard`,
+        danger: true,
+        body: (
+          <>
+            Discard {c.count === 1 ? "this hunk" : `these ${c.count} hunks`} from the working tree? The
+            lines go back to what the index holds — they aren't committed anywhere, so this can't be
+            undone.
           </>
         ),
       };

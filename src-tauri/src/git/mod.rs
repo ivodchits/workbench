@@ -1823,6 +1823,159 @@ pub fn git_repo_state(repo_root: String) -> Result<RepoState, String> {
     Ok(RepoState { operation: operation.map(str::to_owned) })
 }
 
+// --- working tree: side-scoped diffs + hunk staging (step G5) ----------------
+// Hunk staging is the feature that needs the *sides* kept apart. Until now the
+// working-tree tab read one diff per file — `git diff HEAD` — which is the right
+// thing to review but the wrong thing to apply from: a hunk cut out of a
+// HEAD-based diff describes a file that may already be half-staged, and
+// `git apply --cached` would be applying it against an index that doesn't match.
+//
+// So `git_file_diff` reads exactly one side (index→worktree, or HEAD→index), and
+// `git_apply_patch` feeds a patch built from that side's hunks back to the same
+// side. Old-side line numbers in each hunk are then exact, which is what lets the
+// panel ship the selected hunks *verbatim* instead of renumbering them.
+
+/// Run git with `input` on stdin, returning its whole output (stdout + stderr) on
+/// failure the way `git_run_full` does — `git apply` says which line of the patch
+/// it choked on, and that's the only useful thing to show when it does.
+///
+/// The write completes before we read, which would deadlock against a child that
+/// filled its stdout pipe first. Safe for `git apply`: the patch is one file's
+/// diff and the reply is a line or two of error.
+fn git_run_stdin(path: &Path, args: &[&str], input: &str) -> Result<String, String> {
+    use std::io::Write;
+    use std::process::Stdio;
+
+    let mut cmd = Command::new("git");
+    cmd.arg("-C")
+        .arg(path)
+        .args(args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    let mut child = cmd.spawn().map_err(|e| format!("failed to run git: {e}"))?;
+    {
+        let mut stdin = child
+            .stdin
+            .take()
+            .ok_or_else(|| "git took no stdin".to_owned())?;
+        stdin
+            .write_all(input.as_bytes())
+            .map_err(|e| format!("failed to send the patch to git: {e}"))?;
+        // Dropped here — git waits for EOF before it starts applying.
+    }
+    let out = child
+        .wait_with_output()
+        .map_err(|e| format!("failed to run git: {e}"))?;
+    let stdout = String::from_utf8_lossy(&out.stdout).trim().to_owned();
+    let stderr = String::from_utf8_lossy(&out.stderr).trim().to_owned();
+    if out.status.success() {
+        return Ok(if stdout.is_empty() { stderr } else { stdout });
+    }
+    let joined = [stderr, stdout]
+        .into_iter()
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n");
+    Err(if joined.is_empty() {
+        format!("git {} failed", args.first().copied().unwrap_or("command"))
+    } else {
+        joined
+    })
+}
+
+/// One working-tree file's diff for **one side** (G5).
+///
+/// * `staged: false` — `git diff -- <path>`: index → working tree. Its hunks are
+///   what "stage this hunk" applies (`--cached`).
+/// * `staged: true` — `git diff --cached -- <path>`: HEAD → index. Its hunks are
+///   what "unstage this hunk" applies in reverse.
+/// * `untracked` — no side to diff against, so the same all-added synthesis the
+///   review panel uses. Not applyable, and the panel says so.
+#[tauri::command]
+pub fn git_file_diff(
+    repo_root: String,
+    path: String,
+    staged: bool,
+    untracked: bool,
+) -> Result<FileDiff, String> {
+    let root = Path::new(&repo_root);
+    if untracked {
+        let (text, binary) = synth_added_diff(&root.join(&path));
+        return Ok(FileDiff { path, base: "∅".into(), text, binary, untracked: true });
+    }
+    // `core.quotePath=false` for the guardrail's reason *and* a second one here: a
+    // C-quoted path in the `diff --git` header would come back around as a patch
+    // git apply couldn't match to a file.
+    let mut args = vec!["-c", "core.quotePath=false", "diff"];
+    if staged {
+        args.push("--cached");
+    }
+    args.push("--");
+    args.push(&path);
+    let out = git_stdout(root, &args).unwrap_or_default();
+    let binary = out.contains("Binary files ");
+    Ok(FileDiff {
+        text: if binary { String::new() } else { out },
+        path,
+        base: if staged { "HEAD".into() } else { "index".into() },
+        binary,
+        untracked: false,
+    })
+}
+
+/// Apply a patch the panel built from selected hunks (G5).
+///
+/// The four combinations the working-tree tab uses:
+///
+/// | intent | `cached` | `reverse` |
+/// |---|---|---|
+/// | stage a hunk | true | false |
+/// | unstage a hunk | true | true |
+/// | discard a hunk | false | true |
+///
+/// (`cached: false, reverse: false` — applying a patch to the working tree — isn't
+/// reachable from the panel, but the command doesn't forbid it.)
+///
+/// Rejects with git's own message, which names the patch line it failed on. That's
+/// the honest failure here: it means the file moved under the panel between the
+/// read and the click, and re-reading is the fix.
+#[tauri::command]
+pub fn git_apply_patch(
+    repo_root: String,
+    patch: String,
+    cached: bool,
+    reverse: bool,
+) -> Result<String, String> {
+    if patch.trim().is_empty() {
+        return Err("nothing to apply".into());
+    }
+    // `--whitespace=nowarn`: the patch came out of `git diff` moments ago, so any
+    // whitespace git would complain about is already in the file — warning about it
+    // (or worse, "fixing" it) would corrupt a straight round trip.
+    let mut args = vec!["apply", "--whitespace=nowarn"];
+    if cached {
+        args.push("--cached");
+    }
+    if reverse {
+        args.push("--reverse");
+    }
+    args.push("-");
+    // git rejects a patch whose last line has no newline ("corrupt patch at line N"),
+    // and a trimmed-in-transit patch is easy to arrive at from the UI side.
+    let mut text = patch;
+    if !text.ends_with('\n') {
+        text.push('\n');
+    }
+    git_run_stdin(Path::new(&repo_root), &args, &text)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2549,6 +2702,131 @@ mod tests {
             "but the branch *this* worktree has out isn't 'held elsewhere': {head:?}"
         );
         assert!(!head.subject.is_empty(), "and every row carries its tip subject");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A tracked file with a committed body, one staged edit and one unstaged edit
+    /// on top of it — the state that makes the two diff sides differ. Returns false
+    /// (skip) when git is missing.
+    fn half_staged_repo(dir: &Path) -> bool {
+        if !init_repo(dir) {
+            return false;
+        }
+        // Twelve lines so two edits at opposite ends land in two separate hunks
+        // (default context is 3 lines).
+        let base: String = (1..=12).map(|n| format!("line {n}\n")).collect();
+        std::fs::write(dir.join("a.txt"), &base).unwrap();
+        git_run(dir, &["add", "."]).unwrap();
+        git_run(dir, &["commit", "-qm", "seed"]).unwrap();
+        true
+    }
+
+    #[test]
+    fn file_diff_reads_one_side_at_a_time() {
+        let dir = temp_dir("g5-sides");
+        if !half_staged_repo(&dir) {
+            std::fs::remove_dir_all(&dir).ok();
+            return;
+        }
+        let root = dir.to_string_lossy().into_owned();
+
+        // Stage one edit, then make a second one that stays unstaged.
+        std::fs::write(dir.join("a.txt"), "STAGED\n".to_owned() + &(2..=12).map(|n| format!("line {n}\n")).collect::<String>()).unwrap();
+        git_run(&dir, &["add", "a.txt"]).unwrap();
+        std::fs::write(dir.join("a.txt"), "STAGED\n".to_owned() + &(2..=11).map(|n| format!("line {n}\n")).collect::<String>() + "WORKTREE\n").unwrap();
+
+        let staged = git_file_diff(root.clone(), "a.txt".into(), true, false).unwrap();
+        assert!(staged.text.contains("+STAGED"), "the staged side has the first edit: {}", staged.text);
+        assert!(!staged.text.contains("WORKTREE"), "and not the second one: {}", staged.text);
+
+        let unstaged = git_file_diff(root, "a.txt".into(), false, false).unwrap();
+        assert!(unstaged.text.contains("+WORKTREE"), "the unstaged side has the second edit: {}", unstaged.text);
+        assert!(!unstaged.text.contains("+STAGED"), "and not the first one: {}", unstaged.text);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// The point of the step: stage *part* of a file's changes and leave the rest
+    /// unstaged, then put it back. The patch is the preamble plus one hunk, sliced
+    /// out verbatim — exactly what the panel's builder does.
+    #[test]
+    fn applying_one_hunk_stages_it_and_leaves_the_other_alone() {
+        let dir = temp_dir("g5-hunk");
+        if !half_staged_repo(&dir) {
+            std::fs::remove_dir_all(&dir).ok();
+            return;
+        }
+        let root = dir.to_string_lossy().into_owned();
+
+        // Two edits, first and last line — far enough apart to be two hunks.
+        let edited = "FIRST\n".to_owned()
+            + &(2..=11).map(|n| format!("line {n}\n")).collect::<String>()
+            + "LAST\n";
+        std::fs::write(dir.join("a.txt"), &edited).unwrap();
+
+        let diff = git_file_diff(root.clone(), "a.txt".into(), false, false).unwrap().text;
+        let at = diff.match_indices("\n@@").map(|(i, _)| i + 1).collect::<Vec<_>>();
+        assert_eq!(at.len(), 2, "two hunks to choose between: {diff}");
+        let first_hunk_only = diff[..at[1]].to_owned();
+
+        git_apply_patch(root.clone(), first_hunk_only.clone(), true, false).unwrap();
+
+        let staged = git_file_diff(root.clone(), "a.txt".into(), true, false).unwrap().text;
+        assert!(staged.contains("+FIRST"), "the picked hunk is in the index: {staged}");
+        assert!(!staged.contains("+LAST"), "and only that one: {staged}");
+        let left = git_file_diff(root.clone(), "a.txt".into(), false, false).unwrap().text;
+        assert!(left.contains("+LAST"), "the other hunk is still unstaged: {left}");
+        assert_eq!(
+            std::fs::read_to_string(dir.join("a.txt")).unwrap().replace("\r\n", "\n"),
+            edited,
+            "and staging never touches the file on disk"
+        );
+
+        // Unstaging is the same patch applied to the index in reverse.
+        git_apply_patch(root.clone(), first_hunk_only, true, true).unwrap();
+        assert!(
+            git_file_diff(root.clone(), "a.txt".into(), true, false).unwrap().text.is_empty(),
+            "nothing staged again"
+        );
+
+        // Discarding is the reverse applied to the *working tree*: the second hunk
+        // goes back to the index's version, the first stays.
+        let both = git_file_diff(root.clone(), "a.txt".into(), false, false).unwrap().text;
+        let split = both.match_indices("\n@@").map(|(i, _)| i + 1).collect::<Vec<_>>();
+        let last_hunk = both[..split[0]].to_owned() + &both[split[1]..];
+        git_apply_patch(root, last_hunk, false, true).unwrap();
+        let on_disk = std::fs::read_to_string(dir.join("a.txt")).unwrap().replace("\r\n", "\n");
+        assert!(on_disk.starts_with("FIRST\n"), "the untouched hunk survived: {on_disk}");
+        assert!(on_disk.ends_with("line 12\n"), "the discarded one reverted: {on_disk}");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn applying_a_patch_that_no_longer_fits_says_so() {
+        let dir = temp_dir("g5-stale");
+        if !half_staged_repo(&dir) {
+            std::fs::remove_dir_all(&dir).ok();
+            return;
+        }
+        let root = dir.to_string_lossy().into_owned();
+        std::fs::write(dir.join("a.txt"), "changed\n").unwrap();
+        let diff = git_file_diff(root.clone(), "a.txt".into(), false, false).unwrap().text;
+
+        // Something else stages a different edit to the same lines — an agent
+        // committing under the panel is exactly the case this has to survive. The
+        // patch describes an index that no longer exists.
+        std::fs::write(dir.join("a.txt"), "elsewhere\n").unwrap();
+        git_run(&dir, &["add", "a.txt"]).unwrap();
+
+        let err = git_apply_patch(root.clone(), diff, true, false).unwrap_err();
+        assert!(!err.is_empty(), "git's own message comes back, not a silent success");
+        let staged = git_file_diff(root, "a.txt".into(), true, false).unwrap().text;
+        assert!(
+            staged.contains("+elsewhere") && !staged.contains("+changed"),
+            "and nothing was half-applied over it: {staged}"
+        );
 
         std::fs::remove_dir_all(&dir).ok();
     }

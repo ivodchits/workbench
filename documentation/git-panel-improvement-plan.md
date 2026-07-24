@@ -303,7 +303,7 @@ and should be preserved.
 
 ---
 
-### Step G5 — Selection flexibility + keyboard-first
+### Step G5 — Selection flexibility + keyboard-first ✅ *(landed)*
 
 - **Goal:** The flexibility ask, plus the §5 keyboard-first requirement that Step 3.11 left
   unbuilt.
@@ -335,6 +335,38 @@ and should be preserved.
   a filter + select-all-matching stages a subset in two gestures; a single hunk can be staged
   while the rest of the file stays unstaged; git actions appear in the palette with bindings.
 - **Out of scope:** line-level staging; drag-select.
+- **As built:** the tab moved to `StatusTab.tsx` and `index.tsx` lost ~590 lines on the way.
+
+  **One backend command more than planned.** Hunk staging forced a change the plan didn't
+  name: the diff pane used to read `git diff HEAD` — both sides at once — and a hunk cut out
+  of *that* describes a file that may already be half-staged, so `git apply --cached` would be
+  applying it against an index it doesn't match. `git_file_diff(repoRoot, path, staged,
+  untracked)` reads **one side** (index→worktree, or HEAD→index) and `git_apply_patch` feeds
+  the picked hunks back to that same side, which is what makes the hunks applyable *verbatim*,
+  headers and line numbers untouched — the renumbering that partial-staging implementations
+  usually get wrong never happens. The visible consequence: clicking a file's staged row and
+  its unstaged row now shows two different diffs, which is also the honest answer to "what
+  will this commit take".
+
+  Hunk actions are per-side, so nothing offers an impossible one: an unstaged hunk can be
+  staged or discarded, a staged hunk can be unstaged, and an untracked file has no hunk layer
+  at all (its "diff" is a synthesis with no blob for git to match). Discarding is the only one
+  behind a confirm — it's the only one that destroys work that exists nowhere else.
+
+  **Palette.** `CommandPalette.tsx` needed no change: it renders whatever the keymap holds, so
+  nine `git…` bindings in `keymap.ts` were the whole job. Only two ship *bound*
+  (`Ctrl+Shift+M` write a commit message, `Ctrl+Shift+F` filter the files) — global chords are
+  a scarce shared resource with the terminal, and the keyboard that matters here is the local
+  one on the file list. The rest are unbound and assignable. The commands are panel-level
+  only: the palette can't see a row selection, so it doesn't pretend to act on one. The panel
+  claims them on mount *and* on activation, so with two Git panels open the one you last
+  touched answers; a command run from elsewhere brings its panel forward first.
+
+  Two smaller judgement calls worth knowing: collapsing a folder in the tree hides rows
+  without deselecting them (selection resolves against the filtered set, keyboard order
+  against the visible one), and Space on a mixed selection **stages the part that isn't
+  staged** rather than doing nothing — it only unstages when everything picked is already
+  staged.
 
 ---
 
@@ -345,10 +377,12 @@ and should be preserved.
 - **Design refs:** `§5` (Git → Working tree).
 - **Build:**
   - **Fix the classification bug.** A conflicted file (`UU`, `AA`, `DU`, `UD`, `AU`, `UA`)
-    currently satisfies *both* filters at `index.tsx:772-774` and renders in the staged **and**
-    unstaged groups, uncoloured (`statusCharColor`, `:1394`, has no `U` case), and staging it
-    silently marks it resolved with no indication that's what happened. Add an explicit
-    `conflicted` group that takes precedence over both, with its own colour.
+    still satisfies *both* filters in the `groups` memo (now `StatusTab.tsx`, moved there by
+    G5) and renders in the staged **and** unstaged groups, uncoloured (`statusCharColor` in
+    `format.ts` has no `U` case), and staging it silently marks it resolved with no indication
+    that's what happened. Add an explicit `conflicted` group that takes precedence over both,
+    with its own colour. Note G5's side-scoped diff pane: a conflicted file's two rows now
+    read the index and worktree sides separately, which is the right surface for this.
   - ~~**Repo-state banner**~~ — *landed in G4*, which needed an abort that survives a panel
     remount: `git_repo_state` reads the git dir for `MERGE_HEAD` / `rebase-merge` /
     `CHERRY_PICK_HEAD` / `REVERT_HEAD` and the banner offers continue / skip / abort. What's left
@@ -443,7 +477,8 @@ and should be preserved.
 | `git_rebase`, `git_rebase_control` | G4 | continue / abort / skip |
 | `git_set_upstream`, `git_delete_remote_branch` | G4 | |
 | ~~`git_remotes`~~, ~~`git_worktree_list`~~ | G4 | folded into `git_branches` — same read, no extra round trip |
-| `git_apply_patch` | G5 | hunk stage/unstage/discard via `--cached` / `--reverse` |
+| `git_apply_patch` | G5 | hunk stage/unstage/discard via `--cached` / `--reverse`, patch on stdin |
+| `git_file_diff` | G5 | one file, **one side** (index→worktree or HEAD→index) — what makes a hunk applyable |
 | `git_repo_state` | ~~G6~~ G4 | mid-merge / rebase / cherry-pick / revert; G4's abort needs it |
 | `git_resolve` | G6 | `checkout --ours/--theirs` + `add` |
 | `git_log` *(extend)* | G7 | search, path filter, date range, ref, skip/pagination |
@@ -510,7 +545,7 @@ provisional wide-layout commit box, then let G2 place it properly.
 - [x] G2 — Responsive layout (vertical/narrow)
 - [x] G3 — Context menus
 - [x] G4 — Branch operations (merge / rebase / upstream)
-- [ ] G5 — Selection flexibility + keyboard-first
+- [x] G5 — Selection flexibility + keyboard-first
 - [ ] G6 — Merge conflicts
 - [ ] G7 — History parity (graph / search / rewrite ops)
 - [ ] G8 — Freshness, targeted refresh, robustness

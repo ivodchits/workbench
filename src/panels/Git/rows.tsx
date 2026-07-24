@@ -108,7 +108,9 @@ export function HeaderButton({
   title,
 }: {
   children: React.ReactNode;
-  onClick: () => void;
+  /** The event is passed through for the buttons that open a menu at the pointer
+   *  (G5's select-by-status); callers that don't care can ignore it. */
+  onClick: (e: React.MouseEvent) => void;
   accent?: boolean;
   danger?: boolean;
   disabled?: boolean;

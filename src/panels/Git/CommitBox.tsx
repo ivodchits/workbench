@@ -39,6 +39,7 @@ export default function CommitBox({
   hasUpstream,
   busy,
   committedAt,
+  focusAt,
   onCommit,
 }: {
   repoRoot: string;
@@ -53,6 +54,9 @@ export default function CommitBox({
   busy: boolean;
   /** Bumped by the shell each time a commit lands, which resets the composer. */
   committedAt: number;
+  /** Bumped when the palette's "write a commit message" runs (G5) — puts the
+   *  caret in the subject line, which is the whole point of that command. */
+  focusAt?: number;
   onCommit: (req: CommitRequest) => void;
 }) {
   const [subject, setSubject] = useState(() => readDraft(repoRoot).subject);
@@ -94,6 +98,15 @@ export default function CommitBox({
     setPrefilled(false);
     clearDraft(repoRoot);
   }, [committedAt, repoRoot]);
+
+  // The palette's route into the composer. Skipped on mount (`focusAt` starts at
+  // 0 and only a dispatch moves it), so opening the tab never steals the caret.
+  const subjectRef = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    if (!focusAt) return;
+    subjectRef.current?.focus();
+    subjectRef.current?.select();
+  }, [focusAt]);
 
   const toggleAmend = (next: boolean) => {
     setAmend(next);
@@ -186,6 +199,7 @@ export default function CommitBox({
             }}
           />
           <input
+            ref={subjectRef}
             value={subject}
             onChange={(e) => setSubject(e.target.value.replace(/[\r\n]+/g, " "))}
             onKeyDown={onKeyDown}
