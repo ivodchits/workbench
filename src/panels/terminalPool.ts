@@ -51,6 +51,10 @@ interface TermEntry {
    *  resolves after spawn. Passed to `ptyResize` (min-size arbitration) and to
    *  `ptyUnsubscribe` in `release`. Undefined until the subscription lands. */
   subId?: number;
+  /** True while a terminal attached to a live PTY is still being filled with its
+   *  replayed scrollback. It is held at the PTY's size until that is done (see
+   *  `acquire`), so nothing may resize it. */
+  replaying?: boolean;
   /** Listener that mirrors the agent's terminal title into the task note; only
    *  attached for claude consoles (see `acquire`). */
   titleSub?: { dispose(): void };
@@ -370,8 +374,38 @@ export function acquire(container: HTMLDivElement, opts: AcquireOptions): void {
   // `release` to unsubscribe.
   let subId: number | undefined;
 
+  // Attaching to a live PTY (step C3): the scrollback it replays was laid out for the
+  // PTY's size, not for whatever this panel measures. Written into a narrower terminal
+  // its lines wrap, the TUI's cursor moves land on the wrong rows, and each redraw is
+  // painted over part of the one before. So the terminal takes the PTY's size first,
+  // the replay goes in at that size, and only then is it fitted to the panel — an
+  // ordinary resize, which xterm reflows and the TUI redraws for. Output that arrives
+  // before the size is known is held back; `received` tells when the replay is all in
+  // (the channel and the subscribe result aren't ordered against each other).
+  let held: Uint8Array[] | null = opts.attach ? [] : null;
+  let received = 0;
+  let replayLen = Infinity;
+  const endReplay = () => {
+    replayLen = Infinity; // once only
+    // The empty write's callback runs after everything queued before it is parsed.
+    term.write("", () => {
+      if (pool.get(opts.instanceId) !== entry) return; // released meanwhile
+      entry.replaying = false;
+      refit(entry);
+      // Vote this terminal's size into the arbitration whether or not the fit
+      // changed it (an unchanged size fires no `onResize`).
+      void ptyResize(opts.instanceId, term.cols, term.rows, subId);
+    });
+  };
+
   const output = new Channel<PtyChunk>();
-  output.onmessage = (chunk) => term.write(new Uint8Array(chunk));
+  output.onmessage = (chunk) => {
+    const bytes = new Uint8Array(chunk);
+    received += bytes.length;
+    if (held) held.push(bytes);
+    else term.write(bytes);
+    if (received >= replayLen) endReplay();
+  };
 
   const dataSub = term.onData((data) => {
     void ptyWrite(opts.instanceId, new TextEncoder().encode(data));
@@ -384,6 +418,8 @@ export function acquire(container: HTMLDivElement, opts: AcquireOptions): void {
     }
   });
   const resizeSub = term.onResize(({ cols, rows }) => {
+    // Taking the PTY's own size for a replay is not a request to resize it.
+    if (pool.get(opts.instanceId)?.replaying) return;
     // Carry the subscription id so this terminal's size joins the PTY's min-size
     // arbitration (step 4.1). Before the subscription lands, `subId` is undefined
     // and the resize falls through to a direct PTY resize — harmless, and the seed
@@ -405,6 +441,7 @@ export function acquire(container: HTMLDivElement, opts: AcquireOptions): void {
   }
 
   const entry: TermEntry = { host, term, fit, dataSub, resizeSub, titleSub };
+  entry.replaying = !!opts.attach;
   pool.set(opts.instanceId, entry);
 
   // Re-sync the viewport whenever the host is shown again after being hidden.
@@ -450,25 +487,25 @@ export function acquire(container: HTMLDivElement, opts: AcquireOptions): void {
   // measure char size; then spawn the child at the fitted dimensions.
   requestAnimationFrame(() => {
     if (!pool.has(opts.instanceId)) return; // released before we got here
-    try {
-      fit.fit();
-    } catch {
-      // not measurable yet; the ResizeObserver will fit shortly.
-    }
     if (opts.attach) {
       // Step 4.2: the PTY is already live (a torn-off window, or a panel being
       // docked back into the main dock). Don't spawn — just attach as another
       // multiplexer subscriber (step 4.1), which replays the ring buffer so this
       // terminal paints the in-flight session. A failure means the child is gone.
+      // No fit yet: the replay goes in at the PTY's size first (see `held` above).
       ptySubscribe(opts.instanceId, output)
-        .then((id) => {
+        .then((sub) => {
           if (pool.get(opts.instanceId) !== entry) {
-            void ptyUnsubscribe(opts.instanceId, id); // released while subscribing
+            void ptyUnsubscribe(opts.instanceId, sub.subId); // released while subscribing
             return;
           }
-          subId = id;
-          entry.subId = id;
-          void ptyResize(opts.instanceId, term.cols, term.rows, id);
+          subId = sub.subId;
+          entry.subId = sub.subId;
+          term.resize(sub.cols, sub.rows);
+          for (const bytes of held ?? []) term.write(bytes);
+          held = null;
+          replayLen = sub.replayLen;
+          if (received >= replayLen) endReplay();
           opts.onAttached?.();
         })
         .catch((e: unknown) => {
@@ -476,6 +513,11 @@ export function acquire(container: HTMLDivElement, opts: AcquireOptions): void {
           release(opts.instanceId); // no live PTY to attach to — drop the dead entry
         });
       return;
+    }
+    try {
+      fit.fit();
+    } catch {
+      // not measurable yet; the ResizeObserver will fit shortly.
     }
     ptySpawn(
       opts.instanceId,
@@ -493,7 +535,7 @@ export function acquire(container: HTMLDivElement, opts: AcquireOptions): void {
         // that produced output between spawn and here isn't lost. Guard against a
         // release that raced in before the spawn resolved.
         if (pool.get(opts.instanceId) !== entry) return;
-        const id = await ptySubscribe(opts.instanceId, output);
+        const { subId: id } = await ptySubscribe(opts.instanceId, output);
         if (pool.get(opts.instanceId) !== entry) {
           // Released while subscribing — detach the just-created subscriber.
           void ptyUnsubscribe(opts.instanceId, id);
@@ -598,10 +640,37 @@ export function readScreen(instanceId: string): string[] | null {
   return out;
 }
 
+/** How long a console's box has to hold still before its terminal is resized to it. */
+const RESIZE_SETTLE_MS = 120;
+
+/** Pending `refitSoon` timers, keyed by instance id. */
+const resizeTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
+/**
+ * Refit once the console's box has stopped changing — what its ResizeObserver calls.
+ *
+ * Dragging a splitter changes the box on every frame, and fitting each time sent the
+ * PTY dozens of resizes per drag. The TUI redraws on each one, and every redraw can
+ * leave a stale copy of the screen behind in the scrollback, so one drag left dozens
+ * (step C3). The terminal — not just the PTY — waits: resized on its own it would
+ * wrap output still being laid out for the old width. Until the drag pauses it keeps
+ * its old size, clipped or with a margin.
+ */
+export function refitSoon(instanceId: string): void {
+  clearTimeout(resizeTimers.get(instanceId));
+  resizeTimers.set(
+    instanceId,
+    setTimeout(() => {
+      resizeTimers.delete(instanceId);
+      refit(instanceId);
+    }, RESIZE_SETTLE_MS),
+  );
+}
+
 /** Re-measure and resize the terminal (and thus its PTY) to its container. */
 export function refit(entryOrId: TermEntry | string): void {
   const entry = typeof entryOrId === "string" ? pool.get(entryOrId) : entryOrId;
-  if (!entry) return;
+  if (!entry || entry.replaying) return;
   try {
     entry.fit.fit();
   } catch {
@@ -741,6 +810,8 @@ export function release(instanceId: string, opts?: { keepPty?: boolean }): void 
   entry.resizeSub.dispose();
   entry.titleSub?.dispose();
   clearTitleMirror(instanceId);
+  clearTimeout(resizeTimers.get(instanceId));
+  resizeTimers.delete(instanceId);
   // Detach this terminal's output subscription. When killing, `ptyKill` tears the
   // whole PTY (and its hub) down anyway, but unsubscribing first keeps the contract
   // clean and avoids a late fanout into a disposed terminal. When keeping the PTY

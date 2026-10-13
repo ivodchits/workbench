@@ -69,17 +69,28 @@ export async function ptySpawn(
   return { sessionId: raw.session_id, cwd: raw.cwd };
 }
 
+/** What attaching to a live PTY returns. */
+export interface Subscribed {
+  /** The subscription id: pass it to `ptyUnsubscribe` on close and to `ptyResize` so
+   *  this terminal's size joins the min-size arbitration. */
+  subId: number;
+  /** The PTY's size when the subscriber attached — what the end of the replayed
+   *  scrollback, and everything after it, is laid out for. */
+  cols: number;
+  rows: number;
+  /** How many bytes of scrollback were replayed into the channel. */
+  replayLen: number;
+}
+
 /**
- * Attach an output subscriber to a live PTY (step 4.1) and return its subscription
- * id. The PTY's recent scrollback is replayed into `onOutput` immediately, then
- * live output streams in alongside any other subscribers. Pass the returned id to
- * `ptyUnsubscribe` on close and to `ptyResize` so this terminal's size joins the
- * min-size arbitration.
+ * Attach an output subscriber to a live PTY (step 4.1). The PTY's recent scrollback
+ * is replayed into `onOutput` immediately, then live output streams in alongside any
+ * other subscribers.
  */
 export function ptySubscribe(
   instanceId: string,
   onOutput: Channel<PtyChunk>,
-): Promise<number> {
+): Promise<Subscribed> {
   return invoke("pty_subscribe", { instanceId, onOutput });
 }
 

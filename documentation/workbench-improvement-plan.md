@@ -242,6 +242,46 @@ filesystem path. There is no `draggable` / `dataTransfer` use anywhere in `src/`
   `src-tauri/src/remote/server.rs` (mirror attach).
 - **Done when:** dragging a splitter during a long streamed answer, and attaching the phone
   mirror mid-turn, both leave a clean screen.
+- **As built (2026-10-13):** it was suspect (a), the resize. Candidate 1 fixes it; a form
+  of 2 and of 3 went in for the attach paths.
+  - **Repro (debug app, two Claude consoles side by side, Claude Code 2.1.296):** one
+    splitter drag sent about 50 `pty_resize` calls per console. The TUI redraws on each,
+    and each redraw left a stale copy of the screen in the scrollback: an idle 10-line
+    screen became 88 lines of repeated banners after one drag. Two drags during a
+    streamed answer (184 resizes) left 32 extra banners and 5 extra prompt boxes.
+  - **Fix 1 — one resize per drag:** the console's ResizeObserver calls `refitSoon`
+    (`terminalPool.ts`), which fits 120 ms after the box stops changing. The terminal
+    waits too, not just the PTY; until the drag pauses it keeps its old size. Same test
+    after: three drags during a streamed answer, 2 resizes, 1 banner, no repeated items.
+  - **Suspect (b), replay starting mid-sequence:** not seen — the ring (1 MiB) had not
+    overflowed in any test, and a second subscriber attached mid-turn ended on the same
+    screen as the live terminal. It can still happen in a long session, so a ring that
+    has dropped bytes is now replayed from after its first line break
+    (`OutputHub::replay`, unit-tested). The phone already resets its terminal before a
+    replay and a desktop attach starts from a new one, so no reset prefix was added.
+  - **Attach at the PTY's size:** `pty_subscribe` now returns
+    `{ subId, cols, rows, replayLen }`. A terminal attaching to a live PTY (tear-off,
+    dock back) takes the PTY's size, writes the replay, and only then fits to its panel.
+    Before, the replay went into whatever size the panel measured; into a narrower one
+    it wrapped and redraws landed on the wrong rows (the same ring replayed 13 columns
+    narrower than the PTY gave two banners, against one this way). Tear-off and dock
+    back both checked in the app.
+  - **Phone mirror:** it was told the PTY's size once, on attach, so any later desktop
+    resize left it painting new-width output at the old width. The hub now sends remote
+    subscribers the size whenever it changes (`RemoteMsg::Size`, forwarded as the
+    existing `size` frame, which the PWA already handles at any time). Unit-tested at
+    the hub. **Not run against a phone or the PWA:** there is no Tailscale interface on
+    the dev machine, so the remote server would not start.
+  - **What is left, not fixed:**
+    - A width change still repeats up to a screenful at the join: the TUI redraws its
+      last screen at the new width under the old-width lines already in the scrollback.
+      My reading is that this is Claude Code's own redraw and not ours; not compared
+      against another terminal.
+    - A replay is written at one size, so history laid out for an earlier width can
+      come out garbled further up in an attached terminal's scrollback (one such line
+      seen after a tear-off). The end of the buffer is right. Recording resizes in the
+      ring and replaying them in order would fix it.
+  - Typecheck, lint, 112 frontend tests and 113 Rust tests pass.
 
 ---
 
@@ -1180,7 +1220,7 @@ any session, which lowers the urgency and makes the terminal bugs easier to comp
 |---|---|---|
 | C1 | Shift+Enter + scrollback | ☑ |
 | C2 | Blank / garbled consoles | ☑ |
-| C3 | Overwritten output | ☐ |
+| C3 | Overwritten output | ☑ |
 | T0 | Spike: transcript + hook payloads | ☑ (label-source decision awaiting approval) |
 | T1 | Backend transcript stream | ☑ |
 | T2 | Transcript model + renderer | ☑ |

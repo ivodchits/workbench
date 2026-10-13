@@ -6,7 +6,7 @@
 // the bridge renders the real interactive TUI; this keeps it alive across layout.
 
 import { useEffect, useRef } from "react";
-import { acquire, detach, refit } from "./terminalPool";
+import { acquire, detach, refitSoon } from "./terminalPool";
 import type { RemoteSpawn, SpawnKind, SpawnResult } from "../ipc/pty";
 
 interface ConsoleProps {
@@ -52,7 +52,7 @@ function Console({ instanceId, kind, cwd, webgl, resumeSessionId, remote, attach
       onError: (m) => onError?.(m),
     });
 
-    const ro = new ResizeObserver(() => refit(instanceId));
+    const ro = new ResizeObserver(() => refitSoon(instanceId));
     ro.observe(container);
 
     return () => {

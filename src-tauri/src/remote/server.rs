@@ -44,7 +44,7 @@ use tauri::{Emitter, Manager};
 use tokio::sync::broadcast;
 
 use super::{token_ok, touch_device, try_pair, RemoteState};
-use crate::pty::PtyManager;
+use crate::pty::{PtyManager, RemoteMsg};
 
 /// Spawn the server on Tauri's runtime and return its task handle. The parent aborts
 /// the handle to stop the server (dropping the listener frees the port immediately).
@@ -328,7 +328,7 @@ async fn api_term(
 /// closing or the PTY being torn down (its sender drops, so `rx.recv()` yields `None`).
 async fn handle_term(mut socket: WebSocket, state: Arc<RemoteState>, instance_id: String) {
     let mgr = state.app.state::<PtyManager>();
-    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<RemoteMsg>();
     let (sub_id, (cols, rows)) = match mgr.subscribe_remote(&instance_id, tx) {
         Some(v) => v,
         None => {
@@ -344,17 +344,22 @@ async fn handle_term(mut socket: WebSocket, state: Arc<RemoteState>, instance_id
     // the phone resizes its xterm to match and renders the TUI at the right width
     // rather than reflowing desktop-width lines. Same socket → ordered ahead of the
     // ring bytes queued in `rx`.
-    let size = format!(r#"{{"type":"size","cols":{cols},"rows":{rows}}}"#);
-    if socket.send(Message::Text(size.into())).await.is_err() {
+    if socket.send(size_message(cols, rows)).await.is_err() {
         mgr.unsubscribe(&instance_id, sub_id);
         return;
     }
     loop {
         tokio::select! {
-            // Outbound: a chunk of live (or replayed) PTY output.
+            // Outbound: a chunk of live (or replayed) PTY output, or the PTY's new
+            // size. Both come down the one queue, so a size change reaches the phone
+            // before the first bytes laid out for it.
             out = rx.recv() => match out {
-                Some(bytes) => {
-                    if socket.send(Message::Binary(bytes.into())).await.is_err() {
+                Some(msg) => {
+                    let frame = match msg {
+                        RemoteMsg::Bytes(bytes) => Message::Binary(bytes.into()),
+                        RemoteMsg::Size(cols, rows) => size_message(cols, rows),
+                    };
+                    if socket.send(frame).await.is_err() {
                         break;
                     }
                 }
@@ -373,4 +378,9 @@ async fn handle_term(mut socket: WebSocket, state: Arc<RemoteState>, instance_id
         }
     }
     mgr.unsubscribe(&instance_id, sub_id);
+}
+
+/// The control frame that tells the phone what size the PTY is.
+fn size_message(cols: u16, rows: u16) -> Message {
+    Message::Text(format!(r#"{{"type":"size","cols":{cols},"rows":{rows}}}"#).into())
 }

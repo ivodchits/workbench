@@ -33,6 +33,18 @@ use tokio::sync::mpsc::UnboundedSender;
 /// terminal output).
 const RING_CAP: usize = 1024 * 1024; // 1 MiB
 
+/// How far into a ring that has dropped its oldest bytes [`OutputHub::replay`] looks
+/// for a line break to start from. Far more than one line of TUI output; if there is
+/// none in that span the output isn't line-shaped and the ring is replayed as it is.
+const REPLAY_TRIM_SCAN: usize = 64 * 1024;
+
+/// What a remote subscriber is sent: the PTY's bytes, and its size whenever that
+/// changes, so the phone's terminal stays the width the bytes were laid out for.
+pub enum RemoteMsg {
+    Bytes(Vec<u8>),
+    Size(u16, u16),
+}
+
 /// One subscriber's output sink. The multiplexer fans identical bytes to every sink
 /// regardless of transport: a desktop console or torn-off window reads a Tauri IPC
 /// `Channel<Vec<u8>>`; a remote phone (step 4.5) reads an `mpsc` channel that the
@@ -43,7 +55,7 @@ enum Sink {
     Channel(Channel<Vec<u8>>),
     /// A remote WS subscriber (step 4.5). `send` is non-blocking, so it works from
     /// the sync reader thread just like the channel.
-    Remote(UnboundedSender<Vec<u8>>),
+    Remote(UnboundedSender<RemoteMsg>),
 }
 
 impl Sink {
@@ -52,7 +64,7 @@ impl Sink {
     fn send(&self, chunk: Vec<u8>) -> bool {
         match self {
             Sink::Channel(c) => c.send(chunk).is_ok(),
-            Sink::Remote(tx) => tx.send(chunk).is_ok(),
+            Sink::Remote(tx) => tx.send(RemoteMsg::Bytes(chunk)).is_ok(),
         }
     }
 }
@@ -72,6 +84,9 @@ impl Sink {
 struct OutputHub {
     /// Recent output bytes, capped at [`RING_CAP`]; replayed to a late subscriber.
     ring: VecDeque<u8>,
+    /// Whether the ring has ever dropped bytes off its front. Until it has, it starts
+    /// where the session started; after, it starts wherever the cap happened to fall.
+    ring_cut: bool,
     /// Live subscribers keyed by a per-PTY monotonic id ([`OutputHub::subscribe`]).
     subscribers: HashMap<u64, Sink>,
     /// Each subscriber's last-requested terminal size. The PTY is sized to the
@@ -95,7 +110,26 @@ impl OutputHub {
         let overflow = self.ring.len().saturating_sub(RING_CAP);
         if overflow > 0 {
             self.ring.drain(..overflow);
+            self.ring_cut = true;
         }
+    }
+
+    /// The bytes to replay to a new subscriber. A ring that has dropped its oldest
+    /// bytes can start in the middle of an escape sequence or a UTF-8 character, which
+    /// the attaching terminal would print as stray text; start such a ring after its
+    /// first line break instead (step C3). This looks for one byte and reads nothing
+    /// else out of the output.
+    fn replay(&self) -> Vec<u8> {
+        let skip = if self.ring_cut {
+            self.ring
+                .iter()
+                .take(REPLAY_TRIM_SCAN)
+                .position(|&b| b == b'\n')
+                .map_or(0, |i| i + 1)
+        } else {
+            0
+        };
+        self.ring.iter().skip(skip).copied().collect()
     }
 
     /// Forward a chunk to every subscriber, dropping any whose channel the
@@ -117,18 +151,21 @@ impl OutputHub {
         }
     }
 
-    /// Register a subscriber, replay the ring into it, and return its id. The
-    /// replay is one `send` of up to [`RING_CAP`] bytes so the attaching terminal
-    /// paints the recent session immediately (raw-ArrayBuffer streaming is a later
-    /// optimization — correctness first, matching the spawn path).
-    fn subscribe(&mut self, sink: Sink) -> u64 {
+    /// Register a subscriber, replay the ring into it, and return its id and how
+    /// many bytes were replayed. The replay is one `send` of up to [`RING_CAP`] bytes
+    /// so the attaching terminal paints the recent session immediately
+    /// (raw-ArrayBuffer streaming is a later optimization — correctness first,
+    /// matching the spawn path).
+    fn subscribe(&mut self, sink: Sink) -> (u64, usize) {
         let id = self.next_sub_id;
         self.next_sub_id += 1;
-        if !self.ring.is_empty() {
-            let _ = sink.send(self.ring.iter().copied().collect());
+        let replay = self.replay();
+        let replayed = replay.len();
+        if !replay.is_empty() {
+            let _ = sink.send(replay);
         }
         self.subscribers.insert(id, sink);
-        id
+        (id, replayed)
     }
 
     /// Drop a subscriber and its size vote.
@@ -144,8 +181,23 @@ impl OutputHub {
         self.sizes.insert(id, (cols, rows));
         let cols = self.sizes.values().map(|(c, _)| *c).min()?;
         let rows = self.sizes.values().map(|(_, r)| *r).min()?;
-        self.applied = Some((cols, rows));
         Some((cols, rows))
+    }
+
+    /// Record the size the PTY has just been given and, when it changed, tell the
+    /// remote subscribers. They take no part in choosing the size, but the bytes that
+    /// follow are laid out for it, and a phone still at the old width would paint them
+    /// over each other (step C3).
+    fn set_applied(&mut self, cols: u16, rows: u16) {
+        if self.applied == Some((cols, rows)) {
+            return;
+        }
+        self.applied = Some((cols, rows));
+        for sink in self.subscribers.values() {
+            if let Sink::Remote(tx) = sink {
+                let _ = tx.send(RemoteMsg::Size(cols, rows));
+            }
+        }
     }
 }
 
@@ -308,16 +360,17 @@ impl PtyManager {
 
     /// Attach a **remote** WS subscriber (step 4.5) to an instance's live PTY. The
     /// hub replays its ring buffer into `tx` immediately (scrollback on attach), then
-    /// fans subsequent output to it alongside any desktop subscribers. Returns the
-    /// subscription id (passed to [`Self::unsubscribe`] on disconnect) and the PTY's
-    /// current size, which the phone uses to render the TUI at the source width.
+    /// fans subsequent output to it alongside any desktop subscribers, with a
+    /// [`RemoteMsg::Size`] whenever the PTY is resized. Returns the subscription id
+    /// (passed to [`Self::unsubscribe`] on disconnect) and the PTY's current size,
+    /// which the phone uses to render the TUI at the source width.
     /// `None` when the instance has no live PTY — the WS handler then tells the client
     /// the session isn't running. The remote subscriber never joins resize
     /// arbitration, so it can't shrink the desktop console (the §11 caveat).
     pub fn subscribe_remote(
         &self,
         instance_id: &str,
-        tx: UnboundedSender<Vec<u8>>,
+        tx: UnboundedSender<RemoteMsg>,
     ) -> Option<(u64, (u16, u16))> {
         // Clone the hub handle out from under the sessions lock before touching it,
         // mirroring `pty_subscribe`: never hold both locks at once.
@@ -327,7 +380,7 @@ impl PtyManager {
         };
         let mut h = hub.lock().unwrap();
         let size = h.applied.unwrap_or((80, 24));
-        let id = h.subscribe(Sink::Remote(tx));
+        let (id, _) = h.subscribe(Sink::Remote(tx));
         Some((id, size))
     }
 
@@ -570,27 +623,48 @@ pub fn pty_spawn(
     })
 }
 
+/// What [`pty_subscribe`] hands back.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Subscribed {
+    /// The subscription id, passed to `pty_unsubscribe` on close and to `pty_resize`
+    /// so this subscriber's size joins the min-size arbitration.
+    sub_id: u64,
+    /// The PTY's size at the moment of attaching — the size the end of the replay,
+    /// and everything after it, is laid out for.
+    cols: u16,
+    rows: u16,
+    /// How many bytes of scrollback were replayed into the channel, so the caller
+    /// can tell when it has all of them.
+    replay_len: usize,
+}
+
 /// Attach an output subscriber to an instance's live PTY (step 4.1). The PTY's
 /// recent scrollback (the hub's ring buffer) is **replayed into `on_output`
 /// immediately** so the attaching terminal paints the in-flight session rather
 /// than a blank screen; subsequent output then fans out to it live alongside any
-/// other subscribers. Returns the subscription id, which the caller passes to
-/// `pty_unsubscribe` on close and to `pty_resize` so its size joins the
-/// min-size arbitration. Errors if the instance has no live PTY.
+/// other subscribers. Errors if the instance has no live PTY.
 #[tauri::command]
 pub fn pty_subscribe(
     state: State<'_, PtyManager>,
     instance_id: String,
     on_output: Channel<Vec<u8>>,
-) -> Result<u64, String> {
+) -> Result<Subscribed, String> {
     // Clone out the hub handle and release the sessions lock before touching it,
     // so we never hold both locks at once (the reader thread holds only the hub).
     let hub = {
         let guard = state.sessions.lock().unwrap();
         guard.get(&instance_id).ok_or("no active PTY")?.hub.clone()
     };
-    let id = hub.lock().unwrap().subscribe(Sink::Channel(on_output));
-    Ok(id)
+    let mut h = hub.lock().unwrap();
+    let (cols, rows) = h.applied.unwrap_or((80, 24));
+    let (sub_id, replay_len) = h.subscribe(Sink::Channel(on_output));
+    Ok(Subscribed {
+        sub_id,
+        cols,
+        rows,
+        replay_len,
+    })
 }
 
 /// Detach a subscriber (its `sub_id` from `pty_subscribe`) from an instance's PTY
@@ -629,13 +703,9 @@ pub fn pty_resize(
 ) -> Result<(), String> {
     let guard = state.sessions.lock().unwrap();
     let session = guard.get(&instance_id).ok_or("no active PTY")?;
+    let mut hub = session.hub.lock().unwrap();
     let (cols, rows) = match sub_id {
-        Some(id) => session
-            .hub
-            .lock()
-            .unwrap()
-            .arbitrate_size(id, cols, rows)
-            .unwrap_or((cols, rows)),
+        Some(id) => hub.arbitrate_size(id, cols, rows).unwrap_or((cols, rows)),
         None => (cols, rows),
     };
     session
@@ -646,7 +716,9 @@ pub fn pty_resize(
             pixel_width: 0,
             pixel_height: 0,
         })
-        .map_err(|e| format!("pty resize failed: {e}"))
+        .map_err(|e| format!("pty resize failed: {e}"))?;
+    hub.set_applied(cols, rows);
+    Ok(())
 }
 
 /// Kill an instance's PTY child (if any) and drop the session.
@@ -984,17 +1056,72 @@ mod tests {
     fn remote_sink_replays_ring_and_evicts_on_drop() {
         let mut hub = OutputHub::default();
         hub.push_ring(b"hello");
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
-        let id = hub.subscribe(Sink::Remote(tx));
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<RemoteMsg>();
+        let (id, replayed) = hub.subscribe(Sink::Remote(tx));
+        assert_eq!(replayed, 5);
         // Attach replays the whole ring as one chunk so the phone paints scrollback.
-        assert_eq!(rx.try_recv().expect("ring replayed on attach"), b"hello");
+        assert_eq!(bytes(rx.try_recv().expect("ring replayed on attach")), b"hello");
         // Live output then fans out to the remote sink.
         hub.fanout(b" world");
-        assert_eq!(rx.try_recv().unwrap(), b" world");
+        assert_eq!(bytes(rx.try_recv().unwrap()), b" world");
         // A dropped receiver (phone disconnected) is evicted on the next fan-out.
         drop(rx);
         hub.fanout(b"!");
         assert!(!hub.subscribers.contains_key(&id));
+    }
+
+    /// The bytes of a remote message that is expected to be output.
+    fn bytes(msg: RemoteMsg) -> Vec<u8> {
+        match msg {
+            RemoteMsg::Bytes(b) => b,
+            RemoteMsg::Size(c, r) => panic!("expected bytes, got size {c}x{r}"),
+        }
+    }
+
+    /// A ring that never overflowed is replayed from its first byte; one that has
+    /// dropped bytes off the front is replayed from after its first line break, so the
+    /// replay can't open partway through an escape sequence (step C3).
+    #[test]
+    fn replay_of_a_cut_ring_starts_after_a_line_break() {
+        let mut hub = OutputHub::default();
+        hub.push_ring(b"8;2;215;119m tail of a cut line\nwhole line\n");
+        assert!(hub.replay().starts_with(b"8;2;"), "an uncut ring is replayed whole");
+
+        // Eight bytes over the cap: "dropped;" falls off and the ring opens mid-line.
+        let cut_line = b"8;2;215;119m tail of a cut line\n";
+        let mut data = b"dropped;".to_vec();
+        data.extend_from_slice(cut_line);
+        data.extend_from_slice(b"whole line ");
+        data.resize(RING_CAP + 8, b'y');
+        let mut hub = OutputHub::default();
+        hub.push_ring(&data);
+        assert!(hub.ring_cut);
+        let replay = hub.replay();
+        assert!(replay.starts_with(b"whole line y"));
+        assert_eq!(replay.len(), RING_CAP - cut_line.len());
+    }
+
+    /// With no line break near the start there is nothing to cut at, and the ring is
+    /// replayed as it is rather than searched to the end.
+    #[test]
+    fn replay_of_a_cut_ring_without_line_breaks_is_whole() {
+        let mut hub = OutputHub::default();
+        hub.push_ring(&vec![b'x'; RING_CAP + 10]);
+        assert!(hub.ring_cut);
+        assert_eq!(hub.replay().len(), RING_CAP);
+    }
+
+    /// A remote subscriber is told the PTY's size when it changes, and only then.
+    #[test]
+    fn remote_sink_is_told_of_a_new_size() {
+        let mut hub = OutputHub::default();
+        hub.set_applied(80, 24);
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<RemoteMsg>();
+        hub.subscribe(Sink::Remote(tx));
+        hub.set_applied(80, 24);
+        assert!(rx.try_recv().is_err(), "an unchanged size is not announced");
+        hub.set_applied(100, 30);
+        assert!(matches!(rx.try_recv(), Ok(RemoteMsg::Size(100, 30))));
     }
 
     /// Resize arbitration returns the **minimum** size across subscribers (tmux's
