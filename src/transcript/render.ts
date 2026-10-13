@@ -378,6 +378,40 @@ function toolCard(item: ToolItem): HTMLElement {
   );
 }
 
+/**
+ * What a tool call that is waiting for permission would do, drawn the way its
+ * card's body is: the command for Bash, the change for Edit / Write, the plan for
+ * ExitPlanMode, the arguments otherwise. For the choice card (step T5), which has
+ * the call's name and input from the hook before the transcript has the line.
+ */
+export function renderPendingTool(name: string, input: Record<string, unknown>): HTMLElement {
+  const item: ToolItem = {
+    kind: "tool",
+    id: "",
+    rev: 0,
+    timestamp: null,
+    name,
+    input,
+    status: "running",
+    resultText: null,
+    stdout: null,
+    stderr: null,
+    diff: null,
+    questions: null,
+    agent: null,
+  };
+  const description = name === "Bash" && inputStr(item, "description");
+  // A read-only tool's card shows its result; before it runs there are only the
+  // arguments.
+  const lookup = name === "Read" || name === "Grep" || name === "Glob";
+  return el(
+    "div",
+    "wb-tx wb-tx-pending",
+    description && el("div", "wb-tx-dim", description),
+    ...(lookup ? [output(JSON.stringify(input, null, 2))] : toolBody(item)),
+  );
+}
+
 // --- the other items --------------------------------------------------------
 
 function userBlock(item: UserItem): HTMLElement {

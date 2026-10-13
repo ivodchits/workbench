@@ -564,6 +564,24 @@ export function submitPrompt(instanceId: string, text: string): void {
     .catch(() => {}); // no such PTY: the session is gone, nothing to send to
 }
 
+/**
+ * The text of the instance's terminal screen, one string per row (the last
+ * `rows` lines of the buffer, not the scrollback), or null when this window holds
+ * no terminal for it. The one place terminal output is read back: the choice card
+ * (step T5) takes a permission prompt's option labels from it, because the hooks
+ * don't carry them. What the session is *doing* still comes from hooks only.
+ */
+export function readScreen(instanceId: string): string[] | null {
+  const entry = pool.get(instanceId);
+  if (!entry) return null;
+  const buf = entry.term.buffer.active;
+  const out: string[] = [];
+  for (let y = buf.baseY; y < buf.baseY + entry.term.rows; y++) {
+    out.push(buf.getLine(y)?.translateToString(true) ?? "");
+  }
+  return out;
+}
+
 /** Re-measure and resize the terminal (and thus its PTY) to its container. */
 export function refit(entryOrId: TermEntry | string): void {
   const entry = typeof entryOrId === "string" ? pool.get(entryOrId) : entryOrId;

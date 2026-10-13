@@ -6,15 +6,17 @@
 // Content comes from the session's transcript file (`transcript/feed`) and is
 // drawn by the framework-free renderer (`transcript/render`); this component is
 // the chrome around it — scrolling, paging back, find, link handling, a status
-// line fed by the hook-driven live status, and the prompt composer underneath
-// (step T4).
+// line fed by the hook-driven live status, the prompt composer underneath (step
+// T4), and over it the card for a prompt the agent is waiting on (step T5).
 
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 
 import { Spinner } from "../theme";
 import { openUrl } from "../ipc/os";
+import ChoiceCard from "./ChoiceCard";
 import PromptComposer from "./PromptComposer";
 import { focusComposer } from "../state/composer";
+import { reconcileWithTranscript, usePendingChoice } from "../state/pendingChoice";
 import { isTextInput } from "../keyboard/keymap";
 import type { LiveStatus } from "../state/status";
 import { createFeed, instanceSource, type Feed } from "../transcript/feed";
@@ -51,6 +53,10 @@ function TranscriptView({ instanceId, live, onShowTerminal }: TranscriptViewProp
   const [feedState, setFeedState] = useState<FeedState>(EMPTY);
   const [away, setAway] = useState(false);
   const [finding, setFinding] = useState(false);
+  // Held back until the conversation is loaded: it may show the prompt was
+  // already answered (in the terminal, while this view was away).
+  const pending = usePendingChoice(instanceId);
+  const choice = feedState.ready ? pending : null;
 
   /** Whether the view was at the bottom, and where, as of the last scroll while
    *  it was on screen. Used when the geometry can't be measured (panel hidden). */
@@ -72,12 +78,18 @@ function TranscriptView({ instanceId, live, onShowTerminal }: TranscriptViewProp
         : scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight < STICK_PX;
 
     const feed = createFeed(instanceSource(instanceId), (why) => {
-      // Measure before the DOM changes: follow the end only if the reader was
-      // there, and keep their place when an earlier page lands above it.
-      const follow = why === "reset" || atBottom();
+      // Follow the end only if the reader was there, and keep their place when
+      // an earlier page lands above it. "Was there" is what the last scroll said,
+      // not the geometry now: the choice card may have just taken space from the
+      // list, and until the resize below is handled the end looks out of reach.
+      const follow = why === "reset" || stuck.current;
       const height = scroll.scrollHeight;
       const top = scroll.scrollTop;
-      if (why !== "loading") renderer.update(feed.items);
+      if (why !== "loading") {
+        renderer.update(feed.items);
+        // A refused or dismissed prompt is only ever recorded here (no hook).
+        if (feed.ready) reconcileWithTranscript(instanceId, feed.items);
+      }
       if (follow) scroll.scrollTop = scroll.scrollHeight;
       else if (why === "prepend") scroll.scrollTop = top + (scroll.scrollHeight - height);
       stuck.current = follow;
@@ -92,8 +104,15 @@ function TranscriptView({ instanceId, live, onShowTerminal }: TranscriptViewProp
     });
     feedRef.current = feed;
 
+    // The list's height as of the last resize handled. A scroll event that
+    // arrives after the list changed height but before that resize is handled
+    // (the choice card appearing, the composer growing) would read as "the
+    // reader left the end"; the resize handler settles it instead.
+    let seenHeight = scroll.clientHeight;
+
     const onScroll = () => {
       if (scroll.clientHeight === 0) return; // hidden: not a position the reader chose
+      if (scroll.clientHeight !== seenHeight) return;
       stuck.current = atBottom();
       lastTop.current = scroll.scrollTop;
       setAway(!stuck.current);
@@ -108,9 +127,10 @@ function TranscriptView({ instanceId, live, onShowTerminal }: TranscriptViewProp
     });
     shown.observe(scroll);
 
-    // The composer growing or shrinking resizes the list; a reader at the end
-    // stays at the end.
+    // The composer growing or shrinking, or the choice card coming and going,
+    // resizes the list; a reader at the end stays at the end.
     const resized = new ResizeObserver(() => {
+      seenHeight = scroll.clientHeight;
       if (scroll.clientHeight > 0 && stuck.current) scroll.scrollTop = scroll.scrollHeight;
     });
     resized.observe(scroll);
@@ -135,6 +155,24 @@ function TranscriptView({ instanceId, live, onShowTerminal }: TranscriptViewProp
     const scroll = scrollRef.current;
     if (scroll && stuck.current) scroll.scrollTop = scroll.scrollHeight;
   }, [feedState, live?.phase, live?.compacting]);
+
+  // A prompt that opens after the conversation was last read is checked once
+  // against it too — the answer may have been recorded before the card was built.
+  const pendingId = choice?.id ?? null;
+  useEffect(() => {
+    if (pendingId && feedRef.current) reconcileWithTranscript(instanceId, feedRef.current.items);
+  }, [instanceId, pendingId]);
+
+  // The card is gone: typing goes to the prompt again.
+  const hadChoice = useRef(false);
+  useEffect(() => {
+    // (Its focus fell to the document when it was removed.)
+    const active = document.activeElement;
+    if (hadChoice.current && !pendingId && (active === document.body || rootRef.current?.contains(active))) {
+      focusComposer(instanceId);
+    }
+    hadChoice.current = Boolean(pendingId);
+  }, [instanceId, pendingId]);
 
   const jumpToLatest = useCallback(() => {
     const scroll = scrollRef.current;
@@ -201,7 +239,7 @@ function TranscriptView({ instanceId, live, onShowTerminal }: TranscriptViewProp
             </div>
           )}
           <div ref={listRef} />
-          <StatusLine live={live} onShowTerminal={onShowTerminal} />
+          <StatusLine live={live} hasCard={choice !== null} onShowTerminal={onShowTerminal} />
         </div>
         {away && (
           <button type="button" className="wb-txv-jump" onClick={jumpToLatest}>
@@ -209,6 +247,9 @@ function TranscriptView({ instanceId, live, onShowTerminal }: TranscriptViewProp
           </button>
         )}
       </div>
+      {choice && (
+        <ChoiceCard instanceId={instanceId} choice={choice} onShowTerminal={onShowTerminal} />
+      )}
       <PromptComposer
         instanceId={instanceId}
         live={live}
@@ -221,7 +262,16 @@ function TranscriptView({ instanceId, live, onShowTerminal }: TranscriptViewProp
 
 /** What the agent is doing right now, under the last message. Always takes its
  *  line, so appearing and disappearing doesn't move the text above it. */
-function StatusLine({ live, onShowTerminal }: { live: LiveStatus | null; onShowTerminal: () => void }) {
+function StatusLine({
+  live,
+  hasCard,
+  onShowTerminal,
+}: {
+  live: LiveStatus | null;
+  /** The prompt is on the choice card, which has its own way to the terminal. */
+  hasCard: boolean;
+  onShowTerminal: () => void;
+}) {
   let body: React.ReactNode = null;
   if (live?.compacting) {
     body = (
@@ -240,9 +290,11 @@ function StatusLine({ live, onShowTerminal }: { live: LiveStatus | null; onShowT
     body = (
       <>
         <span style={{ color: "var(--wb-needs)" }}>● needs you</span>
-        <button type="button" className="wb-txv-link" onClick={onShowTerminal}>
-          answer in the terminal
-        </button>
+        {!hasCard && (
+          <button type="button" className="wb-txv-link" onClick={onShowTerminal}>
+            answer in the terminal
+          </button>
+        )}
       </>
     );
   }

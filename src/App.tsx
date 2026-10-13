@@ -27,6 +27,7 @@ import { loadKeymap } from "./keyboard/keymap";
 import { registerCommand, runCommand } from "./keyboard/bus";
 import { getHookServerStatus, onHookEvent } from "./ipc/hooks";
 import { initStatusEngine } from "./state/status";
+import { initPendingChoices } from "./state/pendingChoice";
 import { initUsageEngine } from "./state/usage";
 import { initUsageLimits, useUsageLimits } from "./state/usageLimits";
 import { initAppearance, useFontZoomWheel } from "./state/appearance";
@@ -71,6 +72,7 @@ function App() {
   // idempotent + app-lifetime, so no cleanup — see their init functions.
   useEffect(() => {
     initStatusEngine();
+    initPendingChoices();
     initUsageEngine();
     initUsageLimits();
     // Wire the tear-off store→window closers (step 4.2), so killing a torn-off

@@ -21,6 +21,7 @@ import { copyLastResponse } from "../panels/consoleCommands";
 import { initQueueDelivery } from "../panels/promptDelivery";
 import { GLYPH } from "../theme";
 import { initAppearance } from "../state/appearance";
+import { initPendingChoices } from "../state/pendingChoice";
 import { initStatusEngine, useLiveStatuses } from "../state/status";
 import { loadTemplatesFor } from "../state/templates";
 import { initViewModes, setViewMode, toggleViewMode, useViewMode } from "../state/viewMode";
@@ -73,6 +74,7 @@ function TornWindow({ params }: { params: TornParams }) {
     if (!isConsole) return;
     void initViewModes();
     initStatusEngine();
+    initPendingChoices();
     void loadKeymap();
     void loadTemplatesFor(null);
     const stopDelivery = initQueueDelivery();

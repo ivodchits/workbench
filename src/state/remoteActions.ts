@@ -54,6 +54,25 @@ export function handleRemoteAction(action: RemoteAction): void {
   }
 }
 
+/** An answer to a pending prompt: one of its numbered options, or dismissing it. */
+export type ChoiceAnswer = { option: number } | "deny";
+
+/**
+ * Answer the prompt an instance is waiting on (the desktop choice card, step T5;
+ * the phone's, step R5). The keys, as verified against the TUI in T0: a digit
+ * selects that option of a permission prompt, a single question or a plan
+ * approval at once, with no Enter; Esc dismisses the prompt and ends the turn.
+ */
+export function answerChoice(instanceId: string, answer: ChoiceAnswer): void {
+  if (answer === "deny") {
+    void ptyWrite(instanceId, INTERRUPT_KEY);
+    markInterrupted(instanceId); // dismissing fires no hook — update the dot ourselves
+    return;
+  }
+  if (!Number.isInteger(answer.option) || answer.option < 1 || answer.option > 9) return;
+  void ptyWrite(instanceId, new TextEncoder().encode(String(answer.option)));
+}
+
 /** Open (or focus) the console for an instance resolved from the registry. No-op if
  *  the id isn't a known instance. */
 function startInstance(instanceId: string): void {

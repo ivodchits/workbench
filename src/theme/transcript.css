@@ -603,3 +603,152 @@
   white-space: nowrap;
   color: var(--wb-textDim2);
 }
+
+/* --- choice card (step T5) --------------------------------------------------- */
+
+.wb-chc {
+  /* Never squeezed by the conversation above it; a long plan scrolls inside. */
+  flex: 0 0 auto;
+  max-height: 60%;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 8px 12px;
+  border-top: 1px solid var(--wb-needs);
+  background: var(--wb-panel);
+  font: 12px var(--wb-mono);
+  color: var(--wb-text);
+  outline: none;
+}
+
+.wb-chc:focus {
+  box-shadow: inset 2px 0 0 var(--wb-needs);
+}
+
+.wb-chc-head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+}
+
+.wb-chc-kind {
+  color: var(--wb-needs);
+}
+
+.wb-chc-tool {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--wb-textDim2);
+}
+
+.wb-chc-keys {
+  flex: 0 0 auto;
+  font-size: 11px;
+  color: var(--wb-textFaint);
+}
+
+.wb-chc-keys b {
+  font-weight: 400;
+  color: var(--wb-textDim2);
+}
+
+/* Only shown while the card has the keyboard — that is when the keys work. */
+.wb-chc:not(:focus) .wb-chc-keys {
+  visibility: hidden;
+}
+
+.wb-chc-content {
+  flex: 0 1 auto;
+  min-height: 0;
+  overflow: auto;
+}
+
+.wb-chc-content .wb-tx-pending {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.wb-chc-question-text {
+  white-space: pre-wrap;
+}
+
+.wb-chc-question + .wb-chc-question {
+  margin-top: 8px;
+}
+
+.wb-chc-question ul {
+  margin: 4px 0 0;
+  padding-left: 18px;
+  color: var(--wb-textDim2);
+}
+
+.wb-chc-question li b {
+  font-weight: 400;
+  color: var(--wb-text);
+}
+
+.wb-chc-options {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.wb-chc button {
+  font: 11px var(--wb-mono);
+  color: var(--wb-textDim2);
+  background: var(--wb-bg);
+  border: 1px solid var(--wb-border);
+  cursor: pointer;
+}
+
+.wb-chc button:hover {
+  color: var(--wb-accent);
+  border-color: var(--wb-borderActive);
+}
+
+.wb-chc button.wb-chc-option {
+  display: flex;
+  gap: 10px;
+  padding: 4px 10px;
+  font-size: 12px;
+  color: var(--wb-text);
+  text-align: left;
+}
+
+.wb-chc-option-key {
+  flex: 0 0 auto;
+  color: var(--wb-needs);
+}
+
+.wb-chc-option-detail {
+  color: var(--wb-textDim2);
+}
+
+.wb-chc-bar {
+  flex: 0 0 auto;
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.wb-chc-bar button,
+.wb-chc-note button {
+  padding: 2px 10px;
+}
+
+.wb-chc button.wb-chc-deny {
+  color: var(--wb-needs);
+}
+
+.wb-chc-note {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--wb-textDim2);
+}

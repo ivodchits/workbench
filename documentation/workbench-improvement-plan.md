@@ -312,7 +312,7 @@ filesystem path. There is no `draggable` / `dataTransfer` use anywhere in `src/`
   The TUI appends rows the hook does not list: "Type something" and "Chat about this" on
   questions. All of T5's "explicit fallbacks" therefore have a safe mapping.
 
-  **Option-label source (question 1) — recommendation, awaiting approval:**
+  **Option-label source (question 1) — approved 2026-10-13, built in T5:**
 
   - **Questions:** hook-only. Labels come from the payload and the digit is the option's
     position, by construction.
@@ -650,6 +650,79 @@ filesystem path. There is no `draggable` / `dataTransfer` use anywhere in `src/`
   plan approval can each be answered from the card, and answering any of them in the
   terminal clears the card.
 - **Out of scope:** the phone (R5).
+- **As built (2026-10-13):** `src/state/pendingChoice.ts`, `src/panels/ChoiceCard.tsx`;
+  checked in the debug app against a live session in default permission mode.
+  - **Store:** `state/pendingChoice.ts` follows the hook stream on its own
+    subscription. `PermissionRequest` opens a prompt (it fires for tool permissions,
+    `AskUserQuestion` and `ExitPlanMode` alike) with the kind, tool name, `tool_input`
+    and the `tool_use_id` of the `PreToolUse` just before it. One prompt per instance.
+  - **What closes it:** `PostToolUse` / `PostToolUseFailure` for that tool,
+    `PostToolBatch`, `UserPromptSubmit`, `Stop`, `StopFailure`, `SessionEnd`,
+    `PermissionDenied`; the status engine leaving needs-you for any reason; and the
+    transcript — the view hands the store the conversation it shows, and a result for
+    the tool, or an interruption line newer than the prompt, closes it. That last one
+    is the only signal for "No" and Esc, which fire no hook.
+  - **Stuck "needs you" after a refusal (found in T0):** when the transcript shows the
+    prompt was refused or dismissed, the store also moves the status to done
+    (`markInterrupted`). This runs while the transcript view is on screen, or the next
+    time it is shown; a console that stays on the terminal still holds "needs you"
+    after "No" until the next prompt, as before.
+  - **Option labels, as decided in T0:**
+    - *Question:* from the hook payload; the digit is the option's position.
+    - *Permission and plan:* read from the terminal screen. `readScreen`
+      (`terminalPool.ts`) returns the visible rows and `parseOptionRows` takes the
+      numbered rows of the prompt at the bottom. It is strict because the digit is what
+      gets sent: rows must count up from 1 with no gap, one must carry the `❯` marker,
+      and only a few hint lines may follow. A label the TUI wrapped is joined back.
+      The card reads the screen a few times over 3.5 s, since the hook fires before
+      the prompt is drawn.
+    - *When the screen can't be read* (no terminal in this window, or no match): a
+      permission prompt offers **Allow** = `1`; a plan shows its text and sends you to
+      the terminal, because option 1 can mean "yes, and use auto mode".
+  - **Keys** go through `answerChoice` in `state/remoteActions.ts`: a digit for an
+    option, Esc to dismiss (which also marks the turn interrupted). R5 can call the
+    same function.
+  - **Card:** sits between the transcript and the composer, up to 60% of the view; a
+    long plan scrolls inside it. Content is drawn by the transcript renderer
+    (`renderPendingTool` in `transcript/render.ts`): the command and its description
+    for Bash, the change for Edit / Write, the plan as markdown, the arguments for
+    anything else — so tool input goes through the same sanitizing path. One numbered
+    button per option, plus **answer in terminal** and **deny** / **cancel** (Esc).
+  - **Keyboard:** 1–9 and Esc work while the card has focus. It takes focus when a
+    prompt arrives only if focus was already in that console's view and the composer
+    is empty; a half-written prompt keeps the keyboard. Other typing on the card goes
+    to the composer. When the card closes, focus returns to the composer.
+  - **Explicit fallbacks:** several questions, multi-select, and a question with no
+    options show the question text and options and an **answer in terminal** button.
+    T0 found key sequences for these, but they need several keys kept in step with
+    the TUI; not built. An option that opens a text field ("Tell Claude what to
+    change") sends its digit and switches to the terminal to type. "Type something" /
+    "Chat about this" on a question are reached through **answer in terminal**.
+  - **After sending:** the card shows "sent: <label>" with the buttons gone, and after
+    4 s without the prompt closing offers **check the terminal**. It never re-sends.
+  - **Scrolling fix in `TranscriptView`:** the card taking space from the list could
+    knock a reader off the end of the conversation (a scroll event measured between
+    the resize and its handler). The view now trusts the last known position across
+    a resize.
+  - **Torn-off windows** start the store too, but only see prompts that open after
+    the window did; before that the status line's "answer in the terminal" link is
+    what shows.
+  - **Verified live:** a Bash permission answered with the `1` key; an edit refused
+    with the **No** button (card closed, status went to done); an edit approved by
+    click; an edit refused in the terminal while the terminal was shown, then the
+    transcript shown again (no card, status done); a single-select question answered
+    with the `2` key; a plan approved with "Yes, manually approve edits"; the edit
+    prompt after it dismissed with Esc; a two-question prompt shown as a fallback,
+    opened in the terminal and dismissed there; a card arriving while a draft was
+    being typed (focus stayed in the composer); the view staying at the end when a
+    card appears.
+  - **Tests:** 17 more (`state/pendingChoice.test.ts`), 112 in all.
+  - **Known gaps:** no **open plan** button (P1 is not built). The card was not run
+    in a torn-off window or in a window with no terminal (the Allow-only fallback is
+    covered by unit tests only). A prompt for a tool inside a subagent was not tried.
+    An option's hint line is joined onto its label ("Tell Claude what to change
+    shift+tab to approve with this feedback"). The phone's Approve button still sends
+    Enter, which on a plan picks option 1 — left for R5.
 
 ---
 
@@ -1075,7 +1148,7 @@ any session, which lowers the urgency and makes the terminal bugs easier to comp
 | T2 | Transcript model + renderer | ☑ |
 | T3 | View + toggle | ☑ |
 | T4 | Prompt composer | ☑ |
-| T5 | Choice cards (desktop) | ☐ |
+| T5 | Choice cards (desktop) | ☑ |
 | D1 | Drag files from inside the app | ☐ |
 | D2 | Drag files from the OS (spike) | ☐ |
 | V1 | Diff rendering | ☐ |
