@@ -22,6 +22,7 @@ import "@xterm/xterm/css/xterm.css";
 
 import { activeTheme, deriveXtermTheme, mono } from "../theme/tokens";
 import {
+  NEWLINE_KEY,
   ptyKill,
   ptyResize,
   ptySpawn,
@@ -144,6 +145,10 @@ export function speakFocusedSelection(): void {
 
 /** The xterm font size at scale 1; the chrome's base is the same 13px feel. */
 const BASE_FONT_SIZE = 13;
+
+/** Lines of scrollback each console keeps (xterm's default is 1,000 — shorter than
+ *  one long agent turn). The single place to tune it. */
+const SCROLLBACK_LINES = 10_000;
 
 /** Current global font scale (1 = 100%). New terminals adopt it on `acquire`; an
  *  existing pool is rescaled by `rescaleAll`. Owned here so the store needn't be
@@ -291,6 +296,7 @@ export function acquire(container: HTMLDivElement, opts: AcquireOptions): void {
     fontWeight: 400,
     fontWeightBold: 700,
     cursorBlink: true,
+    scrollback: SCROLLBACK_LINES,
     theme: deriveXtermTheme(),
     allowProposedApi: true,
   });
@@ -299,6 +305,25 @@ export function acquire(container: HTMLDivElement, opts: AcquireOptions): void {
   term.open(host);
 
   term.attachCustomKeyEventHandler((e) => {
+    // Shift+Enter in a claude console inserts a line break instead of submitting
+    // (xterm would otherwise send a plain CR). Swallow every phase of the key —
+    // keydown writes the sequence, keypress/keyup are dropped — so xterm doesn't
+    // additionally send `\r`. Shells keep the default.
+    if (
+      opts.kind === "claude" &&
+      e.key === "Enter" &&
+      e.shiftKey &&
+      !e.ctrlKey &&
+      !e.altKey &&
+      !e.metaKey
+    ) {
+      if (e.type === "keydown") {
+        e.preventDefault();
+        void ptyWrite(opts.instanceId, NEWLINE_KEY);
+      }
+      return false;
+    }
+
     if (e.ctrlKey && e.shiftKey && e.code === "KeyC" && e.type === "keydown") {
       const sel = term.getSelection();
       if (sel) void navigator.clipboard.writeText(sel);

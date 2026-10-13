@@ -104,6 +104,10 @@ export const INTERRUPT_KEY = new Uint8Array([0x1b]);
  *  a typed prompt). The other half of the §11 keystroke mapping. */
 export const ENTER_KEY = new Uint8Array([0x0d]);
 
+/** ESC + CR — what Alt+Enter sends; the claude TUI reads it as "insert a line break"
+ *  in the prompt rather than submit. Sent for Shift+Enter in a claude console. */
+export const NEWLINE_KEY = new Uint8Array([0x1b, 0x0d]);
+
 /**
  * Resize an instance's PTY to match its terminal's cols/rows. `subId` (step 4.1):
  * a console passes its subscription id so its size joins the PTY's min-size
