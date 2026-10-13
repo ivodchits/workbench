@@ -184,6 +184,44 @@ filesystem path. There is no `draggable` / `dataTransfer` use anywhere in `src/`
   `src/panels/AppearanceMenu.tsx` (if a setting is added).
 - **Done when:** the recorded repro no longer produces blank or garbled output over a
   30-minute multi-agent session.
+- **As built (2026-10-13):** one change in `src/panels/terminalPool.ts` (candidate fix 2);
+  no setting added, no upgrade.
+  - **Cause:** xterm's WebGL renderer keeps one glyph atlas for all terminals with the
+    same font and colours (confirmed: three consoles, one atlas object).
+    `term.clearTextureAtlas()` wipes that shared atlas but only the terminal it is
+    called on forgets where its glyphs were. The others keep their old positions, and
+    the next time one of them repaints even a single row it draws from a texture that
+    has been wiped and refilled in another order: wrong glyphs, or nothing where the
+    old position is now empty. It stays that way until that terminal redraws in full —
+    which focusing it does, hence "needs focus".
+  - **What triggered it:** the pool cleared the atlas for one terminal on every panel
+    focus change (`focusTerminal`), every tab switch and re-parent (`resyncViewport`),
+    and when a new console's fonts finished loading. So with consoles side by side,
+    clicking into one damaged the others as soon as their agents printed anything.
+  - **Repro (debug app, WebView2 debugging port, xterm 5.5.0 / addon-webgl 0.18.0,
+    three Claude consoles side by side, all on WebGL, well under the cap):**
+    - *Blank:* opening the three at once left the first with its text in the buffer and
+      nothing painted until it was focused (seen once, on a fresh launch).
+    - *Garbled:* clear one terminal's atlas, then repaint one row in the others (what a
+      spinner does). A neighbour's status lines came out garbled in 3–5 of 9 tries.
+  - **Fix:** `rebuildAtlas()` calls `clearTextureAtlas()` on every pooled terminal, and
+    every place that cleared one terminal's atlas now calls it (focus / tab switch /
+    re-parent, font load, font scale, theme). The first call wipes the atlas, the rest
+    find it empty and only drop their own stale positions.
+  - **Verified:** the same test through the real focus path, rotating focus between the
+    three consoles: 0 changes in 60 focus changes, and still 0 after cycling font scale
+    and theme and back. Three consoles opened together twice more all painted.
+    Typecheck, lint and the 112 unit tests pass.
+  - **Not done:** the 30-minute session with agents really working — the check above is
+    a few minutes on idle sessions with forced repaints, so it needs confirming in
+    daily use. Not tried: more than 10 consoles (the WebGL cap), WebGL context loss
+    (candidate 1; a lost context still falls back to the DOM renderer), sleep / resume,
+    a torn-off window (its own webview, so its own atlas; same code).
+  - **Seen on the way, not fixed:** one console showed a stray `^[[O` at the top left —
+    a focus-out report sent before the TUI had started and echoed by the PTY.
+  - **Possible follow-up:** the focus path may not need to clear the atlas at all, which
+    would save re-drawing every glyph on each click; left as is to keep the change
+    small.
 
 #### Step C3 — Overwritten / doubled output
 
@@ -1141,7 +1179,7 @@ any session, which lowers the urgency and makes the terminal bugs easier to comp
 | Step | Title | Status |
 |---|---|---|
 | C1 | Shift+Enter + scrollback | ☑ |
-| C2 | Blank / garbled consoles | ☐ |
+| C2 | Blank / garbled consoles | ☑ |
 | C3 | Overwritten output | ☐ |
 | T0 | Spike: transcript + hook payloads | ☑ (label-source decision awaiting approval) |
 | T1 | Backend transcript stream | ☑ |

@@ -83,8 +83,24 @@ function resyncViewport(entry: TermEntry, saved?: TermEntry["scrollState"]): voi
   term.scrollToTop();
   if (atBottom) term.scrollToBottom();
   else term.scrollToLine(line);
-  term.clearTextureAtlas();
+  rebuildAtlas();
   term.refresh(0, term.rows - 1);
+}
+
+/**
+ * Throw away the WebGL glyph atlas and have every terminal redraw from a fresh one.
+ *
+ * Always for the whole pool, never for one terminal: xterm shares a single atlas
+ * between all terminals with the same font and colours, but `clearTextureAtlas` only
+ * makes the terminal it is called on forget where its glyphs were. The others keep
+ * drawing from the old positions in a texture that has since been wiped and refilled
+ * in another order, so they show the wrong glyphs or nothing until something forces
+ * them to redraw in full (step C2). Calling it on each one is cheap: the atlas is
+ * wiped by the first call and found empty by the rest, which then only drop their
+ * own stale positions. No-op for a terminal on the DOM renderer.
+ */
+function rebuildAtlas(): void {
+  for (const entry of pool.values()) entry.term.clearTextureAtlas();
 }
 
 export interface AcquireOptions {
@@ -174,7 +190,7 @@ function applyScale(entry: TermEntry, scale: number): void {
   // glyph atlas, so rebuild it after the resize.
   requestAnimationFrame(() => {
     refit(entry);
-    entry.term.clearTextureAtlas();
+    rebuildAtlas();
   });
 }
 
@@ -182,9 +198,9 @@ function applyScale(entry: TermEntry, scale: number): void {
 export function rethemeAll(): void {
   for (const entry of pool.values()) {
     entry.term.options.theme = deriveXtermTheme();
-    entry.term.clearTextureAtlas();
-    entry.term.refresh(0, entry.term.rows - 1);
   }
+  rebuildAtlas();
+  for (const entry of pool.values()) entry.term.refresh(0, entry.term.rows - 1);
 }
 
 /** Set the global font scale and resize every live terminal to it (Ctrl+wheel). */
@@ -427,7 +443,7 @@ export function acquire(container: HTMLDivElement, opts: AcquireOptions): void {
     document.fonts.load('700 13px "JetBrains Mono"'),
   ]).then(() => {
     if (pool.get(opts.instanceId) !== entry) return; // released/replaced meanwhile
-    term.clearTextureAtlas();
+    rebuildAtlas();
   });
 
   // Defer the first fit + spawn one frame so xterm has rendered and the addon can
