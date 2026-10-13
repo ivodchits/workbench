@@ -1,0 +1,860 @@
+# Workbench — Improvement Plan (post-1.1)
+
+A step-by-step plan for the next round of work: a **transcript view** for consoles (with
+in-view answering of "needs you" prompts), **console fixes**, **drag-to-reference**, a
+better **diff/review** loop, **project notes**, and a **remote** that is pleasant on a phone
+and reachable without toggling Tailscale.
+
+Companion to `claude-code-workbench-design.md` and
+`claude-code-workbench-development-plan.md`. Same working rules as the Git panel plan:
+**one step per session**, respect **Depends on**, honor the Definition of Done, and append
+an **As built** note to a step when it lands.
+
+Origin: a comparison against JetBrains Air (2026-10-12) plus four items from daily use.
+Air's strengths were its review loop and context attachment; its structured chat depends on
+ACP, which this plan deliberately does not adopt (see Guardrails).
+
+---
+
+## Scope statement
+
+**In scope**
+
+| Track | What |
+|---|---|
+| **C — Console** | Shift+Enter newline, scrollback limit, garbled/blank rendering with several consoles, overwritten output |
+| **T — Transcript view** | A second rendering of a Claude console, built from the session transcript, toggled from the console tab at any moment; prompt composer; choice cards for "needs you" |
+| **D — Drag to reference** | Drag a file onto a console to insert an `@path` reference |
+| **V — Diff / review** | Better diff rendering, navigation, inline comments sent to the agent, "add to prompt" |
+| **N — Notes** | A project notes panel, markdown, edited like any file |
+| **R — Remote** | Transcript view + choice cards + prompt-first input on the phone; creating a session from the phone; Tailscale Funnel so the remote is ready whenever the app runs; push notifications |
+| **P — Plans** | An on-demand "open plan" button (never automatic) |
+| **A — Agent review** | "Review with a fresh agent" |
+| **M — Mods** | Run summary on done, as a Claude Code mod |
+
+**Out of scope (decided 2026-10-12):** before-request snapshots (git covers it),
+a permission-mode switch, auto-opening plans, web preview device toolbar, editor blame,
+Docker run environments, voice dictation, ACP / multi-vendor agents.
+
+---
+
+## Current state (audit, 2026-10-12)
+
+**Console** — `src/panels/terminalPool.ts`, `src/panels/Console.tsx`,
+`src/panels/ConsolePanel.tsx`, `src-tauri/src/pty/mod.rs`.
+
+| Where | Finding |
+|---|---|
+| `terminalPool.ts:285-296` | `new Terminal({...})` sets no `scrollback`, so consoles keep xterm's default 1,000 lines. |
+| `terminalPool.ts:301-308` | The custom key handler only handles Ctrl+Shift+C. Shift+Enter reaches the TUI as a plain Enter and submits. |
+| `terminalPool.ts:302-305`, `:611` | Copy is `term.getSelection()`. Claude's TUI hard-wraps its own output, so copied text always carries those line breaks. Not fixable in the terminal; the transcript view is the fix. |
+| `terminalPool.ts:74-85`, `:477-494` | `resyncViewport` rebuilds the WebGL glyph atlas and refreshes. It runs on focus, re-parent and tab-switch visibility — which matches the "garbled until I focus the panel" symptom. A console that is visible but never focused (side-by-side) gets no rebuild. **Hypothesis, not reproduced.** |
+| `state/consoles.ts:27` | `WEBGL_CAP = 10`; shells use the DOM renderer. |
+| `terminalPool.ts:314-322` | On WebGL context loss the addon is disposed; nothing re-renders or re-creates it. |
+| `pty/mod.rs:34`, `:126-134` | 1 MiB raw-byte ring, replayed verbatim on attach. Eviction cuts at an arbitrary byte, so a replay can start mid-escape-sequence or mid-redraw. |
+| `pty/mod.rs:142-149` | PTY is sized to the minimum across subscribers; every resize makes the TUI redraw in place. Suspected cause of "output rendered again on top of the previous output with an offset". **Hypothesis, not reproduced.** |
+| `package-lock.json` | `@xterm/xterm` 5.5.0, `@xterm/addon-webgl` 0.18.0. |
+
+**Transcript** — `src-tauri/src/transcript/mod.rs` already tails each live session's JSONL
+incrementally (byte offset per session, 2 s poll) but extracts only `usage` and resume
+summaries. `notify` is already a dependency (git watcher).
+
+**Hooks** — `src-tauri/src/hooks/`. `PreToolUse`, `PostToolUse`, `PermissionRequest`,
+`Notification`, `Stop` and friends are installed (`install.rs:39-56`). `HookEvent`
+flattens every unknown field into `rest` (`events.rs:38-41`), so `tool_input` and
+`transcript_path` **already reach the frontend** in the `hook-event` envelope; the status
+engine just doesn't use them. The hook server answers immediately and never returns a
+decision.
+
+**Needs-you actions** — `src/state/remoteActions.ts`: approve = Enter, deny = Esc,
+interrupt = Esc, written to the PTY. One place, by design (§11 caveat). No notion of
+*which* options a prompt offers.
+
+**Drag and drop** — `tauri.conf.json:21` has `dragDropEnabled: false`, so HTML5 drag and
+drop works inside the webview (dockview depends on it) but an OS file drop carries no
+filesystem path. There is no `draggable` / `dataTransfer` use anywhere in `src/`.
+
+**Diff / review** — `src/panels/Diff/`.
+
+| Where | Finding |
+|---|---|
+| `UnifiedDiff.tsx` | Flat list of coloured lines: no line numbers, no syntax highlighting, no intra-line changes, no side-by-side. Capped at 4,000 lines. |
+| `Diff/index.tsx:39-56`, `:183-201` | "diff" and "edit" are separate modes; entering edit loses the diff. |
+| `Diff/index.tsx:245-261` | Refresh is a manual button; `git/watch.rs` exists but the panel doesn't subscribe. |
+| `Diff/index.tsx:281-339` | One file at a time, no next/previous-hunk keys, no "viewed" state. |
+| `UnifiedDiff.tsx:82-93` | Hunk controls (stage / unstage / discard) exist but only the Git panel passes them. |
+
+**Remote** — `src-tauri/src/remote/`, `src-tauri/src/remote/pwa/index.html`.
+
+| Where | Finding |
+|---|---|
+| `remote/mod.rs:146-190` | Binds only to the Tailscale address (100.64.0.0/10). Both devices must have Tailscale up. |
+| `pwa/index.html:551-565` | Mobile console renders at the desktop's cols and zooms down to fit — tiny text. |
+| `pwa/index.html:484-488`, `:577-582` | Raw keyboard sends each keystroke over the socket, no local echo. |
+| `pwa/index.html:303-314` | Approve / deny only. No option list, no question text. |
+| `pwa/sw.js` | No push handling. Plain HTTP on a tailnet IP is not a secure context, so service worker registration and install likely don't work today. **Not verified.** |
+| `remote/server.rs:238-249`, `:312-321` | Bearer token travels in the WebSocket URL query. `/pair` has no rate limit. Acceptable on a tailnet, not on the public internet. |
+| `pwa/` | A single hand-written HTML file, `include_str!`'d. No build step, so nothing is shared with the React frontend. |
+
+---
+
+## Guardrails (settled — don't violate)
+
+- **The PTY stays the only way Claude is driven.** No Agent SDK, no `claude -p`, no ACP
+  (design §4.3: subscription-friendly, full fidelity). The transcript view is a second
+  *rendering* of the same interactive session, never a second way to run it.
+- **The terminal is the source of truth for interaction.** Every action taken from the
+  transcript view or the phone is a keystroke or paste into the live TUI. If the transcript
+  view cannot represent something, it says so and offers the terminal — it never guesses.
+- **The toggle is always available** and never restarts, resizes or otherwise disturbs the
+  session. The xterm instance keeps running in the pool while the transcript view is shown.
+- **Status comes from hooks, content from the transcript.** Whether an instance is waiting
+  on you is decided by the existing status engine (`state/status.ts`), not by the
+  transcript view. One narrow, deliberate exception is proposed in T0 (reading option
+  labels off the terminal buffer); it must be approved there, not assumed.
+- **Keystroke mappings live in one module.** Extend `state/remoteActions.ts` (or a module
+  it delegates to); desktop transcript view and phone both go through it.
+- **Session ids rotate.** `/clear` mints a new session id and a new transcript file
+  (`/compact` does not — it continues in the same file; verified in T0). Anything keyed by
+  session must follow the instance, using the `transcript_path` that every hook event
+  carries.
+- **Transcript content is untrusted HTML input.** Render markdown through `marked` +
+  `DOMPurify` (already used by the markdown preview); never `innerHTML` raw tool output.
+- **Remote: nothing public without the hardening step.** R3 (Funnel) depends on R2
+  (hardening). Funnel stays opt-in and off by default.
+- **Windows first.** Paths with backslashes and spaces, `CREATE_NO_WINDOW` on any child
+  process, no shell interpolation of user strings.
+
+---
+
+## Steps
+
+### Track C — Console fixes
+
+#### Step C1 — Shift+Enter newline + scrollback limit
+
+- **Goal:** Shift+Enter inserts a line break in a Claude console; scrollback is long enough
+  to read back a long turn.
+- **Depends on:** nothing.
+- **Build:**
+  - In the existing `attachCustomKeyEventHandler` (`terminalPool.ts:301`), for `kind ===
+    "claude"` only: on Shift+Enter keydown write the newline sequence to the PTY and return
+    `false`; also swallow the matching `keypress` so xterm doesn't additionally send `\r`.
+  - Sequence: start with `ESC` + `CR` (`\x1b\r`, what Alt+Enter sends). **Verify against
+    the installed Claude Code**; if it doesn't insert a newline, fall back to backslash +
+    Enter. Keep the bytes as a named constant next to `ENTER_KEY` in `src/ipc/pty.ts`.
+  - Shells keep default behaviour.
+  - Set `scrollback` on desktop terminals (start at 10,000; the mirror already uses 5,000).
+    Put the number in one constant.
+- **Key files:** `src/panels/terminalPool.ts`, `src/ipc/pty.ts`.
+- **Done when:** Shift+Enter adds a line in the prompt without submitting, Enter still
+  submits, shells are unaffected, and a turn longer than 1,000 lines can be scrolled back.
+- **Out of scope:** making the key configurable in the keymap editor.
+- **As built (2026-10-13):** `NEWLINE_KEY` (`\x1b\r`) in `src/ipc/pty.ts`; the key handler
+  in `terminalPool.ts` writes it on unmodified Shift+Enter keydown for `kind === "claude"`
+  and returns `false` for keydown, keypress and keyup so xterm sends no `\r`. The write
+  goes straight to `ptyWrite`, not through `onData`, so the lone-Esc interrupt check does
+  not see it. `SCROLLBACK_LINES = 10_000` in `terminalPool.ts`; the one-shot
+  `RemoteCommandTerminal` keeps xterm's default. Typecheck and lint pass. Sequence
+  verified against Claude Code 2.1.296 by driving the TUI in a scratch PTY: `AAA1`,
+  `\x1b\r`, `BBB2` leaves two prompt lines and submits nothing, so the backslash + Enter
+  fallback was not needed (open question 4). Checked in a debug build by sending key
+  events over the WebView2 debugging port and reading each `pty_write`: in a Claude
+  console Shift+Enter writes exactly `[27,13]` (no stray `\r`) and Enter writes `[13]`;
+  in a shell Shift+Enter still writes `[13]`. A shell printing 3,000 lines kept ~3,016
+  buffer rows. Not done by hand: scrolling a real long Claude turn with the mouse.
+
+#### Step C2 — Blank / garbled consoles with several sessions open
+
+- **Goal:** A visible console always shows correct text without needing focus.
+- **Depends on:** nothing.
+- **Build:**
+  - **Reproduce first.** Open 3+ consoles side by side with agents working; note whether
+    it happens under the WebGL cap, after a tear-off, after sleep/resume, after a theme or
+    font-scale change. Record the repro in the As-built note.
+  - Candidate fixes, in order of cost:
+    1. On WebGL context loss, re-create the addon (or at least `refresh`) instead of only
+       disposing it.
+    2. Rebuild the atlas for **every** pooled terminal when any one of them rebuilds
+       (suspected shared-atlas invalidation), and on `visibilitychange` / window focus.
+    3. A per-app setting to force the DOM renderer for consoles.
+    4. Upgrade `@xterm/xterm` + addons to the current major and re-test.
+  - Keep whichever is the smallest change that survives the repro.
+- **Key files:** `src/panels/terminalPool.ts`, `src/state/consoles.ts`,
+  `src/panels/AppearanceMenu.tsx` (if a setting is added).
+- **Done when:** the recorded repro no longer produces blank or garbled output over a
+  30-minute multi-agent session.
+
+#### Step C3 — Overwritten / doubled output
+
+- **Goal:** A turn's output is never painted over an earlier copy of itself.
+- **Depends on:** C2 (same file; avoid overlapping edits).
+- **Build:**
+  - **Reproduce first.** Suspects: (a) a resize arriving mid-turn — splitter drag, a second
+    subscriber attaching (tear-off, phone mirror) changing the min-size arbitration;
+    (b) ring replay starting mid-sequence on attach.
+  - Candidate fixes:
+    1. Debounce `fit()` → `ptyResize` so a splitter drag sends one resize, not dozens.
+    2. After attach/replay, force one clean TUI redraw (resize nudge: cols−1 then back),
+       so the screen ends on a known-good frame.
+    3. Make the ring safe to replay: prefix the replay with a terminal reset, and trim the
+       ring's start forward to a line boundary outside an escape sequence.
+  - Note in As-built which suspect it actually was.
+- **Key files:** `src/panels/terminalPool.ts`, `src-tauri/src/pty/mod.rs`,
+  `src-tauri/src/remote/server.rs` (mirror attach).
+- **Done when:** dragging a splitter during a long streamed answer, and attaching the phone
+  mirror mid-turn, both leave a clean screen.
+
+---
+
+### Track T — Transcript view
+
+#### Step T0 — Spike: what the transcript and hooks actually give us
+
+- **Goal:** Replace assumptions with fixtures before building. No UI.
+- **Depends on:** nothing.
+- **Build:**
+  - Capture real JSONL samples from the installed Claude Code into
+    `src-tauri/src/transcript/fixtures/` covering: plain text turn, thinking, Bash, Edit,
+    Write, Read, a failed tool, a subagent (where do sidechain messages live — same file or
+    a separate one?), an image paste, `/compact`, `/clear`, an interrupted turn, a slash
+    command, `AskUserQuestion`, `ExitPlanMode`.
+  - Log raw hook payloads for the "needs you" cases and record, for each, **exactly** what
+    is present: `PermissionRequest` (tool name, `tool_input`, any suggested rules),
+    `PreToolUse` for `AskUserQuestion` (questions, options, `multiSelect`) and for
+    `ExitPlanMode` (plan text), `Notification` types. Also: which event marks the prompt
+    as *resolved* (`PostToolUse`, `PostToolUseFailure`, `UserPromptSubmit`, `Stop`).
+  - Determine the answer keys by hand in the TUI: do number keys select an option
+    directly? What do multi-question and multi-select prompts need? What does "Other /
+    type something" need?
+  - Measure transcript write latency: how long after text appears in the TUI does the line
+    land in the file?
+  - **Decide the option-label source** for permission prompts (the hook does not carry the
+    literal option list). Options:
+    1. *Hook-only:* show generic **Allow / Deny**, plus whatever the payload offers.
+    2. *Read the terminal buffer:* parse the numbered option lines from the bottom of the
+       live xterm buffer, so the buttons match the TUI exactly and the number-key mapping
+       is correct by construction. Hooks still decide *whether* a prompt is pending. This
+       is the narrow exception to "never parse terminal output"; it degrades to (1) when
+       parsing fails.
+    3. *Answer through the hook response* (hold the HTTP hook, return allow/deny).
+       Structured, but the TUI never shows the prompt, which breaks the "terminal is the
+       source of truth" guardrail. Evaluate only; default is to reject.
+  - Write the findings into this document under T0 **As built**, including the decision.
+- **Done when:** fixtures are committed, the payload table is filled in, and the
+  option-label source is chosen.
+- **As built (2026-10-13):** captured from Claude Code 2.1.296 (Sonnet 5.5) by driving one
+  TUI session in a scratch PTY with `--permission-mode default` and an extra HTTP hook
+  that logged every payload. Fixtures and their sanitizing rules:
+  `src-tauri/src/transcript/fixtures/` (`README.md` there).
+
+  **Transcript**
+
+  | Topic | Finding |
+  |---|---|
+  | Line types | Conversation lines are `user`, `assistant`, `system`. Everything else is bookkeeping to skip: `attachment` (about half of all lines — one `hook_success` per hook per event), `mode`, `permission-mode`, `atis-latch`, `ai-title`, `agent-name`, `last-prompt`, `file-history-snapshot`, `file-history-delta`, `queue-operation`, `cost-state`. |
+  | Assistant lines | One line per content block (`text`, `thinking`, `tool_use`); blocks of one API message share `message.id`. |
+  | Thinking | The `thinking` block is present but its text is **empty** (signature only). There is nothing to show — render a "thought" marker at most. |
+  | Tool results | A `user` line with a `tool_result` block, paired by `tool_use_id`. The line also carries a structured `toolUseResult` (Bash: `stdout` / `stderr` / `interrupted`; Edit: `structuredPatch`, `originalFile`; AskUserQuestion: `answers`) and, when a prompt was answered, `permissionDecision`. |
+  | Failed tool | `is_error: true`; `toolUseResult` is a plain string `"Error: …"`. |
+  | Denied tool | `is_error: true`, `toolUseResult: "User rejected tool use"`, `toolDenialKind: "user-rejected"`. |
+  | Interrupted | The partial answer **is** saved as a normal `assistant` text line, followed by a `user` line whose text is `[Request interrupted by user]` (or `… for tool use]` when Esc cancelled a permission prompt). |
+  | Subagent (question 3) | A **separate file**: `<session-id>/subagents/agent-<agentId>.jsonl` plus `.meta.json` (`agentType`, `description`, `toolUseId`), lines marked `isSidechain: true`. The main file only has the `Agent` tool call, its immediate "launched" result, and later a `user` line holding a `<task-notification>` with the result. `SubagentStop` gives the path as `agent_transcript_path`. |
+  | Image paste | `user` content is `[text, image]` (base64 PNG inline), then an `isMeta` user line naming the cached image file. |
+  | Slash command | `system` / `local_command` lines (`<command-name>`, `<local-command-stdout>`) plus `isMeta` user lines. A typed `/context` never reaches the model. |
+  | `/compact` | **Same file, same session id.** Adds `system` / `compact_boundary` (with token counts) and a `user` line flagged `isCompactSummary`. The "session ids rotate" guardrail is corrected accordingly. |
+  | `/clear` | New session id and a new file. `SessionEnd` (`reason: "clear"`) fires on the old id; the first event on the new id is the next `UserPromptSubmit`. |
+  | Write latency | A line lands only when its **whole block** is finished. A 5-second answer was on screen from 0.9 s and in the file at 5.65 s — about 0.1 s after its last word, 4.7 s after its first. User prompt: 0.3 s after Enter. Tool call: about 0.15 s **after** `PreToolUse`. Tool result: about 0.15 s after `PostToolUse`. The final text line landed 0.1 s **after** `Stop`, so `Stop` does not mean the file is complete. |
+
+  **Hook payloads** — every event has `session_id`, `transcript_path`, `cwd`,
+  `hook_event_name`, `prompt_id`.
+
+  | Event | What it carries |
+  |---|---|
+  | `PreToolUse` | `tool_name`, `tool_input`, `tool_use_id`. Bash: `command`, `description`. Edit: `file_path`, `old_string`, `new_string`, `replace_all`. |
+  | `PermissionRequest` | `tool_name`, `tool_input`, `permission_suggestions` (rule or mode changes such as `addRules`, `addDirectories`, `setMode`). **No `tool_use_id`** — take it from the `PreToolUse` just before it. The suggestions are **not** the TUI's option list (see below). |
+  | `PreToolUse` / `PermissionRequest` for `AskUserQuestion` | The full `questions` array: `question`, `header`, `options[{label, description}]`, `multiSelect`. |
+  | `PreToolUse` / `PermissionRequest` for `ExitPlanMode` | `plan` (full markdown) and `planFilePath`. |
+  | `Notification` | Only `permission_prompt` was seen, 6 s after each `PermissionRequest`; `message` is "Claude needs your permission" or "Claude Code needs your approval for the plan". |
+  | `PostToolUse` | `tool_response` (structured), `duration_ms`. For `AskUserQuestion` it includes `answers`. |
+  | `PostToolUseFailure` | `error`, `is_interrupt`. Fires for a tool that ran and failed, **not** for a denial. |
+  | `Stop` | `last_assistant_message`, `background_tasks`. |
+  | `SubagentStart` / `SubagentStop` | `agent_id`, `agent_type`; stop adds `agent_transcript_path`. Tool events from inside a subagent carry `agent_id`. |
+  | `PreCompact` / `PostCompact` | `trigger`; post adds `compact_summary`. |
+  | `SessionStart` | **Never arrived** over the HTTP hook, at startup or after `/clear`. |
+  | `PermissionDenied`, `StopFailure` | Not seen. |
+
+  **What resolves a pending prompt**
+
+  | You do | Hook | Transcript |
+  |---|---|---|
+  | Approve | `PostToolUse` (or `PostToolUseFailure`) then `PostToolBatch`, about 0.15 s later | `tool_result` line |
+  | Choose "No" | **none** | `tool_result` with `toolDenialKind: "user-rejected"`, 0.16 s later |
+  | Press Esc on the prompt | **none** | `user` text `[Request interrupted by user for tool use]` |
+  | Interrupt a turn | **none** | `user` text `[Request interrupted by user]` |
+
+  So T5 cannot clear a card from hooks alone: it must also watch the transcript for the
+  matching `tool_use_id` result and the interruption line. Two tool calls issued in
+  parallel still prompt one at a time (the second `PreToolUse` fires only after the first
+  is answered), so one pending prompt per instance is the right model.
+
+  **Answer keys (question 2)** — all verified by hand in the TUI:
+
+  | Prompt | Keys |
+  |---|---|
+  | Permission | A digit selects that option **immediately**, no Enter. Enter takes the highlighted one (option 1). Esc cancels and ends the turn. |
+  | Single question | Digit *n* answers immediately. |
+  | Free text ("Type something") | Its digit (options + 1) moves the cursor there without submitting; then type, then Enter. |
+  | Several questions | A digit answers the current question and advances to the next tab; the last tab is a review screen where `1` submits and `2` cancels. |
+  | Multi-select | A digit toggles that option and stays; Tab moves on to the review screen. |
+  | Plan approval | `1` "Yes, and use auto mode", `2` "Yes, manually approve edits", `3` "Tell Claude what to change" (free text). No "No" option; Esc cancels. |
+
+  The TUI appends rows the hook does not list: "Type something" and "Chat about this" on
+  questions. All of T5's "explicit fallbacks" therefore have a safe mapping.
+
+  **Option-label source (question 1) — recommendation, awaiting approval:**
+
+  - **Questions:** hook-only. Labels come from the payload and the digit is the option's
+    position, by construction.
+  - **Permission and plan prompts:** read the terminal buffer (option 2), falling back to
+    generic **Allow** = `1` / **Deny** = Esc (option 1) when parsing fails. Reason: the
+    hook's `permission_suggestions` do not match what the TUI offers. A `mkdir` prompt
+    showed four options (Yes / always allow this directory / switch to auto mode / No)
+    while the hook listed two suggestions (`addDirectories`, `setMode: acceptEdits`); the
+    option count, the wording and the position of "No" all vary (three options for edits,
+    four for Bash), and the plan prompt's options depend on the user's default mode.
+    The option rows are regular enough to parse: `❯ 1. Yes`, `  2. …` with indented
+    continuation lines, at the bottom of the buffer.
+  - **Answering through the hook response (option 3):** rejected, as planned.
+
+  **Things found on the way** (not fixed here):
+
+  - `approve` = Enter on a plan prompt selects "Yes, and **use auto mode**" on this
+    machine (`defaultMode: auto`). The phone's Approve button does that today.
+  - Choosing "No" on a permission prompt fires no hook, and the status reducer only
+    leaves `needs_you` on `PostToolBatch` / `UserPromptSubmit` / `Stop`, so the card
+    likely stays on "needs you" until the next prompt. Inferred from the reducer, not
+    reproduced in the app.
+  - After every `Stop`, a prompt-suggestion subagent runs: `SubagentStop` with
+    `agent_type: ""` and sometimes a `PreToolUse` carrying `agent_id`, with **no**
+    matching `SubagentStart`. The subagent counter is clamped at zero so it does not go
+    negative, but it can undercount when a real subagent is running.
+  - `~/.claude/settings.json` still has the debug build's hook entry (port 49010). With
+    no debug build running, every Claude session prints "hook error … ECONNREFUSED
+    127.0.0.1:49010" under each prompt and tool call.
+  - R7 planned to wait for `SessionStart` before sending the first prompt; that event
+    does not arrive, so R7 needs a different readiness signal.
+
+#### Step T1 — Backend: transcript stream
+
+- **Goal:** The frontend can read a session's transcript and follow it live.
+- **Depends on:** T0.
+- **Build:**
+  - Extend `transcript/mod.rs` (reuse the `Tail` offset logic) with:
+    - `transcript_read(instanceId, fromOffset, maxBytes)` → complete JSONL lines + the next
+      offset. Paged, so a long session doesn't load in one call.
+    - a per-instance follow: a `notify` watcher on the active transcript file (2 s poll as
+      fallback) emitting `transcript-appended { instanceId, lines, offset }`.
+  - Follow rotation: when a hook event reports a new `transcript_path` for an instance,
+    switch the follow and emit `transcript-rotated { instanceId, reason }`.
+  - Lines pass through as raw JSON; parsing into a view model happens once, in TS (T2), so
+    desktop and phone share it.
+  - Only follow transcripts that have a consumer (a transcript view open, or a remote
+    client subscribed); the usage tailer is unchanged.
+- **Key files:** `src-tauri/src/transcript/mod.rs`, `src-tauri/src/hooks/server.rs`
+  (path hand-off), `src-tauri/src/lib.rs`, `src/ipc/transcript.ts`.
+- **Done when:** a throwaway debug listener prints new lines within about a second of the
+  file changing, across a `/clear`, with tests over the T0 fixtures.
+
+#### Step T2 — Transcript model + renderer (framework-free)
+
+- **Goal:** One module turns JSONL lines into a conversation and renders it; usable from
+  both the React app and the phone.
+- **Depends on:** T1.
+- **Build:**
+  - `src/transcript/model.ts`: fold lines into ordered **items** — user prompt, assistant
+    text, thinking, tool call (paired with its result by tool-use id), subagent group,
+    compaction/clear divider, interruption marker. Idempotent on re-delivery; tolerant of
+    unknown line types (render nothing, never throw).
+  - `src/transcript/render.ts`: plain DOM rendering, no React, so the PWA can import the
+    same code (R1). Markdown via `marked` + `DOMPurify`, styles from `theme/markdown.css`.
+  - Tool cards, collapsed by default, one-line summary: `Bash` (command, exit state,
+    output on expand), `Edit` / `Write` (path + a small diff on expand), `Read` / `Grep` /
+    `Glob` (target only), subagent (description + final result), anything else (name +
+    JSON on expand).
+  - Thinking collapsed. Long outputs truncated with "show all".
+  - Unit tests over the T0 fixtures.
+- **Key files:** new `src/transcript/`.
+- **Done when:** every T0 fixture renders without error and tool calls are paired with
+  their results.
+- **Out of scope:** the panel chrome, input, choice cards.
+
+#### Step T3 — The view and the toggle
+
+- **Goal:** Switch any Claude console between terminal and transcript at any moment.
+- **Depends on:** T2.
+- **Build:**
+  - `TranscriptView.tsx` hosting the T2 renderer, mounted by `ConsolePanel` in place of
+    `<Console>` when the instance's view mode is `"transcript"`. The pooled xterm is
+    detached, not released (`detach`, never `release`), so the session and its scrollback
+    are untouched.
+  - Toggle: a button in the console `HeaderStrip` and a `toggleTranscriptView` command
+    (keymap + command palette). Mode is per instance, persisted (prefs), and honoured in
+    torn-off windows.
+  - Shell consoles and dormant/error consoles have no toggle.
+  - Behaviour: stick to bottom while at bottom; "jump to latest" when scrolled up; a
+    working indicator driven by the live status; a divider on `/clear` / `/compact`.
+  - Performance: render the last N turns, "load earlier" pages back through
+    `transcript_read`. Do not render a 5 MB transcript in one pass.
+  - Copy: a copy button per assistant message (raw markdown) and per code block; normal
+    text selection copies clean, unwrapped text. Command: **copy last response**, which
+    also works from the terminal view.
+  - Find in view (Ctrl+F).
+- **Key files:** `src/panels/ConsolePanel.tsx`, new `src/panels/TranscriptView.tsx`,
+  `src/state/consoles.ts`, `src/keyboard/commands.ts`, `src/keyboard/keymap.ts`,
+  `src/torn/TornWindow.tsx`.
+- **Done when:** toggling mid-turn loses nothing in either direction; a copied multi-
+  paragraph answer pastes without stray line breaks; a resumed session shows its history.
+
+#### Step T4 — Prompt composer
+
+- **Goal:** Send prompts from the transcript view without flipping to the terminal.
+- **Depends on:** T3.
+- **Build:**
+  - A multi-line input docked at the bottom: Enter sends, Shift+Enter newline (the same
+    behaviour C1 gives the terminal), draft kept per instance.
+  - Send = `submitToTerminal` (bracketed paste + CR), the path the queue and templates
+    already use. While the agent is working, sending goes to the existing prompt queue.
+  - Interrupt button (existing `INTERRUPT_KEY` + `markInterrupted`).
+  - Template insert from the existing library.
+  - Slash commands: pass through as typed text. **Verify** that a pasted `/clear` or
+    `/compact` behaves the same as a typed one; if a command needs the TUI's menu, show
+    "open terminal" instead.
+  - The composer is a drop target for D1.
+- **Key files:** `src/panels/TranscriptView.tsx`, `src/state/queue.ts`,
+  `src/panels/terminalPool.ts`.
+- **Done when:** a full prompt → answer → follow-up loop works without leaving the view.
+
+#### Step T5 — Choice cards for "needs you" (desktop)
+
+- **Goal:** When the agent is waiting on you, the transcript view shows what it is asking
+  and lets you pick an option there.
+- **Depends on:** T0 (decision), T3.
+- **Build:**
+  - `src/state/pendingChoice.ts`: per instance, the current pending prompt, built from the
+    hook stream — kind (`permission` / `question` / `plan`), tool name, `tool_input`,
+    and the option list from the source chosen in T0. Cleared by the resolution events T0
+    identified, and whenever the status engine leaves `needs_you`. Answering in the
+    terminal must clear the card too.
+  - Card content:
+    - **Permission:** tool and a readable rendering of its input — the command for Bash,
+      a diff for Edit/Write (reuse the T2 tool card), the URL for a fetch.
+    - **Question (`AskUserQuestion`):** question text, each option's label and
+      description.
+    - **Plan (`ExitPlanMode`):** the plan rendered as markdown, plus the P1 "open plan"
+      button.
+  - Buttons: one per option, numbered. Choosing sends the mapped keystroke through the
+    single mapping module. Number keys 1–9 work while the card has focus; Esc = deny.
+  - **Fallbacks are explicit:** multi-question, multi-select, and free-text ("Other")
+    prompts show the content plus an **Answer in terminal** button that flips the toggle,
+    until T0's findings show a safe mapping. Unknown prompt kinds do the same.
+  - After sending, the card shows "sent" and waits for the resolution event; if none
+    arrives in a few seconds it offers the terminal instead of re-sending.
+- **Key files:** new `src/state/pendingChoice.ts`, `src/state/remoteActions.ts` (mapping),
+  `src/state/status.ts` (read only), `src/panels/TranscriptView.tsx`.
+- **Done when:** a Bash permission, an edit permission, a single-select question and a
+  plan approval can each be answered from the card, and answering any of them in the
+  terminal clears the card.
+- **Out of scope:** the phone (R5).
+
+---
+
+### Track D — Drag to reference
+
+#### Step D1 — Drag files from inside the app onto a console
+
+- **Goal:** Drag a file onto a console to reference it for Claude.
+- **Depends on:** nothing (T4 adds a second drop target later).
+- **Build:**
+  - Make rows draggable in the editor file tree, editor tabs, the Diff file list and the
+    Git status list, with a custom MIME type (e.g. `application/x-workbench-path`)
+    carrying absolute paths; multi-select drags carry several.
+  - Drop targets: the terminal host and the transcript composer. Insert `@<path> ` per
+    file — relative to the instance's working dir when inside it, absolute otherwise — via
+    `pasteIntoTerminal` (no submit) or at the composer's caret.
+  - **Verify** how Claude Code wants a path with spaces after `@` and encode accordingly.
+  - dockview uses HTML5 drag and drop for panels: make sure the custom type doesn't
+    trigger its dock overlays, and that panel drags don't trigger the file drop.
+  - A drop highlight on the console while a file drag is over it.
+- **Key files:** `src/panels/Editor/FileTree.tsx`, `src/panels/Editor/index.tsx`,
+  `src/panels/Diff/index.tsx`, `src/panels/Git/rows.tsx`, `src/panels/terminalPool.ts`,
+  `src/panels/Workspace.tsx`.
+- **Done when:** dragging a file from the tree onto a console inserts a working reference
+  and panel drag-to-dock still works.
+
+#### Step D2 — Drag files from the OS (spike, may be dropped)
+
+- **Goal:** Decide whether Explorer → console drops are worth their cost.
+- **Depends on:** D1.
+- **Build:** with `dragDropEnabled: false` the webview gets no file paths; turning it on
+  gives paths through Tauri's drag-drop event but disables HTML5 drag and drop on Windows,
+  which dockview needs. Spike whether a second mechanism can supply paths without flipping
+  that flag. If not, close this step as "won't do" and record why.
+- **Done when:** either OS drops work with panel docking intact, or the step is closed.
+
+---
+
+### Track V — Diff / review
+
+#### Step V1 — Diff rendering
+
+- **Goal:** A diff that is comfortable to read.
+- **Depends on:** nothing.
+- **Build:**
+  - Evaluate `@codemirror/merge` for the review panel: syntax highlighting, intra-line
+    changes, collapsed unchanged regions, unified and side-by-side from one component, and
+    an editable "after" side — which would fold today's separate edit mode into the diff.
+    Needs a backend read of the base version (`git show <base>:<path>`), batched per file.
+  - If it fits: unified / side-by-side toggle (persisted), line numbers, edit-in-place
+    with Ctrl+S, and the "edit" mode goes away. If it doesn't, extend `UnifiedDiff` with
+    line numbers + intra-line highlighting and keep the modes.
+  - `UnifiedDiff` stays as is for the Git panel's hunk staging.
+  - Remove the 4,000-line cap where the new view makes it unnecessary; keep a guard for
+    pathological files.
+- **Key files:** `src/panels/Diff/`, `src-tauri/src/git/mod.rs`, `src/ipc/git.ts`,
+  `src/theme/codemirror.ts`.
+- **Done when:** a TypeScript and a Rust file both show highlighted, intra-line diffs in
+  both layouts, and a small edit can be saved without leaving the diff.
+
+#### Step V2 — Navigation and freshness
+
+- **Goal:** Move through a change set quickly and trust that it is current.
+- **Depends on:** V1.
+- **Build:** next/previous hunk and next/previous file keys (keymap + palette); a "viewed"
+  check per file, reset when that file changes; auto-refresh from the existing git watcher
+  (`git/watch.rs`), keeping selection and scroll; a `+N −M` total that updates live.
+- **Done when:** the panel updates as the agent edits, without the refresh button, and the
+  whole change set can be walked from the keyboard.
+
+#### Step V3 — Inline comments sent to the agent
+
+- **Goal:** Comment on lines in the diff and send the batch as the next prompt.
+- **Depends on:** V1.
+- **Build:**
+  - Select a line or range → add comment. Pending comments are listed in the panel and
+    marked in the gutter; editable and removable; kept per instance until sent.
+  - **Send comments** builds one prompt — each comment as `path:line` (or range), a short
+    quote of the code, and the note — and delivers it with `submitToTerminal` (queued if
+    the agent is working).
+  - **Add to prompt** from an editor or diff selection: inserts an `@path` reference with
+    the line range into the console without sending.
+  - Per-hunk **revert** in the review panel, reusing the Git panel's hunk patch machinery,
+    behind the existing confirm.
+- **Key files:** `src/panels/Diff/`, `src/panels/Editor/CodeMirrorView.tsx`,
+  `src/panels/terminalPool.ts`, new `src/state/reviewComments.ts`.
+- **Done when:** three comments across two files arrive as one readable prompt and the
+  agent acts on the right lines.
+
+---
+
+### Track N — Notes
+
+#### Step N1 — Project notes panel
+
+- **Goal:** A notes tab per project: a list of notes, each edited like a file, shown as
+  markdown.
+- **Depends on:** nothing.
+- **Decision to confirm at the start of the step — where notes live:**
+  - *Recommended:* plain `.md` files in the app data dir, `notes/<projectId>/`. Private,
+    survive branch switches and worktrees, never show up in `git status`.
+  - *Alternative:* `<repo>/.workbench/notes/`. Travels with the repo and is directly
+    readable by agents, but appears in git unless ignored and differs per worktree.
+- **Build:**
+  - New dockview panel type `notes`, bound to a project: note list on the left (create,
+    rename, delete with confirm, filter), editor on the right.
+  - Editing reuses `CodeMirrorView` with the markdown language, Ctrl+S and the dirty
+    indicator; view modes reuse the editor's existing preview pane (edit / preview / split).
+  - Because notes are files, the existing `fs` read/write commands apply; add only what
+    listing and the app-data root need.
+  - Open from the rail's project row, the command palette, and a keybinding. Layout
+    presets must round-trip the new panel type.
+  - **Send to agent:** insert the note's text (or an `@path`) into a chosen console.
+- **Key files:** new `src/panels/Notes/`, `src/panels/Workspace.tsx` (`COMPONENTS`),
+  `src/state/layout.ts`, `src-tauri/src/fs/mod.rs`, `src/keyboard/commands.ts`.
+- **Done when:** notes persist across restarts, render as markdown, and survive a layout
+  preset switch.
+
+#### Step N2 — Rendered-while-editing markdown (optional)
+
+- **Goal:** Notes read as formatted text while you type, with markup shown only on the
+  line being edited.
+- **Depends on:** N1.
+- **Build:** CodeMirror decorations for headings, emphasis, links, lists and code spans.
+  Applies to notes first; offer it for `.md` files in the editor if it holds up.
+- **Done when:** a note with headings, lists and code reads cleanly without a preview pane.
+
+---
+
+### Track R — Remote
+
+#### Step R1 — Give the PWA a build
+
+- **Goal:** The phone client can share code with the desktop frontend.
+- **Depends on:** T2.
+- **Build:**
+  - Move the PWA to a second Vite entry (plain TS, no React) that imports
+    `src/transcript/` and the choice-card rendering; output a single self-contained bundle
+    the Rust server embeds.
+  - Decide how the bundle reaches `include_str!` on a fresh clone (committed artifact vs
+    a `build.rs` check with a clear error). Record the decision.
+  - Behaviour parity with today's `index.html`: pairing, dashboard, usage meter, mirror.
+  - Bump the service worker cache version on every build.
+- **Key files:** `src-tauri/src/remote/pwa/`, `vite.config.ts`, `package.json`,
+  `src-tauri/src/remote/server.rs`, `src-tauri/build.rs`.
+- **Done when:** the phone works exactly as before, from the built bundle.
+
+#### Step R2 — Harden pairing and auth
+
+- **Goal:** Safe enough to expose beyond the tailnet. Prerequisite for R3.
+- **Depends on:** nothing.
+- **Build:**
+  - `/pair`: global attempt rate limit with lockout; longer codes; a code exists only
+    after the user asks for one in the desktop UI.
+  - **Desktop approval:** a new device must be confirmed in a desktop dialog before its
+    token becomes valid.
+  - Move the token out of WebSocket URLs (subprotocol header or first-message auth).
+    Constant-time comparison. Check `Origin` on WebSocket upgrades.
+  - Device list shows last seen + address; revoke stays one click. Optional token expiry
+    after N days unused.
+  - Log auth failures where the Remote Access menu can show them.
+- **Key files:** `src-tauri/src/remote/mod.rs`, `src-tauri/src/remote/server.rs`,
+  `src/panels/RemoteAccessMenu.tsx`, PWA client.
+- **Done when:** a brute-force loop against `/pair` is locked out, no token appears in a
+  URL, and an unapproved device gets nothing.
+
+#### Step R3 — Tailscale Funnel: remote ready whenever the app runs
+
+- **Goal:** Open a fixed HTTPS address on the phone, with no Tailscale on the phone.
+- **Depends on:** R2.
+- **Build:**
+  - Listen on `127.0.0.1` as well as the tailnet address (Funnel proxies to localhost).
+  - A **public access** switch in the Remote Access menu, off by default, with a plain
+    statement of what it exposes. When on, Workbench runs `tailscale funnel` for the port
+    on startup and reports the `https://<machine>.<tailnet>.ts.net` address (with a QR
+    code); when off, it removes the funnel.
+  - Detect and explain the one-time prerequisites instead of failing silently: Tailscale
+    installed and logged in, HTTPS certificates and the Funnel attribute enabled for the
+    tailnet. Funnel only serves a few public ports — pick one and say which.
+  - Handle the tailscale CLI being absent, the funnel already existing, and a second
+    Workbench build (dev vs release ports).
+  - Tailnet-only mode keeps working unchanged.
+- **Key files:** `src-tauri/src/remote/mod.rs`, `src/panels/RemoteAccessMenu.tsx`,
+  `src/state/remoteServer.ts`.
+- **Done when:** with the phone on mobile data and Tailscale off, the dashboard loads over
+  HTTPS after a desktop restart with no manual step.
+
+#### Step R4 — Phone: transcript view and prompt-first input
+
+- **Goal:** Reading and writing on the phone feels like a chat, not a shrunken terminal.
+- **Depends on:** R1, T1.
+- **Build:**
+  - Server: a transcript endpoint (WebSocket: history page on connect, then appended
+    lines, plus rotation notices), fed by T1.
+  - Phone console view defaults to **transcript**, with the same toggle to the mirrored
+    terminal.
+  - A sticky composer: multi-line, send button, dictation via the phone keyboard. Sends
+    the existing `prompt` action.
+  - In the mirror view, a quick-key row (Esc, ↑, ↓, Tab, Shift+Tab, Enter, 1–4) so raw
+    keyboard mode is rarely needed.
+  - Reconnect resumes from the last offset instead of reloading the history.
+- **Key files:** `src-tauri/src/remote/server.rs`, PWA sources, `src/transcript/`.
+- **Done when:** a full prompt → read answer → follow-up loop is comfortable one-handed.
+
+#### Step R5 — Phone: choice cards
+
+- **Goal:** Answer "needs you" prompts on the phone with the real options.
+- **Depends on:** T5, R4.
+- **Build:**
+  - Include the pending choice (kind, content, options) in the snapshot the webview
+    already pushes (`RemoteMirror.tsx`), so the phone needs no logic of its own.
+  - A new remote action `choose { instanceId, option }`, handled in
+    `state/remoteActions.ts` by the same mapping T5 uses. Approve / deny remain as the
+    fallback.
+  - Card on the dashboard (compact) and in the transcript view (full), same fallbacks as
+    T5 ("answer in terminal" opens the mirror).
+  - Guard against stale taps: the action carries the prompt's id and is ignored if that
+    prompt is no longer pending.
+- **Key files:** `src/panels/RemoteMirror.tsx`, `src/state/remoteActions.ts`,
+  `src/ipc/remote.ts`, PWA sources.
+- **Done when:** a multi-option question can be answered from the phone and a tap on an
+  already-resolved prompt does nothing.
+
+#### Step R6 — Push notifications
+
+- **Goal:** The phone is told when an agent needs you, with the page closed.
+- **Depends on:** R3 (web push needs HTTPS).
+- **Build:** VAPID keys generated and stored on the desktop; subscribe from the PWA after
+  pairing; the desktop sends a push on the transitions that already raise an OS toast
+  (needs-you, escalation); tapping opens that instance. Per-device mute. Note the platform
+  limits found (e.g. install-to-home-screen requirements) in As built.
+- **Key files:** `src-tauri/src/remote/`, `src-tauri/src/attention.rs`, PWA service worker.
+- **Done when:** a needs-you transition reaches a locked phone.
+
+#### Step R7 — Phone: create a session
+
+- **Goal:** Start a new Claude session from the phone, in an existing project, optionally
+  with its first prompt. Today the phone can only start, stop and prompt instances that
+  already exist (`remoteActions.ts`: `start` resolves an instance from the registry).
+- **Depends on:** R1 (so the form is written once, in the built PWA, not in the
+  hand-written `index.html` that R1 replaces).
+- **Build:**
+  - **Snapshot:** add the project list (id, name, group, remote flag) to the snapshot
+    `RemoteMirror.tsx` already pushes — it currently carries only each instance's
+    `projectId` / `projectName`.
+  - **Action:** a new remote action `create { requestId, projectId, title?, text? }`,
+    handled in `state/remoteActions.ts`: `addInstance` (`state/registry.ts`) →
+    `openConsole` → if `text` is present, submit it once the TUI is ready. "Ready" must
+    be an explicit signal, not a timer; `submitToTerminal` returning `false` is not
+    enough, since the terminal exists before the prompt box does. T0 found that the
+    `SessionStart` hook never arrives, so the signal has to be something else — pick it
+    when building this step (candidates: the transcript file appearing, or the prompt box
+    showing in the terminal buffer). If the signal doesn't arrive, the prompt is kept as the
+    instance's queued prompt rather than dropped.
+  - **Idempotent:** the desktop remembers recent `requestId`s, so a retried tap or a
+    reconnect replay never creates a second instance. The created instance's id is
+    reported back against the `requestId` in the next snapshot, so the phone can open it.
+  - **Phone UI:** a **new session** button on the dashboard and on each project group →
+    project picker (skipped when started from a project) → optional title and first
+    prompt → the phone opens the new instance as soon as it appears. The created console
+    opens on the desktop exactly as a rail-launched one does.
+  - **Title:** when omitted, use the same default the desktop launcher uses.
+  - **Worktree (optional):** an "isolate in a worktree" switch reusing
+    `provisionWorktree` (`state/worktree.ts`); report a provisioning failure on the phone
+    instead of leaving a half-created instance.
+  - Remote (SSH) projects go through the same path as on the desktop; if one needs an
+    interactive password, say so on the phone and point at the mirror.
+- **Key files:** `src/state/remoteActions.ts`, `src/ipc/remote.ts`,
+  `src/panels/RemoteMirror.tsx`, `src/state/registry.ts`, PWA sources,
+  `src-tauri/src/remote/server.rs` (only if the action allow-list lives there).
+- **Done when:** from the phone, a new session in a chosen project starts, receives its
+  first prompt, and shows up on both phone and desktop; a double tap creates one session.
+- **Out of scope:** creating projects, or sessions at an arbitrary path — the phone only
+  ever names an existing project id, never a filesystem path. Resuming a past session
+  from the phone.
+
+---
+
+### Track P — Plans
+
+#### Step P1 — Open plan on demand
+
+- **Goal:** Read a plan as a proper document when you want to — never automatically.
+- **Depends on:** T2 (plan detection in the transcript model).
+- **Build:** when the session's transcript contains a plan (`ExitPlanMode` input, per the
+  T0 fixtures), show an **open plan** button in the console header and on the plan's card
+  in the transcript view and choice card. It opens the plan in a markdown preview tab
+  (read-only; "save as note" once N1 exists). Latest plan by default, earlier ones from a
+  small menu.
+- **Done when:** a plan can be opened beside the console from either view, and nothing
+  opens on its own.
+
+---
+
+### Track A — Agent review
+
+#### Step A1 — Review with a fresh agent
+
+- **Goal:** One action gets an independent review of an instance's changes.
+- **Depends on:** V3.
+- **Build:** from the Diff panel, start a second instance in the same working dir with an
+  editable review prompt scoped to the diff vs base; its findings come back as a list you
+  tick, and the ticked ones are sent to the implementing instance through the V3 comment
+  path. The review prompt is stored per project.
+- **Done when:** a review round trip works end to end without copy-paste.
+
+---
+
+### Track M — Mods
+
+#### Step M1 — Run summary on done (exploratory)
+
+- **Goal:** See what a turn changed (`+N −M`, files) the moment it finishes.
+- **Depends on:** nothing.
+- **Build:** try it as a Claude Code mod (a Stop hook or status-line segment). Workbench
+  already installs a managed status line for the usage meter (`src-tauri/src/statusline/`),
+  so the two must be chained, not replaced. Note which other items from this plan would
+  fit the same route.
+- **Done when:** the summary shows after a turn, and the usage meter still works.
+
+---
+
+## Sequencing
+
+```
+C1 ─ C2 ─ C3
+T0 ─ T1 ─ T2 ─ T3 ─ T4
+               └─ T5 ──────────┐
+D1 (─ D2)                      │
+V1 ─ V2                        │
+   └ V3 ─ A1                   │
+N1 (─ N2)                      │
+R2 ─ R3 ─ R6                   │
+T2 ─ R1 ─ R4 ─────────────── R5
+     └ R7
+T2 ─ P1
+M1
+```
+
+Suggested order: **C1 → T0 → T1 → T2 → T3 → T4 → T5 → C2 → C3 → D1 → R1 → R7 → R2 → R3 → R4 →
+R5 → V1 → V2 → V3 → N1 → P1 → R6 → A1**, with M1, N2 and D2 whenever convenient.
+
+C2/C3 sit after the transcript view on purpose: once T3 exists there is a clean way to read
+any session, which lowers the urgency and makes the terminal bugs easier to compare against.
+
+---
+
+## Open questions
+
+| # | Question | Resolved in |
+|---|---|---|
+| 1 | Option-label source for permission prompts — **recommended:** hook-only for questions, terminal buffer for permission and plan prompts; awaiting approval | T0 |
+| 2 | Exact answer keys for each prompt kind — **digits select directly**; table in T0 As built | T0 |
+| 3 | Where subagent messages live — **a separate file**, `<session-id>/subagents/agent-<id>.jsonl` | T0 |
+| 4 | Shift+Enter byte sequence — **`\x1b\r`** (verified on 2.1.296) | C1 |
+| 5 | Path-with-spaces syntax after `@` | D1 |
+| 6 | `@codemirror/merge` vs extending `UnifiedDiff` | V1 |
+| 7 | Notes storage location | N1 |
+| 8 | How the PWA bundle is embedded on a fresh clone | R1 |
+
+---
+
+## Progress tracker
+
+| Step | Title | Status |
+|---|---|---|
+| C1 | Shift+Enter + scrollback | ☑ |
+| C2 | Blank / garbled consoles | ☐ |
+| C3 | Overwritten output | ☐ |
+| T0 | Spike: transcript + hook payloads | ☑ (label-source decision awaiting approval) |
+| T1 | Backend transcript stream | ☐ |
+| T2 | Transcript model + renderer | ☐ |
+| T3 | View + toggle | ☐ |
+| T4 | Prompt composer | ☐ |
+| T5 | Choice cards (desktop) | ☐ |
+| D1 | Drag files from inside the app | ☐ |
+| D2 | Drag files from the OS (spike) | ☐ |
+| V1 | Diff rendering | ☐ |
+| V2 | Diff navigation + freshness | ☐ |
+| V3 | Inline comments to the agent | ☐ |
+| N1 | Project notes panel | ☐ |
+| N2 | Rendered-while-editing markdown | ☐ |
+| R1 | PWA build | ☐ |
+| R2 | Pairing / auth hardening | ☐ |
+| R3 | Tailscale Funnel | ☐ |
+| R4 | Phone transcript + composer | ☐ |
+| R5 | Phone choice cards | ☐ |
+| R6 | Push notifications | ☐ |
+| R7 | Phone: create a session | ☐ |
+| P1 | Open plan on demand | ☐ |
+| A1 | Review with a fresh agent | ☐ |
+| M1 | Run summary on done (mod) | ☐ |
