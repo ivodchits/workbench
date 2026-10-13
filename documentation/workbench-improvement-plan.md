@@ -427,6 +427,45 @@ filesystem path. There is no `draggable` / `dataTransfer` use anywhere in `src/`
 - **Done when:** every T0 fixture renders without error and tool calls are paired with
   their results.
 - **Out of scope:** the panel chrome, input, choice cards.
+- **As built (2026-10-13):** `src/transcript/model.ts`, `src/transcript/render.ts`,
+  `src/theme/transcript.css`. Checked by eye in the app webview against the fixtures.
+  - **Model:** `createTranscript()` → `{ items, append(lines), prepend(lines), reset() }`.
+    Items: `user`, `assistant`, `thinking`, `tool`, `command` (slash command with its
+    output), `divider` (`compact` / `clear`), `interrupted`, `turn-end` (the turn's
+    duration) and `notice`. Each has a stable `id` and a `rev` that goes up when it
+    changes, which is what the renderer keys on.
+  - **`prepend` was added to the plan's shape.** History is paged in from the end (T1's
+    `transcript_read_back`), so an older page arrives after the lines that follow it — a
+    tool result before its call. The model keeps the parsed conversation lines and
+    re-folds them all on `prepend`; a result whose call is not loaded yet is held back
+    rather than shown bare.
+  - **Idempotent by `uuid`:** a line seen twice is ignored. Bookkeeping lines are dropped
+    at parse, and `originalFile` is stripped from Edit results so a long session does not
+    hold each edited file many times.
+  - **Subagent group** is the `Agent` tool card: description, type, and the final report
+    taken from the later `<task-notification>` line (matched by tool-use id), which is
+    not shown as a user prompt. The subagent's own messages are in a separate file that
+    T1 does not stream; `createTranscript({ sidechain: true })` folds such a file, for
+    whoever adds that view.
+  - **`/compact`** becomes one divider with the token counts and the carried summary
+    (collapsed); the typed `/compact` prompt and the command's hook chatter are folded
+    into it. **`/clear`** is a divider at the top of the new file.
+  - **Renderer:** `renderItem(item)` and `createRenderer(container).update(items)`, plain
+    DOM. `update` reuses every element whose item did not change and keeps a card open
+    when its item updates (a running tool getting its result). Card bodies are built on
+    first open. Output longer than 40 lines or 4000 characters is cut with "show all".
+  - **Cards beyond the plan's list:** `AskUserQuestion` (options, the picked one marked)
+    and `ExitPlanMode` (the plan as markdown). An `Edit` / `Write` still waiting for its
+    result shows the change from its input, which T5 can use for the permission card.
+  - **Untrusted content:** text goes in through `textContent`; markdown through `marked`
+    + `DOMPurify` with `img`, `style` and `form` removed, so a rendered answer cannot
+    fetch a remote image. Links get `target="_blank" rel="noopener noreferrer"`; **T3 must
+    route link clicks to the OS opener**, the renderer does not handle clicks.
+  - **Tests:** the frontend had no test runner. Added `vitest` + `jsdom` (dev
+    dependencies) and `npm test`; 68 tests in `model.test.ts` and `render.test.ts` over
+    the T0 fixtures, including page boundaries at arbitrary points and HTML injection.
+  - **Not done:** syntax highlighting in code blocks; `!` shell lines are parsed from
+    their documented tags but there is no fixture for them.
 
 #### Step T3 — The view and the toggle
 
@@ -876,7 +915,7 @@ any session, which lowers the urgency and makes the terminal bugs easier to comp
 | C3 | Overwritten output | ☐ |
 | T0 | Spike: transcript + hook payloads | ☑ (label-source decision awaiting approval) |
 | T1 | Backend transcript stream | ☑ |
-| T2 | Transcript model + renderer | ☐ |
+| T2 | Transcript model + renderer | ☑ |
 | T3 | View + toggle | ☐ |
 | T4 | Prompt composer | ☐ |
 | T5 | Choice cards (desktop) | ☐ |
