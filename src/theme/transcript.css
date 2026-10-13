@@ -272,3 +272,177 @@
 .wb-tx-notice-error {
   border-left-color: var(--wb-delText);
 }
+
+/* ── copy buttons ────────────────────────────────────────────────────────── */
+
+.wb-tx-message,
+.wb-tx-code {
+  position: relative;
+}
+
+.wb-tx-copy {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  padding: 0 6px;
+  font: 11px/1.6 var(--wb-mono);
+  color: var(--wb-textDim2);
+  background: var(--wb-panel);
+  border: 1px solid var(--wb-border);
+  cursor: pointer;
+  opacity: 0;
+  user-select: none;
+}
+
+/* The message's button sits in the gap above it, clear of a code block's own. */
+.wb-tx-message > .wb-tx-copy {
+  top: -12px;
+  right: 0;
+}
+
+.wb-tx-copy::before {
+  content: "copy";
+}
+
+.wb-tx-copy.wb-tx-copied::before {
+  content: "copied";
+  color: var(--wb-done);
+}
+
+.wb-tx-message:hover > .wb-tx-copy,
+.wb-tx-code:hover > .wb-tx-copy,
+.wb-tx-copy:focus-visible,
+.wb-tx-copy.wb-tx-copied {
+  opacity: 1;
+}
+
+.wb-tx-copy:hover {
+  color: var(--wb-accent);
+  border-color: var(--wb-borderActive);
+}
+
+/* ── the view around the transcript (step T3, `panels/TranscriptView`) ────── */
+
+.wb-txv {
+  position: relative;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background: var(--wb-bg);
+  outline: none;
+}
+
+.wb-txv-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.wb-txv .wb-tx {
+  padding-bottom: 8px;
+  user-select: text;
+}
+
+.wb-txv-empty {
+  padding: 24px 16px 0;
+  font: 12px var(--wb-mono);
+  color: var(--wb-textFaint);
+}
+
+.wb-txv-status {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 22px;
+  padding: 0 16px 12px;
+  font: 12px var(--wb-mono);
+}
+
+.wb-txv-earlier,
+.wb-txv-jump,
+.wb-txv-link,
+.wb-txv-find button {
+  font: 11px var(--wb-mono);
+  color: var(--wb-textDim2);
+  background: var(--wb-titlebar);
+  border: 1px solid var(--wb-border);
+  cursor: pointer;
+}
+
+.wb-txv-earlier:hover:not(:disabled),
+.wb-txv-jump:hover,
+.wb-txv-link:hover,
+.wb-txv-find button:hover {
+  color: var(--wb-accent);
+  border-color: var(--wb-borderActive);
+}
+
+.wb-txv-earlier {
+  display: block;
+  margin: 12px auto 0;
+  padding: 2px 12px;
+}
+
+.wb-txv-earlier:disabled {
+  cursor: default;
+}
+
+.wb-txv-link {
+  padding: 1px 8px;
+}
+
+.wb-txv-jump {
+  position: absolute;
+  right: 22px;
+  bottom: 14px;
+  padding: 3px 10px;
+  color: var(--wb-text);
+  border-color: var(--wb-borderActive);
+}
+
+.wb-txv-find {
+  position: absolute;
+  top: 8px;
+  right: 22px;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px;
+  background: var(--wb-panel);
+  border: 1px solid var(--wb-borderActive);
+}
+
+.wb-txv-find input {
+  width: 200px;
+  padding: 2px 6px;
+  font: 12px var(--wb-mono);
+  color: var(--wb-text);
+  background: var(--wb-bg);
+  border: 1px solid var(--wb-border);
+  outline: none;
+}
+
+.wb-txv-find button {
+  padding: 1px 7px;
+}
+
+.wb-txv-find-count {
+  min-width: 70px;
+  padding: 0 4px;
+  font: 11px var(--wb-mono);
+  color: var(--wb-textFaint);
+  text-align: right;
+  white-space: nowrap;
+}
+
+::highlight(wb-tx-find) {
+  background-color: var(--wb-sel);
+  color: var(--wb-text);
+}
+
+::highlight(wb-tx-find-current) {
+  background-color: var(--wb-working);
+  color: var(--wb-bg);
+}

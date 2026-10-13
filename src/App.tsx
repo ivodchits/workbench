@@ -12,7 +12,9 @@ import CommandPaletteHost from "./panels/CommandPalette";
 import { speakFocusedSelection } from "./panels/terminalPool";
 import ResumePickerHost from "./panels/ResumePicker";
 import KeymapEditorHost from "./panels/KeymapEditor";
-import { useConsoles } from "./state/consoles";
+import { canShowTranscript, getActiveConsoleId, getOpenConsoles, useConsoles } from "./state/consoles";
+import { initViewModes, toggleViewMode } from "./state/viewMode";
+import { copyLastResponse } from "./panels/consoleCommands";
 import { useRegistry } from "./state/registry";
 import {
   getActiveProject,
@@ -81,6 +83,8 @@ function App() {
     // Notification routing + escalation (step 4.6): route needs-you to the configured
     // destinations and watch for held/stuck cards. App-lifetime, idempotent.
     initNotifications();
+    // Per-console terminal/transcript choice (step T3), restored from prefs.
+    void initViewModes();
   }, []);
 
   // The global keymap listener (Ctrl+Shift / Alt / Ctrl+Tab chords). Rail single
@@ -113,6 +117,27 @@ function App() {
   // Registered here so the command is live app-wide; the pool tracks which terminal
   // was last focused and toggles speech on/off.
   useEffect(() => registerCommand("speakSelection", speakFocusedSelection), []);
+
+  // Transcript view (step T3). Both act on the console you last focused: switch it
+  // between terminal and transcript (only a running local session has one), and
+  // copy Claude's last answer — which works from either view.
+  useEffect(
+    () =>
+      registerCommand("toggleTranscriptView", () => {
+        const id = getActiveConsoleId();
+        const session = getOpenConsoles().find((c) => c.instanceId === id);
+        if (id && canShowTranscript(session)) toggleViewMode(id);
+      }),
+    [],
+  );
+  useEffect(
+    () =>
+      registerCommand("copyLastResponse", () => {
+        const id = getActiveConsoleId();
+        if (id) void copyLastResponse(id);
+      }),
+    [],
+  );
 
   // Restore the last-selected project from prefs before we consider a default.
   useEffect(() => {

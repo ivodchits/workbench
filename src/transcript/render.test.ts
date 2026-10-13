@@ -128,6 +128,33 @@ describe("untrusted content", () => {
   });
 });
 
+describe("copy buttons", () => {
+  const source = "Two lines\nof one paragraph.\n\n```sh\necho hi\n```\n";
+
+  it("copy the message as markdown, and a code block as its code", async () => {
+    const copied: string[] = [];
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText: async (t: string) => void copied.push(t) },
+    });
+    const node = renderItem(fold([assistant("a", { type: "text", text: source })])[0]);
+    node.querySelector<HTMLButtonElement>(":scope > .wb-tx-copy")!.click();
+    node.querySelector<HTMLButtonElement>(".wb-tx-code > .wb-tx-copy")!.click();
+    await Promise.resolve();
+    expect(copied).toEqual([source, "echo hi"]);
+    expect(node.querySelector(".wb-tx-copied")).not.toBeNull();
+  });
+
+  it("add nothing to the text a selection would copy", () => {
+    const node = renderItem(fold([assistant("a", { type: "text", text: source })])[0]);
+    expect(node.querySelectorAll(".wb-tx-copy")).toHaveLength(2);
+    expect(node.textContent).not.toMatch(/copy/);
+    // A paragraph's source line break is a soft one: it copies as a space.
+    expect(node.querySelector("p")?.innerHTML).toBe("Two lines\nof one paragraph.");
+    expect(node.querySelector("br")).toBeNull();
+  });
+});
+
 describe("long output", () => {
   it("is cut, with a button that shows the rest", () => {
     const long = Array.from({ length: 200 }, (_, i) => `line ${i}`).join("\n");

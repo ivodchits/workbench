@@ -58,6 +58,8 @@ export function runAction(command: CommandId, arg?: number): void {
     case "openCommandPalette":
     case "openKeymapEditor":
     case "speakSelection":
+    case "toggleTranscriptView":
+    case "copyLastResponse":
     case "gitRefresh":
     case "gitFetch":
     case "gitPull":

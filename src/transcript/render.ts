@@ -50,6 +50,25 @@ function el<K extends keyof HTMLElementTagNameMap>(
   return node;
 }
 
+/** A button that copies `text` (read when clicked). It has no text of its own —
+ *  its label is drawn by CSS — so it never ends up in a selection or in
+ *  `textContent`. */
+function copyButton(label: string, text: () => string): HTMLButtonElement {
+  const button = el("button", "wb-tx-copy");
+  button.type = "button";
+  button.title = label;
+  button.setAttribute("aria-label", label);
+  button.addEventListener("click", (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    void navigator.clipboard?.writeText(text()).then(() => {
+      button.classList.add("wb-tx-copied");
+      setTimeout(() => button.classList.remove("wb-tx-copied"), 1200);
+    });
+  });
+  return button;
+}
+
 /** Sanitized markdown, as a `.wb-md` block. */
 function markdown(source: string, className = ""): HTMLElement {
   const html = DOMPurify.sanitize(marked.parse(source, { async: false, gfm: true }), {
@@ -62,6 +81,13 @@ function markdown(source: string, className = ""): HTMLElement {
   for (const a of node.querySelectorAll("a[href]")) {
     a.setAttribute("target", "_blank");
     a.setAttribute("rel", "noopener noreferrer");
+  }
+  // Each code block gets a copy button, in a wrapper so it stays put while the
+  // block scrolls sideways.
+  for (const pre of node.querySelectorAll("pre")) {
+    const wrap = el("div", "wb-tx-code");
+    pre.replaceWith(wrap);
+    wrap.append(pre, copyButton("copy code", () => (pre.textContent ?? "").replace(/\n$/, "")));
   }
   return node;
 }
@@ -402,7 +428,13 @@ export function renderItem(item: Item): HTMLElement {
       node = userBlock(item);
       break;
     case "assistant":
-      node = markdown(item.text, item.isError ? "wb-tx-assistant wb-tx-err" : "wb-tx-assistant");
+      node = el(
+        "div",
+        "wb-tx-message",
+        markdown(item.text, item.isError ? "wb-tx-assistant wb-tx-err" : "wb-tx-assistant"),
+        // The message as Claude wrote it: its markdown source.
+        copyButton("copy message", () => item.text),
+      );
       break;
     case "thinking":
       node = item.text.trim()

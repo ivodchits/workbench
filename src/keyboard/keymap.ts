@@ -55,6 +55,8 @@ export type CommandId =
   | "openCommandPalette"
   | "openKeymapEditor"
   | "speakSelection"
+  | "toggleTranscriptView"
+  | "copyLastResponse"
   // git panel (G5) — handled by the most recently activated Git panel
   | "gitRefresh"
   | "gitFetch"
@@ -160,6 +162,11 @@ const RAW_BINDINGS: RawBinding[] = [
   // the WebView2 speech synth. `L` = "read aLoud" — free (S/R are Save-All/resume)
   // and, as a Ctrl+Shift chord, a safe global binding that reaches past the terminal.
   { chord: "Ctrl+Shift+L", command: "speakSelection", scope: "global", title: "Speak: read the selection aloud (or stop)" },
+  // Transcript view (T3): flip the focused console between its terminal and its
+  // transcript, and copy Claude's last answer as markdown ("yank") — the latter
+  // works in either view, since it reads the session's transcript.
+  { chord: "Ctrl+Shift+H", command: "toggleTranscriptView", scope: "global", title: "Console: switch between terminal and transcript" },
+  { chord: "Ctrl+Shift+Y", command: "copyLastResponse", scope: "global", title: "Console: copy the last response" },
   // Attention navigation (wired to the status engine in Phase 2). Modifiers must
   // be written in `eventToChord`'s canonical order (Ctrl → Alt → Shift) or the
   // string match in `matchCommand` never fires — hence `Alt+Shift`, not `Shift+Alt`.

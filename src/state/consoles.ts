@@ -57,6 +57,13 @@ export interface ConsoleSession {
   focusSeq: number;
 }
 
+/** Whether a console can show its transcript (step T3): it needs a running local
+ *  session. A dormant or failed console has none, and a remote one keeps its
+ *  transcript on the other machine. */
+export function canShowTranscript(session: ConsoleSession | null | undefined): boolean {
+  return session != null && session.status === "running" && session.kind === "claude" && !session.remote;
+}
+
 /** Build the remote launch descriptor for `instance`, or null when its project is
  *  local (step 3.12). Reads the project from the registry store for the SSH dest +
  *  remote dir; the instance carries its own tmux session name. */

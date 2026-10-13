@@ -2,13 +2,18 @@
 // console. dockview supplies the tab/group chrome; this renders the content:
 // a header strip (project · branch · task note · short session id · tokens) above
 // either the live `xterm` terminal, an error notice, or — for a panel restored
-// from a saved layout — a dormant placeholder offering a relaunch.
+// from a saved layout — a dormant placeholder offering a relaunch. A running
+// console can also show its transcript instead of the terminal (step T3).
 //
 // The panel is bound to an instance via `params.instanceId`. dockview's default
 // `onlyWhenVisible` renderer unmounts the content when it's tabbed away or moved,
 // but the PTY + xterm live in a detached pool (see `terminalPool`), so the `claude`
 // session survives split/tab/float and re-attaches on remount; closing the panel is
 // the only thing that stops the PTY (via the Workspace's remove handler).
+//
+// The transcript view relies on the same property: showing it unmounts `Console`,
+// which only *detaches* the pooled terminal. The session runs on underneath and
+// its scrollback is intact when you switch back.
 
 import { useCallback, useEffect } from "react";
 import type { IDockviewPanelProps } from "dockview";
@@ -16,18 +21,23 @@ import type { IDockviewPanelProps } from "dockview";
 import { GLYPH, Spinner } from "../theme";
 import { accentVars } from "./InstanceManager/accent";
 import Console from "./Console";
+import TranscriptView from "./TranscriptView";
 import type { Instance, Project } from "../ipc/registry";
 import type { SpawnResult } from "../ipc/pty";
 import { contextWindowTokens, formatTokens, tokenBreakdown } from "../util/format";
 import { useLiveStatuses, type LiveStatus } from "../state/status";
 import { useRegistry } from "../state/registry";
 import {
+  canShowTranscript,
   markError,
   markSpawned,
   openConsole,
   useConsoles,
   type ConsoleSession,
 } from "../state/consoles";
+import { setViewMode, toggleViewMode, useViewMode, type ViewMode } from "../state/viewMode";
+import { getBindings } from "../keyboard/keymap";
+import { prettyChord } from "./keymapFormat";
 
 export interface ConsolePanelParams {
   instanceId: string;
@@ -38,6 +48,7 @@ function ConsolePanel(props: IDockviewPanelProps<ConsolePanelParams>) {
   const { open } = useConsoles();
   const { instances, projects } = useRegistry();
   const live = useLiveStatuses().get(instanceId) ?? null;
+  const viewMode = useViewMode(instanceId);
 
   const session = open.find((c) => c.instanceId === instanceId) ?? null;
   const instance = instances.find((i) => i.id === instanceId) ?? null;
@@ -53,6 +64,10 @@ function ConsolePanel(props: IDockviewPanelProps<ConsolePanelParams>) {
   if (!instance) return <MissingInstance />;
 
   const dormant = !session || session.status === "dormant";
+  // Only a running local session has a transcript to show. A console that is
+  // still spawning stays on its terminal — mounting that is what launches claude.
+  const hasTranscript = canShowTranscript(session);
+  const showTranscript = hasTranscript && viewMode === "transcript";
 
   // No onMouseDown→setActive here: that stole DOM focus from xterm's input on
   // every click. dockview activates the group natively when its content gains
@@ -75,12 +90,20 @@ function ConsolePanel(props: IDockviewPanelProps<ConsolePanelParams>) {
         sessionId={session?.sessionId ?? instance.lastSessionId ?? null}
         status={session?.status ?? "dormant"}
         live={live}
+        viewMode={hasTranscript ? viewMode : null}
+        onToggleView={() => toggleViewMode(instanceId)}
       />
       <div style={{ flex: "1 1 auto", minHeight: 0 }}>
         {dormant ? (
           <Dormant instance={instance} />
         ) : session.status === "error" ? (
           <ErrorBody message={session.error} />
+        ) : showTranscript ? (
+          <TranscriptView
+            instanceId={instanceId}
+            live={live}
+            onShowTerminal={() => setViewMode(instanceId, "terminal")}
+          />
         ) : (
           <LiveConsole instanceId={instanceId} session={session} />
         )}
@@ -131,12 +154,17 @@ function HeaderStrip({
   sessionId,
   status,
   live,
+  viewMode,
+  onToggleView,
 }: {
   project: Project | null;
   instance: Instance;
   sessionId: string | null;
   status: ConsoleSession["status"];
   live: LiveStatus | null;
+  /** The view on screen, or null when this console has no transcript to switch to. */
+  viewMode: ViewMode | null;
+  onToggleView: () => void;
 }) {
   const branch = instance.branch ?? project?.defaultBranch ?? null;
   return (
@@ -177,6 +205,7 @@ function HeaderStrip({
         </>
       )}
       <span style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 10, paddingLeft: 12 }}>
+        {viewMode && <ViewToggle mode={viewMode} onToggle={onToggleView} />}
         {status === "spawning" ? (
           <span style={{ color: "var(--wb-working)" }}>
             <Spinner size={10} /> spawning
@@ -192,6 +221,33 @@ function HeaderStrip({
         </span>
       </span>
     </div>
+  );
+}
+
+/** Switches a console between its terminal and its transcript. Labelled with the
+ *  view it switches *to*. Exported for the torn-off window's title bar. */
+export function ViewToggle({ mode, onToggle }: { mode: ViewMode; onToggle: () => void }) {
+  const chord = getBindings().find((b) => b.command === "toggleTranscriptView")?.chord;
+  const target = mode === "transcript" ? "terminal" : "transcript";
+  return (
+    <button
+      type="button"
+      // Keep focus where it is; the view that mounts takes it.
+      onMouseDown={(e) => e.preventDefault()}
+      onClick={onToggle}
+      title={`show the ${target}${chord ? ` (${prettyChord(chord).join("+")})` : ""}`}
+      style={{
+        background: "transparent",
+        border: "1px solid var(--wb-border)",
+        color: "var(--wb-textDim2)",
+        font: "10.5px var(--wb-mono)",
+        cursor: "pointer",
+        padding: "0 7px",
+        lineHeight: 1.5,
+      }}
+    >
+      {target}
+    </button>
   );
 }
 

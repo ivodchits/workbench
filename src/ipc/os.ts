@@ -19,3 +19,9 @@ export function openPath(path: string): Promise<void> {
 export function revealPath(path: string): Promise<void> {
   return invoke("reveal_path", { path });
 }
+
+/** Open a web or mail link in the user's browser (step T3). The backend refuses
+ *  every other scheme — links come from untrusted transcript text. */
+export function openUrl(url: string): Promise<void> {
+  return invoke("open_url", { url });
+}

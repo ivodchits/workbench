@@ -30,6 +30,9 @@ export interface Prefs {
   commitDrafts: Record<string, CommitDraft>;
   /** Git-panel splitter positions + collapsed sections (G2). */
   gitLayout: GitLayout;
+  /** Consoles showing their transcript instead of the terminal (step T3), keyed by
+   *  instance id. Absent = terminal. */
+  transcriptView: Record<string, boolean>;
 }
 
 /** Where the Git panel's draggable splits sit, and which sections are open (G2).

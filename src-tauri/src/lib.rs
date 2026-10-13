@@ -201,6 +201,7 @@ pub fn run() {
             fs::ensure_claude_md,
             sys::open_path,
             sys::reveal_path,
+            sys::open_url,
             attention::notify_needs_you,
             attention::notify_alert,
             attention::update_tray_badge,

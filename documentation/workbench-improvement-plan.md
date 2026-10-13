@@ -493,6 +493,58 @@ filesystem path. There is no `draggable` / `dataTransfer` use anywhere in `src/`
   `src/torn/TornWindow.tsx`.
 - **Done when:** toggling mid-turn loses nothing in either direction; a copied multi-
   paragraph answer pastes without stray line breaks; a resumed session shows its history.
+- **As built (2026-10-13):** `src/panels/TranscriptView.tsx`, `src/transcript/feed.ts`,
+  `src/state/viewMode.ts`; checked in the debug app with a live session.
+  - **Toggle:** a `transcript` / `terminal` button in the console header (labelled with
+    the view it switches to) and the command `toggleTranscriptView`, **Ctrl+Shift+H**,
+    remappable and in the palette. It acts on the console you last focused. Showing the
+    transcript unmounts `<Console>`, which only detaches the pooled terminal.
+  - **Mode** is per instance in `state/viewMode.ts` (not `consoles.ts`: torn-off windows
+    have no consoles store), saved under the `transcriptView` pref, and broadcast as a
+    `console-view-mode` event so the main window and a torn-off one stay in step.
+  - **Who gets a toggle:** a running, local Claude console (`canShowTranscript`). Not
+    dormant or failed consoles, not shells, and not remote (SSH) instances — their
+    transcript is on the other machine. A console that is still spawning shows its
+    terminal even in transcript mode, because mounting the terminal is what launches
+    claude; it flips once the session is up.
+  - **Feed** (`transcript/feed.ts`, framework-free, transport injected so R4 can reuse
+    it): listens, takes the follow, then pages history backwards until about 60 items
+    are loaded. "Load earlier" pages further (up to 24 pages a click, since one prompt
+    writes a page of bookkeeping lines that show nothing). A rotation resets it; a page
+    that arrives for the previous transcript is dropped.
+  - **Scrolling:** follows the end only if you were at it when new lines arrived;
+    otherwise "↓ latest" appears. Loading earlier keeps your place. The position is
+    restored when a hidden dockview tab is shown again.
+  - **Status line** under the last message: working (with the subagent count),
+    compacting, or "needs you" with a button back to the terminal — answering there is
+    still the only way until T5.
+  - **`/clear`:** the view empties, then shows the "context cleared" divider and the new
+    session from its first prompt. The old conversation is not kept on screen; it is a
+    different file. `/compact` is a divider in place.
+  - **Copy:** buttons live in the shared renderer (`render.ts`), so the phone gets them:
+    one per assistant message (its markdown source) and one per code block. They carry
+    no text of their own, so a selection never picks them up. **Copy last response** is
+    `copyLastResponse`, **Ctrl+Shift+Y**; it reads the transcript directly, so it works
+    from the terminal view, and confirms with a short notice (`util/flash.ts`).
+  - **Find:** Ctrl+F while the view has focus. Matches are painted with the CSS Custom
+    Highlight API, so the DOM is untouched. Limits: only text that is on screen (a
+    collapsed card is not searched, and its body is not built until opened), only what
+    is loaded, and no match across an inline-formatting boundary.
+  - **Links** go through a new backend command `open_url`, which only accepts `http`,
+    `https` and `mailto`. Anything else in rendered text does nothing.
+  - **Torn-off windows** honour the mode and have the toggle and both chords. Their
+    working indicator only reflects hook events that arrive after the window opened.
+  - **Verified live:** toggled mid-turn both ways with the real chord (the answer
+    arrived in the view; the terminal had the full turn on return); sent a prompt and
+    `/clear` while the terminal was detached; a three-paragraph answer selected in the
+    view copies as paragraphs with no line breaks inside them; resuming an 815 KB
+    session showed its last 61 items with "load earlier" for the rest.
+  - **Tests:** 12 more (`feed.test.ts`, copy buttons in `render.test.ts`), 80 in all;
+    one Rust test for the link check.
+  - **Known gaps:** a window closed or reloaded without unmounting leaves its follow
+    reference behind (a thread polling every 2 s until the app exits). The saved mode of
+    a deleted instance is never pruned from prefs. No right-click copy — the app blocks
+    the context menu everywhere.
 
 #### Step T4 — Prompt composer
 
@@ -916,7 +968,7 @@ any session, which lowers the urgency and makes the terminal bugs easier to comp
 | T0 | Spike: transcript + hook payloads | ☑ (label-source decision awaiting approval) |
 | T1 | Backend transcript stream | ☑ |
 | T2 | Transcript model + renderer | ☑ |
-| T3 | View + toggle | ☐ |
+| T3 | View + toggle | ☑ |
 | T4 | Prompt composer | ☐ |
 | T5 | Choice cards (desktop) | ☐ |
 | D1 | Drag files from inside the app | ☐ |

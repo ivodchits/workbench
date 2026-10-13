@@ -15,8 +15,14 @@ import { useEffect, useState } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
 import Console from "../panels/Console";
+import { ViewToggle } from "../panels/ConsolePanel";
+import TranscriptView from "../panels/TranscriptView";
+import { copyLastResponse } from "../panels/consoleCommands";
 import { GLYPH } from "../theme";
 import { initAppearance } from "../state/appearance";
+import { initStatusEngine, useLiveStatuses } from "../state/status";
+import { initViewModes, setViewMode, toggleViewMode, useViewMode } from "../state/viewMode";
+import { loadKeymap, matchCommand } from "../keyboard/keymap";
 import type { TornKind } from "../state/tearoff";
 
 interface TornParams {
@@ -38,6 +44,12 @@ export function readTornParams(): TornParams | null {
 function TornWindow({ params }: { params: TornParams }) {
   const { kind, id, title } = params;
   const [error, setError] = useState<string | null>(null);
+  // A torn-off console honours (and can change) the same per-instance view mode
+  // as the main window (step T3); a shell has no transcript.
+  const viewMode = useViewMode(id);
+  const live = useLiveStatuses().get(id) ?? null;
+  const isConsole = kind === "console";
+  const showTranscript = isConsole && viewMode === "transcript" && !error;
 
   // Apply the persisted theme + font scale so the torn-off window matches the main
   // one (it reads the same prefs store). Suppress the webview context menu, as the
@@ -49,6 +61,26 @@ function TornWindow({ params }: { params: TornParams }) {
     document.addEventListener("contextmenu", block);
     return () => document.removeEventListener("contextmenu", block);
   }, [title]);
+
+  // The transcript view's needs (step T3): the saved view mode, live status for
+  // its working indicator (from the hook events this window sees from now on),
+  // and the two console chords — this window doesn't run the global key layer.
+  useEffect(() => {
+    if (!isConsole) return;
+    void initViewModes();
+    initStatusEngine();
+    void loadKeymap();
+    const onKeyDown = (e: KeyboardEvent) => {
+      const command = matchCommand(e, "global")?.command;
+      if (command !== "toggleTranscriptView" && command !== "copyLastResponse") return;
+      e.preventDefault();
+      e.stopPropagation();
+      if (command === "toggleTranscriptView") toggleViewMode(id);
+      else void copyLastResponse(id);
+    };
+    document.addEventListener("keydown", onKeyDown, { capture: true });
+    return () => document.removeEventListener("keydown", onKeyDown, { capture: true });
+  }, [isConsole, id]);
 
   return (
     <div
@@ -62,10 +94,18 @@ function TornWindow({ params }: { params: TornParams }) {
         overflow: "hidden",
       }}
     >
-      <Header kind={kind} title={title} />
+      <Header kind={kind} title={title}>
+        {isConsole && !error && <ViewToggle mode={viewMode} onToggle={() => toggleViewMode(id)} />}
+      </Header>
       <div style={{ flex: "1 1 auto", minHeight: 0 }}>
         {error ? (
           <Ended message={error} />
+        ) : showTranscript ? (
+          <TranscriptView
+            instanceId={id}
+            live={live}
+            onShowTerminal={() => setViewMode(id, "terminal")}
+          />
         ) : (
           <Console
             instanceId={id}
@@ -85,7 +125,15 @@ function TornWindow({ params }: { params: TornParams }) {
 
 /** A slim title bar: the panel name + a "dock back" button. Closing the window is
  *  exactly "dock back" — the main window re-adds the panel on WINDOW_DESTROYED. */
-function Header({ kind, title }: { kind: TornKind; title: string }) {
+function Header({
+  kind,
+  title,
+  children,
+}: {
+  kind: TornKind;
+  title: string;
+  children?: React.ReactNode;
+}) {
   return (
     <div
       style={{
@@ -103,13 +151,13 @@ function Header({ kind, title }: { kind: TornKind; title: string }) {
     >
       <span style={{ color: "var(--wb-accent)" }}>{kind === "shell" ? "$" : GLYPH.run}</span>
       <span style={{ color: "var(--wb-text)", fontWeight: 600 }}>{title}</span>
+      <span style={{ marginLeft: "auto", display: "flex", alignItems: "center" }}>{children}</span>
       <button
         type="button"
         onClick={() => void getCurrentWindow().close()}
         aria-label="dock back into the main window"
         title="dock back into the main window"
         style={{
-          marginLeft: "auto",
           background: "transparent",
           border: "1px solid var(--wb-border)",
           color: "var(--wb-textDim2)",
