@@ -18,9 +18,11 @@ import Console from "../panels/Console";
 import { ViewToggle } from "../panels/ConsolePanel";
 import TranscriptView from "../panels/TranscriptView";
 import { copyLastResponse } from "../panels/consoleCommands";
+import { initQueueDelivery } from "../panels/promptDelivery";
 import { GLYPH } from "../theme";
 import { initAppearance } from "../state/appearance";
 import { initStatusEngine, useLiveStatuses } from "../state/status";
+import { loadTemplatesFor } from "../state/templates";
 import { initViewModes, setViewMode, toggleViewMode, useViewMode } from "../state/viewMode";
 import { loadKeymap, matchCommand } from "../keyboard/keymap";
 import type { TornKind } from "../state/tearoff";
@@ -65,11 +67,15 @@ function TornWindow({ params }: { params: TornParams }) {
   // The transcript view's needs (step T3): the saved view mode, live status for
   // its working indicator (from the hook events this window sees from now on),
   // and the two console chords — this window doesn't run the global key layer.
+  // Its composer (step T4) needs the queue's delivery and the templates; this
+  // window has no active project, so it offers the global ones.
   useEffect(() => {
     if (!isConsole) return;
     void initViewModes();
     initStatusEngine();
     void loadKeymap();
+    void loadTemplatesFor(null);
+    const stopDelivery = initQueueDelivery();
     const onKeyDown = (e: KeyboardEvent) => {
       const command = matchCommand(e, "global")?.command;
       if (command !== "toggleTranscriptView" && command !== "copyLastResponse") return;
@@ -79,7 +85,10 @@ function TornWindow({ params }: { params: TornParams }) {
       else void copyLastResponse(id);
     };
     document.addEventListener("keydown", onKeyDown, { capture: true });
-    return () => document.removeEventListener("keydown", onKeyDown, { capture: true });
+    return () => {
+      stopDelivery();
+      document.removeEventListener("keydown", onKeyDown, { capture: true });
+    };
   }, [isConsole, id]);
 
   return (

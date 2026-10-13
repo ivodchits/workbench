@@ -10,6 +10,7 @@
 
 import type { DockviewApi, IDockviewPanel } from "dockview";
 import { focusTerminal } from "../panels/terminalPool";
+import { focusComposer } from "./composer";
 
 let api: DockviewApi | null = null;
 
@@ -77,6 +78,7 @@ export function activatePanel(panelId: string): void {
 export function routePanelFocus(panelId: string): void {
   requestAnimationFrame(() => {
     focusTerminal(panelId); // console + shell (pool keyed by panel id)
+    focusComposer(panelId); // a console showing its transcript (no-op otherwise)
     document
       .querySelector<HTMLElement>(`[data-wb-panel="${panelId}"] .cm-content`)
       ?.focus(); // editor (no-op when the panel isn't an editor)

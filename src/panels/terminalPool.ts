@@ -22,6 +22,7 @@ import "@xterm/xterm/css/xterm.css";
 
 import { activeTheme, deriveXtermTheme, mono } from "../theme/tokens";
 import {
+  ENTER_KEY,
   NEWLINE_KEY,
   ptyKill,
   ptyResize,
@@ -34,6 +35,7 @@ import {
   type SpawnKind,
   type SpawnResult,
 } from "../ipc/pty";
+import { encodePaste } from "../state/composer";
 import { markInterrupted } from "../state/status";
 import { mirrorInstanceTaskNote } from "../state/registry";
 import { isSpeaking, speak, stopSpeaking } from "../util/speech";
@@ -546,6 +548,20 @@ export function submitToTerminal(instanceId: string, text: string): boolean {
   if (!pasteIntoTerminal(instanceId, text)) return false;
   void ptyWrite(instanceId, new TextEncoder().encode("\r"));
   return true;
+}
+
+/**
+ * Send `text` to the instance's session as a prompt, whether or not this window
+ * holds a terminal for it. The transcript view can be on screen with no pooled
+ * terminal at all — a console docked back from its own window, or a torn-off
+ * window that opened straight into the transcript — so when there is none the
+ * same bytes a paste produces are written to the PTY directly.
+ */
+export function submitPrompt(instanceId: string, text: string): void {
+  if (submitToTerminal(instanceId, text)) return;
+  void ptyWrite(instanceId, encodePaste(text))
+    .then(() => ptyWrite(instanceId, ENTER_KEY))
+    .catch(() => {}); // no such PTY: the session is gone, nothing to send to
 }
 
 /** Re-measure and resize the terminal (and thus its PTY) to its container. */

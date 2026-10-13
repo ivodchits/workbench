@@ -5,13 +5,17 @@
 //
 // Content comes from the session's transcript file (`transcript/feed`) and is
 // drawn by the framework-free renderer (`transcript/render`); this component is
-// the chrome around it — scrolling, paging back, find, link handling, and a
-// status line fed by the hook-driven live status.
+// the chrome around it — scrolling, paging back, find, link handling, a status
+// line fed by the hook-driven live status, and the prompt composer underneath
+// (step T4).
 
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 
 import { Spinner } from "../theme";
 import { openUrl } from "../ipc/os";
+import PromptComposer from "./PromptComposer";
+import { focusComposer } from "../state/composer";
+import { isTextInput } from "../keyboard/keymap";
 import type { LiveStatus } from "../state/status";
 import { createFeed, instanceSource, type Feed } from "../transcript/feed";
 import { createRenderer } from "../transcript/render";
@@ -104,10 +108,19 @@ function TranscriptView({ instanceId, live, onShowTerminal }: TranscriptViewProp
     });
     shown.observe(scroll);
 
-    // The view owns the keyboard the way the terminal does when it is shown.
-    rootRef.current?.focus({ preventScroll: true });
+    // The composer growing or shrinking resizes the list; a reader at the end
+    // stays at the end.
+    const resized = new ResizeObserver(() => {
+      if (scroll.clientHeight > 0 && stuck.current) scroll.scrollTop = scroll.scrollHeight;
+    });
+    resized.observe(scroll);
+
+    // The view owns the keyboard the way the terminal does when it is shown:
+    // typing goes to the prompt.
+    focusComposer(instanceId);
 
     return () => {
+      resized.disconnect();
       shown.disconnect();
       scroll.removeEventListener("scroll", onScroll);
       feed.stop();
@@ -128,10 +141,17 @@ function TranscriptView({ instanceId, live, onShowTerminal }: TranscriptViewProp
     if (scroll) scroll.scrollTop = scroll.scrollHeight;
   }, []);
 
+  /** A prompt was sent: show the end of the conversation, where it will appear. */
+  const followEnd = useCallback(() => {
+    stuck.current = true;
+    setAway(false);
+    jumpToLatest();
+  }, [jumpToLatest]);
+
   const closeFind = useCallback(() => {
     setFinding(false);
-    rootRef.current?.focus({ preventScroll: true });
-  }, []);
+    focusComposer(instanceId);
+  }, [instanceId]);
 
   const onKeyDown = (e: React.KeyboardEvent) => {
     if (e.key.toLowerCase() === "f" && (e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey) {
@@ -142,6 +162,10 @@ function TranscriptView({ instanceId, live, onShowTerminal }: TranscriptViewProp
     } else if (e.key === "Escape" && finding) {
       e.preventDefault();
       closeFind();
+    } else if (e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey && !isTextInput(e.target)) {
+      // Typing while the text (not a field) has focus — after selecting something,
+      // say — goes to the prompt; the field receives this very keystroke.
+      focusComposer(instanceId);
     }
   };
 
@@ -159,30 +183,38 @@ function TranscriptView({ instanceId, live, onShowTerminal }: TranscriptViewProp
       {finding && (
         <FindBar scope={listRef} scroller={scrollRef} rev={feedState.rev} onClose={closeFind} />
       )}
-      <div ref={scrollRef} className="wb-txv-scroll" onClick={onLink} onAuxClick={onLink}>
-        {feedState.hasEarlier && (
-          <button
-            type="button"
-            className="wb-txv-earlier"
-            disabled={feedState.loading}
-            onClick={() => void feedRef.current?.loadEarlier()}
-          >
-            {feedState.loading ? "loading…" : "↑ load earlier"}
+      <div className="wb-txv-body">
+        <div ref={scrollRef} className="wb-txv-scroll" onClick={onLink} onAuxClick={onLink}>
+          {feedState.hasEarlier && (
+            <button
+              type="button"
+              className="wb-txv-earlier"
+              disabled={feedState.loading}
+              onClick={() => void feedRef.current?.loadEarlier()}
+            >
+              {feedState.loading ? "loading…" : "↑ load earlier"}
+            </button>
+          )}
+          {feedState.count === 0 && (
+            <div className="wb-txv-empty">
+              {!feedState.ready || feedState.loading ? "loading…" : "nothing in this session yet"}
+            </div>
+          )}
+          <div ref={listRef} />
+          <StatusLine live={live} onShowTerminal={onShowTerminal} />
+        </div>
+        {away && (
+          <button type="button" className="wb-txv-jump" onClick={jumpToLatest}>
+            ↓ latest
           </button>
         )}
-        {feedState.count === 0 && (
-          <div className="wb-txv-empty">
-            {!feedState.ready || feedState.loading ? "loading…" : "nothing in this session yet"}
-          </div>
-        )}
-        <div ref={listRef} />
-        <StatusLine live={live} onShowTerminal={onShowTerminal} />
       </div>
-      {away && (
-        <button type="button" className="wb-txv-jump" onClick={jumpToLatest}>
-          ↓ latest
-        </button>
-      )}
+      <PromptComposer
+        instanceId={instanceId}
+        live={live}
+        onShowTerminal={onShowTerminal}
+        onSent={followEnd}
+      />
     </div>
   );
 }

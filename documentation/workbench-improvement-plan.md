@@ -564,6 +564,60 @@ filesystem path. There is no `draggable` / `dataTransfer` use anywhere in `src/`
 - **Key files:** `src/panels/TranscriptView.tsx`, `src/state/queue.ts`,
   `src/panels/terminalPool.ts`.
 - **Done when:** a full prompt → answer → follow-up loop works without leaving the view.
+- **As built (2026-10-13):** `src/panels/PromptComposer.tsx`, `src/state/composer.ts`,
+  `src/panels/promptDelivery.ts`; checked in the debug app with a live session.
+  - **Composer:** a field under the transcript that grows with its text (to about nine
+    lines, then scrolls). Enter sends, Shift+Enter is a line break. It has the keyboard
+    whenever the view is shown or its panel is focused, and typing while the transcript
+    text has focus (after selecting something) moves to it.
+  - **Draft:** per instance in `state/composer.ts`, kept in `localStorage`, so it
+    survives the toggle, a tab switch, tearing the console off, and a restart. Cleared
+    on send.
+  - **Sending** goes through one function, `sendOrQueue` (`promptDelivery.ts`), which
+    the queue dialog now uses too: at rest it pastes and submits; while the agent is
+    working, compacting or waiting on you it parks the prompt in the existing queue.
+    The queued prompt shows above the field with **edit** (take it back) and
+    **cancel**; the send button reads **queue**, or **replace queued** when one is
+    already waiting (the queue still holds one prompt per instance).
+  - **No terminal needed:** `submitPrompt` (`terminalPool.ts`) uses the pooled terminal
+    when this window has one and otherwise writes the same bracketed-paste bytes to
+    the PTY. Without this, a console docked back from its own window while showing the
+    transcript, and a torn-off window opened straight into the transcript, had no
+    terminal to paste into and the prompt was dropped. The queue's own delivery uses
+    it as well. Escape characters are stripped from the text so it cannot end the
+    paste early.
+  - **Stop:** a button while the agent is working — `INTERRUPT_KEY` and
+    `markInterrupted`, as on the rail card.
+  - **Templates:** a **templates** button lists the library's templates (project
+    first, then global); picking one inserts its body at the caret and selects the
+    first `{0}` placeholder to type over. Creating and editing stay in the library.
+    The library itself (Ctrl+Shift+P) now inserts into the composer, not the hidden
+    terminal, when its target console is showing the transcript.
+  - **Slash commands** pass through as typed. Verified: `/clear` and `/compact` sent
+    from the composer behave as typed ones. Bare built-ins that answer inside the TUI
+    (`/model`, `/resume`, `/config`, `/permissions`, `/mcp`, `/context`, … — the list
+    is `TERMINAL_COMMANDS` in `state/composer.ts`) are sent and the console switches
+    to the terminal with a short notice, instead of leaving a menu open where it
+    can't be seen. With an argument (`/model opus`) they are sent as-is. The list is
+    hand-kept: a new built-in with a menu has to be added to it.
+  - **Drop target (D1):** the field carries `data-wb-composer="<instanceId>"`, and
+    `insertIntoDraft(instanceId, text)` adds text from outside the component.
+  - **Torn-off windows** have the composer. They run their own queue delivery and
+    load the global templates (no active project there).
+  - **Verified live:** prompt → answer → follow-up without leaving the view; a
+    multi-line prompt; a follow-up queued mid-turn and sent when the turn ended; stop;
+    `/compact`, `/clear` and a prompt after it; `/model` opening the terminal on its
+    menu; a template inserted; a prompt sent from a torn-off window with no terminal,
+    and again from the main window after docking back.
+  - **Tests:** 15 more (`state/composer.test.ts`, `panels/promptDelivery.test.ts`), 95
+    in all.
+  - **Known gaps:** pressing stop does not send or drop a queued prompt — it stays
+    until the next turn ends or you cancel it. A torn-off window only knows the agent
+    is working from hook events that arrive after it opened, so a prompt sent there
+    right after tearing off goes straight to Claude (which queues it itself). No
+    recall of earlier prompts with the arrow keys. `!` shell mode and `#` memory
+    prefixes were not tried from the composer. Drafts of deleted instances are never
+    pruned from `localStorage`.
 
 #### Step T5 — Choice cards for "needs you" (desktop)
 
@@ -1020,7 +1074,7 @@ any session, which lowers the urgency and makes the terminal bugs easier to comp
 | T1 | Backend transcript stream | ☑ |
 | T2 | Transcript model + renderer | ☑ |
 | T3 | View + toggle | ☑ |
-| T4 | Prompt composer | ☐ |
+| T4 | Prompt composer | ☑ |
 | T5 | Choice cards (desktop) | ☐ |
 | D1 | Drag files from inside the app | ☐ |
 | D2 | Drag files from the OS (spike) | ☐ |

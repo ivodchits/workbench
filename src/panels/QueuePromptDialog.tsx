@@ -14,22 +14,13 @@ import { useEffect, useMemo, useState, type CSSProperties } from "react";
 
 import { GLYPH } from "../theme";
 import Modal from "./InstanceManager/Modal";
-import { submitToTerminal } from "./terminalPool";
+import { initQueueDelivery, sendOrQueue } from "./promptDelivery";
 import { useConsoles } from "../state/consoles";
 import { useRegistry } from "../state/registry";
-import { onStatusTransition, useLiveStatuses, type LiveStatus } from "../state/status";
-import { cancelQueued, getQueued, setQueued, useQueued } from "../state/queue";
+import { useLiveStatuses } from "../state/status";
+import { atRest, cancelQueued, useQueued } from "../state/queue";
 import { bindQueueDialogOpener } from "./queueDialogControl";
 import { registerCommand } from "../keyboard/bus";
-
-/** True when an agent is between turns (so a prompt should send immediately rather
- *  than wait for a `Stop` that may never come). A freshly-launched console with no
- *  hook signal yet (undefined phase) is also "at rest" — it's sitting at the prompt. */
-function atRest(live: LiveStatus | undefined): boolean {
-  if (!live) return true;
-  if (live.compacting) return false;
-  return live.phase === "idle" || live.phase === "done";
-}
 
 // --- host -------------------------------------------------------------------
 
@@ -48,20 +39,9 @@ export default function QueuePromptHost() {
 
   useEffect(() => registerCommand("openQueue", () => setTarget(null)), []);
 
-  // The firing path: when an instance transitions into "done" (its turn finished)
-  // and it has a queued prompt, send it. Clear first so the prompt's *own* later
-  // Stop can't re-fire a stale entry (single-shot). App-lifetime subscription.
-  useEffect(
-    () =>
-      onStatusTransition((instanceId, phase) => {
-        if (phase !== "done") return;
-        const q = getQueued(instanceId);
-        if (!q) return;
-        cancelQueued(instanceId);
-        submitToTerminal(instanceId, q.text); // false (no live terminal) → simply dropped
-      }),
-    [],
-  );
+  // The firing path (a queued prompt is sent when its agent's turn finishes)
+  // lives in `promptDelivery`, shared with the transcript view's composer.
+  useEffect(() => initQueueDelivery(), []);
 
   if (target === undefined) return null;
   return <QueuePromptDialog initialTarget={target} onClose={() => setTarget(undefined)} />;
@@ -104,8 +84,7 @@ function QueuePromptDialog({
 
   const submit = () => {
     if (!effectiveTarget || !text.trim()) return;
-    if (sendsNow) submitToTerminal(effectiveTarget, text);
-    else setQueued(effectiveTarget, text);
+    sendOrQueue(effectiveTarget, text);
     onClose();
   };
 

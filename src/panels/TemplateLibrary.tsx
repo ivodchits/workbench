@@ -28,8 +28,11 @@ import { GLYPH } from "../theme";
 import Modal from "./InstanceManager/Modal";
 import { ptyWrite } from "../ipc/pty";
 import { pasteIntoTerminal } from "./terminalPool";
+import { sendOrQueue } from "./promptDelivery";
+import { focusComposer, insertIntoDraft } from "../state/composer";
+import { getViewMode } from "../state/viewMode";
 import { useActiveProject } from "../state/activeProject";
-import { useConsoles } from "../state/consoles";
+import { canShowTranscript, useConsoles } from "../state/consoles";
 import { useRegistry } from "../state/registry";
 import { registerCommand } from "../keyboard/bus";
 import {
@@ -104,6 +107,16 @@ function TemplateLibrary({ onClose }: { onClose: () => void }) {
   /** Land `text` in the target console; optionally submit it with a trailing CR. */
   const doInsert = (text: string, send: boolean) => {
     if (!effectiveTarget) return;
+    // A console showing its transcript has its terminal off screen: text pasted
+    // there would sit unseen in the TUI's input. It goes to the composer instead.
+    const session = consoles.find((c) => c.instanceId === effectiveTarget);
+    if (canShowTranscript(session) && getViewMode(effectiveTarget) === "transcript") {
+      if (send) sendOrQueue(effectiveTarget, text);
+      else insertIntoDraft(effectiveTarget, text);
+      onClose();
+      focusComposer(effectiveTarget);
+      return;
+    }
     if (!pasteIntoTerminal(effectiveTarget, text)) return;
     if (send) void ptyWrite(effectiveTarget, new TextEncoder().encode("\r"));
     onClose();

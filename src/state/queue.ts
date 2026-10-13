@@ -8,13 +8,24 @@
 // This module is the pure data store only — a single queued prompt per instance
 // (queueing again replaces it; project decision). The *delivery* (paste + submit on
 // the Stop transition, or immediately when the agent is already at rest) lives in
-// the panel layer (`QueuePromptDialog` host + `submitToTerminal`), so the state
-// layer stays free of terminal/IPC coupling.
+// the panel layer (`promptDelivery`), so the state layer stays free of
+// terminal/IPC coupling.
 //
 // Transient by design: never persisted. A queued prompt only makes sense against a
 // live console, so it doesn't survive a restart (there'd be nothing to send into).
 
 import { useSyncExternalStore } from "react";
+
+import type { LiveStatus } from "./status";
+
+/** True when an agent is between turns (so a prompt should send immediately rather
+ *  than wait for a `Stop` that may never come). A freshly-launched console with no
+ *  hook signal yet (undefined phase) is also "at rest" — it's sitting at the prompt. */
+export function atRest(live: LiveStatus | null | undefined): boolean {
+  if (!live) return true;
+  if (live.compacting) return false;
+  return live.phase === "idle" || live.phase === "done";
+}
 
 export interface QueuedPrompt {
   instanceId: string;
