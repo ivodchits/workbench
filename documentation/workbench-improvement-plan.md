@@ -26,8 +26,8 @@ ACP, which this plan deliberately does not adopt (see Guardrails).
 | **T — Transcript view** | A second rendering of a Claude console, built from the session transcript, toggled from the console tab at any moment; prompt composer; choice cards for "needs you" |
 | **D — Drag to reference** | Drag a file onto a console to insert an `@path` reference |
 | **V — Diff / review** | Better diff rendering, navigation, inline comments sent to the agent, "add to prompt" |
-| **N — Notes** | A project notes panel, markdown, edited like any file |
-| **R — Remote** | Transcript view + choice cards + prompt-first input on the phone; creating a session from the phone; Tailscale Funnel so the remote is ready whenever the app runs; push notifications |
+| **N — Notes** | A project notes panel, markdown, edited like any file; also readable and writable from the phone (R8) |
+| **R — Remote** | Transcript view + choice cards + prompt-first input on the phone; creating a session from the phone; project notes on the phone; Tailscale Funnel so the remote is ready whenever the app runs; push notifications |
 | **P — Plans** | An on-demand "open plan" button (never automatic) |
 | **A — Agent review** | "Review with a fresh agent" |
 | **M — Mods** | Run summary on done, as a Claude Code mod |
@@ -696,7 +696,9 @@ filesystem path. There is no `draggable` / `dataTransfer` use anywhere in `src/`
 - **Depends on:** nothing.
 - **Decision to confirm at the start of the step — where notes live:**
   - *Recommended:* plain `.md` files in the app data dir, `notes/<projectId>/`. Private,
-    survive branch switches and worktrees, never show up in `git status`.
+    survive branch switches and worktrees, never show up in `git status`. It is also the
+    simpler choice for the phone (R8): one folder per project on this machine, the same
+    for local and remote (SSH) projects.
   - *Alternative:* `<repo>/.workbench/notes/`. Travels with the repo and is directly
     readable by agents, but appears in git unless ignored and differs per worktree.
 - **Build:**
@@ -704,13 +706,21 @@ filesystem path. There is no `draggable` / `dataTransfer` use anywhere in `src/`
     rename, delete with confirm, filter), editor on the right.
   - Editing reuses `CodeMirrorView` with the markdown language, Ctrl+S and the dirty
     indicator; view modes reuse the editor's existing preview pane (edit / preview / split).
-  - Because notes are files, the existing `fs` read/write commands apply; add only what
-    listing and the app-data root need.
+  - Notes are files, but they go through a small **notes module** in the backend
+    (list, read, write, create, rename, delete), not the generic `fs` commands. The phone
+    (R8) uses the same module from the remote server, so both sides share one set of
+    rules: a note is named by project id and note id, never by a path.
+  - Every read returns the note's revision (modified time and size, or a content hash),
+    and every write says which revision it was based on. A write based on a stale
+    revision is refused, so the desktop and the phone cannot silently overwrite each
+    other. The backend emits `notes-changed { projectId }` after any change; the panel
+    refreshes its list and reloads an open note that has no unsaved edits.
   - Open from the rail's project row, the command palette, and a keybinding. Layout
     presets must round-trip the new panel type.
   - **Send to agent:** insert the note's text (or an `@path`) into a chosen console.
-- **Key files:** new `src/panels/Notes/`, `src/panels/Workspace.tsx` (`COMPONENTS`),
-  `src/state/layout.ts`, `src-tauri/src/fs/mod.rs`, `src/keyboard/commands.ts`.
+- **Key files:** new `src/panels/Notes/`, new `src-tauri/src/notes/`, new
+  `src/ipc/notes.ts`, `src/panels/Workspace.tsx` (`COMPONENTS`), `src/state/layout.ts`,
+  `src/keyboard/commands.ts`.
 - **Done when:** notes persist across restarts, render as markdown, and survive a layout
   preset switch.
 
@@ -872,6 +882,46 @@ filesystem path. There is no `draggable` / `dataTransfer` use anywhere in `src/`
   ever names an existing project id, never a filesystem path. Resuming a past session
   from the phone.
 
+#### Step R8 — Phone: project notes
+
+- **Goal:** Read and write a project's notes from the phone, wherever you are, as long as
+  the desktop app is running. A thought about a project can be written down without a
+  session and without being at the desk.
+- **Depends on:** N1 (the notes module and its revision rule), R1 (the built PWA). Uses
+  the project list R7 adds to the snapshot; if R7 has not landed, add it here.
+- **Build:**
+  - **Server:** authenticated endpoints in `remote/server.rs` that call the N1 notes
+    module directly in Rust — list a project's notes, read one, create, save, rename,
+    delete. They do not round-trip through the desktop webview, so they work while the
+    window is minimised or showing another project.
+  - **Naming:** the phone sends a project id and a note id only. The server checks the
+    project exists and that the note id is a plain file name (no separators, no `..`)
+    before touching the disk. A size cap per note keeps a bad client from filling it.
+  - **Conflicts:** saves carry the revision they were based on (N1). When the note
+    changed in the meantime, the phone keeps the typed text, shows both versions, and
+    offers "keep mine as a new note" — nothing is overwritten without being seen.
+  - **Live updates:** note changes are pushed over the existing WebSocket, so a note
+    edited on the desktop updates on the phone, and the desktop panel picks up phone
+    edits through `notes-changed`.
+  - **Phone UI:** a **notes** entry on each project in the dashboard (with a count) →
+    the note list (newest first, filter, **new note**) → the note. A note opens rendered
+    as markdown, through the shared sanitised renderer; **edit** switches to a plain
+    multi-line field that suits the phone keyboard and dictation. Saves on an explicit
+    button and when leaving the note; an unsent edit is kept on the device and offered
+    again after a reconnect.
+  - **Quick capture:** "new note" needs only text; the title defaults to the first line.
+  - **Send to agent (optional):** from a note, "send to…" an instance of that project,
+    using the existing `prompt` action.
+- **Guardrail:** notes are private text. They are served only to a paired client, and
+  over Funnel only once R2 has landed — the same rule as every other remote feature.
+- **Key files:** `src-tauri/src/remote/server.rs`, `src-tauri/src/notes/`, PWA sources,
+  `src/panels/RemoteMirror.tsx` (project list, note counts).
+- **Done when:** a note written on the phone appears in the desktop panel without a
+  restart and the other way round; editing the same note on both sides loses neither
+  version; a request for a note outside the project's notes folder is refused.
+- **Out of scope:** offline editing while the desktop app is not running; attachments
+  and images; notes that are not tied to a project.
+
 ---
 
 ### Track P — Plans
@@ -928,6 +978,7 @@ D1 (─ D2)                      │
 V1 ─ V2                        │
    └ V3 ─ A1                   │
 N1 (─ N2)                      │
+N1 ─ R8 (also needs R1)        │
 R2 ─ R3 ─ R6                   │
 T2 ─ R1 ─ R4 ─────────────── R5
      └ R7
@@ -936,7 +987,7 @@ M1
 ```
 
 Suggested order: **C1 → T0 → T1 → T2 → T3 → T4 → T5 → C2 → C3 → D1 → R1 → R7 → R2 → R3 → R4 →
-R5 → V1 → V2 → V3 → N1 → P1 → R6 → A1**, with M1, N2 and D2 whenever convenient.
+R5 → V1 → V2 → V3 → N1 → R8 → P1 → R6 → A1**, with M1, N2 and D2 whenever convenient.
 
 C2/C3 sit after the transcript view on purpose: once T3 exists there is a clean way to read
 any session, which lowers the urgency and makes the terminal bugs easier to compare against.
@@ -953,7 +1004,7 @@ any session, which lowers the urgency and makes the terminal bugs easier to comp
 | 4 | Shift+Enter byte sequence — **`\x1b\r`** (verified on 2.1.296) | C1 |
 | 5 | Path-with-spaces syntax after `@` | D1 |
 | 6 | `@codemirror/merge` vs extending `UnifiedDiff` | V1 |
-| 7 | Notes storage location | N1 |
+| 7 | Notes storage location (the phone, R8, reads the same store) | N1 |
 | 8 | How the PWA bundle is embedded on a fresh clone | R1 |
 
 ---
@@ -985,6 +1036,7 @@ any session, which lowers the urgency and makes the terminal bugs easier to comp
 | R5 | Phone choice cards | ☐ |
 | R6 | Push notifications | ☐ |
 | R7 | Phone: create a session | ☐ |
+| R8 | Phone: project notes | ☐ |
 | P1 | Open plan on demand | ☐ |
 | A1 | Review with a fresh agent | ☐ |
 | M1 | Run summary on done (mod) | ☐ |
