@@ -182,6 +182,16 @@ async fn handle(State(ctx): State<Arc<HookContext>>, body: Bytes) -> StatusCode 
     match envelope {
         Some(envelope) => {
             ctx.accepted.fetch_add(1, Ordering::Relaxed);
+            // Hand the session's transcript path to the transcript stream (step T1)
+            // and wake this instance's follow, so a `/clear` rotation is acted on
+            // now rather than at its next poll.
+            crate::transcript::stream::on_hook(
+                &ctx.app,
+                &envelope.instance_id,
+                &envelope.event.session_id,
+                envelope.event.transcript_path.as_deref(),
+                is_clear_rotation(&envelope.event),
+            );
             let _ = ctx.app.emit(HOOK_EVENT, *envelope);
         }
         None => {

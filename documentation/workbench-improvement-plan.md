@@ -365,6 +365,45 @@ filesystem path. There is no `draggable` / `dataTransfer` use anywhere in `src/`
   (path hand-off), `src-tauri/src/lib.rs`, `src/ipc/transcript.ts`.
 - **Done when:** a throwaway debug listener prints new lines within about a second of the
   file changing, across a `/clear`, with tests over the T0 fixtures.
+- **As built (2026-10-13):** new module `src-tauri/src/transcript/stream.rs`; bindings in
+  `src/ipc/transcript.ts`. The usage tailer is untouched.
+  - **Commands:** `transcript_follow(instanceId)` → `{ sessionId, offset }` and
+    `transcript_unfollow(instanceId)` (reference-counted, one thread per followed
+    instance); `transcript_read(instanceId, fromOffset, maxBytes?)`; and, added to the
+    plan, `transcript_read_back(instanceId, beforeOffset?, maxBytes?)` — T3's "render the
+    last N turns, load earlier" needs to page from the end, which a forward-only read
+    cannot do. Pages are `{ sessionId, lines, offset, nextOffset, end }`.
+  - **Events:** `transcript-appended { instanceId, sessionId, lines, offset, nextOffset }`
+    and `transcript-rotated { instanceId, sessionId, offset, reason }`, reason `clear` /
+    `session` / `truncated`.
+  - **Offsets** are byte offsets on line boundaries; nothing is read past the last
+    newline, so a half-written line is never delivered. `transcript_follow` returns the
+    offset the live stream continues from; everything before it is history for
+    `transcript_read_back`. That is the whole contract for joining history to live lines.
+  - **Which file:** the session id the PTY manager maps to the instance, plus the
+    `transcript_path` its hook events report (hand-off in `hooks/server.rs`); with no hook
+    yet (a resumed session) the file is found by session id. A hook-reported path is only
+    accepted if it is a `.jsonl` under `~/.claude/projects` — the hook port is local HTTP,
+    and without the check a forged event could aim the stream at any file.
+  - **`/clear`, measured in the app:** `transcript-rotated` (`sessionId: null`) 0.1 s
+    after the command, on `SessionEnd`; nothing more until the next prompt, because the
+    new session reports no hook before then; then a second
+    `transcript-rotated` with the new id and the new file streamed from its top, including
+    the `/clear` lines. Consumers reset on each. A console respawned on another session
+    rotates with reason `session`; onto a transcript larger than 256 KiB the stream starts
+    at its end (`offset` > 0) and history is paged.
+  - **Latency, measured in the app:** lines reached a webview listener 0.15–0.25 s after
+    the timestamp inside them, using the `notify` watcher on the transcript's directory.
+    The 2 s poll is the fallback and also what notices a session change no hook announced.
+  - **Tests:** 8 in `stream.rs`, over the T0 fixtures — forward and backward paging
+    reproduce the session line for line, appending it in arbitrary pieces delivers each
+    line once, the `/clear` hand-over, truncation, and the path check.
+  - **For T2 and R4:** a trivial one-word turn appends about 270 KB, almost all of it
+    `attachment` lines (`prompt_snapshot` alone is 160 KB per prompt). They pass through
+    raw as planned and T2 skips them, which is fine on the desktop. Before the phone
+    follows a transcript (R4), drop `attachment` lines in the backend.
+  - **Not covered:** a dormant console (no live PTY, no follow) has no transcript to
+    read — reads resolve through the live session. T3 excludes dormant consoles anyway.
 
 #### Step T2 — Transcript model + renderer (framework-free)
 
@@ -836,7 +875,7 @@ any session, which lowers the urgency and makes the terminal bugs easier to comp
 | C2 | Blank / garbled consoles | ☐ |
 | C3 | Overwritten output | ☐ |
 | T0 | Spike: transcript + hook payloads | ☑ (label-source decision awaiting approval) |
-| T1 | Backend transcript stream | ☐ |
+| T1 | Backend transcript stream | ☑ |
 | T2 | Transcript model + renderer | ☐ |
 | T3 | View + toggle | ☐ |
 | T4 | Prompt composer | ☐ |

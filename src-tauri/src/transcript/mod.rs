@@ -27,6 +27,8 @@
 //!    bytes appended since the last poll, buffering an incomplete trailing line —
 //!    so a long session isn't re-parsed from the top every tick.
 
+pub mod stream;
+
 use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};

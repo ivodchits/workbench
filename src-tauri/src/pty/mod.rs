@@ -209,6 +209,23 @@ impl PtyManager {
             .collect()
     }
 
+    /// The live session id mapped to `instance_id`, if it has one. The transcript
+    /// stream (step T1) uses this to know which transcript an instance is on.
+    pub fn session_for_instance(&self, instance_id: &str) -> Option<String> {
+        self.by_session
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|(_, iid)| iid.as_str() == instance_id)
+            .map(|(sid, _)| sid.clone())
+    }
+
+    /// Whether `instance_id` is between a `/clear` and the first event of the
+    /// session that replaces it — its mapped session id is the one that just ended.
+    pub fn is_pending_rotation(&self, instance_id: &str) -> bool {
+        self.pending_rotation.lock().unwrap().contains(instance_id)
+    }
+
     /// Flag `instance_id` as awaiting a rotated session, because its old session
     /// just emitted `SessionEnd{reason:"clear"}`. A `/clear` mints a brand-new
     /// session id with no link to the old one *except the shared cwd*, so the only

@@ -85,6 +85,8 @@ pub fn run() {
         // Account-wide usage-limit snapshot, fed by the managed statusline (step 3.2).
         // Managed up front so the ingest route can write it before setup completes.
         .manage(statusline::LimitsState::default())
+        // Per-instance transcript follows (step T1); empty until a view asks for one.
+        .manage(transcript::stream::Streams::default())
         .invoke_handler(tauri::generate_handler![
             pty::pty_spawn,
             pty::pty_subscribe,
@@ -179,6 +181,10 @@ pub fn run() {
             registry::mirror_instance_task_note,
             registry::remove_instance,
             transcript::list_project_sessions,
+            transcript::stream::transcript_follow,
+            transcript::stream::transcript_unfollow,
+            transcript::stream::transcript_read,
+            transcript::stream::transcript_read_back,
             layout::get_layout,
             layout::set_layout,
             mcp::mcp_list,
