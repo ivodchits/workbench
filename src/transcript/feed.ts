@@ -201,3 +201,54 @@ export async function readLastResponse(
   }
   return null;
 }
+
+/** A plan the session proposed (`ExitPlanMode`, step P1). */
+export interface PlanRef {
+  /** The tool call's id: stable, and the transcript card's item id. */
+  id: string;
+  /** The plan as markdown. */
+  text: string;
+  timestamp: string | null;
+  /** Its first heading, or first line, for a menu. */
+  title: string;
+}
+
+/** A plan from its call's id and text, titled by its first heading or line. */
+export function planRef(id: string, text: string, timestamp: string | null): PlanRef {
+  const first = text.split("\n").find((l) => l.trim()) ?? "";
+  // Without heading marks, or the `code` and *emphasis* marks it may carry.
+  const title = first.replace(/^\s*#+\s*/, "").replace(/[`*_]/g, "").trim().slice(0, 80) || "plan";
+  return { id, text, timestamp, title };
+}
+
+/** The plans in `items`, oldest first. */
+export function plansIn(items: readonly Item[]): PlanRef[] {
+  const out: PlanRef[] = [];
+  for (const item of items) {
+    if (item.kind !== "tool" || item.name !== "ExitPlanMode") continue;
+    const text = typeof item.input.plan === "string" ? item.input.plan : "";
+    if (text.trim()) out.push(planRef(item.id, text, item.timestamp));
+  }
+  return out;
+}
+
+/**
+ * Every plan in an instance's session, oldest first, read straight from its
+ * transcript (no view needs to be open). Pages back through the session, up to
+ * the same bound as `readLastResponse`.
+ */
+export async function readPlans(readBack: (before?: number) => Promise<TranscriptPage>): Promise<PlanRef[]> {
+  const transcript = createTranscript();
+  let before: number | undefined;
+  let session: string | null | undefined;
+  for (let n = 0; n < MAX_PAGES; n++) {
+    const page = await readBack(before);
+    if (session !== undefined && page.sessionId !== session) break;
+    session = page.sessionId;
+    if (page.lines.length === 0) break;
+    transcript.prepend(page.lines);
+    if (page.offset <= 0) break;
+    before = page.offset;
+  }
+  return plansIn(transcript.items);
+}

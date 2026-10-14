@@ -290,3 +290,6 @@ footer button { background: transparent; border: none; color: var(--dim); font-s
 #note-keep-new { color: var(--accent); border-color: var(--accent); }
 #note-sendto { display: flex; gap: 8px; }
 #note-sendto select { flex: 1; min-height: 44px; background: var(--panel); color: var(--fg); border: 1px solid var(--line); border-radius: 6px; padding: 8px 10px; font: inherit; }
+
+/* A plan card's "open plan" opens a desktop tab (step P1); the phone has none. */
+body .wb-tx-open-plan { display: none; }

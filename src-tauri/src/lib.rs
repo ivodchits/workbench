@@ -126,6 +126,7 @@ pub fn run() {
             notes::notes_read,
             notes::notes_write,
             notes::notes_create,
+            notes::notes_create_with,
             notes::notes_rename,
             notes::notes_delete,
             git::git_log,

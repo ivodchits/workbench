@@ -21,6 +21,8 @@ import {
 } from "../state/pendingChoice";
 import { answerChoice } from "../state/remoteActions";
 import { renderPendingTool } from "../transcript/render";
+import { planRef } from "../transcript/feed";
+import { openPlan } from "./openPlan";
 
 interface ChoiceCardProps {
   instanceId: string;
@@ -151,7 +153,16 @@ function ChoiceCard({ instanceId, choice, onShowTerminal }: ChoiceCardProps) {
             </div>
           ))
         ) : (
-          <div ref={bodyRef} />
+          <div
+            ref={bodyRef}
+            // The plan's "open plan" (step P1): open it beside the console to read
+            // before answering. Its id is the tool call's, as on the transcript card.
+            onClick={(e) => {
+              if (!(e.target instanceof Element) || !e.target.closest(".wb-tx-open-plan")) return;
+              const text = typeof input.plan === "string" ? input.plan : "";
+              if (text.trim()) openPlan(instanceId, planRef(choice.toolUseId ?? id, text, null));
+            }}
+          />
         )}
       </div>
 

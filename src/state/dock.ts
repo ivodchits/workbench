@@ -19,6 +19,25 @@ export function setDockApi(a: DockviewApi | null): void {
   api = a;
 }
 
+/** Open a panel to the right of `besideId` (or wherever dockview puts it when that
+ *  isn't docked), or bring it forward when one with its id is already open. */
+export function openPanelBeside(
+  besideId: string | null,
+  panel: { id: string; component: string; title: string; params: Record<string, unknown> },
+): void {
+  if (!api) return;
+  const existing = api.getPanel(panel.id);
+  if (existing) {
+    existing.api.setActive();
+    return;
+  }
+  const beside = besideId ? api.getPanel(besideId) : undefined;
+  api.addPanel({
+    ...panel,
+    ...(beside ? { position: { referencePanel: beside.id, direction: "right" as const } } : {}),
+  });
+}
+
 /**
  * Bring `panelId` to the foreground and hand it the keyboard — the *final* word,
  * even when opening it triggers an async project swap.

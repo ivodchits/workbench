@@ -1810,6 +1810,46 @@ filesystem path. There is no `draggable` / `dataTransfer` use anywhere in `src/`
   small menu.
 - **Done when:** a plan can be opened beside the console from either view, and nothing
   opens on its own.
+- **As built (2026-10-14):**
+  - **Finding plans:** `plansIn` / `readPlans` / `planRef` in `transcript/feed.ts`.
+    - `readPlans` pages back through the session's file, with the bound
+      `readLastResponse` uses (24 pages of 256 KB). So it works whichever view is
+      showing.
+    - A plan's id is its tool call's id; its title is the first heading or line,
+      without `#`, backtick, `*` or `_` marks.
+    - `state/plans.ts` caches the plans per instance. Since reading a whole session
+      isn't free, it refreshes only when a console shows up and when a plan
+      approval prompt appears, retried at 1 s, 3 s and 8 s: the prompt can arrive
+      before the plan's line reaches the file. The transcript view also adds the
+      plans it has already folded.
+  - **Opening** (`openPlan.ts`, `state/dock.openPanelBeside`): a `plan` tab to the
+    right of the console, one per plan (`plan:<instance>:<plan id>`). Opening it
+    again brings the tab forward.
+    - The plan's text is in the panel params, so the tab survives layout saves,
+      reloads and presets with no store.
+    - The session id param is `fromInstance`, not `instanceId`: the workspace
+      treats any panel with `instanceId` as a console.
+  - **Three ways in, all clicks:**
+    - **Console header:** "open plan" (the latest), with ▾ listing the earlier ones
+      when there are several. It shows once the session has a plan, in both views.
+    - **The plan's card in the transcript:** an "open plan" button, rendered by the
+      shared renderer and caught by the desktop view. The phone hides it, since it
+      has no dock.
+    - **The plan approval card:** the same button. It uses the tool-use id, so it
+      opens the same tab.
+  - **The tab** (`PlanPanel.tsx`): read-only markdown with **save as note**, which
+    copies the plan into the project's notes. It uses a new `notes_create_with`
+    command (free-name create), and the note name rule moved to
+    `state/noteName.ts`, shared with the phone.
+  - **Checked live** (a real session in plan mode, in a scratch repo):
+    - The approval card's button opened the tab beside the console.
+    - "save as note" made the note.
+    - After a reload the tab was still there.
+    - After resuming the session, the header button showed in both views, and the
+      transcript card's button opened the tab.
+    - Nothing opened by itself.
+    - Found and fixed during the run: the header button missed a plan that arrived
+      with its prompt (now the retries), and titles kept backticks.
 
 ---
 
@@ -1910,6 +1950,6 @@ any session, which lowers the urgency and makes the terminal bugs easier to comp
 | R6 | Push notifications | ☐ |
 | R7 | Phone: create a session | ☑ |
 | R8 | Phone: project notes | ☑ |
-| P1 | Open plan on demand | ☐ |
+| P1 | Open plan on demand | ☑ |
 | A1 | Review with a fresh agent | ☐ |
 | M1 | Run summary on done (mod) | ☐ |

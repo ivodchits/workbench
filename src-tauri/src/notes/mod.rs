@@ -325,6 +325,15 @@ pub fn notes_create(app: AppHandle, project_id: String, id: String) -> Result<No
     Ok(note)
 }
 
+/// Make a note holding `content`, under a free variant of `name` (step P1's "save
+/// as note").
+#[tauri::command]
+pub fn notes_create_with(app: AppHandle, project_id: String, name: String, content: String) -> Result<Note, String> {
+    let note = create_unique(&notes_root(&app)?, &project_id, name.trim(), &content)?;
+    notify(&app, &project_id);
+    Ok(note)
+}
+
 #[tauri::command]
 pub fn notes_rename(app: AppHandle, project_id: String, id: String, to: String) -> Result<(), String> {
     rename(&notes_root(&app)?, &project_id, &id, &to)?;

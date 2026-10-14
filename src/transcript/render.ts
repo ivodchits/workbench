@@ -322,6 +322,16 @@ function questionBlock(q: AskedQuestion): HTMLElement {
   );
 }
 
+/** "open plan" on a plan's card (step P1). It only carries a class: the desktop's
+ *  transcript view catches the click (it knows the session and the dock); the
+ *  phone, which has no dock, hides it. */
+function planButton(): HTMLButtonElement {
+  const button = el("button", "wb-tx-open-plan", "open plan");
+  button.type = "button";
+  button.title = "open the plan in a tab beside the console";
+  return button;
+}
+
 function toolBody(item: ToolItem): Child[] {
   const failed = item.status === "error" || item.status === "denied";
   const result = item.resultText ? output(item.resultText, failed ? "wb-tx-err" : "") : null;
@@ -330,7 +340,7 @@ function toolBody(item: ToolItem): Child[] {
     return [...item.questions.map(questionBlock), failed && result];
   }
   if (item.name === "ExitPlanMode") {
-    return [markdown(inputStr(item, "plan")), result];
+    return [markdown(inputStr(item, "plan")), planButton(), result];
   }
   if (item.agent) {
     const prompt = inputStr(item, "prompt");

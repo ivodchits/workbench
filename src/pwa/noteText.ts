@@ -1,26 +1,7 @@
-// The phone's note rules that need no DOM (step R8): a quick-capture note's name,
-// and the unsent edits kept on the device.
+// The phone's note rules that need no DOM (step R8): a quick-capture note's name
+// (shared with the desktop), and the unsent edits kept on the device.
 
-/** Longest name taken from a first line. */
-const NAME_MAX = 60;
-
-/**
- * A name for a note from its text: the first non-empty line, without markdown's
- * heading or list marks, with the characters a note name can't hold replaced, and
- * cut short. Falls back to "note" — the desktop adds " 2", " 3", … when taken.
- */
-export function nameFromText(text: string): string {
-  const first = text.split(/\r?\n/).find((l) => l.trim()) ?? "";
-  let name = first
-    .replace(/^\s*(#{1,6}\s+|[-*+]\s+(\[[ xX]\]\s+)?|>\s*|\d+[.)]\s+)/, "")
-    .replace(/[<>:"/\\|?*]/g, " ")
-    .replace(/\p{Cc}/gu, " ") // control characters
-    .replace(/\s+/g, " ")
-    .trim();
-  if (name.length > NAME_MAX) name = name.slice(0, NAME_MAX).trimEnd();
-  name = name.replace(/^[. ]+|[. ]+$/g, "");
-  return name || "note";
-}
+export { nameFromText } from "../state/noteName";
 
 /** An edit typed on the phone and not yet saved, kept across reloads. */
 export interface Draft {

@@ -752,3 +752,17 @@
   gap: 8px;
   color: var(--wb-textDim2);
 }
+
+/* A plan card's "open plan" (step P1). */
+.wb-tx-open-plan {
+  margin-top: 6px;
+  padding: 1px 8px;
+  font: 11px/1.6 var(--wb-mono);
+  color: var(--wb-accent);
+  background: transparent;
+  border: 1px solid var(--wb-border);
+  cursor: pointer;
+}
+.wb-tx-open-plan:hover {
+  border-color: var(--wb-accent);
+}

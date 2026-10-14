@@ -2,7 +2,14 @@ import { describe, expect, it } from "vitest";
 
 import type { TranscriptPage } from "../ipc/transcript";
 import { fixtures, sessionLines } from "./fixtures.test-util";
-import { createFeed, lastAssistantText, readLastResponse, type FeedChange, type TranscriptSource } from "./feed";
+import {
+  createFeed,
+  lastAssistantText,
+  readLastResponse,
+  readPlans,
+  type FeedChange,
+  type TranscriptSource,
+} from "./feed";
 import { createTranscript } from "./model";
 
 /** A transcript "file" held in memory, with the T1 contract: offsets are byte
@@ -216,5 +223,22 @@ describe("last response", () => {
   it("is null for a session with no answer yet", async () => {
     const empty = fakeFile("s1", [], 1024);
     expect(await readLastResponse(async (before) => empty.readBack(before))).toBeNull();
+  });
+});
+
+describe("readPlans", () => {
+  it("finds the session's plan, paging back through the file", async () => {
+    const file = fakeFile("s1", sessionLines, 32 * 1024);
+    const plans = await readPlans(async (before) => file.readBack(before));
+    expect(plans).toHaveLength(1);
+    expect(plans[0].text).toContain("subtract");
+    expect(plans[0].title.length).toBeGreaterThan(0);
+    expect(plans[0].title.startsWith("#")).toBe(false);
+    expect(file.reads).toBeGreaterThan(1);
+  });
+
+  it("is empty for a session with no plan", async () => {
+    const file = fakeFile("s1", fixtures["01-text-turn"], 1024);
+    expect(await readPlans(async (before) => file.readBack(before))).toEqual([]);
   });
 });

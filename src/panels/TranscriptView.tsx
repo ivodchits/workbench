@@ -20,7 +20,9 @@ import { reconcileWithTranscript, usePendingChoice } from "../state/pendingChoic
 import { isTextInput } from "../keyboard/keymap";
 import type { LiveStatus } from "../state/status";
 import { instanceSource } from "../transcript/desktopSource";
-import { createFeed, type Feed } from "../transcript/feed";
+import { createFeed, plansIn, type Feed } from "../transcript/feed";
+import { notePlans } from "../state/plans";
+import { openPlan } from "./openPlan";
 import { createRenderer } from "../transcript/render";
 
 interface TranscriptViewProps {
@@ -90,6 +92,7 @@ function TranscriptView({ instanceId, live, onShowTerminal }: TranscriptViewProp
         renderer.update(feed.items);
         // A refused or dismissed prompt is only ever recorded here (no hook).
         if (feed.ready) reconcileWithTranscript(instanceId, feed.items);
+        notePlans(instanceId, plansIn(feed.items));
       }
       if (follow) scroll.scrollTop = scroll.scrollHeight;
       else if (why === "prepend") scroll.scrollTop = top + (scroll.scrollHeight - height);
@@ -211,6 +214,16 @@ function TranscriptView({ instanceId, live, onShowTerminal }: TranscriptViewProp
   // Links in rendered text never navigate this webview: web and mail links go to
   // the OS (the backend refuses anything else), the rest do nothing.
   const onLink = (e: React.MouseEvent) => {
+    const planBtn = e.target instanceof Element ? e.target.closest(".wb-tx-open-plan") : null;
+    if (planBtn) {
+      // A plan card's "open plan" (step P1): the card's item id is the plan's.
+      e.preventDefault();
+      e.stopPropagation();
+      const id = planBtn.closest<HTMLElement>("[data-item-id]")?.dataset.itemId;
+      const plan = plansIn(feedRef.current?.items ?? []).find((p) => p.id === id);
+      if (plan && e.type === "click") openPlan(instanceId, plan);
+      return;
+    }
     const link = e.target instanceof Element ? e.target.closest("a[href]") : null;
     if (!link) return;
     e.preventDefault();

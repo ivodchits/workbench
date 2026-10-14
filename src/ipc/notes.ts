@@ -49,6 +49,11 @@ export function notesCreate(projectId: string, id: string): Promise<Note> {
   return invoke("notes_create", { projectId, id });
 }
 
+/** Make a note holding `content`, named `name` or "name 2", "name 3", … when taken. */
+export function notesCreateWith(projectId: string, name: string, content: string): Promise<Note> {
+  return invoke("notes_create_with", { projectId, name, content });
+}
+
 export function notesRename(projectId: string, id: string, to: string): Promise<void> {
   return invoke("notes_rename", { projectId, id, to });
 }

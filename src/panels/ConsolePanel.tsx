@@ -23,6 +23,7 @@ import { accentVars } from "./InstanceManager/accent";
 import Console from "./Console";
 import FileDropZone from "./FileDropZone";
 import TranscriptView from "./TranscriptView";
+import PlanButton from "./PlanButton";
 import type { Instance, Project } from "../ipc/registry";
 import type { SpawnResult } from "../ipc/pty";
 import { contextWindowTokens, formatTokens, tokenBreakdown } from "../util/format";
@@ -93,6 +94,7 @@ function ConsolePanel(props: IDockviewPanelProps<ConsolePanelParams>) {
         live={live}
         viewMode={hasTranscript ? viewMode : null}
         onToggleView={() => toggleViewMode(instanceId)}
+        plans={hasTranscript}
       />
       <div style={{ flex: "1 1 auto", minHeight: 0 }}>
         {dormant ? (
@@ -168,6 +170,7 @@ function HeaderStrip({
   live,
   viewMode,
   onToggleView,
+  plans,
 }: {
   project: Project | null;
   instance: Instance;
@@ -177,6 +180,8 @@ function HeaderStrip({
   /** The view on screen, or null when this console has no transcript to switch to. */
   viewMode: ViewMode | null;
   onToggleView: () => void;
+  /** The session's transcript is readable here, so its plans can be offered (P1). */
+  plans: boolean;
 }) {
   const branch = instance.branch ?? project?.defaultBranch ?? null;
   return (
@@ -217,6 +222,7 @@ function HeaderStrip({
         </>
       )}
       <span style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 10, paddingLeft: 12 }}>
+        <PlanButton instanceId={instance.id} enabled={plans} />
         {viewMode && <ViewToggle mode={viewMode} onToggle={onToggleView} />}
         {status === "spawning" ? (
           <span style={{ color: "var(--wb-working)" }}>
