@@ -39,6 +39,7 @@ import { closeDiff, diffIdFor, getOpenDiffs, openDiff } from "../../state/diffs"
 import { closeMcp, getOpenMcps, openMcp } from "../../state/mcp";
 import { closeSkills, getOpenSkills, openSkills } from "../../state/skills";
 import { closeGit, getOpenGits, openGit } from "../../state/git";
+import { closeNotes, getOpenNotes, openNotes } from "../../state/notes";
 import { getLiveStatuses, useLiveStatuses, type LiveStatus } from "../../state/status";
 import { mergeStatus } from "./status";
 import { getActiveProject, setActiveProject, useActiveProject } from "../../state/activeProject";
@@ -222,6 +223,10 @@ function InstanceManager({ onCollapse }: InstanceManagerProps) {
         const proj = getRegistry().projects.find((p) => p.id === getActiveProject());
         if (proj) openGitForProject(proj);
       }),
+      registerCommand("openNotes", () => {
+        const proj = getRegistry().projects.find((p) => p.id === getActiveProject());
+        if (proj) openNotesForProject(proj);
+      }),
       registerCommand("jumpNeedsYou", () => doJump(1)),
       registerCommand("jumpPrevNeedsYou", () => doJump(-1)),
     ];
@@ -382,6 +387,13 @@ function InstanceManager({ onCollapse }: InstanceManagerProps) {
   const openGitForProject = (project: Project) => {
     setActiveProject(project.id);
     openGit({ projectId: project.id, repoRoot: project.rootPath, title: project.name });
+  };
+
+  // Open (or focus) the project's notes (step N1). Notes live on this machine, so
+  // a remote project has them too.
+  const openNotesForProject = (project: Project) => {
+    setActiveProject(project.id);
+    openNotes({ projectId: project.id, title: project.name });
   };
 
   // Open the project's CLAUDE.md in its editor (step 3.6) — creating an empty one
@@ -644,6 +656,7 @@ function InstanceManager({ onCollapse }: InstanceManagerProps) {
                         void openScratchpad(p.rootPath).catch((err) => flash(String(err)))
                       }
                       onOpenGit={() => openGitForProject(p)}
+                      onOpenNotes={() => openNotesForProject(p)}
                       onSyncRemote={() => setRemoteSyncTarget(p)}
                       onEdit={() => setEditProjectTarget(p)}
                       onRemove={() => setRemoveProjectTarget(p)}
@@ -742,6 +755,8 @@ interface ProjectNodeProps {
   onOpenScratchpad: () => void;
   /** Open this project's Git panel (step 3.11). */
   onOpenGit: () => void;
+  /** Open this project's notes (step N1). */
+  onOpenNotes: () => void;
   /** Reconcile / adopt this remote project's tmux sessions (step 3.12). */
   onSyncRemote: () => void;
   onEdit: () => void;
@@ -770,6 +785,7 @@ function ProjectNode({
   onOpenSkills,
   onOpenScratchpad,
   onOpenGit,
+  onOpenNotes,
   onSyncRemote,
   onEdit,
   onRemove,
@@ -891,7 +907,10 @@ function ProjectNode({
                 <ProjectMoreMenu
                   open={menuOpen}
                   setOpen={setMenuOpen}
-                  items={[{ label: "edit project", onClick: onEdit }]}
+                  items={[
+                    { label: "notes", onClick: onOpenNotes },
+                    { label: "edit project", onClick: onEdit },
+                  ]}
                 />
               </>
             ) : (
@@ -909,6 +928,7 @@ function ProjectNode({
                   open={menuOpen}
                   setOpen={setMenuOpen}
                   items={[
+                    { label: "notes", onClick: onOpenNotes },
                     { label: "edit CLAUDE.md", onClick: onOpenClaudeMd },
                     { label: "manage MCP servers", onClick: onOpenMcp },
                     { label: "manage skills", onClick: onOpenSkills },
@@ -1254,6 +1274,10 @@ function RemoveProjectConfirm({
     }
     for (const g of getOpenGits().filter((g) => g.projectId === project.id)) {
       closeGit(g.gitId);
+    }
+    // The notes panel closes; the note files stay in the app data dir.
+    for (const n of getOpenNotes().filter((n) => n.projectId === project.id)) {
+      closeNotes(n.notesId);
     }
   };
 

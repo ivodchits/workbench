@@ -50,6 +50,7 @@ export function runAction(command: CommandId, arg?: number): void {
     case "killInstance":
     case "showDiff":
     case "openGit":
+    case "openNotes":
     case "jumpNeedsYou":
     case "jumpPrevNeedsYou":
     case "savePreset":

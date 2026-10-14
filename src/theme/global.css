@@ -138,3 +138,9 @@ html[data-wb-crt="on"] body::after {
   color: var(--wb-accent);
   font: 11px var(--wb-mono);
 }
+
+/* Notes list (step N1): a row's rename / delete show while it is hovered or
+   holds the keyboard. */
+.wb-note-row .wb-note-actions { visibility: hidden; }
+.wb-note-row:hover .wb-note-actions,
+.wb-note-row:focus-within .wb-note-actions { visibility: visible; }

@@ -1112,6 +1112,56 @@ filesystem path. There is no `draggable` / `dataTransfer` use anywhere in `src/`
   `src/keyboard/commands.ts`.
 - **Done when:** notes persist across restarts, render as markdown, and survive a layout
   preset switch.
+- **As built (2026-10-14):**
+  - **Where:** the recommended option, confirmed: `<app data>/notes/<projectId>/<name>.md`
+    (`notes.dev/` for a debug build, like the database). Removing a project closes
+    its notes panel but leaves the files.
+  - **Backend** `src-tauri/src/notes/`: `notes_list`, `notes_read`, `notes_write`,
+    `notes_create`, `notes_rename`, `notes_delete`.
+    - The note id is the file's stem, which is also its name in the list. Names are
+      checked so they can never leave the folder: no separators or characters
+      Windows forbids, no leading or trailing dot or space, no reserved device names,
+      at most 120 characters. Project ids must be UUID-like.
+    - The revision is an FNV-1a hash of the bytes: the same for the same text in any
+      process, with no mtime granularity issues.
+    - A write names its base revision. A changed or deleted note refuses it with an
+      error starting `stale:`; a null base overwrites. One lock covers check and
+      write, and the write goes through a temp file and a rename.
+    - Every change emits `notes-changed { projectId }`. The file operations take the
+      root as a parameter so R8's remote server can call the same rules.
+  - **Frontend:** `ipc/notes.ts`; `state/notes.ts` holds the panels (one per project,
+    `notes:<projectId>`, with the open note) and the open notes' buffers, so
+    unsaved text survives a project swap. Panel `panels/Notes/`:
+    - On the left: the list (newest first), "+ new" (asks for the name first,
+      proposing "untitled", "untitled 2", …), ✎ or double-click to rename, × to
+      delete behind a confirm, and a filter once there are more than four.
+    - On the right: `CodeMirrorView` with markdown; edit, split or preview with the
+      editor's `PreviewPane`; Ctrl+S and the unsaved mark.
+    - A refused save shows "changed elsewhere" with **reload** (drops your edits) or
+      **overwrite**. On `notes-changed` the list re-reads, and the open note
+      reloads unless it has unsaved edits (then the same banner).
+    - **To agent:** "⏎ text to agent" puts the note's text, and "@ to agent" an
+      `@path` to its file, in the project's last focused Claude console, unsent
+      (`consoleInput.ts` from V3).
+  - **Opening:** the rail's project menu ("notes", for SSH projects too, since notes
+    are local), the palette, and **Ctrl+Shift+J**.
+  - **Layouts:** a `notes` component and `notes` descriptors in the saved layout and
+    in presets, defaulting to `[]` for older ones (no schema bump, like `gits`).
+    Picking another note changes no dock geometry, so the workspace also saves when
+    the notes store changes; without that the open note was lost on restart.
+  - **Name fields** commit on Enter or on a click elsewhere in the app, but not when
+    the window loses focus (alt-tab). The field still has the keyboard when the
+    window comes back.
+  - **Checked live** (dev app, workbench project):
+    - Created and renamed a note; wrote markdown, saved, and the split view rendered
+      it.
+    - Changed the file on disk behind the app, then saved: refused with the banner;
+      reload brought the outside text in.
+    - After a restart, the panel came back with the same note open.
+    - Applied another preset and back; and with the notes panel closed, applying a
+      preset that had it restored it with its note.
+    - Send to agent wasn't run (no live session in that project); it uses V3's
+      checked path.
 
 #### Step N2 — Rendered-while-editing markdown (optional)
 
@@ -1801,7 +1851,7 @@ any session, which lowers the urgency and makes the terminal bugs easier to comp
 | V1 | Diff rendering | ☑ |
 | V2 | Diff navigation + freshness | ☑ |
 | V3 | Inline comments to the agent | ☑ |
-| N1 | Project notes panel | ☐ |
+| N1 | Project notes panel | ☑ |
 | N2 | Rendered-while-editing markdown | ☐ |
 | R1 | PWA build | ☑ |
 | R2 | Pairing / auth hardening | ☑ |

@@ -11,6 +11,7 @@ mod git;
 mod hooks;
 mod layout;
 mod mcp;
+mod notes;
 mod pty;
 mod registry;
 mod remote;
@@ -121,6 +122,12 @@ pub fn run() {
             git::instance_diff,
             git::instance_file_diff,
             git::instance_file_versions,
+            notes::notes_list,
+            notes::notes_read,
+            notes::notes_write,
+            notes::notes_create,
+            notes::notes_rename,
+            notes::notes_delete,
             git::git_log,
             git::git_branches,
             git::git_status_entries,
