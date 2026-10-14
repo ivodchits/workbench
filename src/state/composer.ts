@@ -10,6 +10,8 @@
 
 import { useSyncExternalStore } from "react";
 
+import { spliceReference } from "./fileDrag";
+
 const KEY_PREFIX = "wb-draft:";
 
 const drafts = new Map<string, string>();
@@ -45,7 +47,7 @@ export function setDraft(instanceId: string, text: string): void {
 }
 
 /** Add `text` to an instance's draft from outside its composer (a template picked
- *  in the library; a dropped file reference, step D1). Goes on its own line after
+ *  in the library). Goes on its own line after
  *  whatever is already there. */
 export function insertIntoDraft(instanceId: string, text: string): void {
   const draft = getDraft(instanceId);
@@ -73,6 +75,26 @@ export function focusComposer(instanceId: string): void {
   document
     .querySelector<HTMLTextAreaElement>(`textarea[${COMPOSER_ATTR}="${CSS.escape(instanceId)}"]`)
     ?.focus({ preventScroll: true });
+}
+
+/** Put file references (step D1) into an instance's draft: at the caret of its
+ *  composer when one is on screen, else at the end. */
+export function insertReferences(instanceId: string, text: string): void {
+  const field = document.querySelector<HTMLTextAreaElement>(
+    `textarea[${COMPOSER_ATTR}="${CSS.escape(instanceId)}"]`,
+  );
+  const draft = getDraft(instanceId);
+  const next = spliceReference(
+    draft,
+    field?.selectionStart ?? draft.length,
+    field?.selectionEnd ?? draft.length,
+    text,
+  );
+  setDraft(instanceId, next.text);
+  if (!field) return;
+  field.focus({ preventScroll: true });
+  // Once the field has rendered the new text (which leaves its caret at the end).
+  requestAnimationFrame(() => field.setSelectionRange(next.caret, next.caret));
 }
 
 // --- rules -------------------------------------------------------------------

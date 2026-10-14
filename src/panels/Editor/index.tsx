@@ -26,6 +26,7 @@ import {
   type EditorSession,
   type OpenFile,
 } from "../../state/editors";
+import { setDragPaths } from "../../state/fileDrag";
 import { detectLanguage, previewKind } from "./language";
 import FileTree from "./FileTree";
 import CodeMirrorView from "./CodeMirrorView";
@@ -392,6 +393,9 @@ function TabStrip({
         return (
           <div
             key={f.path}
+            // Onto a console, to reference the file (step D1).
+            draggable
+            onDragStart={(e) => setDragPaths(e.dataTransfer, [f.path])}
             onClick={() => onFocus(f.path)}
             title={f.path}
             style={{

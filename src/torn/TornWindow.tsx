@@ -15,6 +15,7 @@ import { useEffect, useState } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
 import Console from "../panels/Console";
+import FileDropZone from "../panels/FileDropZone";
 import { ViewToggle } from "../panels/ConsolePanel";
 import TranscriptView from "../panels/TranscriptView";
 import { copyLastResponse } from "../panels/consoleCommands";
@@ -111,23 +112,34 @@ function TornWindow({ params }: { params: TornParams }) {
       <div style={{ flex: "1 1 auto", minHeight: 0 }}>
         {error ? (
           <Ended message={error} />
-        ) : showTranscript ? (
-          <TranscriptView
-            instanceId={id}
-            live={live}
-            onShowTerminal={() => setViewMode(id, "terminal")}
-          />
         ) : (
-          <Console
+          // A file dragged over from the main window (step D1). This window doesn't
+          // know the session's working dir, so the references are absolute paths.
+          <FileDropZone
             instanceId={id}
-            kind={kind === "shell" ? "shell" : "claude"}
             cwd=""
-            webgl={kind === "console"}
-            resumeSessionId={null}
-            remote={null}
-            attach
-            onError={setError}
-          />
+            target={showTranscript ? "composer" : "terminal"}
+            enabled={isConsole}
+          >
+            {showTranscript ? (
+              <TranscriptView
+                instanceId={id}
+                live={live}
+                onShowTerminal={() => setViewMode(id, "terminal")}
+              />
+            ) : (
+              <Console
+                instanceId={id}
+                kind={kind === "shell" ? "shell" : "claude"}
+                cwd=""
+                webgl={kind === "console"}
+                resumeSessionId={null}
+                remote={null}
+                attach
+                onError={setError}
+              />
+            )}
+          </FileDropZone>
         )}
       </div>
     </div>

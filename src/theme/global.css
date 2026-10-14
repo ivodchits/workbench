@@ -121,3 +121,20 @@ html[data-wb-crt="on"] body::after {
   background: var(--wb-sel, #232742);
   box-shadow: inset 2px 0 0 0 var(--wb-accent, #c9a26b);
 }
+
+/* A console while a file dragged from inside the app is over it (step D1). */
+.wb-filedrop {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  padding-bottom: 14px;
+  box-sizing: border-box;
+  pointer-events: none;
+  border: 1px dashed var(--wb-accent);
+  background: color-mix(in srgb, var(--wb-accent) 9%, transparent);
+  color: var(--wb-accent);
+  font: 11px var(--wb-mono);
+}

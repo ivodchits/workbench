@@ -8,6 +8,7 @@
 import { useEffect, useState, type CSSProperties } from "react";
 import { readDir, type DirEntry } from "../../ipc/fs";
 import { GLYPH } from "../../theme";
+import { setDragPaths } from "../../state/fileDrag";
 
 interface FileTreeProps {
   /** Directory the tree is rooted at (the project working dir). */
@@ -103,7 +104,7 @@ function DirNode({
   const [open, setOpen] = useState(false);
   return (
     <>
-      <Row depth={depth} onClick={() => setOpen((o) => !o)}>
+      <Row depth={depth} dragPath={entry.path} onClick={() => setOpen((o) => !o)}>
         <span style={{ color: "var(--wb-textFaint)", width: 10, flex: "0 0 10px" }}>
           {open ? "▾" : "▸"}
         </span>
@@ -133,7 +134,7 @@ function FileNode({
   onOpenFile: (entry: DirEntry) => void;
 }) {
   return (
-    <Row depth={depth} active={active} onClick={() => onOpenFile(entry)}>
+    <Row depth={depth} active={active} dragPath={entry.path} onClick={() => onOpenFile(entry)}>
       {/* Spacer aligning file names under the caret column of sibling folders. */}
       <span style={{ width: 10, flex: "0 0 10px" }} />
       <span
@@ -153,17 +154,22 @@ function FileNode({
 function Row({
   depth,
   active,
+  dragPath,
   onClick,
   children,
 }: {
   depth: number;
   active?: boolean;
+  /** The row's absolute path — it can be dragged onto a console to reference it (D1). */
+  dragPath: string;
   onClick: () => void;
   children: React.ReactNode;
 }) {
   const [hover, setHover] = useState(false);
   return (
     <div
+      draggable
+      onDragStart={(e) => setDragPaths(e.dataTransfer, [dragPath])}
       onClick={onClick}
       onMouseEnter={() => setHover(true)}
       onMouseLeave={() => setHover(false)}

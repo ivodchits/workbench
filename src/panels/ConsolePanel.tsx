@@ -21,6 +21,7 @@ import type { IDockviewPanelProps } from "dockview";
 import { GLYPH, Spinner } from "../theme";
 import { accentVars } from "./InstanceManager/accent";
 import Console from "./Console";
+import FileDropZone from "./FileDropZone";
 import TranscriptView from "./TranscriptView";
 import type { Instance, Project } from "../ipc/registry";
 import type { SpawnResult } from "../ipc/pty";
@@ -98,14 +99,25 @@ function ConsolePanel(props: IDockviewPanelProps<ConsolePanelParams>) {
           <Dormant instance={instance} />
         ) : session.status === "error" ? (
           <ErrorBody message={session.error} />
-        ) : showTranscript ? (
-          <TranscriptView
-            instanceId={instanceId}
-            live={live}
-            onShowTerminal={() => setViewMode(instanceId, "terminal")}
-          />
         ) : (
-          <LiveConsole instanceId={instanceId} session={session} />
+          // A file dragged from another panel lands here as an `@` reference (D1).
+          // Not for a session on another host: these paths are this machine's.
+          <FileDropZone
+            instanceId={instanceId}
+            cwd={session.cwd}
+            target={showTranscript ? "composer" : "terminal"}
+            enabled={session.status === "running" && !session.remote}
+          >
+            {showTranscript ? (
+              <TranscriptView
+                instanceId={instanceId}
+                live={live}
+                onShowTerminal={() => setViewMode(instanceId, "terminal")}
+              />
+            ) : (
+              <LiveConsole instanceId={instanceId} session={session} />
+            )}
+          </FileDropZone>
         )}
       </div>
     </div>

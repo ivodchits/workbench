@@ -43,6 +43,7 @@ import { useContextMenu } from "../../components/useContextMenu";
 import UnifiedDiff, { type HunkControls } from "../Diff/UnifiedDiff";
 import { buildPatch, parseDiff } from "../Diff/patch";
 import CommitBox, { type CommitRequest } from "./CommitBox";
+import { setDragPaths } from "../../state/fileDrag";
 import { fileRowMenu, stashRowMenu, type FileActions } from "./menus";
 import { conflictLabel, inputStyle, miniActionStyle, statusCharColor } from "./format";
 import { Empty, HeaderButton, RowAction, SectionHead } from "./rows";
@@ -437,6 +438,17 @@ export default function StatusTab({
     fileHistory: actions.fileHistory,
   };
 
+  // Dragging a row onto a console references its file (step D1); dragging one of
+  // the selected rows takes the whole selection. A deleted file has nothing to
+  // reference, so a drag of only those doesn't start.
+  const onRowDrag = (rowId: string, e: React.DragEvent) => {
+    const row = allRows.find((r) => r.rowId === rowId);
+    const target = selected.has(rowId) ? allRows.filter((r) => selected.has(r.rowId)) : row ? [row] : [];
+    const paths = uniquePaths(target.filter((r) => !isDeleted(r.entry))).map(actions.abs);
+    if (paths.length === 0) e.preventDefault();
+    else setDragPaths(e.dataTransfer, paths);
+  };
+
   // Right-clicking *inside* the selection acts on all of it; right-clicking
   // outside replaces the selection with that one row first, so what the menu is
   // about to touch is always what's highlighted when it opens.
@@ -670,6 +682,7 @@ export default function StatusTab({
                       lead={lead}
                       onRowClick={onRowClick}
                       onRowMenu={onRowMenu}
+                      onRowDrag={onRowDrag}
                       onCheck={toggleOne}
                       busy={busy}
                       onStage={onStage}
@@ -1067,6 +1080,7 @@ function StatusGroup({
   lead,
   onRowClick,
   onRowMenu,
+  onRowDrag,
   onCheck,
   busy,
   onStage,
@@ -1085,6 +1099,7 @@ function StatusGroup({
   lead: string | null;
   onRowClick: (rowId: string, e: React.MouseEvent) => void;
   onRowMenu: (rowId: string, e: React.MouseEvent) => void;
+  onRowDrag: (rowId: string, e: React.DragEvent) => void;
   onCheck: (rowId: string) => void;
   busy: boolean;
   onStage: (paths: string[]) => void;
@@ -1176,6 +1191,7 @@ function StatusGroup({
           lead={lead}
           onRowClick={onRowClick}
           onRowMenu={onRowMenu}
+          onRowDrag={onRowDrag}
           onCheck={onCheck}
           busy={busy}
           onStage={onStage}
@@ -1193,6 +1209,7 @@ function StatusGroup({
             lead={r.rowId === lead}
             onClick={(ev) => onRowClick(r.rowId, ev)}
             onMenu={(ev) => onRowMenu(r.rowId, ev)}
+            onDrag={(ev) => onRowDrag(r.rowId, ev)}
             onCheck={() => onCheck(r.rowId)}
             busy={busy}
             onStage={onStage}
@@ -1219,6 +1236,7 @@ function TreeLevel({
   lead,
   onRowClick,
   onRowMenu,
+  onRowDrag,
   onCheck,
   busy,
   onStage,
@@ -1235,6 +1253,7 @@ function TreeLevel({
   lead: string | null;
   onRowClick: (rowId: string, e: React.MouseEvent) => void;
   onRowMenu: (rowId: string, e: React.MouseEvent) => void;
+  onRowDrag: (rowId: string, e: React.DragEvent) => void;
   onCheck: (rowId: string) => void;
   busy: boolean;
   onStage: (paths: string[]) => void;
@@ -1255,6 +1274,7 @@ function TreeLevel({
             lead={row.rowId === lead}
             onClick={(ev) => onRowClick(row.rowId, ev)}
             onMenu={(ev) => onRowMenu(row.rowId, ev)}
+            onDrag={(ev) => onRowDrag(row.rowId, ev)}
             onCheck={() => onCheck(row.rowId)}
             busy={busy}
             onStage={onStage}
@@ -1286,6 +1306,7 @@ function TreeLevel({
               lead={lead}
               onRowClick={onRowClick}
               onRowMenu={onRowMenu}
+              onRowDrag={onRowDrag}
               onCheck={onCheck}
               busy={busy}
               onStage={onStage}
@@ -1385,6 +1406,7 @@ function StatusRow({
   lead,
   onClick,
   onMenu,
+  onDrag,
   onCheck,
   busy,
   onStage,
@@ -1401,6 +1423,8 @@ function StatusRow({
   lead: boolean;
   onClick: (e: React.MouseEvent) => void;
   onMenu: (e: React.MouseEvent) => void;
+  /** The row is being dragged (onto a console, to reference its file). */
+  onDrag: (e: React.DragEvent) => void;
   onCheck: () => void;
   busy: boolean;
   onStage: (paths: string[]) => void;
@@ -1422,6 +1446,8 @@ function StatusRow({
       aria-selected={picked}
       onMouseEnter={() => setHover(true)}
       onMouseLeave={() => setHover(false)}
+      draggable
+      onDragStart={onDrag}
       onClick={onClick}
       onContextMenu={onMenu}
       style={{

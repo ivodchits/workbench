@@ -838,6 +838,34 @@ filesystem path. There is no `draggable` / `dataTransfer` use anywhere in `src/`
   `src/panels/Workspace.tsx`.
 - **Done when:** dragging a file from the tree onto a console inserts a working reference
   and panel drag-to-dock still works.
+- **As built (2026-10-13):**
+  - `src/state/fileDrag.ts` holds the drag type (`application/x-workbench-path`, a JSON
+    array of absolute paths) and the path rules; `src/panels/FileDropZone.tsx` is the
+    drop target, wrapped around the body of a running console in `ConsolePanel.tsx`.
+    The whole body is the target, not only the terminal host or the composer field: in
+    the terminal view a drop is pasted into the TUI (not submitted), in the transcript
+    view it goes to the composer's caret wherever on the view it was dropped.
+  - **Sources:** file and folder rows of the editor tree, editor tabs, the Diff file
+    list, Git status rows. Only the Git status list has a multi-selection: dragging a
+    selected row carries the whole selection, dragging an unselected one carries that
+    row. A deleted file is not draggable (Diff list) or is left out of the drag (Git).
+  - **Path form, verified against Claude Code 2.1.296:** a path with a space has to be
+    written `@"my notes/a b.md"`; relative paths with forward slashes and absolute
+    Windows paths with backslashes both attach, quoted or not. Checked by submitting
+    prompts with each form and seeing Claude read the files without a tool call.
+  - **dockview:** a file drag raises no dock overlay over any panel, and a panel tab
+    dragged over a console shows dockview's overlay and not the file highlight;
+    docking a panel into the console's group still works. Nothing had to be configured
+    — dockview only answers its own drags.
+  - **Not accepted:** a console that is not running, and a remote (SSH) console — the
+    paths are this machine's.
+  - **Torn-off window:** the console there is a drop target too, writing absolute
+    paths (that window does not know the working dir). Its drop handling was exercised
+    with a scripted drop; a real drag carried from the main window to the torn-off one
+    was **not** tried, so whether the custom type survives between windows is unknown.
+  - Run in the app with real drags driven through the debugger: tree file, tree
+    folder, editor tab, Diff row, Git row and Git selection, onto the terminal and
+    onto the transcript view. Typecheck, lint and 123 frontend tests pass.
 
 #### Step D2 — Drag files from the OS (spike, may be dropped)
 
@@ -1239,7 +1267,7 @@ any session, which lowers the urgency and makes the terminal bugs easier to comp
 | T3 | View + toggle | ☑ |
 | T4 | Prompt composer | ☑ |
 | T5 | Choice cards (desktop) | ☑ |
-| D1 | Drag files from inside the app | ☐ |
+| D1 | Drag files from inside the app | ☑ |
 | D2 | Drag files from the OS (spike) | ☐ |
 | V1 | Diff rendering | ☐ |
 | V2 | Diff navigation + freshness | ☐ |

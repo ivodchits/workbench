@@ -15,6 +15,7 @@ import { GLYPH } from "../../theme";
 import { instanceDiff, instanceFileDiff, type DiffFile, type FileDiff, type InstanceDiff } from "../../ipc/git";
 import { readFile, writeFile } from "../../ipc/fs";
 import { useDiffs, type DiffSession } from "../../state/diffs";
+import { setDragPaths } from "../../state/fileDrag";
 import { detectLanguage } from "../Editor/language";
 import CodeMirrorView from "../Editor/CodeMirrorView";
 import UnifiedDiff from "./UnifiedDiff";
@@ -304,6 +305,9 @@ function FileList({
         return (
           <button
             key={f.path}
+            // Onto a console, to reference the file (step D1) — unless it is gone.
+            draggable={f.absPath !== null}
+            onDragStart={(e) => f.absPath && setDragPaths(e.dataTransfer, [f.absPath])}
             onClick={() => onSelect(f.path)}
             title={f.path}
             style={{
