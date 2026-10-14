@@ -25,20 +25,39 @@ export interface RemoteStatus {
   port: number;
   /** Whether a Tailscale interface is currently detectable. */
   tailscaleAvailable: boolean;
+  /** Approved devices. */
   deviceCount: number;
+  /** Devices waiting for approval. */
+  pendingCount: number;
   /** The active pairing code, if one is live (else null). */
   pairingCode: string | null;
   /** Epoch seconds the active pairing code expires (else null). */
   pairingExpiresAt: number | null;
+  /** Wrong tries burned the last code; a new one is needed. */
+  pairingLocked: boolean;
 }
 
-/** A paired device row. */
+/** A paired device, approved or waiting for approval. The token stays in the
+ *  backend; `id` names the device. */
 export interface RemoteDevice {
-  /** Bearer token; also the stable id for revoke (desktop-trusted UI). */
-  token: string;
+  id: string;
   name: string;
   pairedAt: number;
   lastSeen: number | null;
+  /** The address it last used (or paired from). */
+  lastAddr: string | null;
+  approved: boolean;
+  /** Epoch seconds it stops working: unless used (approved) or approved (waiting). */
+  expiresAt: number;
+}
+
+/** One kind of auth failure from one address (step R2). */
+export interface AuthFailure {
+  /** Epoch seconds of the latest occurrence. */
+  at: number;
+  addr: string;
+  what: string;
+  count: number;
 }
 
 /** Enable remote serving (bind the tailnet + start the server). Rejects if no
@@ -72,9 +91,29 @@ export function remoteDevicesList(): Promise<RemoteDevice[]> {
   return invoke("remote_devices_list");
 }
 
-/** Revoke a paired device by its token; returns the updated list. */
-export function remoteRevokeDevice(token: string): Promise<RemoteDevice[]> {
-  return invoke("remote_revoke_device", { token });
+/** Let a waiting device in; returns the updated list. */
+export function remoteApproveDevice(id: string): Promise<RemoteDevice[]> {
+  return invoke("remote_approve_device", { id });
+}
+
+/** Revoke a paired device, or turn away a waiting one; returns the updated list. */
+export function remoteRevokeDevice(id: string): Promise<RemoteDevice[]> {
+  return invoke("remote_revoke_device", { id });
+}
+
+/** Recent auth failures, newest first. */
+export function remoteAuthLog(): Promise<AuthFailure[]> {
+  return invoke("remote_auth_log");
+}
+
+/** Empty the failure log. */
+export function remoteClearAuthLog(): Promise<void> {
+  return invoke("remote_clear_auth_log");
+}
+
+/** Subscribe to changes in devices, the pairing code or the failure log. */
+export function onRemoteChanged(cb: () => void): Promise<UnlistenFn> {
+  return listen("remote-changed", () => cb());
 }
 
 /** Subscribe to actions sent by remote clients. Returns an unlisten function. */

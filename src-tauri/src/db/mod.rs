@@ -181,6 +181,17 @@ const MIGRATIONS: &[&str] = &[
         last_seen  INTEGER
     );
     "#,
+    // v8 -> v9: harder pairing (step R2). A device now has an `id` the desktop UI
+    // names it by (the token never leaves the backend), the address it last used,
+    // and whether the desktop has `approved` it — a new pairing waits for that before
+    // its token works. Devices paired before this were confirmed by typing a code at
+    // the desktop, so they stay approved.
+    r#"
+    ALTER TABLE remote_devices ADD COLUMN id TEXT;
+    ALTER TABLE remote_devices ADD COLUMN last_addr TEXT;
+    ALTER TABLE remote_devices ADD COLUMN approved INTEGER NOT NULL DEFAULT 1;
+    UPDATE remote_devices SET id = lower(hex(randomblob(8))) WHERE id IS NULL;
+    "#,
 ];
 
 /// Apply any migrations the database hasn't seen yet, advancing

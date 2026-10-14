@@ -32,7 +32,7 @@ export default function RemoteMirror(): null {
   const consoles = useConsoles();
   const statuses = useLiveStatuses();
   const limits = useUsageLimits();
-  const server = useRemoteServer();
+  const server = useRemoteServer().status;
   const alerts = useAlerts();
   const notif = useNotificationConfig();
   const created = useCreated();

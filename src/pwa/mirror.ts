@@ -11,7 +11,7 @@ import { Terminal } from "@xterm/xterm";
 import type { TermControl } from "../remote/protocol";
 import { instance } from "./dashboard";
 import { $ } from "./dom";
-import { action, socketUrl } from "./net";
+import { action, openSocket } from "./net";
 
 const RECONNECT_MS = 1500;
 
@@ -106,7 +106,7 @@ function control(data: string): void {
 
 function connect(): void {
   if (!termOpen || !termInstance) return;
-  const ws = new WebSocket(socketUrl("/api/term", { instance: termInstance }));
+  const ws = openSocket("/api/term", { instance: termInstance });
   ws.binaryType = "arraybuffer";
   termWs = ws;
   setConn("connecting…");

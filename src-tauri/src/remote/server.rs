@@ -10,20 +10,26 @@
 //!   app manifest, service worker, and icons. Unauthenticated — the browser fetches them
 //!   before any token exists, and the service worker needs them to make the app
 //!   installable + show "offline" when the desktop is down (design §11).
-//! - `POST /pair` — exchange a one-time pairing code for a device bearer token.
-//!   Unauthenticated (the code *is* the gate).
+//! - `POST /pair` — exchange a one-time pairing code for a device bearer token, which
+//!   works once the device is approved on the desktop. Unauthenticated (the code *is*
+//!   the gate), rate-limited and locked out after wrong codes (`auth::PairGate`).
 //! - `GET /api/state` — the latest webview snapshot (auth: `Authorization: Bearer`).
+//!   Also how a phone learns where it stands: 401 for an unknown token, 403 while it
+//!   waits for approval.
 //! - `GET /api/ws` — WebSocket: pushes the snapshot on connect and on every change, and
-//!   accepts inbound action messages (auth: `?token=`, since browsers can't set headers
-//!   on a `WebSocket`).
+//!   accepts inbound action messages (auth: the token as a `wb-token.<token>`
+//!   subprotocol beside `wb` — a browser can't set an `Authorization` header on a
+//!   `WebSocket`, and a query string would put the token in URLs and logs).
 //! - `POST /api/action` — submit one action over plain HTTP (auth: bearer). Same effect
 //!   as a WS action: forwarded to the webview as `remote-action`.
 //! - `GET /api/term` — WebSocket: mirrors one instance's live PTY (step 4.5). Attaches
 //!   as a multiplexer subscriber (step 4.1), streams raw output down (with scrollback
-//!   replayed on connect) and routes raw keystrokes up (auth: `?token=`, `?instance=`).
+//!   replayed on connect) and routes raw keystrokes up (auth: as `/api/ws`;
+//!   `?instance=` picks the console).
 //!
-//! Auth is pure set-membership against the parent's token set (`token_ok`); a hit also
-//! refreshes the device's `last_seen`. As a submodule of `remote`, this file can reach
+//! Auth is the parent's `check_token` (constant-time, approval and expiry aware); a
+//! grant also refreshes the device's `last_seen` and address. Both WebSockets refuse an
+//! upgrade whose `Origin` is not this server, and close when their device loses access. As a submodule of `remote`, this file can reach
 //! the parent's private state and helpers directly. All PWA assets are `include_*!`'d
 //! into the binary so there's nothing to ship alongside it.
 //!
@@ -32,11 +38,12 @@
 //! build` do it first, so `tauri dev` / `tauri build` need nothing extra; a bare
 //! `cargo build` on a fresh clone is stopped by `build.rs` with that instruction.
 
+use std::net::SocketAddr;
 use std::sync::Arc;
 
 use axum::body::Bytes;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
-use axum::extract::{Query, State};
+use axum::extract::{ConnectInfo, Query, State};
 use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::{Html, IntoResponse, Response};
 use axum::routing::{get, post};
@@ -47,7 +54,8 @@ use tauri::async_runtime::JoinHandle;
 use tauri::{Emitter, Manager};
 use tokio::sync::broadcast;
 
-use super::{token_ok, touch_device, try_pair, RemoteState};
+use super::auth::{self, PairOutcome};
+use super::{check_token, device_valid, log_failure, try_pair, Access, RemoteState};
 use crate::pty::{PtyManager, RemoteMsg};
 
 /// Spawn the server on Tauri's runtime and return its task handle. The parent aborts
@@ -77,7 +85,11 @@ async fn run(listener: std::net::TcpListener, state: Arc<RemoteState>) -> std::i
         .route("/api/action", post(api_action))
         .route("/api/term", get(api_term))
         .with_state(state);
-    axum::serve(listener, router).await
+    axum::serve(
+        listener,
+        router.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .await
 }
 
 /// The phone-optimized dashboard PWA (step 4.4), as built from `src/pwa/`.
@@ -102,7 +114,10 @@ async fn service_worker() -> Response {
     (
         [
             (header::CONTENT_TYPE, "application/javascript"),
-            (header::HeaderName::from_static("service-worker-allowed"), "/"),
+            (
+                header::HeaderName::from_static("service-worker-allowed"),
+                "/",
+            ),
             (header::CACHE_CONTROL, "no-cache"),
         ],
         include_str!("pwa/dist/sw.js"),
@@ -140,21 +155,47 @@ struct PairReq {
     name: String,
 }
 
-/// Exchange a valid pairing code for a device token, or 401.
-async fn pair(State(state): State<Arc<RemoteState>>, Json(req): Json<PairReq>) -> Response {
+/// Exchange a valid pairing code for a device token (which waits for approval on the
+/// desktop), or say why not.
+async fn pair(
+    State(state): State<Arc<RemoteState>>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    Json(req): Json<PairReq>,
+) -> Response {
     let name = if req.name.trim().is_empty() {
         "device".to_string()
     } else {
         req.name.trim().to_string()
     };
-    match try_pair(&state, req.code.trim(), &name) {
-        Some(token) => (StatusCode::OK, Json(json!({ "token": token }))).into_response(),
-        None => (
+    let (status, error) = match try_pair(&state, &req.code, &name, &peer.ip().to_string()) {
+        Ok(token) => {
+            return (
+                StatusCode::OK,
+                Json(json!({ "token": token, "pending": true })),
+            )
+                .into_response()
+        }
+        Err(PairOutcome::Wrong { left }) => (
             StatusCode::UNAUTHORIZED,
-            Json(json!({ "error": "invalid or expired pairing code" })),
-        )
-            .into_response(),
-    }
+            format!(
+                "Wrong code — {left} more {} on it.",
+                if left == 1 { "try" } else { "tries" }
+            ),
+        ),
+        Err(PairOutcome::NoCode) => (
+            StatusCode::UNAUTHORIZED,
+            "No pairing code is live — generate one in Workbench → remote access.".into(),
+        ),
+        Err(PairOutcome::Locked) => (
+            StatusCode::TOO_MANY_REQUESTS,
+            "Too many wrong codes — generate a new code in Workbench.".into(),
+        ),
+        Err(PairOutcome::Busy | PairOutcome::Paired) => (
+            StatusCode::TOO_MANY_REQUESTS,
+            "Too many attempts — wait a minute and try again.".into(),
+        ),
+    };
+    (status, Json(json!({ "error": error }))).into_response()
 }
 
 /// Pull the bearer token out of an `Authorization: Bearer <token>` header.
@@ -163,23 +204,65 @@ fn bearer(headers: &HeaderMap) -> Option<String> {
     raw.strip_prefix("Bearer ").map(|s| s.trim().to_string())
 }
 
-/// Authenticate a request token against the device set; on success refresh `last_seen`.
-fn authed(state: &Arc<RemoteState>, token: Option<&str>) -> bool {
-    let token = match token {
-        Some(t) => t,
-        None => return false,
-    };
-    let ok = { token_ok(&state.inner.lock().unwrap().tokens, token) };
-    if ok {
-        touch_device(state, token);
+/// The token offered as a `wb-token.<token>` WebSocket subprotocol.
+fn subprotocol_token(headers: &HeaderMap) -> Option<String> {
+    let raw = headers.get(header::SEC_WEBSOCKET_PROTOCOL)?.to_str().ok()?;
+    raw.split(',')
+        .find_map(|p| p.trim().strip_prefix("wb-token."))
+        .map(str::to_string)
+}
+
+/// The subprotocol a WebSocket answer names. The phone offers it beside its token, and
+/// a browser drops a connection whose answer names none of what it offered.
+const SUBPROTOCOL: &str = "wb";
+
+#[allow(clippy::result_large_err)] // a refusal is built once per refused request
+/// The device behind `token`, or the refusal to send: 401 for no access, 403 while the
+/// device waits for approval.
+fn authed(
+    state: &Arc<RemoteState>,
+    token: Option<&str>,
+    peer: SocketAddr,
+) -> Result<String, Response> {
+    match check_token(state, token, &peer.ip().to_string()) {
+        Access::Granted(id) => Ok(id),
+        Access::Pending => Err((
+            StatusCode::FORBIDDEN,
+            Json(json!({ "error": "waiting for approval on the desktop", "pending": true })),
+        )
+            .into_response()),
+        Access::Denied => Err(StatusCode::UNAUTHORIZED.into_response()),
     }
-    ok
+}
+
+#[allow(clippy::result_large_err)] // a refusal is built once per refused request
+/// Check a WebSocket upgrade: from this server's own page, with a device token.
+fn ws_authed(
+    state: &Arc<RemoteState>,
+    headers: &HeaderMap,
+    peer: SocketAddr,
+) -> Result<String, Response> {
+    let origin = headers.get(header::ORIGIN).and_then(|v| v.to_str().ok());
+    let host = headers.get(header::HOST).and_then(|v| v.to_str().ok());
+    if !auth::origin_ok(origin, host) {
+        log_failure(
+            state,
+            &peer.ip().to_string(),
+            &format!("WebSocket from another site ({})", origin.unwrap_or("")),
+        );
+        return Err(StatusCode::FORBIDDEN.into_response());
+    }
+    authed(state, subprotocol_token(headers).as_deref(), peer)
 }
 
 /// Serve the latest snapshot JSON (auth: bearer header).
-async fn api_state(State(state): State<Arc<RemoteState>>, headers: HeaderMap) -> Response {
-    if !authed(&state, bearer(&headers).as_deref()) {
-        return StatusCode::UNAUTHORIZED.into_response();
+async fn api_state(
+    State(state): State<Arc<RemoteState>>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+) -> Response {
+    if let Err(refusal) = authed(&state, bearer(&headers).as_deref(), peer) {
+        return refusal;
     }
     let snap = state.inner.lock().unwrap().snapshot.clone();
     ([(header::CONTENT_TYPE, "application/json")], snap).into_response()
@@ -189,11 +272,12 @@ async fn api_state(State(state): State<Arc<RemoteState>>, headers: HeaderMap) ->
 /// forwarded verbatim to the webview as `remote-action`.
 async fn api_action(
     State(state): State<Arc<RemoteState>>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
-    if !authed(&state, bearer(&headers).as_deref()) {
-        return StatusCode::UNAUTHORIZED.into_response();
+    if let Err(refusal) = authed(&state, bearer(&headers).as_deref(), peer) {
+        return refusal;
     }
     match serde_json::from_slice::<Value>(&body) {
         Ok(action) => {
@@ -204,29 +288,26 @@ async fn api_action(
     }
 }
 
-#[derive(Deserialize)]
-struct WsAuth {
-    #[serde(default)]
-    token: String,
-}
-
-/// Upgrade to a WebSocket (auth: `?token=` query, since browser `WebSocket` can't set
-/// an Authorization header).
+/// Upgrade to the dashboard WebSocket (auth: the token subprotocol).
 async fn api_ws(
     ws: WebSocketUpgrade,
     State(state): State<Arc<RemoteState>>,
-    Query(q): Query<WsAuth>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
 ) -> Response {
-    if !authed(&state, Some(q.token.as_str())) {
-        return StatusCode::UNAUTHORIZED.into_response();
-    }
-    ws.on_upgrade(move |socket| handle_socket(socket, state))
+    let device = match ws_authed(&state, &headers, peer) {
+        Ok(id) => id,
+        Err(refusal) => return refusal,
+    };
+    ws.protocols([SUBPROTOCOL])
+        .on_upgrade(move |socket| handle_socket(socket, state, device))
 }
 
 /// Per-connection loop: push the current snapshot immediately, then forward every
 /// broadcast snapshot to the client while forwarding inbound action frames to the
-/// webview. Ends when either side closes.
-async fn handle_socket(mut socket: WebSocket, state: Arc<RemoteState>) {
+/// webview. Ends when either side closes, or when the device loses access.
+async fn handle_socket(mut socket: WebSocket, state: Arc<RemoteState>, device: String) {
+    let mut kick = state.kick.subscribe();
     // Snapshot + a subscription to the live channel, taken together under the lock. If
     // the server has since stopped (no channel), close immediately.
     let (initial, mut rx) = {
@@ -252,6 +333,12 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<RemoteState>) {
                 Err(broadcast::error::RecvError::Lagged(_)) => continue,
                 Err(broadcast::error::RecvError::Closed) => break,
             },
+            // The device was revoked, or the server stopped.
+            _ = kick.changed() => {
+                if !device_valid(&state, &device) {
+                    break;
+                }
+            },
             // Inbound: an action message, or a close.
             incoming = socket.recv() => match incoming {
                 Some(Ok(Message::Text(t))) => {
@@ -269,17 +356,15 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<RemoteState>) {
 }
 
 #[derive(Deserialize)]
-struct TermAuth {
-    #[serde(default)]
-    token: String,
+struct TermQuery {
     /// The instance whose console to mirror.
     #[serde(default)]
     instance: String,
 }
 
 /// Upgrade to the **terminal-mirror** WebSocket (step 4.5, design §11 Phase B): one
-/// instance's live PTY bytes stream down, its raw keystrokes go back up. Auth via
-/// `?token=` like `/api/ws`; `?instance=` selects the console.
+/// instance's live PTY bytes stream down, its raw keystrokes go back up. Auth as
+/// `/api/ws`; `?instance=` selects the console.
 ///
 /// This carries *only* raw bytes. Structured approve/deny stay on the action channel
 /// (`/api/ws` → the webview's one action handler), so the keystroke mapping lives in
@@ -287,12 +372,16 @@ struct TermAuth {
 async fn api_term(
     ws: WebSocketUpgrade,
     State(state): State<Arc<RemoteState>>,
-    Query(q): Query<TermAuth>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    Query(q): Query<TermQuery>,
 ) -> Response {
-    if !authed(&state, Some(q.token.as_str())) {
-        return StatusCode::UNAUTHORIZED.into_response();
-    }
-    ws.on_upgrade(move |socket| handle_term(socket, state, q.instance))
+    let device = match ws_authed(&state, &headers, peer) {
+        Ok(id) => id,
+        Err(refusal) => return refusal,
+    };
+    ws.protocols([SUBPROTOCOL])
+        .on_upgrade(move |socket| handle_term(socket, state, q.instance, device))
 }
 
 /// Per-terminal loop: subscribe to the instance's PTY multiplexer (step 4.1) — which
@@ -300,8 +389,15 @@ async fn api_term(
 /// output to the socket while forwarding the phone's raw keystrokes to the PTY's
 /// single write path. The phone is just another multiplexer subscriber, so its
 /// keystrokes already interleave correctly with the desktop's. Ends on either side
-/// closing or the PTY being torn down (its sender drops, so `rx.recv()` yields `None`).
-async fn handle_term(mut socket: WebSocket, state: Arc<RemoteState>, instance_id: String) {
+/// closing, the PTY being torn down (its sender drops, so `rx.recv()` yields `None`),
+/// or the device losing access.
+async fn handle_term(
+    mut socket: WebSocket,
+    state: Arc<RemoteState>,
+    instance_id: String,
+    device: String,
+) {
+    let mut kick = state.kick.subscribe();
     let mgr = state.app.state::<PtyManager>();
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<RemoteMsg>();
     let (sub_id, (cols, rows)) = match mgr.subscribe_remote(&instance_id, tx) {
@@ -340,6 +436,11 @@ async fn handle_term(mut socket: WebSocket, state: Arc<RemoteState>, instance_id
                 }
                 None => break, // PTY torn down — the hub dropped our sender.
             },
+            _ = kick.changed() => {
+                if !device_valid(&state, &device) {
+                    break;
+                }
+            },
             // Inbound: raw keystroke bytes from the phone keyboard.
             incoming = socket.recv() => match incoming {
                 Some(Ok(Message::Binary(b))) => {
@@ -358,4 +459,31 @@ async fn handle_term(mut socket: WebSocket, state: Arc<RemoteState>, instance_id
 /// The control frame that tells the phone what size the PTY is.
 fn size_message(cols: u16, rows: u16) -> Message {
     Message::Text(format!(r#"{{"type":"size","cols":{cols},"rows":{rows}}}"#).into())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn with_protocols(value: &str) -> HeaderMap {
+        let mut h = HeaderMap::new();
+        h.insert(header::SEC_WEBSOCKET_PROTOCOL, value.parse().unwrap());
+        h
+    }
+
+    /// The phone offers `wb` and `wb-token.<token>`; the token is read from the latter
+    /// in either order, and nothing else passes for one.
+    #[test]
+    fn reads_the_token_subprotocol() {
+        assert_eq!(
+            subprotocol_token(&with_protocols("wb, wb-token.abc123")).as_deref(),
+            Some("abc123")
+        );
+        assert_eq!(
+            subprotocol_token(&with_protocols("wb-token.abc123,wb")).as_deref(),
+            Some("abc123")
+        );
+        assert_eq!(subprotocol_token(&with_protocols("wb")), None);
+        assert_eq!(subprotocol_token(&HeaderMap::new()), None);
+    }
 }

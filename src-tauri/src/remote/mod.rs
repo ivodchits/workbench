@@ -3,8 +3,8 @@
 //! Grows the Rust core into an authenticated API + WebSocket server bound to the
 //! **Tailscale interface**, so you can supervise agents from another device on your
 //! tailnet (the PWA client is step 4.4, the mirrored terminal step 4.5). This module
-//! owns the server lifecycle, the pairing-token auth, and the bridge between the
-//! frontend and remote clients.
+//! owns the server lifecycle, the device auth, and the bridge between the frontend
+//! and remote clients.
 //!
 //! **Two deliberate boundaries** keep this thin and avoid duplicating subtle logic:
 //!
@@ -19,47 +19,55 @@
 //!    event; the frontend's single handler maps it to the right keystroke/command
 //!    (the §11 caveat: keep that mapping in one place). We never write to a PTY here.
 //!
-//! **Security:** off by default; enabled from the Remote Access settings panel. When
+//! **Security (step R2):** off by default; enabled from the Remote Access menu. When
 //! on we bind **only** to the detected Tailscale address (100.64.0.0/10) — never
-//! broader. A device must `POST /pair` a short, expiring, one-time code to receive a
-//! long-lived bearer token; every API/WS call presents that token (decision: §11
-//! pairing). Tailscale secures the wire; the token gates who may attach.
+//! broader. Pairing takes three things: a code that exists only once the desktop asks
+//! for one (10 symbols, 10 minutes, one use, burned after 5 wrong tries, `/pair`
+//! rate-limited for everyone — [`auth::PairGate`]); the long-lived token it is
+//! exchanged for; and a **desktop approval** before that token is worth anything. A
+//! token travels in a header only (`Authorization`, or the WebSocket subprotocol),
+//! is compared in constant time, and stops working after 30 days unused. Failures are
+//! logged for the menu. Every change to devices, the code or the log is announced to
+//! the webview as `remote-changed`.
 
+mod auth;
 mod server;
 
-use std::collections::HashSet;
 use std::net::Ipv4Addr;
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::Serialize;
 use tauri::async_runtime::JoinHandle;
-use tauri::{AppHandle, Manager, State};
-use tokio::sync::broadcast;
+use tauri::{AppHandle, Emitter, Manager, State};
+use tokio::sync::{broadcast, watch};
 
 use crate::db::Db;
+use auth::{AuthFailure, AuthLog, PairGate, PairOutcome};
 
 /// The port the remote server binds on the Tailscale interface. A debug build uses a
 /// different port so a `tauri dev` run never fights an installed release for it
 /// (mirrors the hook server's `PORT_BASE` split).
 const REMOTE_PORT: u16 = if cfg!(debug_assertions) { 49020 } else { 48990 };
 
-/// How long a freshly minted pairing code stays valid (seconds). Short by design: a
-/// code is shown on screen only while you're pairing a device.
-const PAIRING_TTL_SECS: u64 = 600; // 10 minutes
-
 /// `meta` key persisting whether remote serving was last enabled, so it auto-starts
 /// on the next launch (best-effort — a bind failure never blocks the app).
 const ENABLED_KEY: &str = "remote_enabled";
+
+/// Longest device name kept from a pairing request.
+const NAME_MAX: usize = 40;
 
 /// Tauri-managed (`Arc<RemoteState>`) shared state for the remote server. Created and
 /// managed in [`init`] during setup, mirroring how the hook server manages its
 /// `Arc<HookContext>`. The axum handlers receive the same `Arc` as their router state,
 /// so commands and request handlers see one source of truth.
 pub struct RemoteState {
-    /// To resolve the DB (paired devices) and to emit `remote-action` to the webview.
+    /// To resolve the DB (paired devices) and to emit events to the webview.
     app: AppHandle,
     inner: Mutex<RemoteInner>,
+    /// Bumped whenever a device loses access (revoked, denied, expired, server
+    /// stopped), so open sockets re-check theirs and close if it is gone.
+    kick: watch::Sender<u64>,
 }
 
 struct RemoteInner {
@@ -77,24 +85,55 @@ struct RemoteInner {
     tx: Option<broadcast::Sender<String>>,
     /// The most recent snapshot the webview pushed; served to a new WS/HTTP client.
     snapshot: String,
-    /// Valid device bearer tokens (loaded from `remote_devices` at init, kept in sync
-    /// on pair/revoke). The auth check is a pure set-membership test against this.
-    tokens: HashSet<String>,
-    /// The single active pairing code, if one has been generated and not yet used or
-    /// expired.
-    pairing: Option<PairingCode>,
+    /// Every paired device, approved or waiting (mirrors `remote_devices`).
+    devices: Vec<Device>,
+    /// The pairing code and the limits on trying it.
+    gate: PairGate,
+    /// Recent auth failures, for the menu.
+    log: AuthLog,
 }
 
-struct PairingCode {
-    code: String,
-    expires_at: u64,
+/// One paired device, as held in memory.
+#[derive(Clone)]
+struct Device {
+    id: String,
+    token: String,
+    name: String,
+    paired_at: u64,
+    last_seen: Option<u64>,
+    last_addr: Option<String>,
+    approved: bool,
 }
 
-/// Start the remote subsystem: create + manage the shared state, load paired-device
-/// tokens, and auto-start the server if it was enabled last run. Never fails the app —
-/// a bind error only means remote access stays off until re-enabled.
+/// What a presented token is worth.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Access {
+    /// An approved device, by id.
+    Granted(String),
+    /// Paired, but not yet approved on the desktop.
+    Pending,
+    Denied,
+}
+
+/// Start the remote subsystem: create + manage the shared state, load paired devices
+/// (dropping expired ones), and auto-start the server if it was enabled last run.
+/// Never fails the app — a bind error only means remote access stays off until
+/// re-enabled.
 pub fn init(app: &AppHandle) {
-    let tokens = load_tokens(app);
+    let mut devices = load_devices(app);
+    let now = now();
+    let (stale, live): (Vec<Device>, Vec<Device>) = devices
+        .drain(..)
+        .partition(|d| auth::device_expired(d.approved, d.paired_at, d.last_seen, now).is_some());
+    // Said in the failure log, so a device that quietly stopped working is explained.
+    let mut log = AuthLog::default();
+    for d in &stale {
+        delete_device_row(app, &d.id);
+        if let Some(why) = auth::device_expired(d.approved, d.paired_at, d.last_seen, now) {
+            let addr = d.last_addr.as_deref().unwrap_or("—");
+            log.record(addr, &format!("“{}” {why}, removed", d.name), now);
+        }
+    }
     let state = Arc::new(RemoteState {
         app: app.clone(),
         inner: Mutex::new(RemoteInner {
@@ -103,9 +142,11 @@ pub fn init(app: &AppHandle) {
             task: None,
             tx: None,
             snapshot: "{}".to_string(),
-            tokens,
-            pairing: None,
+            devices: live,
+            gate: PairGate::default(),
+            log,
         }),
+        kick: watch::channel(0).0,
     });
     app.manage(state.clone());
 
@@ -123,19 +164,40 @@ pub fn init(app: &AppHandle) {
     }
 }
 
-/// Load every paired device token from the database into the in-memory auth set.
-fn load_tokens(app: &AppHandle) -> HashSet<String> {
+/// Every paired device row.
+fn load_devices(app: &AppHandle) -> Vec<Device> {
     let db = app.state::<Db>();
     let conn = db.conn.lock().expect("db lock poisoned");
-    let mut set = HashSet::new();
-    if let Ok(mut stmt) = conn.prepare("SELECT token FROM remote_devices") {
-        if let Ok(rows) = stmt.query_map([], |r| r.get::<_, String>(0)) {
-            for t in rows.flatten() {
-                set.insert(t);
-            }
+    // A build from before step R2 sharing this database pairs devices with no id.
+    let _ = conn.execute(
+        "UPDATE remote_devices SET id = lower(hex(randomblob(8))) WHERE id IS NULL",
+        [],
+    );
+    let mut out = Vec::new();
+    if let Ok(mut stmt) = conn.prepare(
+        "SELECT id, token, name, paired_at, last_seen, last_addr, approved FROM remote_devices",
+    ) {
+        if let Ok(rows) = stmt.query_map([], |r| {
+            Ok(Device {
+                id: r.get(0)?,
+                token: r.get(1)?,
+                name: r.get(2)?,
+                paired_at: r.get::<_, i64>(3)? as u64,
+                last_seen: r.get::<_, Option<i64>>(4)?.map(|v| v as u64),
+                last_addr: r.get(5)?,
+                approved: r.get::<_, i64>(6)? != 0,
+            })
+        }) {
+            out.extend(rows.flatten());
         }
     }
-    set
+    out
+}
+
+fn delete_device_row(app: &AppHandle, id: &str) {
+    let db = app.state::<Db>();
+    let conn = db.conn.lock().expect("db lock poisoned");
+    let _ = conn.execute("DELETE FROM remote_devices WHERE id = ?1", [id]);
 }
 
 /// Bind the Tailscale interface and spawn the axum server. Idempotent: if already
@@ -185,18 +247,50 @@ fn is_tailscale_v4(ip: Ipv4Addr) -> bool {
     o[0] == 100 && (64..=127).contains(&o[1])
 }
 
-/// Validate a pairing attempt and, on success, mint + persist a device token. The code
-/// is **one-time**: a successful pair consumes it (cleared), so a leaked code can't be
-/// replayed. Returns the new bearer token, or `None` when the code is wrong/expired.
-/// Called by the (unauthenticated) `/pair` handler.
-fn try_pair(state: &Arc<RemoteState>, code: &str, name: &str) -> Option<String> {
-    {
-        let mut inner = state.inner.lock().unwrap();
-        let ok = matches!(&inner.pairing, Some(p) if p.code == code && p.expires_at > now());
-        if !ok {
-            return None;
+/// Tell the webview that devices, the code or the failure log changed.
+fn changed(state: &RemoteState) {
+    let _ = state.app.emit("remote-changed", ());
+}
+
+/// Note a failure from `addr` for the menu.
+fn log_failure(state: &RemoteState, addr: &str, what: &str) {
+    state.inner.lock().unwrap().log.record(addr, what, now());
+    changed(state);
+}
+
+/// Tell open sockets to re-check their device.
+fn kick(state: &RemoteState) {
+    state.kick.send_modify(|n| *n += 1);
+}
+
+/// Check a pairing attempt from `addr` and, on success, mint + persist a device token
+/// that waits for approval on the desktop. Called by the (unauthenticated) `/pair`
+/// handler; the outcome decides its answer.
+fn try_pair(
+    state: &Arc<RemoteState>,
+    code: &str,
+    name: &str,
+    addr: &str,
+) -> Result<String, PairOutcome> {
+    let outcome = state.inner.lock().unwrap().gate.attempt(code, now());
+    match outcome {
+        PairOutcome::Paired => {}
+        PairOutcome::Busy => {
+            log_failure(state, addr, "too many pairing attempts");
+            return Err(outcome);
         }
-        inner.pairing = None; // one-time: consume on success
+        PairOutcome::Locked => {
+            log_failure(state, addr, "pairing locked after wrong codes");
+            return Err(outcome);
+        }
+        PairOutcome::NoCode => {
+            log_failure(state, addr, "pairing with no live code");
+            return Err(outcome);
+        }
+        PairOutcome::Wrong { .. } => {
+            log_failure(state, addr, "wrong pairing code");
+            return Err(outcome);
+        }
     }
     // 256-bit unguessable token (two v4 UUIDs concatenated, hyphen-free).
     let token = format!(
@@ -204,33 +298,93 @@ fn try_pair(state: &Arc<RemoteState>, code: &str, name: &str) -> Option<String> 
         uuid::Uuid::new_v4().simple(),
         uuid::Uuid::new_v4().simple()
     );
+    let id = uuid::Uuid::new_v4().simple().to_string()[..16].to_string();
+    let name: String = name.chars().take(NAME_MAX).collect();
+    let device = Device {
+        id: id.clone(),
+        token: token.clone(),
+        name,
+        paired_at: now(),
+        last_seen: None,
+        last_addr: Some(addr.to_string()),
+        approved: false,
+    };
     {
         let db = state.app.state::<Db>();
         let conn = db.conn.lock().expect("db lock poisoned");
         let _ = conn.execute(
-            "INSERT INTO remote_devices (token, name, paired_at, last_seen) VALUES (?1, ?2, ?3, NULL)",
-            (&token, name, now() as i64),
+            "INSERT INTO remote_devices (id, token, name, paired_at, last_seen, last_addr, approved)
+             VALUES (?1, ?2, ?3, ?4, NULL, ?5, 0)",
+            (&device.id, &device.token, &device.name, device.paired_at as i64, addr),
         );
     }
-    state.inner.lock().unwrap().tokens.insert(token.clone());
-    Some(token)
+    state.inner.lock().unwrap().devices.push(device);
+    changed(state);
+    Ok(token)
 }
 
-/// Whether `token` is a known paired device. Pure set membership — the heart of the
-/// API/WS auth gate. Kept tiny and testable.
-fn token_ok(tokens: &HashSet<String>, token: &str) -> bool {
-    !token.is_empty() && tokens.contains(token)
-}
-
-/// Record that a token was just used (updates `last_seen`). Best-effort, called on each
-/// authenticated request / WS connect — low frequency, so a DB write per call is fine.
-fn touch_device(state: &Arc<RemoteState>, token: &str) {
+/// What `token`, presented from `addr`, is worth. Every device is compared in
+/// constant time, so the answer's timing doesn't depend on which (if any) matched. A
+/// grant records the device's `last_seen` and address. An expired device is dropped.
+fn check_token(state: &Arc<RemoteState>, token: Option<&str>, addr: &str) -> Access {
+    let token = token.unwrap_or("");
+    if token.is_empty() {
+        log_failure(state, addr, "no device token");
+        return Access::Denied;
+    }
+    let now = now();
+    let found = {
+        let inner = state.inner.lock().unwrap();
+        let mut hit = None;
+        for (i, d) in inner.devices.iter().enumerate() {
+            if auth::ct_eq(d.token.as_bytes(), token.as_bytes()) {
+                hit = Some(i);
+            }
+        }
+        hit.map(|i| inner.devices[i].clone())
+    };
+    let Some(device) = found else {
+        log_failure(state, addr, "unknown device token");
+        return Access::Denied;
+    };
+    if let Some(why) =
+        auth::device_expired(device.approved, device.paired_at, device.last_seen, now)
+    {
+        remove_device(state, &device.id);
+        log_failure(state, addr, &format!("“{}” {why}", device.name));
+        return Access::Denied;
+    }
+    if !device.approved {
+        return Access::Pending;
+    }
+    {
+        let mut inner = state.inner.lock().unwrap();
+        if let Some(d) = inner.devices.iter_mut().find(|d| d.id == device.id) {
+            d.last_seen = Some(now);
+            d.last_addr = Some(addr.to_string());
+        }
+    }
     let db = state.app.state::<Db>();
     let conn = db.conn.lock().expect("db lock poisoned");
     let _ = conn.execute(
-        "UPDATE remote_devices SET last_seen = ?1 WHERE token = ?2",
-        (now() as i64, token),
+        "UPDATE remote_devices SET last_seen = ?1, last_addr = ?2 WHERE id = ?3",
+        (now as i64, addr, &device.id),
     );
+    Access::Granted(device.id)
+}
+
+/// Whether the device behind an open socket still has access.
+fn device_valid(state: &RemoteState, id: &str) -> bool {
+    let inner = state.inner.lock().unwrap();
+    inner.running && inner.devices.iter().any(|d| d.id == id && d.approved)
+}
+
+/// Forget a device everywhere and close its sockets.
+fn remove_device(state: &RemoteState, id: &str) {
+    delete_device_row(&state.app, id);
+    state.inner.lock().unwrap().devices.retain(|d| d.id != id);
+    kick(state);
+    changed(state);
 }
 
 fn now() -> u64 {
@@ -256,62 +410,72 @@ pub struct RemoteStatus {
     pub port: u16,
     /// Whether a Tailscale interface is currently detectable (drives the UI hint).
     pub tailscale_available: bool,
+    /// Approved devices.
     pub device_count: usize,
+    /// Devices waiting for approval.
+    pub pending_count: usize,
     /// The active pairing code, if one is live (else null).
     pub pairing_code: Option<String>,
     /// Epoch seconds the active pairing code expires (else null).
     pub pairing_expires_at: Option<u64>,
+    /// Whether wrong tries burned the last code (a new one is needed).
+    pub pairing_locked: bool,
 }
 
-/// A paired device row for the settings panel's device list.
+/// A paired device row for the settings panel's device list. The token never leaves
+/// the backend; the id names the device for approve and revoke.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RemoteDevice {
-    /// The bearer token — also serves as the stable id for revoke (desktop-trusted UI).
-    pub token: String,
+    pub id: String,
     pub name: String,
-    pub paired_at: i64,
-    pub last_seen: Option<i64>,
+    pub paired_at: u64,
+    pub last_seen: Option<u64>,
+    /// The address it last used (or paired from).
+    pub last_addr: Option<String>,
+    pub approved: bool,
+    /// Epoch seconds it stops working unless used (approved) or approved (pending).
+    pub expires_at: u64,
 }
 
 fn status_of(state: &Arc<RemoteState>) -> RemoteStatus {
     let inner = state.inner.lock().unwrap();
-    let (code, exp) = match &inner.pairing {
-        Some(p) if p.expires_at > now() => (Some(p.code.clone()), Some(p.expires_at)),
-        _ => (None, None),
-    };
+    let now = now();
+    let live = inner.gate.live(now);
     RemoteStatus {
         running: inner.running,
         bound_addr: inner.bound_addr.clone(),
         url: inner.bound_addr.clone().map(|a| format!("http://{a}")),
         port: REMOTE_PORT,
         tailscale_available: tailscale_ip().is_some(),
-        device_count: inner.tokens.len(),
-        pairing_code: code,
-        pairing_expires_at: exp,
+        device_count: inner.devices.iter().filter(|d| d.approved).count(),
+        pending_count: inner.devices.iter().filter(|d| !d.approved).count(),
+        pairing_code: live.map(|(code, _)| code.to_string()),
+        pairing_expires_at: live.map(|(_, exp)| exp),
+        pairing_locked: inner.gate.locked(),
     }
 }
 
-fn list_devices(app: &AppHandle) -> Vec<RemoteDevice> {
-    let db = app.state::<Db>();
-    let conn = db.conn.lock().expect("db lock poisoned");
-    let mut out = Vec::new();
-    if let Ok(mut stmt) = conn
-        .prepare("SELECT token, name, paired_at, last_seen FROM remote_devices ORDER BY paired_at DESC")
-    {
-        if let Ok(rows) = stmt.query_map([], |r| {
-            Ok(RemoteDevice {
-                token: r.get(0)?,
-                name: r.get(1)?,
-                paired_at: r.get(2)?,
-                last_seen: r.get(3)?,
-            })
-        }) {
-            for d in rows.flatten() {
-                out.push(d);
-            }
-        }
-    }
+fn list_devices(state: &RemoteState) -> Vec<RemoteDevice> {
+    let inner = state.inner.lock().unwrap();
+    let mut out: Vec<RemoteDevice> = inner
+        .devices
+        .iter()
+        .map(|d| RemoteDevice {
+            id: d.id.clone(),
+            name: d.name.clone(),
+            paired_at: d.paired_at,
+            last_seen: d.last_seen,
+            last_addr: d.last_addr.clone(),
+            approved: d.approved,
+            expires_at: if d.approved {
+                d.last_seen.unwrap_or(d.paired_at).max(d.paired_at) + auth::IDLE_EXPIRY_SECS
+            } else {
+                d.paired_at + auth::PENDING_TTL_SECS
+            },
+        })
+        .collect();
+    out.sort_by_key(|d| std::cmp::Reverse(d.paired_at));
     out
 }
 
@@ -325,7 +489,8 @@ pub fn remote_start(state: State<'_, Arc<RemoteState>>) -> Result<RemoteStatus, 
     Ok(status_of(st))
 }
 
-/// Disable remote serving: gracefully stop the server and clear the enabled flag.
+/// Disable remote serving: gracefully stop the server, drop any pairing code, and
+/// clear the enabled flag.
 #[tauri::command]
 pub fn remote_stop(state: State<'_, Arc<RemoteState>>) -> RemoteStatus {
     let st = state.inner();
@@ -339,7 +504,9 @@ pub fn remote_stop(state: State<'_, Arc<RemoteState>>) -> RemoteStatus {
         inner.tx = None;
         inner.running = false;
         inner.bound_addr = None;
+        inner.gate.clear();
     }
+    kick(st); // mirrored consoles don't ride the broadcast channel
     let _ = st.app.state::<Db>().meta_set(ENABLED_KEY, "0");
     status_of(st)
 }
@@ -350,27 +517,18 @@ pub fn remote_status(state: State<'_, Arc<RemoteState>>) -> RemoteStatus {
     status_of(state.inner())
 }
 
-/// Generate a fresh one-time pairing code (replacing any prior active one) and return
-/// the updated status carrying it. Shown in the UI so you can type it on the device.
+/// Generate a fresh one-time pairing code (replacing any prior one and clearing a
+/// lockout) and return the updated status carrying it. The only way a code comes to
+/// exist: shown in the UI so you can type it on the device.
 #[tauri::command]
-pub fn remote_new_pairing_code(state: State<'_, Arc<RemoteState>>) -> RemoteStatus {
+pub fn remote_new_pairing_code(state: State<'_, Arc<RemoteState>>) -> Result<RemoteStatus, String> {
     let st = state.inner();
-    let code = gen_pairing_code();
-    {
-        let mut inner = st.inner.lock().unwrap();
-        inner.pairing = Some(PairingCode {
-            code,
-            expires_at: now() + PAIRING_TTL_SECS,
-        });
+    if !st.inner.lock().unwrap().running {
+        return Err("remote access is off".into());
     }
-    status_of(st)
-}
-
-/// A short, human-typable code like `A1B2-C3D4` (8 hex chars from a fresh UUID).
-fn gen_pairing_code() -> String {
-    let hex = uuid::Uuid::new_v4().simple().to_string();
-    let up = hex[..8].to_uppercase();
-    format!("{}-{}", &up[..4], &up[4..8])
+    let code = auth::gen_pairing_code();
+    st.inner.lock().unwrap().gate.issue(code, now());
+    Ok(status_of(st))
 }
 
 /// Store the latest snapshot from the webview and fan it out to every WS client. Called
@@ -385,27 +543,62 @@ pub fn remote_push_snapshot(state: State<'_, Arc<RemoteState>>, json: String) {
     }
 }
 
-/// List paired devices for the settings panel.
+/// List paired devices (approved and waiting) for the menu and the approval dialog.
 #[tauri::command]
 pub fn remote_devices_list(state: State<'_, Arc<RemoteState>>) -> Vec<RemoteDevice> {
-    list_devices(&state.inner().app)
+    list_devices(state.inner())
 }
 
-/// Revoke a paired device: delete its row and drop its token from the auth set, so its
-/// next request is rejected. Returns the updated device list.
+/// Approve a waiting device: its token starts working. Returns the updated list.
 #[tauri::command]
-pub fn remote_revoke_device(
-    state: State<'_, Arc<RemoteState>>,
-    token: String,
-) -> Vec<RemoteDevice> {
+pub fn remote_approve_device(state: State<'_, Arc<RemoteState>>, id: String) -> Vec<RemoteDevice> {
     let st = state.inner();
-    {
+    let now = now();
+    let found = {
+        let mut inner = st.inner.lock().unwrap();
+        match inner.devices.iter_mut().find(|d| d.id == id && !d.approved) {
+            Some(d) => {
+                d.approved = true;
+                d.last_seen = Some(now); // the 30 days unused count from here
+                true
+            }
+            None => false,
+        }
+    };
+    if found {
         let db = st.app.state::<Db>();
         let conn = db.conn.lock().expect("db lock poisoned");
-        let _ = conn.execute("DELETE FROM remote_devices WHERE token = ?1", [&token]);
+        let _ = conn.execute(
+            "UPDATE remote_devices SET approved = 1, last_seen = ?1 WHERE id = ?2",
+            (now as i64, &id),
+        );
+        drop(conn);
+        changed(st);
     }
-    st.inner.lock().unwrap().tokens.remove(&token);
-    list_devices(&st.app)
+    list_devices(st)
+}
+
+/// Revoke a paired device, or deny a waiting one: delete its row, drop its token, and
+/// close any socket it has open. Returns the updated device list.
+#[tauri::command]
+pub fn remote_revoke_device(state: State<'_, Arc<RemoteState>>, id: String) -> Vec<RemoteDevice> {
+    let st = state.inner();
+    remove_device(st, &id);
+    list_devices(st)
+}
+
+/// Recent auth failures, newest first.
+#[tauri::command]
+pub fn remote_auth_log(state: State<'_, Arc<RemoteState>>) -> Vec<AuthFailure> {
+    state.inner().inner.lock().unwrap().log.entries()
+}
+
+/// Empty the failure log.
+#[tauri::command]
+pub fn remote_clear_auth_log(state: State<'_, Arc<RemoteState>>) {
+    let st = state.inner();
+    st.inner.lock().unwrap().log.clear();
+    changed(st);
 }
 
 #[cfg(test)]
@@ -427,29 +620,5 @@ mod tests {
         assert!(!is_tailscale_v4(Ipv4Addr::new(10, 0, 0, 1)));
         assert!(!is_tailscale_v4(Ipv4Addr::new(127, 0, 0, 1)));
         assert!(!is_tailscale_v4(Ipv4Addr::new(8, 8, 8, 8)));
-    }
-
-    /// The auth gate accepts exactly the tokens in the set, and never the empty string
-    /// (a missing/blank bearer must be rejected, not treated as a present token).
-    #[test]
-    fn token_membership_gate() {
-        let mut set = HashSet::new();
-        set.insert("good-token".to_string());
-        assert!(token_ok(&set, "good-token"));
-        assert!(!token_ok(&set, "other"));
-        assert!(!token_ok(&set, ""));
-        assert!(!token_ok(&HashSet::new(), "good-token"));
-    }
-
-    /// A pairing code is `XXXX-XXXX`, uppercase hex — the shape the device types in.
-    #[test]
-    fn pairing_code_shape() {
-        let c = gen_pairing_code();
-        assert_eq!(c.len(), 9);
-        assert_eq!(c.as_bytes()[4], b'-');
-        assert!(c
-            .chars()
-            .filter(|&ch| ch != '-')
-            .all(|ch| ch.is_ascii_hexdigit() && !ch.is_ascii_lowercase()));
     }
 }

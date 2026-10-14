@@ -20,10 +20,19 @@
       <h1>Workbench Remote</h1>
       <p class="muted">Enter the pairing code shown in Workbench → remote access.</p>
       <div class="row">
-        <input id="code" placeholder="XXXX-XXXX" autocomplete="off" autocapitalize="characters" inputmode="text" />
-        <input id="name" placeholder="device name" autocomplete="off" />
+        <input id="code" placeholder="XXXXX-XXXXX" maxlength="16" autocomplete="off" autocapitalize="characters" inputmode="text" />
+        <input id="name" placeholder="device name" maxlength="40" autocomplete="off" />
         <button id="pairBtn">Pair this device</button>
       </div>
+      <p id="pair-msg" class="muted"></p>
+    </div>
+
+    <!-- Paired, waiting for the desktop to allow this device (step R2). -->
+    <div id="waiting" class="hidden">
+      <h1>Workbench Remote</h1>
+      <p>Allow this device in Workbench on your computer.</p>
+      <p id="waiting-msg" class="muted">Waiting for approval…</p>
+      <button id="waiting-cancel" type="button">cancel</button>
     </div>
 
     <!-- Dashboard view. -->

@@ -1060,6 +1060,76 @@ filesystem path. There is no `draggable` / `dataTransfer` use anywhere in `src/`
   `src/panels/RemoteAccessMenu.tsx`, PWA client.
 - **Done when:** a brute-force loop against `/pair` is locked out, no token appears in a
   URL, and an unapproved device gets nothing.
+- **As built (2026-10-14):**
+  - **Pure rules** live in the new `src-tauri/src/remote/auth.rs` (unit-tested, `now`
+    passed in): `PairGate`, `gen_pairing_code`, `ct_eq`, `device_expired`, `origin_ok`
+    and `AuthLog`.
+  - **Pairing code:** 10 symbols from a 30-symbol alphabet without look-alikes
+    (`XXXXX-XXXXX`, ≈49 bits), drawn from the OS random source. Typed input ignores case,
+    dashes and spaces. A code exists only after "generate code" in the menu, and that
+    command is refused while the server is off. Stopping the server drops the code. It
+    still lasts 10 minutes and works once.
+  - **Lockout:** the 5th wrong code burns the code (`pairingLocked`) and even the right
+    one is refused until a new code is generated. Separately, `/pair` takes at most 10
+    attempts per 60 s from anyone; the rest get 429 without being checked. Each refusal
+    returns its reason, and the phone shows it inline instead of in an `alert`.
+  - **Desktop approval:** a successful pair creates a device with `approved = 0`. Its
+    token gets 403 on HTTP and is refused on WebSockets. `RemoteApproval.tsx`, mounted in
+    App, shows the oldest waiting device (name, address, when) with *allow*, *turn away*
+    and *decide later*. Focus starts on *decide later*, so a stray Enter doesn't allow
+    anything. A device not allowed within 10 minutes is dropped. The status bar shows
+    "· N waiting". The phone has a waiting view that polls `/api/state` every 2 s and
+    moves on by itself when the device is allowed or turned away.
+  - **Token transport:** WebSockets carry the token as a `wb-token.<token>` subprotocol
+    beside `wb` (the server answers `wb`). HTTP keeps `Authorization: Bearer`. Nothing
+    puts the token in a query string any more. Every device's token is compared with
+    `ct_eq`, with no early exit.
+  - **Origin:** both WebSocket upgrades are refused with 403, and logged, when `Origin`
+    isn't this server's own `Host`. No `Origin` (a non-browser client) is let through,
+    since it still needs a token.
+  - **Revoke cuts live sockets:** previously a revoked phone kept its open dashboard
+    socket. Now a `watch` counter (`kick`) is bumped on revoke, turn-away, expiry and
+    server stop, and both socket loops re-check their device and close. If the phone's
+    socket never opens it asks `/api/state` why, and on 401 it drops the token and
+    returns to pairing with a message.
+  - **Devices:** migration v9 adds `id` (the UI names devices by id, so the token no
+    longer reaches the webview), `last_addr` and `approved`. Devices paired before this
+    stay approved. Load backfills a missing id, in case an older build sharing the
+    database pairs a device. The menu row shows address and last seen, and revoke is
+    still one click. **Expiry is fixed at 30 days unused** rather than a setting.
+    Devices expired at startup are recorded in the failure log rather than dropped
+    silently.
+  - **Auth-failure log:** in memory only, last 30 entries. A repeat of the same failure
+    from the same address adds to a count instead of a new row, so a revoked phone's
+    reconnect loop takes one line. The menu shows 4 entries, then "show all", and has a
+    *clear* button. Every change to devices, the code or the log emits `remote-changed`,
+    and `state/remoteServer.ts` (which now holds status, devices and failures) reloads on
+    it.
+  - **Verified live:** the dev app ran with the server bound to loopback (a test-only
+    patch, since reverted). The test drove the desktop webview and a headless Edge at
+    phone size:
+    - No code → 401 "No pairing code is live". 40 rapid wrong codes → 4 × "Wrong code —
+      n more tries", 5 × locked, 31 × rate-limited; then the right code was refused and
+      the menu showed the lockout.
+    - After the window passed, the phone paired with a lower-case code and sat in the
+      waiting view. Its token got 403 from `/api/state` and `/api/action`, and its
+      WebSocket was refused with no data.
+    - The desktop dialog appeared. *Allow* moved the phone to the live dashboard within
+      2 s.
+    - Upgrade with `Origin: https://evil.example` → 403; own origin and no origin → 101
+      `wb`.
+    - CDP's network log showed the token in no URL, only in the WebSocket handshake
+      header.
+    - Revoke closed the open socket, and the phone returned to pairing with "stopped
+      taking this device" and its token gone. *Turn away* from the dialog sent the phone
+      back with "didn't allow".
+    - The failure log listed each kind with counts.
+  - **Not tried:** a real phone, over Tailscale, and the 30-day expiry outside unit
+    tests. Tokens are still stored in plain text in the database (hashing them was not
+    asked for). If the phone cancels its wait, the desktop still lists the device as
+    waiting until it is turned away or runs out.
+  - 127 Rust tests (12 new) and 152 frontend tests pass; typecheck passes; lint shows
+    only the existing `TornWindow.tsx` warning.
 
 #### Step R3 — Tailscale Funnel: remote ready whenever the app runs
 
@@ -1386,7 +1456,7 @@ any session, which lowers the urgency and makes the terminal bugs easier to comp
 | N1 | Project notes panel | ☐ |
 | N2 | Rendered-while-editing markdown | ☐ |
 | R1 | PWA build | ☑ |
-| R2 | Pairing / auth hardening | ☐ |
+| R2 | Pairing / auth hardening | ☑ |
 | R3 | Tailscale Funnel | ☐ |
 | R4 | Phone transcript + composer | ☐ |
 | R5 | Phone choice cards | ☐ |

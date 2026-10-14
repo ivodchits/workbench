@@ -34,7 +34,8 @@ import { initAppearance, useFontZoomWheel } from "./state/appearance";
 import { initTearOff } from "./state/tearoff";
 import { initRemoteActions } from "./state/remoteActions";
 import { initNotifications } from "./state/notifications";
-import { refreshRemoteStatus } from "./state/remoteServer";
+import { initRemoteServer } from "./state/remoteServer";
+import RemoteApprovalHost from "./panels/RemoteApproval";
 import type { RateWindow } from "./ipc/usageLimits";
 import { formatCountdown, formatAgo } from "./util/format";
 import { GLYPH } from "./theme";
@@ -79,9 +80,10 @@ function App() {
     // console/shell from the rail also closes its OS window.
     initTearOff();
     // Remote access (step 4.3): start consuming actions from paired clients and load
-    // the server's current status (it auto-starts if it was enabled last run).
+    // the server's current status (it auto-starts if it was enabled last run), then
+    // follow its device and auth changes (step R2).
     initRemoteActions();
-    void refreshRemoteStatus();
+    initRemoteServer();
     // Notification routing + escalation (step 4.6): route needs-you to the configured
     // destinations and watch for held/stuck cards. App-lifetime, idempotent.
     initNotifications();
@@ -220,6 +222,8 @@ function App() {
       {/* Remote access (step 4.3): mirrors live state to the backend for paired
           tailnet clients. Renders nothing; pushes only while the server is running. */}
       <RemoteMirror />
+      {/* A newly paired device waits here for the desktop's yes (step R2). */}
+      <RemoteApprovalHost />
     </div>
   );
 }
