@@ -1,7 +1,7 @@
 // The dashboard's wording and ordering rules, apart from the DOM so they can be
 // tested on their own.
 
-import type { RemoteCreated, RemoteInstance, RemoteProject } from "../remote/protocol";
+import type { RemoteCreated, RemoteInstance, RemoteProject, RemoteSnapshot } from "../remote/protocol";
 
 /** What a card shows for a phase: its glyph and the class that colours it. */
 const GLYPH: Record<string, [glyph: string, cls: string]> = {
@@ -81,6 +81,13 @@ export function attentionLine(instances: RemoteInstance[]): string | null {
 /** A project as the new-session picker lists it: its group first, if any. */
 export function projectLabel(p: RemoteProject): string {
   return (p.group ? `${p.group} / ` : "") + p.name + (p.remote ? " (ssh)" : "");
+}
+
+/** Projects with no session on the dashboard yet, in the snapshot's (rail) order —
+ *  the ones a card's "+" can't reach. */
+export function unusedProjects(snap: Pick<RemoteSnapshot, "instances" | "projects">): RemoteProject[] {
+  const used = new Set((snap.instances ?? []).map((it) => it.projectId));
+  return (snap.projects ?? []).filter((p) => !used.has(p.id));
 }
 
 /** What the new-session sheet says about its request. */

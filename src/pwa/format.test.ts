@@ -11,6 +11,7 @@ import {
   newRequestId,
   phaseOf,
   projectLabel,
+  unusedProjects,
   waitMins,
 } from "./format";
 
@@ -115,6 +116,16 @@ describe("attentionLine", () => {
 });
 
 describe("new session", () => {
+  it("lists the projects with no session yet, in order", () => {
+    const proj = (id: string) => ({ id, name: id, group: null, remote: false });
+    const snap = {
+      projects: [proj("a"), proj("b"), proj("c")],
+      instances: [inst({ id: "1", projectId: "b" })],
+    };
+    expect(unusedProjects(snap).map((p) => p.id)).toEqual(["a", "c"]);
+    expect(unusedProjects({ projects: [proj("a")], instances: [] }).map((p) => p.id)).toEqual(["a"]);
+  });
+
   it("labels a project with its group and ssh", () => {
     expect(projectLabel({ id: "p", name: "web", group: null, remote: false })).toBe("web");
     expect(projectLabel({ id: "p", name: "web", group: "work", remote: true })).toBe("work / web (ssh)");

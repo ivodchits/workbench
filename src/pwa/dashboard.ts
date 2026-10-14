@@ -3,7 +3,17 @@
 import type { RateLimits } from "../ipc/usageLimits";
 import type { RemoteInstance, RemoteSnapshot } from "../remote/protocol";
 import { $, el } from "./dom";
-import { attentionLine, byAttention, countdown, glyphOf, metaLine, phaseOf, waitMins } from "./format";
+import {
+  attentionLine,
+  byAttention,
+  countdown,
+  glyphOf,
+  metaLine,
+  phaseOf,
+  projectLabel,
+  unusedProjects,
+  waitMins,
+} from "./format";
 import { action } from "./net";
 
 interface Card {
@@ -168,6 +178,20 @@ function renderUsage(limits: RateLimits | null | undefined): void {
   $("usage").replaceChildren(...rows);
 }
 
+/** A button per project with no session yet, so a new one can start there too. */
+function renderUnused(snap: RemoteSnapshot, open: Openers): void {
+  const unused = needsYouOnly ? [] : unusedProjects(snap);
+  $("unused").classList.toggle("hidden", unused.length === 0);
+  $("unused-list").replaceChildren(
+    ...unused.map((p) => {
+      const b = el("button", "", `+ ${projectLabel(p)}`);
+      b.type = "button";
+      b.onclick = () => open.newSession(p.id);
+      return b;
+    }),
+  );
+}
+
 function render(snap: RemoteSnapshot, open: Openers): void {
   const all = snap.instances || [];
   const sorted = byAttention(all);
@@ -175,6 +199,7 @@ function render(snap: RemoteSnapshot, open: Openers): void {
 
   renderAttention(all);
   renderUsage(snap.usageLimits);
+  renderUnused(snap, open);
 
   const list = $("list");
   const seen = new Set<string>();
