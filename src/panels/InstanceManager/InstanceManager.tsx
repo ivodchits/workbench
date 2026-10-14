@@ -33,6 +33,8 @@ import {
 import { closeShell, getOpenShells, newShell, openShell } from "../../state/shells";
 import { closeEditor, getOpenEditors, openEditor, openProjectFile } from "../../state/editors";
 import { ensureClaudeMd } from "../../ipc/fs";
+import { openScratchpad } from "../../ipc/os";
+import { flash } from "../../util/flash";
 import { closeDiff, diffIdFor, getOpenDiffs, openDiff } from "../../state/diffs";
 import { closeMcp, getOpenMcps, openMcp } from "../../state/mcp";
 import { closeSkills, getOpenSkills, openSkills } from "../../state/skills";
@@ -638,6 +640,9 @@ function InstanceManager({ onCollapse }: InstanceManagerProps) {
                       onOpenClaudeMd={() => void openClaudeMdForProject(p)}
                       onOpenMcp={() => openMcpForProject(p)}
                       onOpenSkills={() => openSkillsForProject(p)}
+                      onOpenScratchpad={() =>
+                        void openScratchpad(p.rootPath).catch((err) => flash(String(err)))
+                      }
                       onOpenGit={() => openGitForProject(p)}
                       onSyncRemote={() => setRemoteSyncTarget(p)}
                       onEdit={() => setEditProjectTarget(p)}
@@ -733,6 +738,8 @@ interface ProjectNodeProps {
   onOpenMcp: () => void;
   /** Open this project's Skill Manager (step 3.7b). */
   onOpenSkills: () => void;
+  /** Open the project's Claude Code scratchpad folder in the file manager. */
+  onOpenScratchpad: () => void;
   /** Open this project's Git panel (step 3.11). */
   onOpenGit: () => void;
   /** Reconcile / adopt this remote project's tmux sessions (step 3.12). */
@@ -761,6 +768,7 @@ function ProjectNode({
   onOpenClaudeMd,
   onOpenMcp,
   onOpenSkills,
+  onOpenScratchpad,
   onOpenGit,
   onSyncRemote,
   onEdit,
@@ -904,6 +912,7 @@ function ProjectNode({
                     { label: "edit CLAUDE.md", onClick: onOpenClaudeMd },
                     { label: "manage MCP servers", onClick: onOpenMcp },
                     { label: "manage skills", onClick: onOpenSkills },
+                    { label: "open scratchpad folder", onClick: onOpenScratchpad },
                     { label: "edit project", onClick: onEdit },
                   ]}
                 />

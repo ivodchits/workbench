@@ -20,6 +20,12 @@ export function revealPath(path: string): Promise<void> {
   return invoke("reveal_path", { path });
 }
 
+/** Open the project's Claude Code scratchpad folder (under `%TEMP%\claude`) in the
+ *  OS file manager. Rejects with a readable message when no session made one yet. */
+export function openScratchpad(rootPath: string): Promise<void> {
+  return invoke("open_scratchpad", { rootPath });
+}
+
 /** Open a web or mail link in the user's browser (step T3). The backend refuses
  *  every other scheme — links come from untrusted transcript text. */
 export function openUrl(url: string): Promise<void> {
