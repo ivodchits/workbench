@@ -726,6 +726,86 @@ pub fn instance_file_diff(
     })
 }
 
+/// Larger than this on either side, the review panel shows git's unified diff
+/// instead of the two whole versions (step V1) — the guard against pathological
+/// files that the old 4,000-line cap was.
+const MAX_VERSION_BYTES: usize = 2 * 1024 * 1024;
+
+/// Both sides of one file for the review panel's merge view (step V1): the file at
+/// the base and in the working tree, read in one call.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FileVersions {
+    pub path: String,
+    pub base: String,
+    /// The file at `base`; `None` when it didn't exist there (added, untracked).
+    pub original: Option<String>,
+    /// The working-tree file; `None` when it is gone (deleted).
+    pub current: Option<String>,
+    /// Either side has a NUL byte or isn't UTF-8 — no text to show.
+    pub binary: bool,
+    /// Either side is over `MAX_VERSION_BYTES`; the texts are left out.
+    pub too_large: bool,
+    /// The working-tree file uses CRLF, so a save from the panel writes CRLF back.
+    pub crlf: bool,
+}
+
+/// Read one file at `base` (`git show <base>:<path>`) and on disk (step V1). `path`
+/// is the diff list's path, relative to the repo top level as git prints it.
+#[tauri::command]
+pub fn instance_file_versions(
+    working_dir: String,
+    base: String,
+    path: String,
+    untracked: bool,
+) -> Result<FileVersions, String> {
+    let wd = Path::new(&working_dir);
+    let mut out = FileVersions {
+        path: path.clone(),
+        base: base.clone(),
+        original: None,
+        current: None,
+        binary: false,
+        too_large: false,
+        crlf: false,
+    };
+    if !untracked {
+        // A failed `show` means the path isn't in the base: an added file.
+        let spec = format!("{base}:{path}");
+        if let Ok(o) = run::exec(wd, Spec::local(&["show", &spec])) {
+            if o.ok {
+                out.original = text_side(o.raw, &mut out);
+            }
+        }
+    }
+    match std::fs::read(wd.join(&path)) {
+        Ok(bytes) => {
+            out.crlf = bytes.windows(2).any(|w| w == [b'\r', b'\n']);
+            out.current = text_side(bytes, &mut out);
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(format!("cannot read {path}: {e}")),
+    }
+    if out.binary || out.too_large {
+        out.original = None;
+        out.current = None;
+    }
+    Ok(out)
+}
+
+/// One side of `FileVersions` as text, or `None` with the reason flagged.
+fn text_side(bytes: Vec<u8>, out: &mut FileVersions) -> Option<String> {
+    if bytes.len() > MAX_VERSION_BYTES {
+        out.too_large = true;
+        return None;
+    }
+    if bytes.iter().take(8000).any(|&b| b == 0) {
+        out.binary = true;
+        return None;
+    }
+    String::from_utf8(bytes).map_err(|_| out.binary = true).ok()
+}
+
 /// Pick the ref to diff an instance's working dir against (step 2.7). An explicit
 /// `base` wins. Otherwise a *linked worktree* (a dir other than the repo root)
 /// diffs against the main repo's current branch — the branch it would integrate
@@ -2875,9 +2955,25 @@ mod tests {
         // A tracked file's diff comes from git; an untracked file's is synthesized.
         let tracked = instance_file_diff(root.clone(), "HEAD".into(), "keep.txt".into(), false).unwrap();
         assert!(tracked.text.contains("+v2"), "diff shows the added line");
-        let synth = instance_file_diff(root, "HEAD".into(), "fresh.txt".into(), true).unwrap();
+        let synth = instance_file_diff(root.clone(), "HEAD".into(), "fresh.txt".into(), true).unwrap();
         assert!(synth.untracked);
         assert!(synth.text.contains("+hello") && synth.text.contains("+world"));
+
+        // Both versions of each, for the merge view (V1).
+        let v = |p: &str, untracked: bool| {
+            instance_file_versions(root.clone(), "HEAD".into(), p.into(), untracked).unwrap()
+        };
+        let keep = v("keep.txt", false);
+        assert_eq!(keep.original.as_deref(), Some("v1\n"));
+        assert_eq!(keep.current.as_deref(), Some("v1\nv2\n"));
+        assert!(!keep.crlf && !keep.binary && !keep.too_large);
+        let gone = v("gone.txt", false);
+        assert_eq!((gone.original.as_deref(), gone.current.as_deref()), (Some("bye\n"), None));
+        let fresh = v("fresh.txt", true);
+        assert_eq!((fresh.original.as_deref(), fresh.current.as_deref()), (None, Some("hello\nworld\n")));
+        std::fs::write(dir.join("keep.txt"), b"a\r\nb\0\r\n").unwrap();
+        let bin = v("keep.txt", false);
+        assert!(bin.binary && bin.crlf && bin.original.is_none() && bin.current.is_none());
 
         std::fs::remove_dir_all(&dir).ok();
     }

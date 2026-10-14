@@ -33,7 +33,12 @@ export interface Prefs {
   /** Consoles showing their transcript instead of the terminal (step T3), keyed by
    *  instance id. Absent = terminal. */
   transcriptView: Record<string, boolean>;
+  /** The review panel's diff layout (step V1). Absent = unified. */
+  diffLayout: DiffLayout;
 }
+
+/** One column with the old lines above the new, or the two versions side by side. */
+export type DiffLayout = "unified" | "split";
 
 /** Where the Git panel's draggable splits sit, and which sections are open (G2).
  *  Global rather than per repo: it's a shape-of-the-window preference, and the

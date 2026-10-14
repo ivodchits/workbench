@@ -120,6 +120,7 @@ pub fn run() {
             git::remove_worktree,
             git::instance_diff,
             git::instance_file_diff,
+            git::instance_file_versions,
             git::git_log,
             git::git_branches,
             git::git_status_entries,

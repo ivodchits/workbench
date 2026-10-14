@@ -191,6 +191,33 @@ export function instanceFileDiff(
   return invoke("instance_file_diff", { workingDir, base, path, untracked });
 }
 
+/** Both sides of one file, for the review panel's merge view (step V1). */
+export interface FileVersions {
+  path: string;
+  base: string;
+  /** The file at `base`; null when it didn't exist there (added, untracked). */
+  original: string | null;
+  /** The working-tree file; null when it is gone (deleted). */
+  current: string | null;
+  /** Either side isn't text — both texts are null. */
+  binary: boolean;
+  /** Either side is too big for the merge view — both texts are null; show the
+   *  unified diff instead. */
+  tooLarge: boolean;
+  /** The working-tree file uses CRLF; a save writes CRLF back. */
+  crlf: boolean;
+}
+
+/** Read one file at `base` and on disk in one call (step V1). */
+export function instanceFileVersions(
+  workingDir: string,
+  base: string,
+  path: string,
+  untracked: boolean,
+): Promise<FileVersions> {
+  return invoke("instance_file_versions", { workingDir, base, path, untracked });
+}
+
 // --- git panel (step 3.11) --------------------------------------------------
 // Project-scoped repo lens: history, branches, working tree, stash, remotes.
 // Reads each run a single batched git command; writes shell out. The UI gates

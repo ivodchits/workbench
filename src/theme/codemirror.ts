@@ -126,6 +126,39 @@ function highlightStyle(tokens: ThemeTokens): HighlightStyle {
 }
 
 /**
+ * Colours for the review panel's merge view (step V1), over `@codemirror/merge`'s
+ * own: removed in the `needs` colour, added in `done`, as the Git panel's diff.
+ * Side `a` is the base, `b` the working tree; the unified view is all `b`, with the
+ * removed lines drawn as `.cm-deletedChunk` widgets.
+ */
+export function diffTheme(tokens: ThemeTokens = activeTheme): Extension {
+  const del = (a: number) => withAlpha(tokens.needs, a);
+  const add = (a: number) => withAlpha(tokens.done, a);
+  return EditorView.theme(
+    {
+      "&.cm-merge-a .cm-changedLine, .cm-deletedChunk": { backgroundColor: del(0.1) },
+      "&.cm-merge-b .cm-changedLine, .cm-inlineChangedLine": { backgroundColor: add(0.1) },
+      "&.cm-merge-a .cm-changedText, .cm-deletedChunk .cm-deletedText": { background: del(0.26) },
+      "&.cm-merge-b .cm-changedText": { background: add(0.2) },
+      "&.cm-merge-b .cm-deletedText": { background: del(0.26) },
+      ".cm-deletedChunk": { color: tokens.textDim2, paddingLeft: "0" },
+      ".cm-changeGutter": { width: "3px", paddingLeft: "0" },
+      "&.cm-merge-a .cm-changedLineGutter, .cm-deletedLineGutter": { background: tokens.needs },
+      "&.cm-merge-b .cm-changedLineGutter": { background: tokens.done },
+      ".cm-collapsedLines": {
+        color: tokens.textFaint,
+        background: tokens.titlebar,
+        fontFamily: mono,
+        fontSize: "11px",
+        padding: "2px 10px",
+      },
+      ".cm-collapsedLines:hover": { color: tokens.accent },
+    },
+    { dark: true },
+  );
+}
+
+/**
  * The full editor theme extension (chrome + syntax highlighting) for `tokens`,
  * defaulting to the active app theme. The Phase-3 theme switcher rebuilds the
  * editor with the new theme, exactly as it re-derives the xterm theme.

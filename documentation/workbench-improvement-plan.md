@@ -900,6 +900,49 @@ filesystem path. There is no `draggable` / `dataTransfer` use anywhere in `src/`
   `src/theme/codemirror.ts`.
 - **Done when:** a TypeScript and a Rust file both show highlighted, intra-line diffs in
   both layouts, and a small edit can be saved without leaving the diff.
+- **As built (2026-10-14):** `@codemirror/merge` 6.12.2 fits, so the review panel uses
+  it and the edit mode is gone (open question 6). New `src/panels/Diff/MergeDiff.tsx`
+  and `src/state/diffLayout.ts`. Checked in headless Edge with real file versions, and
+  in the dev app on this repo's own uncommitted changes.
+  - **Backend:** `instance_file_versions(workingDir, base, path, untracked)` in
+    `git/mod.rs` returns both sides of one file in one call: `original` from
+    `git show <base>:<path>` (null when the file isn't in the base) and `current` from
+    disk (null when deleted). It also reports `binary` (a NUL byte or non-UTF-8 on
+    either side), `tooLarge` (either side over 2 MiB) and `crlf`. Binary detection
+    needed git's raw bytes, so `run::Output` gained `raw`. Tested by extending the
+    end-to-end diff test.
+  - **View:** `MergeDiff` builds `unifiedMergeView` (unified) or `MergeView` (side by
+    side, base read-only on the left). Both have line numbers, the file's syntax
+    highlighting (including deleted lines), changed words marked inside changed lines,
+    a change gutter, and unchanged runs collapsed to 3 lines of context (click to
+    expand). Colours come from the theme tokens via a new `diffTheme()` in
+    `theme/codemirror.ts`: removed in `needs`, added in `done`, as in the Git panel.
+    Theme switches reconfigure the views in place.
+  - **Layout toggle:** *unified* / *side by side* in the file bar, persisted as the
+    `diffLayout` pref and shared by every review panel. Switching keeps unsaved edits
+    (the view is rebuilt from the buffer) but not undo history.
+  - **Edit in place:** the working-tree side is the editor. Ctrl+S or *save* writes
+    the file, keeping CRLF line ends when the file had them (CodeMirror works in
+    `\n`), then refreshes the file list's counts. The file isn't re-read after a save,
+    so the cursor and scroll stay put. The bar shows "● unsaved" while dirty. A
+    deleted file is read-only. *Refresh* re-reads the selected file only when it has
+    no unsaved edits.
+  - **Guards:** files over 2 MiB fall back to `UnifiedDiff` with git's diff, which
+    keeps its 4,000-line cap. The merge view itself has no line cap: it renders only
+    what is on screen, and its diff gives up refining after 1.5 s
+    (`diffConfig.timeout`). A file whose versions differ only in line ends or mode
+    says so instead of showing an empty diff.
+  - `UnifiedDiff` is unchanged for the Git panel's hunk staging and history.
+  - **Checked live:**
+    - A TS file (`remoteActions.ts` between R4 and R5; this step's `Diff/index.tsx`)
+      and a Rust file (`git/mod.rs`, 3,700 lines) in both layouts. Highlighting, word
+      marks, collapsed runs and line numbers were all present; each rendered in under
+      1 s, with no console errors.
+    - An edit plus Ctrl+S on a CRLF file in the dev app: it saved with CRLF intact,
+      showed "✓ saved", and the panel stayed on the diff.
+  - **Not done:** switching files with unsaved edits still drops them without asking
+    (as the old edit mode did). The pure-insertion chunks mark every word as changed,
+    which reads heavier than a line tint alone.
 
 #### Step V2 — Navigation and freshness
 
@@ -1633,7 +1676,7 @@ any session, which lowers the urgency and makes the terminal bugs easier to comp
 | 3 | Where subagent messages live — **a separate file**, `<session-id>/subagents/agent-<id>.jsonl` | T0 |
 | 4 | Shift+Enter byte sequence — **`\x1b\r`** (verified on 2.1.296) | C1 |
 | 5 | Path-with-spaces syntax after `@` | D1 |
-| 6 | `@codemirror/merge` vs extending `UnifiedDiff` | V1 |
+| 6 | `@codemirror/merge` vs extending `UnifiedDiff` — **`@codemirror/merge`**; the edit mode folds into the diff | V1 |
 | 7 | Notes storage location (the phone, R8, reads the same store) | N1 |
 | 8 | How the PWA bundle is embedded on a fresh clone — **built, not committed**; `build.rs` says what to run | R1 |
 
@@ -1654,7 +1697,7 @@ any session, which lowers the urgency and makes the terminal bugs easier to comp
 | T5 | Choice cards (desktop) | ☑ |
 | D1 | Drag files from inside the app | ☑ |
 | D2 | Drag files from the OS (spike) | ☐ |
-| V1 | Diff rendering | ☐ |
+| V1 | Diff rendering | ☑ |
 | V2 | Diff navigation + freshness | ☐ |
 | V3 | Inline comments to the agent | ☐ |
 | N1 | Project notes panel | ☐ |

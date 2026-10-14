@@ -72,6 +72,9 @@ pub struct Output {
     pub ok: bool,
     pub stdout: String,
     pub stderr: String,
+    /// stdout as git wrote it, for a reader that must tell text from binary
+    /// (`stdout` has already replaced invalid UTF-8).
+    pub raw: Vec<u8>,
 }
 
 /// One invocation, as the panel's scrollback shows it.
@@ -301,7 +304,8 @@ pub fn exec(path: &Path, spec: Spec) -> Result<Output, String> {
         let _ = out_thread.join();
         let _ = err_thread.join();
     }
-    let stdout = String::from_utf8_lossy(&out_buf.lock().unwrap()).into_owned();
+    let raw = std::mem::take(&mut *out_buf.lock().unwrap());
+    let stdout = String::from_utf8_lossy(&raw).into_owned();
     let stderr = String::from_utf8_lossy(&err_buf.lock().unwrap()).into_owned();
 
     let verb = spec.args.first().copied().unwrap_or("command");
@@ -343,7 +347,7 @@ pub fn exec(path: &Path, spec: Spec) -> Result<Output, String> {
             .join("\n")
     };
     record(&repo, &argv, success, started, &noise);
-    Ok(Output { ok: success, stdout, stderr })
+    Ok(Output { ok: success, stdout, stderr, raw })
 }
 
 fn record(repo: &str, argv: &str, ok: bool, started: Instant, output: &str) {

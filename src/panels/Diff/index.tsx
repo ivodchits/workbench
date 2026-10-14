@@ -4,20 +4,32 @@
 // panel re-fetches the diff from git on mount / refresh / save rather than caching.
 //
 // Layout: a changed-file list on the left; on the right, the selected file's diff.
-// Each file has two views — a read-only unified diff (default) and an editable
-// CodeMirror over the working-tree file. Saving writes to disk and refreshes the
-// diff: the "tweak the files Claude edited, then re-review" loop the design calls for.
+// Since step V1 that is a merge view of the file at the base against the working
+// tree (`MergeDiff`), unified or side by side, whose working-tree side is editable:
+// Ctrl+S saves and refreshes the counts — the "tweak the files Claude edited, then
+// re-review" loop the design calls for, without leaving the diff. A file too large
+// for it falls back to git's unified diff (`UnifiedDiff`).
 
 import { useCallback, useEffect, useState } from "react";
 import type { IDockviewPanelProps } from "dockview";
 
 import { GLYPH } from "../../theme";
-import { instanceDiff, instanceFileDiff, type DiffFile, type FileDiff, type InstanceDiff } from "../../ipc/git";
-import { readFile, writeFile } from "../../ipc/fs";
+import {
+  instanceDiff,
+  instanceFileDiff,
+  instanceFileVersions,
+  type DiffFile,
+  type FileDiff,
+  type FileVersions,
+  type InstanceDiff,
+} from "../../ipc/git";
+import { writeFile } from "../../ipc/fs";
+import type { DiffLayout } from "../../ipc/prefs";
 import { useDiffs, type DiffSession } from "../../state/diffs";
+import { setDiffLayout, useDiffLayout } from "../../state/diffLayout";
 import { setDragPaths } from "../../state/fileDrag";
 import { detectLanguage } from "../Editor/language";
-import CodeMirrorView from "../Editor/CodeMirrorView";
+import MergeDiff from "./MergeDiff";
 import UnifiedDiff from "./UnifiedDiff";
 
 export interface DiffPanelParams {
@@ -37,13 +49,19 @@ export function DiffPanel(props: IDockviewPanelProps<DiffPanelParams>) {
   return <DiffBody session={session} />;
 }
 
-type Mode = "diff" | "edit";
-
-/** The local edit buffer for the selected file (only while in edit mode). */
-interface EditBuffer {
+/** The selected file's two versions, and the working-tree side as edited here. */
+interface Loaded {
   path: string;
+  versions: FileVersions;
+  /** The working-tree text in the editor, with `\n` line ends. */
   content: string;
+  /** `content` as last read or saved. */
   baseline: string;
+}
+
+/** Line ends aside, the two texts are the same: nothing for the merge view to show. */
+function sameText(a: string, b: string): boolean {
+  return a.replace(/\r\n/g, "\n") === b.replace(/\r\n/g, "\n");
 }
 
 function DiffBody({ session }: { session: DiffSession }) {
@@ -52,10 +70,13 @@ function DiffBody({ session }: { session: DiffSession }) {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [selected, setSelected] = useState<string | null>(null);
-  const [fileDiff, setFileDiff] = useState<FileDiff | null>(null);
-  const [mode, setMode] = useState<Mode>("diff");
-  const [edit, setEdit] = useState<EditBuffer | null>(null);
+  const [loaded, setLoaded] = useState<Loaded | null>(null);
+  /** Git's unified diff, for a file too large for the merge view. */
+  const [fallback, setFallback] = useState<FileDiff | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  /** Bumped to re-read the selected file's versions (and rebuild its view). */
+  const [reread, setReread] = useState(0);
+  const layout = useDiffLayout();
 
   const selectedFile = summary?.files.find((f) => f.path === selected) ?? null;
 
@@ -83,75 +104,116 @@ function DiffBody({ session }: { session: DiffSession }) {
     void loadSummary();
   }, [loadSummary]);
 
-  // Switching to a different file resets to the read-only diff view and drops any
-  // stale edit buffer. Keyed on the *path* (not the derived file object) so a save's
-  // summary refresh doesn't kick the user out of edit mode on the same file.
+  // Read the selected file's two versions — on selection, on a base or status
+  // change, and on refresh. Not after a save: the editor already holds the text.
   const base = summary?.base ?? "HEAD";
+  const untracked = selectedFile?.status === "untracked";
+  const binary = selectedFile?.binary ?? false;
   useEffect(() => {
-    setMode("diff");
-    setEdit(null);
     setNotice(null);
-  }, [selected]);
-
-  // Load the selected file's unified diff — on selection, on working-dir/base change,
-  // and whenever the summary refreshes (after a save) so the updated diff shows.
-  useEffect(() => {
-    const file = summary?.files.find((f) => f.path === selected) ?? null;
-    if (!file) {
-      setFileDiff(null);
+    setFallback(null);
+    if (!selected || binary) {
+      setLoaded(null);
       return;
     }
     let alive = true;
-    void instanceFileDiff(workingDir, base, file.path, file.status === "untracked")
-      .then((d) => alive && setFileDiff(d))
-      .catch((err) => alive && setFileDiff({ path: file.path, base, text: String(err), binary: false, untracked: false }));
+    void instanceFileVersions(workingDir, base, selected, untracked)
+      .then((versions) => {
+        if (!alive) return;
+        const content = (versions.current ?? "").replace(/\r\n/g, "\n");
+        setLoaded({ path: selected, versions, content, baseline: content });
+        if (versions.tooLarge) {
+          return instanceFileDiff(workingDir, base, selected, untracked).then((d) => alive && setFallback(d));
+        }
+      })
+      .catch((err) => {
+        if (!alive) return;
+        setLoaded(null);
+        setNotice(String(err));
+      });
     return () => {
       alive = false;
     };
-  }, [selected, workingDir, base, summary]);
+  }, [selected, untracked, binary, workingDir, base, reread]);
 
-  // Enter edit mode: read the working-tree file into a local buffer. Disabled for
-  // deleted (gone) and binary files.
-  const enterEdit = useCallback(async () => {
-    if (!selectedFile?.absPath || selectedFile.binary) return;
-    try {
-      const content = await readFile(selectedFile.absPath);
-      setEdit({ path: selectedFile.absPath, content, baseline: content });
-      setMode("edit");
-      setNotice(null);
-    } catch (err) {
-      setNotice(String(err));
-    }
-  }, [selectedFile]);
+  const current = loaded && loaded.path === selected ? loaded : null;
+  const dirty = current ? current.content !== current.baseline : false;
+  const editable = !!selectedFile?.absPath && current?.versions.current != null;
 
-  // Save the edit buffer to disk, then refresh the file list — which, via the diff
-  // effect above, re-fetches this file's diff so the review reflects the tweak.
+  const refresh = useCallback(() => {
+    void loadSummary();
+    // Unsaved edits stay; the file is re-read once they're saved or dropped.
+    if (!dirty) setReread((n) => n + 1);
+  }, [loadSummary, dirty]);
+
+  // Save the working-tree side, keeping the file's own line ends, then refresh the
+  // file list so its counts follow.
   const save = useCallback(
     async (content: string) => {
-      if (!edit) return;
+      const target = selectedFile?.absPath;
+      if (!current || !target || !editable) return;
       try {
-        await writeFile(edit.path, content);
-        setEdit({ ...edit, content, baseline: content });
+        await writeFile(target, current.versions.crlf ? content.replace(/\n/g, "\r\n") : content);
+        setLoaded((l) => (l && l.path === current.path ? { ...l, content, baseline: content } : l));
         setNotice("saved");
         await loadSummary();
       } catch (err) {
         setNotice(String(err));
       }
     },
-    [edit, loadSummary],
+    [current, selectedFile, editable, loadSummary],
   );
 
   const lang = selectedFile ? detectLanguage(selectedFile.path) : null;
-  const dirty = edit ? edit.content !== edit.baseline : false;
+
+  let view: React.ReactNode;
+  if (!selectedFile) {
+    view = <Empty base={base} />;
+  } else if (selectedFile.binary || current?.versions.binary) {
+    view = <Note>{GLYPH.warn} binary file — no textual diff</Note>;
+  } else if (!current) {
+    view = <Note>{notice && notice !== "saved" ? `${GLYPH.warn} ${notice}` : "reading diff…"}</Note>;
+  } else if (current.versions.tooLarge) {
+    view = !fallback ? (
+      <Note>reading diff…</Note>
+    ) : (
+      <div style={{ height: "100%", display: "flex", flexDirection: "column" }}>
+        <div style={{ padding: "4px 12px", color: "var(--wb-textFaint)", font: "10.5px var(--wb-mono)" }}>
+          too large to show whole — git's diff instead
+        </div>
+        <div style={{ flex: 1, minHeight: 0 }}>
+          <UnifiedDiff text={fallback.text} />
+        </div>
+      </div>
+    );
+  } else if (!dirty && sameText(current.versions.original ?? "", current.versions.current ?? "")) {
+    view = <Note>no line changes (mode or line endings only)</Note>;
+  } else {
+    view = (
+      <MergeDiff
+        key={`${current.path}\n${layout}\n${reread}`}
+        layout={layout}
+        original={current.versions.original ?? ""}
+        doc={current.content}
+        editable={editable}
+        language={lang?.extension ?? null}
+        scrollKey={`diff:${session.diffId}:${current.path}:${layout}`}
+        onChange={(content) =>
+          setLoaded((l) => (l && l.path === current.path ? { ...l, content } : l))
+        }
+        onSave={(content) => void save(content)}
+      />
+    );
+  }
 
   return (
     // `data-wb-panel` lets the keyboard layer (state/dock) focus this panel's
-    // CodeMirror when it's in edit mode, the same way it focuses the Editor panel.
+    // CodeMirror, the same way it focuses the Editor panel.
     <div
       data-wb-panel={session.diffId}
       style={{ height: "100%", display: "flex", flexDirection: "column", minHeight: 0, background: "var(--wb-bg)" }}
     >
-      <Header summary={summary} loading={loading} onRefresh={() => void loadSummary()} />
+      <Header summary={summary} loading={loading} onRefresh={refresh} />
 
       {loadError ? (
         <div style={{ padding: "10px 14px", color: "var(--wb-needs)", font: "11.5px var(--wb-mono)" }}>
@@ -170,37 +232,15 @@ function DiffBody({ session }: { session: DiffSession }) {
             {selectedFile && (
               <FileBar
                 file={selectedFile}
-                mode={mode}
+                layout={layout}
+                editable={editable}
                 dirty={dirty}
-                notice={notice}
-                onShowDiff={() => setMode("diff")}
-                onEdit={() => void enterEdit()}
-                onSave={edit ? () => void save(edit.content) : undefined}
+                notice={current ? notice : null}
+                onLayout={setDiffLayout}
+                onSave={current ? () => void save(current.content) : undefined}
               />
             )}
-            <div style={{ flex: 1, minHeight: 0 }}>
-              {!selectedFile ? (
-                <Empty base={base} />
-              ) : mode === "edit" && edit ? (
-                <CodeMirrorView
-                  key={edit.path}
-                  path={edit.path}
-                  initialDoc={edit.content}
-                  language={lang?.extension ?? null}
-                  onChange={(content) => setEdit((e) => (e ? { ...e, content } : e))}
-                  onSave={(content) => void save(content)}
-                  onSaveAll={() => edit && void save(edit.content)}
-                />
-              ) : selectedFile.binary ? (
-                <Note>{GLYPH.warn} binary file — no textual diff</Note>
-              ) : !fileDiff ? (
-                <Note>reading diff…</Note>
-              ) : fileDiff.text.trim() === "" ? (
-                <Note>no line changes (mode or whitespace only)</Note>
-              ) : (
-                <UnifiedDiff text={fileDiff.text} />
-              )}
-            </div>
+            <div style={{ flex: 1, minHeight: 0 }}>{view}</div>
           </div>
         </div>
       )}
@@ -344,22 +384,21 @@ function FileList({
 
 function FileBar({
   file,
-  mode,
+  layout,
+  editable,
   dirty,
   notice,
-  onShowDiff,
-  onEdit,
+  onLayout,
   onSave,
 }: {
   file: DiffFile;
-  mode: Mode;
+  layout: DiffLayout;
+  editable: boolean;
   dirty: boolean;
   notice: string | null;
-  onShowDiff: () => void;
-  onEdit: () => void;
+  onLayout: (layout: DiffLayout) => void;
   onSave?: () => void;
 }) {
-  const editable = !!file.absPath && !file.binary;
   return (
     <div
       style={{
@@ -386,19 +425,20 @@ function FileBar({
       >
         {file.path}
       </span>
-      {notice && (
+      {dirty && <span style={{ color: "var(--wb-working)", flex: "0 0 auto" }}>● unsaved</span>}
+      {notice && !dirty && (
         <span style={{ color: notice === "saved" ? "var(--wb-done)" : "var(--wb-needs)", flex: "0 0 auto" }}>
           {notice === "saved" ? `${GLYPH.ok} saved` : notice}
         </span>
       )}
       <span style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 6, flex: "0 0 auto" }}>
-        <BarButton active={mode === "diff"} onClick={onShowDiff}>
-          diff
+        <BarButton active={layout === "unified"} onClick={() => onLayout("unified")}>
+          unified
         </BarButton>
-        <BarButton active={mode === "edit"} onClick={onEdit} disabled={!editable}>
-          ✎ edit
+        <BarButton active={layout === "split"} onClick={() => onLayout("split")}>
+          side by side
         </BarButton>
-        {mode === "edit" && (
+        {editable && (
           <BarButton onClick={onSave} disabled={!dirty} accent>
             ⌃S save
           </BarButton>

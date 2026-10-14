@@ -3,6 +3,6 @@
 
 export * from "./tokens";
 export * from "./glyphs";
-export { codeMirrorTheme } from "./codemirror";
+export { codeMirrorTheme, diffTheme } from "./codemirror";
 export { default as Panel } from "./Panel";
 export { default as Spinner } from "./Spinner";
