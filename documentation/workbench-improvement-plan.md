@@ -1151,6 +1151,85 @@ filesystem path. There is no `draggable` / `dataTransfer` use anywhere in `src/`
   `src/state/remoteServer.ts`.
 - **Done when:** with the phone on mobile data and Tailscale off, the dashboard loads over
   HTTPS after a desktop restart with no manual step.
+- **As built (2026-10-14):**
+  - **Listeners:** the server always binds `127.0.0.1:<port>` (where Funnel delivers),
+    plus the tailnet address when there is one. Turning remote access on no longer needs
+    Tailscale up: a *keeper* thread (`remote/mod.rs`) binds the tailnet address once it
+    appears, so a boot where Workbench starts before Tailscale still ends up reachable.
+    One axum task per listener, same router. The LAN is still never bound.
+  - **Funnel driver:** the new `src-tauri/src/remote/funnel.rs` runs the `tailscale` CLI
+    (on `PATH`, or the installer's location; no console window, 20 s deadline per call).
+    It reads `status --json` and `serve status --json`, and runs `funnel --bg --yes
+    --https=<port> http://127.0.0.1:<port>` to add the funnel and `funnel --https=<port>
+    off` to remove it. Parsing and the prerequisite rules are pure and unit-tested
+    (6 tests, including the QR code).
+  - **Ports:** a release uses public port **443** (an address with no port in it), a
+    debug build uses **8443**, so both can be public at once. Funnel allows only 443, 8443
+    and 10000; the tailnet's `funnel-ports` grant is checked.
+  - **Switch:** *public access · funnel* in the Remote Access menu, off by default and
+    persisted (`meta.remote_public`). While it is off, the menu says what it exposes:
+    the page is public, but nothing works without a pairing code and the desktop's
+    allow. When on, the menu shows the public URL with *copy* and a QR code. The QR code
+    is rendered in Rust (`qrcode` crate, SVG, no `image` dependency) through
+    `remote_qr_svg`. The status bar adds "· public", or "· public ✕" when there is a
+    problem.
+  - **Keeper:** whenever the switch and the server are both on, it makes sure the funnel
+    is in place. It re-checks every 60 s once working, every 15 s while not, and is woken
+    at once by any toggle. Turning the switch off, or disabling the server, removes the
+    funnel; the switch keeps its state, so re-enabling the server restores it. A funnel
+    left over from a run where the switch was later turned off is removed at startup,
+    once Tailscale can be asked.
+  - **Prerequisites explained, not failed silently:** the menu says what is missing:
+    - the CLI is absent (with a download link);
+    - Tailscale is disconnected or logged out;
+    - there is no MagicDNS name;
+    - HTTPS certificates are off (link to the DNS page);
+    - the `funnel` node attribute is missing (link to the policy file);
+    - the port isn't in the tailnet's funnel ports.
+
+    A consent link printed by the CLI is passed through. "Workbench keeps trying"
+    follows each message.
+  - **Someone else's entry:** a port already serving anything but our loopback target is
+    reported ("Port 8443 is already serving / → http://127.0.0.1:3999 … remove it with
+    `tailscale serve --https=8443 off`") and never overwritten. Our own entry, or our
+    proxy served only on the tailnet, is adopted.
+  - **Behind the proxy:** for a loopback peer only, `X-Forwarded-For` names the client
+    (in the device list and the failure log), and `X-Forwarded-Host` is accepted in the
+    WebSocket `Origin` check. In practice Tailscale passes the public `Host` through
+    unchanged.
+  - **Verified live** against the real tailnet, with the phone simulated by headless
+    Edge at phone size. It was pointed at the funnel's *public* relay address (looked up
+    via 8.8.8.8, not MagicDNS), which is the path a phone on mobile data takes:
+    - With the switches set in the dev database and the app started, the funnel appeared
+      by itself.
+    - Over the relay: the page loads; `/api/state` gives 401 without a token and 200 with
+      an approved one; `/pair` explains that no code is live; a WebSocket from Origin
+      `evil.example` gets 403, while the page's own Origin gets 101 `wb`.
+    - The phone page is a secure context, goes live over `wss://`, and its service
+      worker is **active**. On plain http it never had a secure context.
+    - The device row and the failure log show the client's real public IP, not
+      127.0.0.1.
+    - Menu (driven by real mouse clicks): URL and QR code shown. *Turn off* removed the
+      funnel and the address stopped answering. A foreign `tailscale serve` entry on
+      8443 was reported and left alone; once it was removed, Workbench put its funnel up
+      within 9 s on its own. *Disable* took the funnel down, and *enable* restored it
+      within 1 s.
+    - **Restart:** with the app stopped and the funnel removed by hand, launching the app
+      brought the funnel back with no action taken. The phone then loaded the dashboard
+      over public HTTPS and went live.
+  - **Found along the way:**
+    - A *newly added* funnel took about 2½ minutes before Tailscale's public relay
+      completed TLS. The tailnet path answered at once. An ordinary restart doesn't hit
+      this: the funnel lives in Tailscale's own config and survives app restarts and
+      reboots.
+    - WebView2 runtime 155 now drops `--remote-debugging-port` however it is passed, so
+      the desktop was driven by window clicks rather than CDP.
+  - **Not tried:** a real phone on mobile data, the release build on 443, and the
+    "Tailscale disconnected / not installed / attribute missing" messages live (they are
+    unit-tested). Loopback is reachable by anything on this machine, which still needs a
+    token; DNS rebinding isn't specifically guarded against beyond that.
+  - 133 Rust tests (6 new) and 152 frontend tests pass; typecheck and clippy are clean;
+    lint shows only the existing `TornWindow.tsx` warning.
 
 #### Step R4 — Phone: transcript view and prompt-first input
 
@@ -1457,7 +1536,7 @@ any session, which lowers the urgency and makes the terminal bugs easier to comp
 | N2 | Rendered-while-editing markdown | ☐ |
 | R1 | PWA build | ☑ |
 | R2 | Pairing / auth hardening | ☑ |
-| R3 | Tailscale Funnel | ☐ |
+| R3 | Tailscale Funnel | ☑ |
 | R4 | Phone transcript + composer | ☐ |
 | R5 | Phone choice cards | ☐ |
 | R6 | Push notifications | ☐ |

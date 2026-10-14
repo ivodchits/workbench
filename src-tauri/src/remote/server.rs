@@ -1,7 +1,9 @@
 //! The axum router for the remote access server (steps 4.3, 4.4).
 //!
-//! Runs on Tauri's async runtime, bound to the Tailscale interface by the parent
-//! module. Routes split into the **PWA shell** (unauthenticated static assets, served so
+//! Runs on Tauri's async runtime, bound to the Tailscale interface and loopback by the
+//! parent module (one task per listener, same router). Loopback is where Tailscale
+//! Funnel delivers public requests (step R3), so a loopback peer's `X-Forwarded-*`
+//! headers name the real client and host. Routes split into the **PWA shell** (unauthenticated static assets, served so
 //! the companion can install + load offline) and the **data plane** (bearer-gated):
 //!
 //! - `GET /` — the phone-optimized dashboard PWA (step 4.4): one self-contained page,
@@ -160,6 +162,7 @@ struct PairReq {
 async fn pair(
     State(state): State<Arc<RemoteState>>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
     Json(req): Json<PairReq>,
 ) -> Response {
     let name = if req.name.trim().is_empty() {
@@ -167,7 +170,7 @@ async fn pair(
     } else {
         req.name.trim().to_string()
     };
-    let (status, error) = match try_pair(&state, &req.code, &name, &peer.ip().to_string()) {
+    let (status, error) = match try_pair(&state, &req.code, &name, &client_addr(peer, &headers)) {
         Ok(token) => {
             return (
                 StatusCode::OK,
@@ -198,6 +201,28 @@ async fn pair(
     (status, Json(json!({ "error": error }))).into_response()
 }
 
+/// One header as text, when present and readable.
+fn header_str<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
+    headers.get(name).and_then(|v| v.to_str().ok())
+}
+
+/// Who is asking, for the device list and the failure log. Tailscale Funnel delivers
+/// public requests to the loopback listener and names the real client in
+/// `X-Forwarded-For`; only a loopback peer is believed when it says so (anything that
+/// can reach loopback is on this machine already).
+fn client_addr(peer: SocketAddr, headers: &HeaderMap) -> String {
+    if peer.ip().is_loopback() {
+        let forwarded = header_str(headers, "x-forwarded-for")
+            .and_then(|v| v.split(',').next())
+            .map(str::trim)
+            .filter(|v| !v.is_empty());
+        if let Some(addr) = forwarded {
+            return addr.to_string();
+        }
+    }
+    peer.ip().to_string()
+}
+
 /// Pull the bearer token out of an `Authorization: Bearer <token>` header.
 fn bearer(headers: &HeaderMap) -> Option<String> {
     let raw = headers.get(header::AUTHORIZATION)?.to_str().ok()?;
@@ -222,9 +247,9 @@ const SUBPROTOCOL: &str = "wb";
 fn authed(
     state: &Arc<RemoteState>,
     token: Option<&str>,
-    peer: SocketAddr,
+    addr: &str,
 ) -> Result<String, Response> {
-    match check_token(state, token, &peer.ip().to_string()) {
+    match check_token(state, token, addr) {
         Access::Granted(id) => Ok(id),
         Access::Pending => Err((
             StatusCode::FORBIDDEN,
@@ -236,23 +261,33 @@ fn authed(
 }
 
 #[allow(clippy::result_large_err)] // a refusal is built once per refused request
-/// Check a WebSocket upgrade: from this server's own page, with a device token.
+/// Check a WebSocket upgrade: from this server's own page, with a device token. Behind
+/// Funnel the page's host is the public name, which a proxy may pass on as
+/// `X-Forwarded-Host` (believed from a loopback peer only, as in [`client_addr`]).
 fn ws_authed(
     state: &Arc<RemoteState>,
     headers: &HeaderMap,
     peer: SocketAddr,
 ) -> Result<String, Response> {
-    let origin = headers.get(header::ORIGIN).and_then(|v| v.to_str().ok());
-    let host = headers.get(header::HOST).and_then(|v| v.to_str().ok());
-    if !auth::origin_ok(origin, host) {
+    let addr = client_addr(peer, headers);
+    let origin = header_str(headers, "origin");
+    let host = header_str(headers, "host");
+    let forwarded_host = peer
+        .ip()
+        .is_loopback()
+        .then(|| header_str(headers, "x-forwarded-host"))
+        .flatten();
+    let own = auth::origin_ok(origin, host)
+        || (forwarded_host.is_some() && auth::origin_ok(origin, forwarded_host));
+    if !own {
         log_failure(
             state,
-            &peer.ip().to_string(),
+            &addr,
             &format!("WebSocket from another site ({})", origin.unwrap_or("")),
         );
         return Err(StatusCode::FORBIDDEN.into_response());
     }
-    authed(state, subprotocol_token(headers).as_deref(), peer)
+    authed(state, subprotocol_token(headers).as_deref(), &addr)
 }
 
 /// Serve the latest snapshot JSON (auth: bearer header).
@@ -261,7 +296,8 @@ async fn api_state(
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
 ) -> Response {
-    if let Err(refusal) = authed(&state, bearer(&headers).as_deref(), peer) {
+    let addr = client_addr(peer, &headers);
+    if let Err(refusal) = authed(&state, bearer(&headers).as_deref(), &addr) {
         return refusal;
     }
     let snap = state.inner.lock().unwrap().snapshot.clone();
@@ -276,7 +312,8 @@ async fn api_action(
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
-    if let Err(refusal) = authed(&state, bearer(&headers).as_deref(), peer) {
+    let addr = client_addr(peer, &headers);
+    if let Err(refusal) = authed(&state, bearer(&headers).as_deref(), &addr) {
         return refusal;
     }
     match serde_json::from_slice::<Value>(&body) {
@@ -469,6 +506,18 @@ mod tests {
         let mut h = HeaderMap::new();
         h.insert(header::SEC_WEBSOCKET_PROTOCOL, value.parse().unwrap());
         h
+    }
+
+    /// A forwarded client address is believed from loopback (Funnel's proxy) only.
+    #[test]
+    fn reads_the_client_address() {
+        let mut h = HeaderMap::new();
+        h.insert("x-forwarded-for", "203.0.113.7, 10.0.0.1".parse().unwrap());
+        let local: SocketAddr = "127.0.0.1:5000".parse().unwrap();
+        let tailnet: SocketAddr = "100.70.1.2:5000".parse().unwrap();
+        assert_eq!(client_addr(local, &h), "203.0.113.7");
+        assert_eq!(client_addr(tailnet, &h), "100.70.1.2");
+        assert_eq!(client_addr(local, &HeaderMap::new()), "127.0.0.1");
     }
 
     /// The phone offers `wb` and `wb-token.<token>`; the token is read from the latter

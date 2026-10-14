@@ -15,12 +15,29 @@ import type { RemoteAction } from "../remote/protocol";
 
 export type { RemoteAction, RemoteActionType } from "../remote/protocol";
 
+/** Public access through Tailscale Funnel (step R3). */
+export interface PublicStatus {
+  /** The switch. */
+  enabled: boolean;
+  /** off (switch or server off) · starting (not checked yet) · on · problem. */
+  phase: "off" | "starting" | "on" | "problem";
+  /** `https://<machine>.<tailnet>.ts.net[:port]` once known. */
+  url: string | null;
+  /** The public port this build uses (443, or 8443 for a dev build). */
+  port: number;
+  problem: string | null;
+  /** A page that fixes `problem`, when there is one. */
+  fixUrl: string | null;
+}
+
 /** Snapshot of the remote server for the settings panel. */
 export interface RemoteStatus {
   running: boolean;
-  /** `ip:port` when running, else null. */
+  /** The tailnet `ip:port` when running and Tailscale is up, else null. */
   boundAddr: string | null;
-  /** `http://ip:port` to open on the phone, when running. */
+  /** The loopback `ip:port` when running (what Funnel proxies to). */
+  localAddr: string | null;
+  /** `http://ip:port` to open on the phone over the tailnet. */
   url: string | null;
   port: number;
   /** Whether a Tailscale interface is currently detectable. */
@@ -35,6 +52,7 @@ export interface RemoteStatus {
   pairingExpiresAt: number | null;
   /** Wrong tries burned the last code; a new one is needed. */
   pairingLocked: boolean;
+  public: PublicStatus;
 }
 
 /** A paired device, approved or waiting for approval. The token stays in the
@@ -60,8 +78,8 @@ export interface AuthFailure {
   count: number;
 }
 
-/** Enable remote serving (bind the tailnet + start the server). Rejects if no
- *  Tailscale interface is found or the bind fails. */
+/** Enable remote serving (bind loopback + the tailnet, start the server). Rejects if
+ *  the bind fails; with Tailscale down the tailnet address follows once it connects. */
 export function remoteStart(): Promise<RemoteStatus> {
   return invoke("remote_start");
 }
@@ -99,6 +117,17 @@ export function remoteApproveDevice(id: string): Promise<RemoteDevice[]> {
 /** Revoke a paired device, or turn away a waiting one; returns the updated list. */
 export function remoteRevokeDevice(id: string): Promise<RemoteDevice[]> {
   return invoke("remote_revoke_device", { id });
+}
+
+/** Turn public access (Tailscale Funnel) on or off. The outcome follows as
+ *  `remote-changed`; the status returned says "starting" until then. */
+export function remoteSetPublic(enabled: boolean): Promise<RemoteStatus> {
+  return invoke("remote_set_public", { enabled });
+}
+
+/** `text` as a QR code, an SVG document. */
+export function remoteQrSvg(text: string): Promise<string> {
+  return invoke("remote_qr_svg", { text });
 }
 
 /** Recent auth failures, newest first. */

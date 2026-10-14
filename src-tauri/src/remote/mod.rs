@@ -20,8 +20,8 @@
 //!    (the §11 caveat: keep that mapping in one place). We never write to a PTY here.
 //!
 //! **Security (step R2):** off by default; enabled from the Remote Access menu. When
-//! on we bind **only** to the detected Tailscale address (100.64.0.0/10) — never
-//! broader. Pairing takes three things: a code that exists only once the desktop asks
+//! on we bind **only** the detected Tailscale address (100.64.0.0/10) and loopback —
+//! never the LAN. Pairing takes three things: a code that exists only once the desktop asks
 //! for one (10 symbols, 10 minutes, one use, burned after 5 wrong tries, `/pair`
 //! rate-limited for everyone — [`auth::PairGate`]); the long-lived token it is
 //! exchanged for; and a **desktop approval** before that token is worth anything. A
@@ -29,13 +29,21 @@
 //! is compared in constant time, and stops working after 30 days unused. Failures are
 //! logged for the menu. Every change to devices, the code or the log is announced to
 //! the webview as `remote-changed`.
+//!
+//! **Public access (step R3):** the server also listens on `127.0.0.1`, and an
+//! opt-in switch has Tailscale Funnel proxy a public `https://…ts.net` address to that
+//! listener ([`funnel`]). A background *keeper* thread holds things in place: it binds
+//! the tailnet address once Tailscale connects (it may come up after Workbench at
+//! boot), adds the funnel while the switch and the server are on, removes it when
+//! either goes off, and re-checks now and then so the menu says what is missing.
 
 mod auth;
+mod funnel;
 mod server;
 
 use std::net::Ipv4Addr;
-use std::sync::{Arc, Mutex};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::sync::{mpsc, Arc, Mutex};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::Serialize;
 use tauri::async_runtime::JoinHandle;
@@ -44,6 +52,7 @@ use tokio::sync::{broadcast, watch};
 
 use crate::db::Db;
 use auth::{AuthFailure, AuthLog, PairGate, PairOutcome};
+use funnel::{PublicPhase, PublicStatus};
 
 /// The port the remote server binds on the Tailscale interface. A debug build uses a
 /// different port so a `tauri dev` run never fights an installed release for it
@@ -53,6 +62,15 @@ const REMOTE_PORT: u16 = if cfg!(debug_assertions) { 49020 } else { 48990 };
 /// `meta` key persisting whether remote serving was last enabled, so it auto-starts
 /// on the next launch (best-effort — a bind failure never blocks the app).
 const ENABLED_KEY: &str = "remote_enabled";
+
+/// `meta` key persisting the public access (Funnel) switch. Off unless set to `1`.
+const PUBLIC_KEY: &str = "remote_public";
+
+/// How often the keeper re-checks: while public access works, while it doesn't (or
+/// the tailnet address is missing), and otherwise.
+const RECHECK_ON: Duration = Duration::from_secs(60);
+const RECHECK_RETRY: Duration = Duration::from_secs(15);
+const RECHECK_IDLE: Duration = Duration::from_secs(300);
 
 /// Longest device name kept from a pairing request.
 const NAME_MAX: usize = 40;
@@ -68,15 +86,25 @@ pub struct RemoteState {
     /// Bumped whenever a device loses access (revoked, denied, expired, server
     /// stopped), so open sockets re-check theirs and close if it is gone.
     kick: watch::Sender<u64>,
+    /// Wakes the keeper thread to act on a change now rather than at its next check.
+    wake: Mutex<mpsc::Sender<()>>,
 }
 
 struct RemoteInner {
     running: bool,
-    /// `ip:port` the server is bound to, when running.
+    /// The tailnet `ip:port` the server is bound to, when running and Tailscale is up.
     bound_addr: Option<String>,
-    /// The running server's acceptor task. Aborting it drops the listener and frees the
-    /// port immediately, so a disable→enable toggle can always re-bind.
-    task: Option<JoinHandle<()>>,
+    /// The loopback `ip:port` (what Funnel proxies to), when running.
+    local_addr: Option<String>,
+    /// The running server's acceptor tasks, one per listener. Aborting them drops the
+    /// listeners and frees the port immediately, so a disable→enable toggle can always
+    /// re-bind.
+    tasks: Vec<JoinHandle<()>>,
+    /// Public access: the switch and where it stands.
+    public: PublicStatus,
+    /// Our funnel may still be up although it is no longer wanted; the keeper removes
+    /// it once Tailscale can be asked.
+    funnel_cleanup: bool,
     /// Broadcast of snapshot JSON to every connected WS client, **created per run**: it
     /// lives only while the server is running. Dropping it on stop makes every connected
     /// client's receiver close, so the toggle actually disconnects them (rather than
@@ -134,12 +162,22 @@ pub fn init(app: &AppHandle) {
             log.record(addr, &format!("“{}” {why}, removed", d.name), now);
         }
     }
+    let db = app.state::<Db>();
+    let meta = |key| db.meta_get(key).ok().flatten();
+    let enabled = meta(ENABLED_KEY).as_deref() == Some("1");
+    let public = meta(PUBLIC_KEY);
+    let public_on = public.as_deref() == Some("1");
+    let (wake, wake_rx) = mpsc::channel();
     let state = Arc::new(RemoteState {
         app: app.clone(),
         inner: Mutex::new(RemoteInner {
             running: false,
             bound_addr: None,
-            task: None,
+            local_addr: None,
+            tasks: Vec::new(),
+            public: PublicStatus::new(public_on),
+            // Only someone who has used the switch can have a funnel of ours left over.
+            funnel_cleanup: public.is_some() && !(public_on && enabled),
             tx: None,
             snapshot: "{}".to_string(),
             devices: live,
@@ -147,21 +185,20 @@ pub fn init(app: &AppHandle) {
             log,
         }),
         kick: watch::channel(0).0,
+        wake: Mutex::new(wake),
     });
     app.manage(state.clone());
 
-    let enabled = app
-        .state::<Db>()
-        .meta_get(ENABLED_KEY)
-        .ok()
-        .flatten()
-        .as_deref()
-        == Some("1");
     if enabled {
         if let Err(e) = start_server(&state) {
             eprintln!("[remote] auto-start skipped: {e}");
         }
     }
+    let keeper_state = state.clone();
+    std::thread::Builder::new()
+        .name("remote-keeper".into())
+        .spawn(move || keeper(keeper_state, wake_rx))
+        .ok();
 }
 
 /// Every paired device row.
@@ -200,35 +237,152 @@ fn delete_device_row(app: &AppHandle, id: &str) {
     let _ = conn.execute("DELETE FROM remote_devices WHERE id = ?1", [id]);
 }
 
-/// Bind the Tailscale interface and spawn the axum server. Idempotent: if already
-/// running, returns the current bound address. Errors (returned, never panicked) when
-/// no Tailscale interface is present or the bind fails — the caller surfaces that.
-/// A fresh broadcast channel is created per run so [`remote_stop`] can drop it to
-/// disconnect clients.
-fn start_server(state: &Arc<RemoteState>) -> Result<String, String> {
-    {
-        let inner = state.inner.lock().unwrap();
-        if inner.running {
-            return Ok(inner.bound_addr.clone().unwrap_or_default());
-        }
+/// Bind loopback (and the Tailscale interface, if it is up) and spawn the axum server.
+/// Idempotent: if already running, does nothing. Errors (returned, never panicked)
+/// when the loopback bind fails — the caller surfaces that. With no Tailscale address
+/// yet, the keeper binds it once one appears. A fresh broadcast channel is created per
+/// run so [`remote_stop`] can drop it to disconnect clients.
+fn start_server(state: &Arc<RemoteState>) -> Result<(), String> {
+    if state.inner.lock().unwrap().running {
+        return Ok(());
     }
-    let ip = tailscale_ip()
-        .ok_or("Tailscale interface not found — is Tailscale installed and connected?")?;
-    let listener = std::net::TcpListener::bind((ip, REMOTE_PORT))
-        .map_err(|e| format!("bind {ip}:{REMOTE_PORT} failed: {e}"))?;
-    let addr = format!("{ip}:{REMOTE_PORT}");
+    let local = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, REMOTE_PORT))
+        .map_err(|e| format!("bind 127.0.0.1:{REMOTE_PORT} failed: {e}"))?;
     let (tx, _rx) = broadcast::channel::<String>(32);
     {
         let mut inner = state.inner.lock().unwrap();
         inner.running = true;
-        inner.bound_addr = Some(addr.clone());
+        inner.local_addr = Some(format!("127.0.0.1:{REMOTE_PORT}"));
         inner.tx = Some(tx);
     }
     // Spawn after the state is published so a connection that arrives immediately finds
     // the channel; store the acceptor handle so stop can abort it (freeing the port).
+    let task = server::serve(local, state.clone());
+    state.inner.lock().unwrap().tasks.push(task);
+    if let Err(e) = bind_tailnet(state) {
+        eprintln!("[remote] {e}");
+    }
+    wake(state);
+    Ok(())
+}
+
+/// Add the tailnet listener to a running server, if Tailscale has an address and it
+/// isn't bound yet. `Ok(false)`: nothing to bind (yet).
+fn bind_tailnet(state: &Arc<RemoteState>) -> Result<bool, String> {
+    {
+        let inner = state.inner.lock().unwrap();
+        if !inner.running || inner.bound_addr.is_some() {
+            return Ok(false);
+        }
+    }
+    let Some(ip) = tailscale_ip() else { return Ok(false) };
+    let listener = std::net::TcpListener::bind((ip, REMOTE_PORT))
+        .map_err(|e| format!("bind {ip}:{REMOTE_PORT} failed: {e}"))?;
     let task = server::serve(listener, state.clone());
-    state.inner.lock().unwrap().task = Some(task);
-    Ok(addr)
+    let mut inner = state.inner.lock().unwrap();
+    if !inner.running {
+        task.abort(); // stopped meanwhile
+        return Ok(false);
+    }
+    inner.bound_addr = Some(format!("{ip}:{REMOTE_PORT}"));
+    inner.tasks.push(task);
+    Ok(true)
+}
+
+/// The loopback URL Funnel proxies to.
+fn local_target() -> String {
+    format!("http://127.0.0.1:{REMOTE_PORT}")
+}
+
+/// Ask the keeper to look again now.
+fn wake(state: &RemoteState) {
+    let _ = state.wake.lock().unwrap().send(());
+}
+
+/// The keeper thread: see the module docs. Runs for the life of the app.
+fn keeper(state: Arc<RemoteState>, wake: mpsc::Receiver<()>) {
+    loop {
+        let wait = keep(&state);
+        match wake.recv_timeout(wait) {
+            Ok(()) | Err(mpsc::RecvTimeoutError::Timeout) => {}
+            Err(mpsc::RecvTimeoutError::Disconnected) => return,
+        }
+        while wake.try_recv().is_ok() {} // several changes, one look
+    }
+}
+
+/// One look: bind the tailnet if it has appeared, then bring the funnel in line with
+/// the switch. Returns how long to wait before the next look. The CLI calls run with
+/// no lock held.
+fn keep(state: &Arc<RemoteState>) -> Duration {
+    match bind_tailnet(state) {
+        Ok(true) => changed(state),
+        Ok(false) => {}
+        Err(e) => eprintln!("[remote] {e}"),
+    }
+    let (running, tailnet, enabled) = {
+        let inner = state.inner.lock().unwrap();
+        (inner.running, inner.bound_addr.is_some(), inner.public.enabled)
+    };
+    let target = local_target();
+    if running && enabled {
+        let next = match funnel::ensure(&target) {
+            Ok(url) => PublicStatus {
+                phase: PublicPhase::On,
+                url: Some(url),
+                ..PublicStatus::new(true)
+            },
+            Err(p) => PublicStatus {
+                phase: PublicPhase::Problem,
+                problem: Some(p.message),
+                fix_url: p.fix_url,
+                ..PublicStatus::new(true)
+            },
+        };
+        let on = next.phase == PublicPhase::On;
+        set_public(state, next, true);
+        return if on && tailnet { RECHECK_ON } else { RECHECK_RETRY };
+    }
+    set_public(
+        state,
+        PublicStatus { phase: PublicPhase::Off, ..PublicStatus::new(enabled) },
+        enabled,
+    );
+    if state.inner.lock().unwrap().funnel_cleanup {
+        let done = match funnel::remove(&target) {
+            Ok(done) => done,
+            Err(e) => {
+                eprintln!("[remote] couldn’t remove the funnel: {e}");
+                true // said once; don't keep at it
+            }
+        };
+        if done {
+            state.inner.lock().unwrap().funnel_cleanup = false;
+        }
+    }
+    let cleanup = state.inner.lock().unwrap().funnel_cleanup;
+    if cleanup || (running && !tailnet) {
+        RECHECK_RETRY
+    } else {
+        RECHECK_IDLE
+    }
+}
+
+/// Publish the keeper's finding, unless the switch moved while it looked (`wanted` is
+/// the switch it looked for). Announces only a real change.
+fn set_public(state: &RemoteState, next: PublicStatus, wanted: bool) {
+    let moved = {
+        let mut inner = state.inner.lock().unwrap();
+        if inner.public.enabled != wanted || inner.public == next {
+            false
+        } else {
+            inner.public = next;
+            true
+        }
+    };
+    if moved {
+        changed(state);
+    }
 }
 
 /// The first local IPv4 in the Tailscale CGNAT range (100.64.0.0/10), or `None`.
@@ -403,9 +557,11 @@ fn now() -> u64 {
 #[serde(rename_all = "camelCase")]
 pub struct RemoteStatus {
     pub running: bool,
-    /// `ip:port` when running, else null.
+    /// The tailnet `ip:port` when running and Tailscale is up, else null.
     pub bound_addr: Option<String>,
-    /// Convenience `http://ip:port` to open on the phone, when running.
+    /// The loopback `ip:port` when running (what Funnel proxies to).
+    pub local_addr: Option<String>,
+    /// Convenience `http://ip:port` to open on the phone over the tailnet.
     pub url: Option<String>,
     pub port: u16,
     /// Whether a Tailscale interface is currently detectable (drives the UI hint).
@@ -420,6 +576,8 @@ pub struct RemoteStatus {
     pub pairing_expires_at: Option<u64>,
     /// Whether wrong tries burned the last code (a new one is needed).
     pub pairing_locked: bool,
+    /// Public access through Tailscale Funnel (step R3).
+    pub public: PublicStatus,
 }
 
 /// A paired device row for the settings panel's device list. The token never leaves
@@ -445,6 +603,7 @@ fn status_of(state: &Arc<RemoteState>) -> RemoteStatus {
     RemoteStatus {
         running: inner.running,
         bound_addr: inner.bound_addr.clone(),
+        local_addr: inner.local_addr.clone(),
         url: inner.bound_addr.clone().map(|a| format!("http://{a}")),
         port: REMOTE_PORT,
         tailscale_available: tailscale_ip().is_some(),
@@ -453,6 +612,7 @@ fn status_of(state: &Arc<RemoteState>) -> RemoteStatus {
         pairing_code: live.map(|(code, _)| code.to_string()),
         pairing_expires_at: live.map(|(_, exp)| exp),
         pairing_locked: inner.gate.locked(),
+        public: inner.public.clone(),
     }
 }
 
@@ -479,8 +639,9 @@ fn list_devices(state: &RemoteState) -> Vec<RemoteDevice> {
     out
 }
 
-/// Enable remote serving: bind the Tailscale interface, start the server, and persist
-/// the enabled flag so it auto-starts next launch. Errors if no tailnet / bind fails.
+/// Enable remote serving: bind loopback and the Tailscale interface, start the server,
+/// and persist the enabled flag so it auto-starts next launch. Errors if the bind
+/// fails. With Tailscale down it still starts; the tailnet address follows.
 #[tauri::command]
 pub fn remote_start(state: State<'_, Arc<RemoteState>>) -> Result<RemoteStatus, String> {
     let st = state.inner();
@@ -498,17 +659,51 @@ pub fn remote_stop(state: State<'_, Arc<RemoteState>>) -> RemoteStatus {
         let mut inner = st.inner.lock().unwrap();
         // Abort the acceptor (drops the listener → frees the port) and drop the
         // broadcast sender (every connected client's receiver closes → they disconnect).
-        if let Some(task) = inner.task.take() {
+        for task in inner.tasks.drain(..) {
             task.abort();
         }
         inner.tx = None;
         inner.running = false;
         inner.bound_addr = None;
+        inner.local_addr = None;
         inner.gate.clear();
+        // A funnel to a stopped server only answers 502; take it down too. The switch
+        // stays as it is, so turning the server back on restores it.
+        if inner.public.enabled {
+            inner.funnel_cleanup = true;
+            inner.public.phase = PublicPhase::Off;
+        }
     }
     kick(st); // mirrored consoles don't ride the broadcast channel
+    wake(st);
     let _ = st.app.state::<Db>().meta_set(ENABLED_KEY, "0");
     status_of(st)
+}
+
+/// Turn public access (Tailscale Funnel) on or off. Persisted, so it comes back on
+/// with the app. The keeper does the work and announces the outcome as
+/// `remote-changed`; the status returned says "starting" until then.
+#[tauri::command]
+pub fn remote_set_public(state: State<'_, Arc<RemoteState>>, enabled: bool) -> RemoteStatus {
+    let st = state.inner();
+    {
+        let mut inner = st.inner.lock().unwrap();
+        let phase = if enabled && inner.running { PublicPhase::Starting } else { PublicPhase::Off };
+        inner.public = PublicStatus { phase, ..PublicStatus::new(enabled) };
+        if !enabled {
+            inner.funnel_cleanup = true;
+        }
+    }
+    let _ = st.app.state::<Db>().meta_set(PUBLIC_KEY, if enabled { "1" } else { "0" });
+    wake(st);
+    changed(st);
+    status_of(st)
+}
+
+/// `text` as a QR code (an SVG document), for the public address.
+#[tauri::command]
+pub fn remote_qr_svg(text: String) -> Result<String, String> {
+    funnel::qr_svg(&text)
 }
 
 /// Current remote server status for the settings panel.
@@ -606,7 +801,8 @@ mod tests {
     use super::*;
 
     /// The Tailscale CGNAT block 100.64.0.0/10 is recognized; neighboring private and
-    /// public ranges are not — so we only ever bind the tailnet, never the LAN.
+    /// public ranges are not — so we only ever bind the tailnet (and loopback), never the
+/// LAN.
     #[test]
     fn detects_tailscale_cgnat_range() {
         assert!(is_tailscale_v4(Ipv4Addr::new(100, 64, 0, 1)));

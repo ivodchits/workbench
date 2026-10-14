@@ -4,8 +4,10 @@
 // see recent auth failures (step R2).
 // Mirrors the AppearanceMenu's upward popover so it sits naturally in the status bar.
 //
-// The server binds *only* the detected Tailscale interface — if Tailscale isn't up,
-// enabling is disabled and the panel says so, rather than ever binding broader.
+// The server binds *only* the detected Tailscale interface and loopback — never the
+// LAN. If Tailscale isn't up yet the panel says so, and the tailnet address follows
+// once it connects. Public access (step R3) is a separate switch: Tailscale Funnel
+// puts the loopback listener at a fixed https address, shown here with a QR code.
 
 import { useEffect, useRef, useState } from "react";
 import {
@@ -13,11 +15,18 @@ import {
   newPairingCode,
   refreshRemoteStatus,
   revokeDevice,
+  setPublicAccess,
   startRemote,
   stopRemote,
   useRemoteServer,
 } from "../state/remoteServer";
-import { remoteClearAuthLog, type RemoteDevice } from "../ipc/remote";
+import {
+  remoteClearAuthLog,
+  remoteQrSvg,
+  type PublicStatus,
+  type RemoteDevice,
+} from "../ipc/remote";
+import { openUrl } from "../ipc/os";
 import { formatAgo, formatCountdown } from "../util/format";
 
 /** Failures listed before "show all". */
@@ -106,6 +115,10 @@ function RemoteAccessMenu() {
       >
         <span style={{ color: running ? "var(--wb-accent)" : "var(--wb-textFaint)" }}>⇄</span>
         remote {running ? `:${status?.port ?? ""}` : "off"}
+        {running && status?.public.phase === "on" && <span>· public</span>}
+        {running && status?.public.phase === "problem" && (
+          <span style={{ color: "var(--wb-needs)" }}>· public ✕</span>
+        )}
         {waiting > 0 && <span style={{ color: "var(--wb-needs)" }}>· {waiting} waiting</span>}
       </button>
 
@@ -134,24 +147,23 @@ function RemoteAccessMenu() {
             </span>
             <button
               type="button"
-              disabled={busy || (!running && !tailscale)}
+              disabled={busy}
               onClick={() => void toggle()}
-              style={toggleStyle(running, busy || (!running && !tailscale))}
+              style={toggleStyle(running, busy)}
             >
               {running ? "disable" : "enable"}
             </button>
           </Row>
 
-          {!tailscale && (
+          {(running ? !status?.boundAddr : !tailscale) && (
             <Note>
-              Tailscale interface not found — start/connect Tailscale, then reopen this
-              menu.
+              Tailscale isn’t connected — the tailnet url appears here once it is.
             </Note>
           )}
 
           {running && status?.url && (
             <Row>
-              <span style={{ color: "var(--wb-textFaint)" }}>url</span>
+              <span style={{ color: "var(--wb-textFaint)" }}>tailnet</span>
               <code
                 style={{
                   flex: 1,
@@ -173,6 +185,8 @@ function RemoteAccessMenu() {
               </button>
             </Row>
           )}
+
+          {running && status && <PublicAccess pub={status.public} />}
 
           {running && (
             <>
@@ -276,6 +290,120 @@ function RemoteAccessMenu() {
         </div>
       )}
     </div>
+  );
+}
+
+/** The public access (Funnel) switch, what it exposes, and where it stands. */
+function PublicAccess({ pub }: { pub: PublicStatus }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function flip() {
+    setBusy(true);
+    setError(null);
+    try {
+      await setPublicAccess(!pub.enabled);
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <>
+      <Divider />
+      <Row>
+        <span style={{ ...sectionLabelStyle, flex: 1 }}>public access · funnel</span>
+        <button
+          type="button"
+          disabled={busy}
+          onClick={() => void flip()}
+          style={toggleStyle(pub.enabled, busy)}
+        >
+          {pub.enabled ? "turn off" : "turn on"}
+        </button>
+      </Row>
+      {!pub.enabled && (
+        <Note>
+          Puts this server on the internet at a fixed https address (port {pub.port}) through
+          Tailscale Funnel, so a phone can reach it without Tailscale. Anyone can load the
+          page; nothing works without a pairing code from here and your allow. Stays on
+          across restarts.
+        </Note>
+      )}
+      {pub.phase === "starting" && <Note>setting up the funnel…</Note>}
+      {pub.phase === "problem" && (
+        <Note tone="error">
+          {pub.problem}
+          {pub.fixUrl && (
+            <>
+              {" "}
+              <button
+                type="button"
+                onClick={() => void openUrl(pub.fixUrl ?? "").catch(() => {})}
+                style={{ ...miniBtn, border: "none", padding: 0, textDecoration: "underline" }}
+              >
+                open the page
+              </button>
+            </>
+          )}
+          <span style={{ color: "var(--wb-textFaint)" }}> Workbench keeps trying.</span>
+        </Note>
+      )}
+      {pub.phase === "on" && pub.url && <PublicUrl url={pub.url} />}
+      {error && <Note tone="error">{error}</Note>}
+    </>
+  );
+}
+
+/** The public address, with a copy button and a QR code to scan with the phone. */
+function PublicUrl({ url }: { url: string }) {
+  const [svg, setSvg] = useState<string | null>(null);
+  useEffect(() => {
+    let live = true;
+    remoteQrSvg(url)
+      .then((s) => live && setSvg(s))
+      .catch(() => live && setSvg(null));
+    return () => {
+      live = false;
+    };
+  }, [url]);
+  return (
+    <>
+      <Row>
+        <span style={{ color: "var(--wb-textFaint)" }}>public</span>
+        <code
+          style={{
+            flex: 1,
+            color: "var(--wb-accent)",
+            userSelect: "all",
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+          }}
+        >
+          {url}
+        </code>
+        <button
+          type="button"
+          onClick={() => void navigator.clipboard?.writeText(url)}
+          title="copy"
+          style={miniBtn}
+        >
+          copy
+        </button>
+      </Row>
+      {svg && (
+        <div style={{ padding: "4px 12px", display: "flex", justifyContent: "center" }}>
+          <img
+            src={`data:image/svg+xml;utf8,${encodeURIComponent(svg)}`}
+            alt={`QR code for ${url}`}
+            width={150}
+            height={150}
+          />
+        </div>
+      )}
+    </>
   );
 }
 

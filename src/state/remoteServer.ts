@@ -14,6 +14,7 @@ import {
   remoteDevicesList,
   remoteNewPairingCode,
   remoteRevokeDevice,
+  remoteSetPublic,
   remoteStart,
   remoteStatus,
   remoteStop,
@@ -77,6 +78,11 @@ export async function startRemote(): Promise<void> {
 /** Disable serving; updates the store. */
 export async function stopRemote(): Promise<void> {
   set({ status: await remoteStop() });
+}
+
+/** Turn public access (Funnel) on or off; the store follows the backend's report. */
+export async function setPublicAccess(enabled: boolean): Promise<void> {
+  set({ status: await remoteSetPublic(enabled) });
 }
 
 /** Mint a fresh pairing code; updates the store so the panel shows it. */

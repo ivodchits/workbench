@@ -109,6 +109,8 @@ pub fn run() {
             remote::remote_revoke_device,
             remote::remote_auth_log,
             remote::remote_clear_auth_log,
+            remote::remote_set_public,
+            remote::remote_qr_svg,
             statusline::usage_limits,
             git::detect_repo,
             git::provision_worktree,
