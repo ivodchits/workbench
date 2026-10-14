@@ -1328,6 +1328,69 @@ filesystem path. There is no `draggable` / `dataTransfer` use anywhere in `src/`
   `src/ipc/remote.ts`, PWA sources.
 - **Done when:** a multi-option question can be answered from the phone and a tap on an
   already-resolved prompt does nothing.
+- **As built (2026-10-14):** new `src/state/choiceWatch.ts`, `src/pwa/choice.ts`;
+  checked live in the dev app from headless Edge at phone size.
+  - **Snapshot:** `RemoteInstance.choice` (`RemoteChoice` in `remote/protocol.ts`)
+    carries the pending prompt's id, kind, tool, arguments, questions, the options the
+    phone may send, `terminalOnly` and the label of an answer already sent. It is set
+    only while the instance is in needs-you. Tool arguments longer than 6000
+    characters are cut, because the snapshot is pushed on every change and a whole
+    file being written would otherwise go with every push.
+  - **Action:** `choose { instanceId, choiceId, option: digit | "deny" }`, handled by
+    `chooseRemote` in `state/remoteActions.ts` through T5's `answerChoice`. It is
+    ignored unless `choiceId` is still the open prompt, no answer has been sent yet,
+    and the digit is one of its options. That covers a stale tap, a double tap and a
+    second phone. Rust needed no change, since the server forwards any action
+    verbatim. The phone's plain **approve** (Enter) now does nothing on a plan, which
+    closes the gap T5 left. It remains the fallback for a needs-you the desktop can't
+    describe.
+  - **Choice watch (needed for the phone, also fixes a T5 gap):** T5 read
+    permission and plan options off the screen, and caught "No" / Esc from the
+    transcript, only while the desktop card was on screen. `state/choiceWatch.ts`
+    (main window) now does both for every open prompt. It reads the screen on the
+    card's schedule (`READ_AT_MS`, moved to `pendingChoice.ts`) and follows the
+    transcript until the prompt closes. A desktop console left on its terminal no
+    longer stays in "needs you" after "No".
+  - **Phone card:** `src/pwa/choice.ts` is a framework-free version of
+    `ChoiceCard`, reusing the `.wb-chc` styles at touch size.
+    - Compact on a dashboard card, replacing approve / deny: one summary line, the
+      options, *terminal* (opens the console on its terminal) and *deny* /
+      *cancel*.
+    - Full in the transcript view, above the composer and up to 55vh: the arguments
+      are drawn by `renderPendingTool`.
+    - Fallbacks match T5: a prompt that is `terminalOnly` shows why, plus the
+      terminal button. An option typed in the terminal sends its digit, then
+      switches to the terminal.
+    - A tap shows "sent: …" at once, and the card offers *check the terminal* after
+      4 s without the prompt closing. It never re-sends.
+    - The card is redrawn only when the prompt or its state changes, so the
+      snapshots don't reset a long plan's scroll.
+  - **Wrapped option labels:** `parseOptionRows` joined a row that reached the
+    screen's edge without a space, which gave "promptsfor you". It now joins without
+    a space only when the cut word is path-like (contains `/` or `\`) or longer than
+    24 characters, because the TUI wraps at spaces.
+  - **Verified live:**
+    - A session switched to manual mode with the phone's ⇧Tab key, and a Bash
+      prompt showing all four real options, including "Yes, and switch to auto
+      mode".
+    - "No" tapped: the card closed and the status left needs-you. The desktop
+      console was on its terminal, so the watch alone caught this.
+    - "Yes" tapped: the command ran.
+    - The same prompt's id sent again after it closed: nothing was typed into the
+      prompt box.
+    - A single-select question: *Green* tapped, and Claude answered "green".
+    - A plan in plan mode, showing the plan and its three options read off the
+      screen, then *cancel*.
+    - The dashboard's compact card shown alongside the full one each time. No JS
+      errors.
+  - **Tests:** 10 more (`state/remoteActions.test.ts`, `pwa/choice.test.ts`,
+    `state/pendingChoice.test.ts`), 166 in all.
+  - **Known gaps:**
+    - Not tried on a real phone.
+    - No live test of a plan approved from the phone, or of an option typed in the
+      terminal; both are covered by unit tests only.
+    - The dashboard card learns of a tap made in the transcript view only from the
+      next snapshot, a fraction of a second later.
 
 #### Step R6 — Push notifications
 
@@ -1600,7 +1663,7 @@ any session, which lowers the urgency and makes the terminal bugs easier to comp
 | R2 | Pairing / auth hardening | ☑ |
 | R3 | Tailscale Funnel | ☑ |
 | R4 | Phone transcript + composer | ☑ |
-| R5 | Phone choice cards | ☐ |
+| R5 | Phone choice cards | ☑ |
 | R6 | Push notifications | ☐ |
 | R7 | Phone: create a session | ☑ |
 | R8 | Phone: project notes | ☐ |

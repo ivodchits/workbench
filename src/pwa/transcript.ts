@@ -4,12 +4,14 @@
 // The desktop's own pieces do the work: `transcript/feed` joins history to the live
 // stream and `transcript/render` draws it, here over the `/api/transcript` socket
 // (`transcriptSource`). This module is the chrome: scrolling that sticks to the end,
-// "load earlier", the status line, the needs-you row and the composer, which sends
-// the dashboard's ordinary `prompt` action.
+// "load earlier", the status line, the choice card (step R5) — or, when the desktop
+// can't say what is asked, the needs-you row — and the composer, which sends the
+// dashboard's ordinary `prompt` action.
 
 import type { RemoteInstance } from "../remote/protocol";
 import { createFeed, type Feed } from "../transcript/feed";
 import { createRenderer, type TranscriptRenderer } from "../transcript/render";
+import { createChoiceCard, type ChoiceCardView } from "./choice";
 import { $ } from "./dom";
 import { phaseOf } from "./format";
 import { action, openSocket } from "./net";
@@ -32,6 +34,7 @@ let onLink: (text: string) => void = () => {};
 /** The feed's connection state, as last reported. */
 let linkText = "";
 let switchToTerminal: () => void = () => {};
+let card: ChoiceCardView | null = null;
 
 function scroller(): HTMLElement {
   return $("tx-scroll");
@@ -89,7 +92,9 @@ function paintStatus(): void {
     status.className = "";
     status.textContent = "";
   }
-  $("tx-needs").classList.toggle("hidden", phase !== "needs_you");
+  const choice = phase === "needs_you" ? (it?.choice ?? null) : null;
+  card?.update(choice);
+  $("tx-needs").classList.toggle("hidden", phase !== "needs_you" || choice !== null);
   $("tx-stop").classList.toggle("hidden", phase !== "working");
   const running = it?.live ?? false;
   const text = $<HTMLTextAreaElement>("tx-text");
@@ -172,6 +177,7 @@ export function hideTranscript(): void {
   }
   feed?.stop();
   feed = null;
+  card?.update(null);
   renderer?.clear();
   renderer = null;
   current = null;
@@ -236,4 +242,12 @@ export function initTranscript(link: (text: string) => void, terminal: () => voi
     };
   }
   $("tx-answer").onclick = () => switchToTerminal();
+  card = createChoiceCard(false, {
+    choose: (choiceId, option) => {
+      if (current) action({ type: "choose", instanceId: current, choiceId, option });
+    },
+    terminal: () => switchToTerminal(),
+  });
+  $("tx-choice").replaceWith(card.root);
+  card.root.id = "tx-choice";
 }

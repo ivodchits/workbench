@@ -8,7 +8,27 @@
 
 import type { InstanceStatus } from "../ipc/registry";
 import type { RateLimits } from "../ipc/usageLimits";
+import type { ChoiceKind, ChoiceOption, ChoiceQuestion } from "../state/pendingChoice";
 import type { StatusPhase } from "../state/status";
+
+/** What a "needs you" instance is asking (step R5): the desktop's pending prompt
+ *  (`state/pendingChoice`), as much as the phone needs to show it and answer. */
+export interface RemoteChoice {
+  /** Names this prompt; an answer carries it, and is ignored once it has closed. */
+  id: string;
+  kind: ChoiceKind;
+  toolName: string;
+  /** The tool's arguments, long strings cut short. */
+  input: Record<string, unknown>;
+  /** `question` only. */
+  questions: ChoiceQuestion[];
+  /** The answers the phone may send; empty when `terminalOnly`. */
+  options: ChoiceOption[];
+  /** Why it is answered in the terminal instead; null when it can be answered here. */
+  terminalOnly: string | null;
+  /** The label of an answer already sent (from either end), until the prompt closes. */
+  sent: string | null;
+}
 
 /** One instance as the phone sees it. */
 export interface RemoteInstance {
@@ -34,6 +54,8 @@ export interface RemoteInstance {
   needsSince: number | null;
   escalated: boolean;
   stuck: boolean;
+  /** The prompt it is waiting on, when the desktop knows what it asks (step R5). */
+  choice: RemoteChoice | null;
 }
 
 /** A project the phone can start a session in (step R7). */
@@ -86,11 +108,12 @@ export type RemoteActionType =
   | "interrupt"
   | "start"
   | "stop"
-  | "create";
+  | "create"
+  | "choose";
 
 /** An action on an existing instance. */
 export interface RemoteInstanceAction {
-  type: Exclude<RemoteActionType, "create">;
+  type: Exclude<RemoteActionType, "create" | "choose">;
   instanceId: string;
   /** Present for `prompt`. */
   text?: string;
@@ -110,8 +133,17 @@ export interface RemoteCreateAction {
   worktree?: boolean;
 }
 
+/** Answer an instance's pending prompt (step R5): one of its options by digit, or
+ *  `deny` to dismiss it. Ignored unless `choiceId` is still the open prompt. */
+export interface RemoteChooseAction {
+  type: "choose";
+  instanceId: string;
+  choiceId: string;
+  option: number | "deny";
+}
+
 /** An action message from a remote client, routed to the frontend handler. */
-export type RemoteAction = RemoteInstanceAction | RemoteCreateAction;
+export type RemoteAction = RemoteInstanceAction | RemoteCreateAction | RemoteChooseAction;
 
 /** A text frame on the terminal-mirror socket (`/api/term`); output itself is binary. */
 export type TermControl =

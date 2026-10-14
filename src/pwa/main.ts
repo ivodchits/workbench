@@ -65,7 +65,11 @@ function lostAccess(): void {
 
 function showApp(): void {
   show("app");
-  const dashboard = initDashboard({ console: openConsole, newSession: openNewSession });
+  const dashboard = initDashboard({
+    console: (id) => openConsole(id),
+    terminal: (id) => openConsole(id, "terminal"),
+    newSession: openNewSession,
+  });
   const newSession = initNewSession(openConsole);
   connect({
     live: setConn,

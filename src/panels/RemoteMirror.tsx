@@ -6,15 +6,16 @@
 //
 // Implemented as a render-nothing component (not a store subscription) so it can read
 // the contributing stores through their existing hooks — registry, live statuses,
-// consoles (is it running?), account usage limits, and the phone's own `create`
-// requests (step R7) — and re-push on any
+// consoles (is it running?), account usage limits, the phone's own `create`
+// requests (step R7) and pending prompts (step R5) — and re-push on any
 // change. Pushes are debounced to coalesce the ~2 s token ticks; gated on the server
 // actually running so we don't do needless IPC while remote access is off (the
 // default). Mounted once from `App.tsx` (main window only).
 
 import { useEffect, useRef } from "react";
 import { remotePushSnapshot } from "../ipc/remote";
-import type { RemoteSnapshot } from "../remote/protocol";
+import type { RemoteChoice, RemoteSnapshot } from "../remote/protocol";
+import { useChoiceStates, type PendingChoice } from "../state/pendingChoice";
 import { useRegistry } from "../state/registry";
 import { useConsoles } from "../state/consoles";
 import { useLiveStatuses } from "../state/status";
@@ -26,6 +27,34 @@ import { contextWindowTokens } from "../util/format";
 
 /** One push per this window, to coalesce bursts of token/status updates. */
 const PUSH_DEBOUNCE_MS = 250;
+/** A tool argument longer than this is cut for the phone: the snapshot is pushed
+ *  on every change, and a whole file being written would ride along each time. */
+const MAX_INPUT_CHARS = 6000;
+
+function capped(value: unknown): unknown {
+  if (typeof value === "string") {
+    return value.length > MAX_INPUT_CHARS ? `${value.slice(0, MAX_INPUT_CHARS)}
+… (cut short)` : value;
+  }
+  if (Array.isArray(value)) return value.map(capped);
+  if (value && typeof value === "object") {
+    return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, capped(v)]));
+  }
+  return value;
+}
+
+function remoteChoice(p: PendingChoice): RemoteChoice {
+  return {
+    id: p.id,
+    kind: p.kind,
+    toolName: p.toolName,
+    input: capped(p.input) as Record<string, unknown>,
+    questions: p.questions,
+    options: p.terminalOnly ? [] : p.options,
+    terminalOnly: p.terminalOnly,
+    sent: p.sent?.label ?? null,
+  };
+}
 
 export default function RemoteMirror(): null {
   const registry = useRegistry();
@@ -36,6 +65,7 @@ export default function RemoteMirror(): null {
   const alerts = useAlerts();
   const notif = useNotificationConfig();
   const created = useCreated();
+  const choices = useChoiceStates();
   const running = server?.running ?? false;
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -61,6 +91,7 @@ export default function RemoteMirror(): null {
         usageLimits: limits,
         instances: registry.instances.map((i) => {
           const live = statuses.get(i.id);
+          const pending = choices.get(i.id)?.pending ?? null;
           return {
             id: i.id,
             projectId: i.projectId,
@@ -82,6 +113,8 @@ export default function RemoteMirror(): null {
             needsSince: withAlerts ? alerts.needsSince.get(i.id) ?? null : null,
             escalated: withAlerts && alerts.escalated.has(i.id),
             stuck: withAlerts && alerts.stuck.has(i.id),
+            // Only while it is waiting: a prompt outlives needs-you by a moment.
+            choice: live?.phase === "needs_you" && pending ? remoteChoice(pending) : null,
           };
         }),
         // What the phone can start a session in (step R7), in the rail's order.
@@ -101,7 +134,7 @@ export default function RemoteMirror(): null {
         timer.current = null;
       }
     };
-  }, [running, registry, consoles, statuses, limits, alerts, notif, created]);
+  }, [running, registry, consoles, statuses, limits, alerts, notif, created, choices]);
 
   return null;
 }

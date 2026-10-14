@@ -2,6 +2,7 @@
 
 import type { RateLimits } from "../ipc/usageLimits";
 import type { RemoteInstance, RemoteSnapshot } from "../remote/protocol";
+import { createChoiceCard, type ChoiceCardView } from "./choice";
 import { $, el } from "./dom";
 import {
   attentionLine,
@@ -25,6 +26,8 @@ interface Card {
   stuck: HTMLElement;
   meta: HTMLElement;
   approve: HTMLElement;
+  /** What it asks, when the desktop knows (step R5); else `approve` is shown. */
+  choice: ChoiceCardView;
   // The attention cues of the last snapshot, so the ticker can repaint the badge.
   attn: boolean;
   needsSince: number | null;
@@ -37,9 +40,11 @@ interface Card {
 // so reordering is safe.
 const cards = new Map<string, Card>();
 
-/** What a card can open: an instance's console, or the new-session sheet. */
+/** What a card can open: an instance's console (on its terminal, to answer a
+ *  prompt there), or the new-session sheet. */
 export interface Openers {
   console: (id: string) => void;
+  terminal: (id: string) => void;
   newSession: (projectId: string) => void;
 }
 
@@ -73,8 +78,14 @@ function buildCard(id: string, open: Openers): Card {
   const stuck = el("div", "stuck note hidden", "⚠ possibly stuck — working longer than usual");
   const meta = el("div", "meta");
 
+  // What it is waiting on, with its real answers (step R5).
+  const choice = createChoiceCard(true, {
+    choose: (choiceId, option) => action({ type: "choose", instanceId: id, choiceId, option }),
+    terminal: () => open.terminal(id),
+  });
+
   // Prominent approve / deny — the one thing a phone is really for. Shown only
-  // when this instance is actually waiting on you.
+  // when this instance is waiting on you and the desktop can't say on what.
   const approve = el("div", "approve hidden");
   const ok = el("button", "ok", "✓ approve");
   ok.onclick = () => action({ type: "approve", instanceId: id });
@@ -107,9 +118,9 @@ function buildCard(id: string, open: Openers): Card {
   }
 
   const card = el("div", "card");
-  card.append(h2, note, stuck, meta, approve, prompt, secondary);
+  card.append(h2, note, stuck, meta, choice.root, approve, prompt, secondary);
   return {
-    card, dot, title, badge, note, stuck, meta, approve,
+    card, dot, title, badge, note, stuck, meta, approve, choice,
     attn: false, needsSince: null, escalated: false,
   };
 }
@@ -136,7 +147,9 @@ function updateCard(c: Card, it: RemoteInstance): void {
   c.card.classList.toggle("attn", attn);
   // Escalated (step 4.6): waited past the desktop threshold.
   c.card.classList.toggle("escalated", attn && c.escalated);
-  c.approve.classList.toggle("hidden", !attn);
+  const choice = attn ? (it.choice ?? null) : null;
+  c.choice.update(choice);
+  c.approve.classList.toggle("hidden", !attn || choice !== null);
   paintBadge(c);
   c.note.textContent = it.taskNote || "";
   c.stuck.classList.toggle("hidden", !it.stuck);

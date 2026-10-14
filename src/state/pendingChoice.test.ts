@@ -184,6 +184,17 @@ describe("options read from the terminal screen", () => {
     ]);
   });
 
+  it("keep the space where a label wrapped between words at the screen's edge", () => {
+    const options = parseOptionRows([
+      "──────────────────────────────",
+      " ❯ 1. Yes",
+      "   2. Yes, and switch to auto mode",
+      "      for you",
+      "   3. No",
+    ]);
+    expect(options?.[1].label).toBe("Yes, and switch to auto mode for you");
+  });
+
   it("keep an option's hint line and mark the option that opens a text field", () => {
     const options = parseOptionRows([
       " Would you like to proceed?",

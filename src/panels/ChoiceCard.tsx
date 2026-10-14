@@ -14,6 +14,7 @@ import { getDraft } from "../state/composer";
 import {
   markChoiceSent,
   parseOptionRows,
+  READ_AT_MS,
   setTerminalOptions,
   type ChoiceOption,
   type PendingChoice,
@@ -28,9 +29,6 @@ interface ChoiceCardProps {
   onShowTerminal: () => void;
 }
 
-/** When to look at the terminal screen for the prompt's options, ms after the
- *  card appears: the hook fires before the TUI has drawn the prompt. */
-const READ_AT_MS = [0, 150, 400, 900, 1800, 3500];
 /** With no sign of the prompt closing this long after an answer was sent, stop
  *  waiting and point at the terminal (never re-send: the key may have landed). */
 const STALLED_MS = 4000;

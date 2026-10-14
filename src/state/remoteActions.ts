@@ -2,7 +2,7 @@
 // action from a remote client onto a local effect. The remote server is pure
 // transport: it forwards each action as a `remote-action` event and never touches a
 // PTY itself, so the keystroke mapping (approve/deny/interrupt) and the lifecycle
-// calls (start/stop/prompt/create) all live here, one definition each. A TUI keystroke
+// calls (start/stop/prompt/create) and the answer to a pending prompt (choose) all live here, one definition each. A TUI keystroke
 // change is therefore a one-line fix here (the §11 caveat).
 //
 // Mirrors the other engines: a permanent, idempotent subscription (a stored promise,
@@ -12,9 +12,10 @@
 import { ENTER_KEY, INTERRUPT_KEY, ptyWrite } from "../ipc/pty";
 import { onRemoteAction, type RemoteAction } from "../ipc/remote";
 import type { Instance } from "../ipc/registry";
-import type { RemoteCreateAction } from "../remote/protocol";
+import type { RemoteChooseAction, RemoteCreateAction } from "../remote/protocol";
 import { addInstance, deleteInstance, getRegistry, nextInstanceTitle } from "./registry";
 import { markInterrupted } from "./status";
+import { getPendingChoice, markChoiceSent } from "./pendingChoice";
 import { closeConsole, openConsole } from "./consoles";
 import { setActiveProject } from "./activeProject";
 import { activatePanel } from "./dock";
@@ -30,6 +31,10 @@ export function handleRemoteAction(action: RemoteAction): void {
     void createSession(action);
     return;
   }
+  if (action.type === "choose") {
+    chooseRemote(action);
+    return;
+  }
   const { type, instanceId, text } = action;
   switch (type) {
     case "prompt": {
@@ -43,6 +48,9 @@ export function handleRemoteAction(action: RemoteAction): void {
     }
     case "approve":
       // Submitting the highlighted choice approves the pending permission prompt.
+      // Not a plan: its first option can be "yes, and use auto mode", so a plan is
+      // only approved through one of its options read off the screen (`choose`).
+      if (getPendingChoice(instanceId)?.kind === "plan") break;
       void ptyWrite(instanceId, ENTER_KEY);
       break;
     case "deny":
@@ -82,6 +90,26 @@ export function answerChoice(instanceId: string, answer: ChoiceAnswer): void {
   }
   if (!Number.isInteger(answer.option) || answer.option < 1 || answer.option > 9) return;
   void ptyWrite(instanceId, new TextEncoder().encode(String(answer.option)));
+}
+
+/**
+ * The phone answering a prompt (step R5). Only the prompt it was shown counts: a
+ * tap that arrives after that prompt closed — answered in the terminal, replaced by
+ * the next one — or after an answer was already sent, does nothing.
+ */
+function chooseRemote(action: RemoteChooseAction): void {
+  const { instanceId, choiceId, option } = action;
+  const pending = getPendingChoice(instanceId);
+  if (!pending || pending.id !== choiceId || pending.sent) return;
+  if (option === "deny") {
+    answerChoice(instanceId, "deny");
+    markChoiceSent(instanceId, choiceId, pending.kind === "permission" ? "deny" : "cancel");
+    return;
+  }
+  const picked = pending.terminalOnly ? undefined : pending.options.find((o) => o.key === option);
+  if (!picked) return;
+  answerChoice(instanceId, { option: picked.key });
+  markChoiceSent(instanceId, choiceId, picked.label);
 }
 
 /** Open (or focus) the console for an instance resolved from the registry. No-op if

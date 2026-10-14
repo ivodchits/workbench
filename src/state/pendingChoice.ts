@@ -228,12 +228,26 @@ export function resolvedBy(pending: PendingChoice, items: readonly Item[]): "ans
 
 // --- options from the terminal screen ----------------------------------------
 
+/** When to look at the terminal screen for a prompt's options, ms after it opens:
+ *  the hook fires before the TUI has drawn the prompt. */
+export const READ_AT_MS = [0, 150, 400, 900, 1800, 3500];
+
 const OPTION_ROW = /^[\s│|]*([❯>›]\s*)?(\d)\.\s+(\S.*?)[\s│|]*$/;
 /** Rows whose option opens a text field instead of answering. */
 const TYPED_LABEL = /tell claude|type something|type here|chat about/i;
 /** A prompt sits at the bottom of the screen: at most this many non-empty rows
  *  (the key hints) may follow its last option. */
 const MAX_ROWS_AFTER = 6;
+
+/** Whether a label row that wrapped onto `next` was cut inside a word. The TUI
+ *  wraps at spaces and only cuts a word too long to fit — a path, in practice — so
+ *  a row reaching the screen's edge was cut only if the word there is one. */
+function cutMidWord(row: string, next: string, width: number): boolean {
+  if (row.trimEnd().length < width - 1) return false;
+  const end = row.replace(/[\s│|]+$/, "");
+  const word = (end.split(/\s/).pop() ?? "") + (next.split(/\s/)[0] ?? "");
+  return /[/\\]/.test(word) || word.length > 24;
+}
 
 /**
  * The numbered options of the prompt at the bottom of a terminal screen, or null
@@ -274,8 +288,7 @@ export function parseOptionRows(screen: readonly string[]): ChoiceOption[] | nul
       const more = screen[i].replace(/^[\s│|]+|[\s│|]+$/g, "");
       const option = options[options.length - 1];
       if (!more || last !== i - 1) continue;
-      const cut = screen[i - 1].trimEnd().length >= width - 1;
-      option.label += (cut ? "" : " ") + more;
+      option.label += (cutMidWord(screen[i - 1], more, width) ? "" : " ") + more;
       last = i;
       continue;
     }
@@ -307,7 +320,12 @@ function put(instanceId: string, next: ChoiceState): void {
 function update(instanceId: string, change: (pending: PendingChoice) => PendingChoice | null): void {
   const state = states.get(instanceId);
   if (!state?.pending) return;
-  put(instanceId, { ...state, pending: change(state.pending) });
+  const next = change(state.pending);
+  if (next !== state.pending) put(instanceId, { ...state, pending: next });
+}
+
+function sameOptions(a: readonly ChoiceOption[], b: readonly ChoiceOption[]): boolean {
+  return a.length === b.length && a.every((o, i) => o.label === b[i].label && o.typed === b[i].typed);
 }
 
 /** Fold one accepted hook event into the store. */
@@ -329,7 +347,9 @@ export function clearPendingChoice(instanceId: string): void {
  *  prompt has replaced it, or its options are the payload's). */
 export function setTerminalOptions(instanceId: string, id: string, options: ChoiceOption[]): void {
   update(instanceId, (p) =>
-    p.id !== id || p.source === "hook" ? p : { ...p, options, source: "terminal", terminalOnly: null },
+    p.id !== id || p.source === "hook" || (p.source === "terminal" && sameOptions(p.options, options))
+      ? p
+      : { ...p, options, source: "terminal", terminalOnly: null },
   );
 }
 
@@ -373,6 +393,21 @@ function subscribe(cb: () => void): () => void {
   return () => {
     listeners.delete(cb);
   };
+}
+
+/** Every instance's prompt state; a new map whenever any of them changes. */
+export function getChoiceStates(): ReadonlyMap<string, ChoiceState> {
+  return states;
+}
+
+/** Call `cb` on every change to any instance's prompt. */
+export function onChoicesChanged(cb: () => void): () => void {
+  return subscribe(cb);
+}
+
+/** Subscribe a component to every instance's prompt state (the phone's snapshot). */
+export function useChoiceStates(): ReadonlyMap<string, ChoiceState> {
+  return useSyncExternalStore(subscribe, getChoiceStates);
 }
 
 /** Subscribe a component to one instance's pending prompt. */

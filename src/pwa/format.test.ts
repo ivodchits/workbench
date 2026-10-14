@@ -34,6 +34,7 @@ function inst(over: Partial<RemoteInstance>): RemoteInstance {
     needsSince: null,
     escalated: false,
     stuck: false,
+    choice: null,
     ...over,
   };
 }

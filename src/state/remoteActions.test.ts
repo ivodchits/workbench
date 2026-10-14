@@ -57,7 +57,10 @@ vi.mock("./registry", () => ({
   },
 }));
 
+import { ptyWrite } from "../ipc/pty";
+import type { HookEvent } from "../ipc/hooks";
 import { handleRemoteAction } from "./remoteActions";
+import { clearPendingChoice, getPendingChoice, ingestChoiceEvent, setTerminalOptions } from "./pendingChoice";
 import { cancelQueued, getQueued } from "./queue";
 import { getCreated, resetCreated } from "./remoteCreate";
 
@@ -154,5 +157,65 @@ describe("create from the phone", () => {
     await settle();
     expect(calls).toEqual([]);
     expect(getCreated()[0]).toMatchObject({ state: "failed" });
+  });
+});
+
+describe("answering a prompt from the phone", () => {
+  const written = () =>
+    vi.mocked(ptyWrite).mock.calls.map(([id, bytes]) => `${id} ${new TextDecoder().decode(bytes)}`);
+  const ask = (event: Partial<HookEvent>) =>
+    ingestChoiceEvent({ instanceId: "i1", event } as Parameters<typeof ingestChoiceEvent>[0]);
+  const permission = () => {
+    ask({ hook_event_name: "PreToolUse", tool_name: "Bash", tool_use_id: "t1" });
+    ask({ hook_event_name: "PermissionRequest", tool_name: "Bash", tool_input: { command: "ls" } });
+    const id = getPendingChoice("i1")!.id;
+    setTerminalOptions("i1", id, [
+      { key: 1, label: "Yes", detail: "", typed: false },
+      { key: 2, label: "Yes, and don't ask again", detail: "", typed: false },
+      { key: 3, label: "No", detail: "", typed: false },
+    ]);
+    return id;
+  };
+
+  beforeEach(() => {
+    vi.mocked(ptyWrite).mockClear();
+    clearPendingChoice("i1");
+  });
+
+  it("sends the option's digit for the prompt it was shown, once", () => {
+    const id = permission();
+    handleRemoteAction({ type: "choose", instanceId: "i1", choiceId: id, option: 2 });
+    expect(written()).toEqual(["i1 2"]);
+    expect(getPendingChoice("i1")?.sent?.label).toBe("Yes, and don't ask again");
+    // A second tap (or a second phone) while that answer is in flight does nothing.
+    handleRemoteAction({ type: "choose", instanceId: "i1", choiceId: id, option: 3 });
+    expect(written()).toEqual(["i1 2"]);
+  });
+
+  it("ignores a tap on a prompt that has closed or been replaced", () => {
+    const old = permission();
+    clearPendingChoice("i1"); // answered in the terminal
+    handleRemoteAction({ type: "choose", instanceId: "i1", choiceId: old, option: 1 });
+    vi.setSystemTime(Date.now() + 1000);
+    permission(); // the next prompt
+    handleRemoteAction({ type: "choose", instanceId: "i1", choiceId: old, option: 1 });
+    handleRemoteAction({ type: "choose", instanceId: "i1", choiceId: old, option: "deny" });
+    expect(written()).toEqual([]);
+  });
+
+  it("ignores an option the prompt doesn't offer, and answers deny with Esc", () => {
+    const id = permission();
+    handleRemoteAction({ type: "choose", instanceId: "i1", choiceId: id, option: 7 });
+    expect(written()).toEqual([]);
+    handleRemoteAction({ type: "choose", instanceId: "i1", choiceId: id, option: "deny" });
+    expect(written()).toEqual(["i1 "]);
+  });
+
+  it("never answers a prompt that is answered in the terminal, nor approves a plan with Enter", () => {
+    ask({ hook_event_name: "PermissionRequest", tool_name: "ExitPlanMode", tool_input: { plan: "x" } });
+    const id = getPendingChoice("i1")!.id;
+    handleRemoteAction({ type: "choose", instanceId: "i1", choiceId: id, option: 1 });
+    handleRemoteAction({ type: "approve", instanceId: "i1" });
+    expect(written()).toEqual([]);
   });
 });

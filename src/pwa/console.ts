@@ -10,7 +10,7 @@ import { $ } from "./dom";
 import { hideMirror, initMirror, showMirror } from "./mirror";
 import { hideTranscript, initTranscript, showTranscript, updateTranscript } from "./transcript";
 
-type View = "transcript" | "terminal";
+export type View = "transcript" | "terminal";
 
 let openId: string | null = null;
 let view: View = "transcript";
@@ -56,14 +56,14 @@ function setView(next: View): void {
   }
 }
 
-/** Open an instance's console, on the view it was last left on (the transcript
- *  the first time). */
-export function openConsole(id: string): void {
+/** Open an instance's console on `on`, or on the view it was last left on (the
+ *  transcript the first time). */
+export function openConsole(id: string, on?: View): void {
   if (openId !== id) closeConsole();
   openId = id;
   $("term-title").textContent = instance(id)?.title || "console";
   $("term-overlay").classList.remove("hidden");
-  setView(chosen.get(id) ?? "transcript");
+  setView(on ?? chosen.get(id) ?? "transcript");
 }
 
 function closeConsole(): void {
