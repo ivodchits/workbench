@@ -77,6 +77,8 @@ export function openSocket(path: string, params: Record<string, string> = {}): W
 export function connect(on: {
   live: (live: boolean) => void;
   snapshot: (snap: RemoteSnapshot) => void;
+  /** A project's notes changed, here or on the desktop (step R8). */
+  notes: (projectId: string) => void;
   refused: () => void;
 }): void {
   const socket = openSocket("/api/ws");
@@ -99,7 +101,11 @@ export function connect(on: {
     });
   };
   socket.onerror = () => socket.close();
-  socket.onmessage = (ev) => on.snapshot(JSON.parse(ev.data as string) as RemoteSnapshot);
+  socket.onmessage = (ev) => {
+    const msg = JSON.parse(ev.data as string) as RemoteSnapshot | { type: "notes"; projectId: string };
+    if ("type" in msg && msg.type === "notes") on.notes(msg.projectId);
+    else on.snapshot(msg as RemoteSnapshot);
+  };
 }
 
 /** Send one action to the desktop: over the socket when it is up, else by HTTP. */
@@ -113,4 +119,42 @@ export function action(act: RemoteAction): void {
     headers: { "Content-Type": "application/json", Authorization: "Bearer " + token },
     body: JSON.stringify(act),
   }).catch(() => {}); // unreachable: the offline banner already says so
+}
+
+/** A failed API call: the HTTP status, and the body the desktop sent with it. */
+export class ApiError extends Error {
+  constructor(
+    readonly status: number,
+    readonly body: Record<string, unknown>,
+  ) {
+    super(typeof body.error === "string" ? body.error : `HTTP ${status}`);
+  }
+}
+
+/** Call a data-plane endpoint with the device token: GET with `query`, or POST of
+ *  `body` as JSON. Resolves with the parsed answer; throws `ApiError` on a refusal,
+ *  and a plain error when the desktop can't be reached. */
+export async function api<T>(
+  path: string,
+  opts: { query?: Record<string, string>; body?: unknown } = {},
+): Promise<T> {
+  const query = opts.query ? "?" + new URLSearchParams(opts.query).toString() : "";
+  const res = await fetch(path + query, {
+    method: opts.body === undefined ? "GET" : "POST",
+    headers: {
+      Authorization: "Bearer " + (token ?? ""),
+      ...(opts.body === undefined ? {} : { "Content-Type": "application/json" }),
+    },
+    body: opts.body === undefined ? undefined : JSON.stringify(opts.body),
+    cache: "no-store",
+  });
+  const text = await res.text();
+  let parsed: unknown = null;
+  try {
+    parsed = text ? JSON.parse(text) : null;
+  } catch {
+    parsed = { error: text }; // a plain-text refusal (an oversized body, say)
+  }
+  if (!res.ok) throw new ApiError(res.status, (parsed ?? {}) as Record<string, unknown>);
+  return parsed as T;
 }

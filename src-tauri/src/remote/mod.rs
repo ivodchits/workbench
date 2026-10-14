@@ -39,6 +39,7 @@
 
 mod auth;
 mod funnel;
+mod notes;
 mod server;
 mod transcript;
 
@@ -736,6 +737,18 @@ pub fn remote_push_snapshot(state: State<'_, Arc<RemoteState>>, json: String) {
     inner.snapshot = json.clone();
     if let Some(tx) = &inner.tx {
         let _ = tx.send(json); // Err only means no WS clients are connected
+    }
+}
+
+/// Tell connected phones that a project's notes changed (step R8), on the dashboard
+/// socket beside the snapshots: `{"type":"notes","projectId":…}`. Not stored as the
+/// snapshot, so a phone connecting later just reads the notes fresh. A no-op while
+/// the server is off or remote access was never set up.
+pub fn push_notes_changed(app: &AppHandle, project_id: &str) {
+    let Some(state) = app.try_state::<Arc<RemoteState>>() else { return };
+    let inner = state.inner.lock().unwrap();
+    if let Some(tx) = &inner.tx {
+        let _ = tx.send(serde_json::json!({ "type": "notes", "projectId": project_id }).to_string());
     }
 }
 

@@ -15,6 +15,7 @@ import { initDashboard } from "./dashboard";
 import { $ } from "./dom";
 import { checkAccess, connect, forget, isPaired, pair } from "./net";
 import { initNewSession, openNewSession } from "./newSession";
+import { initNotes } from "./notes";
 
 /** How often the waiting view asks whether the desktop has decided. */
 const WAIT_POLL_MS = 2000;
@@ -71,13 +72,20 @@ function showApp(): void {
     newSession: openNewSession,
   });
   const newSession = initNewSession(openConsole);
+  const notes = initNotes();
   connect({
-    live: setConn,
+    live: (live) => {
+      setConn(live);
+      // Back after a dropped link: the counts may have moved meanwhile.
+      if (live) notes.connected();
+    },
     snapshot: (snap) => {
       dashboard(snap);
       newSession(snap);
+      notes.snapshot(snap);
       updateConsole();
     },
+    notes: notes.changed,
     refused: lostAccess,
   });
 }

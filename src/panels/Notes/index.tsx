@@ -110,10 +110,12 @@ function NotesBody({ session }: { session: NotesSession }) {
   useEffect(() => {
     setConflict(false);
     if (!activeNote || getBuffer(projectId, activeNote)) return;
-    load(projectId, activeNote).catch((err) => {
-      setNotice(String(err));
-      setActiveNote(notesId, null);
-    });
+    load(projectId, activeNote)
+      .then(() => setNotice(null))
+      .catch((err) => {
+        setNotice(String(err));
+        setActiveNote(notesId, null);
+      });
   }, [projectId, activeNote, notesId]);
 
   // Follow changes from anywhere: re-list, and bring the open note up to date

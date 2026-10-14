@@ -234,3 +234,59 @@ footer button { background: transparent; border: none; color: var(--dim); font-s
 .pwa-chc .wb-chc-option-key { font-weight: 600; min-width: 1em; }
 .pwa-chc .wb-chc-bar button, .pwa-chc .wb-chc-note button { flex: 1; padding: 6px 10px; font-size: 13px; }
 .pwa-chc .wb-chc-note { flex-wrap: wrap; }
+
+/* ── project notes (step R8) ──────────────────────────── */
+#notes-bar { margin: 16px 0 4px; font-size: 13px; }
+#notes-bar.hidden { display: none; }
+#notes-projects { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 6px; }
+#notes-projects button {
+  min-height: 38px; padding: 6px 12px; font-size: 13px;
+  max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+#notes-projects .count { color: var(--dim); }
+#notes-overlay {
+  position: fixed; inset: 0; z-index: 45; background: var(--bg); overflow: auto;
+  display: flex; flex-direction: column; gap: 10px;
+  padding: calc(12px + var(--safe-t)) 12px calc(16px + var(--safe-b));
+  max-width: 760px; margin-inline: auto;
+}
+#notes-overlay.hidden { display: none; }
+#notes-head { display: flex; align-items: center; gap: 10px; }
+#notes-head .title { flex: 1; font-weight: 600; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#notes-head button { min-height: 38px; padding: 6px 12px; }
+#notes-back { color: var(--accent); }
+#notes-msg { padding: 8px 12px; border: 1px solid var(--working); border-radius: 8px; color: var(--working); font-size: 13px; }
+#notes-msg.hidden, #notes-list-view.hidden, #note-view.hidden { display: none; }
+#notes-list-view, #note-view { display: flex; flex-direction: column; gap: 10px; flex: 1; min-height: 0; }
+#notes-new { display: flex; gap: 8px; align-items: flex-end; }
+#notes-quick { flex: 1; resize: vertical; min-height: 44px; font-size: 16px; }
+#notes-add { color: var(--accent); border-color: var(--accent); font-weight: 600; }
+#notes-filter { font-size: 15px; }
+#notes-filter.hidden, #notes-empty.hidden { display: none; }
+#notes-list button {
+  display: flex; width: 100%; gap: 10px; align-items: baseline; text-align: left;
+  margin-bottom: 6px; padding: 10px 12px;
+}
+#notes-list .name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#notes-list .when { color: var(--dim); font-size: 12px; }
+#note-read { flex: 1; min-height: 120px; overflow-wrap: anywhere; }
+#note-read.hidden, #note-edit.hidden { display: none; }
+#note-edit { flex: 1; min-height: 50vh; resize: none; font-size: 16px; line-height: 1.45; }
+#note-bar { display: flex; flex-wrap: wrap; gap: 8px; }
+#note-bar button { flex: 1 1 0; min-width: 72px; min-height: 44px; padding: 6px 8px; font-size: 13px; }
+#note-bar button.hidden { display: none; }
+#note-save { color: var(--accent); border-color: var(--accent); font-weight: 600; }
+#note-delete { color: var(--needs); }
+#note-banner, #note-conflict {
+  padding: 10px 12px; border: 1px solid var(--working); border-radius: 8px; font-size: 13px;
+}
+#note-banner { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; color: var(--working); }
+#note-banner span { flex: 1 1 100%; }
+#note-banner button { min-height: 36px; padding: 4px 12px; }
+#note-banner.hidden, #note-conflict.hidden, #note-sendto.hidden { display: none; }
+#note-conflict p { margin: 0 0 8px; }
+#note-theirs { max-height: 30vh; overflow: auto; border: 1px solid var(--line); border-radius: 6px; padding: 6px 10px; margin: 4px 0 8px; }
+#note-conflict .row button { flex: 1 1 auto; min-height: 40px; font-size: 13px; }
+#note-keep-new { color: var(--accent); border-color: var(--accent); }
+#note-sendto { display: flex; gap: 8px; }
+#note-sendto select { flex: 1; min-height: 44px; background: var(--panel); color: var(--fg); border: 1px solid var(--line); border-radius: 6px; padding: 8px 10px; font: inherit; }

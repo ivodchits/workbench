@@ -1745,6 +1745,55 @@ filesystem path. There is no `draggable` / `dataTransfer` use anywhere in `src/`
   version; a request for a note outside the project's notes folder is refused.
 - **Out of scope:** offline editing while the desktop app is not running; attachments
   and images; notes that are not tied to a project.
+- **As built (2026-10-14):**
+  - **Server** `remote/notes.rs`, all behind the bearer check:
+    - `GET /api/notes` gives the counts per project; `GET …/list`, `GET …/read`, and
+      `POST …/create`, `…/save`, `…/rename`, `…/delete` call the N1 module in Rust.
+    - Each request checks the project is in the registry (404 otherwise); the N1
+      name rules refuse anything path-like (400).
+    - A stale save answers 409 with the note as it is now, or null when it was
+      deleted.
+    - Create takes a name and finds a free "name 2", "name 3" (`create_unique`, new
+      in the N1 module). The phone gets no file paths.
+    - Notes ride the same Funnel rule as every other endpoint, since they use the
+      same auth.
+  - **Live both ways:** `notes::notify` now also calls
+    `remote::push_notes_changed`, which sends `{"type":"notes","projectId"}` on the
+    dashboard socket beside the snapshots (not stored as the snapshot). So a change
+    from either side reaches the desktop panel (`notes-changed`) and every phone.
+    - The counts come from the server rather than the snapshot, so
+      `RemoteMirror.tsx` didn't change.
+  - **Phone** (`src/pwa/notes.ts`, `noteText.ts`; `net.ts` gained `api()` and the
+    `notes` frame):
+    - A **notes** row on the dashboard: each project with its count.
+    - The list: newest first, a filter past four notes, and a quick-capture field
+      (the first line names the note, without markdown marks or the characters a
+      name can't hold).
+    - A note opens rendered through the desktop's `renderMarkdown` (marked +
+      DOMPurify); **edit** switches to a plain textarea. **Save** saves, and so does
+      leaving the note (back or close); if the save can't go through you stay on
+      the note.
+    - Every keystroke is kept in `localStorage` until saved, and offered again
+      (restore / discard) when the note is next opened.
+    - **Conflict:** both versions are shown, with **keep mine as a new note**
+      ("name (phone)"), **overwrite with mine**, or **drop mine**.
+    - Rename and delete (behind a confirm), and **send to…** one of the project's
+      sessions through the `prompt` action.
+    - A change elsewhere refreshes the list, and the open note unless you're
+      editing it; then it says that saving will show both versions.
+  - **Checked live** (dev app plus the PWA in headless Edge, on the loopback
+    listener with a test device):
+    - Refused: no token (401), an unknown project (404), and ids with `/` or `\`,
+      for read and create (400).
+    - A quick note from the phone: the desktop panel listed it with no restart, and
+      the dashboard count went up.
+    - The phone was editing while another writer saved: the phone said so, the save
+      showed both versions, and "keep mine" left both notes.
+    - An edit and save on the desktop re-ordered the phone's list live.
+    - A draft planted as if typed offline was offered, restored and saved, and the
+      device copy was dropped.
+    - A real phone over the tailnet wasn't used this time; the transport is the same
+      one R4/R5 checked.
 
 ---
 
@@ -1860,7 +1909,7 @@ any session, which lowers the urgency and makes the terminal bugs easier to comp
 | R5 | Phone choice cards | ☑ |
 | R6 | Push notifications | ☐ |
 | R7 | Phone: create a session | ☑ |
-| R8 | Phone: project notes | ☐ |
+| R8 | Phone: project notes | ☑ |
 | P1 | Open plan on demand | ☐ |
 | A1 | Review with a fresh agent | ☐ |
 | M1 | Run summary on done (mod) | ☐ |

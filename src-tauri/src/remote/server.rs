@@ -30,6 +30,8 @@
 //!   `?instance=` picks the console).
 //! - `GET /api/transcript` — WebSocket: one instance's conversation, history paged on
 //!   request and appended lines live (step R4, [`super::transcript`]).
+//! - `/api/notes…` — a project's notes, read and written through the N1 notes module
+//!   (step R8, [`super::notes`]). Auth: bearer.
 //!
 //! Auth is the parent's `check_token` (constant-time, approval and expiry aware); a
 //! grant also refreshes the device's `last_seen` and address. Both WebSockets refuse an
@@ -89,6 +91,14 @@ async fn run(listener: std::net::TcpListener, state: Arc<RemoteState>) -> std::i
         .route("/api/action", post(api_action))
         .route("/api/term", get(api_term))
         .route("/api/transcript", get(super::transcript::api_transcript))
+        // Project notes (step R8), through the N1 notes module.
+        .route("/api/notes", get(super::notes::counts))
+        .route("/api/notes/list", get(super::notes::list))
+        .route("/api/notes/read", get(super::notes::read))
+        .route("/api/notes/create", post(super::notes::create))
+        .route("/api/notes/save", post(super::notes::save))
+        .route("/api/notes/rename", post(super::notes::rename))
+        .route("/api/notes/delete", post(super::notes::delete))
         .with_state(state);
     axum::serve(
         listener,
@@ -213,7 +223,7 @@ fn header_str<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
 /// public requests to the loopback listener and names the real client in
 /// `X-Forwarded-For`; only a loopback peer is believed when it says so (anything that
 /// can reach loopback is on this machine already).
-fn client_addr(peer: SocketAddr, headers: &HeaderMap) -> String {
+pub(super) fn client_addr(peer: SocketAddr, headers: &HeaderMap) -> String {
     if peer.ip().is_loopback() {
         let forwarded = header_str(headers, "x-forwarded-for")
             .and_then(|v| v.split(',').next())
@@ -227,7 +237,7 @@ fn client_addr(peer: SocketAddr, headers: &HeaderMap) -> String {
 }
 
 /// Pull the bearer token out of an `Authorization: Bearer <token>` header.
-fn bearer(headers: &HeaderMap) -> Option<String> {
+pub(super) fn bearer(headers: &HeaderMap) -> Option<String> {
     let raw = headers.get(header::AUTHORIZATION)?.to_str().ok()?;
     raw.strip_prefix("Bearer ").map(|s| s.trim().to_string())
 }
@@ -247,7 +257,7 @@ pub(super) const SUBPROTOCOL: &str = "wb";
 #[allow(clippy::result_large_err)] // a refusal is built once per refused request
 /// The device behind `token`, or the refusal to send: 401 for no access, 403 while the
 /// device waits for approval.
-fn authed(
+pub(super) fn authed(
     state: &Arc<RemoteState>,
     token: Option<&str>,
     addr: &str,

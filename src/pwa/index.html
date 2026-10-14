@@ -64,6 +64,12 @@
         <div id="unused-list"></div>
       </div>
 
+      <!-- Each project's notes, with a count (step R8). -->
+      <div id="notes-bar" class="hidden">
+        <div class="muted">notes</div>
+        <div id="notes-projects"></div>
+      </div>
+
       <footer><button id="unpair">forget this device</button></footer>
     </div>
 
@@ -152,6 +158,59 @@
       <label class="check"><input id="new-worktree" type="checkbox" /> isolate in a worktree</label>
       <div id="new-msg" class="muted"></div>
       <button id="new-create" type="button">start session</button>
+    </div>
+
+    <!-- A project's notes (step R8): the list with a quick note, then one note,
+         read as markdown or edited as plain text. -->
+    <div id="notes-overlay" class="hidden">
+      <div id="notes-head">
+        <button id="notes-back" class="hidden" type="button">‹ notes</button>
+        <span class="title" id="notes-title">notes</span>
+        <button id="notes-close" type="button" aria-label="close">✕</button>
+      </div>
+      <div id="notes-msg" class="hidden"></div>
+
+      <div id="notes-list-view">
+        <div id="notes-new">
+          <textarea id="notes-quick" rows="3" placeholder="a new note — its first line names it"></textarea>
+          <button id="notes-add" type="button">add note</button>
+        </div>
+        <input id="notes-filter" class="hidden" placeholder="filter…" autocomplete="off" />
+        <div id="notes-list"></div>
+        <div id="notes-empty" class="muted hidden">no notes yet</div>
+      </div>
+
+      <div id="note-view" class="hidden">
+        <div id="note-banner" class="hidden">
+          <span id="note-banner-text"></span>
+          <button id="note-banner-yes" type="button">restore</button>
+          <button id="note-banner-no" type="button">discard</button>
+        </div>
+        <div id="note-conflict" class="hidden">
+          <p><strong>Changed elsewhere while you edited.</strong> Nothing is lost — pick what to keep.</p>
+          <div class="muted">now on the desktop</div>
+          <div id="note-theirs" class="wb-md"></div>
+          <div class="muted">yours, below</div>
+          <div class="row">
+            <button id="note-keep-new" type="button">keep mine as a new note</button>
+            <button id="note-overwrite" type="button">overwrite with mine</button>
+            <button id="note-drop" type="button">drop mine</button>
+          </div>
+        </div>
+        <div id="note-read" class="wb-md"></div>
+        <textarea id="note-edit" class="hidden" enterkeyhint="enter"></textarea>
+        <div id="note-sendto" class="hidden">
+          <select id="note-target"></select>
+          <button id="note-send-go" type="button">send</button>
+        </div>
+        <div id="note-bar">
+          <button id="note-edit-btn" type="button">edit</button>
+          <button id="note-save" class="hidden" type="button">save</button>
+          <button id="note-send" type="button">send to…</button>
+          <button id="note-rename" type="button">rename</button>
+          <button id="note-delete" type="button">delete</button>
+        </div>
+      </div>
     </div>
 
     <script type="module" src="./main.ts"></script>

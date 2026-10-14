@@ -235,6 +235,32 @@ pub fn create(root: &Path, project_id: &str, id: &str) -> Result<Note, String> {
     Ok(Note { id: id.to_string(), content: String::new(), revision: revision_of(b""), path: path.to_string_lossy().into_owned() })
 }
 
+/// Make a note holding `content`, named `name` or, when that is taken, the first
+/// free "name 2", "name 3", … (the phone's quick capture names a note after its
+/// first line, which may repeat).
+pub fn create_unique(root: &Path, project_id: &str, name: &str, content: &str) -> Result<Note, String> {
+    if content.len() > MAX_NOTE_BYTES {
+        return Err("this note is too large to save".into());
+    }
+    check_name(name)?;
+    let _guard = WRITE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    for n in 1..1000 {
+        let id = if n == 1 { name.to_string() } else { format!("{name} {n}") };
+        let path = note_path(root, project_id, &id)?;
+        if path.exists() {
+            continue;
+        }
+        replace(&path, content.as_bytes())?;
+        return Ok(Note {
+            id,
+            content: content.to_string(),
+            revision: revision_of(content.as_bytes()),
+            path: path.to_string_lossy().into_owned(),
+        });
+    }
+    Err(format!("too many notes called \"{name}\""))
+}
+
 /// Rename a note. Refused when another note has the new name; a change of case
 /// alone is allowed (on a case-insensitive disk it is the same file).
 pub fn rename(root: &Path, project_id: &str, id: &str, to: &str) -> Result<(), String> {
@@ -260,9 +286,11 @@ pub fn delete(root: &Path, project_id: &str, id: &str) -> Result<(), String> {
     }
 }
 
-/// Tell every view that a project's notes changed.
+/// Tell every view that a project's notes changed: the desktop panels through the
+/// event, connected phones through the remote socket (step R8).
 pub fn notify(app: &AppHandle, project_id: &str) {
     let _ = app.emit(EVENT, Changed { project_id: project_id.to_string() });
+    crate::remote::push_notes_changed(app, project_id);
 }
 
 // --- commands -------------------------------------------------------------------
@@ -358,6 +386,16 @@ mod tests {
         let rev = read(&r, P, "plan").unwrap().revision;
         delete(&r, P, "plan").unwrap();
         assert!(write(&r, P, "plan", "again", Some(&rev)).unwrap_err().starts_with(STALE));
+        let _ = std::fs::remove_dir_all(&r);
+    }
+
+    #[test]
+    fn create_unique_picks_a_free_name() {
+        let r = root();
+        assert_eq!(create_unique(&r, P, "idea", "one").unwrap().id, "idea");
+        assert_eq!(create_unique(&r, P, "idea", "two").unwrap().id, "idea 2");
+        assert_eq!(read(&r, P, "idea 2").unwrap().content, "two");
+        assert!(create_unique(&r, P, "../x", "").is_err());
         let _ = std::fs::remove_dir_all(&r);
     }
 
