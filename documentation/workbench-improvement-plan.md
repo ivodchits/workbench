@@ -277,6 +277,10 @@ filesystem path. There is no `draggable` / `dataTransfer` use anywhere in `src/`
       last screen at the new width under the old-width lines already in the scrollback.
       My reading is that this is Claude Code's own redraw and not ours; not compared
       against another terminal.
+    - Overlapping and swallowed output also happens with no resize at all, and in a
+      regular console outside Workbench (seen by the user, 2026-10-13). That is Claude
+      Code's own rendering; nothing in this step touches it. The transcript view is the
+      reliable way to read a turn when it happens.
   - **Follow-up, same day — resizes replayed in place:** a replay written at one size
     garbled the scrollback from before each earlier resize. After five resizes during
     two streamed answers, 812 of 1,166 lines differed from the live terminal's buffer.
