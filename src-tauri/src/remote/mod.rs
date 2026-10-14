@@ -40,6 +40,7 @@
 mod auth;
 mod funnel;
 mod server;
+mod transcript;
 
 use std::net::Ipv4Addr;
 use std::sync::{mpsc, Arc, Mutex};

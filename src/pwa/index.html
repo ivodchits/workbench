@@ -2,7 +2,7 @@
 <html lang="en">
   <head>
     <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1, interactive-widget=resizes-content" />
     <meta name="color-scheme" content="dark" />
     <meta name="theme-color" content="#14161a" />
     <!-- Installable companion (step 4.4, design §11 Phase A). -->
@@ -67,22 +67,64 @@
       <footer><button id="unpair">forget this device</button></footer>
     </div>
 
-    <!-- Mirrored live console (step 4.5, design §11 Phase B). Hidden until opened from
-         a card. Output is read-mostly; raw keyboard is opt-in; approve/deny/interrupt
-         ride the structured action channel so the keystroke mapping stays server-side. -->
+    <!-- One session's console, opened from its card: the transcript with a composer
+         (step R4, the default), or the mirrored live terminal (step 4.5). Approve /
+         deny / interrupt ride the structured action channel, so the keystroke mapping
+         stays on the desktop; raw keyboard is opt-in and the quick keys cover most of
+         what it is needed for. -->
     <div id="term-overlay" class="hidden">
       <div id="term-head">
         <span class="title" id="term-title">console</span>
-        <span id="term-conn" class="muted" style="font-size:12px"></span>
-        <button id="term-close">✕ close</button>
+        <span id="term-conn" class="muted"></span>
+        <button id="viewBtn" type="button">terminal</button>
+        <button id="term-close" type="button" aria-label="close">✕</button>
       </div>
-      <div id="term-msg" class="hidden"></div>
-      <div id="term-wrap"><div id="term-host"></div></div>
-      <div id="term-bar">
-        <button id="term-approve" class="ok">✓ approve</button>
-        <button id="term-deny" class="no">✗ deny</button>
-        <button id="term-interrupt" class="plain">interrupt</button>
-        <button id="kbBtn" class="plain">keyboard</button>
+
+      <div id="tx-view">
+        <div id="tx-scroll">
+          <button id="tx-earlier" class="hidden" type="button">↑ load earlier</button>
+          <div id="tx-empty" class="muted">loading…</div>
+          <div id="tx-list"></div>
+          <div id="tx-status" aria-live="polite"></div>
+        </div>
+        <button id="tx-jump" class="hidden" type="button">↓ latest</button>
+      </div>
+
+      <div id="term-view" class="hidden">
+        <div id="term-msg" class="hidden"></div>
+        <div id="term-wrap"><div id="term-host"></div></div>
+        <div id="term-keys">
+          <button type="button" data-key="esc">Esc</button>
+          <button type="button" data-key="up" aria-label="up">↑</button>
+          <button type="button" data-key="down" aria-label="down">↓</button>
+          <button type="button" data-key="tab">Tab</button>
+          <button type="button" data-key="backtab">⇧Tab</button>
+          <button type="button" data-key="enter">Enter</button>
+          <button type="button" data-key="1">1</button>
+          <button type="button" data-key="2">2</button>
+          <button type="button" data-key="3">3</button>
+          <button type="button" data-key="4">4</button>
+        </div>
+        <div id="term-bar">
+          <button id="term-approve" class="ok" type="button">✓ approve</button>
+          <button id="term-deny" class="no" type="button">✗ deny</button>
+          <button id="term-interrupt" class="plain" type="button">interrupt</button>
+          <button id="kbBtn" class="plain" type="button">keyboard</button>
+        </div>
+      </div>
+
+      <div id="tx-dock">
+        <div id="tx-needs" class="hidden">
+          <span class="needs">● needs you</span>
+          <button id="tx-approve" class="ok" type="button">✓ approve</button>
+          <button id="tx-deny" class="no" type="button">✗ deny</button>
+          <button id="tx-answer" class="plain" type="button">terminal</button>
+        </div>
+        <div id="tx-composer">
+          <textarea id="tx-text" rows="1" placeholder="message Claude…" enterkeyhint="enter"></textarea>
+          <button id="tx-stop" class="hidden" type="button">stop</button>
+          <button id="tx-send" type="button">send</button>
+        </div>
       </div>
     </div>
 

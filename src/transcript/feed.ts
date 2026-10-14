@@ -5,19 +5,18 @@
 // follow started). Nothing here touches the DOM, and the transport is passed in,
 // so the join is testable and the phone can drive it over its own connection.
 //
+// Types only from `ipc/`: the phone's bundle imports this file too (step R4), and
+// its transport is a WebSocket (`pwa/transcriptSource.ts`); the desktop's is
+// `desktopSource.ts`.
+//
 // Only the newest part of a long session is loaded up front; `loadEarlier` pages
 // further back on request, so a 5 MB transcript is never folded in one go.
 
-import {
-  followTranscript,
-  onTranscriptAppended,
-  onTranscriptRotated,
-  readTranscriptBack,
-  unfollowTranscript,
-  type TranscriptAppended,
-  type TranscriptFollow,
-  type TranscriptPage,
-  type TranscriptRotated,
+import type {
+  TranscriptAppended,
+  TranscriptFollow,
+  TranscriptPage,
+  TranscriptRotated,
 } from "../ipc/transcript";
 import { createTranscript, type Item } from "./model";
 
@@ -167,23 +166,6 @@ export function createFeed(source: TranscriptSource, onChange: (why: FeedChange)
       generation++;
       release();
     },
-  };
-}
-
-/** The desktop transport: the T1 commands and events for one instance. */
-export function instanceSource(instanceId: string): TranscriptSource {
-  return {
-    follow: () => followTranscript(instanceId),
-    unfollow: () => void unfollowTranscript(instanceId).catch(() => {}),
-    readBack: (before) => readTranscriptBack(instanceId, before),
-    onAppended: (cb) =>
-      onTranscriptAppended((e) => {
-        if (e.instanceId === instanceId) cb(e);
-      }),
-    onRotated: (cb) =>
-      onTranscriptRotated((e) => {
-        if (e.instanceId === instanceId) cb(e);
-      }),
   };
 }
 

@@ -1,4 +1,5 @@
-// The mirrored live console (step 4.5, design §11 Phase B).
+// The mirrored live console (step 4.5, design §11 Phase B) — the terminal half of
+// the console overlay (`console.ts`).
 //
 // A second WebSocket (`/api/term`) carries raw PTY bytes both ways: the backend
 // attaches us as another multiplexer subscriber (step 4.1), replays scrollback on
@@ -9,7 +10,6 @@
 import { Terminal } from "@xterm/xterm";
 
 import type { TermControl } from "../remote/protocol";
-import { instance } from "./dashboard";
 import { $ } from "./dom";
 import { action, openSocket } from "./net";
 
@@ -21,6 +21,28 @@ let termInstance: string | null = null;
 let termOpen = false;
 let reconnect: ReturnType<typeof setTimeout> | null = null;
 let keyboardOn = false;
+let onLink: (text: string) => void = () => {};
+
+/** The quick keys (step R4): what answering the TUI takes, without the keyboard.
+ *  The arrows follow the terminal's cursor-key mode, as a real keyboard's would. */
+const QUICK_KEYS: Record<string, string | ((t: Terminal | null) => string)> = {
+  esc: "\x1b",
+  up: (t) => (t?.modes.applicationCursorKeysMode ? "\x1bOA" : "\x1b[A"),
+  down: (t) => (t?.modes.applicationCursorKeysMode ? "\x1bOB" : "\x1b[B"),
+  tab: "\t",
+  backtab: "\x1b[Z",
+  enter: "\r",
+  "1": "1",
+  "2": "2",
+  "3": "3",
+  "4": "4",
+};
+
+function sendRaw(data: string): void {
+  if (termWs && termWs.readyState === WebSocket.OPEN) {
+    termWs.send(new TextEncoder().encode(data));
+  }
+}
 
 function ensureTerm(): Terminal {
   if (term) return term;
@@ -35,11 +57,7 @@ function ensureTerm(): Terminal {
   created.open($("term-host"));
   // Raw keyboard: fires only when stdin is enabled (the keyboard toggle) and the
   // terminal has focus. Keystrokes go up as raw bytes — nothing is mapped here.
-  created.onData((d) => {
-    if (termWs && termWs.readyState === WebSocket.OPEN) {
-      termWs.send(new TextEncoder().encode(d));
-    }
-  });
+  created.onData(sendRaw);
   term = created;
   return created;
 }
@@ -54,7 +72,7 @@ function setMessage(text: string): void {
 }
 
 function setConn(text: string): void {
-  $("term-conn").textContent = text;
+  onLink(text);
 }
 
 function setKeyboard(on: boolean): void {
@@ -131,19 +149,20 @@ function connect(): void {
   };
 }
 
-/** Show the live console of an instance. */
-export function openTerminal(id: string): void {
+/** Show the live terminal of an instance in the console overlay. */
+export function showMirror(id: string): void {
+  if (termOpen && termInstance === id) return;
+  hideMirror();
   termInstance = id;
   termOpen = true;
-  $("term-title").textContent = instance(id)?.title || "console";
-  $("term-overlay").classList.remove("hidden");
   setMessage("");
   setKeyboard(false);
   ensureTerm().reset();
   connect();
 }
 
-function closeTerminal(): void {
+/** Disconnect the terminal (the overlay closed, or switched to the transcript). */
+export function hideMirror(): void {
   termOpen = false;
   if (reconnect) {
     clearTimeout(reconnect);
@@ -154,16 +173,24 @@ function closeTerminal(): void {
     termWs = null;
     ws.close();
   }
-  $("term-overlay").classList.add("hidden");
   setKeyboard(false);
 }
 
-export function initMirror(): void {
-  $("term-close").onclick = closeTerminal;
+/** Wire the terminal's controls; `link` shows its connection state. */
+export function initMirror(link: (text: string) => void): void {
+  onLink = link;
   $("kbBtn").onclick = () => setKeyboard(!keyboardOn);
   for (const type of ["approve", "deny", "interrupt"] as const) {
     $(`term-${type}`).onclick = () => {
       if (termInstance) action({ type, instanceId: termInstance });
+    };
+  }
+  for (const button of $("term-keys").querySelectorAll<HTMLButtonElement>("button[data-key]")) {
+    // Keep the focus (and the on-screen keyboard, if raw typing is on) where it is.
+    button.addEventListener("pointerdown", (e) => e.preventDefault());
+    button.onclick = () => {
+      const key = QUICK_KEYS[button.dataset.key ?? ""];
+      if (key !== undefined) sendRaw(typeof key === "function" ? key(term) : key);
     };
   }
 }

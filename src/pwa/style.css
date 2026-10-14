@@ -6,6 +6,14 @@
   --accent: #7daea3;
   --safe-t: env(safe-area-inset-top, 0px);
   --safe-b: env(safe-area-inset-bottom, 0px);
+  /* The desktop theme's names, for the shared transcript styles (step R4). */
+  --wb-bg: var(--bg); --wb-panel: var(--panel); --wb-titlebar: #101216;
+  --wb-border: var(--line); --wb-borderActive: var(--accent);
+  --wb-text: var(--fg); --wb-textDim2: var(--dim); --wb-textFaint: #4f5761;
+  --wb-sel: #252a33; --wb-accent: var(--accent); --wb-accentSoft: rgba(125, 174, 163, 0.14);
+  --wb-working: var(--working); --wb-needs: var(--needs); --wb-done: var(--done);
+  --wb-addText: #6cc886; --wb-delText: #e8707a; --wb-str: #9bd4a6;
+  --wb-mono: ui-monospace, "JetBrains Mono", "Cascadia Code", Menlo, Consolas, monospace;
 }
 * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
 html, body { height: 100%; }
@@ -110,20 +118,59 @@ footer { margin-top: 20px; text-align: center; }
 footer button { background: transparent; border: none; color: var(--dim); font-size: 12px; }
 .hidden { display: none; }
 
-/* ── mirrored terminal overlay (step 4.5) ──────────────── */
+/* ── console overlay: transcript (step R4) or mirrored terminal (step 4.5) ── */
 #term-overlay {
   position: fixed; inset: 0; z-index: 50; background: var(--bg);
   display: flex; flex-direction: column;
   padding: calc(8px + var(--safe-t)) 8px calc(8px + var(--safe-b));
+  max-width: 760px; margin-inline: auto;
 }
 /* Must out-specify the id rule above, or `.hidden` (a bare class) loses to it
    and the overlay can never be hidden. */
-#term-overlay.hidden { display: none; }
-#term-head { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
+#term-overlay.hidden, #tx-view.hidden, #term-view.hidden, #tx-dock.hidden { display: none; }
+#term-head { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
 #term-head .title {
   flex: 1; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
+#term-conn { font-size: 12px; white-space: nowrap; }
+#term-conn.live { color: var(--done); }
 #term-head button { min-height: 38px; padding: 6px 12px; }
+#viewBtn { color: var(--accent); border-color: var(--accent); }
+
+/* transcript */
+#tx-view { flex: 1; min-height: 0; position: relative; display: flex; }
+#tx-scroll {
+  flex: 1; overflow-y: auto; overflow-x: hidden; -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain; padding: 0 2px 8px; font-size: 14px;
+}
+#tx-earlier { display: block; margin: 4px auto 10px; min-height: 36px; padding: 4px 14px; font-size: 13px; color: var(--dim); }
+#tx-earlier.hidden { display: none; }
+#tx-empty { text-align: center; padding: 24px 0; }
+#tx-empty.hidden { display: none; }
+#tx-status { min-height: 1.5em; font-size: 13px; margin-top: 6px; }
+#tx-jump {
+  position: absolute; right: 8px; bottom: 10px; min-height: 36px; padding: 4px 14px;
+  font-size: 13px; color: var(--accent); border-color: var(--accent); background: var(--panel);
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.5);
+}
+#tx-jump.hidden { display: none; }
+#tx-dock { border-top: 1px solid var(--line); padding-top: 8px; margin-top: 2px; }
+#tx-needs { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; font-size: 13px; }
+#tx-needs.hidden { display: none; }
+#tx-needs span { margin-right: auto; font-weight: 600; }
+#tx-needs button { min-height: 40px; padding: 4px 12px; font-weight: 600; }
+#tx-needs .ok { color: var(--done); border-color: var(--done); }
+#tx-needs .no { color: var(--needs); border-color: var(--needs); }
+#tx-needs .plain { color: var(--dim); font-weight: 400; }
+#tx-composer { display: flex; gap: 8px; align-items: flex-end; }
+#tx-text { flex: 1; resize: none; min-height: 44px; max-height: 35vh; font-size: 16px; line-height: 1.4; }
+#tx-composer button { min-width: 64px; font-weight: 600; }
+#tx-send { color: var(--accent); border-color: var(--accent); }
+#tx-stop { color: var(--working); border-color: var(--working); }
+#tx-stop.hidden { display: none; }
+
+/* mirrored terminal */
+#term-view { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 #term-wrap {
   flex: 1; overflow: auto; background: #000; border: 1px solid var(--line);
   border-radius: 6px; -webkit-overflow-scrolling: touch;
@@ -132,8 +179,10 @@ footer button { background: transparent; border: none; color: var(--dim); font-s
    viewport so the whole TUI is visible without horizontal scrolling. */
 #term-host { width: 100%; }
 #term-msg { color: var(--dim); padding: 18px 14px; text-align: center; font-size: 14px; }
+#term-keys { display: grid; grid-template-columns: repeat(5, 1fr); gap: 6px; margin-top: 8px; }
+#term-keys button { min-height: 40px; padding: 4px 0; font-size: 13px; }
 #term-bar { display: flex; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
-#term-bar button { flex: 1 1 0; min-height: 44px; min-width: 72px; font-weight: 600; }
+#term-bar button { flex: 1 1 0; min-height: 44px; min-width: 72px; padding: 6px 4px; font-weight: 600; white-space: nowrap; }
 #term-bar .ok { color: var(--done); border-color: var(--done); }
 #term-bar .no { color: var(--needs); border-color: var(--needs); }
 #term-bar .plain { color: var(--dim); font-weight: 400; }

@@ -28,6 +28,8 @@
 //!   as a multiplexer subscriber (step 4.1), streams raw output down (with scrollback
 //!   replayed on connect) and routes raw keystrokes up (auth: as `/api/ws`;
 //!   `?instance=` picks the console).
+//! - `GET /api/transcript` — WebSocket: one instance's conversation, history paged on
+//!   request and appended lines live (step R4, [`super::transcript`]).
 //!
 //! Auth is the parent's `check_token` (constant-time, approval and expiry aware); a
 //! grant also refreshes the device's `last_seen` and address. Both WebSockets refuse an
@@ -86,6 +88,7 @@ async fn run(listener: std::net::TcpListener, state: Arc<RemoteState>) -> std::i
         .route("/api/ws", get(api_ws))
         .route("/api/action", post(api_action))
         .route("/api/term", get(api_term))
+        .route("/api/transcript", get(super::transcript::api_transcript))
         .with_state(state);
     axum::serve(
         listener,
@@ -239,7 +242,7 @@ fn subprotocol_token(headers: &HeaderMap) -> Option<String> {
 
 /// The subprotocol a WebSocket answer names. The phone offers it beside its token, and
 /// a browser drops a connection whose answer names none of what it offered.
-const SUBPROTOCOL: &str = "wb";
+pub(super) const SUBPROTOCOL: &str = "wb";
 
 #[allow(clippy::result_large_err)] // a refusal is built once per refused request
 /// The device behind `token`, or the refusal to send: 401 for no access, 403 while the
@@ -264,7 +267,7 @@ fn authed(
 /// Check a WebSocket upgrade: from this server's own page, with a device token. Behind
 /// Funnel the page's host is the public name, which a proxy may pass on as
 /// `X-Forwarded-Host` (believed from a loopback peer only, as in [`client_addr`]).
-fn ws_authed(
+pub(super) fn ws_authed(
     state: &Arc<RemoteState>,
     headers: &HeaderMap,
     peer: SocketAddr,

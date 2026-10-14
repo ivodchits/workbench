@@ -1247,6 +1247,68 @@ filesystem path. There is no `draggable` / `dataTransfer` use anywhere in `src/`
   - Reconnect resumes from the last offset instead of reloading the history.
 - **Key files:** `src-tauri/src/remote/server.rs`, PWA sources, `src/transcript/`.
 - **Done when:** a full prompt → read answer → follow-up loop is comfortable one-handed.
+- **As built (2026-10-14):**
+  - **Socket:** `GET /api/transcript?instance=…` (new `src-tauri/src/remote/transcript.rs`),
+    with the same auth and Origin check as `/api/ws`. It takes a reference on the T1 follow
+    while it is open, but keeps a **cursor of its own**. The follow now also broadcasts
+    small notes (`Note::Appended`, `Note::Rotated` with the new path) besides its webview
+    events, and on each note the socket reads forward from where it is. So a slow or
+    reconnecting phone never misses or repeats a line, and a lagged receiver re-checks
+    the follow's position. `transcript_follow` / `transcript_unfollow` became thin
+    wrappers over `stream::acquire` / `release`.
+  - **Frames:** down `start` / `resume` / `lines` / `rotated` / `page`, up `back { id,
+    before }`; typed in `src/remote/protocol.ts` (`TranscriptFrame`).
+  - **Only the conversation travels**, as T1 asked: lines are cut to what the model
+    keeps (main-thread `user` / `assistant` / `system`) and Edit results lose
+    `originalFile`. History pages that hold nothing to show are skipped server-side, so an
+    empty page still means "top of file". Measured: reopening a 432 KB transcript sent
+    about 10 KB.
+  - **Resume:** a reconnect names `session` and `offset`; if that is still the
+    instance's transcript the server answers `resume` and carries on from that offset.
+    Otherwise it answers `start`, which the phone turns into a rotation so the feed starts
+    over.
+  - **Phone:** the shared `transcript/feed` and `render` run in the PWA over a
+    reconnecting transport (`src/pwa/transcriptSource.ts`, unit-tested with a fake
+    socket). `instanceSource` moved to `transcript/desktopSource.ts`, so the phone bundle
+    has no Tauri code (bundle 425 kB / 116 kB gzip). The transcript styles get the
+    desktop's `--wb-*` names mapped onto the phone palette.
+  - **Console overlay** (`src/pwa/console.ts`) opens on the **transcript**. A header
+    button switches to the mirrored terminal and back. The choice is remembered per
+    instance while the page is open, and SSH projects only get the terminal. The
+    transcript keeps following while the terminal is shown. The view has sticky-to-end
+    scrolling, "↓ latest", "load earlier", and a working / compacting status line.
+  - **Composer:** a sticky multi-line box that grows to about a third of the screen.
+    Enter is a new line (phone keyboards dictate into it as usual), the button sends,
+    and Ctrl/⌘+Enter also sends. Tapping send keeps the keyboard open. It sends the
+    existing `prompt` action. While working there is a *stop* (interrupt) button; while
+    needs-you, a row with approve / deny / terminal. When the session isn't running the
+    button reads *start* and keeps the text, since a prompt to a stopped console would be
+    dropped. Drafts are kept per instance. The viewport meta gains
+    `interactive-widget=resizes-content` so on Android the composer stays above the
+    keyboard.
+  - **Quick keys** in the terminal view: Esc, ↑, ↓, Tab, ⇧Tab, Enter, 1–4, sent as raw
+    bytes on the mirror socket. The arrows follow xterm's application-cursor mode.
+  - **Verified live** (dev app, headless Edge at phone size against the loopback
+    listener):
+    - The console opened on the transcript.
+    - *start* launched the session; a prompt sent from the composer showed "working"
+      and *stop*, then the answer appeared.
+    - `/clear` emptied the view, and the next answer arrived on the same socket.
+    - Closing the socket by force reconnected with `session` and `offset`. The server
+      sent only `resume`, nothing was re-fetched, and a follow-up arrived.
+    - Terminal toggle: the mirror went live, Esc sent `1b`, and switching back left the
+      transcript intact with the mirror socket closed. Closing the overlay closed every
+      socket. No JS errors.
+  - **Found along the way:** a new session's file appears only with its first line,
+    and the follow takes it up without a rotation, so the socket's cursor had no path
+    and showed nothing until a reconnect. The socket now asks the follow for the path
+    when it has a session but no file.
+  - **Not tried:** a real phone (keyboard overlap, dictation, one-handed feel), and the
+    needs-you row against a real permission prompt (it uses the existing approve / deny
+    actions). The desktop transcript view was only covered by typecheck after
+    `instanceSource` moved.
+  - 136 Rust tests (2 new) and 156 frontend tests (3 new) pass; typecheck and clippy are
+    clean; lint shows only the existing `TornWindow.tsx` warning.
 
 #### Step R5 — Phone: choice cards
 
@@ -1537,7 +1599,7 @@ any session, which lowers the urgency and makes the terminal bugs easier to comp
 | R1 | PWA build | ☑ |
 | R2 | Pairing / auth hardening | ☑ |
 | R3 | Tailscale Funnel | ☑ |
-| R4 | Phone transcript + composer | ☐ |
+| R4 | Phone transcript + composer | ☑ |
 | R5 | Phone choice cards | ☐ |
 | R6 | Push notifications | ☐ |
 | R7 | Phone: create a session | ☑ |

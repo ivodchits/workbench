@@ -10,9 +10,9 @@
 import "@xterm/xterm/css/xterm.css";
 import "./style.css";
 
+import { initConsole, openConsole, updateConsole } from "./console";
 import { initDashboard } from "./dashboard";
 import { $ } from "./dom";
-import { initMirror, openTerminal } from "./mirror";
 import { checkAccess, connect, forget, isPaired, pair } from "./net";
 import { initNewSession, openNewSession } from "./newSession";
 
@@ -65,13 +65,14 @@ function lostAccess(): void {
 
 function showApp(): void {
   show("app");
-  const dashboard = initDashboard({ console: openTerminal, newSession: openNewSession });
-  const newSession = initNewSession(openTerminal);
+  const dashboard = initDashboard({ console: openConsole, newSession: openNewSession });
+  const newSession = initNewSession(openConsole);
   connect({
     live: setConn,
     snapshot: (snap) => {
       dashboard(snap);
       newSession(snap);
+      updateConsole();
     },
     refused: lostAccess,
   });
@@ -149,7 +150,7 @@ $("unpair").onclick = () => {
   forget();
   location.reload();
 };
-initMirror();
+initConsole();
 
 if ("serviceWorker" in navigator) {
   window.addEventListener("load", () => {

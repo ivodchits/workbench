@@ -19,7 +19,8 @@ import { focusComposer } from "../state/composer";
 import { reconcileWithTranscript, usePendingChoice } from "../state/pendingChoice";
 import { isTextInput } from "../keyboard/keymap";
 import type { LiveStatus } from "../state/status";
-import { createFeed, instanceSource, type Feed } from "../transcript/feed";
+import { instanceSource } from "../transcript/desktopSource";
+import { createFeed, type Feed } from "../transcript/feed";
 import { createRenderer } from "../transcript/render";
 
 interface TranscriptViewProps {

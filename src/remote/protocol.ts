@@ -117,3 +117,32 @@ export type RemoteAction = RemoteInstanceAction | RemoteCreateAction;
 export type TermControl =
   | { type: "notrunning" }
   | { type: "size"; cols: number; rows: number };
+
+/** A frame from the transcript socket (`/api/transcript`, step R4). All offsets are
+ *  byte offsets in the transcript file, on line boundaries. */
+export type TranscriptFrame =
+  /** Connected: the live stream continues from `offset`; before it is history. */
+  | { type: "start"; sessionId: string | null; offset: number }
+  /** Reconnected where the phone left off (it named `session` and `offset`). */
+  | { type: "resume"; sessionId: string | null; offset: number }
+  /** Appended lines (only the conversation; may be empty). */
+  | { type: "lines"; sessionId: string | null; lines: string[]; offset: number; nextOffset: number }
+  /** Another transcript, or the file was truncated: start over from `offset`. */
+  | { type: "rotated"; sessionId: string | null; offset: number; reason: string }
+  /** The history page asked for with `{ type: "back", id, before }`. */
+  | {
+      type: "page";
+      id: number;
+      sessionId: string | null;
+      lines: string[];
+      offset: number;
+      nextOffset: number;
+      end: number;
+    };
+
+/** A request on the transcript socket: the page of history ending at `before`. */
+export interface TranscriptBack {
+  type: "back";
+  id: number;
+  before: number;
+}

@@ -42,7 +42,7 @@ use std::time::Duration;
 
 use notify::{Config, RecommendedWatcher, RecursiveMode, Watcher};
 use serde::Serialize;
-use tauri::{AppHandle, Emitter, Manager, State};
+use tauri::{AppHandle, Emitter, Manager};
 
 use super::{claude_projects_dir, norm_dir, resolve_transcript};
 use crate::pty::PtyManager;
@@ -64,7 +64,7 @@ const COALESCE: Duration = Duration::from_millis(25);
 /// Upper bound on the lines of one `transcript-appended` event, and the default
 /// page size of a read. A single line longer than this (an inline image, a big
 /// file's `originalFile`) still goes out whole.
-const CHUNK_BYTES: u64 = 256 * 1024;
+pub(crate) const CHUNK_BYTES: u64 = 256 * 1024;
 
 /// Largest page a caller may ask for.
 const MAX_PAGE_BYTES: u64 = 4 * 1024 * 1024;
@@ -121,20 +121,20 @@ fn split_lines(buf: &[u8]) -> Vec<String> {
 
 /// A run of complete lines and the byte range they came from.
 #[derive(Debug, Default, PartialEq)]
-struct Lines {
-    lines: Vec<String>,
+pub(crate) struct Lines {
+    pub(crate) lines: Vec<String>,
     /// Offset of the first line.
-    offset: u64,
+    pub(crate) offset: u64,
     /// Offset just past the last line — where the next read continues.
-    next_offset: u64,
+    pub(crate) next_offset: u64,
     /// End of the last complete line in the file when it was read.
-    end: u64,
+    pub(crate) end: u64,
 }
 
 /// Read complete lines forward from `from`, about `max` bytes of them. Always
 /// returns at least one line when one exists, however long it is, so a caller
 /// paging with a small `max` can't stall on a big line.
-fn read_forward(path: &Path, from: u64, max: u64) -> std::io::Result<Lines> {
+pub(crate) fn read_forward(path: &Path, from: u64, max: u64) -> std::io::Result<Lines> {
     let mut f = File::open(path)?;
     let end = aligned_end(&mut f)?;
     if from >= end {
@@ -155,7 +155,7 @@ fn read_forward(path: &Path, from: u64, max: u64) -> std::io::Result<Lines> {
 
 /// Read complete lines backward: the last `max` bytes' worth of lines ending at
 /// `before` (or at the end of the file). This is what "load earlier" pages through.
-fn read_back(path: &Path, before: Option<u64>, max: u64) -> std::io::Result<Lines> {
+pub(crate) fn read_back(path: &Path, before: Option<u64>, max: u64) -> std::io::Result<Lines> {
     let mut f = File::open(path)?;
     let end = aligned_end(&mut f)?;
     let before = before.map_or(end, |b| b.min(end));
@@ -319,10 +319,34 @@ struct Inner {
     follows: HashMap<String, Follow>,
 }
 
+/// What a follow just did, for consumers outside the webview (the phone's transcript
+/// socket, step R4). The webview gets the lines themselves as events; these only say
+/// *that* something happened, and each consumer reads from its own cursor, so one
+/// that falls behind or reconnects never misses or repeats a line.
+#[derive(Debug, Clone)]
+pub(crate) enum Note {
+    /// New lines were appended to the instance's transcript.
+    Appended { instance_id: String },
+    /// The instance moved to another transcript, or its file was truncated.
+    Rotated {
+        instance_id: String,
+        session_id: Option<String>,
+        path: Option<PathBuf>,
+        offset: u64,
+        reason: &'static str,
+    },
+}
+
 /// Tauri-managed state of the transcript stream.
-#[derive(Default)]
 pub struct Streams {
     inner: Mutex<Inner>,
+    notes: tokio::sync::broadcast::Sender<Note>,
+}
+
+impl Default for Streams {
+    fn default() -> Self {
+        Streams { inner: Mutex::default(), notes: tokio::sync::broadcast::channel(256).0 }
+    }
 }
 
 /// Decide what `instance_id` should be reading (see [`Target`]).
@@ -416,6 +440,12 @@ fn watch(path: &Path, tx: Sender<Msg>) -> Option<RecommendedWatcher> {
 }
 
 fn emit_lines(app: &AppHandle, instance_id: &str, session_id: Option<&str>, chunks: &[Lines]) {
+    if !chunks.is_empty() {
+        let _ = app
+            .state::<Streams>()
+            .notes
+            .send(Note::Appended { instance_id: instance_id.to_string() });
+    }
     for c in chunks {
         let _ = app.emit(
             APPENDED_EVENT,
@@ -428,6 +458,26 @@ fn emit_lines(app: &AppHandle, instance_id: &str, session_id: Option<&str>, chun
             },
         );
     }
+}
+
+/// Announce that `instance_id` is now on `cur`'s transcript, from `cur.offset` on.
+fn emit_rotated(app: &AppHandle, instance_id: &str, cur: &Cursor, reason: &'static str) {
+    let _ = app.state::<Streams>().notes.send(Note::Rotated {
+        instance_id: instance_id.to_string(),
+        session_id: cur.session_id.clone(),
+        path: cur.path.clone(),
+        offset: cur.offset,
+        reason,
+    });
+    let _ = app.emit(
+        ROTATED_EVENT,
+        Rotated {
+            instance_id,
+            session_id: cur.session_id.as_deref(),
+            offset: cur.offset,
+            reason,
+        },
+    );
 }
 
 fn run_follow(
@@ -485,15 +535,7 @@ fn run_follow(
                     inner.cleared.contains(&instance_id)
                 }
             };
-            let _ = app.emit(
-                ROTATED_EVENT,
-                Rotated {
-                    instance_id: &instance_id,
-                    session_id: cur.session_id.as_deref(),
-                    offset: cur.offset,
-                    reason: if cleared { "clear" } else { "session" },
-                },
-            );
+            emit_rotated(&app, &instance_id, &cur, if cleared { "clear" } else { "session" });
         }
 
         if watcher.as_ref().map(|(p, _)| p) != cur.path.as_ref() {
@@ -506,15 +548,7 @@ fn run_follow(
         match cur.drain() {
             Ok(chunks) => emit_lines(&app, &instance_id, cur.session_id.as_deref(), &chunks),
             Err(e) if e.kind() == std::io::ErrorKind::InvalidData => {
-                let _ = app.emit(
-                    ROTATED_EVENT,
-                    Rotated {
-                        instance_id: &instance_id,
-                        session_id: cur.session_id.as_deref(),
-                        offset: 0,
-                        reason: "truncated",
-                    },
-                );
+                emit_rotated(&app, &instance_id, &cur, "truncated");
                 if let Ok(chunks) = cur.drain() {
                     emit_lines(&app, &instance_id, cur.session_id.as_deref(), &chunks);
                 }
@@ -552,30 +586,39 @@ pub struct Page {
     end: u64,
 }
 
-/// Start following an instance's transcript, or take another reference on a follow
-/// that is already running. New lines arrive as `transcript-appended`; a change of
-/// transcript as `transcript-rotated`. Pair every call with `transcript_unfollow`.
-#[tauri::command]
-pub fn transcript_follow(
-    app: AppHandle,
-    streams: State<'_, Streams>,
-    instance_id: String,
-) -> Result<FollowInfo, String> {
+/// Where a follow stands, with the file it reads — what the phone's socket needs to
+/// keep a cursor of its own (step R4).
+pub(crate) struct Position {
+    pub(crate) session_id: Option<String>,
+    pub(crate) path: Option<PathBuf>,
+    pub(crate) offset: u64,
+}
+
+/// Take a reference on the instance's follow, starting it if nobody holds one. New
+/// lines then arrive as `transcript-appended` (and a [`Note`]); a change of transcript
+/// as `transcript-rotated`. Pair every call with [`release`].
+pub(crate) fn acquire(app: &AppHandle, instance_id: &str) -> Result<Position, String> {
     // Resolve the target before taking our lock: `target` takes it too.
-    let want = target(&app, &instance_id);
+    let want = target(app, instance_id);
+    let streams = app.state::<Streams>();
     let mut inner = streams.inner.lock().unwrap();
-    if let Some(follow) = inner.follows.get_mut(&instance_id) {
+    if let Some(follow) = inner.follows.get_mut(instance_id) {
         follow.refs += 1;
         let cur = follow.cursor.lock().unwrap();
-        return Ok(FollowInfo { session_id: cur.session_id.clone(), offset: cur.offset });
+        return Ok(Position {
+            session_id: cur.session_id.clone(),
+            path: cur.path.clone(),
+            offset: cur.offset,
+        });
     }
 
     let cur = Cursor::attach(want);
-    let info = FollowInfo { session_id: cur.session_id.clone(), offset: cur.offset };
+    let position =
+        Position { session_id: cur.session_id.clone(), path: cur.path.clone(), offset: cur.offset };
     let cursor = Arc::new(Mutex::new(cur));
     let (tx, rx) = mpsc::channel();
     {
-        let (app, id, cursor, tx) = (app.clone(), instance_id.clone(), cursor.clone(), tx.clone());
+        let (app, id, cursor, tx) = (app.clone(), instance_id.to_string(), cursor.clone(), tx.clone());
         std::thread::Builder::new()
             .name("transcript-follow".into())
             .spawn(move || run_follow(app, id, cursor, tx, rx))
@@ -584,22 +627,51 @@ pub fn transcript_follow(
     // First tick right away: arms the watcher and picks up anything written
     // between measuring the offset and now.
     let _ = tx.send(Msg::Wake);
-    inner.follows.insert(instance_id, Follow { refs: 1, tx, cursor });
-    Ok(info)
+    inner.follows.insert(instance_id.to_string(), Follow { refs: 1, tx, cursor });
+    Ok(position)
 }
 
 /// Drop a reference; the last one out stops the follow. Unknown instances are
 /// ignored — a view closing after its console was removed is normal.
-#[tauri::command]
-pub fn transcript_unfollow(streams: State<'_, Streams>, instance_id: String) {
+pub(crate) fn release(app: &AppHandle, instance_id: &str) {
+    let streams = app.state::<Streams>();
     let mut inner = streams.inner.lock().unwrap();
-    let Some(follow) = inner.follows.get_mut(&instance_id) else { return };
+    let Some(follow) = inner.follows.get_mut(instance_id) else { return };
     follow.refs = follow.refs.saturating_sub(1);
     if follow.refs == 0 {
         let _ = follow.tx.send(Msg::Stop);
-        inner.follows.remove(&instance_id);
-        inner.cleared.remove(&instance_id);
+        inner.follows.remove(instance_id);
+        inner.cleared.remove(instance_id);
     }
+}
+
+/// Every follow's [`Note`]s from now on. Subscribe before [`acquire`], so nothing
+/// falls between the two.
+pub(crate) fn subscribe(app: &AppHandle) -> tokio::sync::broadcast::Receiver<Note> {
+    app.state::<Streams>().notes.subscribe()
+}
+
+/// Where the instance's follow stands now, if it has one.
+pub(crate) fn position(app: &AppHandle, instance_id: &str) -> Option<Position> {
+    let streams = app.state::<Streams>();
+    let inner = streams.inner.lock().unwrap();
+    let cur = inner.follows.get(instance_id)?.cursor.lock().unwrap().clone();
+    Some(Position { session_id: cur.session_id, path: cur.path, offset: cur.offset })
+}
+
+/// Start following an instance's transcript, or take another reference on a follow
+/// that is already running (see [`acquire`]). Pair every call with
+/// `transcript_unfollow`.
+#[tauri::command]
+pub fn transcript_follow(app: AppHandle, instance_id: String) -> Result<FollowInfo, String> {
+    let p = acquire(&app, &instance_id)?;
+    Ok(FollowInfo { session_id: p.session_id, offset: p.offset })
+}
+
+/// Drop a reference taken with `transcript_follow`.
+#[tauri::command]
+pub fn transcript_unfollow(app: AppHandle, instance_id: String) {
+    release(&app, &instance_id);
 }
 
 /// The transcript reads go to: the one the instance's follow is on, so pages and
