@@ -40,6 +40,7 @@
 mod auth;
 mod funnel;
 mod notes;
+pub mod push;
 mod server;
 mod transcript;
 
@@ -237,6 +238,8 @@ fn delete_device_row(app: &AppHandle, id: &str) {
     let db = app.state::<Db>();
     let conn = db.conn.lock().expect("db lock poisoned");
     let _ = conn.execute("DELETE FROM remote_devices WHERE id = ?1", [id]);
+    // Its push subscription goes with it (step R6).
+    let _ = conn.execute("DELETE FROM push_subscriptions WHERE device_id = ?1", [id]);
 }
 
 /// Bind loopback (and the Tailscale interface, if it is up) and spawn the axum server.

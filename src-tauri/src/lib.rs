@@ -112,6 +112,8 @@ pub fn run() {
             remote::remote_clear_auth_log,
             remote::remote_set_public,
             remote::remote_qr_svg,
+            remote::push::remote_push_send,
+            remote::push::remote_push_count,
             statusline::usage_limits,
             git::detect_repo,
             git::provision_worktree,

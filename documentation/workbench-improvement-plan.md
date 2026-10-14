@@ -1596,6 +1596,57 @@ filesystem path. There is no `draggable` / `dataTransfer` use anywhere in `src/`
   limits found (e.g. install-to-home-screen requirements) in As built.
 - **Key files:** `src-tauri/src/remote/`, `src-tauri/src/attention.rs`, PWA service worker.
 - **Done when:** a needs-you transition reaches a locked phone.
+- **As built (2026-10-14) — built and checked end to end, but not yet on a locked
+  phone, so the tracker row stays open:**
+  - **Backend** `remote/push.rs`:
+    - The VAPID key pair (P-256) is made on first use and stored in `meta`
+      (`push_vapid_private`).
+    - Payload encryption is RFC 8291 `aes128gcm`; a unit test matches the RFC's
+      worked example byte for byte. Each push is signed with an ES256 VAPID JWT
+      (RFC 8292) whose audience is the push service's origin.
+    - Sending is a blocking `ureq` POST (rustls) on a short-lived thread, with TTL
+      1 h and `Urgency: high`. A 404 or 410 from the push service drops the
+      subscription.
+    - New crates: `ureq`, `p256`, `aes-gcm`, `hkdf`, `sha2`, `base64`, `rand_core`.
+      There was no HTTP client with TLS before.
+  - **Storage:** migration v10 adds `push_subscriptions`, one row per paired device
+    with a `muted` flag. Unpairing a device deletes its row.
+  - **Endpoints** (bearer, approved devices only): `GET /api/push` (key, subscribed,
+    muted), `POST /api/push/subscribe` (https endpoints and well-formed keys only, so
+    a client can't aim our requests at this machine), `POST /api/push/unsubscribe`,
+    `POST /api/push/mute`.
+  - **When:** `state/notifications.ts` sends `remote_push_send` beside the OS toast,
+    on needs-you and on escalation, when the "phone" route is on. That is the same
+    switch as before; it no longer depends on the desktop toast being on.
+    - Payload: `{title, body, instanceId, tag}`. The tag is the instance, so a newer
+      push about the same card replaces the older one.
+  - **Phone:**
+    - The service worker shows the push and, on a tap, focuses an open dashboard
+      (which opens that instance's console) or opens `/#instance=<id>`.
+    - `src/pwa/push.ts`: a footer button reads "turn on notifications",
+      "notifications: on · mute" or "notifications: muted · unmute".
+    - It quietly resubscribes when the desktop lost the subscription, and
+      resubscribes when the desktop's key changed.
+  - **Platform limits found:**
+    - Push needs a secure page: the Funnel (R3) https address, or localhost. The
+      plain tailnet `http://100.x` address can't subscribe; the button says so.
+    - Permission can only be asked from a tap.
+    - On iPhone (iOS 16.4+) only a web app added to the home screen can subscribe;
+      in Safari itself `PushManager` is missing, and the button says to add it
+      first.
+    - Android Chrome subscribes in the browser.
+  - **Checked live** (dev app plus headless Edge on the loopback origin, through
+    Microsoft's real push service):
+    - The button subscribed, and the desktop stored the `wns2…notify.windows.com`
+      endpoint.
+    - A real session's permission prompt (a Write in manual mode) made a push that
+      the service worker showed as "● needs you · r6test.r6" with the instance as
+      tag and data.
+    - Mute and unmute changed the desktop's flag.
+    - Not checked: a tap opening the instance (headless Edge can't tap a
+      notification), and **a real locked phone**. To finish: on the phone, open the
+      Funnel address, tap "turn on notifications", lock it, and make a session ask
+      for permission.
 
 #### Step R7 — Phone: create a session
 

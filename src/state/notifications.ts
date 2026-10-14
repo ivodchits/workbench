@@ -30,6 +30,7 @@ import { useSyncExternalStore } from "react";
 import { getLiveStatuses, onStatusTransition, type StatusPhase } from "./status";
 import { getRegistry } from "./registry";
 import { notifyAlert, notifyNeedsYou } from "../ipc/attention";
+import { remotePushSend } from "../ipc/remote";
 import { getPref, setPref, type NotificationPrefs } from "../ipc/prefs";
 
 export type { NotificationPrefs };
@@ -226,25 +227,25 @@ function label(r: Resolved): string {
   return r.project ? `${r.project}.${r.title}` : r.title;
 }
 
-/** A fresh needs-you transition → route to the enabled destinations. The phone needs
- *  no push here: it already renders the needs-you from the live snapshot (step 4.4). */
+/** A fresh needs-you transition → route to the enabled destinations: the desktop
+ *  toast, and a push to subscribed phones (step R6) — the dashboard shows it from
+ *  the snapshot too, but only while it is open. */
 function deliverNeedsYou(id: string): void {
-  if (!config.desktop) return;
   const r = resolve(id);
   if (!r) return;
-  void notifyNeedsYou(r.project, r.title, r.note).catch(() => {});
+  if (config.desktop) void notifyNeedsYou(r.project, r.title, r.note).catch(() => {});
+  if (config.phone) void remotePushSend(id, `● needs you · ${label(r)}`, r.note || "waiting on your answer").catch(() => {});
 }
 
 /** Escalation: the card has sat in needs-you past the threshold. A louder desktop
- *  re-ping; the phone picks it up via the alerts store → snapshot emphasis. */
+ *  re-ping and a push; the open dashboard also shows it via the alerts store. */
 function escalateNeedsYou(id: string, mins: number): void {
-  if (!config.desktop) return;
   const r = resolve(id);
   if (!r) return;
-  void notifyAlert(
-    `⚠ Still waiting · ${label(r)}`,
-    `Has needed you for ${mins} min with no response.`,
-  ).catch(() => {});
+  const title = `⚠ Still waiting · ${label(r)}`;
+  const body = `Has needed you for ${mins} min with no response.`;
+  if (config.desktop) void notifyAlert(title, body).catch(() => {});
+  if (config.phone) void remotePushSend(id, title, body).catch(() => {});
 }
 
 /** Stuck flag: the card has run in working past the threshold (possibly hung). */

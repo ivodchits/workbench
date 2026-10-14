@@ -99,6 +99,11 @@ async fn run(listener: std::net::TcpListener, state: Arc<RemoteState>) -> std::i
         .route("/api/notes/save", post(super::notes::save))
         .route("/api/notes/rename", post(super::notes::rename))
         .route("/api/notes/delete", post(super::notes::delete))
+        // Web Push (step R6).
+        .route("/api/push", get(super::push::status))
+        .route("/api/push/subscribe", post(super::push::subscribe))
+        .route("/api/push/unsubscribe", post(super::push::unsubscribe))
+        .route("/api/push/mute", post(super::push::mute))
         .with_state(state);
     axum::serve(
         listener,

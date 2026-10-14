@@ -149,3 +149,14 @@ export function onRemoteChanged(cb: () => void): Promise<UnlistenFn> {
 export function onRemoteAction(cb: (action: RemoteAction) => void): Promise<UnlistenFn> {
   return listen<RemoteAction>("remote-action", (event) => cb(event.payload));
 }
+
+/** Push a notification about an instance to every subscribed, unmuted phone
+ *  (step R6). Fire-and-forget: the backend sends on its own thread. */
+export function remotePushSend(instanceId: string, title: string, body: string): Promise<void> {
+  return invoke("remote_push_send", { instanceId, title, body });
+}
+
+/** How many phones get pushes. */
+export function remotePushCount(): Promise<number> {
+  return invoke("remote_push_count");
+}

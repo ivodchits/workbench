@@ -50,6 +50,18 @@ notify = { version = "8", default-features = false, features = ["macos_fsevent"]
 # Step R3: the QR code beside the public (Funnel) address in the Remote Access menu,
 # rendered as an SVG string. `default-features = false` drops the `image` crate.
 qrcode = { version = "0.14.1", default-features = false, features = ["svg"] }
+# Step R6: Web Push to the phone. A push is an HTTPS POST to the phone's push
+# service (FCM, Mozilla, Apple), signed with our VAPID key (ES256) and encrypted per
+# RFC 8291 (ECDH P-256 + HKDF-SHA256 + AES-128-GCM). `ureq` is a small blocking
+# client with rustls — pushes go out on a short-lived thread, nothing else here
+# makes outbound requests.
+ureq = { version = "3", default-features = false, features = ["rustls"] }
+p256 = { version = "0.13", features = ["ecdh", "ecdsa"] }
+aes-gcm = "0.10"
+hkdf = "0.12"
+sha2 = "0.10"
+base64 = "0.22"
+rand_core = { version = "0.6", features = ["getrandom"] }
 
 # Windows-only: intercept WebView2 accelerator keys so we can suppress the engine's
 # built-in reload shortcuts (F5 / Ctrl+R / Ctrl+Shift+R), which would otherwise

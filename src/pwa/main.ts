@@ -16,6 +16,7 @@ import { $ } from "./dom";
 import { checkAccess, connect, forget, isPaired, pair } from "./net";
 import { initNewSession, openNewSession } from "./newSession";
 import { initNotes } from "./notes";
+import { initPush, takeLaunchInstance } from "./push";
 
 /** How often the waiting view asks whether the desktop has decided. */
 const WAIT_POLL_MS = 2000;
@@ -73,6 +74,9 @@ function showApp(): void {
   });
   const newSession = initNewSession(openConsole);
   const notes = initNotes();
+  initPush((id) => openConsole(id));
+  // Opened by tapping a push (step R6): show that instance once it is known.
+  let launch = takeLaunchInstance();
   connect({
     live: (live) => {
       setConn(live);
@@ -84,6 +88,10 @@ function showApp(): void {
       newSession(snap);
       notes.snapshot(snap);
       updateConsole();
+      if (launch && snap.instances.some((i) => i.id === launch)) {
+        openConsole(launch);
+        launch = null;
+      }
     },
     notes: notes.changed,
     refused: lostAccess,

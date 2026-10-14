@@ -192,6 +192,21 @@ const MIGRATIONS: &[&str] = &[
     ALTER TABLE remote_devices ADD COLUMN approved INTEGER NOT NULL DEFAULT 1;
     UPDATE remote_devices SET id = lower(hex(randomblob(8))) WHERE id IS NULL;
     "#,
+    // v9 -> v10: Web Push (step R6). One subscription per paired device: where its
+    // push service takes messages (`endpoint`) and the keys to encrypt them for it
+    // (`p256dh`, `auth`, base64url as the browser gave them). `muted` keeps the
+    // subscription but sends nothing. Unpairing a device drops its row in code (the
+    // device table has no foreign key to hang a cascade on).
+    r#"
+    CREATE TABLE push_subscriptions (
+        device_id  TEXT PRIMARY KEY,
+        endpoint   TEXT NOT NULL,
+        p256dh     TEXT NOT NULL,
+        auth       TEXT NOT NULL,
+        muted      INTEGER NOT NULL DEFAULT 0,
+        created_at INTEGER NOT NULL
+    );
+    "#,
 ];
 
 /// Apply any migrations the database hasn't seen yet, advancing
