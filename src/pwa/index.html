@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1" />
+    <meta name="color-scheme" content="dark" />
+    <meta name="theme-color" content="#14161a" />
+    <!-- Installable companion (step 4.4, design §11 Phase A). -->
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <link rel="icon" href="/icon-192.png" />
+    <link rel="apple-touch-icon" href="/icon-192.png" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="Workbench" />
+    <title>Workbench Remote</title>
+  </head>
+  <body>
+    <!-- Pairing view (shown until a device token is stored). -->
+    <div id="pair">
+      <h1>Workbench Remote</h1>
+      <p class="muted">Enter the pairing code shown in Workbench → remote access.</p>
+      <div class="row">
+        <input id="code" placeholder="XXXX-XXXX" autocomplete="off" autocapitalize="characters" inputmode="text" />
+        <input id="name" placeholder="device name" autocomplete="off" />
+        <button id="pairBtn">Pair this device</button>
+      </div>
+    </div>
+
+    <!-- Dashboard view. -->
+    <div id="app" class="hidden">
+      <header>
+        <h1>Workbench</h1>
+        <span id="conn" class="muted">connecting…</span>
+      </header>
+
+      <div id="offline" class="hidden">
+        <strong>Workbench offline.</strong>
+        <span class="muted">The desktop app is unreachable — reconnecting…</span>
+      </div>
+
+      <div id="attention" class="attention calm">all quiet</div>
+      <div id="usage"></div>
+      <div id="filter" class="hidden">
+        <button id="filterBtn" type="button">show only needs-you</button>
+      </div>
+      <div id="list"></div>
+
+      <footer><button id="unpair">forget this device</button></footer>
+    </div>
+
+    <!-- Mirrored live console (step 4.5, design §11 Phase B). Hidden until opened from
+         a card. Output is read-mostly; raw keyboard is opt-in; approve/deny/interrupt
+         ride the structured action channel so the keystroke mapping stays server-side. -->
+    <div id="term-overlay" class="hidden">
+      <div id="term-head">
+        <span class="title" id="term-title">console</span>
+        <span id="term-conn" class="muted" style="font-size:12px"></span>
+        <button id="term-close">✕ close</button>
+      </div>
+      <div id="term-msg" class="hidden"></div>
+      <div id="term-wrap"><div id="term-host"></div></div>
+      <div id="term-bar">
+        <button id="term-approve" class="ok">✓ approve</button>
+        <button id="term-deny" class="no">✗ deny</button>
+        <button id="term-interrupt" class="plain">interrupt</button>
+        <button id="kbBtn" class="plain">keyboard</button>
+      </div>
+    </div>
+
+    <script type="module" src="./main.ts"></script>
+  </body>
+</html>

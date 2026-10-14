@@ -4,8 +4,9 @@
   "version": "1.1.0",
   "type": "module",
   "scripts": {
-    "dev": "vite",
-    "build": "tsc && vite build",
+    "dev": "npm run build:pwa && vite",
+    "build": "tsc && npm run build:pwa && vite build",
+    "build:pwa": "vite build --config vite.pwa.config.js",
     "preview": "vite preview",
     "lint": "eslint .",
     "test": "vitest run",

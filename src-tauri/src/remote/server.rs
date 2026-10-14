@@ -4,7 +4,8 @@
 //! module. Routes split into the **PWA shell** (unauthenticated static assets, served so
 //! the companion can install + load offline) and the **data plane** (bearer-gated):
 //!
-//! - `GET /` — the phone-optimized dashboard PWA (step 4.4). Unauthenticated.
+//! - `GET /` — the phone-optimized dashboard PWA (step 4.4): one self-contained page,
+//!   script, styles and terminal emulator included. Unauthenticated.
 //! - `GET /manifest.webmanifest`, `GET /sw.js`, `GET /icon-*.png` — the PWA shell: web
 //!   app manifest, service worker, and icons. Unauthenticated — the browser fetches them
 //!   before any token exists, and the service worker needs them to make the app
@@ -20,13 +21,16 @@
 //! - `GET /api/term` — WebSocket: mirrors one instance's live PTY (step 4.5). Attaches
 //!   as a multiplexer subscriber (step 4.1), streams raw output down (with scrollback
 //!   replayed on connect) and routes raw keystrokes up (auth: `?token=`, `?instance=`).
-//! - `GET /xterm.js`, `GET /xterm.css` — the vendored terminal emulator the mirror
-//!   renders into. Static shell assets, unauthenticated like the icons.
 //!
 //! Auth is pure set-membership against the parent's token set (`token_ok`); a hit also
 //! refreshes the device's `last_seen`. As a submodule of `remote`, this file can reach
 //! the parent's private state and helpers directly. All PWA assets are `include_*!`'d
 //! into the binary so there's nothing to ship alongside it.
+//!
+//! The page and the service worker are **built** (step R1): `npm run build:pwa` turns
+//! `src/pwa/` into `pwa/dist/`, which is not committed. `npm run dev` and `npm run
+//! build` do it first, so `tauri dev` / `tauri build` need nothing extra; a bare
+//! `cargo build` on a fresh clone is stopped by `build.rs` with that instruction.
 
 use std::sync::Arc;
 
@@ -67,10 +71,6 @@ async fn run(listener: std::net::TcpListener, state: Arc<RemoteState>) -> std::i
         .route("/icon-192.png", get(icon_192))
         .route("/icon-512.png", get(icon_512))
         .route("/icon-maskable-512.png", get(icon_maskable))
-        // Vendored xterm.js + css — static shell assets for the mirrored terminal
-        // (step 4.5). Unauthenticated like the icons; the live bytes ride `/api/term`.
-        .route("/xterm.js", get(xterm_js))
-        .route("/xterm.css", get(xterm_css))
         .route("/pair", post(pair))
         .route("/api/state", get(api_state))
         .route("/api/ws", get(api_ws))
@@ -80,9 +80,9 @@ async fn run(listener: std::net::TcpListener, state: Arc<RemoteState>) -> std::i
     axum::serve(listener, router).await
 }
 
-/// The phone-optimized dashboard PWA (step 4.4).
+/// The phone-optimized dashboard PWA (step 4.4), as built from `src/pwa/`.
 async fn index() -> Html<&'static str> {
-    Html(include_str!("pwa/index.html"))
+    Html(include_str!("pwa/dist/index.html"))
 }
 
 /// The web app manifest that makes the dashboard installable (Add to Home Screen).
@@ -96,7 +96,8 @@ async fn manifest() -> Response {
 
 /// The service worker. `Service-Worker-Allowed: /` lets a script served from `/sw.js`
 /// claim the whole-origin scope it declares; the no-store header keeps the browser from
-/// pinning a stale worker (updates ride the `CACHE` version inside the script instead).
+/// pinning a stale worker (updates ride the cache name inside the script, which the
+/// build derives from the shell's content).
 async fn service_worker() -> Response {
     (
         [
@@ -104,7 +105,7 @@ async fn service_worker() -> Response {
             (header::HeaderName::from_static("service-worker-allowed"), "/"),
             (header::CACHE_CONTROL, "no-cache"),
         ],
-        include_str!("pwa/sw.js"),
+        include_str!("pwa/dist/sw.js"),
     )
         .into_response()
 }
@@ -130,32 +131,6 @@ async fn icon_512() -> Response {
 }
 async fn icon_maskable() -> Response {
     png(include_bytes!("pwa/icon-maskable-512.png"))
-}
-
-/// The vendored xterm.js UMD bundle (step 4.5), `include_str!`'d into the binary like
-/// every other shell asset so there's nothing to ship alongside it. Long-lived cache:
-/// it changes only with a new build.
-async fn xterm_js() -> Response {
-    (
-        [
-            (header::CONTENT_TYPE, "application/javascript"),
-            (header::CACHE_CONTROL, "public, max-age=604800"),
-        ],
-        include_str!("pwa/vendor/xterm.js"),
-    )
-        .into_response()
-}
-
-/// xterm's stylesheet (step 4.5).
-async fn xterm_css() -> Response {
-    (
-        [
-            (header::CONTENT_TYPE, "text/css"),
-            (header::CACHE_CONTROL, "public, max-age=604800"),
-        ],
-        include_str!("pwa/vendor/xterm.css"),
-    )
-        .into_response()
 }
 
 #[derive(Deserialize)]

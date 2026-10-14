@@ -10,14 +10,12 @@
 //   • `/api/*` and `/pair` → network only, never cached (auth + live state must be fresh).
 //   • Everything else (navigations + static assets) → network-first, falling back to the
 //     cache so the app opens with no connection.
-// Bump CACHE when any shell asset changes so old caches are dropped on activate.
+//
+// The build (`vite.pwa.config.js`) writes the cache name: it carries a hash of the
+// shell, so any change to the page or its assets drops the old cache on activate.
 
-const CACHE = "wb-remote-v2";
-const SHELL = [
-  "/", "/manifest.webmanifest", "/icon-192.png", "/icon-512.png",
-  // The mirrored terminal's vendored assets (step 4.5) — part of the offline shell.
-  "/xterm.js", "/xterm.css",
-];
+const CACHE = "__WB_CACHE__";
+const SHELL = ["/", "/manifest.webmanifest", "/icon-192.png", "/icon-512.png"];
 
 self.addEventListener("install", (event) => {
   event.waitUntil(caches.open(CACHE).then((c) => c.addAll(SHELL)).then(() => self.skipWaiting()));

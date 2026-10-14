@@ -997,6 +997,50 @@ filesystem path. There is no `draggable` / `dataTransfer` use anywhere in `src/`
 - **Key files:** `src-tauri/src/remote/pwa/`, `vite.config.ts`, `package.json`,
   `src-tauri/src/remote/server.rs`, `src-tauri/build.rs`.
 - **Done when:** the phone works exactly as before, from the built bundle.
+- **As built (2026-10-13):**
+  - **Source** is `src/pwa/` — plain TypeScript and DOM, no React: `index.html`,
+    `style.css`, `main.ts` (pairing, wiring), `net.ts` (token, sockets, actions),
+    `dashboard.ts` (banner, usage meter, cards), `mirror.ts` (console mirror),
+    `format.ts` (wording and ordering, unit-tested), `sw.js` (worker template).
+    xterm now comes from `node_modules` (the same 5.5.0 that was vendored); the
+    vendored copy and its two routes are gone.
+  - **Build:** `npm run build:pwa` (`vite.pwa.config.js`, a second Vite config with
+    no React plugin) writes `src-tauri/src/remote/pwa/dist/index.html` — script,
+    styles and xterm inlined, ~308 kB / 79 kB gzip — and `dist/sw.js`. The manifest
+    and icons stay where they were and are embedded as before.
+  - **Decision (open question 8): the bundle is not committed.** `npm run dev` and
+    `npm run build` build it first, and Tauri waits for those before compiling, so
+    `tauri dev` / `tauri build` need nothing extra (checked: `tauri:dev` on a tree
+    with no `dist/` built it and compiled). A bare `cargo build` / `cargo test` on a
+    fresh clone is stopped by `build.rs` with "run `npm run build:pwa`". Chosen over
+    a committed artifact because that would go stale silently and add ~300 kB to
+    history on every change to shared code. Cost: editing `src/pwa/` while
+    `tauri dev` runs needs `npm run build:pwa` and an app restart (the output is
+    git-ignored, so Tauri's watcher does not see it).
+  - **Service worker cache** is named after a hash of the shell (the page, manifest
+    and icons) rather than a counter, so it changes on every build that changes
+    anything and on no other — a deviation from "bump on every build", which would
+    make every phone re-download an identical shell.
+  - **Shared code:** the wire shapes now live in `src/remote/protocol.ts`
+    (`RemoteSnapshot`, `RemoteInstance`, `RemoteAction`, `TermControl`), used by
+    `RemoteMirror` (which builds the snapshot) and by the PWA (which reads it).
+    `src/transcript/` is **not** in the bundle yet — nothing uses it until R4 — but a
+    trial build importing `render.ts` and `model.ts` worked (+96 kB, no React or
+    Tauri code pulled in). The choice cards are a React component
+    (`panels/ChoiceCard.tsx`); R5 will need a framework-free renderer for them.
+  - **Parity:** the old page and the built one were driven through one scripted
+    scenario in a headless browser at phone size with a stubbed server (pairing
+    refused / unreachable / accepted, two snapshots with a draft kept across a
+    reorder, every action, the filter, the mirror with resize, keyboard, reconnect
+    and not-running, offline, HTTP fallback, unpair). Layout, colours, text and
+    every message sent were identical; the only difference is the worker's cache
+    name and its shell list (no xterm files).
+  - **Against the real server** (dev app, bound to loopback for the test only, since
+    this machine has no Tailscale): paired with a real code, dashboard and usage
+    meter live, mirror showed a running session and took keystrokes, a prompt sent
+    from a card ran (working → done), the worker cached the shell and the page
+    reloaded offline. Not tried on an actual phone.
+  - Typecheck, lint, 131 frontend tests and 116 Rust tests pass.
 
 #### Step R2 — Harden pairing and auth
 
@@ -1250,7 +1294,7 @@ any session, which lowers the urgency and makes the terminal bugs easier to comp
 | 5 | Path-with-spaces syntax after `@` | D1 |
 | 6 | `@codemirror/merge` vs extending `UnifiedDiff` | V1 |
 | 7 | Notes storage location (the phone, R8, reads the same store) | N1 |
-| 8 | How the PWA bundle is embedded on a fresh clone | R1 |
+| 8 | How the PWA bundle is embedded on a fresh clone — **built, not committed**; `build.rs` says what to run | R1 |
 
 ---
 
@@ -1274,7 +1318,7 @@ any session, which lowers the urgency and makes the terminal bugs easier to comp
 | V3 | Inline comments to the agent | ☐ |
 | N1 | Project notes panel | ☐ |
 | N2 | Rendered-while-editing markdown | ☐ |
-| R1 | PWA build | ☐ |
+| R1 | PWA build | ☑ |
 | R2 | Pairing / auth hardening | ☐ |
 | R3 | Tailscale Funnel | ☐ |
 | R4 | Phone transcript + composer | ☐ |

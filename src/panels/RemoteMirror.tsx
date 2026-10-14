@@ -13,6 +13,7 @@
 
 import { useEffect, useRef } from "react";
 import { remotePushSnapshot } from "../ipc/remote";
+import type { RemoteSnapshot } from "../remote/protocol";
 import { useRegistry } from "../state/registry";
 import { useConsoles } from "../state/consoles";
 import { useLiveStatuses } from "../state/status";
@@ -51,7 +52,7 @@ export default function RemoteMirror(): null {
       // Escalation cues (step 4.6) ride the snapshot only when the phone route is on;
       // off, the dashboard still shows live status without the extra 4.6 emphasis.
       const withAlerts = notif.phone;
-      const snapshot = {
+      const snapshot: RemoteSnapshot = {
         updatedAt: Math.floor(Date.now() / 1000),
         usageLimits: limits,
         instances: registry.instances.map((i) => {

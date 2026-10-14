@@ -22,6 +22,9 @@ npm run tauri:dev    # run the app
 npm run tauri:build  # produce a bundle
 ```
 
+Both build the phone's remote page (`src/pwa/`) first. To run `cargo` directly in
+`src-tauri/` on a fresh clone, run `npm run build:pwa` once beforehand.
+
 ## Documentation
 
 - [**Design document**](documentation/claude-code-workbench-design.md) — architecture,

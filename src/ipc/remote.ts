@@ -11,6 +11,10 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
+import type { RemoteAction } from "../remote/protocol";
+
+export type { RemoteAction, RemoteActionType } from "../remote/protocol";
+
 /** Snapshot of the remote server for the settings panel. */
 export interface RemoteStatus {
   running: boolean;
@@ -35,23 +39,6 @@ export interface RemoteDevice {
   name: string;
   pairedAt: number;
   lastSeen: number | null;
-}
-
-/** The action set a remote client can drive (design §11 "Expose:"). */
-export type RemoteActionType =
-  | "prompt"
-  | "approve"
-  | "deny"
-  | "interrupt"
-  | "start"
-  | "stop";
-
-/** An action message from a remote client, routed to the frontend handler. */
-export interface RemoteAction {
-  type: RemoteActionType;
-  instanceId: string;
-  /** Present for `prompt`. */
-  text?: string;
 }
 
 /** Enable remote serving (bind the tailnet + start the server). Rejects if no

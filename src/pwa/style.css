@@ -1,0 +1,128 @@
+/* Phone-first dashboard, mono + dark to match the desktop app's retro console
+   look. Inlined into the page by the build (`vite.pwa.config.js`). */
+:root {
+  --bg: #14161a; --panel: #1b1e24; --fg: #d7dbe0; --dim: #8a929c; --line: #2a2f37;
+  --working: #d8a657; --needs: #e06c9a; --done: #89b482; --idle: #6a737d; --ended: #4a5058;
+  --accent: #7daea3;
+  --safe-t: env(safe-area-inset-top, 0px);
+  --safe-b: env(safe-area-inset-bottom, 0px);
+}
+* { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+html, body { height: 100%; }
+body {
+  margin: 0; background: var(--bg); color: var(--fg);
+  font: 15px/1.5 ui-monospace, "JetBrains Mono", "Cascadia Code", Menlo, Consolas, monospace;
+  padding: calc(12px + var(--safe-t)) 12px calc(16px + var(--safe-b));
+  max-width: 760px; margin-inline: auto; overscroll-behavior-y: contain;
+}
+h1 { font-size: 16px; font-weight: 600; margin: 0; }
+.muted { color: var(--dim); }
+input, button, textarea {
+  font: inherit; background: var(--panel); color: var(--fg);
+  border: 1px solid var(--line); border-radius: 6px; padding: 10px 12px;
+}
+button { cursor: pointer; min-height: 44px; } /* comfortable touch target */
+button:active { border-color: #3a4049; }
+button:disabled { opacity: 0.5; }
+.row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+
+/* ── pairing ───────────────────────────────────────────── */
+#pair { margin-top: 8px; }
+#pair p { margin: 6px 0 12px; }
+#pair input { flex: 1 1 160px; min-height: 44px; }
+#pairBtn { flex: 1 1 100%; }
+
+/* ── header / attention banner ─────────────────────────── */
+header { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+#conn { font-size: 12px; white-space: nowrap; }
+#conn.live { color: var(--done); }
+#conn.off { color: var(--needs); }
+.attention {
+  margin: 12px 0 4px; padding: 12px 14px; border: 1px solid var(--line);
+  border-radius: 8px; font-size: 15px; font-weight: 600;
+  display: flex; align-items: center; gap: 10px;
+}
+.attention.alert { border-color: var(--needs); color: var(--needs); }
+.attention.calm { color: var(--dim); font-weight: 400; }
+.attention .big { font-size: 22px; }
+#offline {
+  margin: 12px 0; padding: 12px 14px; border: 1px solid var(--ended);
+  border-radius: 8px; color: var(--dim); background: #181a1f;
+}
+
+/* ── usage meter ───────────────────────────────────────── */
+#usage { margin: 8px 0 4px; }
+.meter { display: flex; align-items: center; gap: 8px; margin: 6px 0; font-size: 12px; }
+.meter .lbl { color: var(--dim); width: 28px; }
+.bar { flex: 1; height: 8px; background: var(--panel); border: 1px solid var(--line); border-radius: 5px; overflow: hidden; }
+.bar > span { display: block; height: 100%; background: var(--accent); }
+.bar.warn > span { background: var(--working); }
+.bar.hot > span { background: var(--needs); }
+.meter .pct { width: 38px; text-align: right; color: var(--fg); }
+.meter .reset { color: var(--dim); white-space: nowrap; }
+
+/* ── filter ────────────────────────────────────────────── */
+#filter { margin: 8px 0; }
+#filter button { min-height: 38px; padding: 6px 12px; font-size: 13px; }
+#filter button.on { border-color: var(--needs); color: var(--needs); }
+
+/* ── instance cards ────────────────────────────────────── */
+.card { border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; margin: 10px 0; }
+.card.attn { border-color: var(--needs); }
+/* Escalated (waited past the desktop threshold, step 4.6): a brighter, filled
+   badge + a tinted card edge so it stands out from an ordinary needs-you. */
+.card.escalated { border-color: var(--needs); box-shadow: 0 0 0 1px var(--needs) inset; }
+.badge.hot { background: var(--needs); color: var(--bg); }
+.stuck { color: var(--working); }
+.card h2 { font-size: 15px; font-weight: 600; margin: 0; display: flex; align-items: center; gap: 9px; }
+.card h2 .title { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dot { font-size: 17px; line-height: 1; }
+.badge { font-size: 11px; font-weight: 600; color: var(--needs); border: 1px solid var(--needs); border-radius: 4px; padding: 1px 6px; }
+.badge.hidden { display: none; }
+.working { color: var(--working); } .needs { color: var(--needs); }
+.done { color: var(--done); } .idle { color: var(--idle); } .ended { color: var(--ended); }
+.note { color: var(--dim); font-size: 13px; margin: 4px 0 6px; }
+.note:empty { display: none; }
+.meta { color: var(--dim); font-size: 12px; }
+.approve { display: flex; gap: 8px; margin-top: 10px; }
+.approve.hidden { display: none; }
+.approve button { flex: 1; font-weight: 600; }
+.approve .ok { color: var(--done); border-color: var(--done); }
+.approve .no { color: var(--needs); border-color: var(--needs); }
+.prompt { display: flex; gap: 8px; margin-top: 8px; }
+.prompt textarea { flex: 1; resize: vertical; min-height: 44px; }
+.secondary { display: flex; gap: 8px; margin-top: 8px; }
+.secondary button { flex: 1; min-height: 38px; padding: 6px 8px; font-size: 13px; color: var(--dim); }
+
+footer { margin-top: 20px; text-align: center; }
+footer button { background: transparent; border: none; color: var(--dim); font-size: 12px; }
+.hidden { display: none; }
+
+/* ── mirrored terminal overlay (step 4.5) ──────────────── */
+#term-overlay {
+  position: fixed; inset: 0; z-index: 50; background: var(--bg);
+  display: flex; flex-direction: column;
+  padding: calc(8px + var(--safe-t)) 8px calc(8px + var(--safe-b));
+}
+/* Must out-specify the id rule above, or `.hidden` (a bare class) loses to it
+   and the overlay can never be hidden. */
+#term-overlay.hidden { display: none; }
+#term-head { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
+#term-head .title {
+  flex: 1; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+#term-head button { min-height: 38px; padding: 6px 12px; }
+#term-wrap {
+  flex: 1; overflow: auto; background: #000; border: 1px solid var(--line);
+  border-radius: 6px; -webkit-overflow-scrolling: touch;
+}
+/* xterm mounts here; sized to the source terminal's width then zoom-fit to the
+   viewport so the whole TUI is visible without horizontal scrolling. */
+#term-host { width: 100%; }
+#term-msg { color: var(--dim); padding: 18px 14px; text-align: center; font-size: 14px; }
+#term-bar { display: flex; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
+#term-bar button { flex: 1 1 0; min-height: 44px; min-width: 72px; font-weight: 600; }
+#term-bar .ok { color: var(--done); border-color: var(--done); }
+#term-bar .no { color: var(--needs); border-color: var(--needs); }
+#term-bar .plain { color: var(--dim); font-weight: 400; }
+#kbBtn.on { border-color: var(--accent); color: var(--accent); }
