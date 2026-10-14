@@ -587,6 +587,11 @@ pub struct DiffFile {
     pub deletions: u32,
     /// True when git reports the file binary — no textual diff, no inline edit.
     pub binary: bool,
+    /// Changes whenever the file's change does (V2): its size and modification time
+    /// on disk, and its counts. The review panel clears a "viewed" mark when it
+    /// moves. Only the instance diff sets it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stamp: Option<String>,
 }
 
 /// An instance's changes versus its base ref (step 2.7, design §5) — the answer to
@@ -654,7 +659,7 @@ pub fn instance_diff(
             Some(wd.join(&path).to_string_lossy().into_owned())
         };
         seen.insert(path.clone());
-        files.push(DiffFile { path, abs_path, status, insertions, deletions, binary });
+        files.push(DiffFile { path, abs_path, status, insertions, deletions, binary, stamp: None });
     }
 
     // Untracked files never appear in `git diff` — list them separately and count
@@ -675,14 +680,36 @@ pub fn instance_diff(
             insertions,
             deletions: 0,
             binary,
+            stamp: None,
         });
     }
 
     files.sort_by(|a, b| a.path.cmp(&b.path));
+    for f in &mut files {
+        f.stamp = Some(file_stamp(f));
+    }
     let files_changed = files.len() as u32;
     let insertions = files.iter().map(|f| f.insertions).sum();
     let deletions = files.iter().map(|f| f.deletions).sum();
     Ok(InstanceDiff { base, files, files_changed, insertions, deletions })
+}
+
+/// See `DiffFile::stamp`. A deleted or unreadable file stamps as `gone`.
+fn file_stamp(f: &DiffFile) -> String {
+    let disk = f
+        .abs_path
+        .as_deref()
+        .and_then(|p| std::fs::metadata(p).ok())
+        .map(|m| {
+            let mtime = m
+                .modified()
+                .ok()
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map_or(0, |d| d.as_nanos());
+            format!("{}@{mtime}", m.len())
+        })
+        .unwrap_or_else(|| "gone".to_owned());
+    format!("{disk}:+{}-{}", f.insertions, f.deletions)
 }
 
 /// One file's unified diff against the base (step 2.7) — fetched on demand when the
@@ -1447,6 +1474,7 @@ pub fn git_commit_files(repo_root: String, sha: String) -> Result<Vec<DiffFile>,
             insertions: ins_raw.parse().unwrap_or(0),
             deletions: del_raw.parse().unwrap_or(0),
             binary,
+            stamp: None,
         });
     }
     files.sort_by(|a, b| a.path.cmp(&b.path));
@@ -2380,6 +2408,7 @@ pub fn git_range_files(
             insertions: ins_raw.parse().unwrap_or(0),
             deletions: del_raw.parse().unwrap_or(0),
             binary,
+            stamp: None,
         });
     }
     files.sort_by(|a, b| a.path.cmp(&b.path));
@@ -2951,6 +2980,14 @@ mod tests {
         let fresh = by_path("fresh.txt");
         assert_eq!(fresh.status, "untracked");
         assert_eq!(fresh.insertions, 2);
+        assert!(by_path("gone.txt").stamp.as_deref().unwrap().starts_with("gone:"));
+
+        // A further edit moves the file's stamp, which is what clears "viewed" (V2).
+        std::fs::write(dir.join("keep.txt"), "v1\nv2\nv3\n").unwrap();
+        let again = instance_diff(root.clone(), root.clone(), None).unwrap();
+        let stamp = |d: &InstanceDiff| d.files.iter().find(|f| f.path == "keep.txt").unwrap().stamp.clone();
+        assert_ne!(stamp(&diff), stamp(&again));
+        std::fs::write(dir.join("keep.txt"), "v1\nv2\n").unwrap();
 
         // A tracked file's diff comes from git; an untracked file's is synthesized.
         let tracked = instance_file_diff(root.clone(), "HEAD".into(), "keep.txt".into(), false).unwrap();

@@ -69,6 +69,11 @@ export function runAction(command: CommandId, arg?: number): void {
     case "gitCommitFocus":
     case "gitFilterFiles":
     case "gitToggleTree":
+    case "diffNextChange":
+    case "diffPrevChange":
+    case "diffNextFile":
+    case "diffPrevFile":
+    case "diffToggleViewed":
       runCommand(command, arg);
       break;
     // Rail-scope commands never reach here (matched in the rail's own scope).

@@ -143,6 +143,9 @@ export interface DiffFile {
   deletions: number;
   /** True when git reports the file binary (no textual diff / inline edit). */
   binary: boolean;
+  /** Moves whenever the file's change does — clears its "viewed" mark (V2). Set
+   *  only by `instanceDiff`. */
+  stamp?: string;
 }
 
 /** An instance's changes vs its base ref (step 2.7) — the Diff/Review summary. */

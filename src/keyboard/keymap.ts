@@ -67,6 +67,12 @@ export type CommandId =
   | "gitCommitFocus"
   | "gitFilterFiles"
   | "gitToggleTree"
+  // review panel (V2) — handled by the most recently activated review panel
+  | "diffNextChange"
+  | "diffPrevChange"
+  | "diffNextFile"
+  | "diffPrevFile"
+  | "diffToggleViewed"
   // rail
   | "railPrev"
   | "railNext"
@@ -205,6 +211,17 @@ const RAW_BINDINGS: RawBinding[] = [
   { chord: "", command: "gitStageAll", scope: "global", title: "Git: stage every change" },
   { chord: "", command: "gitUnstageAll", scope: "global", title: "Git: unstage everything" },
   { chord: "", command: "gitToggleTree", scope: "global", title: "Git: toggle the folder tree" },
+  // --- global: review panel (V2) --------------------------------------------
+  // Walk a change set from the keyboard. Ctrl+Alt with arrows / PageUp / PageDown /
+  // Enter: CodeMirror binds Alt+arrows (move line) and Shift+Alt+arrows (copy line),
+  // the terminal and the TUI use none of these, and no AltGr layout types a
+  // character on them. "Next change" past a file's last change moves on to the
+  // next file, so the one key walks everything.
+  { chord: "Ctrl+Alt+Down", command: "diffNextChange", scope: "global", title: "Review: next change" },
+  { chord: "Ctrl+Alt+Up", command: "diffPrevChange", scope: "global", title: "Review: previous change" },
+  { chord: "Ctrl+Alt+PageDown", command: "diffNextFile", scope: "global", title: "Review: next file" },
+  { chord: "Ctrl+Alt+PageUp", command: "diffPrevFile", scope: "global", title: "Review: previous file" },
+  { chord: "Ctrl+Alt+Enter", command: "diffToggleViewed", scope: "global", title: "Review: mark the file viewed (or not)" },
 
   // --- rail: navigation (TUI single keys) -----------------------------------
   { chord: "Up", command: "railPrev", scope: "rail", title: "Rail: move up" },

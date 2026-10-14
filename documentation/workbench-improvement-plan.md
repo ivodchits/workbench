@@ -953,6 +953,51 @@ filesystem path. There is no `draggable` / `dataTransfer` use anywhere in `src/`
   (`git/watch.rs`), keeping selection and scroll; a `+N −M` total that updates live.
 - **Done when:** the panel updates as the agent edits, without the refresh button, and the
   whole change set can be walked from the keyboard.
+- **As built (2026-10-14):** new `src/state/diffViewed.ts` and
+  `src/panels/Diff/mergeNav.ts` (both unit-tested). Checked live in the dev app on this
+  repo, with files written from outside the app as an agent would.
+  - **Keys** (global, remappable, in the palette; they act on the last active review
+    panel and bring it forward):
+    - **Ctrl+Alt+↓ / ↑:** next / previous change. Past a file's last change it moves
+      to the next file's first change, and back to the previous file's last change,
+      so one key walks the whole change set.
+    - **Ctrl+Alt+PgDn / PgUp:** next / previous file.
+    - **Ctrl+Alt+Enter:** toggles "viewed".
+    - Why Ctrl+Alt: CodeMirror owns Alt+arrows (move line) and Shift+Alt+arrows
+      (copy line), and the terminal and the TUI use none of these.
+    - CodeMirror's own chunk commands wrap around, so `stepChange` is its own. A key
+      pressed while the next file is still loading waits instead of skipping that
+      file (keys repeat faster than a file loads).
+  - **Viewed:** a checkbox per file in the list, and "n/m viewed" in the header.
+    `DiffFile` gained a `stamp`, set only by `instance_diff`: the file's size and
+    modification time plus its counts. A mark remembers the stamp; once it moves, the
+    file counts as not viewed again. Marks live in memory per review panel, so a
+    restart forgets them.
+  - **Auto-refresh:** the panel starts the G8 repo watcher on its working dir (shared
+    and reference-counted with the Git panel). Any change re-reads the file list
+    after 300 ms of quiet, one read at a time. The totals and per-file counts update
+    live. A file the agent creates or deletes appears or goes away.
+  - **The open file updates in place:** when its stamp moves, its two versions are
+    re-read. The editor is patched with the single replacement that differs
+    (`textPatch`), so the cursor and the visible lines stay put. The base side gets
+    the same (`updateOriginalDoc` in unified). The patch is kept out of undo history.
+  - **Unsaved edits are never overwritten:** if the file changes on disk while it
+    has unsaved edits here, the edits stay, and the bar says "changed on disk —
+    saving overwrites that".
+  - **Small fixes:**
+    - The header wraps in a narrow panel instead of overlapping the refresh button.
+    - `forgetScroll` (in `scrollMemory.ts`) stops a remembered scroll offset from
+      undoing a jump to a change.
+  - **Checked live:**
+    - Twelve presses of Ctrl+Alt+↓ walked through four files' changes into the
+      fifth; Ctrl+Alt+PgUp went back. Both layouts.
+    - A file created outside the app appeared in the list. Marking it viewed showed
+      1/11. Editing it on disk cleared the mark and updated the open view.
+    - A line added at the top of a 734-line file left the view on the same text.
+    - With unsaved edits, an outside change kept them and showed the warning.
+  - **Not done:** viewed marks aren't persisted across restarts. The watcher also
+    fires for ignored folders (a build writing to `target/`), which costs a list
+    re-read every 750 ms or so while that runs, and nothing else.
 
 #### Step V3 — Inline comments sent to the agent
 
@@ -1698,7 +1743,7 @@ any session, which lowers the urgency and makes the terminal bugs easier to comp
 | D1 | Drag files from inside the app | ☑ |
 | D2 | Drag files from the OS (spike) | ☐ |
 | V1 | Diff rendering | ☑ |
-| V2 | Diff navigation + freshness | ☐ |
+| V2 | Diff navigation + freshness | ☑ |
 | V3 | Inline comments to the agent | ☐ |
 | N1 | Project notes panel | ☐ |
 | N2 | Rendered-while-editing markdown | ☐ |

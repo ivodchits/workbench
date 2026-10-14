@@ -9,8 +9,13 @@
 // Ctrl+S saves and refreshes the counts — the "tweak the files Claude edited, then
 // re-review" loop the design calls for, without leaving the diff. A file too large
 // for it falls back to git's unified diff (`UnifiedDiff`).
+//
+// Step V2 made it follow the agent and walkable from the keyboard: the repo watcher
+// re-reads the list as files change (the open file updates in place), each file can
+// be marked viewed until it changes again, and the `diff…` commands step through
+// changes and files.
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { IDockviewPanelProps } from "dockview";
 
 import { GLYPH } from "../../theme";
@@ -18,6 +23,9 @@ import {
   instanceDiff,
   instanceFileDiff,
   instanceFileVersions,
+  gitWatchStart,
+  gitWatchStop,
+  onGitChanged,
   type DiffFile,
   type FileDiff,
   type FileVersions,
@@ -25,11 +33,13 @@ import {
 } from "../../ipc/git";
 import { writeFile } from "../../ipc/fs";
 import type { DiffLayout } from "../../ipc/prefs";
+import { registerCommand } from "../../keyboard/bus";
 import { useDiffs, type DiffSession } from "../../state/diffs";
 import { setDiffLayout, useDiffLayout } from "../../state/diffLayout";
+import { isViewed, toggleViewed, useViewed } from "../../state/diffViewed";
 import { setDragPaths } from "../../state/fileDrag";
 import { detectLanguage } from "../Editor/language";
-import MergeDiff from "./MergeDiff";
+import MergeDiff, { type MergeDiffHandle } from "./MergeDiff";
 import UnifiedDiff from "./UnifiedDiff";
 
 export interface DiffPanelParams {
@@ -38,15 +48,24 @@ export interface DiffPanelParams {
 
 export function DiffPanel(props: IDockviewPanelProps<DiffPanelParams>) {
   const { diffId } = props.params;
+  const { api } = props;
   const { open } = useDiffs();
   const session = open.find((d) => d.diffId === diffId) ?? null;
 
   const title = session ? `diff · ${session.title}` : "diff";
-  const setTitle = props.api.setTitle.bind(props.api);
+  const setTitle = api.setTitle.bind(api);
   useEffect(() => setTitle(title), [setTitle, title]);
 
+  // Which review panel the keyboard's review commands drive: the one last active.
+  const [active, setActive] = useState(api.isActive);
+  useEffect(() => {
+    const sub = api.onDidActiveChange((e) => setActive(e.isActive));
+    return () => sub.dispose();
+  }, [api]);
+  const activate = useCallback(() => api.setActive(), [api]);
+
   if (!session) return <Missing />;
-  return <DiffBody session={session} />;
+  return <DiffBody session={session} active={active} activate={activate} />;
 }
 
 /** The selected file's two versions, and the working-tree side as edited here. */
@@ -64,8 +83,23 @@ function sameText(a: string, b: string): boolean {
   return a.replace(/\r\n/g, "\n") === b.replace(/\r\n/g, "\n");
 }
 
-function DiffBody({ session }: { session: DiffSession }) {
-  const { repoRoot, workingDir } = session;
+/** After the repo watcher speaks, wait this long for more before re-reading: an
+ *  agent's edit is often several writes. */
+const WATCH_SETTLE_MS = 300;
+
+/** Shown when the file changed on disk while it had unsaved edits here. */
+const CHANGED_ON_DISK = "changed on disk — saving overwrites that";
+
+function DiffBody({
+  session,
+  active,
+  activate,
+}: {
+  session: DiffSession;
+  active: boolean;
+  activate: () => void;
+}) {
+  const { repoRoot, workingDir, diffId } = session;
   const [summary, setSummary] = useState<InstanceDiff | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -74,28 +108,52 @@ function DiffBody({ session }: { session: DiffSession }) {
   /** Git's unified diff, for a file too large for the merge view. */
   const [fallback, setFallback] = useState<FileDiff | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
-  /** Bumped to re-read the selected file's versions (and rebuild its view). */
+  /** Bumped by the refresh button to re-read the selected file's versions. */
   const [reread, setReread] = useState(0);
+  /** Where a file reached by keyboard navigation puts its cursor once shown. */
+  const [startAt, setStartAt] = useState<{ path: string; at: "first" | "last" } | null>(null);
   const layout = useDiffLayout();
+  const viewed = useViewed(diffId);
+  const mergeRef = useRef<MergeDiffHandle>(null);
+  const loadedRef = useRef(loaded);
+  loadedRef.current = loaded;
 
-  const selectedFile = summary?.files.find((f) => f.path === selected) ?? null;
+  const files = summary?.files ?? EMPTY_FILES;
+  const selectedFile = files.find((f) => f.path === selected) ?? null;
 
   // Fetch the changed-file list. Preserve the current selection when it survives
-  // the refresh; otherwise fall back to the first changed file.
-  const loadSummary = useCallback(async () => {
+  // the refresh; otherwise fall back to the first changed file. One read at a time:
+  // a call while one is running asks for one more read after it.
+  const inFlight = useRef<Promise<void> | null>(null);
+  const again = useRef(false);
+  const loadSummary = useCallback(async (): Promise<void> => {
+    if (inFlight.current) {
+      again.current = true;
+      return inFlight.current;
+    }
+    const run = (async () => {
+      do {
+        again.current = false;
+        try {
+          const next = await instanceDiff(repoRoot, workingDir);
+          setSummary(next);
+          setLoadError(null);
+          setSelected((prev) => {
+            if (prev && next.files.some((f) => f.path === prev)) return prev;
+            return next.files[0]?.path ?? null;
+          });
+        } catch (err) {
+          setLoadError(String(err));
+          setSummary(null);
+        }
+      } while (again.current);
+    })();
+    inFlight.current = run;
     setLoading(true);
     try {
-      const next = await instanceDiff(repoRoot, workingDir);
-      setSummary(next);
-      setLoadError(null);
-      setSelected((prev) => {
-        if (prev && next.files.some((f) => f.path === prev)) return prev;
-        return next.files[0]?.path ?? null;
-      });
-    } catch (err) {
-      setLoadError(String(err));
-      setSummary(null);
+      await run;
     } finally {
+      inFlight.current = null;
       setLoading(false);
     }
   }, [repoRoot, workingDir]);
@@ -104,14 +162,49 @@ function DiffBody({ session }: { session: DiffSession }) {
     void loadSummary();
   }, [loadSummary]);
 
-  // Read the selected file's two versions — on selection, on a base or status
-  // change, and on refresh. Not after a save: the editor already holds the text.
+  // Follow the repo (step V2): the watcher that drives the Git panel also says when
+  // the working tree, the index or a ref moved. Re-read the list then; the selected
+  // file follows through its stamp below.
+  useEffect(() => {
+    let unlisten: (() => void) | null = null;
+    let live = true;
+    let timer: number | null = null;
+    // An unwatchable folder just doesn't auto-refresh; the button still works.
+    void gitWatchStart(workingDir).catch(() => {});
+    void onGitChanged((change) => {
+      if (change.repoRoot !== workingDir) return;
+      if (timer != null) window.clearTimeout(timer);
+      timer = window.setTimeout(() => {
+        timer = null;
+        void loadSummary();
+      }, WATCH_SETTLE_MS);
+    }).then((fn) => {
+      if (live) unlisten = fn;
+      else fn();
+    });
+    return () => {
+      live = false;
+      unlisten?.();
+      if (timer != null) window.clearTimeout(timer);
+      void gitWatchStop(workingDir).catch(() => {});
+    };
+  }, [workingDir, loadSummary]);
+
+  // Read the selected file's two versions — on selection, when its stamp moves (it
+  // changed on disk, or its counts did), and on refresh. A newer version of the file
+  // already shown patches the open view in place, keeping cursor and scroll; it is
+  // never applied over unsaved edits.
   const base = summary?.base ?? "HEAD";
   const untracked = selectedFile?.status === "untracked";
   const binary = selectedFile?.binary ?? false;
+  const stamp = selectedFile?.stamp;
+  const shownPath = useRef<string | null>(null);
   useEffect(() => {
-    setNotice(null);
-    setFallback(null);
+    if (shownPath.current !== selected) {
+      shownPath.current = selected;
+      setNotice(null);
+      setFallback(null);
+    }
     if (!selected || binary) {
       setLoaded(null);
       return;
@@ -121,7 +214,17 @@ function DiffBody({ session }: { session: DiffSession }) {
       .then((versions) => {
         if (!alive) return;
         const content = (versions.current ?? "").replace(/\r\n/g, "\n");
-        setLoaded({ path: selected, versions, content, baseline: content });
+        const prev = loadedRef.current;
+        if (prev && prev.path === selected) {
+          if (prev.content !== prev.baseline) {
+            if (content !== prev.baseline) setNotice(CHANGED_ON_DISK);
+            return;
+          }
+          setLoaded({ path: selected, versions, content, baseline: content });
+          mergeRef.current?.update(versions.original ?? "", versions.current ?? "");
+        } else {
+          setLoaded({ path: selected, versions, content, baseline: content });
+        }
         if (versions.tooLarge) {
           return instanceFileDiff(workingDir, base, selected, untracked).then((d) => alive && setFallback(d));
         }
@@ -134,7 +237,7 @@ function DiffBody({ session }: { session: DiffSession }) {
     return () => {
       alive = false;
     };
-  }, [selected, untracked, binary, workingDir, base, reread]);
+  }, [selected, untracked, binary, workingDir, base, stamp, reread]);
 
   const current = loaded && loaded.path === selected ? loaded : null;
   const dirty = current ? current.content !== current.baseline : false;
@@ -142,9 +245,14 @@ function DiffBody({ session }: { session: DiffSession }) {
 
   const refresh = useCallback(() => {
     void loadSummary();
-    // Unsaved edits stay; the file is re-read once they're saved or dropped.
-    if (!dirty) setReread((n) => n + 1);
-  }, [loadSummary, dirty]);
+    setReread((n) => n + 1);
+  }, [loadSummary]);
+
+  /** A file picked by hand opens at the top (or where it was last scrolled). */
+  const pick = useCallback((path: string) => {
+    setStartAt(null);
+    setSelected(path);
+  }, []);
 
   // Save the working-tree side, keeping the file's own line ends, then refresh the
   // file list so its counts follow.
@@ -163,6 +271,52 @@ function DiffBody({ session }: { session: DiffSession }) {
     },
     [current, selectedFile, editable, loadSummary],
   );
+
+  // Keyboard review (step V2), through refs so the registrations below needn't
+  // churn on every render.
+  // `reading`: the selected file's versions haven't arrived, so there is no view to
+  // step through yet. A change key pressed then waits rather than skipping the file
+  // (keys repeat faster than a file loads).
+  const reading = !!selectedFile && !selectedFile.binary && !current;
+  const nav = useRef({ files, selected, selectedFile, reading });
+  nav.current = { files, selected, selectedFile, reading };
+  const goFile = useCallback((dir: 1 | -1, at: "first" | "last"): boolean => {
+    const { files, selected } = nav.current;
+    const i = files.findIndex((f) => f.path === selected);
+    const next = files[i + dir];
+    if (!next) return false;
+    setStartAt({ path: next.path, at });
+    setSelected(next.path);
+    return true;
+  }, []);
+  useEffect(() => {
+    const surface = () => {
+      if (!active) activate();
+    };
+    const on = (id: Parameters<typeof registerCommand>[0], go: () => void) =>
+      registerCommand(id, () => {
+        surface();
+        go();
+      });
+    const disposers = [
+      // Past a file's last change, on to the next file's first (and back).
+      on("diffNextChange", () => {
+        if (!nav.current.reading && !mergeRef.current?.step(1)) goFile(1, "first");
+      }),
+      on("diffPrevChange", () => {
+        if (!nav.current.reading && !mergeRef.current?.step(-1)) goFile(-1, "last");
+      }),
+      on("diffNextFile", () => void goFile(1, "first")),
+      on("diffPrevFile", () => void goFile(-1, "first")),
+      on("diffToggleViewed", () => {
+        const file = nav.current.selectedFile;
+        if (file) toggleViewed(diffId, file);
+      }),
+    ];
+    return () => {
+      for (const dispose of disposers) dispose();
+    };
+  }, [active, activate, goFile, diffId]);
 
   const lang = selectedFile ? detectLanguage(selectedFile.path) : null;
 
@@ -191,13 +345,15 @@ function DiffBody({ session }: { session: DiffSession }) {
   } else {
     view = (
       <MergeDiff
-        key={`${current.path}\n${layout}\n${reread}`}
+        ref={mergeRef}
+        key={`${current.path}\n${layout}`}
+        start={startAt?.path === current.path ? startAt.at : undefined}
         layout={layout}
         original={current.versions.original ?? ""}
         doc={current.content}
         editable={editable}
         language={lang?.extension ?? null}
-        scrollKey={`diff:${session.diffId}:${current.path}:${layout}`}
+        scrollKey={`diff:${diffId}:${current.path}:${layout}`}
         onChange={(content) =>
           setLoaded((l) => (l && l.path === current.path ? { ...l, content } : l))
         }
@@ -206,14 +362,16 @@ function DiffBody({ session }: { session: DiffSession }) {
     );
   }
 
+  const viewedCount = files.filter((f) => isViewed(viewed, f)).length;
+
   return (
     // `data-wb-panel` lets the keyboard layer (state/dock) focus this panel's
     // CodeMirror, the same way it focuses the Editor panel.
     <div
-      data-wb-panel={session.diffId}
+      data-wb-panel={diffId}
       style={{ height: "100%", display: "flex", flexDirection: "column", minHeight: 0, background: "var(--wb-bg)" }}
     >
-      <Header summary={summary} loading={loading} onRefresh={refresh} />
+      <Header summary={summary} loading={loading} viewed={viewedCount} onRefresh={refresh} />
 
       {loadError ? (
         <div style={{ padding: "10px 14px", color: "var(--wb-needs)", font: "11.5px var(--wb-mono)" }}>
@@ -224,9 +382,11 @@ function DiffBody({ session }: { session: DiffSession }) {
       ) : (
         <div style={{ flex: 1, display: "flex", minHeight: 0 }}>
           <FileList
-            files={summary?.files ?? []}
+            files={files}
             selected={selected}
-            onSelect={setSelected}
+            isViewed={(f) => isViewed(viewed, f)}
+            onSelect={pick}
+            onToggleViewed={(f) => toggleViewed(diffId, f)}
           />
           <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", minHeight: 0 }}>
             {selectedFile && (
@@ -248,13 +408,18 @@ function DiffBody({ session }: { session: DiffSession }) {
   );
 }
 
+const EMPTY_FILES: DiffFile[] = [];
+
 function Header({
   summary,
   loading,
+  viewed,
   onRefresh,
 }: {
   summary: InstanceDiff | null;
   loading: boolean;
+  /** Files marked viewed and unchanged since. */
+  viewed: number;
   onRefresh: () => void;
 }) {
   return (
@@ -272,13 +437,21 @@ function Header({
       }}
     >
       {summary ? (
-        <span style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
+        <span style={{ display: "flex", alignItems: "center", flexWrap: "wrap", columnGap: 8, minWidth: 0 }}>
           <span style={{ color: "var(--wb-text)" }}>
             {summary.filesChanged} file{summary.filesChanged === 1 ? "" : "s"}
           </span>
           {summary.insertions > 0 && <span style={{ color: "var(--wb-done)" }}>+{summary.insertions}</span>}
           {summary.deletions > 0 && <span style={{ color: "var(--wb-needs)" }}>−{summary.deletions}</span>}
           <span style={{ color: "var(--wb-textFaint)" }}>vs {summary.base}</span>
+          {summary.filesChanged > 0 && (
+            <span
+              style={{ color: viewed === summary.filesChanged ? "var(--wb-done)" : "var(--wb-textFaint)" }}
+              title="files marked viewed (Ctrl+Alt+Enter) and unchanged since"
+            >
+              {viewed}/{summary.filesChanged} viewed
+            </span>
+          )}
         </span>
       ) : (
         <span style={{ color: "var(--wb-textFaint)" }}>{loading ? "reading changes…" : "—"}</span>
@@ -290,6 +463,8 @@ function Header({
         title="refresh diff"
         style={{
           marginLeft: "auto",
+          flex: "0 0 auto",
+          whiteSpace: "nowrap",
           background: "transparent",
           border: "none",
           cursor: loading ? "default" : "pointer",
@@ -322,11 +497,15 @@ function statusColor(status: string): string {
 function FileList({
   files,
   selected,
+  isViewed,
   onSelect,
+  onToggleViewed,
 }: {
   files: DiffFile[];
   selected: string | null;
+  isViewed: (file: DiffFile) => boolean;
   onSelect: (path: string) => void;
+  onToggleViewed: (file: DiffFile) => void;
 }) {
   return (
     <div
@@ -342,40 +521,69 @@ function FileList({
         const active = f.path === selected;
         const name = f.path.split("/").pop() || f.path;
         const dir = f.path.slice(0, f.path.length - name.length);
+        const seen = isViewed(f);
         return (
-          <button
+          <div
             key={f.path}
-            // Onto a console, to reference the file (step D1) — unless it is gone.
-            draggable={f.absPath !== null}
-            onDragStart={(e) => f.absPath && setDragPaths(e.dataTransfer, [f.absPath])}
-            onClick={() => onSelect(f.path)}
-            title={f.path}
             style={{
               display: "flex",
               alignItems: "baseline",
-              gap: 7,
-              width: "100%",
-              textAlign: "left",
-              padding: "5px 10px 5px 11px",
-              border: "none",
               borderLeft: `2px solid ${active ? "var(--wb-selBar)" : "transparent"}`,
               background: active ? "var(--wb-sel)" : "transparent",
-              cursor: "pointer",
-              font: "11px var(--wb-mono)",
+              opacity: seen && !active ? 0.55 : 1,
             }}
           >
-            <span style={{ color: statusColor(f.status), flex: "0 0 auto", width: 9 }} title={f.status}>
-              {STATUS_GLYPH[f.status] ?? "•"}
-            </span>
-            <span style={{ minWidth: 0, flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-              {dir && <span style={{ color: "var(--wb-textFaint)" }}>{dir}</span>}
-              <span style={{ color: active ? "var(--wb-text)" : "var(--wb-textDim2)" }}>{name}</span>
-            </span>
-            <span style={{ flex: "0 0 auto", font: "10px var(--wb-mono)" }}>
-              {f.insertions > 0 && <span style={{ color: "var(--wb-done)" }}>+{f.insertions} </span>}
-              {f.deletions > 0 && <span style={{ color: "var(--wb-needs)" }}>−{f.deletions}</span>}
-            </span>
-          </button>
+            <button
+              onClick={() => onToggleViewed(f)}
+              role="checkbox"
+              aria-checked={seen}
+              aria-label={`viewed: ${f.path}`}
+              title={seen ? "viewed — unmark" : "mark viewed (clears when the file changes)"}
+              style={{
+                flex: "0 0 auto",
+                background: "transparent",
+                border: "none",
+                padding: "5px 0 5px 9px",
+                cursor: "pointer",
+                font: "11px var(--wb-mono)",
+                color: seen ? "var(--wb-done)" : "var(--wb-textFaint)",
+              }}
+            >
+              {seen ? "▣" : "▢"}
+            </button>
+            <button
+              // Onto a console, to reference the file (step D1) — unless it is gone.
+              draggable={f.absPath !== null}
+              onDragStart={(e) => f.absPath && setDragPaths(e.dataTransfer, [f.absPath])}
+              onClick={() => onSelect(f.path)}
+              title={f.path}
+              style={{
+                display: "flex",
+                alignItems: "baseline",
+                gap: 7,
+                flex: 1,
+                minWidth: 0,
+                textAlign: "left",
+                padding: "5px 10px 5px 7px",
+                border: "none",
+                background: "transparent",
+                cursor: "pointer",
+                font: "11px var(--wb-mono)",
+              }}
+            >
+              <span style={{ color: statusColor(f.status), flex: "0 0 auto", width: 9 }} title={f.status}>
+                {STATUS_GLYPH[f.status] ?? "•"}
+              </span>
+              <span style={{ minWidth: 0, flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                {dir && <span style={{ color: "var(--wb-textFaint)" }}>{dir}</span>}
+                <span style={{ color: active ? "var(--wb-text)" : "var(--wb-textDim2)" }}>{name}</span>
+              </span>
+              <span style={{ flex: "0 0 auto", font: "10px var(--wb-mono)" }}>
+                {f.insertions > 0 && <span style={{ color: "var(--wb-done)" }}>+{f.insertions} </span>}
+                {f.deletions > 0 && <span style={{ color: "var(--wb-needs)" }}>−{f.deletions}</span>}
+              </span>
+            </button>
+          </div>
         );
       })}
     </div>
@@ -426,7 +634,7 @@ function FileBar({
         {file.path}
       </span>
       {dirty && <span style={{ color: "var(--wb-working)", flex: "0 0 auto" }}>● unsaved</span>}
-      {notice && !dirty && (
+      {notice && (!dirty || notice === CHANGED_ON_DISK) && (
         <span style={{ color: notice === "saved" ? "var(--wb-done)" : "var(--wb-needs)", flex: "0 0 auto" }}>
           {notice === "saved" ? `${GLYPH.ok} saved` : notice}
         </span>

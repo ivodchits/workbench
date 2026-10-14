@@ -92,3 +92,9 @@ export function persistScroll(el: HTMLElement, key: string): () => void {
     mo.disconnect();
   };
 }
+
+/** Drop the offset saved under `key`, for a view about to scroll somewhere on purpose
+ *  (the review panel landing on a change, step V2) that a restore would undo. */
+export function forgetScroll(key: string): void {
+  offsets.delete(key);
+}
