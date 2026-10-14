@@ -130,6 +130,19 @@ export function deleteGroup(id: string): Promise<void> {
 
 // --- instance mutations -----------------------------------------------------
 
+/** The title a new instance gets when none is given: the next free integer among
+ *  the project's numbered instances (1, 2, 3, …). Instances renamed to something
+ *  else don't count. */
+export function nextInstanceTitle(instances: readonly Instance[], projectId: string): string {
+  let max = 0;
+  for (const i of instances) {
+    if (i.projectId === projectId && /^\d+$/.test(i.title.trim())) {
+      max = Math.max(max, Number(i.title.trim()));
+    }
+  }
+  return String(max + 1);
+}
+
 /** Create an instance and return its row (callers need the new id to provision a
  *  worktree right after — step 2.4). Reloads the registry on success. */
 export async function addInstance(input: NewInstance): Promise<Instance> {

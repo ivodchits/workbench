@@ -1,0 +1,99 @@
+// Sessions created from the phone (step R7) — the record of each `create` request,
+// and the two checks on a new console's screen that the creation flow
+// (`state/remoteActions`) waits on.
+//
+// The record is what makes a request idempotent: a retried tap or an action replayed
+// after a reconnect carries the same `requestId`, finds it here, and does nothing.
+// It also goes back to the phone in the snapshot (`RemoteMirror`), so the phone
+// learns the new instance's id and what happened to its first prompt.
+//
+// Transient: a restart forgets it, and the phone only cares about the last minutes.
+
+import { useSyncExternalStore } from "react";
+
+import type { RemoteCreated } from "../remote/protocol";
+
+/** How many requests are remembered (newest first). */
+export const CREATED_KEEP = 20;
+
+let created: readonly RemoteCreated[] = [];
+const listeners = new Set<() => void>();
+
+function set(next: readonly RemoteCreated[]): void {
+  created = next;
+  for (const l of listeners) l();
+}
+
+/** Record a new request. False if `requestId` was already seen — the caller must
+ *  then do nothing. */
+export function beginCreate(requestId: string): boolean {
+  if (!requestId || created.some((c) => c.requestId === requestId)) return false;
+  const entry: RemoteCreated = { requestId, instanceId: null, state: "creating", message: null };
+  set([entry, ...created].slice(0, CREATED_KEEP));
+  return true;
+}
+
+/** Update a request's record. No-op if it has been forgotten. */
+export function updateCreate(requestId: string, patch: Partial<Omit<RemoteCreated, "requestId">>): void {
+  if (!created.some((c) => c.requestId === requestId)) return;
+  set(created.map((c) => (c.requestId === requestId ? { ...c, ...patch } : c)));
+}
+
+export function getCreated(): readonly RemoteCreated[] {
+  return created;
+}
+
+/** Forget every request (tests). */
+export function resetCreated(): void {
+  set([]);
+}
+
+function subscribe(cb: () => void): () => void {
+  listeners.add(cb);
+  return () => {
+    listeners.delete(cb);
+  };
+}
+
+/** Subscribe a component to the request records. */
+export function useCreated(): readonly RemoteCreated[] {
+  return useSyncExternalStore(subscribe, getCreated);
+}
+
+// --- reading a new console's screen -----------------------------------------
+
+/** A rule of the TUI's prompt box: a row that starts as a long horizontal line. */
+const RULE = /^\s*─{20,}/;
+/** The prompt row: the caret, then a placeholder or nothing. An option row of a
+ *  dialog (`❯ 1. Yes, I trust this folder`) has a number and is not one. */
+const PROMPT_ROW = /^\s*[❯>](\s|$)(?!\s*\d+\.)/;
+
+/**
+ * True when the screen shows Claude's empty prompt box — the caret row with a rule
+ * directly above it and another a few rows below — so a pasted prompt will land in
+ * it. This is the "ready" signal for a session created from the phone: the TUI
+ * fires no hook at startup (T0: `SessionStart` never arrives), and the terminal
+ * exists well before the box does.
+ *
+ * The workspace trust dialog has a rule above its options but its caret row is
+ * numbered, so a folder Claude has not been told to trust never reads as ready.
+ */
+export function promptBoxReady(screen: readonly string[]): boolean {
+  for (let y = 1; y < screen.length; y++) {
+    if (!PROMPT_ROW.test(screen[y]) || !RULE.test(screen[y - 1])) continue;
+    for (let below = y + 1; below < Math.min(screen.length, y + 6); below++) {
+      if (RULE.test(screen[below])) return true;
+    }
+  }
+  return false;
+}
+
+/** True when the screen's last line with text asks for a password or passphrase —
+ *  an SSH login (remote project) that only the terminal can answer. */
+export function asksForPassword(screen: readonly string[]): boolean {
+  for (let y = screen.length - 1; y >= 0; y--) {
+    const line = screen[y].trim();
+    if (line) return /(password|passphrase)[^:]*:$/i.test(line);
+  }
+  return false;
+}

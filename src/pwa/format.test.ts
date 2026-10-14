@@ -1,7 +1,18 @@
 import { describe, expect, it } from "vitest";
 
-import type { RemoteInstance } from "../remote/protocol";
-import { attentionLine, byAttention, countdown, glyphOf, metaLine, phaseOf, waitMins } from "./format";
+import type { RemoteCreated, RemoteInstance } from "../remote/protocol";
+import {
+  attentionLine,
+  byAttention,
+  countdown,
+  createStatus,
+  glyphOf,
+  metaLine,
+  newRequestId,
+  phaseOf,
+  projectLabel,
+  waitMins,
+} from "./format";
 
 function inst(over: Partial<RemoteInstance>): RemoteInstance {
   return {
@@ -100,5 +111,33 @@ describe("attentionLine", () => {
         inst({ phase: "working", escalated: true }),
       ]),
     ).toBe("2 agents need you · 1 escalated");
+  });
+});
+
+describe("new session", () => {
+  it("labels a project with its group and ssh", () => {
+    expect(projectLabel({ id: "p", name: "web", group: null, remote: false })).toBe("web");
+    expect(projectLabel({ id: "p", name: "web", group: "work", remote: true })).toBe("work / web (ssh)");
+  });
+
+  it("says how a request went, preferring the desktop's message", () => {
+    const rec = (over: Partial<RemoteCreated>): RemoteCreated => ({
+      requestId: "r",
+      instanceId: null,
+      state: "creating",
+      message: null,
+      ...over,
+    });
+    expect(createStatus(rec({}))).toBe("creating the session…");
+    expect(createStatus(rec({ state: "sent" }))).toBe("started, first prompt sent");
+    expect(createStatus(rec({ state: "failed" }))).toBe("could not create the session");
+    expect(createStatus(rec({ state: "failed", message: "gone" }))).toBe("gone");
+    expect(createStatus(rec({ state: "starting", message: "password" }))).toBe("password");
+  });
+
+  it("makes distinct request ids without crypto.randomUUID", () => {
+    expect(newRequestId(1, () => 0.5)).toBe(newRequestId(1, () => 0.5));
+    expect(newRequestId(1, () => 0.5)).not.toBe(newRequestId(1, () => 0.25));
+    expect(newRequestId(1, () => 0.5)).not.toBe(newRequestId(2, () => 0.5));
   });
 });

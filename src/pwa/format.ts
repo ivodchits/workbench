@@ -1,7 +1,7 @@
 // The dashboard's wording and ordering rules, apart from the DOM so they can be
 // tested on their own.
 
-import type { RemoteInstance } from "../remote/protocol";
+import type { RemoteCreated, RemoteInstance, RemoteProject } from "../remote/protocol";
 
 /** What a card shows for a phase: its glyph and the class that colours it. */
 const GLYPH: Record<string, [glyph: string, cls: string]> = {
@@ -76,4 +76,32 @@ export function attentionLine(instances: RemoteInstance[]): string | null {
     `${needs} agent${needs === 1 ? "" : "s"} need${needs === 1 ? "s" : ""} you` +
     (esc > 0 ? ` · ${esc} escalated` : "")
   );
+}
+
+/** A project as the new-session picker lists it: its group first, if any. */
+export function projectLabel(p: RemoteProject): string {
+  return (p.group ? `${p.group} / ` : "") + p.name + (p.remote ? " (ssh)" : "");
+}
+
+/** What the new-session sheet says about its request. */
+export function createStatus(rec: RemoteCreated): string {
+  switch (rec.state) {
+    case "creating":
+      return "creating the session…";
+    case "starting":
+      return rec.message ?? "starting — the first prompt goes in when Claude is ready…";
+    case "started":
+      return rec.message ?? "started";
+    case "sent":
+      return rec.message ?? "started, first prompt sent";
+    case "queued":
+    case "failed":
+      return rec.message ?? (rec.state === "failed" ? "could not create the session" : "first prompt queued");
+  }
+}
+
+/** A request id unique enough for one phone. `crypto.randomUUID` needs a secure
+ *  context, which plain HTTP on a tailnet address is not. */
+export function newRequestId(now = Date.now(), rand = Math.random): string {
+  return `${now.toString(36)}-${Math.floor(rand() * 2 ** 32).toString(36)}`;
 }

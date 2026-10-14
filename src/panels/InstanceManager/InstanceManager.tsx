@@ -49,6 +49,7 @@ import {
   deleteProject,
   getRegistry,
   loadRegistry,
+  nextInstanceTitle,
   updateInstance,
   useRegistry,
 } from "../../state/registry";
@@ -72,13 +73,8 @@ import Modal from "./Modal";
 // every field stays editable on the card afterward. Opens its console straight
 // away so the fresh instance is immediately usable.
 async function spawnInstance(project: Project): Promise<void> {
-  let max = 0;
-  for (const i of getRegistry().instances) {
-    if (i.projectId === project.id && /^\d+$/.test(i.title.trim())) {
-      max = Math.max(max, Number(i.title.trim()));
-    }
-  }
-  const instance = await addInstance({ projectId: project.id, title: String(max + 1) });
+  const title = nextInstanceTitle(getRegistry().instances, project.id);
+  const instance = await addInstance({ projectId: project.id, title });
   setActiveProject(instance.projectId);
   openConsole(instance);
   activatePanel(instance.id);

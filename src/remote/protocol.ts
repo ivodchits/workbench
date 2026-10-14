@@ -36,12 +36,46 @@ export interface RemoteInstance {
   stuck: boolean;
 }
 
+/** A project the phone can start a session in (step R7). */
+export interface RemoteProject {
+  id: string;
+  name: string;
+  /** Its group's name, or null when ungrouped. */
+  group: string | null;
+  /** The project runs on another host over SSH. */
+  remote: boolean;
+}
+
+/** How far a `create` request has got (step R7):
+ *  - `creating` — the instance (and its worktree, if asked) is being made;
+ *  - `starting` — its console is open and the first prompt waits for the TUI;
+ *  - `started` — running, with no first prompt to send;
+ *  - `sent` — the first prompt was submitted;
+ *  - `queued` — the TUI never showed its prompt box, so the first prompt is the
+ *    instance's queued prompt instead (sent after its first turn, or cancel it);
+ *  - `failed` — nothing was left behind; `message` says why. */
+export type RemoteCreateState = "creating" | "starting" | "started" | "sent" | "queued" | "failed";
+
+/** The outcome of one `create` request, reported back against its id. */
+export interface RemoteCreated {
+  requestId: string;
+  /** The new instance, once it exists. */
+  instanceId: string | null;
+  state: RemoteCreateState;
+  /** Why it failed, or something worth knowing (a setup command failed, the SSH
+   *  login wants a password). */
+  message: string | null;
+}
+
 /** The whole state pushed to the phone on connect and on every change. */
 export interface RemoteSnapshot {
   /** Epoch seconds. */
   updatedAt: number;
   usageLimits: RateLimits | null;
   instances: RemoteInstance[];
+  projects: RemoteProject[];
+  /** Recent `create` requests, newest first. */
+  created: RemoteCreated[];
 }
 
 /** The action set a remote client can drive (design §11 "Expose:"). */
@@ -51,15 +85,33 @@ export type RemoteActionType =
   | "deny"
   | "interrupt"
   | "start"
-  | "stop";
+  | "stop"
+  | "create";
 
-/** An action message from a remote client, routed to the frontend handler. */
-export interface RemoteAction {
-  type: RemoteActionType;
+/** An action on an existing instance. */
+export interface RemoteInstanceAction {
+  type: Exclude<RemoteActionType, "create">;
   instanceId: string;
   /** Present for `prompt`. */
   text?: string;
 }
+
+/** Start a new session in an existing project (step R7). The phone only ever names
+ *  a project id, never a path. Sending the same `requestId` again does nothing. */
+export interface RemoteCreateAction {
+  type: "create";
+  requestId: string;
+  projectId: string;
+  /** Defaults to the next free number, as the rail does. */
+  title?: string;
+  /** The first prompt, submitted once the TUI is ready. */
+  text?: string;
+  /** Isolate the session in a new worktree. */
+  worktree?: boolean;
+}
+
+/** An action message from a remote client, routed to the frontend handler. */
+export type RemoteAction = RemoteInstanceAction | RemoteCreateAction;
 
 /** A text frame on the terminal-mirror socket (`/api/term`); output itself is binary. */
 export type TermControl =

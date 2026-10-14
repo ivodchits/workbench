@@ -5,8 +5,9 @@
 // we mirror the *result* here.
 //
 // Implemented as a render-nothing component (not a store subscription) so it can read
-// the four contributing stores through their existing hooks — registry, live
-// statuses, consoles (is it running?), and account usage limits — and re-push on any
+// the contributing stores through their existing hooks — registry, live statuses,
+// consoles (is it running?), account usage limits, and the phone's own `create`
+// requests (step R7) — and re-push on any
 // change. Pushes are debounced to coalesce the ~2 s token ticks; gated on the server
 // actually running so we don't do needless IPC while remote access is off (the
 // default). Mounted once from `App.tsx` (main window only).
@@ -19,6 +20,7 @@ import { useConsoles } from "../state/consoles";
 import { useLiveStatuses } from "../state/status";
 import { useUsageLimits } from "../state/usageLimits";
 import { useRemoteServer } from "../state/remoteServer";
+import { useCreated } from "../state/remoteCreate";
 import { useAlerts, useNotificationConfig } from "../state/notifications";
 import { contextWindowTokens } from "../util/format";
 
@@ -33,6 +35,7 @@ export default function RemoteMirror(): null {
   const server = useRemoteServer();
   const alerts = useAlerts();
   const notif = useNotificationConfig();
+  const created = useCreated();
   const running = server?.running ?? false;
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -46,6 +49,7 @@ export default function RemoteMirror(): null {
       const remoteProject = new Map(
         registry.projects.map((p) => [p.id, p.remoteSshDest != null]),
       );
+      const groupName = new Map(registry.groups.map((g) => [g.id, g.name]));
       const liveIds = new Set(
         consoles.open.filter((c) => c.status === "running").map((c) => c.instanceId),
       );
@@ -80,6 +84,14 @@ export default function RemoteMirror(): null {
             stuck: withAlerts && alerts.stuck.has(i.id),
           };
         }),
+        // What the phone can start a session in (step R7), in the rail's order.
+        projects: registry.projects.map((p) => ({
+          id: p.id,
+          name: p.name,
+          group: p.groupId ? groupName.get(p.groupId) ?? null : null,
+          remote: p.remoteSshDest != null,
+        })),
+        created: [...created],
       };
       void remotePushSnapshot(JSON.stringify(snapshot)).catch(() => {});
     }, PUSH_DEBOUNCE_MS);
@@ -89,7 +101,7 @@ export default function RemoteMirror(): null {
         timer.current = null;
       }
     };
-  }, [running, registry, consoles, statuses, limits, alerts, notif]);
+  }, [running, registry, consoles, statuses, limits, alerts, notif, created]);
 
   return null;
 }

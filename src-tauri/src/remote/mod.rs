@@ -15,7 +15,7 @@
 //!    and fan it out to WS clients. If the desktop webview is gone the snapshot simply
 //!    stops updating — exactly the "Workbench offline" case §11 describes.
 //! 2. **Actions are executed by the webview, not here.** An inbound action
-//!    (prompt/approve/deny/interrupt/start/stop) is emitted as a `remote-action` Tauri
+//!    (prompt/approve/deny/interrupt/start/stop/create) is emitted as a `remote-action` Tauri
 //!    event; the frontend's single handler maps it to the right keystroke/command
 //!    (the §11 caveat: keep that mapping in one place). We never write to a PTY here.
 //!

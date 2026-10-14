@@ -11,6 +11,7 @@ import { initDashboard } from "./dashboard";
 import { $ } from "./dom";
 import { initMirror, openTerminal } from "./mirror";
 import { connect, forget, isPaired, pair } from "./net";
+import { initNewSession, openNewSession } from "./newSession";
 
 let everConnected = false;
 
@@ -26,7 +27,15 @@ function setConn(live: boolean): void {
 function showApp(): void {
   $("pair").classList.add("hidden");
   $("app").classList.remove("hidden");
-  connect({ live: setConn, snapshot: initDashboard(openTerminal) });
+  const dashboard = initDashboard({ console: openTerminal, newSession: openNewSession });
+  const newSession = initNewSession(openTerminal);
+  connect({
+    live: setConn,
+    snapshot: (snap) => {
+      dashboard(snap);
+      newSession(snap);
+    },
+  });
 }
 
 async function submitPairing(): Promise<void> {

@@ -27,6 +27,12 @@ interface Card {
 // so reordering is safe.
 const cards = new Map<string, Card>();
 
+/** What a card can open: an instance's console, or the new-session sheet. */
+export interface Openers {
+  console: (id: string) => void;
+  newSession: (projectId: string) => void;
+}
+
 let lastSnap: RemoteSnapshot | null = null;
 let needsYouOnly = false;
 
@@ -37,12 +43,20 @@ export function instance(id: string): RemoteInstance | undefined {
   return lastSnap?.instances.find((it) => it.id === id);
 }
 
-function buildCard(id: string, openConsole: (id: string) => void): Card {
+function buildCard(id: string, open: Openers): Card {
   const dot = el("span");
   const title = el("span", "title");
   const badge = el("span", "badge hidden", "needs you");
+  // Another session in this card's project (step R7), with no project to pick.
+  const here = el("button", "here", "+");
+  here.type = "button";
+  here.title = here.ariaLabel = "new session in this project";
+  here.onclick = () => {
+    const projectId = instance(id)?.projectId;
+    if (projectId) open.newSession(projectId);
+  };
   const h2 = el("h2");
-  h2.append(dot, title, badge);
+  h2.append(dot, title, badge, here);
 
   const note = el("div", "note");
   // Possibly-stuck flag (step 4.6): a working card past the desktop threshold.
@@ -74,7 +88,7 @@ function buildCard(id: string, openConsole: (id: string) => void): Card {
   const secondary = el("div", "secondary");
   // Open the mirrored live console for this instance (step 4.5).
   const consoleBtn = el("button", "", "console");
-  consoleBtn.onclick = () => openConsole(id);
+  consoleBtn.onclick = () => open.console(id);
   secondary.append(consoleBtn);
   for (const type of ["interrupt", "start", "stop"] as const) {
     const b = el("button", "", type);
@@ -154,7 +168,7 @@ function renderUsage(limits: RateLimits | null | undefined): void {
   $("usage").replaceChildren(...rows);
 }
 
-function render(snap: RemoteSnapshot, openConsole: (id: string) => void): void {
+function render(snap: RemoteSnapshot, open: Openers): void {
   const all = snap.instances || [];
   const sorted = byAttention(all);
   const visible = needsYouOnly ? sorted.filter((it) => phaseOf(it) === "needs_you") : sorted;
@@ -168,7 +182,7 @@ function render(snap: RemoteSnapshot, openConsole: (id: string) => void): void {
     seen.add(it.id);
     let c = cards.get(it.id);
     if (!c) {
-      c = buildCard(it.id, openConsole);
+      c = buildCard(it.id, open);
       cards.set(it.id, c);
     }
     updateCard(c, it);
@@ -185,13 +199,13 @@ function render(snap: RemoteSnapshot, openConsole: (id: string) => void): void {
 }
 
 /** Wire the dashboard; returns what to call with each snapshot. */
-export function initDashboard(openConsole: (id: string) => void): (snap: RemoteSnapshot) => void {
+export function initDashboard(open: Openers): (snap: RemoteSnapshot) => void {
   const filterBtn = $("filterBtn");
   filterBtn.onclick = () => {
     needsYouOnly = !needsYouOnly;
     filterBtn.classList.toggle("on", needsYouOnly);
     filterBtn.textContent = needsYouOnly ? "show all" : "show only needs-you";
-    if (lastSnap) render(lastSnap, openConsole);
+    if (lastSnap) render(lastSnap, open);
   };
 
   // Keep the usage countdowns and the "waiting Nm" badges (step 4.6) ticking
@@ -204,6 +218,6 @@ export function initDashboard(openConsole: (id: string) => void): (snap: RemoteS
 
   return (snap) => {
     lastSnap = snap;
-    render(snap, openConsole);
+    render(snap, open);
   };
 }

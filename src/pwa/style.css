@@ -34,7 +34,8 @@ button:disabled { opacity: 0.5; }
 
 /* ── header / attention banner ─────────────────────────── */
 header { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
-#conn { font-size: 12px; white-space: nowrap; }
+#conn { font-size: 12px; white-space: nowrap; margin-left: auto; }
+#newBtn { min-height: 38px; padding: 6px 12px; font-size: 13px; color: var(--accent); border-color: var(--accent); }
 #conn.live { color: var(--done); }
 #conn.off { color: var(--needs); }
 .attention {
@@ -126,3 +127,36 @@ footer button { background: transparent; border: none; color: var(--dim); font-s
 #term-bar .no { color: var(--needs); border-color: var(--needs); }
 #term-bar .plain { color: var(--dim); font-weight: 400; }
 #kbBtn.on { border-color: var(--accent); color: var(--accent); }
+
+/* ── notice from a session started here (step R7) ──────── */
+#notice {
+  margin: 8px 0; padding: 10px 12px; border: 1px solid var(--working); border-radius: 8px;
+  color: var(--working); font-size: 13px; display: flex; align-items: center; gap: 10px;
+}
+#notice.hidden { display: none; }
+#notice span { flex: 1; }
+#notice button { min-height: 32px; padding: 2px 10px; background: transparent; }
+
+/* ── new-session sheet (step R7) ───────────────────────── */
+#new-overlay {
+  position: fixed; inset: 0; z-index: 40; background: var(--bg); overflow: auto;
+  display: flex; flex-direction: column; gap: 12px;
+  padding: calc(12px + var(--safe-t)) 12px calc(16px + var(--safe-b));
+  max-width: 760px; margin-inline: auto;
+}
+#new-overlay.hidden { display: none; }
+#new-head { display: flex; align-items: center; gap: 10px; }
+#new-head .title { flex: 1; font-weight: 600; }
+#new-head button { min-height: 38px; padding: 6px 12px; }
+.field { display: flex; flex-direction: column; gap: 4px; font-size: 13px; }
+.field.hidden { display: none; }
+.field input, .field select, .field textarea { min-height: 44px; font-size: 15px; }
+.field select { background: var(--panel); color: var(--fg); border: 1px solid var(--line); border-radius: 6px; padding: 10px 12px; font: inherit; }
+.field textarea { resize: vertical; }
+#new-project-fixed { font-size: 15px; font-weight: 600; }
+.check { display: flex; align-items: center; gap: 10px; min-height: 44px; font-size: 14px; }
+.check input { width: 22px; height: 22px; margin: 0; }
+#new-msg:empty { display: none; }
+#new-msg.err { color: var(--needs); }
+#new-create { font-weight: 600; color: var(--accent); border-color: var(--accent); }
+.card h2 .here { min-height: 32px; padding: 2px 10px; font-size: 13px; color: var(--dim); }

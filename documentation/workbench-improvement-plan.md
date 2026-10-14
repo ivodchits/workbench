@@ -1170,6 +1170,73 @@ filesystem path. There is no `draggable` / `dataTransfer` use anywhere in `src/`
 - **Out of scope:** creating projects, or sessions at an arbitrary path — the phone only
   ever names an existing project id, never a filesystem path. Resuming a past session
   from the phone.
+- **As built (2026-10-14):**
+  - **Wire:** `src/remote/protocol.ts` — the snapshot gains `projects` (id, name, group
+    name, remote flag) and `created` (one record per request: `requestId`, `instanceId`,
+    `state`, `message`); `RemoteAction` is now a union with `RemoteCreateAction`
+    (`requestId`, `projectId`, optional `title`, `text`, `worktree`). The Rust server
+    has no action allow-list, so it only changed a doc comment.
+  - **Desktop:** `createSession` in `state/remoteActions.ts`. It follows the rail's
+    `spawnInstance`: `addInstance` → (worktree) `provisionWorktree` →
+    `setActiveProject` → `openConsole` → `activatePanel`. So a phone-made console
+    switches the desktop to its project, the same as clicking "new instance". The
+    default title is the next free number. That rule is now `nextInstanceTitle`
+    (`state/registry.ts`), and the rail uses it too. If the worktree can't be made, the
+    instance is deleted again and the record reports `failed` with the error. A failed
+    setup command doesn't stop the session; it comes back as the record's `message`.
+  - **Idempotent:** `state/remoteCreate.ts` keeps the last 20 records in memory.
+    `beginCreate` refuses an id it has already seen, so a double tap, a "send again"
+    or a replay over HTTP is a no-op. The records go into the snapshot, and that is how
+    the phone learns the new instance's id.
+  - **Ready signal: the prompt box on the terminal screen.** `promptBoxReady` looks for
+    a `❯` row with a `────` rule right above it and another within five rows below.
+    That is the empty input box, captured from Claude Code 2.1.299 in a scratch PTY.
+    The workspace trust dialog also has a rule and a `❯`, but its caret row is numbered
+    (`❯ 1. Yes, I trust this folder`), so it never reads as ready. Permission prompts
+    don't either. The screen is read with `readScreen`, the read T5 approved; this is
+    its second user, and it still decides only *when to paste*, never the status. The
+    screen is checked every 250 ms. If the box hasn't shown after 60 s (5 min once
+    `asksForPassword` has seen an SSH password or passphrase prompt), the prompt
+    becomes the instance's queued prompt (`state: "queued"`) and the phone is told
+    to check the console. The other candidate, the transcript file appearing, was not
+    tried: the screen shows the exact thing the paste needs.
+  - **Phone:** `src/pwa/newSession.ts`. There is a **+ new session** button in the
+    header (shown when there are projects) and a **+** on each card that opens the
+    same sheet for that card's project, with no picker. The plan asked for a button on
+    each project group, but the dashboard has no groups (cards are sorted by
+    attention), so the card's **+** stands in for one. The sheet has project,
+    optional title, optional first prompt and an "isolate in a worktree" box. Its
+    status line follows the record. When the new instance shows up in the snapshot,
+    the sheet closes and the mirror opens on it. If there is no reply within 6 s, the
+    button becomes **send again** and resends the same request id. Request ids don't
+    use `crypto.randomUUID`, because plain HTTP on a tailnet address isn't a secure
+    context. Once the sheet is closed, a message about the request (queued prompt,
+    password, failed setup) shows in a dismissable banner under the attention line.
+    Wording helpers are in `format.ts`.
+  - **Verified live:** in the dev app with the server temporarily bound to loopback
+    (reverted), and the built PWA in headless Edge at 390×844. Steps: pair; open the
+    sheet (every project listed, with its group and "(ssh)"); create with a title and
+    first prompt using a double tap; then replay the same request over `/api/action`.
+    Result: one instance, the sheet closed after 0.5–1 s, the mirror opened, the
+    prompt went in once the box showed and "pong" came back, and the console opened on
+    the desktop. The card **+** opened the sheet with the project fixed and gave title
+    `1`. A worktree session got branch `agent/wt-probe`. An untrusted folder with a
+    first prompt sat on the trust dialog and was `queued` after 60 s, with the prompt
+    in the queue. An unknown project id was `failed` ("That project no longer
+    exists."). No page errors. The probe projects, instances and test device were
+    removed afterwards.
+  - **Not tried:** an actual phone; a remote (SSH) project, where the password path
+    is unit-tested only; a worktree provisioning failure in the app (the backend
+    makes branch names unique, so a clash doesn't fail; covered by a mocked test).
+  - **Known gaps:** a session queued because of the trust dialog still needs someone to
+    answer the dialog in the console. The queued prompt is then sent only after a first
+    turn ends, the same as any queued prompt, so it may be quicker to cancel it and
+    resend. Records are forgotten on restart, so a request replayed after the desktop
+    restarts would create a second session. The sheet's draft isn't kept if the page
+    reloads.
+  - **Tests:** 21 more (`state/remoteCreate.test.ts`, `state/remoteActions.test.ts`,
+    `pwa/format.test.ts`), 152 in all. Typecheck and lint pass; the PWA builds
+    (314 kB / 81 kB gzip).
 
 #### Step R8 — Phone: project notes
 
@@ -1324,7 +1391,7 @@ any session, which lowers the urgency and makes the terminal bugs easier to comp
 | R4 | Phone transcript + composer | ☐ |
 | R5 | Phone choice cards | ☐ |
 | R6 | Push notifications | ☐ |
-| R7 | Phone: create a session | ☐ |
+| R7 | Phone: create a session | ☑ |
 | R8 | Phone: project notes | ☐ |
 | P1 | Open plan on demand | ☐ |
 | A1 | Review with a fresh agent | ☐ |
