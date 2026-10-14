@@ -45,6 +45,28 @@ pub enum RemoteMsg {
     Size(u16, u16),
 }
 
+/// A resize the PTY took partway through the bytes of a [`Replay`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct ReplayResize {
+    /// How many of the replayed bytes come before it.
+    at: usize,
+    cols: u16,
+    rows: u16,
+}
+
+/// The scrollback handed to a new subscriber. The bytes were laid out for whatever
+/// size the PTY had as each was written, so they only come out right in a terminal
+/// that starts at `cols` × `rows` and takes each of `resizes` at its place — the way
+/// the terminal that watched them live did. Written at one size, anything from before
+/// a resize lands on the wrong rows.
+struct Replay {
+    /// The PTY's size as the first replayed byte was written.
+    cols: u16,
+    rows: u16,
+    bytes: Vec<u8>,
+    resizes: Vec<ReplayResize>,
+}
+
 /// One subscriber's output sink. The multiplexer fans identical bytes to every sink
 /// regardless of transport: a desktop console or torn-off window reads a Tauri IPC
 /// `Channel<Vec<u8>>`; a remote phone (step 4.5) reads an `mpsc` channel that the
@@ -87,6 +109,12 @@ struct OutputHub {
     /// Whether the ring has ever dropped bytes off its front. Until it has, it starts
     /// where the session started; after, it starts wherever the cap happened to fall.
     ring_cut: bool,
+    /// How many bytes the PTY has written in all — the ring holds the last of them.
+    total: u64,
+    /// Every size the PTY has been given, with the value of `total` when it took it:
+    /// where in the output each resize falls. Kept for as long as the ring reaches
+    /// back, plus the one in force at the ring's first byte.
+    resizes: VecDeque<(u64, u16, u16)>,
     /// Live subscribers keyed by a per-PTY monotonic id ([`OutputHub::subscribe`]).
     subscribers: HashMap<u64, Sink>,
     /// Each subscriber's last-requested terminal size. The PTY is sized to the
@@ -107,19 +135,27 @@ impl OutputHub {
     /// Append a chunk to the ring, evicting oldest bytes past [`RING_CAP`].
     fn push_ring(&mut self, chunk: &[u8]) {
         self.ring.extend(chunk.iter().copied());
+        self.total += chunk.len() as u64;
         let overflow = self.ring.len().saturating_sub(RING_CAP);
         if overflow > 0 {
             self.ring.drain(..overflow);
             self.ring_cut = true;
+            // Forget resizes from before the ring's first byte, bar the last of them.
+            let start = self.total - self.ring.len() as u64;
+            while self.resizes.get(1).is_some_and(|&(at, _, _)| at <= start) {
+                self.resizes.pop_front();
+            }
         }
     }
 
-    /// The bytes to replay to a new subscriber. A ring that has dropped its oldest
-    /// bytes can start in the middle of an escape sequence or a UTF-8 character, which
-    /// the attaching terminal would print as stray text; start such a ring after its
-    /// first line break instead (step C3). This looks for one byte and reads nothing
-    /// else out of the output.
-    fn replay(&self) -> Vec<u8> {
+    /// What to replay to a new subscriber: the ring, and the resizes the PTY took
+    /// while those bytes were being written.
+    ///
+    /// A ring that has dropped its oldest bytes can start in the middle of an escape
+    /// sequence or a UTF-8 character, which the attaching terminal would print as
+    /// stray text; such a ring is replayed from after its first line break instead
+    /// (step C3). That looks for one byte and reads nothing else out of the output.
+    fn replay(&self) -> Replay {
         let skip = if self.ring_cut {
             self.ring
                 .iter()
@@ -129,7 +165,28 @@ impl OutputHub {
         } else {
             0
         };
-        self.ring.iter().skip(skip).copied().collect()
+        let bytes: Vec<u8> = self.ring.iter().skip(skip).copied().collect();
+        let start = self.total - bytes.len() as u64;
+        let (mut cols, mut rows) = self.applied.unwrap_or((80, 24));
+        let mut resizes = Vec::new();
+        for &(at, c, r) in &self.resizes {
+            if at <= start {
+                // In force before the first replayed byte: the size to start at.
+                (cols, rows) = (c, r);
+            } else {
+                resizes.push(ReplayResize {
+                    at: (at - start) as usize,
+                    cols: c,
+                    rows: r,
+                });
+            }
+        }
+        Replay {
+            cols,
+            rows,
+            bytes,
+            resizes,
+        }
     }
 
     /// Forward a chunk to every subscriber, dropping any whose channel the
@@ -151,21 +208,42 @@ impl OutputHub {
         }
     }
 
-    /// Register a subscriber, replay the ring into it, and return its id and how
-    /// many bytes were replayed. The replay is one `send` of up to [`RING_CAP`] bytes
-    /// so the attaching terminal paints the recent session immediately
-    /// (raw-ArrayBuffer streaming is a later optimization — correctness first,
-    /// matching the spawn path).
-    fn subscribe(&mut self, sink: Sink) -> (u64, usize) {
+    /// Register a subscriber, replay the ring into it, and return its id and the
+    /// shape of what was replayed (its bytes already sent, so `bytes` comes back
+    /// empty and `len` says how many there were).
+    ///
+    /// A webview gets the bytes as one `send` of up to [`RING_CAP`] bytes and applies
+    /// the resizes itself from the returned list (its channel carries bytes only). A
+    /// remote subscriber gets them in order on its queue, as bytes and
+    /// [`RemoteMsg::Size`] turn by turn.
+    fn subscribe(&mut self, sink: Sink) -> (u64, Replay, usize) {
         let id = self.next_sub_id;
         self.next_sub_id += 1;
-        let replay = self.replay();
-        let replayed = replay.len();
-        if !replay.is_empty() {
-            let _ = sink.send(replay);
+        let mut replay = self.replay();
+        let bytes = std::mem::take(&mut replay.bytes);
+        let len = bytes.len();
+        match &sink {
+            Sink::Channel(_) => {
+                if !bytes.is_empty() {
+                    let _ = sink.send(bytes);
+                }
+            }
+            Sink::Remote(tx) => {
+                let mut from = 0;
+                for r in &replay.resizes {
+                    if r.at > from {
+                        let _ = tx.send(RemoteMsg::Bytes(bytes[from..r.at].to_vec()));
+                        from = r.at;
+                    }
+                    let _ = tx.send(RemoteMsg::Size(r.cols, r.rows));
+                }
+                if from < len {
+                    let _ = tx.send(RemoteMsg::Bytes(bytes[from..].to_vec()));
+                }
+            }
         }
         self.subscribers.insert(id, sink);
-        (id, replayed)
+        (id, replay, len)
     }
 
     /// Drop a subscriber and its size vote.
@@ -184,15 +262,20 @@ impl OutputHub {
         Some((cols, rows))
     }
 
-    /// Record the size the PTY has just been given and, when it changed, tell the
-    /// remote subscribers. They take no part in choosing the size, but the bytes that
-    /// follow are laid out for it, and a phone still at the old width would paint them
-    /// over each other (step C3).
+    /// Record the size the PTY has just been given and, when it changed, note where
+    /// in the output it fell and tell the remote subscribers. They take no part in
+    /// choosing the size, but the bytes that follow are laid out for it, and a phone
+    /// still at the old width would paint them over each other (step C3).
     fn set_applied(&mut self, cols: u16, rows: u16) {
         if self.applied == Some((cols, rows)) {
             return;
         }
         self.applied = Some((cols, rows));
+        match self.resizes.back_mut() {
+            // Nothing was written at the size before this one; it never showed.
+            Some(last) if last.0 == self.total => *last = (self.total, cols, rows),
+            _ => self.resizes.push_back((self.total, cols, rows)),
+        }
         for sink in self.subscribers.values() {
             if let Sink::Remote(tx) = sink {
                 let _ = tx.send(RemoteMsg::Size(cols, rows));
@@ -363,7 +446,9 @@ impl PtyManager {
     /// fans subsequent output to it alongside any desktop subscribers, with a
     /// [`RemoteMsg::Size`] whenever the PTY is resized. Returns the subscription id
     /// (passed to [`Self::unsubscribe`] on disconnect) and the PTY's current size,
-    /// which the phone uses to render the TUI at the source width.
+    /// which the phone uses to render the TUI at the source width. That size is the
+    /// one the replay starts at; resizes since are already on `tx`, in their place
+    /// among the replayed bytes.
     /// `None` when the instance has no live PTY — the WS handler then tells the client
     /// the session isn't running. The remote subscriber never joins resize
     /// arbitration, so it can't shrink the desktop console (the §11 caveat).
@@ -379,9 +464,8 @@ impl PtyManager {
             guard.get(instance_id)?.hub.clone()
         };
         let mut h = hub.lock().unwrap();
-        let size = h.applied.unwrap_or((80, 24));
-        let (id, _) = h.subscribe(Sink::Remote(tx));
-        Some((id, size))
+        let (id, replay, _) = h.subscribe(Sink::Remote(tx));
+        Some((id, (replay.cols, replay.rows)))
     }
 
     /// Detach a subscriber (`sub_id`) from an instance's PTY without killing the
@@ -581,7 +665,7 @@ pub fn pty_spawn(
     // Seed the applied size with the spawn dimensions so a remote subscriber that
     // attaches before any desktop console resizes the PTY still learns its real width
     // (step 4.5), not the 80×24 fallback.
-    hub.lock().unwrap().applied = Some((cols, rows));
+    hub.lock().unwrap().set_applied(cols, rows);
     let reader_hub = hub.clone();
     thread::spawn(move || {
         let mut buf = [0u8; 8192];
@@ -630,13 +714,16 @@ pub struct Subscribed {
     /// The subscription id, passed to `pty_unsubscribe` on close and to `pty_resize`
     /// so this subscriber's size joins the min-size arbitration.
     sub_id: u64,
-    /// The PTY's size at the moment of attaching — the size the end of the replay,
-    /// and everything after it, is laid out for.
+    /// The PTY's size as the first replayed byte was written — the size to start
+    /// the replay at.
     cols: u16,
     rows: u16,
     /// How many bytes of scrollback were replayed into the channel, so the caller
     /// can tell when it has all of them.
     replay_len: usize,
+    /// The resizes the PTY took during those bytes, in order, for the caller to
+    /// apply at their places. After the last, the size is the PTY's current one.
+    resizes: Vec<ReplayResize>,
 }
 
 /// Attach an output subscriber to an instance's live PTY (step 4.1). The PTY's
@@ -657,13 +744,13 @@ pub fn pty_subscribe(
         guard.get(&instance_id).ok_or("no active PTY")?.hub.clone()
     };
     let mut h = hub.lock().unwrap();
-    let (cols, rows) = h.applied.unwrap_or((80, 24));
-    let (sub_id, replay_len) = h.subscribe(Sink::Channel(on_output));
+    let (sub_id, replay, replay_len) = h.subscribe(Sink::Channel(on_output));
     Ok(Subscribed {
         sub_id,
-        cols,
-        rows,
+        cols: replay.cols,
+        rows: replay.rows,
         replay_len,
+        resizes: replay.resizes,
     })
 }
 
@@ -1057,7 +1144,7 @@ mod tests {
         let mut hub = OutputHub::default();
         hub.push_ring(b"hello");
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<RemoteMsg>();
-        let (id, replayed) = hub.subscribe(Sink::Remote(tx));
+        let (id, _, replayed) = hub.subscribe(Sink::Remote(tx));
         assert_eq!(replayed, 5);
         // Attach replays the whole ring as one chunk so the phone paints scrollback.
         assert_eq!(bytes(rx.try_recv().expect("ring replayed on attach")), b"hello");
@@ -1085,7 +1172,7 @@ mod tests {
     fn replay_of_a_cut_ring_starts_after_a_line_break() {
         let mut hub = OutputHub::default();
         hub.push_ring(b"8;2;215;119m tail of a cut line\nwhole line\n");
-        assert!(hub.replay().starts_with(b"8;2;"), "an uncut ring is replayed whole");
+        assert!(hub.replay().bytes.starts_with(b"8;2;"), "an uncut ring is replayed whole");
 
         // Eight bytes over the cap: "dropped;" falls off and the ring opens mid-line.
         let cut_line = b"8;2;215;119m tail of a cut line\n";
@@ -1096,7 +1183,7 @@ mod tests {
         let mut hub = OutputHub::default();
         hub.push_ring(&data);
         assert!(hub.ring_cut);
-        let replay = hub.replay();
+        let replay = hub.replay().bytes;
         assert!(replay.starts_with(b"whole line y"));
         assert_eq!(replay.len(), RING_CAP - cut_line.len());
     }
@@ -1108,7 +1195,74 @@ mod tests {
         let mut hub = OutputHub::default();
         hub.push_ring(&vec![b'x'; RING_CAP + 10]);
         assert!(hub.ring_cut);
-        assert_eq!(hub.replay().len(), RING_CAP);
+        assert_eq!(hub.replay().bytes.len(), RING_CAP);
+    }
+
+    /// The replay starts at the size the PTY had for its first byte and carries each
+    /// later resize at the byte it fell on, so an attaching terminal can take them in
+    /// the same places the live one did.
+    #[test]
+    fn replay_carries_resizes_at_their_places() {
+        let mut hub = OutputHub::default();
+        hub.set_applied(80, 24);
+        hub.push_ring(b"wide ");
+        hub.set_applied(40, 24);
+        hub.push_ring(b"narrow ");
+        // Two resizes with no output between them: only the second ever showed.
+        hub.set_applied(50, 24);
+        hub.set_applied(60, 30);
+        hub.push_ring(b"end");
+        let replay = hub.replay();
+        assert_eq!((replay.cols, replay.rows), (80, 24));
+        assert_eq!(replay.bytes, b"wide narrow end");
+        assert_eq!(
+            replay.resizes,
+            vec![
+                ReplayResize { at: 5, cols: 40, rows: 24 },
+                ReplayResize { at: 12, cols: 60, rows: 30 },
+            ]
+        );
+    }
+
+    /// Once the ring has dropped the bytes a resize fell among, that resize is no
+    /// longer replayed: it is the size the replay starts at.
+    #[test]
+    fn replay_of_a_cut_ring_starts_at_the_size_then_in_force() {
+        let mut hub = OutputHub::default();
+        hub.set_applied(80, 24);
+        hub.push_ring(b"gone\n");
+        hub.set_applied(40, 24);
+        hub.push_ring(b"also gone\n");
+        hub.set_applied(100, 30);
+        // Enough to push both of those out, with a line break near the new start.
+        let mut filler = vec![b'x'; RING_CAP];
+        filler[30] = b'\n';
+        hub.push_ring(&filler);
+        hub.set_applied(120, 30);
+        hub.push_ring(b" tail");
+        let replay = hub.replay();
+        assert_eq!((replay.cols, replay.rows), (100, 30));
+        assert!(replay.bytes.ends_with(b"x tail"));
+        let at = replay.bytes.len() - 5;
+        assert_eq!(replay.resizes, vec![ReplayResize { at, cols: 120, rows: 30 }]);
+        assert_eq!(hub.resizes.len(), 2, "resizes older than the ring are dropped");
+    }
+
+    /// A remote subscriber gets the replay's bytes and resizes on its queue in order.
+    #[test]
+    fn remote_sink_replay_interleaves_sizes() {
+        let mut hub = OutputHub::default();
+        hub.set_applied(80, 24);
+        hub.push_ring(b"wide ");
+        hub.set_applied(40, 24);
+        hub.push_ring(b"narrow");
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<RemoteMsg>();
+        let (_, replay, len) = hub.subscribe(Sink::Remote(tx));
+        assert_eq!((replay.cols, replay.rows, len), (80, 24, 11));
+        assert_eq!(bytes(rx.try_recv().unwrap()), b"wide ");
+        assert!(matches!(rx.try_recv(), Ok(RemoteMsg::Size(40, 24))));
+        assert_eq!(bytes(rx.try_recv().unwrap()), b"narrow");
+        assert!(rx.try_recv().is_err());
     }
 
     /// A remote subscriber is told the PTY's size when it changes, and only then.

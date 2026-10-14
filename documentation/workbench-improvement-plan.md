@@ -277,11 +277,19 @@ filesystem path. There is no `draggable` / `dataTransfer` use anywhere in `src/`
       last screen at the new width under the old-width lines already in the scrollback.
       My reading is that this is Claude Code's own redraw and not ours; not compared
       against another terminal.
-    - A replay is written at one size, so history laid out for an earlier width can
-      come out garbled further up in an attached terminal's scrollback (one such line
-      seen after a tear-off). The end of the buffer is right. Recording resizes in the
-      ring and replaying them in order would fix it.
-  - Typecheck, lint, 112 frontend tests and 113 Rust tests pass.
+  - **Follow-up, same day — resizes replayed in place:** a replay written at one size
+    garbled the scrollback from before each earlier resize. After five resizes during
+    two streamed answers, 812 of 1,166 lines differed from the live terminal's buffer.
+    The hub now records where in the output each resize fell (`OutputHub::resizes`,
+    trimmed with the ring). `pty_subscribe` returns them as
+    `resizes: [{ at, cols, rows }]`, with `cols`/`rows` now the size the replay
+    *starts* at, and the attaching terminal resizes at each byte offset (`writeOut` in
+    `terminalPool.ts`). Same case after: 0 of 1,166 lines differ. Tear-off and dock
+    back re-checked in the app. A remote subscriber gets the same thing as `size`
+    frames between the replayed bytes, and the PWA now applies a `size` from xterm's
+    write queue so it lands in order — like the rest of the phone path, unit-tested at
+    the hub only, not run against a phone.
+  - Typecheck, lint, 112 frontend tests and 116 Rust tests pass.
 
 ---
 

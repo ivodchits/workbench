@@ -544,7 +544,11 @@
           // started (from its card's "start", or on the desktop).
           setTermMsg("Session not running — it will appear here once started.");
         } else if (msg.type === "size") {
-          fitTerm(msg.cols, msg.rows);
+          // A size can arrive between chunks of output (a resize during the replayed
+          // scrollback, or live). xterm parses what it is given a little later, so
+          // resize from the write queue: after everything received before this, and
+          // before anything after.
+          if (term) term.write("", () => fitTerm(msg.cols, msg.rows));
         }
       }
 

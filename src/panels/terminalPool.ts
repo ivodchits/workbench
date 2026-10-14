@@ -34,6 +34,7 @@ import {
   type RemoteSpawn,
   type SpawnKind,
   type SpawnResult,
+  type Subscribed,
 } from "../ipc/pty";
 import { encodePaste } from "../state/composer";
 import { markInterrupted } from "../state/status";
@@ -375,16 +376,31 @@ export function acquire(container: HTMLDivElement, opts: AcquireOptions): void {
   let subId: number | undefined;
 
   // Attaching to a live PTY (step C3): the scrollback it replays was laid out for the
-  // PTY's size, not for whatever this panel measures. Written into a narrower terminal
-  // its lines wrap, the TUI's cursor moves land on the wrong rows, and each redraw is
-  // painted over part of the one before. So the terminal takes the PTY's size first,
-  // the replay goes in at that size, and only then is it fitted to the panel — an
-  // ordinary resize, which xterm reflows and the TUI redraws for. Output that arrives
-  // before the size is known is held back; `received` tells when the replay is all in
-  // (the channel and the subscribe result aren't ordered against each other).
+  // PTY's size as each byte was written, not for whatever this panel measures. Written
+  // into a terminal of another width its lines wrap, the TUI's cursor moves land on the
+  // wrong rows, and each redraw is painted over part of the one before. So the terminal
+  // starts at the size the replay starts at, takes each resize the PTY took at the byte
+  // it fell on (`resizes`) — replaying what the terminal that watched live went
+  // through — and only then is fitted to the panel: an ordinary resize, which xterm
+  // reflows and the TUI redraws for. Output that arrives before the sizes are known is
+  // held back; `received` tells when the replay is all in (the channel and the
+  // subscribe result aren't ordered against each other).
   let held: Uint8Array[] | null = opts.attach ? [] : null;
   let received = 0;
   let replayLen = Infinity;
+  let resizes: Subscribed["resizes"] = [];
+  let written = 0;
+  const writeOut = (bytes: Uint8Array) => {
+    let from = 0;
+    while (resizes.length > 0 && resizes[0].at - written <= bytes.length) {
+      const { at, cols, rows } = resizes.shift()!;
+      // The callback runs once these bytes are parsed and before any written after.
+      term.write(bytes.subarray(from, at - written), () => term.resize(cols, rows));
+      from = at - written;
+    }
+    if (from < bytes.length) term.write(from > 0 ? bytes.subarray(from) : bytes);
+    written += bytes.length;
+  };
   const endReplay = () => {
     replayLen = Infinity; // once only
     // The empty write's callback runs after everything queued before it is parsed.
@@ -403,7 +419,7 @@ export function acquire(container: HTMLDivElement, opts: AcquireOptions): void {
     const bytes = new Uint8Array(chunk);
     received += bytes.length;
     if (held) held.push(bytes);
-    else term.write(bytes);
+    else writeOut(bytes);
     if (received >= replayLen) endReplay();
   };
 
@@ -502,7 +518,8 @@ export function acquire(container: HTMLDivElement, opts: AcquireOptions): void {
           subId = sub.subId;
           entry.subId = sub.subId;
           term.resize(sub.cols, sub.rows);
-          for (const bytes of held ?? []) term.write(bytes);
+          resizes = sub.resizes;
+          for (const bytes of held ?? []) writeOut(bytes);
           held = null;
           replayLen = sub.replayLen;
           if (received >= replayLen) endReplay();

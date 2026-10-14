@@ -74,12 +74,16 @@ export interface Subscribed {
   /** The subscription id: pass it to `ptyUnsubscribe` on close and to `ptyResize` so
    *  this terminal's size joins the min-size arbitration. */
   subId: number;
-  /** The PTY's size when the subscriber attached — what the end of the replayed
-   *  scrollback, and everything after it, is laid out for. */
+  /** The PTY's size as the first replayed byte was written — the size to start the
+   *  replay at. */
   cols: number;
   rows: number;
   /** How many bytes of scrollback were replayed into the channel. */
   replayLen: number;
+  /** The resizes the PTY took during those bytes, in order. Each has to be applied
+   *  after `at` replayed bytes for what follows to land where it did live; after the
+   *  last, the size is the PTY's current one. */
+  resizes: { at: number; cols: number; rows: number }[];
 }
 
 /**
