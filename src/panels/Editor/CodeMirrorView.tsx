@@ -8,8 +8,10 @@
 // Ctrl/Cmd+S with the view's current text; `onCursor` reports the caret position
 // for the footer. Callbacks are read through refs so the long-lived view never
 // holds a stale closure when the parent re-renders.
+//
+// The handle (`ref`) reads the selected lines, for "add to prompt" (step V3).
 
-import { useEffect, useRef } from "react";
+import { useEffect, useImperativeHandle, useRef, type Ref } from "react";
 import { Compartment, EditorState, Prec, type Extension } from "@codemirror/state";
 import {
   EditorView,
@@ -27,8 +29,16 @@ import { searchKeymap, highlightSelectionMatches } from "@codemirror/search";
 import { codeMirrorTheme } from "../../theme";
 import { useThemeVersion } from "../../state/appearance";
 import { persistScroll } from "./scrollMemory";
+import { selectedLines } from "../Diff/commentMarks";
+
+/** What the editor panel can read from an open view. */
+export interface CodeMirrorHandle {
+  /** The lines the main selection covers (the cursor's line when it is empty). */
+  selectedLines: () => [number, number] | null;
+}
 
 interface CodeMirrorViewProps {
+  ref?: Ref<CodeMirrorHandle>;
   /** Stable for the component's life — the parent keys on it. */
   path: string;
   /** Stable id under which this view's scroll offset is remembered across tab
@@ -49,6 +59,7 @@ interface CodeMirrorViewProps {
 }
 
 function CodeMirrorView({
+  ref,
   path,
   scrollKey,
   initialDoc,
@@ -148,6 +159,13 @@ function CodeMirrorView({
     // file never changes these, so the view is built exactly once per open file.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [path]);
+
+  useImperativeHandle(ref, () => ({
+    selectedLines: () => {
+      const view = viewRef.current;
+      return view ? selectedLines(view.state) : null;
+    },
+  }));
 
   // Re-derive the editor theme in place when the app theme switches (step 3.9).
   // The view persists; only its theme compartment is reconfigured. Skips the

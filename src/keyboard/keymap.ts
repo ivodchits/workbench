@@ -73,6 +73,10 @@ export type CommandId =
   | "diffNextFile"
   | "diffPrevFile"
   | "diffToggleViewed"
+  // review comments and references (V3)
+  | "diffAddComment"
+  | "diffSendComments"
+  | "addToPrompt"
   // rail
   | "railPrev"
   | "railNext"
@@ -222,6 +226,13 @@ const RAW_BINDINGS: RawBinding[] = [
   { chord: "Ctrl+Alt+PageDown", command: "diffNextFile", scope: "global", title: "Review: next file" },
   { chord: "Ctrl+Alt+PageUp", command: "diffPrevFile", scope: "global", title: "Review: previous file" },
   { chord: "Ctrl+Alt+Enter", command: "diffToggleViewed", scope: "global", title: "Review: mark the file viewed (or not)" },
+  // --- global: review comments (V3) -----------------------------------------
+  // Letters, so Ctrl+Shift: Ctrl+Alt+letter is a character on AltGr layouts, and
+  // Alt+letter is the terminal's Meta. Neither O nor B means anything to the
+  // terminal, the TUI or CodeMirror's default keys.
+  { chord: "Ctrl+Shift+O", command: "diffAddComment", scope: "global", title: "Review: comment on the selected lines" },
+  { chord: "", command: "diffSendComments", scope: "global", title: "Review: send the comments to the agent" },
+  { chord: "Ctrl+Shift+B", command: "addToPrompt", scope: "global", title: "Add the selected lines to the prompt (@path#L…)" },
 
   // --- rail: navigation (TUI single keys) -----------------------------------
   { chord: "Up", command: "railPrev", scope: "rail", title: "Rail: move up" },

@@ -1017,6 +1017,62 @@ filesystem path. There is no `draggable` / `dataTransfer` use anywhere in `src/`
   `src/panels/terminalPool.ts`, new `src/state/reviewComments.ts`.
 - **Done when:** three comments across two files arrive as one readable prompt and the
   agent acts on the right lines.
+- **As built (2026-10-14):**
+  - **Comments:** a gutter on the working-tree side shows "+" on hover. A click
+    comments that line, or the selection when the click is inside it. The
+    "+ comment" button and **Ctrl+Shift+O** comment the selected lines. The draft
+    opens under the diff with the quoted code; Ctrl+Enter adds it, Esc cancels.
+  - **The list** sits under the diff for all files. Each entry shows `path:line` (a
+    click goes there, opening the file if needed) and the note (click or "edit" to
+    change it; emptying a note removes it; × removes it). Commented lines get a dot
+    in the gutter and a tint, and the file list shows a count per file.
+  - **Store:** `state/reviewComments.ts`, in memory, per instance. Comments survive
+    closing the panel or relaunching the console, and are dropped once sent.
+  - **Lines follow edits:** in the editor (`Diff/commentMarks.ts`) a comment is a
+    document range. Typing, an agent's change arriving through the refresh, or a
+    revert move it, and the new lines go back to the store. If a comment's lines are
+    deleted whole, it stays on the line left where they were.
+  - **Send** builds one prompt (`buildCommentsPrompt`): a header saying the line
+    numbers are in the files as they are now, then per comment `path:line` or
+    `path:a-b`, up to three quoted lines (shared indent removed, each cut at 120
+    characters, then "… (n more)"), and the note. It goes through `sendOrQueue`: sent
+    now if the agent is between turns, queued otherwise. The queue holds one prompt,
+    so a prompt already waiting is kept ahead of the comments. Send is off while the
+    session has no running console in this window. The palette has
+    `diffSendComments`; it has no default key.
+  - **Add to prompt** (`panels/consoleInput.ts`) puts `@path#L12` or `@path#L12-14`
+    in the console unsent: pasted into the terminal, or into the composer when the
+    console shows its transcript. The console is brought forward. In the diff it
+    goes to the panel's own instance. In the editor (footer button) it goes to the
+    project's last focused running Claude console. **Ctrl+Shift+B** does it for
+    whichever of the two is the active panel.
+  - **Keys:** Ctrl+Shift letters, because Ctrl+Alt+letter types a character on
+    AltGr layouts and Alt+letter is the terminal's Meta. O and B aren't used by the
+    terminal, the TUI or CodeMirror's default keys.
+  - **Revert, not through git patches:** each change has a revert button: "↶ revert"
+    at the change in unified view, "↶" in the gap between the sides. A confirm asks
+    first. Then the base's lines go back into the buffer and the file is saved.
+    - Why not the plan's hunk patches: git's hunks (three lines of context) don't
+      line up with the merge view's changes, and the view already holds both texts.
+    - This way it's an ordinary edit: Ctrl+Z undoes it while the file stays open.
+    - If the file changed while the confirm was open, nothing is reverted, and the
+      bar says so.
+    - Side by side, the library reverts on its own mousedown; the panel takes that
+      press first.
+    - A deleted file has no revert, since there is nothing on disk to edit.
+  - **Checked live** (a scratch git repo with two changed files, a real Claude
+    session):
+    - Three comments: one line and one range in `calc.py`, one line in `greet.py`.
+    - They arrived as one prompt; the agent changed exactly those three places.
+    - The panel's list and counts followed the agent's edits.
+    - "@ to prompt" from the diff gave `@src/calc.py#L17-19`, and from the editor
+      `@src/calc.py#L13-14`, both unsent.
+    - Revert in unified and side by side: the confirm, then the file back at its base
+      text, saved, with the counts updated.
+    - The keys couldn't be pressed by the test driver (SendKeys doesn't reach the
+      existing Ctrl+Shift+D either); the palette lists the commands with them.
+  - **Not done:** a comment on a removed line (unified view) isn't possible; comments
+    go on the working tree, the file the agent will open.
 
 ---
 
@@ -1744,7 +1800,7 @@ any session, which lowers the urgency and makes the terminal bugs easier to comp
 | D2 | Drag files from the OS (spike) | ☐ |
 | V1 | Diff rendering | ☑ |
 | V2 | Diff navigation + freshness | ☑ |
-| V3 | Inline comments to the agent | ☐ |
+| V3 | Inline comments to the agent | ☑ |
 | N1 | Project notes panel | ☐ |
 | N2 | Rendered-while-editing markdown | ☐ |
 | R1 | PWA build | ☑ |

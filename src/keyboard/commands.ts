@@ -74,6 +74,9 @@ export function runAction(command: CommandId, arg?: number): void {
     case "diffNextFile":
     case "diffPrevFile":
     case "diffToggleViewed":
+    case "diffAddComment":
+    case "diffSendComments":
+    case "addToPrompt":
       runCommand(command, arg);
       break;
     // Rail-scope commands never reach here (matched in the rail's own scope).

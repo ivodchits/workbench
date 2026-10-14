@@ -8,6 +8,10 @@
 // here, so the panel survives dockview detaching it on a project swap — this
 // component is the view; the store is the model. IO (read on open, write on save)
 // happens here and reports back through the store actions.
+//
+// "Add to prompt" (step V3, Ctrl+Shift+B while the editor is active) puts an
+// `@path#L…` reference to the selected lines in the project's last focused
+// Claude console, unsent.
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { IDockviewPanelProps } from "dockview";
@@ -26,10 +30,12 @@ import {
   type EditorSession,
   type OpenFile,
 } from "../../state/editors";
-import { setDragPaths } from "../../state/fileDrag";
+import { rangeReference, setDragPaths } from "../../state/fileDrag";
+import { registerCommand } from "../../keyboard/bus";
+import { insertIntoConsole, promptTargetFor } from "../consoleInput";
 import { detectLanguage, previewKind } from "./language";
 import FileTree from "./FileTree";
-import CodeMirrorView from "./CodeMirrorView";
+import CodeMirrorView, { type CodeMirrorHandle } from "./CodeMirrorView";
 import PreviewPane from "./PreviewPane";
 import { type PreviewPanelParams } from "../PreviewPanel";
 
@@ -56,6 +62,13 @@ export function EditorPanel(props: IDockviewPanelProps<EditorPanelParams>) {
   const setTitle = props.api.setTitle.bind(props.api);
   useEffect(() => setTitle(title), [setTitle, title]);
 
+  const { api } = props;
+  const [active, setActive] = useState(api.isActive);
+  useEffect(() => {
+    const sub = api.onDidActiveChange((e) => setActive(e.isActive));
+    return () => sub.dispose();
+  }, [api]);
+
   // Open (or focus) a standalone Preview panel beside this editor, bound to the
   // given file's live buffer. Reuses the deterministic id so re-triggering focuses
   // the existing pane rather than stacking duplicates.
@@ -79,17 +92,21 @@ export function EditorPanel(props: IDockviewPanelProps<EditorPanelParams>) {
   );
 
   if (!session) return <MissingEditor />;
-  return <EditorBody session={session} onPopOutPreview={openPreviewPanel} />;
+  return <EditorBody session={session} active={active} onPopOutPreview={openPreviewPanel} />;
 }
 
 function EditorBody({
   session,
+  active,
   onPopOutPreview,
 }: {
   session: EditorSession;
+  /** The dock's active panel: the one "add to prompt" reads. */
+  active: boolean;
   onPopOutPreview: (path: string) => void;
 }) {
-  const { editorId, rootPath, files, activePath } = session;
+  const { editorId, rootPath, files, activePath, projectId } = session;
+  const cmRef = useRef<CodeMirrorHandle>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [cursor, setCursor] = useState<{ line: number; col: number } | null>(null);
   const [treeCollapsed, setTreeCollapsed] = useState(false);
@@ -174,6 +191,25 @@ function EditorBody({
       if (f.content !== f.baseline) await save(f.path, f.content);
     }
   }, [files, save]);
+
+  // Reference the selected lines in the project's console, unsent (step V3).
+  const addToPrompt = () => {
+    const lines = activeFile && cmRef.current?.selectedLines();
+    if (!activeFile || !lines) return;
+    const target = promptTargetFor(projectId);
+    if (!target) {
+      setNotice("no running Claude console in this project to add it to");
+      return;
+    }
+    const text = `${rangeReference(activeFile.path, target.cwd || rootPath, lines[0], lines[1])} `;
+    if (insertIntoConsole(target.instanceId, text)) setNotice(null);
+  };
+  const addToPromptRef = useRef(addToPrompt);
+  addToPromptRef.current = addToPrompt;
+  useEffect(() => {
+    if (!active) return;
+    return registerCommand("addToPrompt", () => addToPromptRef.current());
+  }, [active]);
 
   const lang = activeFile ? detectLanguage(activeFile.name) : null;
   const kind = activeFile ? previewKind(activeFile.name) : null;
@@ -314,6 +350,7 @@ function EditorBody({
                 }}
               >
                 <CodeMirrorView
+                  ref={cmRef}
                   key={activeFile.path}
                   path={activeFile.path}
                   scrollKey={`cm:${editorId}:${activeFile.path}`}
@@ -346,6 +383,7 @@ function EditorBody({
           dirtyCount={files.reduce((n, f) => (f.content !== f.baseline ? n + 1 : n), 0)}
           onSave={save}
           onSaveAll={() => void saveAll()}
+          onAddToPrompt={addToPrompt}
         />
       </div>
     </div>
@@ -495,12 +533,14 @@ function Footer({
   dirtyCount,
   onSave,
   onSaveAll,
+  onAddToPrompt,
 }: {
   file: OpenFile | null;
   cursor: { line: number; col: number } | null;
   dirtyCount: number;
   onSave: (path: string, content: string) => Promise<void>;
   onSaveAll: () => void;
+  onAddToPrompt: () => void;
 }) {
   const dirty = file ? file.content !== file.baseline : false;
   return (
@@ -525,6 +565,15 @@ function Footer({
           </span>
           {cursor && <span>Ln {cursor.line}, Col {cursor.col}</span>}
           <span style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 12 }}>
+            <button
+              // Keep the editor's selection: a click would otherwise take focus first.
+              onMouseDown={(e) => e.preventDefault()}
+              onClick={onAddToPrompt}
+              title="put an @reference to the selected lines in this project's console, unsent (Ctrl+Shift+B)"
+              style={footerButton("var(--wb-textDim2)")}
+            >
+              @ to prompt
+            </button>
             {dirtyCount >= 2 && (
               <button onClick={onSaveAll} style={footerButton("var(--wb-accent)")}>
                 ⌃⇧S save all ({dirtyCount})

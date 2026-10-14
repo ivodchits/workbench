@@ -141,7 +141,8 @@ export function diffTheme(tokens: ThemeTokens = activeTheme): Extension {
       "&.cm-merge-a .cm-changedText, .cm-deletedChunk .cm-deletedText": { background: del(0.26) },
       "&.cm-merge-b .cm-changedText": { background: add(0.2) },
       "&.cm-merge-b .cm-deletedText": { background: del(0.26) },
-      ".cm-deletedChunk": { color: tokens.textDim2, paddingLeft: "0" },
+      // Relative: the revert button (V3) sits at the top right of its change.
+      ".cm-deletedChunk": { color: tokens.textDim2, paddingLeft: "0", position: "relative" },
       ".cm-changeGutter": { width: "3px", paddingLeft: "0" },
       "&.cm-merge-a .cm-changedLineGutter, .cm-deletedLineGutter": { background: tokens.needs },
       "&.cm-merge-b .cm-changedLineGutter": { background: tokens.done },
@@ -153,6 +154,23 @@ export function diffTheme(tokens: ThemeTokens = activeTheme): Extension {
         padding: "2px 10px",
       },
       ".cm-collapsedLines:hover": { color: tokens.accent },
+      // The revert button on each change (V3): over the change in unified, in the
+      // gap between the sides side by side.
+      ".cm-deletedChunk .cm-chunkButtons": { top: "0", zIndex: "1" },
+      ".cm-deletedChunk button.cm-wb-revert, .cm-merge-revert button.cm-wb-revert": {
+        background: tokens.titlebar,
+        color: tokens.textDim2,
+        border: `1px solid ${tokens.border}`,
+        borderRadius: "0",
+        margin: "0",
+        padding: "0 6px",
+        fontFamily: mono,
+        fontSize: "10.5px",
+        lineHeight: "1.5",
+        cursor: "pointer",
+      },
+      ".cm-merge-revert button.cm-wb-revert": { padding: "0", border: "none", background: "none" },
+      "button.cm-wb-revert:hover": { color: tokens.needs, borderColor: tokens.needs },
     },
     { dark: true },
   );

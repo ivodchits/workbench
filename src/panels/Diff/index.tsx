@@ -14,6 +14,11 @@
 // re-reads the list as files change (the open file updates in place), each file can
 // be marked viewed until it changes again, and the `diff…` commands step through
 // changes and files.
+//
+// Step V3 closed the loop back to the agent: comments on lines (the gutter's "+",
+// or Ctrl+Shift+O on a selection) collect in a list under the diff and go to the
+// instance as one prompt; "add to prompt" puts an `@path#L…` reference in its
+// console unsent; and each change has a revert button, behind a confirm.
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { IDockviewPanelProps } from "dockview";
@@ -37,9 +42,26 @@ import { registerCommand } from "../../keyboard/bus";
 import { useDiffs, type DiffSession } from "../../state/diffs";
 import { setDiffLayout, useDiffLayout } from "../../state/diffLayout";
 import { isViewed, toggleViewed, useViewed } from "../../state/diffViewed";
-import { setDragPaths } from "../../state/fileDrag";
+import { rangeReference, setDragPaths } from "../../state/fileDrag";
+import { useConsoles } from "../../state/consoles";
+import { getQueued, setQueued } from "../../state/queue";
+import {
+  addComment,
+  buildCommentsPrompt,
+  clearComments,
+  editComment,
+  location,
+  moveComments,
+  removeComment,
+  useComments,
+  type ReviewComment,
+} from "../../state/reviewComments";
+import { insertIntoConsole } from "../consoleInput";
+import { sendOrQueue } from "../promptDelivery";
+import Modal from "../InstanceManager/Modal";
+import { confirmButtonStyle } from "../Git/format";
 import { detectLanguage } from "../Editor/language";
-import MergeDiff, { type MergeDiffHandle } from "./MergeDiff";
+import MergeDiff, { type MergeDiffHandle, type PendingRevert, type StartAt } from "./MergeDiff";
 import UnifiedDiff from "./UnifiedDiff";
 
 export interface DiffPanelParams {
@@ -99,7 +121,7 @@ function DiffBody({
   active: boolean;
   activate: () => void;
 }) {
-  const { repoRoot, workingDir, diffId } = session;
+  const { repoRoot, workingDir, diffId, instanceId } = session;
   const [summary, setSummary] = useState<InstanceDiff | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -111,7 +133,16 @@ function DiffBody({
   /** Bumped by the refresh button to re-read the selected file's versions. */
   const [reread, setReread] = useState(0);
   /** Where a file reached by keyboard navigation puts its cursor once shown. */
-  const [startAt, setStartAt] = useState<{ path: string; at: "first" | "last" } | null>(null);
+  const [startAt, setStartAt] = useState<{ path: string; at: StartAt } | null>(null);
+  const comments = useComments(instanceId);
+  /** A comment being written, before it joins the list. */
+  const [draft, setDraft] = useState<Omit<ReviewComment, "id"> | null>(null);
+  /** A change's revert, waiting for the confirm. */
+  const [pendingRevert, setPendingRevert] = useState<PendingRevert | null>(null);
+  /** What the last comment action did ("sent", "no console", …). */
+  const [toast, setToast] = useState<string | null>(null);
+  const { open: consoles } = useConsoles();
+  const live = consoles.some((c) => c.instanceId === instanceId && c.status === "running" && !c.tornOff);
   const layout = useDiffLayout();
   const viewed = useViewed(diffId);
   const mergeRef = useRef<MergeDiffHandle>(null);
@@ -272,6 +303,67 @@ function DiffBody({
     [current, selectedFile, editable, loadSummary],
   );
 
+  // --- review comments (V3) ---------------------------------------------------
+  const startComment = useCallback(
+    (fromLine: number, toLine: number, quote: string) => {
+      if (!current) return;
+      setToast(null);
+      setDraft({ path: current.path, fromLine, toLine, quote, note: "" });
+    },
+    [current],
+  );
+  const commentSelection = () => {
+    const sel = mergeRef.current?.selection();
+    if (sel) startComment(sel.fromLine, sel.toLine, sel.text);
+  };
+  const addSelectionToPrompt = () => {
+    const sel = mergeRef.current?.selection();
+    const target = selectedFile?.absPath;
+    if (!sel || !target) return;
+    const text = `${rangeReference(target, workingDir, sel.fromLine, sel.toLine)} `;
+    if (!insertIntoConsole(instanceId, text)) setToast(NO_CONSOLE);
+  };
+  const sendComments = () => {
+    if (comments.length === 0) return;
+    if (!live) {
+      setToast(NO_CONSOLE);
+      return;
+    }
+    const prompt = buildCommentsPrompt(comments);
+    // The queue holds one prompt: one already waiting is kept, ahead of these.
+    const waiting = getQueued(instanceId)?.text;
+    const how = sendOrQueue(instanceId, prompt);
+    if (how === "queued" && waiting) setQueued(instanceId, `${waiting}\n\n${prompt}`);
+    const n = comments.length;
+    clearComments(instanceId);
+    setToast(
+      how === "sent"
+        ? `${GLYPH.ok} sent ${n} comment${n === 1 ? "" : "s"}`
+        : `queued ${n} comment${n === 1 ? "" : "s"} — sent when the agent finishes its turn`,
+    );
+  };
+  /** Show a comment's lines: in the open file, or by opening its file there. */
+  const showComment = (c: ReviewComment) => {
+    if (current?.path === c.path) mergeRef.current?.goToLine(c.fromLine);
+    else {
+      setStartAt({ path: c.path, at: { line: c.fromLine } });
+      setSelected(c.path);
+    }
+  };
+  const confirmRevert = () => {
+    const run = pendingRevert;
+    setPendingRevert(null);
+    if (!run) return;
+    if (!run()) {
+      setNotice("the file changed meanwhile — nothing reverted");
+      return;
+    }
+    const text = mergeRef.current?.content();
+    if (text != null) void save(text);
+  };
+  const commentActions = useRef({ commentSelection, sendComments, addSelectionToPrompt });
+  commentActions.current = { commentSelection, sendComments, addSelectionToPrompt };
+
   // Keyboard review (step V2), through refs so the registrations below needn't
   // churn on every render.
   // `reading`: the selected file's versions haven't arrived, so there is no view to
@@ -312,13 +404,24 @@ function DiffBody({
         const file = nav.current.selectedFile;
         if (file) toggleViewed(diffId, file);
       }),
+      on("diffAddComment", () => commentActions.current.commentSelection()),
+      on("diffSendComments", () => commentActions.current.sendComments()),
     ];
     return () => {
       for (const dispose of disposers) dispose();
     };
   }, [active, activate, goFile, diffId]);
 
+  // "Add to prompt" takes the selection of whichever panel is active: this one
+  // while it is, the editor's while that is.
+  useEffect(() => {
+    if (!active) return;
+    return registerCommand("addToPrompt", () => commentActions.current.addSelectionToPrompt());
+  }, [active]);
+
   const lang = selectedFile ? detectLanguage(selectedFile.path) : null;
+
+  const fileComments = current ? comments.filter((c) => c.path === current.path) : EMPTY_COMMENTS;
 
   let view: React.ReactNode;
   if (!selectedFile) {
@@ -354,6 +457,10 @@ function DiffBody({
         editable={editable}
         language={lang?.extension ?? null}
         scrollKey={`diff:${diffId}:${current.path}:${layout}`}
+        comments={fileComments}
+        onAddComment={startComment}
+        onCommentsMoved={(lines) => moveComments(instanceId, lines)}
+        onRevert={(run) => setPendingRevert(() => run)}
         onChange={(content) =>
           setLoaded((l) => (l && l.path === current.path ? { ...l, content } : l))
         }
@@ -385,6 +492,7 @@ function DiffBody({
             files={files}
             selected={selected}
             isViewed={(f) => isViewed(viewed, f)}
+            commentCount={(f) => comments.filter((c) => c.path === f.path).length}
             onSelect={pick}
             onToggleViewed={(f) => toggleViewed(diffId, f)}
           />
@@ -398,15 +506,65 @@ function DiffBody({
                 notice={current ? notice : null}
                 onLayout={setDiffLayout}
                 onSave={current ? () => void save(current.content) : undefined}
+                onComment={current && !current.versions.tooLarge ? commentSelection : undefined}
+                onAddToPrompt={current && !current.versions.tooLarge ? addSelectionToPrompt : undefined}
               />
             )}
             <div style={{ flex: 1, minHeight: 0 }}>{view}</div>
           </div>
         </div>
       )}
+
+      {(comments.length > 0 || draft || toast) && (
+        <Comments
+          comments={comments}
+          draft={draft}
+          toast={toast}
+          live={live}
+          onDraft={(note) => setDraft((d) => (d ? { ...d, note } : d))}
+          onAdd={() => {
+            if (draft?.note.trim()) addComment(instanceId, { ...draft, note: draft.note.trim() });
+            setDraft(null);
+          }}
+          onCancel={() => setDraft(null)}
+          onEdit={(id, note) => editComment(instanceId, id, note)}
+          onRemove={(id) => removeComment(instanceId, id)}
+          onShow={showComment}
+          onSend={sendComments}
+          onClear={() => {
+            clearComments(instanceId);
+            setToast(null);
+          }}
+          onDismiss={() => setToast(null)}
+        />
+      )}
+
+      {pendingRevert && (
+        <Modal title="revert change" onClose={() => setPendingRevert(null)} width={420}>
+          <div style={{ fontSize: 12.5, color: "var(--wb-text)", lineHeight: 1.5 }}>
+            Put this change back to the base version and save the file?{" "}
+            {dirty && "Your unsaved edits to it are saved too. "}
+            Ctrl+Z in the diff undoes it while the file stays open; then save again.
+          </div>
+          <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 16 }}>
+            <button onClick={() => setPendingRevert(null)} style={confirmButtonStyle}>
+              cancel
+            </button>
+            <button
+              onClick={confirmRevert}
+              style={{ ...confirmButtonStyle, borderColor: "var(--wb-needs)", color: "var(--wb-needs)" }}
+            >
+              ↶ revert
+            </button>
+          </div>
+        </Modal>
+      )}
     </div>
   );
 }
+
+const NO_CONSOLE = "this session has no running console here — open it first";
+const EMPTY_COMMENTS: ReviewComment[] = [];
 
 const EMPTY_FILES: DiffFile[] = [];
 
@@ -498,12 +656,14 @@ function FileList({
   files,
   selected,
   isViewed,
+  commentCount,
   onSelect,
   onToggleViewed,
 }: {
   files: DiffFile[];
   selected: string | null;
   isViewed: (file: DiffFile) => boolean;
+  commentCount: (file: DiffFile) => number;
   onSelect: (path: string) => void;
   onToggleViewed: (file: DiffFile) => void;
 }) {
@@ -522,6 +682,7 @@ function FileList({
         const name = f.path.split("/").pop() || f.path;
         const dir = f.path.slice(0, f.path.length - name.length);
         const seen = isViewed(f);
+        const noted = commentCount(f);
         return (
           <div
             key={f.path}
@@ -579,6 +740,11 @@ function FileList({
                 <span style={{ color: active ? "var(--wb-text)" : "var(--wb-textDim2)" }}>{name}</span>
               </span>
               <span style={{ flex: "0 0 auto", font: "10px var(--wb-mono)" }}>
+                {noted > 0 && (
+                  <span style={{ color: "var(--wb-working)" }} title={`${noted} pending comment${noted === 1 ? "" : "s"}`}>
+                    ●{noted}{" "}
+                  </span>
+                )}
                 {f.insertions > 0 && <span style={{ color: "var(--wb-done)" }}>+{f.insertions} </span>}
                 {f.deletions > 0 && <span style={{ color: "var(--wb-needs)" }}>−{f.deletions}</span>}
               </span>
@@ -598,6 +764,8 @@ function FileBar({
   notice,
   onLayout,
   onSave,
+  onComment,
+  onAddToPrompt,
 }: {
   file: DiffFile;
   layout: DiffLayout;
@@ -606,6 +774,9 @@ function FileBar({
   notice: string | null;
   onLayout: (layout: DiffLayout) => void;
   onSave?: () => void;
+  /** Comment on / reference the selected lines (V3); absent when there is no view. */
+  onComment?: () => void;
+  onAddToPrompt?: () => void;
 }) {
   return (
     <div
@@ -613,7 +784,9 @@ function FileBar({
         flex: "0 0 auto",
         display: "flex",
         alignItems: "center",
+        flexWrap: "wrap",
         gap: 8,
+        rowGap: 3,
         padding: "4px 10px",
         borderBottom: "1px solid var(--wb-border)",
         background: "var(--wb-titlebar)",
@@ -640,6 +813,19 @@ function FileBar({
         </span>
       )}
       <span style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 6, flex: "0 0 auto" }}>
+        {onComment && (
+          <BarButton onClick={onComment} title="comment on the selected lines (Ctrl+Shift+O) — or click + in the gutter">
+            + comment
+          </BarButton>
+        )}
+        {onAddToPrompt && (
+          <BarButton
+            onClick={onAddToPrompt}
+            title="put an @reference to the selected lines in the session's prompt, unsent (Ctrl+Shift+B)"
+          >
+            @ to prompt
+          </BarButton>
+        )}
         <BarButton active={layout === "unified"} onClick={() => onLayout("unified")}>
           unified
         </BarButton>
@@ -662,12 +848,14 @@ function BarButton({
   active,
   disabled,
   accent,
+  title,
 }: {
   children: React.ReactNode;
   onClick?: () => void;
   active?: boolean;
   disabled?: boolean;
   accent?: boolean;
+  title?: string;
 }) {
   const color = disabled
     ? "var(--wb-textFaint)"
@@ -678,6 +866,7 @@ function BarButton({
     <button
       onClick={onClick}
       disabled={disabled}
+      title={title}
       style={{
         background: active ? "var(--wb-accentSoft)" : "transparent",
         border: "none",
@@ -692,6 +881,238 @@ function BarButton({
     </button>
   );
 }
+
+/** The pending review comments (V3), the one being written, and sending them. */
+function Comments({
+  comments,
+  draft,
+  toast,
+  live,
+  onDraft,
+  onAdd,
+  onCancel,
+  onEdit,
+  onRemove,
+  onShow,
+  onSend,
+  onClear,
+  onDismiss,
+}: {
+  comments: readonly ReviewComment[];
+  draft: Omit<ReviewComment, "id"> | null;
+  toast: string | null;
+  /** The session has a running console to send to. */
+  live: boolean;
+  onDraft: (note: string) => void;
+  onAdd: () => void;
+  onCancel: () => void;
+  onEdit: (id: string, note: string) => void;
+  onRemove: (id: string) => void;
+  onShow: (comment: ReviewComment) => void;
+  onSend: () => void;
+  onClear: () => void;
+  onDismiss: () => void;
+}) {
+  const [editing, setEditing] = useState<{ id: string; note: string } | null>(null);
+  const n = comments.length;
+  return (
+    <div
+      style={{
+        flex: "0 1 auto",
+        maxHeight: "40%",
+        display: "flex",
+        flexDirection: "column",
+        minHeight: 0,
+        borderTop: "1px solid var(--wb-border)",
+        background: "var(--wb-panel)",
+        font: "11px var(--wb-mono)",
+      }}
+    >
+      <div
+        style={{
+          flex: "0 0 auto",
+          display: "flex",
+          alignItems: "center",
+          flexWrap: "wrap",
+          gap: 8,
+          padding: "4px 10px",
+          background: "var(--wb-titlebar)",
+          color: "var(--wb-textDim2)",
+        }}
+      >
+        <span style={{ color: n ? "var(--wb-working)" : "var(--wb-textFaint)" }}>
+          {n ? `${n} comment${n === 1 ? "" : "s"}` : "comments"}
+        </span>
+        {toast && (
+          <button onClick={onDismiss} title="dismiss" style={{ ...linkButton, color: "var(--wb-textDim2)" }}>
+            {toast}
+          </button>
+        )}
+        <span style={{ marginLeft: "auto", display: "flex", gap: 6 }}>
+          {n > 0 && (
+            <BarButton onClick={onClear} title="drop every pending comment">
+              clear
+            </BarButton>
+          )}
+          {n > 0 && (
+            <BarButton
+              onClick={onSend}
+              disabled={!live}
+              accent
+              title={
+                live
+                  ? "send them to the agent as one prompt — queued if it is mid-turn"
+                  : "this session has no running console here"
+              }
+            >
+              ⏎ send {n} to agent
+            </BarButton>
+          )}
+        </span>
+      </div>
+      <div style={{ overflow: "auto", minHeight: 0 }}>
+        {draft && (
+          <div style={{ padding: "6px 10px", borderBottom: "1px solid var(--wb-border)" }}>
+            <div style={{ color: "var(--wb-text)" }}>{location(draft)}</div>
+            <Quote text={draft.quote} />
+            <NoteField
+              value={draft.note}
+              placeholder="what should change here? — Ctrl+Enter adds, Esc cancels"
+              onChange={onDraft}
+              onSubmit={onAdd}
+              onCancel={onCancel}
+            />
+            <div style={{ display: "flex", gap: 6, marginTop: 4 }}>
+              <BarButton onClick={onAdd} disabled={!draft.note.trim()} accent>
+                add comment
+              </BarButton>
+              <BarButton onClick={onCancel}>cancel</BarButton>
+            </div>
+          </div>
+        )}
+        {comments.map((c) => (
+          <div
+            key={c.id}
+            style={{ display: "flex", gap: 8, padding: "5px 10px", borderBottom: "1px solid var(--wb-border)" }}
+          >
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <button onClick={() => onShow(c)} title="show these lines" style={linkButton}>
+                {location(c)}
+              </button>
+              {editing?.id === c.id ? (
+                <NoteField
+                  value={editing.note}
+                  onChange={(note) => setEditing({ id: c.id, note })}
+                  onSubmit={() => {
+                    onEdit(c.id, editing.note);
+                    setEditing(null);
+                  }}
+                  onCancel={() => setEditing(null)}
+                />
+              ) : (
+                <div
+                  style={{ color: "var(--wb-text)", whiteSpace: "pre-wrap", overflowWrap: "anywhere", cursor: "text" }}
+                  onClick={() => setEditing({ id: c.id, note: c.note })}
+                  title="click to edit"
+                >
+                  {c.note}
+                </div>
+              )}
+            </div>
+            <span style={{ flex: "0 0 auto", display: "flex", alignItems: "flex-start", gap: 4 }}>
+              {editing?.id !== c.id && (
+                <BarButton onClick={() => setEditing({ id: c.id, note: c.note })} title="edit the note">
+                  edit
+                </BarButton>
+              )}
+              <BarButton onClick={() => onRemove(c.id)} title="remove this comment">
+                ×
+              </BarButton>
+            </span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function Quote({ text }: { text: string }) {
+  const lines = text.split("\n");
+  const shown = lines.slice(0, 3).join("\n") + (lines.length > 3 ? `\n… ${lines.length - 3} more` : "");
+  return (
+    <pre
+      style={{
+        margin: "3px 0",
+        padding: "2px 6px",
+        borderLeft: "2px solid var(--wb-border)",
+        color: "var(--wb-textFaint)",
+        font: "10.5px var(--wb-mono)",
+        whiteSpace: "pre",
+        overflow: "hidden",
+        textOverflow: "ellipsis",
+      }}
+    >
+      {shown}
+    </pre>
+  );
+}
+
+function NoteField({
+  value,
+  placeholder,
+  onChange,
+  onSubmit,
+  onCancel,
+}: {
+  value: string;
+  placeholder?: string;
+  onChange: (value: string) => void;
+  onSubmit: () => void;
+  onCancel: () => void;
+}) {
+  return (
+    <textarea
+      autoFocus
+      value={value}
+      placeholder={placeholder}
+      rows={3}
+      onChange={(e) => onChange(e.target.value)}
+      onKeyDown={(e) => {
+        // Stays here: Enter is a new line, and the panel's own keys mustn't fire.
+        e.stopPropagation();
+        if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
+          e.preventDefault();
+          onSubmit();
+        } else if (e.key === "Escape") {
+          e.preventDefault();
+          onCancel();
+        }
+      }}
+      style={{
+        width: "100%",
+        boxSizing: "border-box",
+        marginTop: 3,
+        resize: "vertical",
+        background: "var(--wb-bg)",
+        color: "var(--wb-text)",
+        border: "1px solid var(--wb-borderActive)",
+        outline: "none",
+        padding: "4px 6px",
+        font: "11.5px var(--wb-mono)",
+      }}
+    />
+  );
+}
+
+const linkButton: React.CSSProperties = {
+  background: "transparent",
+  border: "none",
+  padding: 0,
+  cursor: "pointer",
+  color: "var(--wb-accent)",
+  font: "11px var(--wb-mono)",
+  textAlign: "left",
+};
 
 function Note({ children }: { children: React.ReactNode }) {
   return (

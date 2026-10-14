@@ -64,6 +64,13 @@ export function reference(path: string, cwd: string): string {
   return /\s/.test(shown) ? `@"${shown}"` : `@${shown}`;
 }
 
+/** A reference to lines of a file (step V3), `@path#L12` or `@path#L12-14` — the
+ *  form Claude Code's own editor integrations write. */
+export function rangeReference(path: string, cwd: string, fromLine: number, toLine: number): string {
+  const lines = fromLine === toLine ? `#L${fromLine}` : `#L${fromLine}-${toLine}`;
+  return `${reference(path, cwd)}${lines}`;
+}
+
 /** The text a drop of `paths` inserts: a reference per file, each followed by a
  *  space so typing can carry straight on. */
 export function referenceText(paths: string[], cwd: string): string {
