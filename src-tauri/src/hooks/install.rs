@@ -34,6 +34,17 @@ pub const HOOK_PATH: &str = if cfg!(debug_assertions) {
     "/__workbench_hook"
 };
 
+/// The environment variable every Workbench-spawned `claude` carries: the id of the
+/// instance whose console it runs in. Hooks echo it back in [`INSTANCE_HEADER`], so
+/// an event names its console even when its session id is one Workbench never saw
+/// (an in-console `/resume`, or a `/clear` after one).
+pub const INSTANCE_ENV: &str = "WORKBENCH_INSTANCE_ID";
+
+/// The request header our hooks send [`INSTANCE_ENV`] in. Claude Code interpolates
+/// it only because the entry lists the variable in `allowedEnvVars`; a `claude` not
+/// started by Workbench sends it empty (or uninterpolated).
+pub const INSTANCE_HEADER: &str = "x-workbench-instance";
+
 /// The hook events Workbench subscribes to (design §4.4). All are valid Claude Code
 /// event names. A single matcher-less entry per event fires for every matcher, so
 /// the server receives e.g. all `Notification` types and inspects the payload.
@@ -138,9 +149,15 @@ fn apply_hooks(settings: &mut Value, url: &str) -> Result<(), String> {
         }
 
         // Append our fresh entry: matcher-less (fires for all matchers), one http
-        // hook to our endpoint.
+        // hook to our endpoint, naming the console it came from (see
+        // [`INSTANCE_HEADER`]).
         next.push(json!({
-            "hooks": [ { "type": "http", "url": url } ]
+            "hooks": [ {
+                "type": "http",
+                "url": url,
+                "headers": { INSTANCE_HEADER: format!("${INSTANCE_ENV}") },
+                "allowedEnvVars": [INSTANCE_ENV],
+            } ]
         }));
 
         hooks.insert(event.to_string(), Value::Array(next));
@@ -248,6 +265,10 @@ mod tests {
             let entries = settings["hooks"][event].as_array().unwrap();
             assert_eq!(entries.len(), 1, "{event} should have one entry");
         }
+        // Each hook names its console through the instance header.
+        let hook = &settings["hooks"]["Stop"][0]["hooks"][0];
+        assert_eq!(hook["headers"][INSTANCE_HEADER], json!("$WORKBENCH_INSTANCE_ID"));
+        assert_eq!(hook["allowedEnvVars"], json!(["WORKBENCH_INSTANCE_ID"]));
 
         std::fs::remove_dir_all(path.parent().unwrap()).ok();
     }

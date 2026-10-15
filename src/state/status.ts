@@ -161,10 +161,13 @@ export function reduceStatus(
       // follows; the next `UserPromptSubmit` carries the new id and is re-correlated
       // by cwd in the backend `adopt` path). Marking the card "ended" here is the bug
       // that made `/clear` look like it killed the session — so treat a clear as a
-      // fresh idle turn and let the next event light it back up. Every other reason
+      // fresh idle turn and let the next event light it back up. An in-console
+      // `/resume` (`reason: "resume"`) swaps sessions the same way — the backend
+      // adopts the resumed one by the console's instance id. Every other reason
       // (`prompt_input_exit`, `logout`, `other`) is a genuine end.
       const reason = typeof event.reason === "string" ? event.reason : "";
-      return to(reason === "clear" ? "idle" : "ended", true, { subagents: 0 });
+      const rotated = reason === "clear" || reason === "resume";
+      return to(rotated ? "idle" : "ended", true, { subagents: 0 });
     }
 
     // --- you acted (instant): start a new turn, clearing any resting state ---

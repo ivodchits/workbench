@@ -19,14 +19,14 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use axum::body::Bytes;
 use axum::extract::State;
-use axum::http::StatusCode;
+use axum::http::{HeaderMap, StatusCode};
 use axum::routing::post;
 use axum::Router;
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager};
 
 use super::events::{HookEnvelope, HookEvent};
-use super::install::HOOK_PATH;
+use super::install::{HOOK_PATH, INSTANCE_HEADER};
 use crate::pty::PtyManager;
 
 /// The Tauri event name carrying accepted, instance-tagged hook events.
@@ -132,9 +132,14 @@ fn classify(body: &[u8], resolve: impl Fn(&str) -> Option<String>) -> Decision {
 }
 
 /// Handle one hook POST. Always returns `200` — pure observation, never blocking.
-async fn handle(State(ctx): State<Arc<HookContext>>, body: Bytes) -> StatusCode {
+async fn handle(
+    State(ctx): State<Arc<HookContext>>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> StatusCode {
     ctx.received.fetch_add(1, Ordering::Relaxed);
     let pty = ctx.app.state::<PtyManager>();
+    let named = named_instance(&headers);
     let decision = classify(&body, |sid| pty.instance_for_session(sid));
     let envelope = match decision {
         Decision::Accept(envelope) => {
@@ -145,7 +150,8 @@ async fn handle(State(ctx): State<Arc<HookContext>>, body: Bytes) -> StatusCode 
             // (or a foreign `claude`) sharing the cwd can never absorb the rotated
             // session — the bug where closing the masking siblings let a stray
             // clear-rotation flip a working card to idle.
-            if is_clear_rotation(&envelope.event) {
+            // An in-console `/resume` swaps the session the same way.
+            if is_rotation(&envelope.event) {
                 pty.mark_pending_rotation(&envelope.instance_id);
             }
             Some(envelope)
@@ -161,7 +167,7 @@ async fn handle(State(ctx): State<Arc<HookContext>>, body: Bytes) -> StatusCode 
             let sid = event.session_id.clone();
             let cwd = event.cwd.clone();
             let name = event.hook_event_name.clone().unwrap_or_default();
-            match adopt(&pty, *event) {
+            match adopt(&pty, *event, named.as_deref()) {
                 Some(env) => {
                     eprintln!(
                         "[hooks] adopt: session={sid} cwd={cwd:?} event={name} -> instance={}",
@@ -211,15 +217,36 @@ async fn handle_statusline(State(ctx): State<Arc<HookContext>>, body: Bytes) -> 
     StatusCode::OK
 }
 
-/// Try to rescue a dropped event by re-correlating a rotated session to a live
-/// instance via its working dir. `/clear` and `/compact` mint a fresh session id
+/// The instance a hook says it came from: the `WORKBENCH_INSTANCE_ID` its `claude`
+/// was spawned with, echoed in [`INSTANCE_HEADER`]. `None` for a `claude` Workbench
+/// didn't start, whose header arrives empty — or as the bare `$VAR` reference, if
+/// the variable is left uninterpolated.
+fn named_instance(headers: &HeaderMap) -> Option<String> {
+    let value = headers.get(INSTANCE_HEADER)?.to_str().ok()?.trim();
+    (!value.is_empty() && !value.starts_with('$')).then(|| value.to_string())
+}
+
+/// Try to rescue a dropped event by re-correlating it to a live instance. First by
+/// the instance its hook named, when that console is expecting a new session —
+/// it just rotated, or this is the `SessionStart` of an in-console `/resume` or
+/// `/clear` (see [`is_session_switch`]); otherwise by working dir, as below.
+///
+/// The working-dir path covers a console spawned before its hooks carried the
+/// instance header. `/clear` and `/compact` mint a fresh session id
 /// that keeps running in the same cwd, and the first rotated event we see may be a
 /// prompt or tool event (not necessarily `SessionStart`) — every event carries
 /// `cwd`, so any of them can re-register the mapping. Returns the instance-tagged
 /// envelope on success; a genuinely foreign session (no live instance in that dir)
 /// matches nothing and stays dropped.
-fn adopt(pty: &PtyManager, event: HookEvent) -> Option<HookEnvelope> {
-    let instance_id = pty.adopt_session_for_cwd(&event.session_id, event.cwd.as_deref()?)?;
+fn adopt(pty: &PtyManager, event: HookEvent, named: Option<&str>) -> Option<HookEnvelope> {
+    let by_name = named.filter(|id| {
+        (pty.is_pending_rotation(id) || is_session_switch(&event))
+            && pty.adopt_session_for_instance(&event.session_id, id)
+    });
+    let instance_id = match by_name {
+        Some(id) => id.to_string(),
+        None => pty.adopt_session_for_cwd(&event.session_id, event.cwd.as_deref()?)?,
+    };
     Some(HookEnvelope {
         instance_id,
         received_at: now(),
@@ -234,8 +261,34 @@ fn adopt(pty: &PtyManager, event: HookEvent) -> Option<HookEnvelope> {
 /// reasons (`prompt_input_exit` / `logout` / `other`) are genuine deaths, not
 /// rotations, and must not flag a pending adoption.
 fn is_clear_rotation(event: &HookEvent) -> bool {
-    event.hook_event_name.as_deref() == Some("SessionEnd")
-        && event.rest.get("reason").and_then(|v| v.as_str()) == Some("clear")
+    end_reason(event) == Some("clear")
+}
+
+/// True iff the emitting console keeps running under another session id: a
+/// `/clear`, or an in-console `/resume` (`SessionEnd{reason:"resume"}`). Either
+/// makes the instance an adoption target for the session that replaces it.
+fn is_rotation(event: &HookEvent) -> bool {
+    matches!(end_reason(event), Some("clear" | "resume"))
+}
+
+/// The `reason` of a `SessionEnd`; `None` for any other event.
+fn end_reason(event: &HookEvent) -> Option<&str> {
+    if event.hook_event_name.as_deref() != Some("SessionEnd") {
+        return None;
+    }
+    event.rest.get("reason").and_then(|v| v.as_str())
+}
+
+/// True iff this is the `SessionStart` of a console switching sessions in place
+/// (`source` `resume`, `clear` or `compact`). A `claude` started *inside* a
+/// console — by a tool call, say — inherits its instance id but starts with
+/// `source:"startup"`, so it is never mistaken for the console's own session.
+fn is_session_switch(event: &HookEvent) -> bool {
+    event.hook_event_name.as_deref() == Some("SessionStart")
+        && matches!(
+            event.rest.get("source").and_then(|v| v.as_str()),
+            Some("resume" | "clear" | "compact")
+        )
 }
 
 fn now() -> i64 {
@@ -298,9 +351,9 @@ mod tests {
         }
     }
 
-    /// Only `SessionEnd{reason:"clear"}` flags a pending rotation — the signal that
-    /// a `/clear` is re-minting the session id in the same cwd. Other `SessionEnd`
-    /// reasons are genuine deaths and must not make the instance an adoption target.
+    /// Only `SessionEnd{reason:"clear"}` is a `/clear` — the signal that the
+    /// session id is being re-minted in the same cwd. Other `SessionEnd` reasons
+    /// are genuine deaths or (`resume`) a rotation that isn't a clear.
     #[test]
     fn clear_rotation_is_detected() {
         let parse = |body: &[u8]| serde_json::from_slice::<HookEvent>(body).unwrap();
@@ -319,5 +372,59 @@ mod tests {
         assert!(!is_clear_rotation(&parse(
             br#"{"session_id":"a","hook_event_name":"Stop","reason":"clear"}"#
         )));
+    }
+
+    /// A `/clear` or an in-console `/resume` keeps the console running under a new
+    /// session id, so both make the instance an adoption target; a real end doesn't.
+    #[test]
+    fn clear_and_resume_are_rotations() {
+        let parse = |body: &[u8]| serde_json::from_slice::<HookEvent>(body).unwrap();
+        for reason in ["clear", "resume"] {
+            let body = format!(
+                r#"{{"session_id":"a","hook_event_name":"SessionEnd","reason":"{reason}"}}"#
+            );
+            assert!(is_rotation(&parse(body.as_bytes())), "{reason}");
+        }
+        assert!(!is_rotation(&parse(
+            br#"{"session_id":"a","hook_event_name":"SessionEnd","reason":"prompt_input_exit"}"#
+        )));
+        assert!(!is_clear_rotation(&parse(
+            br#"{"session_id":"a","hook_event_name":"SessionEnd","reason":"resume"}"#
+        )));
+    }
+
+    /// A console switching sessions in place starts the new one with `source`
+    /// `resume` / `clear` / `compact`; a `claude` launched inside the console (which
+    /// inherits its instance id) starts with `startup` and must not take it over.
+    #[test]
+    fn session_switch_excludes_nested_startups() {
+        let parse = |body: &[u8]| serde_json::from_slice::<HookEvent>(body).unwrap();
+        for source in ["resume", "clear", "compact"] {
+            let body = format!(
+                r#"{{"session_id":"b","hook_event_name":"SessionStart","source":"{source}"}}"#
+            );
+            assert!(is_session_switch(&parse(body.as_bytes())), "{source}");
+        }
+        assert!(!is_session_switch(&parse(
+            br#"{"session_id":"b","hook_event_name":"SessionStart","source":"startup"}"#
+        )));
+        assert!(!is_session_switch(&parse(
+            br#"{"session_id":"b","hook_event_name":"UserPromptSubmit","source":"resume"}"#
+        )));
+    }
+
+    /// The instance header counts only when it carries a value: a `claude` Workbench
+    /// didn't start sends it empty, or as the uninterpolated `$VAR`.
+    #[test]
+    fn reads_the_named_instance() {
+        let with = |value: &str| {
+            let mut h = HeaderMap::new();
+            h.insert(INSTANCE_HEADER, value.parse().unwrap());
+            h
+        };
+        assert_eq!(named_instance(&with("inst-1")).as_deref(), Some("inst-1"));
+        assert_eq!(named_instance(&with("")), None);
+        assert_eq!(named_instance(&with("$WORKBENCH_INSTANCE_ID")), None);
+        assert_eq!(named_instance(&HeaderMap::new()), None);
     }
 }

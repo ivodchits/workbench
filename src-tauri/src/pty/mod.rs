@@ -441,6 +441,29 @@ impl PtyManager {
         Some(instance_id)
     }
 
+    /// Re-correlate a session id Workbench didn't mint to the instance its hooks
+    /// named (the `WORKBENCH_INSTANCE_ID` the console's `claude` was spawned with),
+    /// replacing that instance's mapping. Unlike [`Self::adopt_session_for_cwd`]
+    /// there is no guessing: the event says which console it came from. Returns
+    /// `false` — leaving the event dropped — when the id isn't a live PTY of this
+    /// app (another build's console, or one that has exited).
+    pub fn adopt_session_for_instance(&self, session_id: &str, instance_id: &str) -> bool {
+        {
+            let mut sessions = self.sessions.lock().unwrap();
+            let Some(s) = sessions.get_mut(instance_id) else {
+                return false;
+            };
+            if matches!(s.child.try_wait(), Ok(Some(_))) {
+                return false;
+            }
+        }
+        self.pending_rotation.lock().unwrap().remove(instance_id);
+        let mut map = self.by_session.lock().unwrap();
+        map.retain(|_, v| v != instance_id);
+        map.insert(session_id.to_string(), instance_id.to_string());
+        true
+    }
+
     /// Attach a **remote** WS subscriber (step 4.5) to an instance's live PTY. The
     /// hub replays its ring buffer into `tx` immediately (scrollback on attach), then
     /// fans subsequent output to it alongside any desktop subscribers, with a
@@ -611,7 +634,11 @@ pub fn pty_spawn(
                 } else {
                     ["--session-id", sid]
                 };
-                vec![claude_command(&session_args, &cwd)?]
+                let mut cmd = claude_command(&session_args, &cwd)?;
+                // Lets this console's hooks name it even under a session id we
+                // didn't mint (an in-console `/resume`, or a `/clear` after one).
+                cmd.env(crate::hooks::install::INSTANCE_ENV, &instance_id);
+                vec![cmd]
             }
             SpawnKind::Shell => shell_candidates(&cwd),
         }
