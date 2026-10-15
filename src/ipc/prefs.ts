@@ -38,6 +38,8 @@ export interface Prefs {
   /** The prompt a fresh reviewing agent gets (step A1), keyed by project id.
    *  Absent = the default; `{base}` is filled with the diff's base. */
   reviewPrompts: Record<string, string>;
+  /** The editor shows markdown files formatted while editing (step N2). Absent = off. */
+  editorLiveMarkdown: boolean;
 }
 
 /** One column with the old lines above the new, or the two versions side by side. */

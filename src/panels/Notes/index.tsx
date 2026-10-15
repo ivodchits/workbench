@@ -1,6 +1,7 @@
 // Notes panel (step N1) — a project's notes: the list on the left (new, rename,
-// delete, filter), the open note on the right, edited as markdown with a preview
-// beside or instead of the editor. Notes are files in the app data dir, read and
+// delete, filter), the open note on the right, edited as markdown that reads
+// formatted while it is typed (step N2), or as source with a preview beside or
+// instead of the editor. Notes are files in the app data dir, read and
 // written through the backend notes module (`ipc/notes`), which refuses a save
 // based on a stale revision; the panel then offers to reload or overwrite.
 //
@@ -48,7 +49,15 @@ export interface NotesPanelParams {
   notesId: string;
 }
 
-type ViewMode = "edit" | "split" | "preview";
+/** live: rendered while editing (N2); source: the plain markdown. */
+type ViewMode = "live" | "source" | "split" | "preview";
+
+const MODE_TITLE: Record<ViewMode, string> = {
+  live: "formatted while you type — the markup shows on the line you're editing",
+  source: "the plain markdown",
+  split: "the plain markdown beside its preview",
+  preview: "the preview alone",
+};
 
 const MARKDOWN = detectLanguage("note.md")?.extension ?? null;
 
@@ -90,7 +99,7 @@ function NotesBody({ session }: { session: NotesSession }) {
   const [notice, setNotice] = useState<string | null>(null);
   /** The note on screen changed elsewhere while it had unsaved edits here. */
   const [conflict, setConflict] = useState(false);
-  const [mode, setMode] = useState<ViewMode>("edit");
+  const [mode, setMode] = useState<ViewMode>("live");
   const [renaming, setRenaming] = useState<string | null>(null);
   const [deleting, setDeleting] = useState<string | null>(null);
   /** Bumped when the open note is re-read from disk, to rebuild the editor on it. */
@@ -330,10 +339,11 @@ function NotesBody({ session }: { session: NotesSession }) {
                     onChange={(content) => editBuffer(projectId, activeNote, content)}
                     onSave={(content) => void save(content)}
                     onSaveAll={() => void save(buffer.content)}
+                    live={mode === "live"}
                   />
                 </div>
               )}
-              {mode !== "edit" && (
+              {(mode === "split" || mode === "preview") && (
                 <div style={{ flex: 1, minWidth: 0, minHeight: 0 }}>
                   <PreviewPane kind="markdown" source={buffer.content} scrollKey={`note-preview:${projectId}:${activeNote}`} />
                 </div>
@@ -612,8 +622,8 @@ function Bar({
         <BarButton onClick={onSendReference} disabled={!target} title={`put an @reference to the note in ${to}, unsent`}>
           @ to agent
         </BarButton>
-        {(["edit", "split", "preview"] as const).map((m) => (
-          <BarButton key={m} active={mode === m} onClick={() => onMode(m)}>
+        {(["live", "source", "split", "preview"] as const).map((m) => (
+          <BarButton key={m} active={mode === m} onClick={() => onMode(m)} title={MODE_TITLE[m]}>
             {m}
           </BarButton>
         ))}

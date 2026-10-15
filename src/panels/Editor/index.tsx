@@ -18,6 +18,7 @@ import type { IDockviewPanelProps } from "dockview";
 
 import { GLYPH } from "../../theme";
 import { readFile, writeFile, type DirEntry } from "../../ipc/fs";
+import { getPref, setPref } from "../../ipc/prefs";
 import {
   closeFile,
   consumePendingOpen,
@@ -113,6 +114,17 @@ function EditorBody({
   // In-panel markdown preview split (editor | preview). Persisted only in component
   // state; gated by the active file actually being markdown.
   const [showPreview, setShowPreview] = useState(false);
+  // Markdown formatted while editing (step N2), kept across sessions.
+  const [liveMarkdown, setLiveMarkdown] = useState(false);
+  useEffect(() => {
+    void getPref("editorLiveMarkdown", false).then(setLiveMarkdown);
+  }, []);
+  const toggleLive = () => {
+    setLiveMarkdown((on) => {
+      void setPref("editorLiveMarkdown", !on);
+      return !on;
+    });
+  };
   const activeFile = files.find((f) => f.path === activePath) ?? null;
 
   // Read a file from disk and open it, surfacing read failures (binary / too
@@ -313,6 +325,8 @@ function EditorBody({
           previewOn={showPreview}
           onTogglePreview={() => setShowPreview((v) => !v)}
           onPopOutPreview={activeFile ? () => onPopOutPreview(activeFile.path) : undefined}
+          liveOn={kind === "markdown" ? liveMarkdown : null}
+          onToggleLive={toggleLive}
           onFocus={(p) => focusFile(editorId, p)}
           onClose={(p) => closeFile(editorId, p)}
         />
@@ -360,6 +374,7 @@ function EditorBody({
                   onSave={(content) => void save(activeFile.path, content)}
                   onSaveAll={() => void saveAll()}
                   onCursor={(line, col) => setCursor({ line, col })}
+                  live={kind === "markdown" && liveMarkdown}
                 />
               </div>
               {splitPreview && kind && (
@@ -398,6 +413,8 @@ function TabStrip({
   previewOn,
   onTogglePreview,
   onPopOutPreview,
+  liveOn,
+  onToggleLive,
   onFocus,
   onClose,
 }: {
@@ -411,6 +428,9 @@ function TabStrip({
   onTogglePreview: () => void;
   /** Open the preview as a separate dockable panel; undefined when no file is open. */
   onPopOutPreview?: () => void;
+  /** Whether a markdown file reads formatted while edited; null for other files. */
+  liveOn: boolean | null;
+  onToggleLive: () => void;
   onFocus: (path: string) => void;
   onClose: (path: string) => void;
 }) {
@@ -476,6 +496,17 @@ function TabStrip({
       <span style={{ flex: 1 }} />
       {previewable && (
         <div style={{ display: "flex", alignItems: "center", gap: 4, padding: "0 6px", flex: "0 0 auto" }}>
+          {liveOn !== null && (
+            <button
+              onClick={onToggleLive}
+              aria-label="format markdown while editing"
+              aria-pressed={liveOn}
+              title="format markdown while editing — the markup shows on the line you're editing"
+              style={tabStripButton(liveOn)}
+            >
+              ✎ live
+            </button>
+          )}
           <button
             onClick={onTogglePreview}
             aria-label="toggle preview"

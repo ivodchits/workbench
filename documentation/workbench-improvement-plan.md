@@ -1171,6 +1171,29 @@ filesystem path. There is no `draggable` / `dataTransfer` use anywhere in `src/`
 - **Build:** CodeMirror decorations for headings, emphasis, links, lists and code spans.
   Applies to notes first; offer it for `.md` files in the editor if it holds up.
 - **Done when:** a note with headings, lists and code reads cleanly without a preview pane.
+- **As built (2026-10-14):**
+  - **`src/panels/Editor/livePreview.ts`:** a view plugin that decorates from the
+    markdown syntax tree, over the visible ranges only.
+    - Styled: headings (sized), bold, italic, strikethrough, inline code, links and
+      autolinks, bullets, task boxes, quotes, fenced and indented code, rules.
+    - Markup is hidden except on the lines a selection touches. With the editor
+      unfocused, every line reads rendered.
+    - A task box ticks on click. Ctrl/Cmd+click opens an http(s) link.
+    - Tables and images stay as source.
+  - **Markdown is GFM now** (`markdown({ base: markdownLanguage })` in `language.ts`),
+    for strikethrough and task lists. This also applies to the source view.
+  - **`CodeMirrorView` takes `live`.** It swaps the gutters (line numbers, folding)
+    for the live view, in a compartment, so switching modes keeps the text, cursor
+    and undo history.
+  - **Notes:** the modes are live (the default), source, split (source beside the
+    preview) and preview.
+  - **Editor:** a "✎ live" toggle on markdown tabs, kept in prefs
+    `editorLiveMarkdown` (off by default).
+  - **Tests:** `livePreview.test.ts` checks what reads through with and without
+    an active line, the line styles and the link lookup.
+  - **Checked live** (dev app): a demo note with every construct read cleanly.
+    Clicking a line showed its markup; ticking a box edited the text; switching
+    modes kept the text. In the editor, README.md read cleanly with the toggle on.
 
 ---
 
@@ -2026,7 +2049,7 @@ any session, which lowers the urgency and makes the terminal bugs easier to comp
 | V2 | Diff navigation + freshness | ☑ |
 | V3 | Inline comments to the agent | ☑ |
 | N1 | Project notes panel | ☑ |
-| N2 | Rendered-while-editing markdown | ☐ |
+| N2 | Rendered-while-editing markdown | ☑ |
 | R1 | PWA build | ☑ |
 | R2 | Pairing / auth hardening | ☑ |
 | R3 | Tailscale Funnel | ☑ |

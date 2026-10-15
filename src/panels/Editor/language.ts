@@ -6,7 +6,7 @@
 
 import type { Extension } from "@codemirror/state";
 import { javascript } from "@codemirror/lang-javascript";
-import { markdown } from "@codemirror/lang-markdown";
+import { markdown, markdownLanguage } from "@codemirror/lang-markdown";
 import { json } from "@codemirror/lang-json";
 import { css } from "@codemirror/lang-css";
 import { html } from "@codemirror/lang-html";
@@ -25,9 +25,9 @@ const PLAIN: DetectedLanguage = { extension: null, label: "text" };
 
 /** Extension (lowercase, no dot) → language factory + label. */
 const BY_EXT: Record<string, () => DetectedLanguage> = {
-  md: () => ({ extension: markdown(), label: "markdown" }),
-  markdown: () => ({ extension: markdown(), label: "markdown" }),
-  mdx: () => ({ extension: markdown(), label: "markdown" }),
+  md: () => ({ extension: markdown({ base: markdownLanguage }), label: "markdown" }),
+  markdown: () => ({ extension: markdown({ base: markdownLanguage }), label: "markdown" }),
+  mdx: () => ({ extension: markdown({ base: markdownLanguage }), label: "markdown" }),
 
   js: () => ({ extension: javascript(), label: "javascript" }),
   cjs: () => ({ extension: javascript(), label: "javascript" }),

@@ -10,6 +10,9 @@
 // holds a stale closure when the parent re-renders.
 //
 // The handle (`ref`) reads the selected lines, for "add to prompt" (step V3).
+//
+// `live` (step N2) swaps the gutters for the rendered-while-editing markdown view;
+// it lives in a compartment, so toggling it keeps the text and its undo history.
 
 import { useEffect, useImperativeHandle, useRef, type Ref } from "react";
 import { Compartment, EditorState, Prec, type Extension } from "@codemirror/state";
@@ -28,6 +31,7 @@ import { searchKeymap, highlightSelectionMatches } from "@codemirror/search";
 
 import { codeMirrorTheme } from "../../theme";
 import { useThemeVersion } from "../../state/appearance";
+import { livePreview } from "./livePreview";
 import { persistScroll } from "./scrollMemory";
 import { selectedLines } from "../Diff/commentMarks";
 
@@ -56,6 +60,13 @@ interface CodeMirrorViewProps {
   onSaveAll: () => void;
   /** Fired when the caret moves, with 1-based line/column. */
   onCursor?: (line: number, col: number) => void;
+  /** Markdown rendered while editing, without gutters (needs the markdown language). */
+  live?: boolean;
+}
+
+/** The gutters of a source view, or the live markdown view in their place. */
+function liveOrGutters(live: boolean): Extension {
+  return live ? livePreview() : [lineNumbers(), highlightActiveLineGutter(), foldGutter()];
 }
 
 function CodeMirrorView({
@@ -68,12 +79,14 @@ function CodeMirrorView({
   onSave,
   onSaveAll,
   onCursor,
+  live = false,
 }: CodeMirrorViewProps) {
   const hostRef = useRef<HTMLDivElement>(null);
   // The live view + the compartment holding its theme, so a theme switch can
   // reconfigure the editor in place (step 3.9) without rebuilding it.
   const viewRef = useRef<EditorView | null>(null);
   const themeCompartment = useRef(new Compartment());
+  const liveCompartment = useRef(new Compartment());
   const themeVersion = useThemeVersion();
 
   // Latest callbacks, so the view (built once per `path`) never calls a stale one.
@@ -121,10 +134,8 @@ function CodeMirrorView({
     );
 
     const extensions: Extension[] = [
-      lineNumbers(),
-      highlightActiveLineGutter(),
+      liveCompartment.current.of(liveOrGutters(live)),
       highlightActiveLine(),
-      foldGutter(),
       history(),
       drawSelection(),
       dropCursor(),
@@ -177,6 +188,10 @@ function CodeMirrorView({
       effects: themeCompartment.current.reconfigure(codeMirrorTheme()),
     });
   }, [themeVersion]);
+
+  useEffect(() => {
+    viewRef.current?.dispatch({ effects: liveCompartment.current.reconfigure(liveOrGutters(live)) });
+  }, [live]);
 
   return <div ref={hostRef} style={{ height: "100%", width: "100%", overflow: "hidden" }} />;
 }
