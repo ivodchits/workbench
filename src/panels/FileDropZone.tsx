@@ -1,13 +1,15 @@
 // The body of a console as a drop target for files dragged from inside the app
-// (step D1): the editor's tree and tabs, the Diff file list, the Git status list.
-// A drop writes an `@path` reference per file — pasted into the terminal (not
+// (step D1): the editor's tree and tabs, the Diff file list, the Git status list —
+// and, on Windows, from the OS (step D2), whose paths the host reads. A drop writes an `@path` reference per file — pasted into the terminal (not
 // submitted), or put at the caret of the transcript view's composer.
 //
-// Only a drag carrying our own type is answered (`state/fileDrag`), so dragging a
-// dockview panel over a console still reaches dockview untouched.
+// Only a drag carrying files is answered — our own type (`state/fileDrag`) or the
+// OS's — so dragging a dockview panel over a console still reaches dockview
+// untouched. A file outside the session's directory is referenced by its full path.
 
 import { useRef, useState } from "react";
 
+import { isOsFileDrag, osDropPaths, osDropSupported } from "../ipc/osDrop";
 import { insertReferences } from "../state/composer";
 import { isFileDrag, readDragPaths, referenceText } from "../state/fileDrag";
 import { pasteIntoTerminal } from "./terminalPool";
@@ -28,7 +30,15 @@ function FileDropZone({ instanceId, cwd, target, enabled, children }: FileDropZo
   // dragenter/dragleave fire for every element crossed inside the zone.
   const depth = useRef(0);
 
-  const accepts = (e: React.DragEvent) => enabled && isFileDrag(e.dataTransfer);
+  const accepts = (e: React.DragEvent) =>
+    enabled && (isFileDrag(e.dataTransfer) || (osDropSupported() && isOsFileDrag(e.dataTransfer)));
+
+  const insert = (paths: string[]) => {
+    const text = referenceText(paths, cwd);
+    if (!text) return;
+    if (target === "composer") insertReferences(instanceId, text);
+    else pasteIntoTerminal(instanceId, text);
+  };
 
   const leave = () => {
     depth.current = 0;
@@ -58,10 +68,9 @@ function FileDropZone({ instanceId, cwd, target, enabled, children }: FileDropZo
         if (!accepts(e)) return;
         e.preventDefault();
         leave();
-        const text = referenceText(readDragPaths(e.dataTransfer), cwd);
-        if (!text) return;
-        if (target === "composer") insertReferences(instanceId, text);
-        else pasteIntoTerminal(instanceId, text);
+        if (isFileDrag(e.dataTransfer)) insert(readDragPaths(e.dataTransfer));
+        // The files are read now: the drop's data is gone once the event ends.
+        else void osDropPaths(Array.from(e.dataTransfer.files)).then(insert);
       }}
     >
       {children}

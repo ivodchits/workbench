@@ -76,6 +76,9 @@ export function tearOff(kind: TornKind, id: string, title: string): void {
     height: 640,
     minWidth: 480,
     minHeight: 320,
+    // As the main window (tauri.conf): the page takes drops itself, so a file from
+    // the OS reaches the console with its path (step D2).
+    dragDropEnabled: false,
   });
   windows.set(key, win);
 

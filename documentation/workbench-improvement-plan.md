@@ -876,6 +876,31 @@ filesystem path. There is no `draggable` / `dataTransfer` use anywhere in `src/`
   which dockview needs. Spike whether a second mechanism can supply paths without flipping
   that flag. If not, close this step as "won't do" and record why.
 - **Done when:** either OS drops work with panel docking intact, or the step is closed.
+- **As built (2026-10-14):** OS drops work on Windows; `dragDropEnabled` stays off.
+  - **Route:** WebView2's `chrome.webview.postMessageWithAdditionalObjects`.
+    - The console's drop zone posts the dropped `File` objects with a token.
+    - The host gets each as an `ICoreWebView2File` and reads its `Path`.
+    - It emits `file-drop-paths` `{ token, paths }`, and the zone writes the usual
+      references (`src-tauri/src/filedrop.rs`, `src/ipc/osDrop.ts`).
+  - **The message must be a string.** wry's IPC handler is registered first and
+    fails on any other message. A failing handler stops WebView2 from calling the
+    handlers after it, so a message sent as an object never arrived (found live).
+    Tauri's IPC also reads the string, finds no command and logs one console
+    error per drop.
+  - **Installed by a small plugin** (`on_webview_ready`), so torn-off console
+    windows get it too. Those windows now also open with `dragDropEnabled: false`.
+  - **Files outside the working directory** keep their full path, quoted when it
+    has spaces, the same as D1. Folders come through too.
+  - **A file dropped outside a console** is swallowed (`blockStrayDrops` in
+    `main.tsx`), so the webview can't open it in place of the app.
+  - **Linux / macOS:** no equivalent route, so an OS drop does nothing there.
+  - **Checked live** (dev app, a scratch project):
+    - One file, then two files and a folder at once (names with spaces, outside
+      the session's directory), dragged from Explorer onto a running console.
+    - Claude Code resolved all three references: it read both files and listed
+      the folder.
+    - A stray drop on the rail left the app as it was.
+    - A torn-off window wasn't tried.
 
 ---
 
@@ -2044,7 +2069,7 @@ any session, which lowers the urgency and makes the terminal bugs easier to comp
 | T4 | Prompt composer | ☑ |
 | T5 | Choice cards (desktop) | ☑ |
 | D1 | Drag files from inside the app | ☑ |
-| D2 | Drag files from the OS (spike) | ☐ |
+| D2 | Drag files from the OS (spike) | ☑ |
 | V1 | Diff rendering | ☑ |
 | V2 | Diff navigation + freshness | ☑ |
 | V3 | Inline comments to the agent | ☑ |

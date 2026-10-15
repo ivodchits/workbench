@@ -4,6 +4,7 @@
 // prefs store; step 1.3 adds git inspection for project registration.
 
 mod accel;
+mod filedrop;
 mod attention;
 mod db;
 mod fs;
@@ -29,6 +30,8 @@ pub fn run() {
         .plugin(tauri_plugin_store::Builder::default().build())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())
+        // Paths of files dropped in from the OS (step D2).
+        .plugin(filedrop::plugin())
         .setup(|app| {
             // Open the registry database under the OS app-data dir so it
             // survives restarts (design §4.6). Created on first launch.
