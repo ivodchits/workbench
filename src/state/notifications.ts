@@ -34,6 +34,7 @@ import { onHookEvent, type HookEnvelope } from "../ipc/hooks";
 import { remotePushSend } from "../ipc/remote";
 import { getPref, setPref, type NotificationPrefs } from "../ipc/prefs";
 import { onTurnEnded, type TurnEnded } from "../ipc/transcript";
+import { getActivePanelId } from "./dock";
 
 export type { NotificationPrefs };
 
@@ -235,10 +236,18 @@ function label(r: Resolved): string {
   return r.project ? `${r.project}.${r.title}` : r.title;
 }
 
+/** You're looking at this session right now: its console is the active panel and
+ *  the app window has focus. No alert for it — on any route — since you can see
+ *  it already. With the window in the background it alerts as usual. */
+function watching(id: string): boolean {
+  return document.hasFocus() && getActivePanelId() === id;
+}
+
 /** A fresh needs-you transition → route to the enabled destinations: the desktop
  *  toast, and a push to subscribed phones (step R6) — the dashboard shows it from
  *  the snapshot too, but only while it is open. */
 function deliverNeedsYou(id: string): void {
+  if (watching(id)) return;
   const r = resolve(id);
   if (!r) return;
   if (config.desktop) void notifyNeedsYou(r.project, r.title, r.note).catch(() => {});
@@ -248,6 +257,7 @@ function deliverNeedsYou(id: string): void {
 /** Escalation: the card has sat in needs-you past the threshold. A louder desktop
  *  re-ping and a push; the open dashboard also shows it via the alerts store. */
 function escalateNeedsYou(id: string, mins: number): void {
+  if (watching(id)) return;
   const r = resolve(id);
   if (!r) return;
   const title = `⚠ Still waiting · ${label(r)}`;
@@ -258,7 +268,7 @@ function escalateNeedsYou(id: string, mins: number): void {
 
 /** Stuck flag: the card has run in working past the threshold (possibly hung). */
 function flagStuck(id: string, mins: number): void {
-  if (!config.desktop) return;
+  if (!config.desktop || watching(id)) return;
   const r = resolve(id);
   if (!r) return;
   void notifyAlert(
@@ -340,6 +350,7 @@ function onDoneTurnEnded({ instanceId: id, pendingBackground }: TurnEnded): void
 
 /** The agent finished: a desktop toast and a phone push, on the enabled routes. */
 function deliverDone(id: string, body: string): void {
+  if (watching(id)) return;
   const r = resolve(id);
   if (!r) return;
   const title = `○ done · ${label(r)}`;

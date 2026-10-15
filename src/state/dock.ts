@@ -19,6 +19,11 @@ export function setDockApi(a: DockviewApi | null): void {
   api = a;
 }
 
+/** The id of the dock's active panel (a console's is its instance id), or null. */
+export function getActivePanelId(): string | null {
+  return api?.activePanel?.id ?? null;
+}
+
 /** Open a panel to the right of `besideId` (or wherever dockview puts it when that
  *  isn't docked), or bring it forward when one with its id is already open. */
 export function openPanelBeside(
