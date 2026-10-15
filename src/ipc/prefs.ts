@@ -86,6 +86,11 @@ export interface NotificationPrefs {
   escalateAfterMin: number;
   /** Minutes a card may run in ◐ working before it's flagged possibly-stuck. */
   stuckAfterMin: number;
+  /** Alert (on the routes above) each time an agent finishes a turn. */
+  done: boolean;
+  /** Hold the done alert while the session still has background work running
+   *  (agents, workflows, shells, monitors) — fire only once it's all finished. */
+  doneWaitForBackground: boolean;
 }
 // Note: the hook-server port is owned by the Rust backend (it must bind before it
 // can advertise the port), persisted in the SQLite `meta` table, and read by the

@@ -78,7 +78,7 @@ function NotificationsMenu() {
           <SectionLabel>notification routing</SectionLabel>
           <Toggle
             label="desktop"
-            hint="OS toast on needs-you + escalation"
+            hint="OS toast on needs-you, escalation + done"
             on={config.desktop}
             onToggle={() => void setNotificationConfig({ desktop: !config.desktop })}
           />
@@ -87,6 +87,24 @@ function NotificationsMenu() {
             hint="escalation cues on the tailnet companion"
             on={config.phone}
             onToggle={() => void setNotificationConfig({ phone: !config.phone })}
+          />
+
+          <Divider />
+          <SectionLabel>done</SectionLabel>
+          <Toggle
+            label="agent finished"
+            hint="alert when an agent finishes its turn"
+            on={config.done}
+            onToggle={() => void setNotificationConfig({ done: !config.done })}
+          />
+          <Checkbox
+            label="wait for background jobs"
+            hint="only once no agents, shells or monitors are still running"
+            checked={config.doneWaitForBackground}
+            disabled={!config.done}
+            onToggle={() =>
+              void setNotificationConfig({ doneWaitForBackground: !config.doneWaitForBackground })
+            }
           />
 
           <Divider />
@@ -146,6 +164,45 @@ function Toggle({
         {on ? "on" : "off"}
       </button>
     </Row>
+  );
+}
+
+function Checkbox({
+  label,
+  hint,
+  checked,
+  disabled,
+  onToggle,
+}: {
+  label: string;
+  hint: string;
+  checked: boolean;
+  disabled: boolean;
+  onToggle: () => void;
+}) {
+  return (
+    <label
+      style={{
+        display: "flex",
+        alignItems: "flex-start",
+        gap: 8,
+        padding: "4px 12px 4px 22px",
+        cursor: disabled ? "default" : "pointer",
+        opacity: disabled ? 0.45 : 1,
+      }}
+    >
+      <input
+        type="checkbox"
+        checked={checked}
+        disabled={disabled}
+        onChange={onToggle}
+        style={{ margin: "1px 0 0", accentColor: "var(--wb-accent)" }}
+      />
+      <span style={{ display: "flex", flexDirection: "column", flex: 1, gap: 1 }}>
+        <span style={{ color: "var(--wb-text)" }}>{label}</span>
+        <span style={{ color: "var(--wb-textFaint)", fontSize: 9.5 }}>{hint}</span>
+      </span>
+    </label>
   );
 }
 

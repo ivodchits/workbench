@@ -26,6 +26,15 @@
 //! 2. **Incremental tail.** We track a byte offset per session and only parse the
 //!    bytes appended since the last poll, buffering an incomplete trailing line —
 //!    so a long session isn't re-parsed from the top every tick.
+//!
+//! The same tail also reports **turn ends with their background load** (the done
+//! alert's "wait for background jobs" option). Hooks say nothing about background
+//! work, but the transcript does: each turn closes with a `system/turn_duration`
+//! line carrying `pendingBackgroundAgentCount` and `pendingWorkflowCount`.
+//! Background shells and monitors aren't counted there, so we track them ourselves
+//! — opened by a tool result's `backgroundTaskId` (Bash) or `taskId` + `timeoutMs`
+//! (Monitor), closed by a `<task-notification>` for that task id that carries a
+//! `<status>` (a monitor's interim events carry none).
 
 pub mod stream;
 
@@ -50,6 +59,10 @@ const POLL_INTERVAL: Duration = Duration::from_secs(2);
 /// The Tauri event carrying a per-instance token update to the frontend.
 const USAGE_EVENT: &str = "usage-updated";
 
+/// The Tauri event fired when a main-thread turn ends, with how much background
+/// work the session still has running.
+const TURN_ENDED_EVENT: &str = "turn-ended";
+
 /// The latest assistant turn's token usage. The context window the UI shows is
 /// `input + cache_creation + cache_read` (the prompt size); `output` is kept for
 /// completeness but isn't part of the window figure.
@@ -71,6 +84,15 @@ struct UsageUpdate {
     usage: Usage,
 }
 
+/// The payload of [`TURN_ENDED_EVENT`]: background agents + workflows + shells +
+/// monitors still running when the turn ended.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct TurnEnded {
+    instance_id: String,
+    pending_background: u32,
+}
+
 /// Per-session tailing state: where we've read to, an incomplete-line buffer, and
 /// the latest turn's usage (the current context-window figures).
 #[derive(Default)]
@@ -84,6 +106,13 @@ struct Tail {
     partial: Vec<u8>,
     /// The most recent main-thread assistant turn's usage.
     usage: Usage,
+    /// Background shell / monitor task ids launched and not yet reported finished.
+    open_tasks: HashSet<String>,
+    /// Background load at each turn end seen since the last drain, oldest first.
+    turn_ends: Vec<u32>,
+    /// Whether the first poll (the catch-up read of an already-written transcript)
+    /// has happened. Turn ends found by it are history, not news.
+    primed: bool,
 }
 
 impl Tail {
@@ -100,6 +129,7 @@ impl Tail {
             self.offset = 0;
             self.partial.clear();
             self.usage = Usage::default();
+            self.open_tasks.clear();
         }
         if len == self.offset {
             return Ok(false);
@@ -130,10 +160,8 @@ impl Tail {
         self.partial.extend_from_slice(&buf[start..]);
     }
 
-    /// Parse one transcript line; if it's a main-thread assistant turn, replace the
-    /// stored usage with its figures (the latest turn defines the current window —
-    /// not a sum). Content-block lines of one turn carry identical `usage`, so the
-    /// overwrite is idempotent within a turn and the file's last such line wins.
+    /// Parse one transcript line and fold it into the tail: a main-thread assistant
+    /// turn's usage, a background task opening or finishing, or a turn end.
     fn ingest_line(&mut self, line: &[u8]) {
         let line = trim_ascii(line);
         if line.is_empty() {
@@ -142,14 +170,85 @@ impl Tail {
         let Ok(v) = serde_json::from_slice::<Value>(line) else {
             return; // not JSON (or a partial we shouldn't have) — skip, never error
         };
-        if v.get("type").and_then(Value::as_str) != Some("assistant") {
-            return;
-        }
-        // Subagent turns run in their own context window; they must not stand in for
-        // the main agent's current context.
+        // Subagent lines run in their own context window and don't own the session's
+        // turns or background tasks; they must not stand in for the main agent's.
         if v.get("isSidechain").and_then(Value::as_bool) == Some(true) {
             return;
         }
+        match v.get("type").and_then(Value::as_str) {
+            Some("assistant") => self.ingest_usage(&v),
+            Some("user") => {
+                self.open_task(&v);
+                if let Some(text) = message_text(&v) {
+                    self.close_tasks(&text);
+                }
+            }
+            // A notification that lands mid-turn is folded into the running turn and
+            // never becomes a user line — its queue entry or attachment is the trace.
+            Some("queue-operation") => {
+                if let Some(text) = v.get("content").and_then(Value::as_str) {
+                    self.close_tasks(text);
+                }
+            }
+            Some("attachment") => {
+                if let Some(text) = v.pointer("/attachment/prompt").and_then(Value::as_str) {
+                    self.close_tasks(text);
+                }
+            }
+            Some("system") if v.get("subtype").and_then(Value::as_str) == Some("turn_duration") => {
+                let count = |k: &str| v.get(k).and_then(Value::as_u64).unwrap_or(0) as u32;
+                let pending = count("pendingBackgroundAgentCount")
+                    + count("pendingWorkflowCount")
+                    + self.open_tasks.len() as u32;
+                self.turn_ends.push(pending);
+            }
+            _ => {}
+        }
+    }
+
+    /// Record a background shell or monitor launched by this tool result.
+    fn open_task(&mut self, v: &Value) {
+        let Some(r) = v.get("toolUseResult") else {
+            return;
+        };
+        let id = r
+            .get("backgroundTaskId")
+            .or_else(|| r.get("timeoutMs").and(r.get("taskId")))
+            .and_then(Value::as_str);
+        if let Some(id) = id {
+            self.open_tasks.insert(id.to_string());
+        }
+        // TaskStop's result: the stopped task never sends a notification.
+        if r.get("task_type").is_some() {
+            if let Some(id) = r.get("task_id").and_then(Value::as_str) {
+                self.open_tasks.remove(id);
+            }
+        }
+    }
+
+    /// Close every task a `<task-notification>` in `text` reports as finished. One
+    /// notification can name several tasks (the orphan summary after a resume).
+    fn close_tasks(&mut self, text: &str) {
+        for block in text.split("<task-notification>").skip(1) {
+            let block = block.split("</task-notification>").next().unwrap_or(block);
+            // A monitor's interim events carry no status — it's still running —
+            // except the one saying it timed out.
+            if !block.contains("<status>") && !block.contains("[Monitor expired") {
+                continue;
+            }
+            for part in block.split("<task-id>").skip(1) {
+                if let Some(id) = part.split("</task-id>").next() {
+                    self.open_tasks.remove(id.trim());
+                }
+            }
+        }
+    }
+
+    /// Replace the stored usage with a main-thread assistant turn's figures (the
+    /// latest turn defines the current window — not a sum). Content-block lines of
+    /// one turn carry identical `usage`, so the overwrite is idempotent within a
+    /// turn and the file's last such line wins.
+    fn ingest_usage(&mut self, v: &Value) {
         let Some(u) = v.get("message").and_then(|m| m.get("usage")) else {
             return;
         };
@@ -159,6 +258,21 @@ impl Tail {
             cache_creation_tokens: usage_field(u, "cache_creation_input_tokens"),
             cache_read_tokens: usage_field(u, "cache_read_input_tokens"),
         };
+    }
+}
+
+/// A user line's message text: its string content, or its text blocks joined.
+fn message_text(v: &Value) -> Option<String> {
+    match v.get("message")?.get("content")? {
+        Value::String(s) => Some(s.clone()),
+        Value::Array(blocks) => Some(
+            blocks
+                .iter()
+                .filter_map(|b| b.get("text").and_then(Value::as_str))
+                .collect::<Vec<_>>()
+                .join("\n"),
+        ),
+        _ => None,
     }
 }
 
@@ -435,7 +549,23 @@ fn run(app: AppHandle) {
                     continue; // transcript not written yet; retry next tick
                 }
             }
-            match tail.poll() {
+            let polled = tail.poll();
+            // The first read of a transcript replays its history; only turn ends
+            // appended after that are news.
+            let catching_up = !std::mem::replace(&mut tail.primed, true);
+            for pending_background in std::mem::take(&mut tail.turn_ends) {
+                if catching_up {
+                    continue;
+                }
+                let _ = app.emit(
+                    TURN_ENDED_EVENT,
+                    TurnEnded {
+                        instance_id: instance_id.clone(),
+                        pending_background,
+                    },
+                );
+            }
+            match polled {
                 Ok(true) => {
                     persist(&app, instance_id, tail.usage);
                     let _ = app.emit(
@@ -633,5 +763,62 @@ mod tests {
         let mut t = Tail::default();
         t.ingest_line(b"{\"type\":\"assistant\",\"message\":{\"id\":\"z\",\"usage\":{\"input_tokens\":9}}}\r");
         assert_eq!(t.usage.input_tokens, 9);
+    }
+
+    // --- turn ends + background load ------------------------------------------
+
+    /// The subagent fixture: the first turn ends with its background agent still
+    /// running; the agent's notification wakes a second turn that ends with none.
+    #[test]
+    fn turn_ends_carry_pending_background_agents() {
+        let mut t = Tail::default();
+        t.feed(include_bytes!("fixtures/11-subagent.jsonl"));
+        assert_eq!(t.turn_ends, vec![1, 0]);
+    }
+
+    /// A background shell and a monitor stay open through a monitor's interim event
+    /// and close on their status-bearing notifications — whether the notification
+    /// arrives as a user line or only as a mid-turn enqueue.
+    #[test]
+    fn background_shells_and_monitors_open_and_close() {
+        let mut t = Tail::default();
+        let turn_end = br#"{"type":"system","subtype":"turn_duration","durationMs":5}"#;
+        t.ingest_line(br#"{"type":"user","message":{"content":[{"type":"tool_result"}]},"toolUseResult":{"stdout":"","backgroundTaskId":"bsh1"}}"#);
+        t.ingest_line(br#"{"type":"user","message":{"content":[{"type":"tool_result"}]},"toolUseResult":{"taskId":"bmon","timeoutMs":600000,"persistent":false}}"#);
+        t.ingest_line(turn_end);
+        t.ingest_line(br#"{"type":"queue-operation","operation":"enqueue","content":"<task-notification>\n<task-id>bmon</task-id>\n<summary>Monitor event: tick</summary>\n</task-notification>"}"#);
+        t.ingest_line(br#"{"type":"queue-operation","operation":"enqueue","content":"<task-notification>\n<task-id>bsh1</task-id>\n<status>completed</status>\n</task-notification>"}"#);
+        t.ingest_line(turn_end);
+        t.ingest_line(br#"{"type":"user","message":{"content":"<task-notification>\n<task-id>bmon</task-id>\n<status>killed</status>\n</task-notification>"}}"#);
+        t.ingest_line(turn_end);
+        assert_eq!(t.turn_ends, vec![2, 1, 0]);
+    }
+
+    /// The other ways a task ends: TaskStop (a tool result, no notification), a
+    /// monitor timing out (an event, no status), and one notification naming
+    /// several tasks.
+    #[test]
+    fn stopped_expired_and_grouped_tasks_close() {
+        let mut t = Tail::default();
+        for id in ["s1", "s2", "s3"] {
+            t.ingest_line(format!(r#"{{"type":"user","toolUseResult":{{"backgroundTaskId":"{id}"}}}}"#).as_bytes());
+        }
+        t.ingest_line(br#"{"type":"user","toolUseResult":{"taskId":"m1","timeoutMs":600000}}"#);
+        t.ingest_line(br#"{"type":"user","toolUseResult":{"message":"Successfully stopped task: s1","task_id":"s1","task_type":"local_bash"}}"#);
+        t.ingest_line(br#"{"type":"queue-operation","operation":"remove","content":"<task-notification>\n<task-id>m1</task-id>\n<event>[Monitor expired after 30m with 6 events delivered.]</event>\n</task-notification>"}"#);
+        t.ingest_line(br#"{"type":"user","message":{"content":"<task-notification>\n<task-id>s2</task-id>\n<task-id>s3</task-id>\n<status>stopped</status>\n</task-notification>"}}"#);
+        assert!(t.open_tasks.is_empty());
+        // …and a notification absorbed mid-turn as a queued-command attachment.
+        t.ingest_line(br#"{"type":"user","toolUseResult":{"backgroundTaskId":"s4"}}"#);
+        t.ingest_line(br#"{"type":"attachment","attachment":{"type":"queued_command","prompt":"<task-notification>\n<task-id>s4</task-id>\n<status>completed</status>\n</task-notification>"}}"#);
+        assert!(t.open_tasks.is_empty());
+    }
+
+    /// A sidechain's own turn end isn't the session's.
+    #[test]
+    fn sidechain_turn_end_ignored() {
+        let mut t = Tail::default();
+        t.ingest_line(br#"{"type":"system","subtype":"turn_duration","isSidechain":true}"#);
+        assert!(t.turn_ends.is_empty());
     }
 }

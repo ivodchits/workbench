@@ -24,6 +24,19 @@ export function onUsageUpdate(cb: (update: UsageUpdate) => void): Promise<Unlist
   return listen<UsageUpdate>("usage-updated", (event) => cb(event.payload));
 }
 
+/** A main-thread turn ended (its `turn_duration` line was written), with the
+ *  background agents + workflows + shells + monitors still running at that point. */
+export interface TurnEnded {
+  instanceId: string;
+  pendingBackground: number;
+}
+
+/** Subscribe to turn ends. Only turns appended while the app is tailing — a
+ *  transcript's history is never replayed. Returns an unlisten function. */
+export function onTurnEnded(cb: (ended: TurnEnded) => void): Promise<UnlistenFn> {
+  return listen<TurnEnded>("turn-ended", (event) => cb(event.payload));
+}
+
 // --- transcript stream (step T1) --------------------------------------------
 // The lines themselves: paged reads for history and a per-instance follow for
 // what Claude Code appends. Lines are raw JSONL text — `transcript/model` (T2)

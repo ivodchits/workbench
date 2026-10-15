@@ -30,23 +30,31 @@ import { useSyncExternalStore } from "react";
 import { getLiveStatuses, onStatusTransition, type StatusPhase } from "./status";
 import { getRegistry } from "./registry";
 import { notifyAlert, notifyNeedsYou } from "../ipc/attention";
+import { onHookEvent, type HookEnvelope } from "../ipc/hooks";
 import { remotePushSend } from "../ipc/remote";
 import { getPref, setPref, type NotificationPrefs } from "../ipc/prefs";
+import { onTurnEnded, type TurnEnded } from "../ipc/transcript";
 
 export type { NotificationPrefs };
 
 /** Sensible defaults: desktop + phone on; escalate a stuck-waiting prompt after 5
- *  min; flag a working agent as possibly stuck after 30. */
+ *  min; flag a working agent as possibly stuck after 30; alert on every done. */
 export const DEFAULT_NOTIFICATION_PREFS: NotificationPrefs = {
   desktop: true,
   phone: true,
   escalateAfterMin: 5,
   stuckAfterMin: 30,
+  done: true,
+  doneWaitForBackground: false,
 };
 
 /** How often the escalation watch re-evaluates every live card. Coarse on purpose —
  *  the thresholds are in minutes, so ±15 s granularity is invisible. */
 const TICK_MS = 15_000;
+
+/** How long a done alert waits on background work for the transcript's turn end
+ *  (tailed every 2 s) before deciding on the last load it knew. */
+const TURN_END_GRACE_MS = 8_000;
 
 // --- config store -----------------------------------------------------------
 // In-memory mirror of the persisted prefs, so the synchronous delivery path and the
@@ -259,6 +267,86 @@ function flagStuck(id: string, mins: number): void {
   ).catch(() => {});
 }
 
+// --- done alerts ------------------------------------------------------------
+// Keyed off the turn itself (the `Stop` hook), not the ○ done phase: a background
+// job finishing wakes a done agent for a report-back turn without any phase change,
+// and that turn's end is exactly the alert "wait for background jobs" wants. (An
+// idle-prompt reminder or your own interrupt also lands in done — neither is the
+// agent finishing, so neither alerts.)
+//
+// With the wait on, a Stop arms a pending alert that the transcript's turn end
+// resolves: fire if no background work is left, drop it otherwise (the job's
+// completion will wake a later turn that gets its own say). If the turn end never
+// shows up, the grace timer decides on the last load the tailer reported.
+
+interface PendingDone {
+  timer: ReturnType<typeof setTimeout>;
+  body: string;
+}
+
+const pendingDone = new Map<string, PendingDone>();
+/** instance id → background load at its last turn end. */
+const lastBackground = new Map<string, number>();
+
+function lastMessage(env: HookEnvelope): string {
+  const msg = env.event.last_assistant_message;
+  if (typeof msg !== "string") return "";
+  const line = msg.replace(/\s+/g, " ").trim();
+  return line.length > 140 ? `${line.slice(0, 139)}…` : line;
+}
+
+function cancelDone(id: string): void {
+  const p = pendingDone.get(id);
+  if (!p) return;
+  clearTimeout(p.timer);
+  pendingDone.delete(id);
+}
+
+function onDoneHook(env: HookEnvelope): void {
+  const id = env.instanceId;
+  switch (env.event.hook_event_name) {
+    case "Stop":
+    case "StopFailure": {
+      cancelDone(id);
+      if (!config.done) return;
+      const failed = env.event.hook_event_name === "StopFailure";
+      const body = failed ? "Stopped on an error." : lastMessage(env) || "Finished its turn.";
+      if (!config.doneWaitForBackground) {
+        deliverDone(id, body);
+        return;
+      }
+      const timer = setTimeout(() => {
+        pendingDone.delete(id);
+        if ((lastBackground.get(id) ?? 0) === 0) deliverDone(id, body);
+      }, TURN_END_GRACE_MS);
+      pendingDone.set(id, { timer, body });
+      return;
+    }
+    // You moved on (a new prompt) or the session is gone — the turn's alert is moot.
+    case "UserPromptSubmit":
+    case "SessionEnd":
+      cancelDone(id);
+      return;
+  }
+}
+
+function onDoneTurnEnded({ instanceId: id, pendingBackground }: TurnEnded): void {
+  lastBackground.set(id, pendingBackground);
+  const p = pendingDone.get(id);
+  if (!p) return;
+  cancelDone(id);
+  if (config.done && pendingBackground === 0) deliverDone(id, p.body);
+}
+
+/** The agent finished: a desktop toast and a phone push, on the enabled routes. */
+function deliverDone(id: string, body: string): void {
+  const r = resolve(id);
+  if (!r) return;
+  const title = `○ done · ${label(r)}`;
+  if (config.desktop) void notifyAlert(title, body).catch(() => {});
+  if (config.phone) void remotePushSend(id, title, body).catch(() => {});
+}
+
 // --- lifecycle --------------------------------------------------------------
 
 let started = false;
@@ -283,6 +371,11 @@ export function initNotifications(): void {
   onStatusTransition((id, phase, prev) => {
     if (phase === "needs_you" && prev !== "needs_you") deliverNeedsYou(id);
   });
+
+  // Done alerts: turn ends from the hook stream, background load from the transcript.
+  // A non-Tauri host has neither; the alerts just never fire.
+  void onHookEvent(onDoneHook).catch(() => {});
+  void onTurnEnded(onDoneTurnEnded).catch(() => {});
 
   tick();
   setInterval(tick, TICK_MS);
