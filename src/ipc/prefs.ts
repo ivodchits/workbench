@@ -35,6 +35,9 @@ export interface Prefs {
   transcriptView: Record<string, boolean>;
   /** The review panel's diff layout (step V1). Absent = unified. */
   diffLayout: DiffLayout;
+  /** The prompt a fresh reviewing agent gets (step A1), keyed by project id.
+   *  Absent = the default; `{base}` is filled with the diff's base. */
+  reviewPrompts: Record<string, string>;
 }
 
 /** One column with the old lines above the new, or the two versions side by side. */
@@ -73,8 +76,9 @@ export interface CommitDraft {
 export interface NotificationPrefs {
   /** Desktop OS toast on a fresh needs-you and on escalation. */
   desktop: boolean;
-  /** Surface escalation/stuck emphasis on the phone dashboard snapshot (step 4.4).
-   *  The phone always shows live status; this gates the extra 4.6 attention cues. */
+  /** The phone route: escalation/stuck emphasis on the dashboard snapshot (step
+   *  4.4), and pushes to subscribed phones on needs-you and escalation (step R6).
+   *  The phone always shows live status. */
   phone: boolean;
   /** Minutes a card may sit in ● needs-you before a louder escalation re-ping. */
   escalateAfterMin: number;

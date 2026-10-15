@@ -19,6 +19,10 @@
 // or Ctrl+Shift+O on a selection) collect in a list under the diff and go to the
 // instance as one prompt; "add to prompt" puts an `@path#L…` reference in its
 // console unsent; and each change has a revert button, behind a confirm.
+//
+// Step A1: "review" starts a fresh agent in the same working dir with a review
+// prompt; its findings come back as a list to tick, and the ticked ones are sent
+// through the same comment path.
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { IDockviewPanelProps } from "dockview";
@@ -44,10 +48,8 @@ import { setDiffLayout, useDiffLayout } from "../../state/diffLayout";
 import { isViewed, toggleViewed, useViewed } from "../../state/diffViewed";
 import { rangeReference, setDragPaths } from "../../state/fileDrag";
 import { useConsoles } from "../../state/consoles";
-import { getQueued, setQueued } from "../../state/queue";
 import {
   addComment,
-  buildCommentsPrompt,
   clearComments,
   editComment,
   location,
@@ -57,7 +59,9 @@ import {
   type ReviewComment,
 } from "../../state/reviewComments";
 import { insertIntoConsole } from "../consoleInput";
-import { sendOrQueue } from "../promptDelivery";
+import { sendPendingComments } from "./sendComments";
+import { ReviewDialog, ReviewStrip } from "./Review";
+import { useRegistry } from "../../state/registry";
 import Modal from "../InstanceManager/Modal";
 import { confirmButtonStyle } from "../Git/format";
 import { detectLanguage } from "../Editor/language";
@@ -142,6 +146,10 @@ function DiffBody({
   /** What the last comment action did ("sent", "no console", …). */
   const [toast, setToast] = useState<string | null>(null);
   const { open: consoles } = useConsoles();
+  const { instances } = useRegistry();
+  const impl = instances.find((i) => i.id === instanceId) ?? null;
+  /** The "review with a fresh agent" dialog (A1). */
+  const [reviewing, setReviewing] = useState(false);
   const live = consoles.some((c) => c.instanceId === instanceId && c.status === "running" && !c.tornOff);
   const layout = useDiffLayout();
   const viewed = useViewed(diffId);
@@ -329,13 +337,9 @@ function DiffBody({
       setToast(NO_CONSOLE);
       return;
     }
-    const prompt = buildCommentsPrompt(comments);
-    // The queue holds one prompt: one already waiting is kept, ahead of these.
-    const waiting = getQueued(instanceId)?.text;
-    const how = sendOrQueue(instanceId, prompt);
-    if (how === "queued" && waiting) setQueued(instanceId, `${waiting}\n\n${prompt}`);
-    const n = comments.length;
-    clearComments(instanceId);
+    const sent = sendPendingComments(instanceId);
+    if (!sent) return;
+    const { how, count: n } = sent;
     setToast(
       how === "sent"
         ? `${GLYPH.ok} sent ${n} comment${n === 1 ? "" : "s"}`
@@ -478,7 +482,13 @@ function DiffBody({
       data-wb-panel={diffId}
       style={{ height: "100%", display: "flex", flexDirection: "column", minHeight: 0, background: "var(--wb-bg)" }}
     >
-      <Header summary={summary} loading={loading} viewed={viewedCount} onRefresh={refresh} />
+      <Header
+        summary={summary}
+        loading={loading}
+        viewed={viewedCount}
+        onRefresh={refresh}
+        onReview={impl && summary && summary.filesChanged > 0 ? () => setReviewing(true) : undefined}
+      />
 
       {loadError ? (
         <div style={{ padding: "10px 14px", color: "var(--wb-needs)", font: "11.5px var(--wb-mono)" }}>
@@ -515,6 +525,14 @@ function DiffBody({
         </div>
       )}
 
+      {impl && (
+        <ReviewStrip
+          impl={impl}
+          onShow={(f) => showComment({ id: "", path: f.path, fromLine: f.fromLine, toLine: f.toLine, quote: "", note: "" })}
+          onSent={setToast}
+        />
+      )}
+
       {(comments.length > 0 || draft || toast) && (
         <Comments
           comments={comments}
@@ -536,6 +554,18 @@ function DiffBody({
             setToast(null);
           }}
           onDismiss={() => setToast(null)}
+        />
+      )}
+
+      {reviewing && impl && (
+        <ReviewDialog
+          impl={impl}
+          base={base}
+          onClose={() => setReviewing(false)}
+          onStarted={(error) => {
+            setReviewing(false);
+            if (error) setToast(`${GLYPH.warn} ${error}`);
+          }}
         />
       )}
 
@@ -573,12 +603,15 @@ function Header({
   loading,
   viewed,
   onRefresh,
+  onReview,
 }: {
   summary: InstanceDiff | null;
   loading: boolean;
   /** Files marked viewed and unchanged since. */
   viewed: number;
   onRefresh: () => void;
+  /** Review with a fresh agent (A1); absent when there is nothing to review. */
+  onReview?: () => void;
 }) {
   return (
     <div
@@ -614,13 +647,32 @@ function Header({
       ) : (
         <span style={{ color: "var(--wb-textFaint)" }}>{loading ? "reading changes…" : "—"}</span>
       )}
+      {onReview && (
+        <button
+          onClick={onReview}
+          title="have a fresh agent review these changes; its findings come back here to tick"
+          style={{
+            marginLeft: "auto",
+            flex: "0 0 auto",
+            whiteSpace: "nowrap",
+            background: "transparent",
+            border: "none",
+            cursor: "pointer",
+            color: "var(--wb-accent)",
+            font: "11px var(--wb-mono)",
+            padding: 0,
+          }}
+        >
+          ⌕ review
+        </button>
+      )}
       <button
         onClick={onRefresh}
         disabled={loading}
         aria-label="refresh diff"
         title="refresh diff"
         style={{
-          marginLeft: "auto",
+          marginLeft: onReview ? 0 : "auto",
           flex: "0 0 auto",
           whiteSpace: "nowrap",
           background: "transparent",

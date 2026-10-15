@@ -1915,6 +1915,40 @@ filesystem path. There is no `draggable` / `dataTransfer` use anywhere in `src/`
   tick, and the ticked ones are sent to the implementing instance through the V3 comment
   path. The review prompt is stored per project.
 - **Done when:** a review round trip works end to end without copy-paste.
+- **As built (2026-10-14):**
+  - **"⌕ review"** in the review panel's header (shown when there are changes)
+    opens a dialog with the editable prompt.
+    - The prompt is kept per project in prefs (`reviewPrompts`). The default isn't
+      stored, so "reset to default" returns to it. `{base}` becomes the diff's base.
+    - The default asks for a review only (no edits): bugs, unhandled cases,
+      contradictions, no style nits. It ends with a fenced `findings` block,
+      `path:line(-end) | high|medium|low | note`.
+  - **The reviewer** (`Diff/reviewRun.ts`) is an ordinary new instance,
+    "review · <title>", in the implementing instance's working dir (its worktree if
+    it has one). Its console opens beside the diff, and the prompt is submitted
+    once the prompt box shows (queued if it never does).
+    - The rail flags both as "shared", which they are.
+  - **Findings:** when the reviewer's turn ends, its last reply is read from the
+    transcript and parsed (`state/reviewFindings.ts`: the last `findings` block;
+    lines not in the form are skipped).
+    - The reply is re-read for up to about 17 s while it has no block yet: the
+      first live run heard the turn end before the reply reached the file, and
+      showed "no findings block".
+  - **The strip** (`Diff/Review.tsx`, state in `state/reviews.ts`): "is
+    reviewing…", then the findings with severity and `path:line` (a click shows the
+    lines), each ticked except the low ones.
+    - "send N to <title>" adds the ticked findings as V3 comments, with the code
+      read from the working tree and the note prefixed with `[severity]`. It sends
+      them with any comments already pending (`sendPendingComments`, now shared
+      with the panel's own send) and dismisses the review.
+    - Send is off while the implementing session has no running console here.
+  - **Checked live** (a scratch repo with two planted bugs, two real sessions):
+    - The reviewer found the float index (high), the empty-list division (medium)
+      and an even-length median quibble (low).
+    - "send 2" put the two ticked findings, with the quoted code, into the
+      implementing session as one prompt, and it fixed both (`// 2`, a
+      `ValueError` on empty input).
+    - Nothing was copied by hand.
 
 ---
 
@@ -2002,5 +2036,5 @@ any session, which lowers the urgency and makes the terminal bugs easier to comp
 | R7 | Phone: create a session | ☑ |
 | R8 | Phone: project notes | ☑ |
 | P1 | Open plan on demand | ☑ |
-| A1 | Review with a fresh agent | ☐ |
+| A1 | Review with a fresh agent | ☑ |
 | M1 | Run summary on done (mod) | ☐ |
