@@ -139,11 +139,32 @@ function TranscriptView({ instanceId, live, onShowTerminal }: TranscriptViewProp
     });
     resized.observe(scroll);
 
+    // Focus moving into an already-visible view (two consoles side by side, switching
+    // between them) snaps the scroller's DOM scrollTop to 0 — the same focus-scroll
+    // reset `focusTerminal` re-syncs for xterm — and, being on screen the whole time,
+    // the view is neither hidden nor resized, so neither observer above puts it back.
+    // Note where the reader was as focus arrives (the reset's scroll event hasn't been
+    // dispatched yet, so the refs still hold it) and restore it on the next frame if
+    // it was thrown to the top. Only from 0: a click that moves the view on purpose
+    // ("↓ latest") must win.
+    const onFocusIn = () => {
+      const wasStuck = stuck.current;
+      const top = lastTop.current;
+      requestAnimationFrame(() => {
+        if (scroll.clientHeight === 0 || scroll.scrollTop !== 0) return;
+        if (!wasStuck && top === 0) return; // the reader really was at the top
+        scroll.scrollTop = wasStuck ? scroll.scrollHeight : top;
+      });
+    };
+    const root = rootRef.current;
+    root?.addEventListener("focusin", onFocusIn);
+
     // The view owns the keyboard the way the terminal does when it is shown:
     // typing goes to the prompt.
     focusComposer(instanceId);
 
     return () => {
+      root?.removeEventListener("focusin", onFocusIn);
       resized.disconnect();
       shown.disconnect();
       scroll.removeEventListener("scroll", onScroll);
