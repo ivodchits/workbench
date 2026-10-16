@@ -8,7 +8,7 @@
 
 import { submitPrompt } from "./terminalPool";
 import { atRest, cancelQueued, getQueued, setQueued } from "../state/queue";
-import { getLiveStatuses, onStatusTransition } from "../state/status";
+import { getLiveStatuses, onCompactionEnd, onStatusTransition } from "../state/status";
 
 /** Send `text` to `instanceId` now, or queue it if its agent is mid-turn. A prompt
  *  is never sent into a pending permission prompt or question — it could answer
@@ -25,19 +25,33 @@ export function sendOrQueue(instanceId: string, text: string): "sent" | "queued"
 let users = 0;
 let unsubscribe: (() => void) | null = null;
 
+/** Send the prompt queued for `instanceId`, if any. Cleared first, so the prompt's
+ *  own later Stop can't re-fire a stale entry. */
+function deliverQueued(instanceId: string): void {
+  const q = getQueued(instanceId);
+  if (!q) return;
+  cancelQueued(instanceId);
+  submitPrompt(instanceId, q.text);
+}
+
 /** Start sending queued prompts as their agents finish a turn (live phase →
- *  "done"). Returns a release function; the subscription is shared and lasts
- *  while anyone holds it. */
+ *  "done"), or finish compacting back to rest — a `/compact` from an idle session
+ *  ends with no phase change, so the turn boundary alone would strand the prompt.
+ *  Returns a release function; the subscription is shared and lasts while anyone
+ *  holds it. */
 export function initQueueDelivery(): () => void {
   if (users++ === 0) {
-    unsubscribe = onStatusTransition((instanceId, phase) => {
-      if (phase !== "done") return;
-      const q = getQueued(instanceId);
-      if (!q) return;
-      // Clear first, so the prompt's own later Stop can't re-fire a stale entry.
-      cancelQueued(instanceId);
-      submitPrompt(instanceId, q.text);
+    const offTransition = onStatusTransition((instanceId, phase) => {
+      if (phase === "done") deliverQueued(instanceId);
     });
+    // Mid-turn auto-compaction lifts back into "working": still held for the Stop.
+    const offCompaction = onCompactionEnd((instanceId, live) => {
+      if (atRest(live)) deliverQueued(instanceId);
+    });
+    unsubscribe = () => {
+      offTransition();
+      offCompaction();
+    };
   }
   let held = true;
   return () => {

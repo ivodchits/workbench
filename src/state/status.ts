@@ -249,6 +249,21 @@ export function onStatusTransition(cb: TransitionListener): () => void {
   };
 }
 
+/** Called synchronously when a card's compaction overlay lifts, with its new
+ *  entry. A `/compact` run from an idle session ends with no phase change at all
+ *  (just PreCompact→PostCompact), so a phase listener alone never sees it finish. */
+type CompactionEndListener = (instanceId: string, live: LiveStatus) => void;
+
+const compactionEndListeners = new Set<CompactionEndListener>();
+
+/** Subscribe to compaction ending (the overlay lifting). Returns an unsubscribe fn. */
+export function onCompactionEnd(cb: CompactionEndListener): () => void {
+  compactionEndListeners.add(cb);
+  return () => {
+    compactionEndListeners.delete(cb);
+  };
+}
+
 // --- store ------------------------------------------------------------------
 // `latest` is the authoritative state, updated synchronously on every event.
 // `committed` is what React sees via getSnapshot; it only advances on a flush
@@ -297,6 +312,9 @@ export function ingestHookEvent(envelope: HookEnvelope): void {
   // returns the same object reference, so this only fires on real transitions.
   if (entry.phase !== prev?.phase) {
     for (const l of transitionListeners) l(instanceId, entry.phase, prev?.phase ?? null);
+  }
+  if (prev?.compacting && !entry.compacting) {
+    for (const l of compactionEndListeners) l(instanceId, entry);
   }
   if (instant) flushNow();
   else scheduleFlush();
