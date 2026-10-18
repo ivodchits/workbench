@@ -119,6 +119,16 @@ export const INTERRUPT_KEY = new Uint8Array([0x1b]);
  *  a typed prompt). The other half of the §11 keystroke mapping. */
 export const ENTER_KEY = new Uint8Array([0x0d]);
 
+/** Ctrl+U × 32 — clears the claude TUI's input. Sent before every prompt the app
+ *  submits: interrupting a turn before it has answered puts the interrupted prompt
+ *  back in the input, and the next paste would be appended to it. Ctrl+U deletes
+ *  one *visual* row (a long prompt wraps, a multi-line paste is one chip), so it is
+ *  repeated; on an empty input it does nothing. Not many more: a burst of 64 in one
+ *  write is taken as a paste ("Removed 64 invisible characters") and the prompt
+ *  after it isn't submitted. Verified against Claude Code 2.1.302 in a scratch PTY
+ *  (a 210-character prompt at 24 columns; 32 and 48 work, 64 doesn't). */
+export const CLEAR_INPUT_KEY = new Uint8Array(32).fill(0x15);
+
 /** ESC + CR — what Alt+Enter sends; the claude TUI reads it as "insert a line break"
  *  in the prompt rather than submit. Sent for Shift+Enter in a claude console. */
 export const NEWLINE_KEY = new Uint8Array([0x1b, 0x0d]);

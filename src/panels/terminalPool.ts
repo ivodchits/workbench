@@ -22,6 +22,7 @@ import "@xterm/xterm/css/xterm.css";
 
 import { activeTheme, deriveXtermTheme, mono } from "../theme/tokens";
 import {
+  CLEAR_INPUT_KEY,
   ENTER_KEY,
   NEWLINE_KEY,
   ptyKill,
@@ -618,10 +619,19 @@ export function pasteIntoTerminal(instanceId: string, text: string): boolean {
  * send a queued prompt the instant the agent finishes its turn and to send one
  * straight away when the agent is already at rest. Returns false if the instance
  * has no live terminal (so the caller can keep the prompt queued / surface it).
+ * Whatever is already in the TUI's input is cleared first (`clearInput`), so a
+ * prompt an interrupt left there isn't sent along with this one.
  */
 export function submitToTerminal(instanceId: string, text: string): boolean {
-  if (!pasteIntoTerminal(instanceId, text)) return false;
-  void ptyWrite(instanceId, new TextEncoder().encode("\r"));
+  const entry = pool.get(instanceId);
+  if (!entry) return false;
+  void clearInput(instanceId)
+    .then(() => {
+      if (pool.get(instanceId) !== entry) return; // released meanwhile
+      pasteIntoTerminal(instanceId, text);
+      return ptyWrite(instanceId, ENTER_KEY);
+    })
+    .catch(() => {}); // the PTY is gone: nothing to send to
   return true;
 }
 
@@ -634,9 +644,23 @@ export function submitToTerminal(instanceId: string, text: string): boolean {
  */
 export function submitPrompt(instanceId: string, text: string): void {
   if (submitToTerminal(instanceId, text)) return;
-  void ptyWrite(instanceId, encodePaste(text))
+  void clearInput(instanceId)
+    .then(() => ptyWrite(instanceId, encodePaste(text)))
     .then(() => ptyWrite(instanceId, ENTER_KEY))
     .catch(() => {}); // no such PTY: the session is gone, nothing to send to
+}
+
+/** How long the cleared input is left before the prompt is pasted. Arriving in one
+ *  chunk with the paste and its Enter — likely mid-turn, while the TUI is busy
+ *  drawing — the Ctrl+U burst makes the TUI take the Enter as part of the paste,
+ *  and the prompt sits in the input unsent. 30 ms was enough in a scratch PTY. */
+const CLEAR_SETTLE_MS = 50;
+
+/** Empty the TUI's input (`CLEAR_INPUT_KEY`), then give it a moment to settle. */
+function clearInput(instanceId: string): Promise<void> {
+  return ptyWrite(instanceId, CLEAR_INPUT_KEY).then(
+    () => new Promise((resolve) => setTimeout(resolve, CLEAR_SETTLE_MS)),
+  );
 }
 
 /**
