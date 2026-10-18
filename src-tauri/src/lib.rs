@@ -227,6 +227,11 @@ pub fn run() {
             attention::update_tray_badge,
             attention::update_tray_usage,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app, event| {
+            if let tauri::RunEvent::Exit = event {
+                hooks::uninstall_dev(app);
+            }
+        });
 }

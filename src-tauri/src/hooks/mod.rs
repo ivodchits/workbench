@@ -69,6 +69,23 @@ pub fn init(app: &AppHandle) -> Result<u16, String> {
     Ok(port)
 }
 
+/// On a debug build's exit, take back what [`init`] put in `~/.claude/settings.json`
+/// (this build's hooks and its claim on `statusLine`), so a closed `tauri dev` run
+/// leaves no entries pointing at a dead port. A release build's stay: they're meant
+/// to be permanent. A crash or kill skips this; the next dev launch reinstalls and
+/// its exit cleans up again.
+pub fn uninstall_dev(app: &AppHandle) {
+    if !cfg!(debug_assertions) {
+        return;
+    }
+    if let Err(e) = install::uninstall_hooks() {
+        eprintln!("[hooks] could not uninstall hooks: {e}");
+    }
+    if let Err(e) = crate::statusline::uninstall(app) {
+        eprintln!("[statusline] could not uninstall: {e}");
+    }
+}
+
 /// Bind a loopback listener, preferring `persisted` then walking the
 /// `PORT_BASE..` range. Returning the bound listener (rather than just a port)
 /// avoids a TOCTOU race — the server serves on this exact socket.

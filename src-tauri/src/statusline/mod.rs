@@ -212,6 +212,42 @@ pub fn install(app: &AppHandle, port: u16) -> Result<(), String> {
     Ok(())
 }
 
+/// Give up the `statusLine` key if this build owns it, so a dev run doesn't leave the
+/// key pointing at a script that POSTs to a dead port. It goes back to the release
+/// build's script when one is installed, else to the chained foreign command, else
+/// is removed. A key some other command owns is left alone.
+pub fn uninstall(app: &AppHandle) -> Result<(), String> {
+    let settings_path = crate::hooks::install::settings_path()?;
+    let mut settings = crate::hooks::install::read_settings(&settings_path)?;
+    let owned = settings
+        .get("statusLine")
+        .and_then(|s| s.get("command"))
+        .and_then(Value::as_str)
+        .is_some_and(|cmd| cmd.contains(SCRIPT_NAME));
+    if !owned {
+        return Ok(());
+    }
+
+    let release = script_path()?.with_file_name("workbench-statusline.mjs");
+    let command = if cfg!(debug_assertions) && release.exists() {
+        Some(format!("node \"{}\"", release.display()))
+    } else {
+        app.state::<Db>().meta_get(CHAINED_KEY).ok().flatten()
+    };
+    let root = settings
+        .as_object_mut()
+        .ok_or("settings root is not an object")?;
+    match command {
+        Some(command) => {
+            root.insert("statusLine".into(), json!({ "type": "command", "command": command }));
+        }
+        None => {
+            root.remove("statusLine");
+        }
+    }
+    crate::hooks::install::write_settings(&settings_path, &settings)
+}
+
 /// The managed statusline body, with the live POST URL and the (JSON-encoded) chained
 /// command substituted in. Kept as a literal with `__TOKEN__` markers rather than a
 /// `format!` so the embedded JavaScript's own braces need no escaping.

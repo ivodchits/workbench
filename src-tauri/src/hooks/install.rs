@@ -89,6 +89,33 @@ fn install_hooks_at(path: &Path, url: &str) -> Result<bool, String> {
     Ok(true)
 }
 
+/// Remove this build's hook entries, leaving foreign hooks (and the other build's
+/// Workbench entries) untouched. The dev build calls this on exit so its entries
+/// don't linger pointing at a dead port. Returns `Ok(true)` if the file was written.
+pub fn uninstall_hooks() -> Result<bool, String> {
+    uninstall_hooks_at(&settings_path()?)
+}
+
+fn uninstall_hooks_at(path: &Path) -> Result<bool, String> {
+    let original = read_settings(path)?;
+    let mut settings = original.clone();
+    if let Some(hooks) = settings.get_mut("hooks").and_then(Value::as_object_mut) {
+        for &event in HOOK_EVENTS {
+            let had = hooks.contains_key(event);
+            let next = strip_ours(take_event_array(hooks, event)?);
+            // Re-insert unless the event held nothing but our entry.
+            if had && !next.is_empty() {
+                hooks.insert(event.to_string(), Value::Array(next));
+            }
+        }
+    }
+    if settings == original {
+        return Ok(false);
+    }
+    write_settings(path, &settings)?;
+    Ok(true)
+}
+
 /// Read `settings.json` as a JSON object, returning `{}` if the file is absent.
 /// A parse failure or a non-object root is a hard error: we refuse to clobber a
 /// file we don't understand. `pub(crate)` so step 3.2's statusline installer shares
@@ -124,29 +151,8 @@ fn apply_hooks(settings: &mut Value, url: &str) -> Result<(), String> {
         .ok_or("`hooks` is present but is not an object")?;
 
     for &event in HOOK_EVENTS {
-        let entries = take_event_array(hooks, event)?;
-        let mut next: Vec<Value> = Vec::with_capacity(entries.len() + 1);
-
-        // Drop our own previous entries (so a re-run / port change doesn't pile up);
-        // keep every foreign entry verbatim.
-        for entry in entries {
-            match entry.get("hooks").and_then(Value::as_array) {
-                Some(inner) => {
-                    let before = inner.len();
-                    let kept: Vec<Value> =
-                        inner.iter().filter(|h| !is_ours(h)).cloned().collect();
-                    // An entry we emptied was purely ours — drop it. An entry that
-                    // was already empty (foreign oddity) is left as-is.
-                    if kept.is_empty() && kept.len() < before {
-                        continue;
-                    }
-                    let mut entry = entry;
-                    entry["hooks"] = Value::Array(kept);
-                    next.push(entry);
-                }
-                None => next.push(entry), // foreign entry without a hooks array
-            }
-        }
+        // Drop our own previous entries (so a re-run / port change doesn't pile up).
+        let mut next = strip_ours(take_event_array(hooks, event)?);
 
         // Append our fresh entry: matcher-less (fires for all matchers), one http
         // hook to our endpoint, naming the console it came from (see
@@ -164,6 +170,29 @@ fn apply_hooks(settings: &mut Value, url: &str) -> Result<(), String> {
     }
 
     Ok(())
+}
+
+/// Filter our hooks out of an event's entries, keeping every foreign entry verbatim.
+fn strip_ours(entries: Vec<Value>) -> Vec<Value> {
+    let mut next = Vec::with_capacity(entries.len() + 1);
+    for entry in entries {
+        match entry.get("hooks").and_then(Value::as_array) {
+            Some(inner) => {
+                let before = inner.len();
+                let kept: Vec<Value> = inner.iter().filter(|h| !is_ours(h)).cloned().collect();
+                // An entry we emptied was purely ours — drop it. An entry that
+                // was already empty (foreign oddity) is left as-is.
+                if kept.is_empty() && kept.len() < before {
+                    continue;
+                }
+                let mut entry = entry;
+                entry["hooks"] = Value::Array(kept);
+                next.push(entry);
+            }
+            None => next.push(entry), // foreign entry without a hooks array
+        }
+    }
+    next
 }
 
 /// Remove `hooks[event]` and return it as a vec of entries. A missing key yields an
@@ -390,6 +419,38 @@ mod tests {
         assert!(install_hooks_at(&path, &url).is_err());
         // The original bytes are untouched.
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "{ not json");
+
+        std::fs::remove_dir_all(path.parent().unwrap()).ok();
+    }
+
+    #[test]
+    fn uninstall_removes_only_ours() {
+        let other_path = if HOOK_PATH.ends_with("__dev") {
+            "/__workbench_hook"
+        } else {
+            "/__workbench_hook__dev"
+        };
+        let other_url = format!("http://127.0.0.1:40000{other_path}");
+        let foreign = json!({ "type": "command", "command": "echo hi" });
+
+        let path = temp_settings("uninstall");
+        let preexisting = json!({
+            "hooks": {
+                "Stop": [ { "hooks": [ { "type": "http", "url": other_url } ] } ],
+                "PreToolUse": [ { "matcher": "Bash", "hooks": [ foreign.clone() ] } ],
+            }
+        });
+        std::fs::write(&path, serde_json::to_string_pretty(&preexisting).unwrap()).unwrap();
+        let url = format!("http://127.0.0.1:48970{HOOK_PATH}");
+        install_hooks_at(&path, &url).unwrap();
+        assert_eq!(ours_count(&read(&path)), HOOK_EVENTS.len());
+
+        assert!(uninstall_hooks_at(&path).unwrap());
+        // Back to exactly what was there: the other build's entry, the foreign hook,
+        // and no event keys left behind that held only ours.
+        assert_eq!(read(&path), preexisting);
+        // A second run has nothing to do.
+        assert!(!uninstall_hooks_at(&path).unwrap());
 
         std::fs::remove_dir_all(path.parent().unwrap()).ok();
     }
