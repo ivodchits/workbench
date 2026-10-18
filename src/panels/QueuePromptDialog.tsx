@@ -14,7 +14,7 @@ import { useEffect, useMemo, useState, type CSSProperties } from "react";
 
 import { GLYPH } from "../theme";
 import Modal from "./InstanceManager/Modal";
-import { initQueueDelivery, sendOrQueue } from "./promptDelivery";
+import { deliverQueued, initQueueDelivery, sendOrQueue } from "./promptDelivery";
 import { useConsoles } from "../state/consoles";
 import { useRegistry } from "../state/registry";
 import { useLiveStatuses } from "../state/status";
@@ -188,6 +188,23 @@ function QueuePromptDialog({
             >
               {existing.text.replace(/\s+/g, " ").trim()}
             </span>
+            <button
+              onClick={() => effectiveTarget && deliverQueued(effectiveTarget)}
+              disabled={targetLive?.phase === "needs_you"}
+              title={
+                targetLive?.phase === "needs_you"
+                  ? "can't send while the agent is waiting on you — it could answer the prompt"
+                  : "send it now, without waiting for the turn to end"
+              }
+              style={{
+                ...buttonStyle,
+                padding: "3px 8px",
+                flex: "0 0 auto",
+                opacity: targetLive?.phase === "needs_you" ? 0.5 : 1,
+              }}
+            >
+              force send
+            </button>
             <button
               onClick={() => effectiveTarget && cancelQueued(effectiveTarget)}
               title="clear the queued prompt"

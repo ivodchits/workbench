@@ -26,8 +26,10 @@ let users = 0;
 let unsubscribe: (() => void) | null = null;
 
 /** Send the prompt queued for `instanceId`, if any. Cleared first, so the prompt's
- *  own later Stop can't re-fire a stale entry. */
-function deliverQueued(instanceId: string): void {
+ *  own later Stop can't re-fire a stale entry. Also the queue's "force send": typed
+ *  into a working TUI, the prompt goes into Claude Code's own queue, which takes it
+ *  in at the turn's next step (or as soon as the turn ends). */
+export function deliverQueued(instanceId: string): void {
   const q = getQueued(instanceId);
   if (!q) return;
   cancelQueued(instanceId);

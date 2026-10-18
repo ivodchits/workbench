@@ -11,7 +11,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { GLYPH } from "../theme";
 import { INTERRUPT_KEY, ptyWrite } from "../ipc/pty";
 import { submitPrompt } from "./terminalPool";
-import { sendOrQueue } from "./promptDelivery";
+import { deliverQueued, sendOrQueue } from "./promptDelivery";
 import { COMPOSER_ATTR, setDraft, spliceText, terminalCommand, useDraft } from "../state/composer";
 import { atRest, cancelQueued, useQueued } from "../state/queue";
 import { markInterrupted, type LiveStatus } from "../state/status";
@@ -126,6 +126,18 @@ function PromptComposer({ instanceId, live, onShowTerminal, onSent }: PromptComp
           <span className="wb-cmp-queued-text" title={queued.text}>
             {queued.text.replace(/\s+/g, " ").trim()}
           </span>
+          <button
+            type="button"
+            onClick={() => deliverQueued(instanceId)}
+            disabled={live?.phase === "needs_you"}
+            title={
+              live?.phase === "needs_you"
+                ? "can't send while claude is waiting on you — it could answer the prompt"
+                : "send it now, without waiting for the turn to end"
+            }
+          >
+            force send
+          </button>
           <button type="button" onClick={editQueued} title="take it back into the field">
             edit
           </button>
