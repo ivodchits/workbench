@@ -61,6 +61,8 @@ export type ClientMessage =
       allow: boolean;
     }
   | { type: "thread.new"; mode?: string }
+  /** Delete a thread (refused while a reply is running: stop it first). */
+  | { type: "thread.delete"; threadId: string }
   /** Ask for the thread list, the open confirmations and the spend (a surface
    *  connecting). */
   | { type: "sync" }
@@ -81,6 +83,8 @@ export type DuckEvent =
     }
   /** A thread was created or renamed. */
   | { type: "thread"; thread: ThreadRow }
+  /** A thread was deleted, with its messages and open confirmations. */
+  | { type: "threadDeleted"; threadId: string }
   /** A message was appended to a thread (and stored). */
   | { type: "message"; message: StoredMessage }
   /** Reply text as it streams; the full message follows as `message`. */

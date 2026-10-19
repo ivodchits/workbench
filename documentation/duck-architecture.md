@@ -5,7 +5,7 @@ behind each decision are in `assistant-plan.md`. This file describes the code, a
 Duck step updates it as part of its Done when. Duck's self-development sessions (L3)
 read it first.
 
-Last updated: step A3 (2026-10-19).
+Last updated: step A4 (2026-10-19).
 
 ## The shape
 
@@ -33,7 +33,7 @@ Last updated: step A3 (2026-10-19).
 | File | What it is |
 |---|---|
 | `index.ts` | `initAssistant()` (called from `App.tsx` with the other engines) builds the store, the registry and the engine; `getDuck()` returns the in-process transport. `endpoint()` maps protocol messages onto the engine and adds the spend (from a `SpendSource`: the ledger commands and `assistant-usage` events). |
-| `protocol.ts` | The Duck Protocol, version 1: `ClientMessage` (send, stop, confirm, thread.new, sync, thread.open) and `DuckEvent` (threads, history, thread, message, delta, tool, confirm, confirmed, turnState, spend, error). `createLocalTransport` stamps `v`. |
+| `protocol.ts` | The Duck Protocol, version 1: `ClientMessage` (send, stop, confirm, thread.new, thread.delete, sync, thread.open) and `DuckEvent` (threads, history, thread, threadDeleted, message, delta, tool, confirm, confirmed, turnState, spend, error). `createLocalTransport` stamps `v`. |
 | `spend.ts` | `createTurnMeter()`: bills each metered `thread` call to the one turn that is calling (none if two are), giving each thread's latest turn cost for the `spend` event. |
 | `engine.ts` | The loop. Pure helpers `toApiMessages`, `effectiveEffort` and `buildParams` are exported for tests. |
 | `threads.ts` | `createThreadStore(backend)`: threads, messages (loaded per thread on first use) and parked tool batches, in memory and persisted. Appends to one thread are serialized so each gets the next `seq`. |
@@ -53,7 +53,7 @@ Last updated: step A3 (2026-10-19).
 | `proxy.rs` | `/anthropic/{*path}` on the hook server: token check, CORS for the app's origins, endpoint allow-list, budget check, key swap, streaming forward, usage tap. |
 | `usage.rs` | The price table, the stream meter, and ledger rows. |
 | `budget.rs` | Limits, month-to-date spend, and the cap rule (at the cap only Haiku with a purpose other than `thread` passes). |
-| `threads.rs` | Threads, append-only messages and parked batches in `duck.db`. |
+| `threads.rs` | Threads, append-only messages and parked batches in `duck.db`; `delete` removes a thread with its messages and batches in one transaction. |
 | `db.rs` | `duck.db` / `duck.dev.db` and its append-only migrations. |
 
 ### The desktop surface: `src/panels/Assistant/`
@@ -62,7 +62,7 @@ Last updated: step A3 (2026-10-19).
 |---|---|
 | `duckState.ts` | The desktop's one subscription to the protocol, an external store shared by the button and the drawer: threads, the open thread, loaded messages, streaming text, turn states, locally queued messages, confirmations, spend. Actions (`sendMessage`, `stopTurn`, `answer`, `openThread`, …) only send protocol messages. Persists `assistantDrawer` prefs (width, open thread, interrupt). |
 | `view.ts` | `toItems(messages)`: stored messages → display items (user text, reply text, a tool chip with its result attached, notices; thinking and system messages hidden). `sessionLink()` reads `#session/<id>` links. |
-| `DuckButton.tsx` | The title-bar button: toggles the drawer, the acronym tooltip, a confirmation-count badge, an amber/red tint past the soft limit/cap. |
+| `DuckButton.tsx` | The title-bar button ("D.U.C.K.", the icon beside it): toggles the drawer, the acronym tooltip, a confirmation-count badge, an amber/red tint past the soft limit/cap. |
 | `Drawer.tsx` | The drawer: header (thread list, new, settings, close), thread view (markdown replies, tool chips, queued bubbles), confirmation cards, spend line, composer (Enter / Shift+Enter / Esc, "think hard" = effort `high` for one message). Always mounted and only hidden, so the thread and scroll survive closing. |
 | `DrawerSettings.tsx` | Queue-or-interrupt, and "start at login, minimized to the tray" (`@tauri-apps/plugin-autostart`; disabled in dev builds). |
 | `DuckIcon.tsx` | The icon as a CSS mask in the accent colour; the eyeless version below 20 px. Images in `src/assets/duck/`. |
@@ -142,6 +142,10 @@ One turn on a thread (`engine.ts`):
    - The proxy's `402 budget_exceeded` becomes a `cap` notice.
    - Any other failure becomes an `error` notice.
    - After 25 rounds in one turn the engine stops with a `rounds` notice.
+
+**Deleting a thread** (`deleteThread`): refused while a reply runs (stop it first). A
+parked thread is deleted with its batch, so its confirmations vanish; its queue is
+dropped. Every surface gets `threadDeleted`. Spend rows are kept.
 
 **Other rules:**
 - **Queueing:** a message sent while a turn runs, or while one is parked, waits in a

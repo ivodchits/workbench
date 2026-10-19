@@ -132,6 +132,7 @@ pub fn run() {
             assistant::assistant_thread_list,
             assistant::assistant_thread_messages,
             assistant::assistant_thread_title,
+            assistant::assistant_thread_delete,
             assistant::assistant_message_append,
             assistant::assistant_pending_put,
             assistant::assistant_pending_list,

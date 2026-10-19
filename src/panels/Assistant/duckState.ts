@@ -120,6 +120,27 @@ function onEvent(e: DuckEvent): void {
       }
       break;
     }
+    case "threadDeleted": {
+      const id = e.threadId;
+      const drop = <T>(r: Record<string, T>) => {
+        const rest = { ...r };
+        delete rest[id];
+        return rest;
+      };
+      const threads = state.threads.filter((t) => t.id !== id);
+      set({
+        threads,
+        messages: drop(state.messages),
+        streaming: drop(state.streaming),
+        states: drop(state.states),
+        queued: drop(state.queued),
+        turns: drop(state.turns),
+        asks: state.asks.filter((a) => a.threadId !== id),
+      });
+      // The open thread went: show the next most recent, or a new one.
+      if (state.current === id) openThread(threads[0]?.id ?? null);
+      break;
+    }
     case "history":
       set({
         messages: { ...state.messages, [e.threadId]: e.messages },
@@ -247,6 +268,12 @@ export function openThread(threadId: string | null): void {
   }
 }
 
+/** True while a reply is being made (not parked on a confirmation). */
+export const isRunning = (threadId: string): boolean => {
+  const s = state.states[threadId] ?? "idle";
+  return s !== "idle" && s !== "waiting";
+};
+
 /** True while the thread has a turn running or parked. */
 export const isBusy = (threadId: string | null): boolean =>
   !!threadId && (state.states[threadId] ?? "idle") !== "idle";
@@ -270,6 +297,15 @@ export function sendMessage(text: string, effort?: Effort): void {
   }
   if (!threadId) adopting = true;
   post({ type: "send", threadId, text, source: "desktop", effort });
+}
+
+/** Delete a thread (step A4); the engine refuses while a reply runs. */
+export function deleteThread(threadId: string): void {
+  post({ type: "thread.delete", threadId });
+}
+
+export function clearError(): void {
+  set({ error: null });
 }
 
 export function stopTurn(): void {

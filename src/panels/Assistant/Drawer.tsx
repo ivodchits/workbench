@@ -21,10 +21,14 @@ import "../../theme/assistant.css";
 import type { ConfirmRequest } from "../../assistant/protocol";
 import DuckIcon from "./DuckIcon";
 import DrawerSettings from "./DrawerSettings";
+import type { ThreadRow } from "../../ipc/assistant";
 import {
   answer,
+  clearError,
   connectDuck,
+  deleteThread,
   isBusy,
+  isRunning,
   openThread,
   sendMessage,
   setDrawerOpen,
@@ -143,6 +147,26 @@ export default function AssistantDrawer() {
       {noKey && (
         <div style={{ ...banner, color: "var(--wb-needs)" }}>
           No API key yet. Add one from the ◆ duck menu in the status bar.
+        </div>
+      )}
+      {duck.error && (
+        <div
+          style={{
+            ...banner,
+            color: "var(--wb-needs)",
+            display: "flex",
+            gap: 8,
+          }}
+        >
+          <span style={{ flex: 1 }}>{duck.error}</span>
+          <button
+            type="button"
+            style={plainBtn}
+            onClick={clearError}
+            aria-label="dismiss"
+          >
+            ×
+          </button>
         </div>
       )}
       <ThreadBody duck={duck} />
@@ -265,41 +289,15 @@ function Header({ duck, title }: { duck: DuckState; title: string }) {
             </div>
           )}
           {duck.threads.map((t) => (
-            <button
+            <ThreadListRow
               key={t.id}
-              type="button"
-              onClick={() => {
+              thread={t}
+              duck={duck}
+              onOpen={() => {
                 openThread(t.id);
                 setMenu(null);
               }}
-              style={{
-                ...plainBtn,
-                width: "100%",
-                display: "flex",
-                gap: 8,
-                padding: "4px 12px",
-                background:
-                  t.id === duck.current ? "var(--wb-sel)" : "transparent",
-              }}
-            >
-              <span
-                style={{
-                  flex: 1,
-                  textAlign: "left",
-                  overflow: "hidden",
-                  textOverflow: "ellipsis",
-                  whiteSpace: "nowrap",
-                }}
-              >
-                {t.title || "untitled"}
-              </span>
-              {duck.asks.some((a) => a.threadId === t.id) && (
-                <span style={{ color: "var(--wb-needs)" }}>●</span>
-              )}
-              <span style={{ color: "var(--wb-textFaint)" }}>
-                {formatAgo(Math.floor(t.updated / 1000))}
-              </span>
-            </button>
+            />
           ))}
         </div>
       )}
@@ -308,6 +306,115 @@ function Header({ duck, title }: { duck: DuckState; title: string }) {
           <DrawerSettings duck={duck} />
         </div>
       )}
+    </div>
+  );
+}
+
+/** One row of the thread list: open it, or delete it after a yes (step A4). A
+ *  thread with a reply running can't be deleted until the reply is stopped. */
+function ThreadListRow({
+  thread: t,
+  duck,
+  onOpen,
+}: {
+  thread: ThreadRow;
+  duck: DuckState;
+  onOpen: () => void;
+}) {
+  const [confirming, setConfirming] = useState(false);
+  const [hover, setHover] = useState(false);
+  const running = isRunning(t.id);
+  const title = t.title || "untitled";
+  const row: React.CSSProperties = {
+    display: "flex",
+    alignItems: "center",
+    gap: 8,
+    padding: "4px 12px",
+    background: t.id === duck.current ? "var(--wb-sel)" : "transparent",
+  };
+
+  if (confirming)
+    return (
+      <div style={row}>
+        <span
+          style={{
+            flex: 1,
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+            whiteSpace: "nowrap",
+            color: "var(--wb-needs)",
+          }}
+        >
+          delete “{title}”?
+        </span>
+        <button
+          type="button"
+          style={{
+            ...btn,
+            color: "var(--wb-needs)",
+            borderColor: "var(--wb-needs)",
+          }}
+          onClick={() => {
+            setConfirming(false);
+            deleteThread(t.id);
+          }}
+        >
+          yes
+        </button>
+        <button type="button" style={btn} onClick={() => setConfirming(false)}>
+          no
+        </button>
+      </div>
+    );
+
+  return (
+    <div
+      style={row}
+      onMouseEnter={() => setHover(true)}
+      onMouseLeave={() => setHover(false)}
+    >
+      <button
+        type="button"
+        onClick={onOpen}
+        style={{ ...plainBtn, flex: 1, minWidth: 0, display: "flex", gap: 8 }}
+      >
+        <span
+          style={{
+            flex: 1,
+            textAlign: "left",
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+            whiteSpace: "nowrap",
+          }}
+        >
+          {title}
+        </span>
+        {duck.asks.some((a) => a.threadId === t.id) && (
+          <span style={{ color: "var(--wb-needs)" }}>●</span>
+        )}
+        <span style={{ color: "var(--wb-textFaint)" }}>
+          {formatAgo(Math.floor(t.updated / 1000))}
+        </span>
+      </button>
+      <button
+        type="button"
+        aria-label={`delete ${title}`}
+        title={
+          running
+            ? "Duck is replying here: stop it first"
+            : "delete this thread"
+        }
+        disabled={running}
+        onClick={() => setConfirming(true)}
+        style={{
+          ...plainBtn,
+          color: running ? "var(--wb-textFaint)" : "var(--wb-textDim2)",
+          cursor: running ? "default" : "pointer",
+          visibility: hover || t.id === duck.current ? "visible" : "hidden",
+        }}
+      >
+        ✕
+      </button>
     </div>
   );
 }

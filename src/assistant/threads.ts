@@ -33,6 +33,7 @@ export interface ThreadBackend {
   threadList(): Promise<ThreadRow[]>;
   threadMessages(threadId: string): Promise<StoredMessage[]>;
   threadTitle(threadId: string, title: string): Promise<void>;
+  threadDelete(threadId: string): Promise<void>;
   messageAppend(m: StoredMessage): Promise<void>;
   pendingPut(id: string, threadId: string, data: unknown): Promise<void>;
   pendingList(): Promise<{ id: string; threadId: string; data: unknown }[]>;
@@ -58,6 +59,9 @@ export interface ThreadStore {
     content: unknown,
     source: string,
   ): Promise<StoredMessage>;
+  /** Delete a thread with its messages and parked batches (after any append in
+   *  flight lands). */
+  remove(threadId: string): Promise<void>;
   pending(): readonly PendingBatch[];
   putPending(b: PendingBatch): Promise<void>;
   clearPending(id: string): Promise<void>;
@@ -165,6 +169,16 @@ export function createThreadStore(
         });
       tails.set(threadId, next);
       return next;
+    },
+    async remove(threadId) {
+      await tails.get(threadId)?.catch(() => {});
+      await backend.threadDelete(threadId);
+      threads = threads.filter((t) => t.id !== threadId);
+      pending = pending.filter((p) => p.threadId !== threadId);
+      messages.delete(threadId);
+      loading.delete(threadId);
+      tails.delete(threadId);
+      emit();
     },
     pending: () => pending,
     async putPending(b) {

@@ -207,6 +207,24 @@ pub fn pending_clear(conn: &Connection, id: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Delete a thread with its messages and parked batches (step A4), in one
+/// transaction. Append-only means no message is ever changed; a whole conversation
+/// can still go. Spend rows stay: they belong to the month, not the thread.
+pub fn delete(conn: &mut Connection, id: &str) -> Result<(), String> {
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    tx.execute("DELETE FROM assistant_pending WHERE thread_id = ?1", [id])
+        .map_err(|e| e.to_string())?;
+    tx.execute("DELETE FROM assistant_messages WHERE thread_id = ?1", [id])
+        .map_err(|e| e.to_string())?;
+    let n = tx
+        .execute("DELETE FROM assistant_threads WHERE id = ?1", [id])
+        .map_err(|e| e.to_string())?;
+    if n == 0 {
+        return Err(format!("no thread {id}"));
+    }
+    tx.commit().map_err(|e| e.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::super::db::DuckDb;
@@ -271,5 +289,32 @@ mod tests {
         assert_eq!(p[0].data["calls"][1], 2);
         pending_clear(&conn, "b1").unwrap();
         assert!(pending_list(&conn).unwrap().is_empty());
+    }
+
+    #[test]
+    fn deletes_a_thread_with_its_messages_and_batches_only() {
+        let db = DuckDb::open_in_memory().unwrap();
+        let mut conn = db.conn.lock().unwrap();
+        create(&conn, "t1", "chat", 1).unwrap();
+        create(&conn, "keep", "chat", 1).unwrap();
+        append(&mut conn, &msg(0, "user", 10)).unwrap();
+        append(&mut conn, &msg(1, "assistant", 20)).unwrap();
+        let mut other = msg(0, "user", 30);
+        other.thread_id = "keep".into();
+        append(&mut conn, &other).unwrap();
+        pending_put(&conn, "b1", "t1", &json!({}), 40).unwrap();
+        pending_put(&conn, "b2", "keep", &json!({}), 40).unwrap();
+
+        delete(&mut conn, "t1").unwrap();
+        assert!(get(&conn, "t1").unwrap().is_none());
+        assert!(messages(&conn, "t1").unwrap().is_empty());
+        assert_eq!(messages(&conn, "keep").unwrap().len(), 1);
+        let p = pending_list(&conn).unwrap();
+        assert_eq!(p.len(), 1);
+        assert_eq!(p[0].thread_id, "keep");
+        assert!(delete(&mut conn, "t1").is_err());
+        // A new thread may reuse nothing of the old one: seq starts over.
+        create(&conn, "t1", "chat", 50).unwrap();
+        append(&mut conn, &msg(0, "user", 60)).unwrap();
     }
 }

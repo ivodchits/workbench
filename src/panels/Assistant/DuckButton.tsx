@@ -1,6 +1,6 @@
-// The Duck button (step A3), at the far left of the title bar: opens and closes the
-// drawer, spells out the acronym on hover, and doubles as Duck's status light. A
-// badge counts the tool calls waiting for your confirmation (in any thread), and
+// The Duck button (step A3), at the far left of the title bar ("D.U.C.K.", with the
+// duck icon beside it): opens and closes the drawer, spells out the acronym on
+// hover, and doubles as Duck's status light. A badge counts the tool calls waiting for your confirmation (in any thread), and
 // the label turns amber past the budget's soft limit and red at the cap. Trust
 // pause (T1) and the voice state (V1/V4) join it later.
 
@@ -45,7 +45,15 @@ export default function DuckButton() {
     (asks ? `. ${asks} waiting for your confirmation` : "");
 
   return (
-    <div style={{ position: "relative", marginLeft: 8 }}>
+    <div
+      style={{
+        position: "relative",
+        marginLeft: 8,
+        display: "flex",
+        alignItems: "center",
+        gap: 7,
+      }}
+    >
       <button
         type="button"
         onClick={() => runCommand("toggleAssistant")}
@@ -72,12 +80,11 @@ export default function DuckButton() {
           font: "11px var(--wb-mono)",
           cursor: "pointer",
           padding: "2px 8px",
-          letterSpacing: "0.12em",
+          letterSpacing: "-0.02em",
           textTransform: "uppercase",
         }}
       >
-        <DuckIcon size={14} color={tone ?? "var(--wb-accent)"} />
-        duck
+        D.U.C.K.
         {asks > 0 && (
           <span
             style={{
@@ -98,6 +105,7 @@ export default function DuckButton() {
           </span>
         )}
       </button>
+      <DuckIcon size={13.5} color={tone ?? "var(--wb-accent)"} />
 
       {tip && (
         <div

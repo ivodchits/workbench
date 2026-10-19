@@ -89,6 +89,9 @@ export function endpoint(
       case "thread.new":
         await e.newThread(msg.mode);
         return;
+      case "thread.delete":
+        await e.deleteThread(msg.threadId);
+        return;
       case "sync":
         say({ type: "threads", threads: [...s.threads()] });
         for (const request of e.pendingRequests())

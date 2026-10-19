@@ -99,6 +99,9 @@ export const threadMessages = (threadId: string): Promise<StoredMessage[]> =>
   invoke("assistant_thread_messages", { threadId });
 export const threadTitle = (threadId: string, title: string): Promise<void> =>
   invoke("assistant_thread_title", { threadId, title });
+/** Delete a thread with its messages and parked batches (step A4). */
+export const threadDelete = (threadId: string): Promise<void> =>
+  invoke("assistant_thread_delete", { threadId });
 export const messageAppend = (message: StoredMessage): Promise<void> =>
   invoke("assistant_message_append", { message });
 export const pendingPut = (

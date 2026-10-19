@@ -1759,9 +1759,9 @@ tapping around. Two stages.
     position.
 - **Out of scope:** voice, the phone.
 - **As built (2026-10-19):**
-  - **Button:** `DuckButton` at the far left of the title bar with your duck icon (a CSS
-    mask in the theme's accent; the eyeless version below 20 px, the one with the eye in
-    the drawer header). The tooltip spells out the acronym and shows the bound shortcut.
+  - **Button:** `DuckButton` at the far left of the title bar, labelled "D.U.C.K.", with
+    your duck icon just right of it, outside the button (a CSS mask in the theme's
+    accent; the eyeless version below 20 px, the one with the eye in the drawer header). The tooltip spells out the acronym and shows the bound shortcut.
     Status light: a red badge counting open confirmations (any thread), and an amber/red
     tint past the soft limit/cap.
   - **Hotkey:** `toggleAssistant` defaults to **Ctrl+Shift+Space**, not Ctrl+Space:
@@ -1828,6 +1828,17 @@ tapping around. Two stages.
   confirmation is gone from the button's badge, and a test covers the store, the
   engine's refusal mid-turn, and the Rust delete.
 - **Out of scope:** archiving, bulk delete, undo.
+- **As built (2026-10-19):**
+  - Rust `threads::delete` + `assistant_thread_delete`; the store's `remove()` waits for
+    any append in flight first. The engine's `deleteThread` refuses a running reply,
+    drops a parked batch and the queue, and emits `threadDeleted`.
+  - Drawer: a ✕ on each thread-list row (on hover, always on the open thread), then
+    "delete “title”? yes / no". Disabled while that thread's reply runs. The drawer also
+    shows Duck's errors now (A3 stored them but never displayed them), e.g. a refused
+    delete.
+  - Verified: 2 engine tests (refusal mid-reply then delete; a parked thread's
+    confirmation, queue and batch go), 1 Rust test (only that thread's rows go; the id
+    can be reused).
 
 ### Track W — Workbench tools
 
@@ -3246,7 +3257,7 @@ voice work.
 | A1 | API key in the keychain + loopback proxy + usage ledger | ☑ |
 | A2 | Assistant engine: loop, tool registry, threads | ☑ |
 | A3 | The Assistant drawer (desktop UI) | ☑ |
-| A4 | Deleting threads | ☐ |
+| A4 | Deleting threads | ☑ |
 | W1 | Read tools | ☐ |
 | W2 | Action tools + the confirmation policy | ☐ |
 | W3 | Session summaries | ☐ |

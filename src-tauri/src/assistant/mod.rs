@@ -190,3 +190,9 @@ pub fn assistant_pending_list(ctx: Db<'_>) -> Result<Vec<Pending>, String> {
 pub fn assistant_pending_clear(ctx: Db<'_>, id: String) -> Result<(), String> {
     threads::pending_clear(&lock(&ctx), &id)
 }
+
+/// Delete a thread, its messages and its parked batches (step A4).
+#[tauri::command]
+pub fn assistant_thread_delete(ctx: Db<'_>, thread_id: String) -> Result<(), String> {
+    threads::delete(&mut lock(&ctx), &thread_id)
+}

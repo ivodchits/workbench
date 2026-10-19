@@ -64,6 +64,14 @@ function memoryBackend(): ThreadBackend & { rows: StoredMessage[] } {
     async pendingClear(id) {
       pending.delete(id);
     },
+    async threadDelete(id) {
+      const i = threads.findIndex((t) => t.id === id);
+      if (i < 0) throw new Error("no thread");
+      threads.splice(i, 1);
+      for (let j = rows.length - 1; j >= 0; j--)
+        if (rows[j].threadId === id) rows.splice(j, 1);
+      for (const [k, p] of pending) if (p.threadId === id) pending.delete(k);
+    },
   };
 }
 
@@ -477,6 +485,50 @@ describe("engine", () => {
       "medium",
       "medium",
     ]);
+  });
+});
+
+describe("deleting a thread", () => {
+  it("refuses mid-reply, then deletes it with its messages", async () => {
+    const { engine, store, backend, events } = await setup([{ hang: "Hmm" }]);
+    const id = await engine.send({
+      threadId: null,
+      text: "talk",
+      source: "desktop",
+    });
+    await new Promise((r) => setTimeout(r, 10));
+    await expect(engine.deleteThread(id)).rejects.toThrow(/Stop it first/);
+    engine.stop(id);
+    await engine.settled(id);
+
+    await engine.deleteThread(id);
+    expect(store.thread(id)).toBeUndefined();
+    expect(backend.rows).toEqual([]);
+    expect(events[events.length - 1]).toEqual({
+      type: "threadDeleted",
+      threadId: id,
+    });
+    await expect(engine.deleteThread(id)).rejects.toThrow(/no thread/);
+  });
+
+  it("drops a parked thread's confirmation, queue and pending batch", async () => {
+    const { engine, store, backend } = await setup([
+      message(
+        [toolUse("s", "send_prompt", { session: "api", text: "x" })],
+        "tool_use",
+      ),
+    ]);
+    const keep = await turn(engine, "one");
+    const other = await engine.newThread();
+    expect(engine.pendingRequests()).toHaveLength(1);
+    await engine.send({ threadId: keep, text: "queued", source: "desktop" });
+
+    await engine.deleteThread(keep);
+    expect(engine.pendingRequests()).toEqual([]);
+    expect(store.pending()).toEqual([]);
+    expect(await backend.pendingList()).toEqual([]);
+    expect(engine.state(keep)).toBe("idle");
+    expect(store.threads().map((t) => t.id)).toEqual([other.id]);
   });
 });
 

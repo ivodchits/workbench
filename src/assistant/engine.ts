@@ -106,6 +106,9 @@ export interface Engine {
   /** Send a message; resolves to the thread id once it's appended or queued. */
   send(input: SendInput): Promise<string>;
   newThread(mode?: string): Promise<ThreadRow>;
+  /** Delete a thread. Refused while a turn runs; a parked one is dropped with its
+   *  confirmations and queue. */
+  deleteThread(threadId: string): Promise<void>;
   stop(threadId: string): void;
   confirm(threadId: string, toolUseId: string, allow: boolean): Promise<void>;
   /** Re-announce parked confirmations (after a reload). */
@@ -611,6 +614,19 @@ export function createEngine(deps: EngineDeps): Engine {
       const t = await store.create(mode);
       emit({ type: "thread", thread: t });
       return t;
+    },
+
+    async deleteThread(threadId) {
+      if (!store.thread(threadId)) throw new Error(`no thread ${threadId}`);
+      if (turns.has(threadId))
+        throw new Error(
+          "Duck is still replying in that thread. Stop it first.",
+        );
+      queues.delete(threadId);
+      await store.remove(threadId);
+      emit({ type: "threadDeleted", threadId });
+      for (const w of settledWaiters.get(threadId) ?? []) w();
+      settledWaiters.delete(threadId);
     },
 
     stop(threadId) {
