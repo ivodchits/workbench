@@ -59,6 +59,58 @@ export const getSpend = (): Promise<Spend> => invoke("assistant_spend");
 export const setBudget = (limits: Limits): Promise<Limits> =>
   invoke("assistant_budget_set", { limits });
 
+// Threads (step A2), stored in duck.db. Messages are append-only: `seq` must be the
+// thread's next, or the append is refused.
+
+export interface ThreadRow {
+  id: string;
+  title: string;
+  mode: string;
+  created: number;
+  updated: number;
+}
+
+/** `notice` is shown in the thread but never sent to the API. */
+export type StoredRole = "user" | "assistant" | "system" | "notice";
+
+export interface StoredMessage {
+  threadId: string;
+  seq: number;
+  ts: number;
+  role: StoredRole;
+  /** API content blocks (or a notice's payload), as JSON. */
+  content: unknown;
+  /** Where the message came from: `desktop`, `phone`, `voice`, `duck`, … */
+  source: string;
+}
+
+export interface PendingRow {
+  id: string;
+  threadId: string;
+  created: number;
+  data: unknown;
+}
+
+export const threadCreate = (id: string, mode: string): Promise<ThreadRow> =>
+  invoke("assistant_thread_create", { id, mode });
+export const threadList = (): Promise<ThreadRow[]> =>
+  invoke("assistant_thread_list");
+export const threadMessages = (threadId: string): Promise<StoredMessage[]> =>
+  invoke("assistant_thread_messages", { threadId });
+export const threadTitle = (threadId: string, title: string): Promise<void> =>
+  invoke("assistant_thread_title", { threadId, title });
+export const messageAppend = (message: StoredMessage): Promise<void> =>
+  invoke("assistant_message_append", { message });
+export const pendingPut = (
+  id: string,
+  threadId: string,
+  data: unknown,
+): Promise<void> => invoke("assistant_pending_put", { id, threadId, data });
+export const pendingList = (): Promise<PendingRow[]> =>
+  invoke("assistant_pending_list");
+export const pendingClear = (id: string): Promise<void> =>
+  invoke("assistant_pending_clear", { id });
+
 export function onUsage(cb: (r: UsageRecord) => void): Promise<UnlistenFn> {
   return listen<UsageRecord>("assistant-usage", (event) => cb(event.payload));
 }

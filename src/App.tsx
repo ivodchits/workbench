@@ -4,6 +4,7 @@ import AppearanceMenu from "./panels/AppearanceMenu";
 import RemoteAccessMenu from "./panels/RemoteAccessMenu";
 import NotificationsMenu from "./panels/NotificationsMenu";
 import AssistantMenu from "./panels/AssistantMenu";
+import { initAssistant } from "./assistant";
 import RemoteMirror from "./panels/RemoteMirror";
 import Workspace from "./panels/Workspace";
 import PresetsBar from "./panels/PresetsBar";
@@ -94,6 +95,9 @@ function App() {
     // Notification routing + escalation (step 4.6): route needs-you to the configured
     // destinations and watch for held/stuck cards. App-lifetime, idempotent.
     initNotifications();
+    // Duck (step A2): the assistant engine, its threads and open confirmations.
+    // App-lifetime and idempotent; without the backend Duck simply stays off.
+    void initAssistant();
     // Per-console terminal/transcript choice (step T3), restored from prefs.
     void initViewModes();
     // Images pasted into a composer are deleted once sent; this collects the ones

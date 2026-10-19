@@ -1,7 +1,8 @@
 // Assistant menu (step A1): the status-bar control for Duck's API access. Shows this
 // month's API spend against the cap; the popover holds the key (stored in Windows
-// Credential Manager, never shown), a one-token test call through the proxy, the
-// spend by model and purpose, and the budget limits.
+// Credential Manager, never shown), a one-token test call through the proxy, a box
+// for talking to Duck until the drawer exists (step A2), the spend by model and
+// purpose, and the budget limits.
 // Mirrors the AppearanceMenu's upward popover so it sits naturally in the status bar.
 //
 // Entering the key here works, but the recommended way is `cmdkey` in your own
@@ -20,6 +21,7 @@ import {
   type KeyStatus,
   type Spend,
 } from "../ipc/assistant";
+import AssistantTry from "./AssistantTry";
 
 const usd = (n: number) => (n < 1 ? `$${n.toFixed(3)}` : `$${n.toFixed(2)}`);
 
@@ -124,6 +126,13 @@ function AssistantMenu() {
           }}
         >
           {key && <KeySection status={key} onChange={setKeyStatus} />}
+          {key?.present && (
+            <>
+              <Divider />
+              <SectionLabel>try duck</SectionLabel>
+              <AssistantTry />
+            </>
+          )}
           {spend && (
             <>
               <Divider />

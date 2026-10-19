@@ -25,4 +25,25 @@ export default tseslint.config(
       ],
     },
   },
+  // Duck touches Workbench only through `WorkbenchPort` (assistant plan → Separable,
+  // not separate): under src/assistant, only the local port may import the stores
+  // or panels.
+  {
+    files: ["src/assistant/**/*.{ts,tsx}"],
+    ignores: ["src/assistant/port.local.ts"],
+    rules: {
+      "no-restricted-imports": [
+        "error",
+        {
+          patterns: [
+            {
+              regex: "(^|/)(state|panels)(/|$)",
+              message:
+                "Duck reaches the app only through WorkbenchPort (src/assistant/port.ts); add what you need there and implement it in port.local.ts.",
+            },
+          ],
+        },
+      ],
+    },
+  },
 );

@@ -21,6 +21,7 @@ mod skills;
 mod statusline;
 mod sys;
 mod transcript;
+mod window;
 
 use tauri::Manager;
 
@@ -87,6 +88,10 @@ pub fn run() {
             // route Ctrl+Shift+R to the resume-last-session event (the engine eats
             // that chord before the DOM, so the keymap binding can't see it).
             // DevTools keys stay enabled.
+            // The main window is built here, not from the config (`create: false`),
+            // so it gets the shared WebView2 profile (step A2, `window.rs`). Last, so
+            // everything its page calls into is already managed.
+            window::build_main(app.handle())?;
             if let Some(win) = app.get_webview_window("main") {
                 accel::install_accelerator_handler(&win);
             }
@@ -116,6 +121,15 @@ pub fn run() {
             assistant::assistant_key_clear,
             assistant::assistant_spend,
             assistant::assistant_budget_set,
+            assistant::assistant_thread_create,
+            assistant::assistant_thread_list,
+            assistant::assistant_thread_messages,
+            assistant::assistant_thread_title,
+            assistant::assistant_message_append,
+            assistant::assistant_pending_put,
+            assistant::assistant_pending_list,
+            assistant::assistant_pending_clear,
+            window::window_open_torn,
             remote::remote_start,
             remote::remote_stop,
             remote::remote_status,

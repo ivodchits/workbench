@@ -20,6 +20,7 @@
 // relaunch it returns to the main dock as a dormant placeholder — matching
 // Workbench's "restore dormant, don't auto-launch" philosophy.
 
+import { invoke } from "@tauri-apps/api/core";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { TauriEvent } from "@tauri-apps/api/event";
 
@@ -32,6 +33,8 @@ export type TornKind = "console" | "shell";
 /** Live torn-off windows, keyed `kind:id`, so a repeat tear-off focuses the
  *  existing window and the rail-kill path can close it. */
 const windows = new Map<string, WebviewWindow>();
+/** Tear-offs whose window is still being built, so a double click opens one. */
+const opening = new Set<string>();
 
 function keyFor(kind: TornKind, id: string): string {
   return `${kind}:${id}`;
@@ -60,6 +63,7 @@ export function tearOff(kind: TornKind, id: string, title: string): void {
     void existing.setFocus();
     return;
   }
+  if (opening.has(key)) return;
 
   // Flag it (drops the main-dock panel via the reconciler) and release the dock's
   // terminal *without* killing the child — the new window becomes its subscriber.
@@ -69,26 +73,29 @@ export function tearOff(kind: TornKind, id: string, title: string): void {
 
   const label = labelFor(kind, id);
   const params = new URLSearchParams({ torn: kind, id, title: windowTitle(title) });
-  const win = new WebviewWindow(label, {
+  opening.add(key);
+  // Built in Rust (`window.rs`) so it shares the main window's WebView2 profile:
+  // WebView2 refuses a second webview on the same data folder with different
+  // browser args, and the windows share localStorage (composer drafts).
+  invoke("window_open_torn", {
+    label,
     url: `index.html?${params.toString()}`,
     title: `${windowTitle(title)} — Workbench`,
-    width: 900,
-    height: 640,
-    minWidth: 480,
-    minHeight: 320,
-    // As the main window (tauri.conf): the page takes drops itself, so a file from
-    // the OS reaches the console with its path (step D2).
-    dragDropEnabled: false,
-  });
-  windows.set(key, win);
-
-  // Closing the OS window docks the panel back into the main dock (keeping the
-  // session alive). A creation error (e.g. a stale label) also unwinds the flag.
-  void win.once(TauriEvent.WINDOW_DESTROYED, () => dockBack(kind, id));
-  void win.once("tauri://error", (e) => {
-    console.error("workbench: tear-off window failed", e);
-    dockBack(kind, id);
-  });
+  })
+    .then(() => WebviewWindow.getByLabel(label))
+    .then((win) => {
+      if (!win) throw new Error(`window ${label} vanished`);
+      windows.set(key, win);
+      // Closing the OS window docks the panel back into the main dock (keeping
+      // the session alive).
+      void win.once(TauriEvent.WINDOW_DESTROYED, () => dockBack(kind, id));
+    })
+    .catch((e: unknown) => {
+      // A creation error (e.g. a stale label) unwinds the flag.
+      console.error("workbench: tear-off window failed", e);
+      dockBack(kind, id);
+    })
+    .finally(() => opening.delete(key));
 }
 
 /** Dock a torn-off panel back into the main dock (its window closed). The

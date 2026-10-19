@@ -1,7 +1,8 @@
 //! Duck's backend (track A). Step A1: the API key in the keychain ([`key`]), the
 //! loopback proxy that is the only way to the API ([`proxy`]), the usage ledger
 //! ([`usage`]) and the monthly budget ([`budget`]), over Duck's own database
-//! ([`db`]).
+//! ([`db`]). Step A2: conversation threads ([`threads`]), stored for the engine that
+//! runs in the webview (`src/assistant/`).
 //!
 //! The webview never holds the key. It asks [`assistant_proxy_info`] for the proxy's
 //! base URL and a per-launch token, and calls the API through the hook server with
@@ -12,6 +13,7 @@ mod budget;
 mod db;
 mod key;
 mod proxy;
+mod threads;
 mod usage;
 
 use std::sync::Arc;
@@ -20,10 +22,12 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use axum::Router;
 use rand_core::{OsRng, RngCore};
 use serde::Serialize;
+use serde_json::Value;
 use tauri::{AppHandle, Manager, State};
 
 pub use budget::{Limits, Spend};
 use db::DuckDb;
+pub use threads::{Message, Pending, Thread};
 
 /// Tauri-managed (as `Arc<Assistant>`): the proxy's shared state.
 pub struct Assistant {
@@ -132,4 +136,57 @@ pub fn assistant_budget_set(
     limits: Limits,
 ) -> Result<Limits, String> {
     budget::set_limits(&ctx.db, limits)
+}
+
+type Db<'a> = State<'a, Arc<Assistant>>;
+
+fn lock(ctx: &Assistant) -> std::sync::MutexGuard<'_, rusqlite::Connection> {
+    ctx.db.conn.lock().expect("duck db lock poisoned")
+}
+
+#[tauri::command]
+pub fn assistant_thread_create(ctx: Db<'_>, id: String, mode: String) -> Result<Thread, String> {
+    threads::create(&lock(&ctx), &id, &mode, now_ms())
+}
+
+#[tauri::command]
+pub fn assistant_thread_list(ctx: Db<'_>) -> Result<Vec<Thread>, String> {
+    threads::list(&lock(&ctx))
+}
+
+#[tauri::command]
+pub fn assistant_thread_messages(ctx: Db<'_>, thread_id: String) -> Result<Vec<Message>, String> {
+    threads::messages(&lock(&ctx), &thread_id)
+}
+
+#[tauri::command]
+pub fn assistant_thread_title(ctx: Db<'_>, thread_id: String, title: String) -> Result<(), String> {
+    threads::set_title(&lock(&ctx), &thread_id, &title)
+}
+
+/// Append one message; `message.seq` must be the thread's next (append-only).
+#[tauri::command]
+pub fn assistant_message_append(ctx: Db<'_>, message: Message) -> Result<(), String> {
+    threads::append(&mut lock(&ctx), &message)
+}
+
+/// Write (or rewrite) a tool batch waiting on a confirmation.
+#[tauri::command]
+pub fn assistant_pending_put(
+    ctx: Db<'_>,
+    id: String,
+    thread_id: String,
+    data: Value,
+) -> Result<(), String> {
+    threads::pending_put(&lock(&ctx), &id, &thread_id, &data, now_ms())
+}
+
+#[tauri::command]
+pub fn assistant_pending_list(ctx: Db<'_>) -> Result<Vec<Pending>, String> {
+    threads::pending_list(&lock(&ctx))
+}
+
+#[tauri::command]
+pub fn assistant_pending_clear(ctx: Db<'_>, id: String) -> Result<(), String> {
+    threads::pending_clear(&lock(&ctx), &id)
 }

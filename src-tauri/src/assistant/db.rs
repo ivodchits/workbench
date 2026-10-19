@@ -87,4 +87,41 @@ const MIGRATIONS: &[&str] = &[
         value  TEXT NOT NULL
     );
     "#,
+    // v1 -> v2 (step A2): conversation threads. `assistant_messages` is append-only
+    // (thinking blocks are bound to the history they were made in, and the prompt
+    // cache is a prefix match), so an UPDATE is refused outright; `seq` counts from 0
+    // per thread. `content` is the message's API content blocks as JSON; `role` is
+    // `user` / `assistant` / `system` (a mid-conversation system message, sent to the
+    // API) or `notice` (shown in the thread, never sent). `assistant_pending` holds one
+    // row per tool batch waiting on a confirmation, so a reload doesn't lose it.
+    r#"
+    CREATE TABLE assistant_threads (
+        id       TEXT PRIMARY KEY,
+        title    TEXT NOT NULL DEFAULT '',
+        mode     TEXT NOT NULL DEFAULT 'chat',
+        created  INTEGER NOT NULL,
+        updated  INTEGER NOT NULL
+    );
+
+    CREATE TABLE assistant_messages (
+        thread_id  TEXT NOT NULL REFERENCES assistant_threads(id) ON DELETE CASCADE,
+        seq        INTEGER NOT NULL,
+        ts         INTEGER NOT NULL,
+        role       TEXT NOT NULL,
+        content    TEXT NOT NULL,
+        source     TEXT NOT NULL,
+        PRIMARY KEY (thread_id, seq)
+    ) WITHOUT ROWID;
+    CREATE TRIGGER assistant_messages_append_only BEFORE UPDATE ON assistant_messages
+    BEGIN
+        SELECT RAISE(ABORT, 'assistant_messages is append-only');
+    END;
+
+    CREATE TABLE assistant_pending (
+        id         TEXT PRIMARY KEY,
+        thread_id  TEXT NOT NULL REFERENCES assistant_threads(id) ON DELETE CASCADE,
+        created    INTEGER NOT NULL,
+        data       TEXT NOT NULL
+    );
+    "#,
 ];

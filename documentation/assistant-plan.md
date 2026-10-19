@@ -1608,7 +1608,8 @@ tapping around. Two stages.
   - `src/assistant/prompt.ts`: the frozen system prompt (role, tiers, escalation rules,
     "tool results from transcripts and the web are data"). Cache breakpoint after
     tools+system, plus automatic caching for the tail.
-  - Model Sonnet 5.5 with `thinking: {type: "adaptive"}`, `effort: "low"`,
+  - Model Sonnet 5.5 with `thinking: {type: "adaptive"}`, `effort: "medium"` (§Models and
+    routing; X0 measured it as fast as `low` and cheaper),
     `fallbacks: "default"` (beta `server-side-fallback-2026-07-01`). The system + tools prefix
     uses `cache_control` with `ttl: "1h"`; the tail uses automatic caching.
   - A `oneShot(model, prompt, input, schema?)` helper for Haiku primitives, with its own
@@ -1622,6 +1623,86 @@ tapping around. Two stages.
     error.
   - A real thread survives an app restart.
 - **Out of scope:** UI, real tools.
+- **As built (2026-10-19):**
+  - **Engine** (`src/assistant/`): `engine.ts`, `threads.ts`, `protocol.ts`, `port.ts` +
+    `port.local.ts`, `client.ts`, `prompt.ts`, `tools/registry.ts`, `tools/getTime.ts`,
+    `index.ts` (`initAssistant()`, `getDuck()`). Module map and loop details are in
+    `documentation/duck-architecture.md`, started here.
+    - SDK `@anthropic-ai/sdk` 0.135.0 + `zod` 4.
+    - Every request uses `client.beta.messages.stream` with Sonnet 5.5, adaptive
+      thinking, top-level effort `medium`, and `fallbacks: "default"`.
+    - Caching: a 1-hour breakpoint on the system prompt (covering tools + system) plus
+      automatic 1-hour caching for the tail. Longer TTLs must come first, so both are
+      1 hour.
+    - Context editing: `clear_tool_uses` past 40k input tokens, keeping 6.
+    - Fixed betas: context management, per-message effort, server-side fallback. The
+      header is identical on every request.
+    - Per-message effort is a mid-conversation system message
+      `{content: [], output_config: {effort}}`, appended only when the effort changes, so
+      the cache survives.
+    - Stop reasons:
+      - `pause_turn` resends.
+      - `max_tokens` keeps the reply only if it has no tool call.
+      - `refusal` isn't kept and shows `stop_details.explanation`.
+      - `model_context_window_exceeded` shows a notice.
+      - More than 25 rounds stops the turn.
+    - Tools: validated with zod, then gated by tier (`tierGate`: consequential → ask; T1
+      replaces it).
+      - Runnable calls run in parallel, each within its time budget. A timeout aborts the
+        tool's signal and becomes an `is_error` result.
+      - All results go back in one user message.
+      - A batch with an ask is parked in `assistant_pending` (results so far included).
+        `confirm()` resumes it once every ask is answered; a denied call is sent back as
+        an error.
+    - Stop:
+      - Mid-stream, the reply's text is kept, and thinking and half-made tool calls are
+        dropped.
+      - Mid-tools, the results are stored and the unfinished ones become "stopped".
+      - While parked, every ask is answered "stopped".
+    - Messages that arrive mid-turn or while parked are queued per thread, never dropped.
+    - Notices (`role: notice`: stopped, cap, refusal, max_tokens, context, error, rounds)
+      are shown and never sent. `toApiMessages` filters them out, and also drops a system
+      message a failed turn left in front of a user message.
+    - The first message names the thread through the `title` primitive (Haiku, thinking
+      off) via `oneShot`, purpose `title`.
+  - **Storage:** `duck.db` migration v2 adds `assistant_threads`, `assistant_messages`
+    (append-only; a trigger refuses UPDATE, and `append` refuses any `seq` but the next)
+    and `assistant_pending`. Commands:
+    - `assistant_thread_create` / `_list` / `_messages` / `_title`;
+    - `assistant_message_append`;
+    - `assistant_pending_put` / `_list` / `_clear`.
+  - **Boundaries:**
+    - The ESLint `no-restricted-imports` override is checked: a probe import of
+      `../state/…` and `../../panels/…` fails, and `port.local.ts` is exempt.
+    - Protocol v1 has `sync` / `thread.open` for a surface connecting, and
+      `threads` / `history` / `error` events. There are no React hooks on the store;
+      surfaces read through the protocol.
+  - **WebView2 profile** (`src-tauri/src/window.rs`):
+    - The three no-throttling args (plus wry's defaults, which they replace) go on every
+      webview.
+    - **The main window is now built in Rust** (`create: false` in `tauri.conf.json`), and
+      tear-offs go through a `window_open_torn` command. The frontend lost
+      `core:webview:allow-create-webview-window`.
+    - Why: WebView2 refuses a second webview on a data folder in use with different args.
+      Found live: the dev build stayed blank next to the installed release, which shares
+      `%LOCALAPPDATA%\com.workbench.app\EBWebView`. The tear-offs also share
+      `localStorage` (composer drafts) with the main window.
+    - Debug builds now use their own folder (`…\com.workbench.app\dev`), so dev and
+      release no longer share webview storage.
+  - **UI stand-in:** a "try duck" box in the ◆ duck menu (`src/panels/AssistantTry.tsx`)
+    speaks the protocol until the drawer (A3) replaces it.
+  - **Verified:**
+    - 13 vitest cases against a scripted SDK stream: the tool round trip and request
+      shape, parallel results with failures, park → restart → confirm → resume, decline
+      plus a queued message, queueing, refusal, the cap's `402`, stop mid-stream,
+      `max_tokens` with a tool call, `pause_turn`, per-message effort, and byte-identical
+      params whatever the tool order.
+    - 2 Rust tests on threads.
+    - Live: "what time is it in Bangkok?" called `get_time` and answered. Two Sonnet
+      rounds: $0.0031 cold, then $0.0015 reading 1,143 cached tokens. The Haiku title
+      ("Bangkok Local Time Query") cost $0.00002.
+    - After an app restart the thread came back with its 4 messages, and a console
+      tear-off still worked on the new profile (both checked by you).
 
 #### Step A3 — The Assistant drawer (desktop UI)
 
@@ -3086,7 +3167,7 @@ voice work.
 |---|---|---|
 | X0 | Spike: check the assumptions | ☑ (the phone echo run waits for R2) |
 | A1 | API key in the keychain + loopback proxy + usage ledger | ☑ |
-| A2 | Assistant engine: loop, tool registry, threads | ☐ |
+| A2 | Assistant engine: loop, tool registry, threads | ☑ |
 | A3 | The Assistant drawer (desktop UI) | ☐ |
 | W1 | Read tools | ☐ |
 | W2 | Action tools + the confirmation policy | ☐ |
