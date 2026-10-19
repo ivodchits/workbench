@@ -100,6 +100,12 @@ fn bind_listener(persisted: Option<u16>) -> Result<std::net::TcpListener, String
     Err(format!("no free port near {PORT_BASE}: {last_err}"))
 }
 
+/// The port the hook server listens on, once [`init`] has bound it. Duck's API proxy
+/// (step A1) is served on the same port.
+pub fn port(app: &AppHandle) -> Option<u16> {
+    app.try_state::<Arc<HookContext>>().map(|ctx| ctx.status().port)
+}
+
 /// Current hook server status (port, listening, event counters) for the UI.
 #[tauri::command]
 pub fn hook_server_status(ctx: State<'_, Arc<HookContext>>) -> HookStatus {

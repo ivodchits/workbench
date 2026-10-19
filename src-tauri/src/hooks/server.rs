@@ -93,12 +93,16 @@ pub fn serve(listener: std::net::TcpListener, ctx: Arc<HookContext>) {
 async fn run(listener: std::net::TcpListener, ctx: Arc<HookContext>) -> std::io::Result<()> {
     listener.set_nonblocking(true)?;
     let listener = tokio::net::TcpListener::from_std(listener)?;
-    let router = Router::new()
+    let mut router = Router::new()
         .route(HOOK_PATH, post(handle))
         // The managed statusline POSTs Claude Code's statusline JSON here so the
         // account-wide usage meter (step 3.2) can read its `rate_limits`.
         .route(crate::statusline::INGEST_PATH, post(handle_statusline))
-        .with_state(ctx);
+        .with_state(ctx.clone());
+    // Duck's Anthropic proxy (step A1) shares this loopback listener.
+    if let Some(proxy) = crate::assistant::router(&ctx.app) {
+        router = router.merge(proxy);
+    }
     axum::serve(listener, router).await
 }
 

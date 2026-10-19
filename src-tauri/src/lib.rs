@@ -4,6 +4,7 @@
 // prefs store; step 1.3 adds git inspection for project registration.
 
 mod accel;
+mod assistant;
 mod filedrop;
 mod attention;
 mod db;
@@ -49,6 +50,12 @@ pub fn run() {
             };
             let db = db::Db::open(&dir.join(db_name))?;
             app.manage(db);
+            // Duck's own database and API proxy state (step A1). Before the hook
+            // server, which mounts the proxy; a failure only leaves Duck without the
+            // API.
+            if let Err(e) = assistant::init(app.handle(), &dir) {
+                eprintln!("[assistant] init failed: {e}");
+            }
 
             // Seed the account-wide usage meter from the last persisted snapshot so it
             // shows the most recent figures at launch instead of staying blank until a
@@ -103,6 +110,12 @@ pub fn run() {
             pty::default_working_dir,
             pty::remote_cmd_spawn,
             hooks::hook_server_status,
+            assistant::assistant_proxy_info,
+            assistant::assistant_key_status,
+            assistant::assistant_key_set,
+            assistant::assistant_key_clear,
+            assistant::assistant_spend,
+            assistant::assistant_budget_set,
             remote::remote_start,
             remote::remote_stop,
             remote::remote_status,

@@ -3,6 +3,7 @@ import InstanceManager from "./panels/InstanceManager";
 import AppearanceMenu from "./panels/AppearanceMenu";
 import RemoteAccessMenu from "./panels/RemoteAccessMenu";
 import NotificationsMenu from "./panels/NotificationsMenu";
+import AssistantMenu from "./panels/AssistantMenu";
 import RemoteMirror from "./panels/RemoteMirror";
 import Workspace from "./panels/Workspace";
 import PresetsBar from "./panels/PresetsBar";
@@ -452,6 +453,7 @@ function StatusBar({ openCount, sessionId }: { openCount: number; sessionId: str
       <HookIndicator />
       <RemoteAccessMenu />
       <NotificationsMenu />
+      <AssistantMenu />
       <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 16 }}>
         <UsageMeters />
         {sessionId && (

@@ -162,7 +162,8 @@ mechanical job later.** Splitting now would cost a lot for little gain:
 3. **Duck's own state:**
    - Its own SQLite file `duck.db` (`duck.dev.db`), with its own migrations, instead of
      tables in `workbench.db`. Workbench's DB gains only the `owner` column on instances.
-   - Its own prefs file and keychain namespace (`duck/anthropic`, `duck/tts-google`).
+   - Its own prefs file and keychain namespace (`duck/anthropic-api-key`,
+     `duck/google-tts-key`; `duck-dev/…` for the debug build).
 4. **Rust side in its own module trees**: `src-tauri/src/assistant/` (proxy, budget,
    threads, MCP host, workspace) and `src-tauri/src/voice/` (capture, STT, TTS, playback,
    screen). They depend on Workbench code only through a small trait, and can become their
@@ -175,8 +176,8 @@ becomes one more Duck client.
 
 ### Calling the API without exposing the key
 
-- The key is stored in the **OS keychain** (Windows Credential Manager through the `keyring`
-  crate), never in prefs, SQLite, process env or JavaScript.
+- The key is stored in the **OS keychain** (a Windows Credential Manager generic credential,
+  read with `CredReadW`), never in prefs, SQLite, process env or JavaScript.
 - The **hook server** (already `127.0.0.1`, axum) gets an `/anthropic/*` route that forwards
   to `api.anthropic.com`. It swaps the real key in and streams the SSE response back
   unchanged (`reqwest`, already in `Cargo.lock` through Tauri). It answers the CORS preflight
@@ -364,7 +365,7 @@ toward your Claude Code 5-hour and weekly limits, which your own coding sessions
   Duck relays voice in and out, is an optional experiment (D3).
 
 **What a Sonnet main thread costs.** Prices: Sonnet 5.5 is $2 in / $10 out per MTok; cache
-reads $0.20; cache writes $2.50 (5-minute TTL) or $4 (1-hour TTL). Haiku 5.5 is $0.10 /
+reads $0.10 (the pricing page, checked 2026-10-19); cache writes $2.50 (5-minute TTL) or $4 (1-hour TTL). Haiku 5.5 is $0.10 /
 $0.50. A command turn is 2–3 rounds over a ~10k-token prefix (system + tools), plus ~1k
 output tokens including thinking:
 
@@ -1485,8 +1486,15 @@ tapping around. Two stages.
 - **Depends on:** X0.
 - **Build:**
   - New module `src-tauri/src/assistant/` with:
-    - `key.rs`: `keyring` entry `duck/anthropic` (`duck-dev/…` for the debug build). Commands `assistant_key_set`, `assistant_key_status` (present / absent, never
-      the value), `assistant_key_clear`.
+    - `key.rs`: the Windows generic credential `duck/anthropic-api-key`
+      (`duck-dev/anthropic-api-key` for the debug build). Both were stored with `cmdkey` on
+      2026-10-19, the dev one as a separate Console key.
+      - Read with `CredReadW` and decoded as UTF-16LE, the way `cmdkey` writes it (X0's
+        spike code). Use the `windows` crate directly rather than `keyring`, so the
+        encoding matches what `cmdkey` stores.
+      - Commands `assistant_key_set`, `assistant_key_status` (present / absent, never the
+        value), `assistant_key_clear`. `assistant_key_set` writes the same format, and the
+        recommended way to enter a key stays `cmdkey` in your own terminal.
     - `proxy.rs`: an axum route `/anthropic/{*path}` merged into the hook server router.
       - Checks `x-api-key == launch token` (32 random bytes, minted at startup, handed out by
         `assistant_proxy_info` → `{baseUrl, token}`).
@@ -1508,14 +1516,54 @@ tapping around. Two stages.
   - Settings: an "Assistant" section in the existing settings/appearance UI with a key field,
     a test button (a one-token Haiku call) and budget limits.
 - **Key files:** `src-tauri/src/assistant/*`, `src-tauri/src/hooks/server.rs`,
-  `src-tauri/src/db/mod.rs`, `src-tauri/src/lib.rs`, `Cargo.toml` (`keyring`; `reqwest` with
-  `stream`).
+  `src-tauri/src/db/mod.rs`, `src-tauri/src/lib.rs`, `Cargo.toml` (`reqwest` with
+  `stream`; the `windows` crate's credential API).
 - **Done when:**
   - A test call streams through the proxy and lands in `assistant_usage` with the right cost.
   - A request with a wrong token is rejected.
   - The key isn't in prefs, the DB or logs (checked with `grep`).
   - Consoles spawned afterwards have no `ANTHROPIC_*` in their environment.
 - **Out of scope:** the agent loop.
+- **As built (2026-10-19):**
+  - `src-tauri/src/assistant/{mod,key,proxy,usage,budget,db}.rs`. `crate::db::run_migrations`
+    is now shared by `workbench.db` and `duck.db`.
+  - **Key:** read with `CredReadW` on every proxied request (not cached), so a `cmdkey`
+    change applies at once. `assistant_key_set` writes UTF-16LE, `CRED_PERSIST_LOCAL_MACHINE`
+    (not roamed). With no key, the proxy answers `401` with the `cmdkey` line to run.
+  - **Proxy:** on the hook server's port; `assistant_proxy_info` → `{baseUrl, token}`.
+    - Forwards only `POST v1/messages`, `POST v1/messages/count_tokens` and `GET v1/models[/id]`.
+      Batches, files and the rest are refused, since their usage would bypass the ledger.
+    - Body limit 32 MB (axum's default of 2 MB is too small for screenshots).
+    - Browser origins other than `http(s)://tauri.localhost` and the vite dev server get
+      `403`; callers with no origin still need the token.
+    - `reqwest` 0.13 with `native-tls` (Schannel) + `http2` + `stream`; `accept-encoding` is
+      dropped so the meter reads plain bytes.
+  - **Ledger:** a meter rides the response stream and writes the row when the body ends or
+    the caller hangs up (a cancelled turn's tokens are billed too), then emits
+    `assistant-usage`.
+    - It reads `message_start.usage` + `message_delta.usage` (cumulative), or a JSON
+      message's `usage`.
+    - Prices are from the pricing page (2026-10-19), matched by model prefix. Cache writes
+      are priced by TTL (`cache_creation.ephemeral_5m/1h`); web search is $0.01 each;
+      Haiku 5.5's >100k-token prompt tier is applied; an unknown model is priced like
+      Fable (the most expensive) so the budget errs early.
+    - `purpose` comes from `x-wb-purpose`, sanitized to `[a-z0-9_-]`, `other` if absent.
+      **The main thread must send `thread`** (A2): it's what the cap tells apart from
+      primitives.
+  - **Budget:** limits in `duck.db`'s `meta` (`{hardCapUsd: 90, softRatio: 0.8}`), months
+    in local time. At the cap: `402` with `error.type = "budget_exceeded"`, except Haiku with
+    any purpose but `thread`. `assistant_spend` also returns `byPurpose`, `softReached` and
+    `capReached`.
+  - **UI:** a **◆ duck** status-bar menu (next to remote / notifications) instead of a
+    section in the appearance menu: key present/absent + the `cmdkey` line, an optional
+    password field, the test button, spend by model and purpose, and the budget fields.
+    The test is a plain streamed `fetch` (Haiku, `max_tokens: 1`, thinking off); the SDK
+    arrives in A2.
+  - **Verified:** the test call streamed through and landed as `claude-haiku-5-5 / test`,
+    8 in / 1 out, $0.0000013 (8 × $0.10 + 1 × $0.50 per MTok). A wrong token got `401`, a
+    foreign origin `403`. The key was found in none of 2,389 files (app data, both DBs,
+    the dev log). Nothing in the backend sets `ANTHROPIC_*`, and consoles inherit the
+    app's environment, which has none.
 
 #### Step A2 — Assistant engine: loop, tool registry, threads
 
@@ -3037,7 +3085,7 @@ voice work.
 | Step | Title | Status |
 |---|---|---|
 | X0 | Spike: check the assumptions | ☑ (the phone echo run waits for R2) |
-| A1 | API key in the keychain + loopback proxy + usage ledger | ☐ |
+| A1 | API key in the keychain + loopback proxy + usage ledger | ☑ |
 | A2 | Assistant engine: loop, tool registry, threads | ☐ |
 | A3 | The Assistant drawer (desktop UI) | ☐ |
 | W1 | Read tools | ☐ |

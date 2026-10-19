@@ -212,9 +212,15 @@ const MIGRATIONS: &[&str] = &[
 /// Apply any migrations the database hasn't seen yet, advancing
 /// `PRAGMA user_version` one step per applied migration.
 fn migrate(conn: &Connection) -> rusqlite::Result<()> {
+    run_migrations(conn, MIGRATIONS)
+}
+
+/// The migration runner itself, shared with Duck's own `duck.db` (step A1), which
+/// keeps its own append-only list under the same rules.
+pub(crate) fn run_migrations(conn: &Connection, migrations: &[&str]) -> rusqlite::Result<()> {
     let mut version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
-    while (version as usize) < MIGRATIONS.len() {
-        let sql = MIGRATIONS[version as usize];
+    while (version as usize) < migrations.len() {
+        let sql = migrations[version as usize];
         conn.execute_batch(&format!("BEGIN; {sql} COMMIT;"))?;
         version += 1;
         // `user_version` is a pragma, not a bindable parameter.

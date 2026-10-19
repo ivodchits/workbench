@@ -62,6 +62,12 @@ hkdf = "0.12"
 sha2 = "0.10"
 base64 = "0.22"
 rand_core = { version = "0.6", features = ["getrandom"] }
+# Step A1: Duck's loopback proxy to the Anthropic API. `reqwest` (already in the
+# tree through Tauri) streams the response back as it arrives (`stream`), over the
+# OS TLS stack (`native-tls`, Schannel on Windows) so no extra crypto builds;
+# `futures-util` maps the byte stream through the usage meter.
+reqwest = { version = "0.13", default-features = false, features = ["stream", "native-tls", "http2"] }
+futures-util = "0.3"
 
 # Windows-only: intercept WebView2 accelerator keys so we can suppress the engine's
 # built-in reload shortcuts (F5 / Ctrl+R / Ctrl+Shift+R), which would otherwise
@@ -69,5 +75,10 @@ rand_core = { version = "0.6", features = ["getrandom"] }
 # to the versions Tauri 2 already resolves (Cargo.lock) so we share one compiled copy.
 [target.'cfg(windows)'.dependencies]
 webview2-com = "0.38"
-windows = { version = "0.61", features = ["Win32_UI_Input_KeyboardAndMouse"] }
+# Step A1 adds the Credential Manager API, where Duck's API key lives.
+windows = { version = "0.61", features = [
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_Security_Credentials",
+    "Win32_Foundation",
+] }
 
