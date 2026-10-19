@@ -153,6 +153,15 @@ export function reduceStatus(
   switch (name) {
     // --- turn boundaries (instant) ------------------------------------------
     case "SessionStart":
+      // A compaction re-starts the session (same id) between PreCompact and
+      // PostCompact. It isn't a new turn: a mid-turn auto-compaction must leave a
+      // working card working, or a queued prompt would be delivered mid-turn. Only
+      // the overlay lifts here, as it did before.
+      if (event.source === "compact") {
+        return base.compacting
+          ? { entry: { ...base, compacting: false, updatedAt: at, reason: name }, instant: true }
+          : keep();
+      }
       return to("idle", true, { subagents: 0 });
     case "SessionEnd": {
       // `/clear` fires `SessionEnd` with `reason: "clear"`, but it is a *rotation*,
