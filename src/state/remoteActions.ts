@@ -149,7 +149,7 @@ async function createSession(action: RemoteCreateAction): Promise<void> {
 
   let instance: Instance;
   try {
-    instance = await addInstance({ projectId: project.id, title });
+    instance = await addInstance({ projectId: project.id, title, model: action.model ?? null });
   } catch (e) {
     return fail(`Could not create the session: ${errorText(e)}`);
   }

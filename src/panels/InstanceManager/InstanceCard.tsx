@@ -32,6 +32,7 @@ import { cancelQueued, useQueued } from "../../state/queue";
 import { openQueueDialog } from "../queueDialogControl";
 import { mergeStatus, relativeTime } from "./status";
 import { contextWindowTokens, formatTokens, tokenBreakdown } from "../../util/format";
+import { SESSION_MODELS } from "../../util/models";
 import InlineEdit from "./InlineEdit";
 
 interface InstanceCardProps {
@@ -48,6 +49,8 @@ interface InstanceCardProps {
   isRemote: boolean;
   /** The SSH destination, for the remote badge (e.g. `ssh:myserver`). */
   remoteDest: string | null;
+  /** The project's default model (step M1), shown when the instance has none. */
+  projectModel: string | null;
   /** Launch or focus this instance's console (row click / Enter). */
   onActivate: () => void;
   /** Provision (or revert) this instance's worktree — opens a confirm (step 2.4). */
@@ -64,6 +67,7 @@ function InstanceCard({
   shared,
   isRemote,
   remoteDest,
+  projectModel,
   onActivate,
   onToggleWorktree,
   onReview,
@@ -73,10 +77,12 @@ function InstanceCard({
   const [editingNote, setEditingNote] = useState(false);
   const [editingTitle, setEditingTitle] = useState(false);
   const [pickingAccent, setPickingAccent] = useState(false);
+  const [pickingModel, setPickingModel] = useState(false);
+  const model = instance.model ?? projectModel;
   const view = mergeStatus(consoleStatus, live, instance.status);
   const queued = useQueued().get(instance.id) ?? null;
   const dim = !live && !consoleStatus && instance.status === "closed";
-  const showActions = hover || editingNote || editingTitle || pickingAccent;
+  const showActions = hover || editingNote || editingTitle || pickingAccent || pickingModel;
 
   // Rail single-keys for a focused instance card (design §5.y). The guards defer
   // to an open inline editor (typing) and to events from child controls; nav /
@@ -276,8 +282,21 @@ function InstanceCard({
               </RowAction>
             )}
             <RowAction
+              label="model"
+              onClick={() => {
+                setPickingAccent(false);
+                setPickingModel((v) => !v);
+              }}
+              active={instance.model != null}
+            >
+              ◇
+            </RowAction>
+            <RowAction
               label="accent color"
-              onClick={() => setPickingAccent((v) => !v)}
+              onClick={() => {
+                setPickingModel(false);
+                setPickingAccent((v) => !v);
+              }}
               active={instance.accent != null}
             >
               ◣
@@ -309,6 +328,18 @@ function InstanceCard({
             setPickingAccent(false);
           }}
           onClose={() => setPickingAccent(false)}
+        />
+      )}
+
+      {pickingModel && (
+        <ModelPicker
+          current={instance.model}
+          projectModel={projectModel}
+          onPick={(m) => {
+            void updateInstance(instance.id, { model: m });
+            setPickingModel(false);
+          }}
+          onClose={() => setPickingModel(false)}
         />
       )}
 
@@ -423,6 +454,21 @@ function InstanceCard({
           >
             {GLYPH.warn} shared
           </button>
+        )}
+        {model && (
+          <span
+            style={{
+              flex: "0 0 auto",
+              color: instance.model ? "var(--wb-textDim2)" : "var(--wb-textFaint)",
+            }}
+            title={
+              instance.model
+                ? `runs on ${model}`
+                : `runs on ${model} (the project's default)`
+            }
+          >
+            {model}
+          </span>
         )}
         {/* Token readout comes from the transcript tailer, which doesn't reach a
             remote session (its transcript lives on the host) — hidden for remote. */}
@@ -566,6 +612,80 @@ function AccentPicker({
         >
           ∅
         </button>
+      </div>
+    </>
+  );
+}
+
+/** The model popover (step M1): the project's default or one of Claude Code's
+ *  aliases. A change applies at the session's next launch or resume; a running
+ *  session keeps its model until then (or switches with `/model`). */
+function ModelPicker({
+  current,
+  projectModel,
+  onPick,
+  onClose,
+}: {
+  current: string | null;
+  projectModel: string | null;
+  onPick: (model: string | null) => void;
+  onClose: () => void;
+}) {
+  const choices: { model: string | null; label: string }[] = [
+    { model: null, label: `default${projectModel ? ` (${projectModel})` : ""}` },
+    ...SESSION_MODELS.map((m) => ({ model: m, label: m })),
+  ];
+  // A full model id set elsewhere (by Duck, say) stays visible as the current pick.
+  if (current && !choices.some((c) => c.model === current)) {
+    choices.push({ model: current, label: current });
+  }
+  return (
+    <>
+      <div
+        onClick={(e) => {
+          e.stopPropagation();
+          onClose();
+        }}
+        style={{ position: "fixed", inset: 0, zIndex: 50 }}
+      />
+      <div
+        onClick={(e) => e.stopPropagation()}
+        title="applies at the next launch or resume"
+        style={{
+          position: "absolute",
+          top: 28,
+          right: 11,
+          zIndex: 51,
+          display: "flex",
+          alignItems: "center",
+          gap: 4,
+          padding: "5px 6px",
+          background: "var(--wb-panel)",
+          border: "1px solid var(--wb-border)",
+          boxShadow: "0 4px 16px rgba(0,0,0,0.5)",
+        }}
+      >
+        {choices.map((c) => (
+          <button
+            key={c.model ?? ""}
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              onPick(c.model);
+            }}
+            style={{
+              padding: "2px 6px",
+              cursor: "pointer",
+              background: "transparent",
+              font: "10.5px var(--wb-mono)",
+              color: current === c.model ? "var(--wb-text)" : "var(--wb-textDim2)",
+              border:
+                current === c.model ? "1px solid var(--wb-accent)" : "1px solid transparent",
+            }}
+          >
+            {c.label}
+          </button>
+        ))}
       </div>
     </>
   );

@@ -1026,6 +1026,7 @@ function ProjectNode({
               shared={sharedInstanceIds.has(i.id)}
               isRemote={isRemote}
               remoteDest={project.remoteSshDest}
+              projectModel={project.defaultModel}
               onActivate={() => onActivate(i)}
               onToggleWorktree={() => onToggleWorktree(i)}
               onReview={() => onReview(i)}

@@ -30,6 +30,9 @@ export interface Project {
   remoteSshDest: string | null;
   /** Working directory on the remote host (step 3.12); null for local. */
   remoteDir: string | null;
+  /** The model new sessions run on unless they pick one (step M1); null leaves
+   *  Claude Code's default. */
+  defaultModel: string | null;
   sortOrder: number;
   createdAt: number;
 }
@@ -60,6 +63,9 @@ export interface Instance {
   /** tmux session name on the host for a remote project's instance (step 3.12);
    *  null for a local instance. */
   remoteTmuxSession: string | null;
+  /** The model this session launches and resumes on (step M1); null inherits the
+   *  project's `defaultModel`. */
+  model: string | null;
 }
 
 // --- inputs -----------------------------------------------------------------
@@ -83,6 +89,7 @@ export interface NewProject {
   remoteSshDest?: string | null;
   /** Working directory on the remote host (step 3.12). */
   remoteDir?: string | null;
+  defaultModel?: string | null;
 }
 
 export interface ProjectPatch {
@@ -94,6 +101,7 @@ export interface ProjectPatch {
   worktreeCopyEnv?: boolean;
   remoteSshDest?: string | null;
   remoteDir?: string | null;
+  defaultModel?: string | null;
   sortOrder?: number;
 }
 
@@ -108,6 +116,8 @@ export interface NewInstance {
   /** Override the tmux session name when *adopting* an existing remote session
    *  (step 3.12); omit to default to `wb-<short id>` for a remote instance. */
   remoteTmuxSession?: string;
+  /** The model to run on (step M1); omit to inherit the project's default. */
+  model?: string | null;
 }
 
 export interface InstancePatch {
@@ -130,6 +140,9 @@ export interface InstancePatch {
   accent?: string | null;
   /** Set/clear the remote tmux session name (step 3.12). */
   remoteTmuxSession?: string | null;
+  /** Set the session's model, or null to inherit the project's (step M1). Takes
+   *  effect at its next launch or resume. */
+  model?: string | null;
 }
 
 // --- groups -----------------------------------------------------------------

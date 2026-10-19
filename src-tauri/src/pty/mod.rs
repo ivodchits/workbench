@@ -577,6 +577,10 @@ pub struct SpawnResult {
 /// brand-new one. A plain `--resume` reuses the same session id and appends to the
 /// same transcript, so the existing `session_id → instance_id` mapping and the
 /// transcript tailer keep working unchanged — we just register the resumed id.
+///
+/// The model (step M1) isn't a parameter: it's looked up in the registry from
+/// `instance_id` (the instance's own, else its project's default), so a fresh
+/// launch, a resume and a relaunch after a restart all pick up the same one.
 // Each parameter is part of the IPC contract the frontend invokes with (the
 // per-PTY output channel, the spawn kind, dimensions, …), so they can't be folded
 // into a struct without obscuring the boundary — over clippy's 7-arg advisory.
@@ -584,6 +588,7 @@ pub struct SpawnResult {
 #[tauri::command]
 pub fn pty_spawn(
     state: State<'_, PtyManager>,
+    db: State<'_, crate::db::Db>,
     instance_id: String,
     kind: SpawnKind,
     cwd: Option<String>,
@@ -609,6 +614,15 @@ pub fn pty_spawn(
         c
     };
 
+    let model = match kind {
+        SpawnKind::Claude => db
+            .conn
+            .lock()
+            .ok()
+            .and_then(|conn| crate::registry::launch_model(&conn, &instance_id)),
+        SpawnKind::Shell => None,
+    };
+
     // Build the command up front so a resolution failure (e.g. `claude` not on
     // PATH) reports cleanly before we touch the PTY. A resumed claude keeps the id
     // it's resuming (same session, same transcript); a fresh one mints a UUID.
@@ -624,17 +638,17 @@ pub fn pty_spawn(
         }
     };
     let candidates = if let Some(r) = &remote {
-        vec![remote_command(r, &cwd, kind)]
+        vec![remote_command(r, &cwd, kind, model.as_deref())]
     } else {
         match kind {
             SpawnKind::Claude => {
                 let sid = session_id.as_deref().unwrap();
-                let session_args: [&str; 2] = if resume_session_id.is_some() {
-                    ["--resume", sid]
-                } else {
-                    ["--session-id", sid]
-                };
-                let mut cmd = claude_command(&session_args, &cwd)?;
+                let flag = if resume_session_id.is_some() { "--resume" } else { "--session-id" };
+                let mut args = vec![flag, sid];
+                if let Some(m) = &model {
+                    args.extend(["--model", m]);
+                }
+                let mut cmd = claude_command(&args, &cwd)?;
                 // Lets this console's hooks name it even under a session id we
                 // didn't mint (an in-console `/resume`, or a `/clear` after one).
                 cmd.env(crate::hooks::install::INSTANCE_ENV, &instance_id);
@@ -984,8 +998,9 @@ pub fn remote_cmd_spawn(
 
 /// Build the command that launches interactive `claude`. `session_args` carries
 /// the session-selecting flags — `["--session-id", <uuid>]` for a fresh session,
-/// or `["--resume", <id>]` to continue an existing one (step 3.8) — appended after
-/// the resolved `claude` path.
+/// or `["--resume", <id>]` to continue an existing one (step 3.8) — plus
+/// `["--model", <m>]` when the instance has one (step M1), appended after the
+/// resolved `claude` path. Each is its own argv entry, never shell text.
 ///
 /// `claude` is resolved off PATH (honoring `PATHEXT` on Windows). A native
 /// executable (`.exe`/`.com` or a Unix binary) is exec'd directly for full TUI
@@ -1044,10 +1059,24 @@ fn claude_command(session_args: &[&str], cwd: &Path) -> Result<CommandBuilder, S
 /// (`ssh -tt <dest> -- bash -lc 'cd <dir>; exec $SHELL -l'`) — the Project Shell's
 /// remote counterpart, so a remote project's shell runs on the host (where its
 /// working dir actually exists) instead of a local shell that can't find it.
-fn remote_command(r: &RemoteSpawn, cwd: &Path, kind: SpawnKind) -> CommandBuilder {
+///
+/// A model (step M1) makes the last token `"claude --model '<m>'"`. ssh joins argv
+/// with spaces and the remote shell re-parses it, so the double quotes keep it one
+/// argument to tmux → `bash -lc`, and the single quotes keep a `[1m]` suffix from
+/// globbing there. That's safe because `registry::valid_model` admits no quote.
+fn remote_command(
+    r: &RemoteSpawn,
+    cwd: &Path,
+    kind: SpawnKind,
+    model: Option<&str>,
+) -> CommandBuilder {
     let mut cmd = CommandBuilder::new("ssh");
     match kind {
         SpawnKind::Claude => {
+            let run = match model {
+                Some(m) if crate::registry::valid_model(m) => format!("\"claude --model '{m}'\""),
+                _ => "claude".to_owned(),
+            };
             for arg in [
                 "-tt",
                 &r.dest,
@@ -1061,7 +1090,7 @@ fn remote_command(r: &RemoteSpawn, cwd: &Path, kind: SpawnKind) -> CommandBuilde
                 &r.dir,
                 "bash",
                 "-lc",
-                "claude",
+                &run,
             ] {
                 cmd.arg(arg);
             }

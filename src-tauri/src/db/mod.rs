@@ -207,6 +207,13 @@ const MIGRATIONS: &[&str] = &[
         created_at INTEGER NOT NULL
     );
     "#,
+    // v10 -> v11: the model a session runs on (step M1). `instances.model` is passed
+    // to `claude --model` at every launch and resume; NULL inherits the project's
+    // `default_model`, and NULL there leaves Claude Code's own default.
+    r#"
+    ALTER TABLE instances ADD COLUMN model TEXT;
+    ALTER TABLE projects ADD COLUMN default_model TEXT;
+    "#,
 ];
 
 /// Apply any migrations the database hasn't seen yet, advancing

@@ -15,6 +15,7 @@ import { getUsageLimits } from "../ipc/usageLimits";
 import { getPendingChoice, type PendingChoice } from "../state/pendingChoice";
 import { getRegistry } from "../state/registry";
 import { getLiveStatuses } from "../state/status";
+import { effectiveModel } from "../util/models";
 import type { ChoiceRef, WorkbenchPort } from "./port";
 
 function choiceRef(p: PendingChoice): ChoiceRef {
@@ -43,8 +44,9 @@ export const localPort: WorkbenchPort = {
   },
   listSessions(projectId) {
     const live = getLiveStatuses();
-    return getRegistry()
-      .instances.filter((i) => !projectId || i.projectId === projectId)
+    const { projects, instances } = getRegistry();
+    return instances
+      .filter((i) => !projectId || i.projectId === projectId)
       .map((i) => {
         const s = live.get(i.id);
         const choice = getPendingChoice(i.id);
@@ -57,6 +59,7 @@ export const localPort: WorkbenchPort = {
           compacting: s?.compacting ?? false,
           subagents: s?.subagents ?? 0,
           worktreeBranch: i.worktreeOn ? i.branch : null,
+          model: effectiveModel(i, projects.find((p) => p.id === i.projectId)),
           workingDir: i.workingDir,
           lastActivity: s?.updatedAt ?? i.lastActivityAt,
           choice: choice ? choiceRef(choice) : null,

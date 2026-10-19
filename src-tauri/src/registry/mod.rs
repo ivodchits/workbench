@@ -88,6 +88,9 @@ pub struct Project {
     /// Working directory on the remote host (step 3.12); mirrored into
     /// `root_path` too so display code that reads the root keeps working.
     pub remote_dir: Option<String>,
+    /// The model new sessions in this project run on unless they pick their own
+    /// (step M1); `None` leaves Claude Code's default.
+    pub default_model: Option<String>,
     pub sort_order: i64,
     pub created_at: i64,
 }
@@ -121,6 +124,9 @@ pub struct Instance {
     /// For a remote project's instance (step 3.12): the tmux session name on the
     /// host (`wb-<short id>`, or an adopted name). `None` for a local instance.
     pub remote_tmux_session: Option<String>,
+    /// The model this session launches and resumes on (`claude --model`, step M1);
+    /// `None` inherits the project's `default_model`.
+    pub model: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -149,6 +155,8 @@ pub struct NewProject {
     pub remote_ssh_dest: Option<String>,
     /// Working directory on the remote host (step 3.12).
     pub remote_dir: Option<String>,
+    #[serde(default)]
+    pub default_model: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -162,6 +170,7 @@ pub struct ProjectPatch {
     pub worktree_copy_env: Option<bool>,
     pub remote_ssh_dest: Option<Option<String>>,
     pub remote_dir: Option<Option<String>>,
+    pub default_model: Option<Option<String>>,
     pub sort_order: Option<i64>,
 }
 
@@ -179,6 +188,9 @@ pub struct NewInstance {
     /// remote session. Omit to default to `wb-<short id>` for a remote project's
     /// instance (and stays `None` for a local one).
     pub remote_tmux_session: Option<String>,
+    /// The model to run on (step M1); omit to inherit the project's default.
+    #[serde(default)]
+    pub model: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -204,6 +216,9 @@ pub struct InstancePatch {
     pub accent: Option<Option<String>>,
     /// Remote tmux session name (step 3.12); `Some(None)` clears it, `None` leaves it.
     pub remote_tmux_session: Option<Option<String>>,
+    /// The session's model (step M1), applied at its next launch or resume;
+    /// `Some(None)` goes back to the project default.
+    pub model: Option<Option<String>>,
 }
 
 // ---------------------------------------------------------------------------
@@ -219,6 +234,29 @@ fn now() -> i64 {
 
 fn new_id() -> String {
     uuid::Uuid::new_v4().to_string()
+}
+
+/// Whether `m` can go to `claude --model` (step M1): an alias or a full model id,
+/// optionally with a `[1m]`-style suffix. It starts with a letter or digit so it
+/// can't read as another flag, and holds nothing a shell would read as syntax
+/// except the brackets, which the remote launch quotes.
+pub fn valid_model(m: &str) -> bool {
+    m.len() <= 64
+        && m.starts_with(|c: char| c.is_ascii_lowercase() || c.is_ascii_digit())
+        && m
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || ".-[]".contains(c))
+}
+
+/// Normalize a model field: trimmed, blank → `None`, and an invalid value is an
+/// error rather than something stored and later passed to `claude`.
+fn clean_model(m: Option<String>) -> rusqlite::Result<Option<String>> {
+    match m.map(|s| s.trim().to_owned()).filter(|s| !s.is_empty()) {
+        Some(v) if !valid_model(&v) => Err(rusqlite::Error::ToSqlConversionFailure(
+            format!("not a model name: {v:?}").into(),
+        )),
+        m => Ok(m),
+    }
 }
 
 // --- groups ---
@@ -302,12 +340,13 @@ fn row_to_project(r: &Row) -> rusqlite::Result<Project> {
         remote_dir: r.get(8)?,
         sort_order: r.get(9)?,
         created_at: r.get(10)?,
+        default_model: r.get(11)?,
     })
 }
 
 const PROJECT_COLS: &str = "id, group_id, name, root_path, default_branch, \
     worktree_setup_command, worktree_copy_env, remote_ssh_dest, remote_dir, \
-    sort_order, created_at";
+    sort_order, created_at, default_model";
 
 pub fn insert_project(conn: &Connection, input: NewProject) -> rusqlite::Result<Project> {
     // Normalize an empty/whitespace setup command to NULL so "configured" is a
@@ -336,14 +375,15 @@ pub fn insert_project(conn: &Connection, input: NewProject) -> rusqlite::Result<
         worktree_copy_env: input.worktree_copy_env,
         remote_ssh_dest,
         remote_dir,
+        default_model: clean_model(input.default_model)?,
         sort_order: 0,
         created_at: now(),
     };
     conn.execute(
         "INSERT INTO projects (id, group_id, name, root_path, default_branch,
             worktree_setup_command, worktree_copy_env, remote_ssh_dest, remote_dir,
-            sort_order, created_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+            sort_order, created_at, default_model)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
         rusqlite::params![
             project.id,
             project.group_id,
@@ -356,6 +396,7 @@ pub fn insert_project(conn: &Connection, input: NewProject) -> rusqlite::Result<
             project.remote_dir,
             project.sort_order,
             project.created_at,
+            project.default_model,
         ],
     )?;
     Ok(project)
@@ -404,6 +445,9 @@ pub fn update_project(
     if let Some(dir) = patch.remote_dir {
         p.remote_dir = dir.map(|s| s.trim().to_owned()).filter(|s| !s.is_empty());
     }
+    if let Some(m) = patch.default_model {
+        p.default_model = clean_model(m)?;
+    }
     if let Some(sort_order) = patch.sort_order {
         p.sort_order = sort_order;
     }
@@ -411,7 +455,7 @@ pub fn update_project(
         "UPDATE projects
          SET group_id = ?2, name = ?3, root_path = ?4, default_branch = ?5,
              worktree_setup_command = ?6, worktree_copy_env = ?7,
-             remote_ssh_dest = ?8, remote_dir = ?9, sort_order = ?10
+             remote_ssh_dest = ?8, remote_dir = ?9, sort_order = ?10, default_model = ?11
          WHERE id = ?1",
         rusqlite::params![
             p.id,
@@ -424,6 +468,7 @@ pub fn update_project(
             p.remote_ssh_dest,
             p.remote_dir,
             p.sort_order,
+            p.default_model,
         ],
     )?;
     Ok(p)
@@ -459,13 +504,14 @@ fn row_to_instance(r: &Row) -> rusqlite::Result<Instance> {
         task_note_auto: r.get(17)?,
         accent: r.get(18)?,
         remote_tmux_session: r.get(19)?,
+        model: r.get(20)?,
     })
 }
 
 const INSTANCE_COLS: &str = "id, project_id, title, task_note, worktree_on, branch, \
     last_session_id, working_dir, status, input_tokens, output_tokens, \
     cache_creation_tokens, cache_read_tokens, cost_usd, sort_order, created_at, \
-    last_activity_at, task_note_auto, accent, remote_tmux_session";
+    last_activity_at, task_note_auto, accent, remote_tmux_session, model";
 
 pub fn insert_instance(conn: &Connection, input: NewInstance) -> rusqlite::Result<Instance> {
     // Resolve the parent project once: its root path is the default working dir,
@@ -512,13 +558,14 @@ pub fn insert_instance(conn: &Connection, input: NewInstance) -> rusqlite::Resul
         last_activity_at: None,
         accent: None,
         remote_tmux_session,
+        model: clean_model(input.model)?,
     };
     conn.execute(
         "INSERT INTO instances (id, project_id, title, task_note, worktree_on, branch,
             last_session_id, working_dir, status, input_tokens, output_tokens,
             cache_creation_tokens, cache_read_tokens, cost_usd, sort_order, created_at,
-            last_activity_at, task_note_auto, accent, remote_tmux_session)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20)",
+            last_activity_at, task_note_auto, accent, remote_tmux_session, model)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21)",
         rusqlite::params![
             instance.id,
             instance.project_id,
@@ -540,6 +587,7 @@ pub fn insert_instance(conn: &Connection, input: NewInstance) -> rusqlite::Resul
             instance.task_note_auto,
             instance.accent,
             instance.remote_tmux_session,
+            instance.model,
         ],
     )?;
     Ok(instance)
@@ -634,13 +682,16 @@ pub fn update_instance(
     if let Some(v) = patch.remote_tmux_session {
         i.remote_tmux_session = v;
     }
+    if let Some(v) = patch.model {
+        i.model = clean_model(v)?;
+    }
     conn.execute(
         "UPDATE instances SET
             title = ?2, task_note = ?3, worktree_on = ?4, branch = ?5, last_session_id = ?6,
             working_dir = ?7, status = ?8, input_tokens = ?9, output_tokens = ?10,
             cache_creation_tokens = ?11, cache_read_tokens = ?12, cost_usd = ?13,
             sort_order = ?14, last_activity_at = ?15, task_note_auto = ?16, accent = ?17,
-            remote_tmux_session = ?18
+            remote_tmux_session = ?18, model = ?19
          WHERE id = ?1",
         rusqlite::params![
             i.id,
@@ -661,6 +712,7 @@ pub fn update_instance(
             i.task_note_auto,
             i.accent,
             i.remote_tmux_session,
+            i.model,
         ],
     )?;
     Ok(i)
@@ -685,6 +737,18 @@ pub fn mirror_task_note(
         rusqlite::params![i.id, i.task_note],
     )?;
     Ok(Some(i))
+}
+
+/// The model `instance_id` launches on (step M1): its own, else its project's
+/// default. `None` when neither is set, when the id isn't an instance (a project
+/// shell), or when a stored value somehow isn't a valid model name.
+pub fn launch_model(conn: &Connection, instance_id: &str) -> Option<String> {
+    let i = get_instance(conn, instance_id).ok()?;
+    let m = match i.model {
+        Some(m) => m,
+        None => get_project(conn, &i.project_id).ok()?.default_model?,
+    };
+    valid_model(&m).then_some(m)
 }
 
 pub fn delete_instance(conn: &Connection, id: &str) -> rusqlite::Result<()> {
@@ -861,6 +925,7 @@ mod tests {
                 remote_ssh_dest: None,
                 remote_dir: None,
                 group_id: Some(group.id.clone()),
+                default_model: None,
             },
         )
         .unwrap();
@@ -876,6 +941,7 @@ mod tests {
                 branch: None,
                 working_dir: None,
                 remote_tmux_session: None,
+                model: None,
             },
         )
         .unwrap();
@@ -908,6 +974,7 @@ mod tests {
                 remote_ssh_dest: None,
                 remote_dir: None,
                 group_id: None,
+                default_model: None,
             },
         )
         .unwrap();
@@ -921,6 +988,7 @@ mod tests {
                 branch: None,
                 working_dir: None,
                 remote_tmux_session: None,
+                model: None,
             },
         )
         .unwrap();
@@ -974,6 +1042,7 @@ mod tests {
                 remote_ssh_dest: None,
                 remote_dir: None,
                 group_id: None,
+                default_model: None,
             },
         )
         .unwrap();
@@ -988,6 +1057,7 @@ mod tests {
                 branch: None,
                 working_dir: None,
                 remote_tmux_session: None,
+                model: None,
             },
         )
         .unwrap();
@@ -1031,6 +1101,7 @@ mod tests {
                 branch: None,
                 working_dir: None,
                 remote_tmux_session: None,
+                model: None,
             },
         )
         .unwrap();
@@ -1052,6 +1123,7 @@ mod tests {
                 remote_ssh_dest: Some("myserver".into()),
                 remote_dir: Some("/home/me/proj".into()),
                 group_id: None,
+                default_model: None,
             },
         )
         .unwrap();
@@ -1068,6 +1140,7 @@ mod tests {
                 branch: None,
                 working_dir: None,
                 remote_tmux_session: None,
+                model: None,
             },
         )
         .unwrap();
@@ -1086,6 +1159,7 @@ mod tests {
                 branch: None,
                 working_dir: None,
                 remote_tmux_session: Some("old-session".into()),
+                model: None,
             },
         )
         .unwrap();
@@ -1103,6 +1177,7 @@ mod tests {
                 remote_ssh_dest: None,
                 remote_dir: None,
                 group_id: None,
+                default_model: None,
             },
         )
         .unwrap();
@@ -1116,6 +1191,7 @@ mod tests {
                 branch: None,
                 working_dir: None,
                 remote_tmux_session: None,
+                model: None,
             },
         )
         .unwrap();
@@ -1136,6 +1212,7 @@ mod tests {
                 remote_ssh_dest: None,
                 remote_dir: None,
                 group_id: None,
+                default_model: None,
             },
         )
         .unwrap();
@@ -1149,6 +1226,7 @@ mod tests {
                 branch: None,
                 working_dir: None,
                 remote_tmux_session: None,
+                model: None,
             },
         )
         .unwrap();
@@ -1179,6 +1257,7 @@ mod tests {
                 remote_ssh_dest: None,
                 remote_dir: None,
                 group_id: Some(group.id.clone()),
+                default_model: None,
             },
         )
         .unwrap();
@@ -1187,5 +1266,68 @@ mod tests {
 
         let reread = get_project(&c, &project.id).unwrap();
         assert_eq!(reread.group_id, None, "group_id should be set to NULL");
+    }
+
+    #[test]
+    fn model_names_are_validated() {
+        for ok in ["opus", "sonnet", "claude-opus-5-5", "opus[1m]", "claude-3.5-x"] {
+            assert!(valid_model(ok), "{ok}");
+        }
+        for bad in ["", "-x", "--model", "Opus", "opus; rm -rf /", "a b", "o'pus", "$(x)", "opus\n"] {
+            assert!(!valid_model(bad), "{bad:?}");
+        }
+        assert_eq!(clean_model(Some("  opus ".into())).unwrap().as_deref(), Some("opus"));
+        assert_eq!(clean_model(Some("  ".into())).unwrap(), None);
+        assert!(clean_model(Some("x y".into())).is_err());
+    }
+
+    #[test]
+    fn launch_model_inherits_the_project_default() {
+        let c = conn();
+        let project = insert_project(
+            &c,
+            NewProject {
+                name: "p".into(),
+                root_path: "/p".into(),
+                default_branch: None,
+                worktree_setup_command: None,
+                worktree_copy_env: false,
+                remote_ssh_dest: None,
+                remote_dir: None,
+                group_id: None,
+                default_model: None,
+            },
+        )
+        .unwrap();
+        let new = |model: Option<&str>| NewInstance {
+            project_id: project.id.clone(),
+            title: "i".into(),
+            task_note: None,
+            worktree_on: None,
+            branch: None,
+            working_dir: None,
+            remote_tmux_session: None,
+            model: model.map(str::to_owned),
+        };
+        let own = insert_instance(&c, new(Some("opus"))).unwrap();
+        let inherits = insert_instance(&c, new(None)).unwrap();
+        assert!(insert_instance(&c, new(Some("--dangerously-skip-permissions"))).is_err());
+
+        assert_eq!(launch_model(&c, &own.id).as_deref(), Some("opus"));
+        assert_eq!(launch_model(&c, &inherits.id), None);
+        assert_eq!(launch_model(&c, "a-project-shell"), None);
+
+        let patch = ProjectPatch { default_model: Some(Some("haiku".into())), ..Default::default() };
+        update_project(&c, &project.id, patch).unwrap();
+        assert_eq!(launch_model(&c, &inherits.id).as_deref(), Some("haiku"));
+        assert_eq!(launch_model(&c, &own.id).as_deref(), Some("opus"));
+
+        // Clearing the instance's own model goes back to the project's.
+        let patch = InstancePatch { model: Some(None), ..Default::default() };
+        update_instance(&c, &own.id, patch).unwrap();
+        assert_eq!(launch_model(&c, &own.id).as_deref(), Some("haiku"));
+
+        let bad = InstancePatch { model: Some(Some("op us".into())), ..Default::default() };
+        assert!(update_instance(&c, &own.id, bad).is_err());
     }
 }

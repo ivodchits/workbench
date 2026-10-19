@@ -1889,7 +1889,7 @@ tapping around. Two stages.
     12,000 characters from the oldest end. The tool-summary helpers moved from
     `render.ts` to `src/transcript/summary.ts` so both share them. The output is wrapped
     `<transcript … untrusted>` and a `</transcript>` inside is defused.
-  - The model column waits for M1. The port grew the members these tools need; tests
+  - The model column came with M1. The port grew the members these tools need; tests
     use `fakePort` (`src/assistant/fakePort.test-util.ts`), and the engine test moved to it.
   - The system prompt gained one line: re-read session state with the tools, since earlier
     results in the thread go stale.
@@ -2034,6 +2034,29 @@ tapping around. Two stages.
   it, and resume keeps it.
 - **Out of scope:** switching the model of a running session (`/model` by prompt already
   covers it).
+- **As built:**
+  - Migration v11: `instances.model`, `projects.default_model` (both nullable). The
+    registry trims them, stores blank as NULL, and rejects anything `valid_model` refuses:
+    lowercase letters, digits, `.`, `-`, `[`, `]`, at most 64 characters, starting with a
+    letter or digit (so a value can never read as another flag).
+  - **No new `pty_spawn` argument.** `pty_spawn` looks the model up itself
+    (`registry::launch_model`: the instance's own, else the project's default), so a fresh
+    launch, every resume path and a relaunch after a restart all agree without threading
+    the model through `ConsoleSession` / `terminalPool`. A project shell's id isn't an
+    instance, so it gets none. Locally it's two argv entries, `--model <m>`. Over SSH it
+    joins the remote shell text as `"claude --model '<m>'"` (ssh re-parses argv; the
+    validator admits no quote).
+  - There's no new-session dialog (a new instance is made in one click), so the picker is
+    on the card: a `◇` row action opens default / opus / sonnet / haiku / fable, and the
+    meta line shows the model (dimmer when inherited). A change applies at the next
+    launch or resume. The project dialog has a "default model" select. The phone's
+    new-session sheet has a model select, and the `create` action takes `model`.
+  - Duck's `list_sessions` shows each session's effective `model`
+    (`src/util/models.ts` `effectiveModel` mirrors `launch_model`).
+  - The `create_session` default (opus for coding work) is W2's, as planned.
+  - **Verified:** 2 new Rust tests (validation, inheritance and clearing), the W1
+    `list_sessions` test now covers `model`; cargo test, clippy, vitest, tsc and eslint
+    clean. Live check passed: Opus in the status line, kept by `/clear` and resume.
 
 #### Step M2 — Effort routing, Haiku workers, budget-aware degrade
 
@@ -3319,7 +3342,7 @@ voice work.
 | W3 | Session summaries | ☐ |
 | W4 | Core memory (the always-loaded profile) | ☐ |
 | W5 | Project toolbar tools | ☐ |
-| M1 | Model per Claude Code session | ☐ |
+| M1 | Model per Claude Code session | ☑ |
 | M2 | Effort routing, Haiku workers, budget-aware degrade | ☐ |
 | M3 | Subscription brain: headless Claude Code as the fallback main thread | ☐ |
 | D1 | Worker sessions: workspace, brief, result contract | ☐ |

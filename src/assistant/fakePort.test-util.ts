@@ -45,6 +45,7 @@ export function session(
     compacting: false,
     subagents: 0,
     worktreeBranch: null,
+    model: null,
     workingDir: `C:/src/${s.projectId}`,
     lastActivity: null,
     choice: null,

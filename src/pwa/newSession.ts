@@ -70,6 +70,7 @@ export function openNewSession(projectId: string | null = null): void {
   fixed.classList.toggle("hidden", fixedProject === null);
   fixed.textContent = project ? projectLabel(project) : "";
   $<HTMLInputElement>("new-worktree").checked = false;
+  $<HTMLSelectElement>("new-model").value = "";
   pending = null;
   setMsg("");
   setBusy(false);
@@ -109,6 +110,7 @@ function submit(): void {
   const title = $<HTMLInputElement>("new-title").value.trim();
   const text = $<HTMLTextAreaElement>("new-text").value.trim();
   const worktree = $<HTMLInputElement>("new-worktree").checked;
+  const model = $<HTMLSelectElement>("new-model").value;
   const send = () =>
     action({
       type: "create",
@@ -117,6 +119,7 @@ function submit(): void {
       ...(title ? { title } : {}),
       ...(text ? { text } : {}),
       ...(worktree ? { worktree } : {}),
+      ...(model ? { model } : {}),
     });
   const p: Pending = { requestId, send, timer: null };
   pending = p;

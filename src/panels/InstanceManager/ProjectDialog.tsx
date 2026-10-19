@@ -10,6 +10,7 @@ import { GLYPH } from "../../theme";
 import { detectRepo } from "../../ipc/git";
 import type { Group, Project } from "../../ipc/registry";
 import { addGroup, addProject, updateProject } from "../../state/registry";
+import { SESSION_MODELS } from "../../util/models";
 import Modal from "./Modal";
 
 interface ProjectDialogProps {
@@ -40,6 +41,7 @@ function ProjectDialog({ project, groups, onClose }: ProjectDialogProps) {
   const [newGroupName, setNewGroupName] = useState("");
   const [setupCommand, setSetupCommand] = useState(project?.worktreeSetupCommand ?? "");
   const [copyEnv, setCopyEnv] = useState(project?.worktreeCopyEnv ?? false);
+  const [model, setModel] = useState(project?.defaultModel ?? "");
   const [gitRepo, setGitRepo] = useState<boolean | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -123,6 +125,7 @@ function ProjectDialog({ project, groups, onClose }: ProjectDialogProps) {
             worktreeCopyEnv: false,
             remoteSshDest: sshDest.trim(),
             remoteDir: remoteDir.trim(),
+            defaultModel: model || null,
           }
         : {
             name: name.trim(),
@@ -133,6 +136,7 @@ function ProjectDialog({ project, groups, onClose }: ProjectDialogProps) {
             worktreeCopyEnv: copyEnv,
             remoteSshDest: null,
             remoteDir: null,
+            defaultModel: model || null,
           };
       if (editing && project) {
         await updateProject(project.id, fields);
@@ -158,6 +162,7 @@ function ProjectDialog({ project, groups, onClose }: ProjectDialogProps) {
     path,
     setupCommand,
     copyEnv,
+    model,
     onClose,
   ]);
 
@@ -273,6 +278,22 @@ function ProjectDialog({ project, groups, onClose }: ProjectDialogProps) {
               style={{ ...inputStyle, marginTop: 7 }}
             />
           )}
+        </Field>
+
+        {/* The model new sessions start on (step M1); each session can pick its own
+            on its card. */}
+        <Field label="default model">
+          <select value={model} onChange={(e) => setModel(e.target.value)} style={inputStyle}>
+            <option value="">(Claude Code's default)</option>
+            {SESSION_MODELS.map((m) => (
+              <option key={m} value={m}>
+                {m}
+              </option>
+            ))}
+            {model && !(SESSION_MODELS as readonly string[]).includes(model) && (
+              <option value={model}>{model}</option>
+            )}
+          </select>
         </Field>
 
         {/* Worktree post-create setup (step 2.5). Local-only — hidden for remote

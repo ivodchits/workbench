@@ -60,6 +60,9 @@ export interface SessionRef {
   subagents: number;
   /** The worktree's branch; null when the session works in the project root. */
   worktreeBranch: string | null;
+  /** The model it launches on (its own, else the project's default); null for
+   *  Claude Code's default. */
+  model: string | null;
   workingDir: string;
   /** Last activity, epoch seconds (the live status, else the stored one). */
   lastActivity: number | null;

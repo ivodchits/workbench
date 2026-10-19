@@ -117,6 +117,7 @@ function sessionSummary(s: SessionRef, projects: ProjectRef[], now: number) {
     needs: s.choice ? choiceLine(s.choice) : null,
     task: s.taskNote,
     worktree: s.worktreeBranch,
+    model: s.model,
     compacting: s.compacting,
     subagents: s.subagents || null,
     lastActivity: s.lastActivity ? when(s.lastActivity * 1000, now) : null,

@@ -131,6 +131,8 @@ export interface RemoteCreateAction {
   text?: string;
   /** Isolate the session in a new worktree. */
   worktree?: boolean;
+  /** The model to run on (step M1); omit to inherit the project's default. */
+  model?: string;
 }
 
 /** Answer an instance's pending prompt (step R5): one of its options by digit, or

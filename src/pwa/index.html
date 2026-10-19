@@ -158,6 +158,16 @@
         <span class="muted">first prompt</span>
         <textarea id="new-text" rows="5" placeholder="optional"></textarea>
       </label>
+      <label class="field">
+        <span class="muted">model</span>
+        <select id="new-model">
+          <option value="">project default</option>
+          <option value="opus">opus</option>
+          <option value="sonnet">sonnet</option>
+          <option value="haiku">haiku</option>
+          <option value="fable">fable</option>
+        </select>
+      </label>
       <label class="check"><input id="new-worktree" type="checkbox" /> isolate in a worktree</label>
       <div id="new-msg" class="muted"></div>
       <button id="new-create" type="button">start session</button>

@@ -72,6 +72,7 @@ const data: FakePortData = {
       phase: "working",
       taskNote: "fixing flaky test",
       worktreeBranch: "agent/tests",
+      model: "opus",
       workingDir: "C:/wt/tests",
       subagents: 2,
     }),
@@ -149,6 +150,7 @@ describe("read tools", () => {
         phase: "working",
         task: "fixing flaky test",
         worktree: "agent/tests",
+        model: "opus",
         subagents: 2,
       },
     ]);
