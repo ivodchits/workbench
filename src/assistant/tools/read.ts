@@ -16,7 +16,7 @@ import { defineTool } from "./registry";
 // ── helpers ─────────────────────────────────────────────────────────────────
 
 /** Leave out null, undefined, false, empty strings and empty arrays. */
-function compact<T extends Record<string, unknown>>(o: T): Partial<T> {
+export function compact<T extends Record<string, unknown>>(o: T): Partial<T> {
   return Object.fromEntries(
     Object.entries(o).filter(
       ([, v]) =>
@@ -103,8 +103,8 @@ export function choiceLine(c: ChoiceRef): string {
   return `permission: ${c.toolName}${line ? ` ${line}` : ""}`;
 }
 
-const projectArg = z.string().describe("The project's id or name.");
-const sessionArg = z
+export const projectArg = z.string().describe("The project's id or name.");
+export const sessionArg = z
   .string()
   .describe("The session's id, or its title (unique, or with `project`).");
 
@@ -186,6 +186,8 @@ export const getPendingChoice = defineTool({
     return compact({
       session: s.title,
       waiting: true,
+      // answer_choice names it, so an answer can't land on a newer prompt.
+      choiceId: c.id,
       kind: c.kind,
       summary: choiceLine(c),
       tool: c.toolName,
@@ -203,6 +205,10 @@ export const getPendingChoice = defineTool({
       ),
       since: when(c.at),
       answerOnlyInTerminal: c.terminalOnly,
+      typedAnswer:
+        c.kind === "question" && !c.terminalOnly
+          ? "or answer in your own words: answer_choice with text"
+          : null,
       answerSent: c.sent,
     });
   },
@@ -364,7 +370,7 @@ export const listNotes = defineTool({
   },
 });
 
-const NOTE_CHARS = 20_000;
+export const NOTE_CHARS = 20_000;
 
 export const readNote = defineTool({
   name: "read_note",

@@ -11,6 +11,8 @@
 import { z } from "zod";
 import type Anthropic from "@anthropic-ai/sdk";
 import type { WorkbenchPort } from "../port";
+import type { Notice } from "../protocol";
+import type { DuckSettings } from "../settings";
 
 export type Tier = "read" | "reversible" | "consequential";
 
@@ -20,6 +22,12 @@ export interface ToolContext {
   threadId: string;
   /** Aborted when the turn is stopped or the tool runs out of time. */
   signal: AbortSignal;
+  settings: DuckSettings;
+  /** Show something in the thread that the model never sees (a note-edit chip). */
+  notice(n: Notice): Promise<void>;
+  /** Post a follow-up into the thread later, as a Workbench event that starts a
+   *  turn of its own: how start + notify tools report back. */
+  later(text: string): void;
 }
 
 /** A tool may return text, API content blocks (e.g. an image), or any JSON value. */
@@ -34,6 +42,11 @@ export interface ToolDef<S extends z.ZodType = z.ZodType> {
   description: string;
   schema: S;
   tier: Tier;
+  /** A tier that depends on the input or the app's state (resuming a session that
+   *  is running ends its process); `tier` when absent or when it throws. */
+  tierFor?(input: z.infer<S>, port: WorkbenchPort): Tier;
+  /** One sentence for the confirmation card: what this call will do. */
+  describe?(input: z.infer<S>, port: WorkbenchPort): string;
   /** The longest the turn waits for `run`. Work that can take longer is written as
    *  start + notify: return a handle at once, report completion later as a new
    *  message in the thread. */
@@ -58,6 +71,10 @@ export interface Registry {
   get(name: string): ToolDef | undefined;
   /** The tool's declared tier; an unknown tool counts as consequential. */
   tierOf(name: string): Tier;
+  /** The tier of this call: `tierFor` over valid input, else the declared tier. */
+  callTier(name: string, input: unknown, port: WorkbenchPort): Tier;
+  /** The confirmation card's sentence for this call, when the tool has one. */
+  describe(name: string, input: unknown, port: WorkbenchPort): string | undefined;
 }
 
 function inputSchema(schema: z.ZodType): Anthropic.Beta.BetaTool.InputSchema {
@@ -90,5 +107,26 @@ export function createRegistry(tools: readonly ToolDef[]): Registry {
     apiTools,
     get: (name) => byName.get(name),
     tierOf: (name) => byName.get(name)?.tier ?? "consequential",
+    callTier(name, input, port) {
+      const t = byName.get(name);
+      if (!t) return "consequential";
+      const parsed = t.schema.safeParse(input);
+      if (!t.tierFor || !parsed.success) return t.tier;
+      try {
+        return t.tierFor(parsed.data, port);
+      } catch {
+        return t.tier;
+      }
+    },
+    describe(name, input, port) {
+      const t = byName.get(name);
+      const parsed = t?.schema.safeParse(input);
+      if (!t?.describe || !parsed?.success) return undefined;
+      try {
+        return t.describe(parsed.data, port);
+      } catch {
+        return undefined;
+      }
+    },
   };
 }

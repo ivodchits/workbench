@@ -31,8 +31,15 @@ import type {
   Source,
   TurnState,
 } from "./protocol";
+import { DEFAULT_SETTINGS, type DuckSettings } from "./settings";
 import type { BatchCall, PendingBatch, ThreadStore } from "./threads";
-import type { Registry, Tier, ToolDef, ToolOutput } from "./tools/registry";
+import type {
+  Registry,
+  Tier,
+  ToolContext,
+  ToolDef,
+  ToolOutput,
+} from "./tools/registry";
 
 type Params = Anthropic.Beta.Messages.MessageCreateParamsStreaming;
 type ApiMessage = Anthropic.Beta.BetaMessageParam;
@@ -92,6 +99,15 @@ export interface EngineDeps {
   newId?: () => string;
   /** Called with the first message of a new thread, to name it (fire and forget). */
   nameThread?: (text: string) => Promise<string>;
+  /** Duck's settings as they are now (the policy and some tools read them). */
+  settings?: () => DuckSettings;
+}
+
+/** A follow-up a tool posts (`ToolContext.later`): marked as Workbench's, so the
+ *  model never takes it for the user. */
+export function eventText(text: string): string {
+  const body = text.replace(/<\/?workbench_event>/g, "");
+  return `<workbench_event>\n${body}\n</workbench_event>`;
 }
 
 export interface SendInput {
@@ -216,7 +232,7 @@ class Stopped extends Error {}
 async function runTool(
   tool: ToolDef,
   call: ToolUse,
-  ctx: { port: WorkbenchPort; threadId: string; signal: AbortSignal },
+  ctx: ToolContext,
 ): Promise<ToolResult> {
   const parsed = tool.schema.safeParse(call.input);
   if (!parsed.success) {
@@ -232,11 +248,7 @@ async function runTool(
   try {
     const out = await Promise.race([
       Promise.resolve().then(() =>
-        tool.run(parsed.data, {
-          port: ctx.port,
-          threadId: ctx.threadId,
-          signal: ctl.signal,
-        }),
+        tool.run(parsed.data, { ...ctx, signal: ctl.signal }),
       ),
       new Promise<never>((_, reject) => {
         timer = setTimeout(() => reject(new TimedOut()), tool.timeoutMs);
@@ -274,6 +286,7 @@ interface Turn {
 export function createEngine(deps: EngineDeps): Engine {
   const { store, registry, port } = deps;
   const gate = deps.gate ?? tierGate;
+  const settings = deps.settings ?? (() => DEFAULT_SETTINGS);
   const newId = deps.newId ?? (() => crypto.randomUUID());
   const listeners = new Set<(e: DuckEvent) => void>();
   const turns = new Map<string, Turn>();
@@ -480,9 +493,16 @@ export function createEngine(deps: EngineDeps): Engine {
     setState(threadId, "tool");
     const calls: BatchCall[] = uses.map((u) => {
       const tool = registry.get(u.name);
+      // A call whose input doesn't fit its schema can't run: it fails at once
+      // with the reason rather than asking the user to allow it.
       const ask =
         tool &&
-        gate({ name: u.name, input: u.input, tier: tool.tier }) === "ask";
+        tool.schema.safeParse(u.input).success &&
+        gate({
+          name: u.name,
+          input: u.input,
+          tier: registry.callTier(u.name, u.input, port),
+        }) === "ask";
       return {
         id: u.id,
         name: u.name,
@@ -503,16 +523,7 @@ export function createEngine(deps: EngineDeps): Engine {
     await store.putPending(batch);
     for (const c of calls) {
       if (c.state === "ask") {
-        emit({
-          type: "confirm",
-          request: {
-            threadId,
-            batchId: batch.id,
-            toolUseId: c.id,
-            name: c.name,
-            input: c.input,
-          },
-        });
+        emit({ type: "confirm", request: request(threadId, batch.id, c) });
       }
     }
     return null;
@@ -533,7 +544,18 @@ export function createEngine(deps: EngineDeps): Engine {
       input: use.input,
     });
     const r = tool
-      ? await runTool(tool, use, { port, threadId, signal: turn.ctl.signal })
+      ? await runTool(tool, use, {
+          port,
+          threadId,
+          signal: turn.ctl.signal,
+          settings: settings(),
+          notice: (n) => notice(threadId, n).then(() => {}),
+          later: (text) => {
+            send({ threadId, text: eventText(text), source: "event" }).catch(
+              (e) => console.warn("duck: a follow-up was dropped", e),
+            );
+          },
+        })
       : errorResult(use.id, `There is no tool named ${use.name}.`);
     emit({
       type: "tool",
@@ -595,20 +617,38 @@ export function createEngine(deps: EngineDeps): Engine {
     return t.id;
   }
 
-  return {
-    async send(input) {
-      const threadId = await ensureThread(input.threadId);
-      const msg = { ...input, threadId };
-      if (busy(threadId)) {
-        const q = queues.get(threadId) ?? [];
-        q.push(msg);
-        queues.set(threadId, q);
-        setState(threadId, turns.get(threadId)?.state ?? "waiting");
-        return threadId;
-      }
-      void start(threadId, msg);
+  async function send(input: SendInput): Promise<string> {
+    const threadId = await ensureThread(input.threadId);
+    const msg = { ...input, threadId };
+    if (busy(threadId)) {
+      const q = queues.get(threadId) ?? [];
+      q.push(msg);
+      queues.set(threadId, q);
+      setState(threadId, turns.get(threadId)?.state ?? "waiting");
       return threadId;
-    },
+    }
+    void start(threadId, msg);
+    return threadId;
+  }
+
+  function request(
+    threadId: string,
+    batchId: string,
+    c: BatchCall,
+  ): ConfirmRequest {
+    const summary = registry.describe(c.name, c.input, port);
+    return {
+      threadId,
+      batchId,
+      toolUseId: c.id,
+      name: c.name,
+      input: c.input,
+      ...(summary && { summary }),
+    };
+  }
+
+  return {
+    send,
 
     async newThread(mode) {
       const t = await store.create(mode);
@@ -668,13 +708,7 @@ export function createEngine(deps: EngineDeps): Engine {
       return store.pending().flatMap((b) =>
         b.calls
           .filter((c) => c.state === "ask")
-          .map((c) => ({
-            threadId: b.threadId,
-            batchId: b.id,
-            toolUseId: c.id,
-            name: c.name,
-            input: c.input,
-          })),
+          .map((c) => request(b.threadId, b.id, c)),
       );
     },
 

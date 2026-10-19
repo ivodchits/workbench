@@ -7,11 +7,13 @@
 // engine or the thread store directly.
 
 import type { Spend, StoredMessage, ThreadRow } from "../ipc/assistant";
+import type { DuckSettings } from "./settings";
 
 export const PROTOCOL_VERSION = 1;
 
-/** Where a message came from; stored on it. */
-export type Source = "desktop" | "phone" | "voice";
+/** Where a message came from; stored on it. `event` is Workbench itself: a
+ *  follow-up a tool scheduled (a watched session finished), not the user. */
+export type Source = "desktop" | "phone" | "voice" | "event";
 
 /** Per-message effort (the API's `output_config.effort`). */
 export type Effort = "low" | "medium" | "high" | "xhigh" | "max";
@@ -26,6 +28,23 @@ export interface ConfirmRequest {
   toolUseId: string;
   name: string;
   input: unknown;
+  /** What the call will do, in a sentence, when the tool can say (e.g. which
+   *  option of which session's prompt). */
+  summary?: string;
+}
+
+/** A note Duck changed (step W2), for the thread's "Duck edited" chip: enough to
+ *  show the diff and to undo it with the same revision check. */
+export interface NoteEdit {
+  projectId: string;
+  project: string;
+  name: string;
+  /** null: the note was made by the edit. */
+  before: string | null;
+  /** null: the edit deleted the note. */
+  after: string | null;
+  /** The note's revision right after the edit; null after a delete. */
+  revision: string | null;
 }
 
 /** The payload of a `notice` message: something the thread shows but the model
@@ -38,8 +57,11 @@ export interface Notice {
     | "max_tokens"
     | "context"
     | "error"
-    | "rounds";
+    | "rounds"
+    | "note";
   text: string;
+  /** `note` only. */
+  note?: NoteEdit;
 }
 
 // ── surface → Duck ──────────────────────────────────────────────────────────
@@ -67,7 +89,9 @@ export type ClientMessage =
    *  connecting). */
   | { type: "sync" }
   /** Ask for a thread's stored messages. */
-  | { type: "thread.open"; threadId: string };
+  | { type: "thread.open"; threadId: string }
+  /** Change Duck's settings (step W2). */
+  | { type: "settings.set"; settings: Partial<DuckSettings> };
 
 // ── Duck → surface ──────────────────────────────────────────────────────────
 
@@ -106,6 +130,8 @@ export type DuckEvent =
   /** The month's API spend, after every metered call and on `sync`. `turns` holds
    *  each thread's latest turn cost (since the app started), in USD. */
   | { type: "spend"; spend: Spend; turns: Record<string, number> }
+  /** Duck's settings, on `sync` and after every change. */
+  | { type: "settings"; settings: DuckSettings }
   /** A request from a surface failed (an unknown thread, storage down, …). */
   | { type: "error"; message: string };
 

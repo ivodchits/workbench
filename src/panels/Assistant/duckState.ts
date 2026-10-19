@@ -16,6 +16,7 @@ import type {
   Effort,
   TurnState,
 } from "../../assistant/protocol";
+import type { DuckSettings } from "../../assistant/settings";
 import type { Spend, StoredMessage, ThreadRow } from "../../ipc/assistant";
 import { getPref, setPref, type AssistantDrawerPrefs } from "../../ipc/prefs";
 
@@ -39,6 +40,8 @@ export interface DuckState {
   turns: Record<string, number>;
   error: string | null;
   prefs: AssistantDrawerPrefs;
+  /** Duck's own settings (step W2), as the engine has them; null until synced. */
+  settings: DuckSettings | null;
 }
 
 export const DEFAULT_DRAWER: AssistantDrawerPrefs = {
@@ -61,6 +64,7 @@ let state: DuckState = {
   turns: {},
   error: null,
   prefs: DEFAULT_DRAWER,
+  settings: null,
 };
 const listeners = new Set<() => void>();
 /** A send with no thread is waiting for the engine to name the new one. */
@@ -212,6 +216,9 @@ function onEvent(e: DuckEvent): void {
     case "spend":
       set({ spend: e.spend, turns: e.turns });
       break;
+    case "settings":
+      set({ settings: e.settings });
+      break;
     case "error":
       set({ error: e.message });
       break;
@@ -327,4 +334,9 @@ export function setDrawerWidth(width: number): void {
 
 export function setInterrupt(interrupt: boolean): void {
   savePrefs({ interrupt });
+}
+
+/** Change Duck's settings; the engine answers with the settings now in force. */
+export function setDuckSettings(settings: Partial<DuckSettings>): void {
+  post({ type: "settings.set", settings });
 }

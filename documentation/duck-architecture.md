@@ -5,7 +5,7 @@ behind each decision are in `assistant-plan.md`. This file describes the code, a
 Duck step updates it as part of its Done when. Duck's self-development sessions (L3)
 read it first.
 
-Last updated: step W1 (2026-10-19).
+Last updated: step W2 (2026-10-19).
 
 ## The shape
 
@@ -33,17 +33,20 @@ Last updated: step W1 (2026-10-19).
 | File | What it is |
 |---|---|
 | `index.ts` | `initAssistant()` (called from `App.tsx` with the other engines) builds the store, the registry and the engine; `getDuck()` returns the in-process transport. `endpoint()` maps protocol messages onto the engine and adds the spend (from a `SpendSource`: the ledger commands and `assistant-usage` events). |
-| `protocol.ts` | The Duck Protocol, version 1: `ClientMessage` (send, stop, confirm, thread.new, thread.delete, sync, thread.open) and `DuckEvent` (threads, history, thread, threadDeleted, message, delta, tool, confirm, confirmed, turnState, spend, error). `createLocalTransport` stamps `v`. |
+| `protocol.ts` | The Duck Protocol, version 1: `ClientMessage` (send, stop, confirm, thread.new, thread.delete, sync, thread.open, settings.set) and `DuckEvent` (threads, history, thread, threadDeleted, message, delta, tool, confirm, confirmed, turnState, spend, settings, error). A `ConfirmRequest` carries the tool's one-line `summary`; a `note` notice carries a `NoteEdit` (before, after, revision) for the drawer's chip. Source `event` marks a follow-up from Workbench, not the user. `createLocalTransport` stamps `v`. |
+| `settings.ts` | Duck's settings (pref `assistant`): `confirmPrompts` (ask before every prompt sent to a session) and `codingModel` (what `create_session` uses for coding work). Loaded at start, changed only through `settings.set`. |
+| `policy.ts` | `createPolicy(settings)`: the gate. Consequential calls ask; prompts ask too when `confirmPrompts` is on. T1 replaces it behind the same `Gate`. |
 | `spend.ts` | `createTurnMeter()`: bills each metered `thread` call to the one turn that is calling (none if two are), giving each thread's latest turn cost for the `spend` event. |
-| `engine.ts` | The loop. Pure helpers `toApiMessages`, `effectiveEffort` and `buildParams` are exported for tests. |
+| `engine.ts` | The loop. Pure helpers `toApiMessages`, `effectiveEffort`, `buildParams` and `eventText` are exported for tests. Each tool call gets a `ToolContext` with the settings, `notice()` (a thread item the model never sees) and `later(text)` (a follow-up sent into the thread as a `<workbench_event>` user message with source `event`, which runs its own turn). The gate is asked with the call's own tier (`registry.callTier`). |
 | `threads.ts` | `createThreadStore(backend)`: threads, messages (loaded per thread on first use) and parked tool batches, in memory and persisted. Appends to one thread are serialized so each gets the next `seq`. |
 | `client.ts` | `getClient()` (the SDK at the proxy, with the launch token as its key), `purpose()`, `capMessage()`, `errorMessage()`, and `oneShot(name, input, {schema?})` for Haiku primitives. |
 | `prompt.ts` | The frozen system prompt, `MAIN_MODEL` / `PRIMITIVE_MODEL`, and `PRIMITIVES` (one frozen prompt per Haiku job; the key is its `x-wb-purpose`). |
-| `port.ts` / `port.local.ts` | `WorkbenchPort` and its one implementation over the stores. The only file under `src/assistant/` allowed to import `src/state/**` or `src/panels/**`. Members: projects, sessions (live phase, pending choice, worktree, last activity), transcript paging, usage limits, a git snapshot of a directory, notes list/read, Duck's spend. |
-| `fakePort.test-util.ts` | `fakePort(data)` and the `project()` / `session()` builders: a port over fixture data for the engine's and the tools' tests. |
-| `tools/registry.ts` | `defineTool({name, description, schema, tier, timeoutMs?, run})` and `createRegistry(tools)`: the API tool list sorted by name, built once; `tierOf(name)`. |
+| `port.ts` / `port.local.ts` | `WorkbenchPort` and its one implementation over the stores. The only file under `src/assistant/` allowed to import `src/state/**` or `src/panels/**`. Members: projects, sessions (live phase, pending choice with its id, worktree, model, last activity), transcript paging, usage limits, a git snapshot of a directory, notes list/read, Duck's spend; and the W2 actions: `sendPrompt` (`sendOrQueue`, or start the console and deliver when ready), `createSession` (`startNewSession` from `state/remoteActions`, shared with the phone), start/resume/interrupt/stop, `answerChoice` (refused unless the named prompt is still open), `openPanel`, note writes, `onPhase`. |
+| `fakePort.test-util.ts` | `fakePort(data)` and the `project()` / `session()` builders: a port over fixture data for the engine's and the tools' tests. Actions are recorded in `calls`, notes writes keep the revision check, `phase()` fires `onPhase`. `toolCtx(port)` is a tool context that records notices and follow-ups. |
+| `tools/registry.ts` | `defineTool({name, description, schema, tier, tierFor?, describe?, timeoutMs?, run})` and `createRegistry(tools)`: the API tool list sorted by name, built once; `tierOf(name)`, `callTier(name, input, port)` (a tier that depends on the input or state), `describe(...)` (the confirmation card's sentence). |
 | `tools/getTime.ts` | `get_time` (read tier): the local date, time and zone. |
 | `tools/read.ts` | The W1 read tools: `list_projects`, `list_sessions`, `get_pending_choice`, `read_session`, `usage_limits`, `git_overview`, `list_notes`, `read_note`, `duck_spend`. Compact JSON, empty fields left out; projects and sessions are named by id or name (`findProject` / `findSession`, which list the choices on a miss or an ambiguity). |
+| `tools/act.ts` | The W2 action tools. Reversible: `send_prompt`, `create_session`, `start_session`, `open_panel`, `wait_for_session`, `create_note`, `append_note`, and `resume_session` on a stopped session. Consequential: `answer_choice`, `interrupt_session`, `stop_session`, `write_note`, `delete_note`, and `resume_session` over a running session. Note writes leave a "Duck edited" chip. |
 | `tools/testConfirm.ts` | `test_confirm`, a consequential tool that does nothing, for trying the confirmation card. Registered in dev builds only. |
 
 Outside the folder, `src/transcript/plainText.ts` (`readPlainText`) writes a session's
@@ -205,6 +208,6 @@ Both rules are in `prompt.ts`.
 
 - The Sonnet toggle (M2, once there is a Haiku thread to step up from); the drawer has
   "think hard" (effort `high`) instead.
-- Action tools (W2), the session's model in `list_sessions` (M1), the trust policy (T1, which replaces `tierGate`), and effort
-  routing (M2).
+- The trust policy (T1, which replaces `createPolicy`) and effort routing (M2).
+- Git writes from Duck (left out of W2 on purpose).
 - The WebSocket transport (R1).

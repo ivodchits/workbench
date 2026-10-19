@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { sessionLines } from "../../transcript/fixtures.test-util";
 import {
   fakePort,
+  toolCtx,
   project,
   session,
   type FakePortData,
@@ -32,6 +33,7 @@ beforeEach(() => {
 afterEach(() => vi.useRealTimers());
 
 const permission: ChoiceRef = {
+  id: "c1",
   kind: "permission",
   toolName: "Bash",
   input: { command: "npm test\n# and more" },
@@ -85,11 +87,7 @@ const data: FakePortData = {
 async function run(tool: ToolDef, input: unknown, d: FakePortData = data) {
   const port = fakePort(d);
   const parsed = tool.schema.parse(input);
-  const out = await tool.run(parsed, {
-    port,
-    threadId: "t",
-    signal: new AbortController().signal,
-  });
+  const out = await tool.run(parsed, toolCtx(port));
   return { out: out as Record<string, unknown> & string, port };
 }
 

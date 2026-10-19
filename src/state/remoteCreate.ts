@@ -79,13 +79,36 @@ const PROMPT_ROW = /^\s*[❯>](\s|$)(?!\s*\d+\.)/;
  * numbered, so a folder Claude has not been told to trust never reads as ready.
  */
 export function promptBoxReady(screen: readonly string[]): boolean {
+  return promptRow(screen) !== null;
+}
+
+/** The prompt box's caret row, or null when the screen shows no prompt box. */
+function promptRow(screen: readonly string[]): string | null {
   for (let y = 1; y < screen.length; y++) {
     if (!PROMPT_ROW.test(screen[y]) || !RULE.test(screen[y - 1])) continue;
     for (let below = y + 1; below < Math.min(screen.length, y + 6); below++) {
-      if (RULE.test(screen[below])) return true;
+      if (RULE.test(screen[below])) return screen[y];
     }
   }
-  return false;
+  return null;
+}
+
+const squash = (s: string) => s.replace(/\s+/g, " ").trim();
+
+/**
+ * True when the prompt box still holds `text` — its start, or the chip a long or
+ * multi-line paste becomes — so the Enter after it was not taken. Only our own text
+ * counts: an empty box, a placeholder, or a dialog in place of the box is false,
+ * so a second Enter can never answer something else.
+ */
+export function inputHolds(screen: readonly string[], text: string): boolean {
+  const row = promptRow(screen);
+  if (row === null) return false;
+  const input = squash(row.replace(PROMPT_ROW, ""));
+  if (!input) return false;
+  if (input.startsWith("[Pasted text")) return true;
+  const head = squash(text).slice(0, 24);
+  return head.length > 0 && input.startsWith(head.slice(0, Math.min(head.length, input.length)));
 }
 
 /** True when the screen's last line with text asks for a password or passphrase —

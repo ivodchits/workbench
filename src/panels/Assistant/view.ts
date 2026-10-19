@@ -1,13 +1,17 @@
 // What the drawer shows for a thread (step A3): the stored messages folded into
 // display items. An assistant message becomes its text and a chip per tool call;
 // the tool results (which travel in the next user message) are attached to their
-// chips; thinking and the mid-conversation system messages are not shown.
+// chips; thinking and the mid-conversation system messages are not shown. A
+// Workbench event (W2) is a line of its own, not a bubble of yours, and a note
+// Duck changed is a chip with its diff.
 
 import type { StoredMessage } from "../../ipc/assistant";
-import type { Notice } from "../../assistant/protocol";
+import type { NoteEdit, Notice } from "../../assistant/protocol";
 
 export type Item =
   | { kind: "user"; key: string; text: string; source: string }
+  | { kind: "event"; key: string; text: string }
+  | { kind: "note"; key: string; text: string; edit: NoteEdit }
   | { kind: "reply"; key: string; text: string }
   | {
       kind: "tool";
@@ -62,7 +66,10 @@ export function toItems(messages: readonly StoredMessage[]): Item[] {
   for (const m of messages) {
     const key = `${m.threadId}:${m.seq}`;
     if (m.role === "notice") {
-      items.push({ kind: "notice", key, notice: m.content as Notice });
+      const n = m.content as Notice;
+      if (n.kind === "note" && n.note)
+        items.push({ kind: "note", key, text: n.text, edit: n.note });
+      else items.push({ kind: "notice", key, notice: n });
       continue;
     }
     if (m.role === "user") {
@@ -71,7 +78,10 @@ export function toItems(messages: readonly StoredMessage[]): Item[] {
         .map((b) => b.text ?? "")
         .join("\n")
         .trim();
-      if (text) items.push({ kind: "user", key, text, source: m.source });
+      if (!text) continue;
+      if (m.source === "event")
+        items.push({ kind: "event", key, text: eventBody(text) });
+      else items.push({ kind: "user", key, text, source: m.source });
       continue;
     }
     if (m.role !== "assistant") continue;
@@ -99,6 +109,79 @@ export function toItems(messages: readonly StoredMessage[]): Item[] {
     flush();
   }
   return items;
+}
+
+/** An event's text without its `<workbench_event>` wrapper. */
+export function eventBody(text: string): string {
+  return text.replace(/<\/?workbench_event>/g, "").trim();
+}
+
+export type DiffLine = { op: " " | "-" | "+"; text: string };
+
+/** Lines past which `lineDiff` stops comparing and shows the whole change. */
+const DIFF_MAX = 1500;
+
+/**
+ * A line diff of two texts (longest common subsequence), with unchanged runs cut
+ * to `context` lines around each change. Notes are small; a very long one is shown
+ * as all-removed then all-added rather than compared.
+ */
+export function lineDiff(before: string, after: string, context = 2): (DiffLine | null)[] {
+  const a = before ? before.replace(/\n$/, "").split("\n") : [];
+  const b = after ? after.replace(/\n$/, "").split("\n") : [];
+  let lines: DiffLine[];
+  if (a.length * b.length > DIFF_MAX * DIFF_MAX) {
+    lines = [
+      ...a.map((text) => ({ op: "-" as const, text })),
+      ...b.map((text) => ({ op: "+" as const, text })),
+    ];
+  } else {
+    // lcs[i][j]: the longest common run of a[i..] and b[j..].
+    const lcs = Array.from({ length: a.length + 1 }, () =>
+      new Array<number>(b.length + 1).fill(0),
+    );
+    for (let i = a.length - 1; i >= 0; i--)
+      for (let j = b.length - 1; j >= 0; j--)
+        lcs[i][j] =
+          a[i] === b[j] ? lcs[i + 1][j + 1] + 1 : Math.max(lcs[i + 1][j], lcs[i][j + 1]);
+    lines = [];
+    let i = 0;
+    let j = 0;
+    while (i < a.length || j < b.length) {
+      if (i < a.length && j < b.length && a[i] === b[j]) {
+        lines.push({ op: " ", text: a[i++] });
+        j++;
+      } else if (i < a.length && (j === b.length || lcs[i + 1][j] >= lcs[i][j + 1])) {
+        // On a tie the removal goes first, as diffs read.
+        lines.push({ op: "-", text: a[i++] });
+      } else {
+        lines.push({ op: "+", text: b[j++] });
+      }
+    }
+  }
+  // Keep the changes and `context` lines either side; a gap becomes null.
+  const keep = lines.map((l) => l.op !== " ");
+  const near = lines.map((_, k) =>
+    keep.slice(Math.max(0, k - context), k + context + 1).some(Boolean),
+  );
+  const out: (DiffLine | null)[] = [];
+  lines.forEach((l, k) => {
+    if (near[k]) out.push(l);
+    else if (out[out.length - 1] !== null) out.push(null);
+  });
+  if (out[0] === null) out.shift();
+  if (out[out.length - 1] === null) out.pop();
+  return out;
+}
+
+/** A tool call's input as `field: value` lines, for a person to read (a card that
+ *  has no sentence from its tool, and the card's details). */
+export function readableInput(input: unknown): string {
+  if (!input || typeof input !== "object" || Array.isArray(input))
+    return JSON.stringify(input, null, 2) ?? "";
+  return Object.entries(input as Record<string, unknown>)
+    .map(([k, v]) => `${k}: ${typeof v === "string" ? v : JSON.stringify(v)}`)
+    .join("\n");
 }
 
 /** A tool call in one line: its input as compact JSON, cut to `max` characters. */

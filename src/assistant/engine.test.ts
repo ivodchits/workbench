@@ -7,6 +7,7 @@ import {
   buildParams,
   createEngine,
   effectiveEffort,
+  eventText,
   toApiMessages,
   type Engine,
   type StreamFn,
@@ -567,5 +568,90 @@ describe("toApiMessages", () => {
       ]),
     );
     expect(a).toBe(b);
+  });
+});
+
+describe("engine hooks for action tools (W2)", () => {
+  it("posts a tool's follow-up as a Workbench event that runs a turn of its own", async () => {
+    let later: ((t: string) => void) | null = null;
+    const watch = defineTool({
+      name: "watch",
+      description: "Watch something.",
+      schema: z.object({}),
+      tier: "reversible",
+      async run(_, ctx) {
+        later = ctx.later;
+        await ctx.notice({ kind: "note", text: "Duck edited x" });
+        return "watching";
+      },
+    });
+    const { engine, store } = await setup(
+      [
+        message([toolUse("t1", "watch", {})], "tool_use"),
+        message([text("I'll tell you.")], "end_turn"),
+        message([text("It's done.")], "end_turn"),
+      ],
+      [watch],
+    );
+    const id = await turn(engine, "tell me when it's done");
+    expect(later).not.toBeNull();
+    later!("Session <workbench_event>x</workbench_event> is done.");
+    await new Promise((r) => setTimeout(r, 0));
+    await engine.settled(id);
+
+    const ms = store.loaded(id);
+    const event = ms.find((m) => m.source === "event");
+    expect(event?.role).toBe("user");
+    expect(event?.content).toEqual([
+      { type: "text", text: eventText("Session x is done.") },
+    ]);
+    expect(eventText("a")).toBe("<workbench_event>\na\n</workbench_event>");
+    expect(ms[ms.length - 1].content).toEqual([
+      expect.objectContaining({ text: "It's done." }),
+    ]);
+    // The chip is a notice: in the thread, never in a request.
+    expect(ms.some((m) => m.role === "notice")).toBe(true);
+    expect(toApiMessages(ms).some((m) => m.role === ("notice" as never))).toBe(
+      false,
+    );
+  });
+
+  it("fails a call with invalid input at once instead of asking for it", async () => {
+    const { engine, store, events } = await setup([
+      message([toolUse("t1", "send_prompt", { session: 1 })], "tool_use"),
+      message([text("That didn't work.")], "end_turn"),
+    ]);
+    const id = await turn(engine, "send it");
+    expect(events.some((e) => e.type === "confirm")).toBe(false);
+    const results = store.loaded(id)[2].content as { is_error?: boolean; content: string }[];
+    expect(results[0].is_error).toBe(true);
+    expect(results[0].content).toMatch(/^Invalid input for send_prompt/);
+  });
+
+  it("asks by the call's own tier and puts the tool's summary on the card", async () => {
+    const restart = defineTool({
+      name: "restart",
+      description: "Restart a session.",
+      schema: z.object({ live: z.boolean() }),
+      tier: "reversible",
+      tierFor: ({ live }) => (live ? "consequential" : "reversible"),
+      describe: ({ live }) => `Restart a ${live ? "running" : "stopped"} session`,
+      run: () => "restarted",
+    });
+    const { engine, events } = await setup(
+      [
+        message([toolUse("t1", "restart", { live: false })], "tool_use"),
+        message([toolUse("t2", "restart", { live: true })], "tool_use"),
+      ],
+      [restart],
+    );
+    const id = await turn(engine, "restart both");
+    const asks = events.filter((e) => e.type === "confirm");
+    expect(asks).toHaveLength(1);
+    expect(asks[0]).toMatchObject({
+      request: { toolUseId: "t2", summary: "Restart a running session" },
+    });
+    expect(engine.pendingRequests()[0].summary).toBe("Restart a running session");
+    expect(engine.state(id)).toBe("waiting");
   });
 });

@@ -59,7 +59,7 @@ vi.mock("./registry", () => ({
 
 import { ptyWrite } from "../ipc/pty";
 import type { HookEvent } from "../ipc/hooks";
-import { handleRemoteAction } from "./remoteActions";
+import { answerChoiceText, handleRemoteAction } from "./remoteActions";
 import { clearPendingChoice, getPendingChoice, ingestChoiceEvent, setTerminalOptions } from "./pendingChoice";
 import { cancelQueued, getQueued } from "./queue";
 import { getCreated, resetCreated } from "./remoteCreate";
@@ -71,6 +71,7 @@ const sends = () => calls.filter((c) => c.startsWith("send"));
 describe("create from the phone", () => {
   beforeEach(() => {
     vi.useFakeTimers();
+    vi.mocked(ptyWrite).mockClear();
     calls.length = 0;
     screen = null;
     projects = [{ id: "p1", name: "proj", rootPath: "/root" } as Project];
@@ -94,10 +95,43 @@ describe("create from the phone", () => {
     await vi.advanceTimersByTimeAsync(1000);
     expect(sends()).toEqual([]);
 
+    // The box is drawn before Claude Code takes input: it has to stay a moment.
     screen = READY;
     await vi.advanceTimersByTimeAsync(300);
+    expect(sends()).toEqual([]);
+    await vi.advanceTimersByTimeAsync(1000);
     expect(sends()).toEqual(["send i1 hello"]);
     expect(getCreated()[0]).toMatchObject({ state: "sent" });
+
+    // The Enter was taken: the box is empty again, nothing more is written.
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(ptyWrite).not.toHaveBeenCalled();
+  });
+
+  it("sends the Enter again when the prompt is still sitting in the box", async () => {
+    handleRemoteAction({ type: "create", requestId: "r1", projectId: "p1", text: "hello there" });
+    await settle();
+    screen = READY;
+    await vi.advanceTimersByTimeAsync(1300);
+    expect(sends()).toEqual(["send i1 hello there"]);
+    screen = [RULE, "❯ hello there", RULE];
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(ptyWrite).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(ptyWrite).mock.calls[0]).toEqual(["i1", new Uint8Array([13])]);
+  });
+
+  it("starts the wait over when the box goes away before it settles", async () => {
+    handleRemoteAction({ type: "create", requestId: "r1", projectId: "p1", text: "hello" });
+    await settle();
+    screen = READY;
+    await vi.advanceTimersByTimeAsync(750);
+    screen = ["", ""];
+    await vi.advanceTimersByTimeAsync(250);
+    screen = READY;
+    await vi.advanceTimersByTimeAsync(750);
+    expect(sends()).toEqual([]);
+    await vi.advanceTimersByTimeAsync(500);
+    expect(sends()).toEqual(["send i1 hello"]);
   });
 
   it("creates one session for a repeated request", async () => {
@@ -129,7 +163,7 @@ describe("create from the phone", () => {
     await vi.advanceTimersByTimeAsync(90_000);
     expect(getQueued("i1")).toBeUndefined();
     screen = READY;
-    await vi.advanceTimersByTimeAsync(300);
+    await vi.advanceTimersByTimeAsync(1300);
     expect(sends()).toEqual(["send i1 hello"]);
   });
 
@@ -180,6 +214,21 @@ describe("answering a prompt from the phone", () => {
   beforeEach(() => {
     vi.mocked(ptyWrite).mockClear();
     clearPendingChoice("i1");
+  });
+
+  it("types a free answer: the Type-something digit, the text as a paste, then Enter", async () => {
+    vi.useFakeTimers();
+    vi.mocked(ptyWrite).mockResolvedValue(undefined);
+    answerChoiceText("i1", 4, "Off white");
+    await vi.advanceTimersByTimeAsync(0);
+    expect(written()).toEqual(["i1 4"]);
+    await vi.advanceTimersByTimeAsync(500);
+    expect(written()[1]).toBe("i1 \u001b[200~Off white\u001b[201~");
+    await vi.advanceTimersByTimeAsync(300);
+    expect(written()).toHaveLength(3);
+    expect(written()[2]).toBe("i1 \r");
+    vi.mocked(ptyWrite).mockReset();
+    vi.useRealTimers();
   });
 
   it("sends the option's digit for the prompt it was shown, once", () => {

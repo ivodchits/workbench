@@ -43,6 +43,8 @@ export interface Prefs {
   /** Duck's drawer (step A3): its width, the thread it shows, and what a message
    *  typed mid-reply does. */
   assistantDrawer: AssistantDrawerPrefs;
+  /** Duck's settings (step W2), as `src/assistant/settings.ts` keeps them. */
+  assistant: Partial<{ confirmPrompts: boolean; codingModel: string }>;
 }
 
 export interface AssistantDrawerPrefs {

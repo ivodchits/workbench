@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { StoredMessage } from "../../ipc/assistant";
-import { oneLine, sessionLink, toItems } from "./view";
+import { lineDiff, oneLine, readableInput, sessionLink, toItems } from "./view";
 
 let seq = 0;
 const msg = (
@@ -97,5 +97,53 @@ describe("helpers", () => {
     expect(sessionLink("#session/")).toBeNull();
     expect(sessionLink("https://x/#session/abc")).toBeNull();
     expect(sessionLink(null)).toBeNull();
+  });
+});
+
+describe("action items (W2)", () => {
+  it("shows a Workbench event as a line, not a bubble, and a note edit as a chip", () => {
+    seq = 0;
+    const edit = {
+      projectId: "p",
+      project: "P",
+      name: "plan",
+      before: "a",
+      after: "b",
+      revision: "r2",
+    };
+    const items = toItems([
+      msg("user", [{ type: "text", text: "<workbench_event>\nSession x is done.\n</workbench_event>" }], "event"),
+      msg("notice", { kind: "note", text: "Duck edited plan", note: edit }, "duck"),
+    ]);
+    expect(items.map((i) => i.kind)).toEqual(["event", "note"]);
+    expect(items[0]).toMatchObject({ text: "Session x is done." });
+    expect(items[1]).toMatchObject({ text: "Duck edited plan", edit });
+  });
+});
+
+describe("readableInput", () => {
+  it("writes an input as field: value lines", () => {
+    expect(readableInput({ session: "api", option: 1, tags: ["a"] })).toBe(
+      ["session: api", "option: 1", 'tags: ["a"]'].join(String.fromCharCode(10)),
+    );
+    expect(readableInput("x")).toBe('"x"');
+  });
+});
+
+describe("lineDiff", () => {
+  it("marks changed lines and cuts long unchanged runs", () => {
+    const before = ["1", "2", "3", "4", "5", "6", "7", "8"].join("\n");
+    const after = ["1", "2", "3", "4", "five", "6", "7", "8", "9"].join("\n");
+    expect(lineDiff(before, after, 1)).toEqual([
+      { op: " ", text: "4" },
+      { op: "-", text: "5" },
+      { op: "+", text: "five" },
+      { op: " ", text: "6" },
+      null,
+      { op: " ", text: "8" },
+      { op: "+", text: "9" },
+    ]);
+    expect(lineDiff("", "new\n")).toEqual([{ op: "+", text: "new" }]);
+    expect(lineDiff("same\n", "same")).toEqual([]);
   });
 });

@@ -9,6 +9,12 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { registerCommand } from "../../keyboard";
 import { getKeyStatus } from "../../ipc/assistant";
+import {
+  notesCreateWith,
+  notesDelete,
+  notesRead,
+  notesWrite,
+} from "../../ipc/notes";
 import { openUrl } from "../../ipc/os";
 import { focusActivePanel, activatePanel } from "../../state/dock";
 import { getRegistry } from "../../state/registry";
@@ -18,7 +24,7 @@ import { formatAgo } from "../../util/format";
 import { renderMarkdown } from "../Editor/markdown";
 import "../../theme/markdown.css";
 import "../../theme/assistant.css";
-import type { ConfirmRequest } from "../../assistant/protocol";
+import type { ConfirmRequest, NoteEdit } from "../../assistant/protocol";
 import DuckIcon from "./DuckIcon";
 import DrawerSettings from "./DrawerSettings";
 import type { ThreadRow } from "../../ipc/assistant";
@@ -38,7 +44,14 @@ import {
   useDuckState,
   type DuckState,
 } from "./duckState";
-import { oneLine, sessionLink, toItems, type Item } from "./view";
+import {
+  lineDiff,
+  oneLine,
+  readableInput,
+  sessionLink,
+  toItems,
+  type Item,
+} from "./view";
 
 const MIN_WIDTH = 320;
 const usd = (n: number) => (n < 1 ? `$${n.toFixed(3)}` : `$${n.toFixed(2)}`);
@@ -503,6 +516,23 @@ function ItemView({ item, active }: { item: Item; active: boolean }) {
       return <Reply text={item.text} />;
     case "tool":
       return <ToolChip item={item} active={active} />;
+    case "event":
+      return (
+        <div
+          style={{
+            margin: "4px 16px",
+            paddingLeft: 8,
+            borderLeft: "2px solid var(--wb-accent)",
+            color: "var(--wb-textDim2)",
+            whiteSpace: "pre-wrap",
+          }}
+          title="from Workbench, not from you"
+        >
+          {item.text}
+        </div>
+      );
+    case "note":
+      return <NoteChip text={item.text} edit={item.edit} />;
     case "notice":
       return (
         <div
@@ -631,6 +661,99 @@ function ToolChip({
   );
 }
 
+/** Put a note back as it was before Duck's edit, if nobody changed it since. */
+async function undoNoteEdit(e: NoteEdit): Promise<string> {
+  if (e.after === null) {
+    // Deleted: make it again (a name taken since gets " 2").
+    const n = await notesCreateWith(e.projectId, e.name, e.before ?? "");
+    return n.id === e.name ? "restored" : `restored as ${n.id}`;
+  }
+  if (e.before === null) {
+    // Made by Duck: delete it, unless it was edited since.
+    const now = await notesRead(e.projectId, e.name);
+    if (now.revision !== e.revision) throw new Error("stale: changed since");
+    await notesDelete(e.projectId, e.name);
+    return "removed";
+  }
+  await notesWrite(e.projectId, e.name, e.before, e.revision);
+  return "undone";
+}
+
+/** "Duck edited <note>" (step W2): the change as a diff, and an undo that is
+ *  refused when the note changed after Duck's edit. */
+function NoteChip({ text, edit }: { text: string; edit: NoteEdit }) {
+  const [open, setOpen] = useState(false);
+  const [status, setStatus] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const undo = async () => {
+    setBusy(true);
+    try {
+      setStatus(await undoNoteEdit(edit));
+    } catch (e) {
+      setStatus(
+        // A refused write (a string from the backend) or our own check.
+        String(e).includes("stale:")
+          ? "can't undo: the note changed since"
+          : `undo failed: ${String(e)}`,
+      );
+    } finally {
+      setBusy(false);
+    }
+  };
+  const diff = open ? lineDiff(edit.before ?? "", edit.after ?? "") : [];
+  return (
+    <div style={{ margin: "3px 16px" }}>
+      <div style={{ display: "flex", gap: 8, alignItems: "baseline", flexWrap: "wrap" }}>
+        <span style={{ color: "var(--wb-accent)" }}>✎ {text}</span>
+        <span style={{ color: "var(--wb-textFaint)" }}>{edit.project}</span>
+        <button type="button" style={linkBtn} onClick={() => setOpen(!open)}>
+          {open ? "hide diff" : "show diff"}
+        </button>
+        {status ? (
+          <span style={{ color: "var(--wb-textFaint)" }}>{status}</span>
+        ) : (
+          <button
+            type="button"
+            style={linkBtn}
+            disabled={busy}
+            onClick={() => void undo()}
+          >
+            undo
+          </button>
+        )}
+      </div>
+      {open && (
+        <div style={{ ...pre, marginTop: 4, fontFamily: "var(--wb-mono)" }}>
+          {diff.length === 0 && (
+            <span style={{ color: "var(--wb-textFaint)" }}>no change</span>
+          )}
+          {diff.map((l, k) =>
+            l === null ? (
+              <div key={k} style={{ color: "var(--wb-textFaint)" }}>
+                ⋯
+              </div>
+            ) : (
+              <div
+                key={k}
+                style={{
+                  color:
+                    l.op === "+"
+                      ? "var(--wb-done)"
+                      : l.op === "-"
+                        ? "var(--wb-needs)"
+                        : undefined,
+                }}
+              >
+                {l.op} {l.text}
+              </div>
+            ),
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── confirmations, spend, composer ──────────────────────────────────────────
 
 function Asks({ duck }: { duck: DuckState }) {
@@ -666,6 +789,7 @@ function Asks({ duck }: { duck: DuckState }) {
 }
 
 function ConfirmCard({ ask }: { ask: ConfirmRequest }) {
+  const [details, setDetails] = useState(!ask.summary);
   return (
     <div
       style={{
@@ -681,9 +805,23 @@ function ConfirmCard({ ask }: { ask: ConfirmRequest }) {
         <span style={{ color: "var(--wb-needs)" }}>● Duck wants to run </span>
         <span style={{ color: "var(--wb-accent)" }}>{ask.name}</span>
       </div>
-      <div style={{ ...pre, maxHeight: 160 }}>
-        {JSON.stringify(ask.input, null, 2)}
-      </div>
+      {ask.summary && (
+        <div style={{ color: "var(--wb-text)", whiteSpace: "pre-wrap" }}>
+          {ask.summary}
+        </div>
+      )}
+      {ask.summary && (
+        <button
+          type="button"
+          style={{ ...linkBtn, alignSelf: "flex-start" }}
+          onClick={() => setDetails(!details)}
+        >
+          {details ? "hide details" : "details"}
+        </button>
+      )}
+      {details && (
+        <div style={{ ...pre, maxHeight: 160 }}>{readableInput(ask.input)}</div>
+      )}
       <div style={{ display: "flex", gap: 8 }}>
         <button
           type="button"
@@ -847,6 +985,17 @@ const btn: React.CSSProperties = {
   color: "var(--wb-text)",
   font: "11px var(--wb-mono)",
   padding: "2px 8px",
+  cursor: "pointer",
+};
+
+const linkBtn: React.CSSProperties = {
+  background: "transparent",
+  border: "none",
+  padding: 0,
+  font: "inherit",
+  fontSize: 11,
+  color: "var(--wb-textDim2)",
+  textDecoration: "underline",
   cursor: "pointer",
 };
 

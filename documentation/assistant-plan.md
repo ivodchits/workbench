@@ -1942,6 +1942,80 @@ tapping around. Two stages.
     the note has unsaved edits in the panel shows the banner and keeps your edits.
 - **Out of scope:** git writes (left out on purpose; add later as consequential tools if
   wanted).
+- **As built:**
+  - `src/assistant/tools/act.ts` has 13 tools, `policy.ts` the gate,
+    `settings.ts` Duck's settings. The port grew the actions; `state/remoteActions.ts`
+    now exports `startNewSession` and `deliverWhenReady` (the phone's create flow
+    uses them, unchanged in behavior) and `port.local` reuses them.
+  - **Tiers as planned, with these choices:**
+    - `write_note` is always consequential. Whether "you asked for that edit in this
+      turn" can't be checked from inside the tool, and a model claim isn't enough.
+      `append_note` and `create_note` run at once.
+    - `resume_session` takes its tier from the session: reversible on a stopped one,
+      consequential over a running one (it ends that process). Tools can now declare
+      `tierFor(input, port)`.
+    - `focus_session` is folded into `start_session` (show the console, starting
+      Claude Code if it isn't running) and `open_panel` with `kind: "console"`.
+  - `answer_choice` names the prompt's `choiceId` (now in `get_pending_choice`). The
+    port refuses it if that prompt is no longer the open one, so a confirm that comes
+    late can't answer a newer prompt. Typed options are refused (answered in the
+    terminal).
+  - `send_prompt` to a session that isn't running starts its console and delivers the
+    prompt once the prompt box shows (queued on the card if it never does), instead of
+    dropping it.
+  - `create_session` with no `model` uses `codingModel` from Duck's settings (opus by
+    default); `"project"` uses the project's default. Its timeout is 90 s, for a
+    worktree's setup command. A session Duck starts or creates gets the focus (its
+    project shown), as the phone's does.
+  - Confirmation cards lead with a sentence from the tool (`describe`): e.g. `Answer
+    "api" — permission: Bash npm test — with: 1. Yes`. The raw input is under "details".
+  - `wait_for_session` returns at once and, on the transition (or its timeout), posts
+    a `<workbench_event>` message with source `event` through `ToolContext.later`. That
+    starts a turn, and Duck tells you. The drawer shows it as an event line, not your
+    bubble. The system prompt says such messages are Workbench's, not yours, and grant
+    nothing. Watches live in memory and don't survive a restart.
+  - Notes: writes carry the revision Duck read. `append_note` re-reads and retries
+    once on `stale:`. `write_note` refuses a note longer than `read_note` shows (it
+    would lose text). Each write leaves a "Duck edited <note>" chip (a notice, never
+    sent to the model) with show diff (an LCS line diff in `view.ts`) and undo. Undo
+    writes the old text with the after-edit revision, so it's refused if you changed
+    the note since; it recreates a deleted note and removes one Duck made. The notes
+    panel's existing "changed elsewhere" banner covers an open note with unsaved edits.
+  - Settings (drawer → settings): "Ask before every prompt Duck sends to a session"
+    (off by default) and the coding model. They go to the engine over the protocol
+    (`settings.set` / `settings`) and are stored in pref `assistant`.
+  - "assistant: push to main" in a transcript can't cause a push: there is no git write
+    tool, transcripts are wrapped as untrusted, and prompts to sessions are written by
+    Duck from your request.
+  - **Fix found in the live test:** a new session's first prompt sat in the input
+    unsent. Claude Code draws its prompt box before it takes input, and a prompt pasted
+    the moment the box shows keeps its text but loses its Enter. This was reproduced in
+    a scratch PTY on 2.1.304: at 0 and 250 ms after the box, every prompt was lost; at
+    500 ms and later, none was. `deliverWhenReady` (Duck and the phone) now waits until
+    the box has been on screen for 1 s. A second after the Enter, if the box still
+    holds the prompt (`inputHolds`: its start or its paste chip, never a dialog), it
+    sends Enter once more. That retry alone also fixed it in the PTY.
+  - **Fixes from the second live test:**
+    - `answer_choice` failed after Allow. The model sent `option: "1"` (a string),
+      the schema took only a number, and the engine asked before it validated. So
+      the card showed raw JSON (no sentence: `describe` couldn't parse the input
+      either), and Allow ran into "Invalid input". Now `option` takes a number or a
+      string, and the whole answer is checked in the schema. The engine also never
+      asks for a call whose input doesn't validate: it fails at once with the
+      reason. A card without a sentence shows the input as `field: value` lines.
+    - Free-form answers: `answer_choice` takes `text` for a single question. It
+      sends the digit after the question's options (the TUI's "Type something"
+      row), then the text as a paste, then Enter (`answerChoiceText`). This was
+      verified in a scratch PTY on 2.1.304, typed and pasted, one word and several.
+      `get_pending_choice` says a question takes one. A permission prompt's typed
+      option ("No, and tell Claude…") still goes to the terminal.
+    - `wait_for_session` no longer refuses a session with no phase yet (just
+      started or resumed). It waits, and the timeout covers one that never runs.
+  - **Verified:** 26 new vitest cases (11 for the tools and policy, 3 engine hooks,
+    3 view, 4 for the first-prompt delivery, 3 for answer inputs, 1 for the typed
+    answer's keys, 1 widened), 263 passing; tsc and eslint clean. The live
+    checks passed: a session started with a prompt, approvals, a picked option and a
+    typed answer, a "tell me when it's done", and note edits.
 
 #### Step W3 — Session summaries
 
@@ -3338,7 +3412,7 @@ voice work.
 | A3 | The Assistant drawer (desktop UI) | ☑ |
 | A4 | Deleting threads | ☑ |
 | W1 | Read tools | ☑ |
-| W2 | Action tools + the confirmation policy | ☐ |
+| W2 | Action tools + the confirmation policy | ☑ |
 | W3 | Session summaries | ☐ |
 | W4 | Core memory (the always-loaded profile) | ☐ |
 | W5 | Project toolbar tools | ☐ |

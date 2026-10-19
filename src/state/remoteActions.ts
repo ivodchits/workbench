@@ -11,7 +11,7 @@
 
 import { ENTER_KEY, INTERRUPT_KEY, ptyWrite } from "../ipc/pty";
 import { onRemoteAction, type RemoteAction } from "../ipc/remote";
-import type { Instance } from "../ipc/registry";
+import type { Instance, Project } from "../ipc/registry";
 import type { RemoteChooseAction, RemoteCreateAction } from "../remote/protocol";
 import { addInstance, deleteInstance, getRegistry, nextInstanceTitle } from "./registry";
 import { markInterrupted } from "./status";
@@ -19,8 +19,15 @@ import { getPendingChoice, markChoiceSent } from "./pendingChoice";
 import { closeConsole, openConsole } from "./consoles";
 import { setActiveProject } from "./activeProject";
 import { activatePanel } from "./dock";
+import { encodePaste } from "./composer";
 import { setQueued } from "./queue";
-import { asksForPassword, beginCreate, promptBoxReady, updateCreate } from "./remoteCreate";
+import {
+  asksForPassword,
+  beginCreate,
+  inputHolds,
+  promptBoxReady,
+  updateCreate,
+} from "./remoteCreate";
 import { provisionWorktree } from "./worktree";
 import { readScreen, release, submitPrompt, submitToTerminal } from "../panels/terminalPool";
 
@@ -76,6 +83,28 @@ export function handleRemoteAction(action: RemoteAction): void {
 /** An answer to a pending prompt: one of its numbered options, or dismissing it. */
 export type ChoiceAnswer = { option: number } | "deny";
 
+/** After the digit of a typed option, how long the TUI takes to open its field. */
+const TYPED_FIELD_MS = 500;
+/** After the pasted text, before its Enter (a paste and its Enter in one chunk can
+ *  lose the Enter). */
+const TYPED_ENTER_MS = 300;
+
+/**
+ * Answer a question with free text: the digit of its "Type something" row opens a
+ * text field, the text goes in as a paste, and Enter answers. Verified in a scratch
+ * PTY against Claude Code 2.1.304 (single question: digit n+1, then the text).
+ */
+export function answerChoiceText(instanceId: string, key: number, text: string): void {
+  if (!Number.isInteger(key) || key < 1 || key > 9) return;
+  const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+  void ptyWrite(instanceId, new TextEncoder().encode(String(key)))
+    .then(() => wait(TYPED_FIELD_MS))
+    .then(() => ptyWrite(instanceId, encodePaste(text)))
+    .then(() => wait(TYPED_ENTER_MS))
+    .then(() => ptyWrite(instanceId, ENTER_KEY))
+    .catch(() => {}); // the PTY is gone: nothing to answer
+}
+
 /**
  * Answer the prompt an instance is waiting on (the desktop choice card, step T5;
  * the phone's, step R5). The keys, as verified against the TUI in T0: a digit
@@ -123,40 +152,47 @@ function startInstance(instanceId: string): void {
 const READY_POLL_MS = 250;
 /** How long to wait for the prompt box before keeping the first prompt queued. */
 const READY_WAIT_MS = 60_000;
+/** How long the prompt box has to have been on screen before the prompt goes in.
+ *  Claude Code draws the box before it takes input: a prompt pasted at once lands in
+ *  it but its Enter is dropped, and the prompt sits there unsent. In a scratch PTY
+ *  (Claude Code 2.1.304) 250 ms after the box showed still lost the Enter; 500 ms
+ *  and more never did. */
+const READY_SETTLE_MS = 1000;
+/** After the Enter, when to look whether the prompt is still sitting in the box. */
+const ENTER_CHECK_MS = 1000;
 /** How long, instead, once the screen has asked for an SSH password: typing it on
  *  the phone's mirror takes a while. */
 const PASSWORD_WAIT_MS = 5 * 60_000;
 
+/** A new session's first prompt: in, or parked on the card because the prompt box
+ *  never showed. */
+export type FirstPromptState = "sent" | "queued";
+
 /**
- * Start a new session from the phone (step R7): the same steps as the rail's "new
- * instance" — make the instance, show its project, open its console — plus an
- * optional worktree and first prompt. The request's record (`state/remoteCreate`)
- * makes a replayed request a no-op and tells the phone how it went.
+ * Make a session the way the rail's "new instance" does — the instance, an optional
+ * worktree, its project shown, its console open and focused — for the phone (R7)
+ * and Duck (W2). `onCreated` hears the instance id as soon as it exists.
  *
- * A worktree that can't be provisioned removes the instance again, so the phone
- * never leaves a half-made one behind. The first prompt goes in only once the TUI
- * shows its prompt box; if it never does, the prompt becomes the instance's queued
- * prompt rather than being dropped.
+ * A worktree that can't be provisioned removes the instance again, so no half-made
+ * one is left behind. Throws an Error whose message says what failed; `message` on
+ * success is something worth knowing (a setup command failed).
  */
-async function createSession(action: RemoteCreateAction): Promise<void> {
-  const { requestId, projectId } = action;
-  if (!beginCreate(requestId)) return; // a retry or a replay: already handled
-  const fail = (message: string) => updateCreate(requestId, { state: "failed", message });
-
-  const project = getRegistry().projects.find((p) => p.id === projectId);
-  if (!project) return fail("That project no longer exists.");
-  const title = action.title?.trim() || nextInstanceTitle(getRegistry().instances, project.id);
-
+export async function startNewSession(
+  project: Project,
+  opts: { title?: string; worktree?: boolean; model?: string | null },
+  onCreated?: (instanceId: string) => void,
+): Promise<{ instance: Instance; message: string | null }> {
+  const title = opts.title?.trim() || nextInstanceTitle(getRegistry().instances, project.id);
   let instance: Instance;
   try {
-    instance = await addInstance({ projectId: project.id, title, model: action.model ?? null });
+    instance = await addInstance({ projectId: project.id, title, model: opts.model ?? null });
   } catch (e) {
-    return fail(`Could not create the session: ${errorText(e)}`);
+    throw new Error(`Could not create the session: ${errorText(e)}`);
   }
-  updateCreate(requestId, { instanceId: instance.id });
+  onCreated?.(instance.id);
 
   let message: string | null = null;
-  if (action.worktree) {
+  if (opts.worktree) {
     try {
       const setup = await provisionWorktree(instance, project);
       if (setup.failed) {
@@ -166,11 +202,7 @@ async function createSession(action: RemoteCreateAction): Promise<void> {
       }
     } catch (e) {
       await deleteInstance(instance.id).catch(() => {});
-      return updateCreate(requestId, {
-        instanceId: null,
-        state: "failed",
-        message: `Could not make the worktree: ${errorText(e)}`,
-      });
+      throw new Error(`Could not make the worktree: ${errorText(e)}`);
     }
     const id = instance.id;
     instance = getRegistry().instances.find((i) => i.id === id) ?? instance;
@@ -180,46 +212,97 @@ async function createSession(action: RemoteCreateAction): Promise<void> {
   setActiveProject(project.id);
   openConsole(instance);
   activatePanel(instance.id);
+  return { instance, message };
+}
+
+/**
+ * Start a new session from the phone (step R7): `startNewSession` plus an optional
+ * first prompt. The request's record (`state/remoteCreate`) makes a replayed
+ * request a no-op and tells the phone how it went.
+ */
+async function createSession(action: RemoteCreateAction): Promise<void> {
+  const { requestId, projectId } = action;
+  if (!beginCreate(requestId)) return; // a retry or a replay: already handled
+
+  const project = getRegistry().projects.find((p) => p.id === projectId);
+  if (!project) return updateCreate(requestId, { state: "failed", message: "That project no longer exists." });
+
+  let made: { instance: Instance; message: string | null };
+  try {
+    made = await startNewSession(
+      project,
+      { title: action.title, worktree: action.worktree, model: action.model },
+      (instanceId) => updateCreate(requestId, { instanceId }),
+    );
+  } catch (e) {
+    return updateCreate(requestId, { instanceId: null, state: "failed", message: errorText(e) });
+  }
+  const { instance, message } = made;
 
   const text = action.text?.trim();
   if (!text) return updateCreate(requestId, { state: "started", message });
   updateCreate(requestId, { state: "starting", message });
-  deliverWhenReady(requestId, instance.id, text, message);
+  deliverWhenReady(instance.id, text, {
+    password: () =>
+      updateCreate(requestId, {
+        message: "The SSH login is asking for a password — answer it in the console.",
+      }),
+    done: (state) =>
+      updateCreate(
+        requestId,
+        state === "sent"
+          ? { state: "sent", message }
+          : {
+              state: "queued",
+              message: "Claude's prompt box never appeared, so the first prompt is queued — check the console.",
+            },
+      ),
+  });
 }
 
-/** Submit `text` once the console shows its prompt box, or queue it if it never does. */
-function deliverWhenReady(
-  requestId: string,
+/**
+ * Submit `text` once a just-opened console shows its prompt box, and has shown it
+ * for `READY_SETTLE_MS`. If the prompt is still in the box a moment after its
+ * Enter, the Enter was dropped and is sent once more. If the box never shows (an
+ * untrusted folder's dialog, a login that wasn't answered…), the prompt becomes the
+ * instance's queued prompt, editable and cancellable on its card, rather than being
+ * dropped. `password` hears that the screen asked for an SSH password (the wait is
+ * longer then).
+ */
+export function deliverWhenReady(
   instanceId: string,
   text: string,
-  message: string | null,
+  on: { password?: () => void; done?: (state: FirstPromptState) => void } = {},
 ): void {
   const started = Date.now();
   let password = false;
+  let readySince: number | null = null;
   const tick = () => {
     const screen = readScreen(instanceId);
     if (screen && promptBoxReady(screen)) {
-      submitPrompt(instanceId, text);
-      updateCreate(requestId, { state: "sent", message });
-      return;
+      readySince ??= Date.now();
+      if (Date.now() - readySince >= READY_SETTLE_MS) {
+        submitPrompt(instanceId, text);
+        setTimeout(() => {
+          const now = readScreen(instanceId);
+          if (now && inputHolds(now, text)) void ptyWrite(instanceId, ENTER_KEY);
+        }, ENTER_CHECK_MS);
+        on.done?.("sent");
+        return;
+      }
+    } else {
+      readySince = null;
     }
     if (!password && screen && asksForPassword(screen)) {
       password = true;
-      updateCreate(requestId, {
-        message: "The SSH login is asking for a password — answer it in the console.",
-      });
+      on.password?.();
     }
     if (Date.now() - started < (password ? PASSWORD_WAIT_MS : READY_WAIT_MS)) {
       setTimeout(tick, READY_POLL_MS);
       return;
     }
-    // Never ready (an untrusted folder's dialog, a login that wasn't answered…):
-    // park the prompt where the desktop shows it, editable and cancellable.
     setQueued(instanceId, text);
-    updateCreate(requestId, {
-      state: "queued",
-      message: "Claude's prompt box never appeared, so the first prompt is queued — check the console.",
-    });
+    on.done?.("queued");
   };
   tick();
 }

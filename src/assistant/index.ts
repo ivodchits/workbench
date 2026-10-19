@@ -11,6 +11,7 @@ import {
 } from "../ipc/assistant";
 import { errorMessage, getClient, oneShot } from "./client";
 import { createEngine, type Engine } from "./engine";
+import { createPolicy } from "./policy";
 import { localPort } from "./port.local";
 import {
   createLocalTransport,
@@ -19,8 +20,10 @@ import {
   type DuckEvent,
   type Transport,
 } from "./protocol";
+import { loadSettings, type SettingsStore } from "./settings";
 import { createTurnMeter } from "./spend";
 import { createThreadStore, ipcBackend, type ThreadStore } from "./threads";
+import { ACT_TOOLS } from "./tools/act";
 import { getTime } from "./tools/getTime";
 import { READ_TOOLS } from "./tools/read";
 import { createRegistry } from "./tools/registry";
@@ -31,6 +34,7 @@ import { testConfirm } from "./tools/testConfirm";
 const TOOLS = [
   getTime,
   ...READ_TOOLS,
+  ...ACT_TOOLS,
   ...(import.meta.env.DEV ? [testConfirm] : []),
 ];
 
@@ -57,6 +61,7 @@ export function endpoint(
   e: Engine,
   s: ThreadStore,
   spend?: SpendSource,
+  settings?: SettingsStore,
 ): DuckEndpoint {
   const listeners = new Set<(ev: DuckEvent) => void>();
   const say = (ev: DuckEvent) => {
@@ -101,7 +106,15 @@ export function endpoint(
         say({ type: "threads", threads: [...s.threads()] });
         for (const request of e.pendingRequests())
           say({ type: "confirm", request });
+        if (settings) say({ type: "settings", settings: settings.get() });
         await sendSpend();
+        return;
+      case "settings.set":
+        if (!settings) throw new Error("Duck's settings aren't available.");
+        say({
+          type: "settings",
+          settings: await settings.set(msg.settings),
+        });
         return;
       case "thread.open": {
         if (!s.thread(msg.threadId))
@@ -135,15 +148,18 @@ export function initAssistant(): Promise<void> {
   started ??= (async () => {
     const s = createThreadStore(ipcBackend);
     await s.load();
+    const settings = await loadSettings();
     const engine = createEngine({
       store: s,
       registry: createRegistry(TOOLS),
       port: localPort,
+      gate: createPolicy(settings.get),
+      settings: settings.get,
       stream: async (params, opts) =>
         (await getClient()).beta.messages.stream(params, opts),
       nameThread: (text) => oneShot("title", text.slice(0, 2000)),
     });
-    duck = createLocalTransport(endpoint(engine, s, ledger));
+    duck = createLocalTransport(endpoint(engine, s, ledger, settings));
   })().catch((e: unknown) => {
     started = null;
     console.error("duck: init failed", e);

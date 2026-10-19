@@ -5,6 +5,7 @@ import {
   asksForPassword,
   beginCreate,
   getCreated,
+  inputHolds,
   promptBoxReady,
   resetCreated,
   updateCreate,
@@ -101,5 +102,23 @@ describe("asksForPassword", () => {
   it("ignores the word elsewhere", () => {
     expect(asksForPassword(["dev@host's password:", "Welcome to Ubuntu"])).toBe(false);
     expect(asksForPassword(READY)).toBe(false);
+  });
+});
+
+describe("inputHolds", () => {
+  const box = (row: string) => [RULE, row, RULE];
+
+  it("sees the prompt still in the box, or its paste chip", () => {
+    expect(inputHolds(box("❯ Fix the failing test in parser"), "Fix the failing test in parser.ts")).toBe(true);
+    // A wrapped prompt: the row holds its start.
+    expect(inputHolds(box("❯ Fix the"), "Fix the failing test")).toBe(true);
+    expect(inputHolds(box("❯ [Pasted text #1 +12 lines]"), "line one\nline two")).toBe(true);
+  });
+
+  it("is false for an empty box, a placeholder, other text, or no box", () => {
+    expect(inputHolds(box("❯ "), "hello")).toBe(false);
+    expect(inputHolds(READY, "hello")).toBe(false);
+    expect(inputHolds(box("❯ something else"), "hello")).toBe(false);
+    expect(inputHolds(TRUST, "hello")).toBe(false);
   });
 });
