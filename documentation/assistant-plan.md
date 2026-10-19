@@ -330,10 +330,11 @@ content from the transcripts, so it knows when a worker is done and can report b
 - Duck's workspace has its own `.claude/settings.json` **allow list**: WebSearch, WebFetch,
   Read/Write/Edit inside the workspace, and the read-only Firefox tools. So most worker
   prompts never appear. Anything else goes through the trust policy like any other session.
-- Workers in the workspace may also run with Claude Code's `--permission-mode auto`
-  (classifier-approved actions), if X0 shows it behaves well there. That's native, so even
-  fewer prompts reach the trust policy. Workers in real projects use that project's normal
-  mode and rules.
+- Workers in the workspace run with `--permission-mode dontAsk`: exactly the allow list,
+  everything else is a hard deny that the worker sees as a tool error. **Not `auto`:** in X0
+  its classifier approved `git push --force origin main` and an `rm -rf` outside the folder.
+  Workers in real projects use that project's normal mode and rules, with the trust floor
+  applying under every mode.
 - Workers owned by Duck **don't ping you** (notification and push). Their needs-you goes to
   Duck, which escalates only what it can't handle.
 - They are grouped under the Duck project in the instance manager, labelled with their task,
@@ -493,22 +494,21 @@ match yours.
 - **STT engine:** `transcribe-rs` (MIT, used in production by Handy, a Tauri v2 dictation
   app) running **NVIDIA Parakeet TDT 0.6B v3 (ONNX) on the RTX 4060**, with the CPU as
   fallback.
-  - 6.3% average WER, punctuation included, covers English and Russian.
-  - On the GPU through ONNX Runtime's **CUDA** execution provider (`ort-cuda`): a 5 s command
-    should transcribe in well under 0.2 s, using about 1–1.5 GB VRAM and almost no CPU
-    (estimates; X0 measures).
+  - On your own recordings (X0): 3.4% WER in English and 0% in Russian.
+  - On the GPU through ONNX Runtime's **CUDA** execution provider (`ort-cuda`): ~0.1 s per
+    command (measured), almost no CPU. It measured 3.6 GB VRAM, which V1 brings down.
   - **DirectML** (`ort-directml`) is the fallback if the CUDA runtime DLLs are a problem; it
     needs no install, and it also runs on the Radeon iGPU.
-  - The CPU path (int8, about 20× real time on 8 Zen 3 cores) stays as the fallback when the
-    GPU isn't available.
-- **Mixed-language speech is the real test.** Russian with English terms ("запусти тесты в
-  backend-сессии") is how you'll actually talk to it. Parakeet picks one language per
-  utterance; Whisper large-v3-turbo (`whisper-rs` with CUDA, about 1.5 GB VRAM) copes with
-  code-switching better. **X0 compares both on your own recordings;** the winner becomes the
-  default. Both sit behind one `Transcriber` trait.
+  - The CPU path (int8, 3 threads: 0.4–0.8 s per command on the Ryzen AI 9 HX 370) stays as
+    the fallback when the GPU isn't available.
+- **Mixed-language speech.** Russian with English terms ("запусти тесты в backend-сессии") is
+  how you'll actually talk to it. X0 compared Parakeet with Whisper large-v3-turbo on your
+  recordings: **Parakeet won** (Whisper was worse in Russian and 5× slower), and both write
+  English terms in Cyrillic («пул реквест»). Duck's model reads those fine; a name fixer maps
+  your project and session names back (V1).
 - **Resource rules (the GPU is a laptop dGPU):**
   - Nothing loads at startup. The model loads when the hotkey goes down, in parallel with
-    recording; X0 measures how long waking the sleeping dGPU (Optimus) adds.
+    recording; waking the sleeping dGPU (Optimus) adds ~0.6 s (X0).
   - It stays loaded while the drawer is open or conversation mode is on, and unloads after 3
     minutes idle. Unloading frees the VRAM and lets the dGPU go back to sleep (battery).
   - A pref "GPU for voice: always / on AC power only / never" (default: on AC only; on
@@ -635,6 +635,13 @@ started and when you've *finished*, not merely paused.
 | **2. Turn detector: is this pause the end of your thought?** | **Smart Turn v3.2** (Pipecat, BSD-2-Clause, ~8 MB ONNX, 23 languages including Russian). It listens to the *audio* of the last few seconds (intonation, trailing-off, a mid-sentence "и…" or "so…") and returns P(turn complete). It runs only when the VAD sees a pause of 200–300 ms. | ~12–40 ms on CPU per pause |
 | **3. Patience ceiling** | If the turn detector says "not done", keep listening. Send anyway only after a long silence that depends on the mode: assistant ~1.5 s, chat ~3 s, **rubber duck ~8 s** (configurable). | — |
 
+**Measured in X0 on your thinking-aloud monologues:** Smart Turn calls most mid-thought
+pauses "complete", so for thinking aloud *silence length* does the work. Rubber duck asks
+Smart Turn only after ≥ 3 s of silence (threshold 0.8, ceiling 8 s): 1 false end in 11
+minutes, replying ~3 s after you stop. Chat uses the patient policy (from 1.5 s, threshold
+0.7): ~1 false end every 36 s, each absorbed by the grace window. The quick policies are for
+short commands.
+
 **What stops it cutting you off mid-thought:**
 - **Mode-aware patience.** Rubber-duck mode expects long pauses and waits for the turn
   detector *and* a longer silence.
@@ -664,7 +671,7 @@ and each layer catches what the previous one lets through:
 |---|---|---|
 | 1 | **Output-device awareness** | Read the active endpoint's form factor (headphones / headset / speakers, via `IMMDevice` `PKEY_AudioEndpoint_FormFactor`) and react when it changes. Headphones → light processing. Speakers → the full chain. |
 | 2 | **Acoustic echo cancellation with a true reference** | **WebRTC AEC3** (`webrtc-audio-processing` crate) fed the exact PCM the app is playing. That's the advantage of doing playback ourselves in Rust (`rodio`): the reference is sample-accurate. Its delay estimator and the residual echo suppressor are on; noise suppression is light. |
-| 3 | **OS voice processing as an alternative** | Windows' communications-mode processing (e.g. *Voice Clarity* or the vendor's AEC, which this Ryzen AI laptop may expose) is reached by opening the mic with the communications category through WASAPI. X0 compares it with AEC3 and keeps whichever is cleaner. Never both stacked. |
+| 3 | ~~OS voice processing as an alternative~~ | Not needed: in X0, AEC3 alone removed ~30 dB of echo on the laptop speakers, with no false barge-ins. Windows' communications-mode processing stays untested, as a fallback idea for a device where AEC3 falls short. Never stacked with AEC3. |
 | 4 | **Barge-in gate** | While the Assistant is speaking, a barge-in needs speech that survives AEC, is clearly louder than the residual echo (an adaptive threshold learned from the playback level), and lasts ≥ 250–300 ms. A cough or a residual echo blip doesn't qualify. |
 | 5 | **Self-voice check** | We know the exact text being spoken. If a would-be barge-in transcribes to words that match the sentence currently playing, it's echo: ignored, and the gate tightens. |
 | 6 | **Last resort** | If the measured echo suppression on a device is still too low, that device drops to half-duplex (the hotkey or "stop" interrupts) and the drawer says why. It's a per-device result, not the plan. |
@@ -1271,6 +1278,202 @@ tapping around. Two stages.
 - **Done when:** every bullet has a measured answer in As built, and the Open questions table
   is updated.
 - **Out of scope:** any UI.
+- **As built (2026-10-18 – 2026-10-19).** The throwaway code and raw data were in a
+  temporary session scratchpad (`x0/`: `rust/`, `api/`, `workers/`, `voice/`, each with a
+  `FINDINGS.md`); everything that matters is summarized here. Machine:
+  Ryzen AI 9 HX 370 (12 cores / 24 threads, Zen 5), 31 GB RAM, RTX 4060 Laptop 8 GB (Optimus) +
+  Radeon 890M; Claude Code 2.1.303; WebView2 155.
+  - **Hidden window:** no throttling after 12.9 minutes with `window.hide()` or `minimize()`:
+    773/773 timer ticks, Rust events handled within 2 ms. `document.visibilityState` stays
+    "visible", so use Tauri window events to know. Hiding the *webview itself*
+    (`SetIsVisible(false)`) throttles timers to one per minute unless WebView2 gets
+    `--disable-background-timer-throttling --disable-renderer-backgrounding
+    --disable-backgrounding-occluded-windows`. `backgroundThrottling` is unsupported on
+    Windows. **Decision:** always hide the window, never the webview; add the three browser
+    args anyway (A2).
+  - **Proxy streaming:** works with no buffering (SDK `messages.stream()` text lag 1–2 ms,
+    11 ms worst). The preflight passes from `http://tauri.localhost` and
+    `http://localhost:1431`. Requirements found:
+    - The allow-headers list must cover every `x-stainless-*` header the SDK sends.
+    - Strip `accept-encoding`, so the SSE stays uncompressed for the usage tee.
+    - Use `reqwest` with `default-features = false` + `stream`, `native-tls`, `http2` (the
+      default rustls pulls a C build of aws-lc-sys).
+    - The key is read with `CredReadW` from the generic credential `duck/anthropic-api-key`
+      (UTF-16LE, as `cmdkey` writes it). JS only ever gets `{baseUrl, token}`.
+    - An unknown origin's preflight gets 403; a bad token gets 401. Upstream never sees the
+      launch token or an Origin header.
+  - **Main thread, measured** (20 samples, 18 stub tools, a 4.3k-token system + tools prefix,
+    1-hour cache):
+
+    | Config | Correct first tool | Warm avg / max per turn | First token (median) |
+    |---|---|---|---|
+    | Sonnet `low` | 20/20 | $0.0072 / $0.015 | 0.73 s |
+    | **Sonnet `medium`** | **20/20** | **$0.0049 / $0.011** | **0.72 s** |
+    | Sonnet `low`, thinking between tools | 20/20 | $0.0080 / $0.018 | 1.13 s |
+    | Haiku `low` | 19/20 | $0.0004 / $0.0007 | 0.57 s |
+
+    - Medium is *cheaper* than low (fewer, better-aimed rounds), so it became the default.
+    - A cold cache costs ~$0.021 per turn on Sonnet. Changing effort keeps the cache;
+      changing the thinking type breaks it. After a 20-minute gap, the cache was fully read
+      (the 1-hour TTL works).
+    - A 10-turn conversation averaged $0.007 per turn, growing ~1.5k cached tokens per turn
+      from the repeated state snapshot. So: small, diffed snapshots and context editing (A2).
+    - Haiku's slips: it refused a requested PR citing Duck's own push rule, put English inside
+      a Russian reply, and answered from a stale result. That's fine for its jobs, not as the
+      main thread.
+    - Sonnet writes markdown even in replies meant to be spoken: a prompt rule, plus stripping
+      before TTS (V2).
+    - Total X0 API spend ≈ $1.20.
+  - **Tool versions** (Models API `capabilities`): Sonnet 5.5 and Haiku 5.5 both take
+    `web_search_20260209` / `20250305` and `web_fetch_20260209` / `20250910`. The dynamic-
+    filtering versions add code-execution rounds (Sonnet search: 8.4 s and $0.042 vs 2.7 s
+    and $0.030), so B1 uses the basic versions for quick lookups. Sonnet 5.5 thinking is
+    `adaptive` or `between_tools` only (`disabled` → 400); Haiku 5.5 takes `adaptive` or
+    `disabled`.
+  - **Billing (verified 2026-10-18):** the Max API credits are live and stop when exhausted,
+    never billing the plan; see the intro. The pause announced in June concerned moving Agent
+    SDK / `claude -p` usage off subscription limits; those still use subscription limits.
+  - **Subscription brain** (inputs for M3): one persistent `claude -p` with stream-json in and
+    out, Duck's 18 tools served over MCP (flags in M3).
+    - 17/20 correct first tools; the misses were harmless (refreshing a list before
+      answering) except one, which checked a session instead of queuing the prompt.
+    - First output after a median 1.64 s (API: 0.72 s); a whole turn 3.3 s (API: 2.2 s).
+    - Cost: about 1 point of the 5-hour window for 20 turns ($0.176 API-equivalent;
+      `total_cost_usd` is cumulative per session).
+    - `--bare` is unusable: it disables OAuth.
+  - **Claude Code:**
+    - `--model` / `--effort` alongside `--session-id` are safe: hooks key on `session_id`,
+      and every hook carries `effort.level`. Without explicit flags, a worker inherits your
+      defaults (Opus, `xhigh`, `auto`), so D1 always passes them.
+    - Consoles authenticate with the subscription (`apiKeySource: none`). Children inherit
+      Workbench's environment, so **an `ANTHROPIC_API_KEY` in Workbench's environment would
+      switch every console to API billing**. A1 keeps the key out of the environment, and
+      `claude_command` removes that variable defensively.
+    - The trust dialog for a new folder defaults to "No, exit": D1 pre-trusts the Duck folder.
+  - **Permission modes** (10 calls each, with prompts disabled):
+    - `dontAsk` + allow list = exactly the allow list; everything else is a hard deny. Denials
+      reach the model as tool errors and are listed in `result.permission_denials[]`.
+    - **`auto` is not a floor.** Its classifier accepted `git push --force origin main` and
+      `rm -rf ../outside-junk` (which it deleted) when framed as a scratch-folder test.
+      **Decision:** workers run `dontAsk` + allow list (D1); the trust floor applies under
+      every mode.
+    - Allow rules behave the same from `--settings` and `settings.local.json`. Under `auto`, a
+      matching rule skips the classifier (which takes 0.2–2.5 s).
+    - Read-only Bash (`git status`, `wc -w`) is auto-allowed everywhere; PowerShell is not.
+  - **Worker sessions** (research at Sonnet `high`, a ~1,500-word write-up at Opus `medium`, a
+    Firefox chore at Sonnet `medium`):
+    - First event after 2.4–2.9 s; done in 63 s, 138 s and 17 s.
+    - `result.md` / `result.json` correct on the first try in 3/3 (the chore correctly
+      reported `blocked`: the add-on wasn't connected).
+    - Peak RSS 420–441 MB per worker process tree. The user-scoped Firefox MCP spawns a
+      bridge (~140 MB) in every worker, so non-browser workers get `--strict-mcp-config` with
+      a minimal config.
+    - Usage: research ≈ 1 point of the 5-hour window, the Opus write-up ≈ 2, the chore ≈ 0
+      (shared account, so upper bounds). Live limits come from the stream-json
+      `rate_limit_event`: `rate_limit_info.unifiedWindows.{five_hour,seven_day}.utilization`.
+  - **PermissionRequest payloads** (10 captured: Bash, Edit, Write, WebFetch, firefox MCP,
+    Read outside the folder, WebSearch, PowerShell):
+    - `tool_name` + `tool_input` (+ `mcp_server.name`) are enough for T1's matcher.
+    - `permission_suggestions` names the rule Claude Code would add, so T3 can use it.
+    - Option 1 is always labelled "Yes". There are 2–4 options, and option 2 may be a mode
+      switch, so T2 answers by the "Yes" label, never by position 2.
+  - **Presence:** `GetLastInputInfo` works. Do Not Disturb is readable from WNF state
+    `0x0D83063EA3BF1C75` (1 = on, 0 = off), verified both ways. `QueryUserNotificationState`
+    does *not* reflect it.
+  - **Autopilot mechanics:**
+    - Manual `/compact <focus>` followed by a queued prompt works (checked by you, both views).
+      Hook order: PreCompact → ~9 s → SessionStart{source: compact} → 150 ms → PostCompact.
+    - **Probable bug, not reproduced:** the reducer's `to("idle")` on SessionStart{compact}
+      clears `compacting` before PostCompact. During a mid-turn *auto*-compaction, that would
+      show a working session as idle and could deliver a queued prompt mid-turn. Fix:
+      SessionStart{compact} only clears `compacting` and keeps the phase.
+    - Sending `/compact` and then queueing "continue" races (the card is at rest until
+      PreCompact): use `setQueued`, or wait for PreCompact.
+    - The statusline POST carries `context_window.used_percentage` per session, but
+      `statusline::ingest` drops it. P1 keeps it per instance.
+  - **Firefox bridge (FoxMCP 3.4.9):**
+    - A second `--stdio` bridge spawned from Rust (`rmcp`) gets all 51 tools; the first
+      keeps working. The second moves to port 8766.
+    - The tool definitions are ~12k tokens, so they stay behind `defer_loading`.
+    - ~145 MB per bridge (launching the venv's python directly saves ~50 MB).
+    - With the `claude-agent` profile open, the add-on connects in 4.7 s, a second bridge in
+      14.9 s, and a reconnect takes 1.4 s.
+    - **The add-on is only in the `claude-agent` profile**, which Firefox's new profile
+      switcher doesn't show. Duck starts that profile on demand
+      (`firefox.exe -P claude-agent --no-remote`) when a browser task needs it (B2).
+    - Ports don't authenticate local processes (accepted upstream for single-user machines).
+  - **STT, on your recordings** (laptop mic; 8 English, 8 Russian, 4 mixed). Word error rate,
+    case and punctuation ignored:
+
+    | Engine | English | Russian | Mixed | Per command |
+    |---|---|---|---|---|
+    | **Parakeet v3, CUDA** | 3.4% | **0.0%** | 38% | **~0.1 s** |
+    | Whisper turbo, CUDA | 3.4% | 9.4% | 29% | ~0.55 s |
+    | Parakeet v3 int8, CPU | (see below) | 3.1% | 38% | 0.4–0.8 s |
+    | Whisper turbo, CPU | 3.4% | 9.4% | 29% | 10–20 s (unusable) |
+
+    - **Parakeet is the engine; Whisper is dropped.** On your voice it beats Whisper in
+      Russian too (the public FLEURS set had said the opposite: 5.0% vs 3.0%), and Whisper
+      writes numbers as digits ("14.30").
+    - **Mixed sentences:** both engines write English terms in Cyrillic («пул реквест для
+      воркбенч», «колод код», «юс сешн»). Duck's model understands them. The name fixer (V1)
+      maps known names back; code identifiers are better typed.
+    - **The int8 CPU model sometimes returns empty text** when there's ~1 s of silence before
+      the speech. The same audio, trimmed or shifted by 0.5 s, transcribes correctly; fp32
+      never fails. V1 trims at the VAD bounds, and retries once in fp32 on an empty result.
+    - GPU: warm 0.1–0.23 s from Rust (`transcribe-rs` 0.3.12; pin `ort = 2.0.0-rc.12` with
+      `load-dynamic`), but **3.6 GB VRAM** (to reduce before V1: an fp16 export or an arena
+      cap). Waking the sleeping dGPU adds 0.57 s. DirectML picks the iGPU and is slower.
+      The Rust path is 2.5–3× slower than Python's `onnx-asr` (worth a look in V1).
+  - **TTS** (decided by your listening test 2026-10-19; details in §Spoken replies):
+    - Kokoro `af_heart` for English and Silero `kseniya` for Russian, both local on the CPU.
+      First audio in 0.18 s, ~1.4 GB RAM with both loaded.
+    - Qwen3-TTS is dropped: slower than real time, no Russian voice at 0.6B.
+    - Silero drops all non-Cyrillic text, digits included, so a speakable rewrite is
+      mandatory. Kokoro reads English numbers well, apart from small slips ("3.5", "#128")
+      that a rule pass handles.
+    - Chirp 3 HD stays optional. The free-quota question no longer matters, so it wasn't
+      re-checked.
+  - **End of turn** (your 10 thinking-aloud monologues, ~11 minutes; Silero VAD v6.2.3 +
+    Smart Turn v3.2 on the CPU; listening costs 3.8% of one core):
+
+    | Policy | False end-of-turns | Wait after you finish |
+    |---|---|---|
+    | Pipecat default / plan's assistant / chat | 97 / 112 / 99 | 0.2–0.3 s |
+    | Patient (Smart Turn ≥ 0.7 from 1.5 s, ceiling 8 s) | 18 (you resumed within 2 s each time) | 1.5 s |
+    | **Strict (Smart Turn ≥ 0.8 only from 3 s, ceiling 8 s)** | **1** | **~3 s** |
+
+    Smart Turn rates mid-thought pauses as "complete" with ~0.98 confidence, so for thinking
+    aloud the silence length does the work. **Rubber duck uses the strict policy**, chat the
+    patient one; the quick policies are for short commands only (V4).
+  - **Echo** (record + score scripts: `voice/record_echo.py`, `voice/score_echo.py`; AEC3 run
+    offline through livekit's WebRTC `AudioProcessingModule`):
+    - **Laptop speakers**, normal volume, laptop mic: the echo reaches the mic at -32 dBFS.
+      **AEC3 with the playback reference removes ~30 dB.** No false barge-ins in 3 minutes
+      (raw: one every ~2 s). Every one of your interruptions fired ~0.29 s after you started
+      speaking (you reacted to the on-screen cue in 1.1–1.5 s). Playback → mic delay ~165 ms,
+      tracked by AEC3's own estimator.
+    - **Headphones** (BlackShark V3 Pro over Bluetooth): the echo at the mic is -66 dBFS,
+      i.e. none, with no false barge-ins. The interruption timing of that run is unusable: the
+      recorder's output position fell ~1 minute behind its cues, though playback sounded
+      clean throughout, so it's a recorder timing quirk on Bluetooth. With no echo it isn't
+      needed.
+    - The barge-in gate and the self-voice check had nothing left to catch on these runs.
+      They stay as insurance for louder volumes and other rooms.
+    - **Windows' communications-mode processing wasn't needed, so it isn't compared.** The
+      phone run waits for R2.
+    - Laptop mic notes: in exclusive mode the mic array opens only with its 4 native channels
+      (1 channel fails as "invalid device"). The recordings went through shared mode,
+      including the Realtek driver's effects, which didn't hurt.
+    - The BlackShark's Bluetooth hands-free mic gates speech (drops to silence, then fades
+      back in), so it's a poor mic for Duck.
+  - **Screen:**
+    - `xcap` captures both monitors, including the DisplayLink ARZOPA screen (WGC ~31 ms),
+      and single windows (26–34 ms). Minimized windows can't be captured, so Duck says
+      "it's minimized".
+    - Haiku read a dense 1568×843 Workbench screenshot nearly verbatim (2 tiny slips), in
+      7.2 s for $0.0011 at `low`.
+    - `Windows.Media.Ocr` has `en-US` and `ru` installed.
 
 ### Track A — Core
 
@@ -1322,6 +1525,10 @@ tapping around. Two stages.
   - `npm i @anthropic-ai/sdk zod`. Client:
     `new Anthropic({ baseURL, apiKey: token, dangerouslyAllowBrowser: true })`, built from
     `assistant_proxy_info`.
+  - The main window gets WebView2 args `--disable-background-timer-throttling
+    --disable-renderer-backgrounding --disable-backgrounding-occluded-windows` (X0: with
+    them, timers keep running even if a webview is hidden). Hiding to the tray stays
+    `window.hide()`, never hiding the webview itself.
   - `src/assistant/engine.ts`, a manual streaming loop (not the beta tool runner), because
     the engine must stop at confirmation gates:
     - `messages.stream(...)` → emit `text_delta`, `tool_start` and `tool_end` events.
@@ -1704,8 +1911,11 @@ tapping around. Two stages.
   - The tools are registered with `defer_loading: true` (tool search, M2). The system
     prompt says to call `browsers_select` with the agent profile when one exists.
   - **Two profiles:**
-    - **Agent** is the default. A dedicated Firefox profile with the add-on, started with
-      `-P agent` if it isn't running. Sites you log into there once stay logged in.
+    - **Agent** is the default: the existing `claude-agent` profile, the only one with the
+      add-on (X0). Firefox's new profile switcher doesn't list it, so Duck starts it on
+      demand with `firefox.exe -P claude-agent --no-remote` when a browser task needs it and
+      the bridge sees no add-on. The add-on connects ~5 s after the profile opens. Sites you
+      log into there once stay logged in.
     - **Personal** is your everyday profile. Using it is the trust request
       `assistant:firefox(profile:personal)`, which asks by default; a rule can allow it per
       site or task.
@@ -1743,9 +1953,15 @@ tapping around. Two stages.
   - `src-tauri/src/voice/`:
     - `capture.rs`: `cpal` default input → mono f32 → 16 kHz resample (`rubato`, or the one
       `transcribe-rs` ships). Ring buffer; start and stop on command.
-    - `stt.rs`: a `Transcriber` trait with the X0 winner as the default implementation
-      (Parakeet v3 via `transcribe-rs`, or Whisper turbo via `whisper-rs`) and the other
-      behind a setting.
+    - `stt.rs`: a `Transcriber` trait, implemented by Parakeet v3 via `transcribe-rs` (the
+      X0 winner; Whisper is dropped). Pin `ort = "=2.0.0-rc.12"` with `load-dynamic`; rc.14
+      breaks `transcribe-rs`.
+      - **Bring VRAM down** from X0's 3.6 GB (an fp16 export, or an ORT arena cap), and look
+        at why the Rust path was 2.5–3× slower than Python's `onnx-asr` (likely the decoder
+        loop).
+      - Every clip is trimmed to the VAD's speech bounds (~200 ms of padding). **An empty
+        result from the int8 CPU model is retried once in fp32:** X0 saw int8 return
+        nothing on clips with ~1 s of leading silence.
       - The model is held in an `Arc<Mutex<Option<Model>>>`: load on the hotkey press, in
         parallel with recording; unload after the idle timeout.
       - Execution provider chosen from the "GPU for voice" pref and the power state: CUDA →
@@ -1753,7 +1969,7 @@ tapping around. Two stages.
         automatic, and the provider in use is shown in settings.
     - `models.rs`: download from Hugging Face into `<appdata>/models/` (`models.dev/` in the
       debug build), with progress events, a checksum, and resume.
-    - Optional Silero VAD to trim leading and trailing silence.
+    - Silero VAD trims leading and trailing silence (required, see above).
   - `tauri-plugin-global-shortcut`: hold-to-talk (default Ctrl+Alt+Space, rebindable).
     Release → transcribe → emit `voice-transcript {text, source: "desktop"}` → the engine
     submits it to the current thread, marked `voice`.
@@ -1762,16 +1978,18 @@ tapping around. Two stages.
   - Settings: engine, "GPU for voice" (always / on AC power only / never), idle unload, mic
     device, and a "send without review" toggle (off = the text lands in the composer for a
     quick edit).
-  - A vocabulary hint list: project names, session titles and common terms ("worktree",
-    "npm"). It is passed as Whisper's initial prompt or used for a post-correction pass, so
-    names come out right.
+  - **A name fixer** for the Cyrillic spellings Parakeet gives English names in mixed speech
+    (X0: «воркбенч», «колод код», «пул реквест»). Known names (project names, session titles,
+    a short term list: Claude Code, pull request, commit, main, npm, worktree) are
+    transliterated to Cyrillic once, then fuzzy-matched in the transcript and replaced
+    with the original spelling. The raw text is kept beside it for the model.
 - **Key files:** `src-tauri/src/voice/*`, `src-tauri/src/lib.rs`, `Cargo.toml` (`cpal`,
-  `transcribe-rs` and/or `whisper-rs`, `tauri-plugin-global-shortcut`),
-  `src/panels/Assistant/*`.
+  `transcribe-rs`, `tauri-plugin-global-shortcut`), `src/panels/Assistant/*`.
 - **Done when:**
   - A 5 s command is transcribed in < 1 s on the GPU (< 1.5 s on the CPU path) with the PC
     under load.
-  - Mixed RU/EN commands keep the English terms.
+  - Mixed RU/EN commands come out with project names and the term list spelled in English
+    (X0's mx01–mx04 recordings are the test set).
   - After the timeout, idle RSS and VRAM return to the pre-voice baseline and the dGPU can
     sleep.
   - No mic indicator shows in Windows while the key isn't held.
@@ -1893,8 +2111,11 @@ tapping around. Two stages.
     - **VAD:** Silero (`voice_activity_detector` crate or `sherpa-onnx` VAD) on 32 ms frames
       from the `cpal` stream.
     - **Turn check:** Smart Turn v3.2 ONNX via `ort` (CPU, 1 thread) on the last ≤ 8 s of
-      audio, at each VAD pause ≥ 250 ms. The threshold and patience ceiling come from the
-      thread's mode (assistant / chat / duck).
+      audio. When it's asked, the threshold and the ceiling come from the thread's mode,
+      using X0's measured policies:
+      - assistant: from 250 ms of silence, threshold 0.5, ceiling 1.5 s;
+      - chat: from 1.5 s, threshold 0.7, ceiling 8 s;
+      - duck: only from 3 s, threshold 0.8, ceiling 8 s.
     - **Grace and merge:**
       - On end-of-turn, emit `voice-turn {text, provisional: true}`. The engine starts the
         request with an AbortController.
@@ -1908,8 +2129,11 @@ tapping around. Two stages.
     - **Barge-in:** user speech during TTS playback stops playback, through the echo chain in
       §Design (`voice/aec.rs`):
       - endpoint form-factor detection, with a re-check on device change;
-      - AEC3 fed the exact playback PCM from `playback.rs` (or the OS communications
-        processing, whichever X0 picked);
+      - AEC3 fed the exact playback PCM from `playback.rs` (X0: ~30 dB on the laptop
+        speakers). X0 ran it through livekit's prebuilt WebRTC `AudioProcessingModule`. Check
+        at the start of V4 whether livekit's Rust `libwebrtc` crate exposes the same module;
+        `webrtc-audio-processing` needs a meson build. Headphones skip AEC (X0: no echo);
+        a device of unknown type gets the full chain;
       - the adaptive barge-in gate;
       - the self-voice check against the sentence being spoken.
 
@@ -1928,7 +2152,10 @@ tapping around. Two stages.
     - Playback barge-in uses the browser's echo cancellation.
 - **Key files:** `src-tauri/src/voice/conversation.rs`, `src-tauri/src/voice/aec.rs`,
   `src/assistant/engine.ts` (provisional turns), `src/panels/Assistant/*`,
-  `src/pwa/assistant.ts`, `Cargo.toml` (`ort`, `webrtc-audio-processing`).
+  `src/pwa/assistant.ts`, `Cargo.toml` (`ort`, the AEC3 binding).
+- **Test kit from X0:** `voice/record_echo.py` and `voice/score_echo.py` (the AEC3 / gate /
+  self-voice scorer) and the 10 monologues are the regression set. Copy them into the repo
+  under `tools/voice-eval/` at the start of V4; the session scratchpad doesn't last.
 - **Done when:**
   - A 2-minute rubber-duck monologue with 4–6 s pauses is sent as one turn.
   - A quick "what needs me?" is answered with < 1.5 s from end of speech to the start of the
@@ -2191,9 +2418,15 @@ tapping around. Two stages.
     - Resolves the tier through the tier table (§Design → Worker tiers: standard = Sonnet
       `medium`, involved = Sonnet `high`, serious = Opus `medium`). Explicit
       `model` / `effort` overrides it.
-    - Spawns with `--model <m> --effort <e>`, through M1's model plumbing, which this step
-      extends with an `effort` argument on `pty_spawn` (validated against Claude Code's
-      `low|medium|high|xhigh|max`).
+    - Spawns with `--model <m> --effort <e> --permission-mode dontAsk`, through M1's model
+      plumbing, which this step extends with `effort` and `permissionMode` arguments on
+      `pty_spawn` (effort validated against Claude Code's `low|medium|high|xhigh|max`).
+      - The flags are always explicit: without them a worker inherits your defaults (Opus,
+        `xhigh`, `auto`). The first hook's `effort.level` and model confirm the tier.
+      - Non-browser kinds also get `--strict-mcp-config --mcp-config <minimal>`, so they
+        don't each start a Firefox bridge (~140 MB, X0).
+      - The Duck folder is pre-trusted on first use: Claude Code's trust dialog for a new
+        folder defaults to "No, exit".
     - Picks the place: the workspace, or the target project's worktree for `code`.
     - Starts the session with a first prompt: "Read `brief.md`, do the task, then write
       `result.md` + `result.json` here", plus the contract.
@@ -2480,6 +2713,14 @@ tapping around. Two stages.
     `duck.db`.
   - The review's structured output adds `compact: yes|no`, `compactReason` and
     `nextPrompt?`.
+  - **From X0:**
+    - `statusline::ingest` keeps `context_window.used_percentage` per instance (the POST
+      has it; today it's dropped), so the review sees the real context fill.
+    - Fix the reducer first: SessionStart{source: compact} only clears `compacting` and keeps
+      the phase. Today it goes `to("idle")` before PostCompact, which during a mid-turn
+      auto-compaction could deliver a queued prompt mid-turn.
+    - Queue "continue" with `setQueued` right after sending `/compact`, never with a second
+      `sendOrQueue`: the card is at rest until PreCompact arrives.
   - Starting it: the tool `start_autopilot(instanceId, planPath?, maxSteps?)`, or the
     instance card menu → Autopilot. If the plan path isn't given, Duck finds it from the
     session's recent prompts and transcript and asks you to confirm.
@@ -2776,7 +3017,7 @@ voice work.
 | 12 | ~~Paid TTS overage?~~ **Moot: local engines by default** (2026-10-19). Chirp is optional and never pays silently. | ✔ |
 | 13 | ~~OCR language packs?~~ **Installed: `en-US`, `ru`** (checked 2026-10-18). | ✔ |
 | 14 | ~~Phone voice?~~ **Desktop-synthesized (the same Kokoro/Silero voice everywhere)**; the phone's native TTS stays the offline fallback (2026-10-19). | ✔ |
-| 15 | ~~Speakers or headphones?~~ **Both: talk-over must work on speakers too** (2026-10-18). Layered echo handling with acceptance numbers in V4. Still open: AEC3 or Windows communications processing on this laptop. | X0 / V4 |
+| 15 | ~~Speakers or headphones?~~ **Both: talk-over must work on speakers too** (2026-10-18). **AEC3 with the playback reference** (X0, 2026-10-19: ~30 dB on the laptop speakers, no false barge-ins, interruptions caught in ~0.29 s; headphones need no AEC). Windows' communications processing isn't needed. | ✔ |
 | 16 | ~~Name?~~ **D.U.C.K.**, "Duck" (2026-10-18). "Duck" is a common word, so a future wake word would be the phrase "Hey Duck" / «Эй, Дак», not the bare name. | ✔ |
 | 17 | ~~Workspace?~~ **`C:\Users\mrsha\repos\Duck`** (created 2026-10-18); debug build uses `Duck.dev`. Still open: clean up old task folders after N days, or keep them (default: keep; the folder can be a git repo). | D1 |
 | 18 | ~~Thresholds?~~ **5-hour < 70%, weekly < 80%; over them, run automatically on the API** (2026-10-18). | ✔ |
@@ -2795,7 +3036,7 @@ voice work.
 
 | Step | Title | Status |
 |---|---|---|
-| X0 | Spike: check the assumptions | ☐ |
+| X0 | Spike: check the assumptions | ☑ (the phone echo run waits for R2) |
 | A1 | API key in the keychain + loopback proxy + usage ledger | ☐ |
 | A2 | Assistant engine: loop, tool registry, threads | ☐ |
 | A3 | The Assistant drawer (desktop UI) | ☐ |
