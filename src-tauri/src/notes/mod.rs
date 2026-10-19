@@ -16,9 +16,20 @@
 //!
 //! The file operations take the notes root explicitly so the tests can run them in
 //! a temp dir; the Tauri commands resolve the root and emit the event.
+//!
+//! **Notes keys (step N3).** A project's id is random per machine, so its folder is
+//! named by its *notes key*, which every machine sharing the notes agrees on: for a
+//! project that had notes before N3 it is its own id (nothing was renamed), and a
+//! project on another machine links to the same key (see [`link`]). Callers still
+//! name a project by its id; [`folder_of`] turns that into the folder, so the phone
+//! (step R8) and the plugin file (step K1) follow a link without knowing about it.
 
+pub mod link;
+pub mod sync;
+
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Mutex, RwLock};
 use std::time::UNIX_EPOCH;
 
 use serde::Serialize;
@@ -37,8 +48,56 @@ const MAX_NOTE_BYTES: usize = 2 * 1024 * 1024;
 const MAX_NAME: usize = 120;
 
 /// One writer at a time: a write checks the revision, then replaces the file, and
-/// nothing may happen in between.
+/// nothing may happen in between. The plugin file and the sync's merge take it too,
+/// so a merge never lands in the middle of a save.
 static WRITE_LOCK: Mutex<()> = Mutex::new(());
+
+/// Hold the notes write lock.
+pub(crate) fn write_lock() -> std::sync::MutexGuard<'static, ()> {
+    WRITE_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// Project id → notes key, for the projects that have one. Loaded from the registry
+/// at start and after every change to it ([`refresh_keys`]).
+static KEYS: RwLock<Option<HashMap<String, String>>> = RwLock::new(None);
+
+/// Reload the project → notes key map from the registry.
+pub fn refresh_keys(conn: &rusqlite::Connection) {
+    let map = conn
+        .prepare("SELECT id, notes_key FROM projects WHERE notes_key IS NOT NULL")
+        .and_then(|mut stmt| {
+            stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?
+                .collect::<rusqlite::Result<HashMap<_, _>>>()
+        })
+        .unwrap_or_default();
+    *KEYS.write().unwrap() = Some(map);
+}
+
+/// The notes key a project is linked to, if it is.
+pub fn key_of(project_id: &str) -> Option<String> {
+    KEYS.read().unwrap().as_ref()?.get(project_id).cloned()
+}
+
+/// The folder a project's notes live in: its notes key, or, before it has one, its
+/// own id (which is what "start new notes" makes its key).
+pub fn folder_of(project_id: &str) -> String {
+    key_of(project_id).unwrap_or_else(|| project_id.to_string())
+}
+
+/// The projects whose notes are in `folder`: the ones linked to it, or the project
+/// whose id it is while that project has no key.
+pub fn projects_in(folder: &str) -> Vec<String> {
+    let keys = KEYS.read().unwrap();
+    let mut out: Vec<String> = keys
+        .as_ref()
+        .map(|m| m.iter().filter(|(_, k)| k.as_str() == folder).map(|(p, _)| p.clone()).collect())
+        .unwrap_or_default();
+    let has_key = keys.as_ref().is_some_and(|m| m.contains_key(folder));
+    if !has_key && !out.iter().any(|p| p == folder) {
+        out.push(folder.to_string());
+    }
+    out
+}
 
 /// A note in a project's list.
 #[derive(Serialize, Debug, Clone, PartialEq)]
@@ -68,8 +127,15 @@ struct Changed {
     project_id: String,
 }
 
+/// Points the notes root somewhere else, for trying sync with two roots on one PC.
+/// A debug build only syncs a root set this way (`notes.dev/` never syncs).
+pub const ROOT_ENV: &str = "WORKBENCH_NOTES_DIR";
+
 /// The notes root for this build.
 pub fn notes_root(app: &AppHandle) -> Result<PathBuf, String> {
+    if let Some(dir) = std::env::var_os(ROOT_ENV).filter(|d| !d.is_empty()) {
+        return Ok(PathBuf::from(dir));
+    }
     let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
     Ok(dir.join(if cfg!(debug_assertions) { "notes.dev" } else { "notes" }))
 }
@@ -127,7 +193,7 @@ pub fn check_name(name: &str) -> Result<(), String> {
 fn note_path(root: &Path, project_id: &str, id: &str) -> Result<PathBuf, String> {
     check_project(project_id)?;
     check_name(id)?;
-    Ok(root.join(project_id).join(format!("{id}.md")))
+    Ok(root.join(folder_of(project_id)).join(format!("{id}.md")))
 }
 
 fn read_bytes(path: &Path) -> Result<Vec<u8>, String> {
@@ -144,7 +210,7 @@ fn read_bytes(path: &Path) -> Result<Vec<u8>, String> {
 /// The project's notes, most recently changed first.
 pub fn list(root: &Path, project_id: &str) -> Result<Vec<NoteMeta>, String> {
     check_project(project_id)?;
-    let dir = root.join(project_id);
+    let dir = root.join(folder_of(project_id));
     let read = match std::fs::read_dir(&dir) {
         Ok(r) => r,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
@@ -195,7 +261,7 @@ pub fn write(root: &Path, project_id: &str, id: &str, content: &str, base: Optio
         return Err("this note is too large to save".into());
     }
     let path = note_path(root, project_id, id)?;
-    let _guard = WRITE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _guard = write_lock();
     if let Some(base) = base {
         match std::fs::read(&path) {
             Ok(bytes) if revision_of(&bytes) != base => {
@@ -227,7 +293,7 @@ fn replace(path: &Path, bytes: &[u8]) -> Result<(), String> {
 /// Make an empty note. Refused when one by that name exists.
 pub fn create(root: &Path, project_id: &str, id: &str) -> Result<Note, String> {
     let path = note_path(root, project_id, id)?;
-    let _guard = WRITE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _guard = write_lock();
     if path.exists() {
         return Err(format!("there is already a note called \"{id}\""));
     }
@@ -243,7 +309,7 @@ pub fn create_unique(root: &Path, project_id: &str, name: &str, content: &str) -
         return Err("this note is too large to save".into());
     }
     check_name(name)?;
-    let _guard = WRITE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _guard = write_lock();
     for n in 1..1000 {
         let id = if n == 1 { name.to_string() } else { format!("{name} {n}") };
         let path = note_path(root, project_id, &id)?;
@@ -266,7 +332,7 @@ pub fn create_unique(root: &Path, project_id: &str, name: &str, content: &str) -
 pub fn rename(root: &Path, project_id: &str, id: &str, to: &str) -> Result<(), String> {
     let from = note_path(root, project_id, id)?;
     let dest = note_path(root, project_id, to)?;
-    let _guard = WRITE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _guard = write_lock();
     if !from.exists() {
         return Err("this note no longer exists".into());
     }
@@ -278,7 +344,7 @@ pub fn rename(root: &Path, project_id: &str, id: &str, to: &str) -> Result<(), S
 
 pub fn delete(root: &Path, project_id: &str, id: &str) -> Result<(), String> {
     let path = note_path(root, project_id, id)?;
-    let _guard = WRITE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _guard = write_lock();
     match std::fs::remove_file(&path) {
         Ok(()) => Ok(()),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
@@ -291,6 +357,7 @@ pub fn delete(root: &Path, project_id: &str, id: &str) -> Result<(), String> {
 pub fn notify(app: &AppHandle, project_id: &str) {
     let _ = app.emit(EVENT, Changed { project_id: project_id.to_string() });
     crate::remote::push_notes_changed(app, project_id);
+    sync::touched();
 }
 
 // --- commands -------------------------------------------------------------------

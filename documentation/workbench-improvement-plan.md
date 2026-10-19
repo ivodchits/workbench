@@ -1281,6 +1281,100 @@ filesystem path. There is no `draggable` / `dataTransfer` use anywhere in `src/`
   - The phone still reads and writes notes unchanged.
 - **Out of scope:** real-time co-editing; merging inside a note (line-level merge of
   prose produces surprises; a conflict copy is clearer); syncing anything else.
+- **As built (2026-10-19):**
+  - **Notes key:**
+    - Migration v12 adds `projects.notes_key` and sets it to each existing project's
+      id, so no folder was renamed. A project registered later has none until its
+      notes are linked or started.
+    - The notes module keeps a project → key map, loaded at start and after every
+      change. `folder_of(projectId)` gives the key, or the id while there is none.
+      `note_path`, `list` and the plugin file (K1) resolve through it, so the phone
+      (R8) calls the same functions unchanged. `projects_in(folder)` goes the other
+      way, for events about a folder.
+  - **Linking** (`src-tauri/src/notes/link.rs`):
+    - `project.json` is `{name, origin}`. Origins normalize scheme, user, scp form,
+      port, `.git`, a trailing slash and case to one string (e.g.
+      `github.com/ivodchits/workbench`). The origin is read with git locally, and
+      over `ssh -o BatchMode=yes` for an SSH project, so a host that needs a
+      password just has no origin.
+    - A project with no key takes:
+      1. its own folder, if it already has one;
+      2. else the one unlinked folder whose origin matches;
+      3. with several matches, or no remote and folders to choose from, the panel
+         asks;
+      4. else it starts new notes.
+    - The notes panel runs this when it opens (`notes_link_status`). After every
+      pull, `link_obvious` links the clear cases (1 and 2) but never starts new
+      notes, so a machine that is still joining doesn't fork every project's notes.
+    - The panel's ask screen lists the unlinked folders by name and note count, with
+      **start new notes** below them.
+    - `describe_folders` writes `project.json` into each linked folder that lacks one
+      (or lacks its origin), so other machines can match it.
+  - **Sync** (`src-tauri/src/notes/sync.rs`):
+    - The remote is stored in the registry's `meta` (`notes_sync_remote`).
+    - Only a release build syncs. `WORKBENCH_NOTES_DIR` moves the notes root, and a
+      debug build syncs only a root moved that way (`notes.dev/` never syncs).
+      `WORKBENCH_MACHINE_NAME` overrides the machine name. Both exist for trying it
+      on one PC.
+    - Commits come 30 s after the last change: the notes module's writes, plus a
+      watcher on the root (shared with K1's), which ignores `.git`. A save in the
+      panel syncs at once when you leave that note.
+    - Messages read `notes: <project> / <note>` (`… and N more` for several files),
+      authored as the machine name.
+    - Pulls happen at start, on window focus after five minutes or more, and before
+      each push. A rejected push fetches, merges and pushes once more.
+    - **The merge is by file.**
+      - Only their side changed a file: take theirs.
+      - Both changed it: keep yours, and write theirs as `<name> (from <machine>).<ext>`.
+        The machine is the author of their last commit to that file.
+      - An edit beats a delete, in both directions.
+      - `project.json` keeps yours, with no copy.
+      - The result is committed with both parents (`commit-tree`), so git's line
+        merge never runs.
+    - Fetch and push run without the notes write lock. The merge takes the lock and
+      commits anything saved during the fetch first, so a save never waits on the
+      network and is never overwritten.
+    - Failures retry after 30 s, 1, 2, 4 and 8 min, then every 15 min. One notice
+      says so after an hour.
+    - Setup: **create** runs `git init -b main`, commits, then
+      `gh repo create <name> --private --source <root> --remote origin --push` behind
+      a confirm. **Join** sets the remote, checks it with `ls-remote`, and lets the
+      first sync merge both sides. **Stop** keeps the repo.
+  - **The git queue** (`src-tauri/src/gitqueue/`): one worker thread per repo, jobs in
+    order, a panicking job doesn't stop the queue. It runs git through the git
+    panel's runner (no prompts, deadlines). Duck's L1 should reuse it.
+  - ***Info* items:** Duck's attention levels don't exist yet (assistant plan V5). So
+    the notices (conflict, restored, linked, failing) live in a **notes** status-bar
+    menu, with an unseen count. Conflicts and failures also flash.
+  - **UI:** `NotesSyncMenu` shows the state (off, synced N ago, syncing, failing), the
+    remote, **sync now** and **stop**; **create repo…** (name, then a confirm that
+    names the `gh` command) and **join existing…** (URL); then the notices.
+  - **Tests:**
+    - `notes::sync`: two machines in temp dirs with a bare remote:
+      - a join merges both sides' notes;
+      - the same note edited on both keeps both texts and gives one conflict notice;
+      - an edit beats a delete, in both directions;
+      - `plugins.json` conflicts into `plugins (from PC-A).json`;
+      - a save with the remote gone stands, and syncs once it's back;
+      - file-safe names.
+    - `notes::link`: origin normalization, the linking decision, unlinked folders.
+    - `gitqueue`: ordering, and a panicking job not stopping the queue.
+  - **Checked live** (debug app as "PC-A", its notes root moved into a lab with a bare
+    remote; a plain clone committing as "PC-B"):
+    - **Join** pushed A's notes. `project.json` was written with the origin read from
+      the repo, and the menu said "synced just now".
+    - **Conflict:** with `plan.md` edited on both and B pushed first, **sync now**
+      kept A's text and wrote `plan (from PC-B).md`. B's new note arrived, and the
+      merge went back to the remote. The panel listed both, and the menu showed the
+      conflict notice.
+    - **Link by origin:** with `quest_log`'s key cleared and a folder from B carrying
+      its origin, the next start pulled the folder and linked it. The panel showed
+      B's note.
+    - **Ask:** `wow_server` (SSH, no readable origin) with an unlinked folder got the
+      ask screen. Picking the folder linked it.
+    - Not run live: `gh repo create`, which would make a real GitHub repo; the
+      30-second quiet commit; the phone. The phone's code path is unchanged; the
+      same functions resolve the folder.
 
 ---
 
@@ -2353,7 +2447,7 @@ any session, which lowers the urgency and makes the terminal bugs easier to comp
 | V3 | Inline comments to the agent | ☑ |
 | N1 | Project notes panel | ☑ |
 | N2 | Rendered-while-editing markdown | ☑ |
-| N3 | Notes sync across machines | ☐ |
+| N3 | Notes sync across machines | ☑ |
 | R1 | PWA build | ☑ |
 | R2 | Pairing / auth hardening | ☑ |
 | R3 | Tailscale Funnel | ☑ |

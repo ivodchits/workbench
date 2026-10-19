@@ -10,6 +10,7 @@ mod attention;
 mod db;
 mod fs;
 mod git;
+mod gitqueue;
 mod hooks;
 mod layout;
 mod mcp;
@@ -58,6 +59,11 @@ pub fn run() {
                 "workbench.db"
             };
             let db = db::Db::open(&dir.join(db_name))?;
+            // Which notes folder each project uses (step N3), before anything
+            // reads a note.
+            if let Ok(conn) = db.conn.lock() {
+                notes::refresh_keys(&conn);
+            }
             app.manage(db);
             // Duck's own database and API proxy state (step A1). Before the hook
             // server, which mounts the proxy; a failure only leaves Duck without the
@@ -93,6 +99,9 @@ pub fn run() {
             // Watch the notes folders for plugin files changing (step K1), so the
             // project toolbar redraws however the file was saved.
             plugins::init_watcher(app.handle());
+            // Notes sync (step N3): pull now and commit after changes, when it's
+            // set up; otherwise just link the projects whose notes are obvious.
+            notes::sync::init(app.handle());
             // Install the WebView2 accelerator handler on the main window: suppress
             // the built-in reload chords (F5 / Ctrl+R / Ctrl+Shift+R) so a stray
             // keypress can't reload the renderer and drop every live console, and
@@ -173,6 +182,15 @@ pub fn run() {
             notes::notes_create_with,
             notes::notes_rename,
             notes::notes_delete,
+            notes::link::notes_link_status,
+            notes::link::notes_link,
+            notes::link::notes_start_new,
+            notes::sync::notes_sync_status,
+            notes::sync::notes_sync_create,
+            notes::sync::notes_sync_join,
+            notes::sync::notes_sync_disable,
+            notes::sync::notes_sync_now,
+            notes::sync::notes_sync_focus,
             plugins::plugins_read,
             plugins::plugins_write,
             plugins::plugins_init,

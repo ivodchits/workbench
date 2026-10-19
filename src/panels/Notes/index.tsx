@@ -21,9 +21,15 @@ import {
   notesRead,
   notesRename,
   notesWrite,
+  notesLink,
+  notesLinkStatus,
+  notesStartNew,
+  notesSyncNow,
   onNotesChanged,
+  type LinkStatus,
   type NoteMeta,
 } from "../../ipc/notes";
+import { flash } from "../../util/flash";
 import {
   editBuffer,
   freshName,
@@ -37,7 +43,7 @@ import {
   type NotesSession,
 } from "../../state/notes";
 import { reference } from "../../state/fileDrag";
-import { useRegistry } from "../../state/registry";
+import { loadRegistry, useRegistry } from "../../state/registry";
 import { detectLanguage } from "../Editor/language";
 import CodeMirrorView from "../Editor/CodeMirrorView";
 import PreviewPane from "../Editor/PreviewPane";
@@ -78,7 +84,86 @@ export function NotesPanel(props: IDockviewPanelProps<NotesPanelParams>) {
       </div>
     );
   }
-  return <NotesBody session={session} />;
+  return (
+    <LinkGate projectId={session.projectId}>
+      <NotesBody session={session} />
+    </LinkGate>
+  );
+}
+
+/**
+ * Notes for a project with no notes key yet (step N3): ask the backend, which
+ * links it when the answer is clear (its own folder, the one folder matching its
+ * repo's origin, or new notes when there's nothing to choose from). When it can't
+ * tell, offer the unlinked folders or new notes.
+ */
+function LinkGate({ projectId, children }: { projectId: string; children: React.ReactNode }) {
+  const { projects } = useRegistry();
+  const keyed = projects.find((p) => p.id === projectId)?.notesKey != null;
+  const [status, setStatus] = useState<LinkStatus | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (keyed) return;
+    let live = true;
+    setStatus(null);
+    notesLinkStatus(projectId)
+      .then((s) => {
+        if (!live) return;
+        setStatus(s);
+        if (s.linkedTo) flash(`linked to existing notes: ${s.linkedTo}`);
+        if (s.linked) void loadRegistry();
+      })
+      .catch((e: unknown) => live && setError(String(e)));
+    return () => {
+      live = false;
+    };
+  }, [projectId, keyed]);
+
+  if (keyed || status?.linked) return <>{children}</>;
+  if (error) {
+    return (
+      <div style={centered}>
+        <span style={{ color: "var(--wb-needs)", font: "12px var(--wb-mono)" }}>
+          {GLYPH.warn} {error}
+        </span>
+      </div>
+    );
+  }
+  if (!status) {
+    return (
+      <div style={centered}>
+        <span style={{ color: "var(--wb-textFaint)", font: "12px var(--wb-mono)" }}>finding this project's notes…</span>
+      </div>
+    );
+  }
+  const choose = (pick: Promise<void>) =>
+    pick.then(() => loadRegistry()).catch((e: unknown) => setError(String(e)));
+  return (
+    <div style={{ ...centered, alignItems: "stretch", maxWidth: 520, margin: "0 auto", gap: 12 }}>
+      <div style={{ color: "var(--wb-text)", font: "12.5px var(--wb-mono)" }}>
+        Notes from another machine might belong to this project.
+      </div>
+      <div style={{ color: "var(--wb-textFaint)", font: "11px var(--wb-mono)" }}>link to existing notes…</div>
+      {status.candidates.map((c) => (
+        <button
+          key={c.folder}
+          onClick={() => void choose(notesLink(projectId, c.folder))}
+          title={c.origin ?? "no remote"}
+          style={{ ...confirmButtonStyle, textAlign: "left", display: "flex", gap: 10 }}
+        >
+          <span style={{ color: "var(--wb-accent)" }}>{GLYPH.run}</span>
+          <span style={{ flex: 1 }}>{c.name}</span>
+          <span style={{ color: "var(--wb-textFaint)" }}>
+            {c.notes} {c.notes === 1 ? "note" : "notes"}
+          </span>
+        </button>
+      ))}
+      <button onClick={() => void choose(notesStartNew(projectId))} style={{ ...confirmButtonStyle, marginTop: 6 }}>
+        start new notes
+      </button>
+    </div>
+  );
 }
 
 /** Load a note into the store's buffer from disk. */
@@ -223,6 +308,18 @@ function NotesBody({ session }: { session: NotesSession }) {
     }
   };
 
+  // Closing a note you saved (switching away, or closing the panel) syncs it now
+  // rather than after the quiet time (step N3).
+  const savedRef = useRef(false);
+  useEffect(
+    () => () => {
+      if (!savedRef.current) return;
+      savedRef.current = false;
+      void notesSyncNow().catch(() => {});
+    },
+    [activeNote],
+  );
+
   /** Save the open note. `force` overwrites a version saved elsewhere. */
   const save = async (content: string, force = false) => {
     const id = activeNote;
@@ -230,6 +327,7 @@ function NotesBody({ session }: { session: NotesSession }) {
     if (!id || !held) return;
     try {
       const revision = await notesWrite(projectId, id, content, force ? null : held.revision);
+      savedRef.current = true;
       setBuffer(projectId, id, { ...held, content: getBuffer(projectId, id)?.content ?? content, baseline: content, revision });
       setConflict(false);
       setNotice(null);
@@ -703,7 +801,7 @@ function Empty({ hasNotes, onCreate }: { hasNotes: boolean; onCreate: () => void
         {GLYPH.prompt} {hasNotes ? "pick a note" : "no notes yet"}
       </div>
       <div style={{ color: "var(--wb-textFaint)", font: "11px var(--wb-mono)", maxWidth: 360, textAlign: "center" }}>
-        notes are markdown, kept on this machine per project — not in the repo
+        notes are markdown, kept per project in the app — not in the repo
       </div>
       <button onClick={onCreate} style={{ ...confirmButtonStyle, marginTop: 6 }}>
         + new note

@@ -17,7 +17,7 @@ use std::process::Command;
 
 use serde::{Deserialize, Serialize};
 
-mod run;
+pub(crate) mod run;
 mod watch;
 
 use run::Spec;

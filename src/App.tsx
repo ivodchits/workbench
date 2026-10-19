@@ -3,6 +3,8 @@ import InstanceManager from "./panels/InstanceManager";
 import AppearanceMenu from "./panels/AppearanceMenu";
 import RemoteAccessMenu from "./panels/RemoteAccessMenu";
 import NotificationsMenu from "./panels/NotificationsMenu";
+import NotesSyncMenu from "./panels/NotesSyncMenu";
+import { initNotesSync } from "./state/notesSync";
 import AssistantMenu from "./panels/AssistantMenu";
 import AssistantDrawer from "./panels/Assistant/Drawer";
 import DuckButton from "./panels/Assistant/DuckButton";
@@ -109,6 +111,9 @@ function App() {
     // ending.
     initPlugins();
     initTasks();
+    // Notes sync across machines (step N3): its status, notices, and pulling when
+    // the window comes back.
+    initNotesSync();
     // Images pasted into a composer are deleted once sent; this collects the ones
     // a draft let go of, or a send couldn't confirm.
     void prunePastedImages(draftImageNames()).catch(() => {});
@@ -482,6 +487,7 @@ function StatusBar({ openCount, sessionId }: { openCount: number; sessionId: str
       <HookIndicator />
       <RemoteAccessMenu />
       <NotificationsMenu />
+      <NotesSyncMenu />
       <AssistantMenu />
       <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 16 }}>
         <UsageMeters />

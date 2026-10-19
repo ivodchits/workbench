@@ -58,10 +58,6 @@ const STARTER: &str = r#"{
 }
 "#;
 
-/// Check and replace in one step, so a write based on a stale revision can't slip
-/// in between.
-static WRITE_LOCK: Mutex<()> = Mutex::new(());
-
 /// A project's plugin file as the toolbar needs it.
 #[derive(Serialize, Debug)]
 #[serde(rename_all = "camelCase")]
@@ -82,10 +78,11 @@ struct Changed {
     project_id: String,
 }
 
-/// The project's notes folder: the plugin file, and `{data}` in an action.
+/// The project's notes folder (by its notes key, step N3): the plugin file, and
+/// `{data}` in an action.
 fn data_dir(root: &Path, project_id: &str) -> Result<PathBuf, String> {
     check_project(project_id)?;
-    Ok(root.join(project_id))
+    Ok(root.join(crate::notes::folder_of(project_id)))
 }
 
 pub fn read(root: &Path, project_id: &str) -> Result<PluginsView, String> {
@@ -133,7 +130,8 @@ pub fn write(root: &Path, project_id: &str, text: &str, base: Option<&str>) -> R
         return Err(format!("not saved, the file has problems:\n{}", list.join("\n")));
     }
     let path = data_dir(root, project_id)?.join(FILE);
-    let _guard = WRITE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    // The notes write lock: a sync's merge never lands in the middle of this.
+    let _guard = crate::notes::write_lock();
     if let Some(base) = base {
         match std::fs::read(&path) {
             Ok(bytes) if revision_of(&bytes) != base => {
@@ -153,7 +151,8 @@ pub fn write(root: &Path, project_id: &str, text: &str, base: Option<&str>) -> R
 /// Make the file with the starter text when there is none. Returns its path.
 pub fn init(root: &Path, project_id: &str) -> Result<PathBuf, String> {
     let path = data_dir(root, project_id)?.join(FILE);
-    let _guard = WRITE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    // The notes write lock: a sync's merge never lands in the middle of this.
+    let _guard = crate::notes::write_lock();
     if !path.exists() {
         replace(&path, STARTER.as_bytes())?;
     }
@@ -284,8 +283,12 @@ fn start_watcher(app: &AppHandle) -> Result<(), String> {
     let mut watcher = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
         let Ok(ev) = res else { return };
         for p in &ev.paths {
-            if let Some(project) = project_of(p) {
-                sink.lock().unwrap().insert(project);
+            if let Some(folder) = folder_of_path(p) {
+                sink.lock().unwrap().insert(folder);
+            }
+            // Any change outside `.git` is something for the notes sync to commit.
+            if !p.components().any(|c| c.as_os_str() == ".git") {
+                crate::notes::sync::touched();
             }
         }
     })
@@ -297,15 +300,18 @@ fn start_watcher(app: &AppHandle) -> Result<(), String> {
     std::thread::spawn(move || loop {
         std::thread::sleep(SETTLE);
         let changed: Vec<String> = pending.lock().unwrap().drain().collect();
-        for project in changed {
-            notify_changed(&app, &project);
+        for folder in changed {
+            for project in crate::notes::projects_in(&folder) {
+                notify_changed(&app, &project);
+            }
         }
     });
     Ok(())
 }
 
-/// The project a changed path's plugin file belongs to, if it is one.
-fn project_of(path: &Path) -> Option<String> {
+/// The notes folder a changed path's plugin file is in, if it is one. The folder is
+/// a notes key; [`crate::notes::projects_in`] says whose it is.
+fn folder_of_path(path: &Path) -> Option<String> {
     if path.file_name()?.to_str()? != FILE {
         return None;
     }
@@ -394,9 +400,9 @@ mod tests {
 
     #[test]
     fn only_plugin_files_name_a_project() {
-        assert_eq!(project_of(&PathBuf::from(format!("/n/{P}/{FILE}"))), Some(P.to_string()));
-        assert_eq!(project_of(&PathBuf::from(format!("/n/{P}/ideas.md"))), None);
-        assert_eq!(project_of(&PathBuf::from(format!("/n/{P}/plugins.json.tmp"))), None);
-        assert_eq!(project_of(&PathBuf::from("/n/not a project/plugins.json")), None);
+        assert_eq!(folder_of_path(&PathBuf::from(format!("/n/{P}/{FILE}"))), Some(P.to_string()));
+        assert_eq!(folder_of_path(&PathBuf::from(format!("/n/{P}/ideas.md"))), None);
+        assert_eq!(folder_of_path(&PathBuf::from(format!("/n/{P}/plugins.json.tmp"))), None);
+        assert_eq!(folder_of_path(&PathBuf::from("/n/not a project/plugins.json")), None);
     }
 }

@@ -33,6 +33,9 @@ export interface Project {
   /** The model new sessions run on unless they pick one (step M1); null leaves
    *  Claude Code's default. */
   defaultModel: string | null;
+  /** The folder its notes live in, shared across machines (step N3); null until
+   *  its notes are linked or started. */
+  notesKey: string | null;
   sortOrder: number;
   createdAt: number;
 }

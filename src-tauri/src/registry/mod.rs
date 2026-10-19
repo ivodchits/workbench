@@ -91,6 +91,9 @@ pub struct Project {
     /// The model new sessions in this project run on unless they pick their own
     /// (step M1); `None` leaves Claude Code's default.
     pub default_model: Option<String>,
+    /// The folder this project's notes live in, shared across machines (step N3);
+    /// `None` until its notes are linked or started.
+    pub notes_key: Option<String>,
     pub sort_order: i64,
     pub created_at: i64,
 }
@@ -341,12 +344,13 @@ fn row_to_project(r: &Row) -> rusqlite::Result<Project> {
         sort_order: r.get(9)?,
         created_at: r.get(10)?,
         default_model: r.get(11)?,
+        notes_key: r.get(12)?,
     })
 }
 
 const PROJECT_COLS: &str = "id, group_id, name, root_path, default_branch, \
     worktree_setup_command, worktree_copy_env, remote_ssh_dest, remote_dir, \
-    sort_order, created_at, default_model";
+    sort_order, created_at, default_model, notes_key";
 
 pub fn insert_project(conn: &Connection, input: NewProject) -> rusqlite::Result<Project> {
     // Normalize an empty/whitespace setup command to NULL so "configured" is a
@@ -376,6 +380,7 @@ pub fn insert_project(conn: &Connection, input: NewProject) -> rusqlite::Result<
         remote_ssh_dest,
         remote_dir,
         default_model: clean_model(input.default_model)?,
+        notes_key: None,
         sort_order: 0,
         created_at: now(),
     };
@@ -820,7 +825,9 @@ pub fn remove_group(db: State<'_, Db>, id: String) -> Result<(), String> {
 #[tauri::command]
 pub fn create_project(db: State<'_, Db>, input: NewProject) -> Result<Project, String> {
     let conn = lock(&db)?;
-    insert_project(&conn, input).map_err(|e| e.to_string())
+    let project = insert_project(&conn, input).map_err(|e| e.to_string())?;
+    crate::notes::refresh_keys(&conn);
+    Ok(project)
 }
 
 #[tauri::command]
@@ -842,7 +849,9 @@ pub fn edit_project(
 #[tauri::command]
 pub fn remove_project(db: State<'_, Db>, id: String) -> Result<(), String> {
     let conn = lock(&db)?;
-    delete_project(&conn, &id).map_err(|e| e.to_string())
+    delete_project(&conn, &id).map_err(|e| e.to_string())?;
+    crate::notes::refresh_keys(&conn);
+    Ok(())
 }
 
 #[tauri::command]
