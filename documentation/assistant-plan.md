@@ -10,7 +10,9 @@ A step-by-step plan for **the Assistant**: a personal AI assistant built into Wo
 can operate the whole app (sessions, prompts, approvals, notes, git, panels), look things up
 on the web, and use your real Firefox. It is reachable by **text or
 voice**, on the **desktop and from the phone** through the existing remote. It runs on the
-Claude API (about $100/month of credits): **Sonnet** is the main model you talk to,
+Claude API (the Max plan's $100/month of API credits, claimed into a linked Console
+organization; they never draw on subscription limits, and when they run out requests stop
+rather than bill the plan; verified against Anthropic's docs 2026-10-18): **Sonnet** is the main model you talk to,
 **Haiku** does summaries and other primitive background jobs, and coding or other
 professional work goes to a new **Workbench session running Opus**.
 
@@ -204,7 +206,7 @@ Haiku-front-door design.)
 | Role | Model | Settings | Why |
 |---|---|---|---|
 | **Heavy work**: research, analysis, comparisons, long writing, browser chores, code | **Worker session** (Claude Code console on your subscription): Sonnet for research and writing, Opus for code and professional deliverables | `--model` per task; runs in Duck's workspace or the target project | Moves the expensive tokens off the API credits. Duck only reads the result file. |
-| **Main thread**: every request, voice or text; acting on the app; quick lookups; dispatching and judging workers; chat and rubber duck | `claude-sonnet-5-5` | adaptive thinking; effort **`low`** for commands and chat, **`medium`** for multi-step work and rubber duck (per-message effort, so the cache survives); `fallbacks: "default"` | Far more reliable tool use and judgment. One model on the thread means one prompt cache. |
+| **Main thread**: every request, voice or text; acting on the app; quick lookups; dispatching and judging workers; chat and rubber duck | `claude-sonnet-5-5` | adaptive thinking; effort **`medium`** by default (decided 2026-10-18 after X0 measured it no slower and no costlier than `low`), **`high`** for multi-step work and rubber duck (per-message effort, so the cache survives); `fallbacks: "default"` | Far more reliable tool use and judgment. One model on the thread means one prompt cache. |
 | Session summaries, "what happened while I was away" | `claude-haiku-5-5` | effort `low`, one-shot | Reads a lot, writes little; needs no judgment |
 | Read-aloud rewrites (narrate / summary), screenshot text extraction | `claude-haiku-5-5` | effort `low`, one-shot | Transformations, not decisions |
 | Trust judge (rule-less permission prompts) | `claude-haiku-5-5` first; **Sonnet second opinion** when Haiku isn't sure (below) | structured output | Volume is high (hundreds a day); the floor and rules carry the safety; Sonnet only for the unclear minority |
@@ -217,17 +219,41 @@ Haiku-front-door design.)
 - Reading-heavy chores that are too small for a session ("summarize these 6 sessions") go to
   Haiku through a `haiku_task` tool, so long transcripts never enter the main context.
 - **Effort carries the cost control, not model switching.**
-  - Sonnet runs at `low` effort by default, which gives terse confirmations and fewer,
-    consolidated tool calls.
-  - The engine raises effort to `medium` for a message that asks for research, planning or a
+  - Sonnet runs at `medium` effort by default. X0 measured it as fast as `low` (0.72 s to
+    first output) and no costlier (~$0.005 a warm turn), with 20/20 correct tool picks.
+  - The engine raises effort to `high` for a message that asks for research, planning or a
     browser task, and for rubber-duck threads. It uses the per-message effort system message
     (beta `mid-conversation-output-config-2026-07-01`), so the cached history isn't thrown
     away.
-- **Budget-aware degrade instead of a wall.** Past the **soft limit (80%)**, the main thread
-  switches to **Haiku for the rest of the month**, in a new thread, because caches are
-  model-scoped. Sonnet stays available per message (a "Sonnet" toggle or "think hard") with
-  the turn's cost shown. At the hard cap ($90) the proxy refuses everything except Haiku
-  primitives.
+- **Two brains, one Duck: the API by default, the subscription as the fallback** (decided
+  2026-10-18). The main thread runs behind a `Brain` interface with two backends:
+  - **`ApiBrain`** (default): the SDK through the proxy, as described above. The API credits
+    expire every month with no rollover, while subscription limits are what your coding
+    sessions run on, so the credits are the right thing to spend first.
+  - **`SubscriptionBrain`**: one persistent headless Claude Code process, `claude -p
+    --input-format stream-json --output-format stream-json --model sonnet --effort medium
+    --tools "" --strict-mcp-config --mcp-config <duck> --system-prompt-file <duck prompt>
+    --permission-mode dontAsk --allowedTools mcp__duck --no-session-persistence`. It bills
+    your subscription limits (allowed for headless use as of 2026-10; Anthropic paused moving
+    it onto credits). Duck's tools reach it through a **Duck MCP server** on the loopback hook
+    server (streamable HTTP, per-launch token), which forwards each call to the same tool
+    registry in the webview, so the trust engine and the 10 s tool budget apply unchanged.
+    `--bare` can't be used: it disables subscription (OAuth) auth.
+  - **Switching** (in a new thread with a short handoff summary, since histories and caches
+    don't carry over):
+    - API spend reaches the **soft limit (80%)**, or the API answers "credit balance too
+      low" → `SubscriptionBrain`, provided the subscription is below D2's thresholds (5-hour
+      < 70%, weekly < 80%).
+    - The subscription is over those thresholds too → a Haiku API thread, as before, with
+      Sonnet available per message (a "Sonnet" toggle or "think hard") and the turn's cost
+      shown.
+    - At the **hard cap ($90)** the proxy refuses everything except Haiku primitives; the
+      main thread stays on `SubscriptionBrain` if the subscription allows it, otherwise only
+      primitives run.
+    - The reverse also holds: while the subscription is near its limits, Duck never moves
+      onto it.
+  - The drawer shows which brain is answering ("on subscription" chip). X0 measured the
+    subscription backend's latency and limit cost (see X0 As built).
 - **Opus sessions** start when the output is code, a document or other professional work
   product.
 - **API constraints** (as of 2026-10): no forced `tool_choice` on Sonnet 5.5, so use `auto`
@@ -341,12 +367,14 @@ reads $0.20; cache writes $2.50 (5-minute TTL) or $4 (1-hour TTL). Haiku 5.5 is 
 $0.50. A command turn is 2–3 rounds over a ~10k-token prefix (system + tools), plus ~1k
 output tokens including thinking:
 
-| Per command turn | Haiku | Sonnet (`low` effort) |
+| Per command turn | Haiku | Sonnet (`medium` effort) |
 |---|---|---|
 | Warm cache | ~$0.002 | **~$0.02** |
 | Cold cache (first turn after a break) | ~$0.004 | **~$0.05–0.08** |
 
-So **Sonnet costs about 8–20× more per command.** In money, a monthly estimate (30 days):
+So **Sonnet costs about 8–20× more per command.** (These are the pre-X0 estimates the table
+below is built on. X0 measured warm one-turn requests at **$0.005 (Sonnet `medium`)**, $0.007
+(`low`) and $0.0004 (Haiku) over a 4.3k-token prefix, so the totals below are conservative.) In money, a monthly estimate (30 days):
 
 | Workload | Per unit | Moderate use | Heavy use |
 |---|---|---|---|
@@ -357,7 +385,7 @@ So **Sonnet costs about 8–20× more per command.** In money, a monthly estimat
 | Chat / rubber duck on Sonnet | ~$0.005–0.01 per turn | 30 min/day → **~$7** | 1 h/day → **~$15** |
 | Haiku primitives (summaries, narrate, screenshots, workers) | ~$0.001–0.003 | **~$5** | **~$10** |
 | Trust judge (Haiku, plus Sonnet second opinions for ~15% of cases) | ~$0.0005 / ~$0.005 | **~$5** | **~$10** |
-| Cloud TTS (Chirp 3 HD free tier, then local) | — | $0 | $0 |
+| TTS (local Kokoro + Silero; Chirp optional) | — | $0 | $0 |
 | Opus coding sessions | API $0 (subscription) | — | — |
 | **Total** | | **~$50 / month** | **~$130 / month**, so the soft limit trips in the last week |
 
@@ -371,10 +399,11 @@ below matter most on heavy months:
   - A deterministic tool order, and no timestamps in the system prompt.
 - **A small fixed prefix.** Browser and rarely used tools are `defer_loading` behind **tool
   search**. Old tool results are cleared by context editing (`clear_tool_uses`).
-- **`low` effort by default**, raised per message only when needed.
+- **`medium` effort by default**, raised to `high` per message only when needed.
 - **A Haiku worker for reading-heavy chores**, so Sonnet never ingests whole transcripts.
-- **Degrade, don't stop**: Haiku main thread past 80% (the soft limit), and only primitives
-  at the $90 cap.
+- **Degrade, don't stop**: past 80% (the soft limit) the main thread moves to the
+  subscription brain (or a Haiku thread when the subscription is busy too), and only
+  primitives use the API at the $90 cap.
 - A spend meter in the drawer: today, this month, by model and by purpose, plus a
   **projection** ("on track for $74 this month").
 - X0 and the first two weeks of use **measure real per-turn costs** from `assistant_usage`.
@@ -515,60 +544,48 @@ The system voices (SAPI / `speechSynthesis`) are out: not natural enough. The re
   - Cloud TTS uses 0 RAM, 0 VRAM and no model download, which suits a PC where resources are
     precious.
 
-**Design: one `Speaker` trait, three candidates, and a listening test picks the default**
-(step V2):
+**Decided after X0's listening test (2026-10-19): local Kokoro for English, local Silero
+(`kseniya`) for Russian, behind one `Speaker` trait** (step V2):
 
-| Candidate | Where | EN+RU in one voice | Cost | Resources | Risk |
-|---|---|---|---|---|---|
-| **Google Chirp 3 HD** (REST/gRPC streaming via `reqwest`) | cloud | yes | $0 under 1M chars a month | none | needs network; text leaves the PC; a second API key (keychain) |
-| **Qwen3-TTS 0.6B** (local, GPU) | RTX 4060 | yes | $0 | ~2–3 GB VRAM while loaded, 0 idle | Russian stress unverified; Rust ports experimental, so likely a `uv`-managed Python sidecar (`uv` is already installed for the Firefox bridge) |
-| **Kokoro (EN) + Silero v5 (RU)** (local) | CPU or GPU | no (routes per sentence) | $0 | Kokoro ~0.5 GB in-process via `sherpa-onnx`; Silero in a Python sidecar ~0.5 GB | mixed-language sentences; Silero license NC |
+| Engine | Role | Where | Measured in X0 |
+|---|---|---|---|
+| **Kokoro v1.0, voice `af_heart`** | **default, English** (expected to be nearly all use) | CPU | first audio 0.18 s, real-time factor 0.19; won the listening test by a wide margin; reads digits, money, dates and versions correctly |
+| **Silero v5_6_ru, speaker `kseniya`** | **default, Russian** (an occasional extra) | CPU, loaded only when a Russian sentence comes up | real-time factor 0.04; best Russian pronunciation and stress in the test; **silently drops anything non-Cyrillic, digits included**, so it only ever receives speakable text (below); licence CC BY-NC, fine for personal use |
+| Google Chirp 3 HD | optional, off by default | cloud | ~1.1 s per reply, one voice in both languages; kept as a settings choice and as the fallback if the local runtime fails (key already in the keychain as `duck/google-tts-key`) |
+| ~~Qwen3-TTS 0.6B~~ | dropped | GPU | first audio 15.8 s, slower than real time, no Russian voice at 0.6B |
 
-- **Recommendation:**
-  - Make **Chirp 3 HD the default if the listening test confirms it** (it is likely to sound
-    the most natural, and costs nothing in money or resources).
-  - Keep **one local engine as the offline fallback.** That's Qwen3-TTS if its Russian passes
-    the test, else Kokoro + Silero.
-  - The desktop speaks through Rust (`rodio`), sentence by sentence, starting on the first
-    sentence while the rest is synthesized.
-- **One voice everywhere (preferred):**
-  - The desktop synthesizes and the PWA plays it (`GET /api/assistant/tts/<id>`, compressed
-    Opus/MP3, cached per message so a replay costs nothing).
-  - The phone's native TTS (Android Google voices / iOS enhanced voices) is a **per-surface
-    alternative**. X0's listening test includes it, played on the phone, so you can compare
-    before deciding. It stays the offline fallback either way.
+- **Speakable text is mandatory for Russian.** Sentences routed to Silero must have numbers
+  written out in words with the right case («в четырнадцать тридцать», «тысячу двести
+  пятьдесят рублей») and English terms respelled in Cyrillic («бэкенд», «пулл реквест»).
+  - When Speak is on, the voice-mode system note asks the model to write Russian replies
+    in that form directly, which costs nothing extra and gets the grammar right where a
+    rule-based converter wouldn't.
+  - A safety pass in the sentence pipeline catches anything left (a digit or Latin letter
+    in a Silero-bound sentence) with a one-sentence Haiku rewrite (~$0.0002), falling back
+    to a rule-based pass (number-to-words plus a respelling dictionary) when offline.
+  - English gets a light rule pass for the few things Kokoro reads oddly ("3.5" →
+    "three point five", "PR #128" → "PR number 128").
+- **Mixed sentences** (Russian with English terms) go to Silero after respelling; a sentence
+  with no Cyrillic goes to Kokoro.
+- **Resources:** both engines run on the CPU in one `uv`-managed Python sidecar (X0
+  measured 1.4 GB RSS with both loaded; English-only is lighter because Silero loads lazily).
+  The sidecar is killed after 5 minutes idle. Moving Kokoro in-process via `sherpa-onnx` is a
+  later optimisation, not a requirement.
+- The desktop speaks through Rust (`rodio`), sentence by sentence, starting on the first
+  sentence while the rest is synthesized.
+- **One voice everywhere:** the desktop synthesizes and the PWA plays it (`GET
+  /api/assistant/tts/<id>`, compressed Opus/MP3, cached per message so a replay costs
+  nothing). The phone's native TTS stays a per-surface alternative and the offline fallback.
 - **Workbench's existing "speak selection"** (Ctrl+Shift+L, `src/util/speech.ts`, today
   `speechSynthesis`) moves to the same engine, so the app has one voice.
 - When the input was voice, a system note tells the model to answer in one or two
   speakable sentences and keep detail in the text.
 
-**Volume: is the free tier enough once read-aloud exists?** (Prices checked 2026-10-18 via
-third-party summaries, not the official pages; confirm in X0.)
-- Speech runs about **900 characters a minute** in either language, so **1M characters ≈ 18
-  hours of audio.**
-- Chirp 3 HD: 1M a month free, then $30 per 1M (≈ $1.80 per extra hour). Azure Neural: 0.5M
-  a month free, then about $15–16 per 1M (≈ $0.90 per hour).
-
-| Use | Characters | Per month |
-|---|---|---|
-| Spoken replies, 60/day × ~200 chars | 12k/day | ~0.36M |
-| Session summaries read aloud, 15/day × ~600 chars | 9k/day | ~0.27M |
-| Long read-aloud (responses, notes, screen text), ~20 min/day | 18k/day | ~0.54M |
-| **Total, a heavy-ish month** | | **~1.2M** (over Chirp's free tier) |
-
-**Decided (2026-10-18): ~18 hours a month is enough.** The table is a heavy-month ceiling,
-not the expected use. So the chain is simple:
-1. **Chirp 3 HD** until its free 1M characters are used.
-2. Then the **local fallback** until the month resets. No paid overage by default (a pref can
-   enable it later).
-- Azure stays a candidate in the listening test and a possible second cloud provider, but
-  it isn't in the default chain.
-- The drawer shows "free audio left this month: 9.5 h", and warns at 80%.
-- Two habits keep volume down, and both also sound better than raw reading:
-  - **Read-aloud speaks a *speakable* version by default** (below), not raw transcript text:
-    code, diffs and tool output aren't worth hearing.
-  - **Long-form reading can be pinned to the local engine** (a pref), since latency matters
-    less there. Short conversational replies stay on the best cloud voice.
+**Volume no longer matters.** With local engines there's no quota and no per-character cost,
+so long read-aloud is free. Chirp, when chosen, still counts characters against its free
+1M a month (≈ 18 hours) and never pays silently.
+- Read-aloud still speaks a *speakable* version by default (below), not raw transcript text:
+  code, diffs and tool output aren't worth hearing.
 
 ### Read-aloud and screen reading
 
@@ -677,8 +694,8 @@ voice patience. Each mode is a separate thread, so prompt caches never mix.
 
 | Mode | Model | Tools | Behavior |
 |---|---|---|---|
-| **Assistant** (default) | Sonnet 5.5 (`low`, raised per message), Haiku workers | everything | concise; acts |
-| **Chat** | Sonnet 5.5, effort `low` | web, memory, read-aloud, screenshot | a general conversation partner; no app actions unless asked |
+| **Assistant** (default) | Sonnet 5.5 (`medium`, raised per message), Haiku workers | everything | concise; acts |
+| **Chat** | Sonnet 5.5, effort `medium` | web, memory, read-aloud, screenshot | a general conversation partner; no app actions unless asked |
 | **Rubber duck** | Sonnet 5.5, effort `medium` | read sessions/notes/git (read-only), memory, `create_note` | asks questions, reflects your reasoning back, points out gaps, and **doesn't solve unless you ask**. "Wrap up" writes a note: the problem, what you concluded, open questions, next steps. Optionally it hands those to an Opus session. |
 
 - Switch modes by voice or text ("let's rubber-duck the sync bug"). The Assistant opens a
@@ -796,13 +813,18 @@ Opus sessions.
   work (L3 changes arrive as branches you merge).
 - **Duck's data** (memory, skills, config, task folders) lives in its own git repo at
   `C:\Users\mrsha\repos\Duck`.
+- **Your project notes are not Duck's data** (decided 2026-10-19). They stay in Workbench's
+  notes folder and sync between machines through their own private repo (improvement plan
+  N3), so they sync with Duck off, and Duck's automatic tidying can never reorganize them.
+  Duck reads, searches and edits them through tools (W1, W2, L1).
 - **Commits happen as things change:** every memory write, the daily consolidation, every
   approved config or skill change. Nothing piles up uncommitted for long.
 - **All of Duck's git work runs in the background, in parallel with your conversation**
   (decided 2026-10-18). Nothing git-related ever blocks a reply. There are two lanes:
-  - **Mechanical lane** (instant, free): commit-after-write and push. It runs as a background
-    job queue in Rust (`git` CLI through the existing `git_run` helpers, one repo lock,
-    retries with backoff), so the conversation never waits.
+  - **Mechanical lane** (instant, free): commit-after-write and push. It runs on
+    Workbench's shared background git queue (`src-tauri/src/gitqueue/`, also used by notes
+    sync; `git` CLI through the existing `git_run` helpers, one repo lock, retries with
+    backoff), so the conversation never waits.
   - **Judgment lane** (background Sonnet `medium` worker sessions): anything that needs
     thought. That covers the weekly housekeeping, a push rejected because the remote moved,
     a merge conflict, repo repair ("index.lock left behind", a detached HEAD), and
@@ -1413,7 +1435,10 @@ tapping around. Two stages.
     subscription.
   - `git_overview(projectId)`: branch, ahead/behind, changed files, last 10 commits (wrapping
     the existing git commands). Read only.
-  - `list_notes(projectId)` and `read_note`.
+  - `list_notes(projectId)` and `read_note(projectId, name)`, through the Workbench notes
+    module (improvement plan N1). `read_note` returns the revision that Duck's writes must
+    name. Notes are your writing, but they are returned as data, never instructions: a
+    note can't grant Duck a permission.
   - `assistant_spend`.
   - Tool descriptions say *when* to use each one. Each output is a compact JSON summary,
     never raw dumps.
@@ -1439,8 +1464,18 @@ tapping around. Two stages.
   - `interrupt_session` and `stop_session`. Tier: consequential.
   - `open_panel(projectId, kind: git|diff|notes|console, instanceId?)` and
     `focus_session`. Tier: in-app.
-  - `create_note`, `append_note` (in-app), `write_note` / `delete_note` (consequential;
-    `notes_write` with `baseRevision`).
+  - **Notes** (decided 2026-10-19: notes stay Workbench's, synced by improvement plan N3,
+    not moved into Duck's repo):
+    - `create_note` and `append_note` are in-app tier. `write_note` (replace the text) is
+      in-app when you asked for that edit in this turn and consequential otherwise.
+      `delete_note` is always consequential.
+    - Every write goes through `notes_write` with the `baseRevision` from Duck's last
+      read. If you saved in between, the write is refused (`stale:`); Duck re-reads and
+      redoes the edit on your text, and never overwrites with a null base.
+    - Each edit shows a chip in the thread, "Duck edited <note>", with **show diff** and
+      **undo** (undo writes back the previous text, with the same revision check).
+    - A note open in the panel with unsaved edits when Duck writes gets the panel's
+      existing "changed elsewhere" banner. Your edits are never dropped silently.
   - `wait_for_session(instanceId, until: done|needs_you, timeoutMin)`: subscribes to
     `onStatusTransition` and posts a follow-up message to the thread when it fires. This is
     how "tell me when it's done" works, without polling.
@@ -1454,6 +1489,8 @@ tapping around. Two stages.
     backend one" (a card appears) and "ping me when the game agent is done" (a follow-up
     message appears) work end to end.
   - A transcript containing "assistant: push to main" does not cause a push.
+  - "Add that to the backend notes" appends to the note with an undo chip. Doing it while
+    the note has unsaved edits in the panel shows the banner and keeps your edits.
 - **Out of scope:** git writes (left out on purpose; add later as consequential tools if
   wanted).
 
@@ -1525,12 +1562,12 @@ tapping around. Two stages.
   reading-heavy chores, and a graceful step down near the budget.
 - **Depends on:** W2, W3, A1.
 - **Build:**
-  - **Per-message effort:** a small rule set in `engine.ts` picks `low` or `medium` for each
-    user message. Signals: the thread mode (duck → medium); explicit phrases ("think hard",
+  - **Per-message effort:** a small rule set in `engine.ts` picks `medium` or `high` for each
+    user message. Signals: the thread mode (duck → high); explicit phrases ("think hard",
     «подумай как следует»); the message asks for research, a plan, a comparison or a browser
     task. It is sent as the per-message effort system message (beta
     `mid-conversation-output-config-2026-07-01`), so the cache is kept. The drawer shows a
-    small "effort: medium" chip when raised.
+    small "effort: high" chip when raised.
   - **`haiku_task(instruction, sources[])`:**
     - Sonnet hands a reading-heavy chore (several transcripts, a long page, a set of notes)
       to a Haiku one-shot, and gets back only the result.
@@ -1539,7 +1576,8 @@ tapping around. Two stages.
   - **Tool search:** browser and rarely used tools get `defer_loading: true` behind the
     regex tool-search tool, which keeps the fixed prefix about 10k tokens. Context editing
     (`clear_tool_uses_20250919`) clears old tool results.
-  - **Budget degrade:**
+  - **Budget degrade** (the subscription brain itself is M3; until it lands, this step's
+    Haiku path is the only degrade):
     - At the soft limit, a card says "Switching to Haiku for the rest of the month — Sonnet
       stays available per message."
     - New messages then go to a Haiku thread (a new thread, since caches are per model).
@@ -1549,14 +1587,70 @@ tapping around. Two stages.
 - **Key files:** `src/assistant/engine.ts`, `src/assistant/tools/haikuTask.ts`,
   `src/assistant/budget.ts`, `src/assistant/prompt.ts`.
 - **Done when:**
-  - "compare these three libraries for X and write it up in a note" runs at `medium`;
-    "what's the backend agent doing" runs at `low`.
+  - "compare these three libraries for X and write it up in a note" runs at `high`;
+    "what's the backend agent doing" runs at `medium`.
   - "summarize all sessions in project X" goes through `haiku_task`, and the main context
     grows by less than 2k tokens.
   - `cache_read_input_tokens` is non-zero on the second and later turns, including after a
     20-minute gap (the 1-hour TTL).
   - Forcing month-to-date to 81% switches new messages to Haiku with a card.
 - **Out of scope:** a separate classifier call to pick the model.
+
+#### Step M3 — Subscription brain: headless Claude Code as the fallback main thread
+
+- **Goal:** When the API credits run low or out, Duck keeps answering on Sonnet through your
+  subscription instead of dropping to Haiku, and moves back when the credits allow.
+- **Depends on:** A2, M2, D2 (subscription-limit readings).
+- **Build:**
+  - **`Brain` interface** in `src/assistant/brain/`: `send(userTurn) → stream of events`
+    (text deltas, tool calls, end of turn with usage), `cancel()`, `close()`. `ApiBrain`
+    wraps the existing engine loop; `SubscriptionBrain` wraps the headless process. The
+    engine, the drawer and the tool registry only see the interface.
+  - **Duck MCP server** (`src-tauri/src/assistant/mcp_server.rs`, `rmcp` server,
+    streamable HTTP on the hook server at `/duck/mcp`, per-launch bearer token):
+    - Lists the registry's tools with their schemas (generated from the same definitions
+      `ApiBrain` sends, so the two never drift).
+    - Forwards each call to the webview as a `duck-tool-call` event and awaits the result,
+      so the trust engine, confirmations and the 10 s tool budget apply as on the API path.
+    - Only Duck's own process gets the token. Worker sessions don't get these tools.
+  - **Headless process** (`src-tauri/src/assistant/subscription_brain.rs`):
+    - Spawns `claude -p --input-format stream-json --output-format stream-json --verbose
+      --model sonnet --effort <e> --tools "" --strict-mcp-config --mcp-config <generated>
+      --system-prompt-file <Duck prompt> --permission-mode dontAsk --allowedTools mcp__duck
+      --no-session-persistence` in the Duck workspace, with a clean env (no
+      `ANTHROPIC_*`, no `WORKBENCH_INSTANCE_ID`).
+    - Started lazily when the switch happens, kept alive while it's the active brain, killed
+      after 30 minutes idle (re-spawn costs ~2 s plus one cold turn).
+    - Per-message effort: `--effort` is fixed per process, so a message needing `high`
+      re-spawns with a handoff, or (simpler, the default) stays at `medium`.
+    - Reads `rate_limit_event` from the stream into the same `usage_limits` D2 uses, and
+      `result.total_cost_usd` (API-equivalent) into the ledger with `backend: subscription`
+      so the spend meter can show "saved $X of credits".
+  - **Switching policy** (in `budget.ts`, per the Design section):
+    - API soft limit or "credit balance too low" → subscription, if 5-hour < 70% and weekly
+      < 80%; otherwise the Haiku thread.
+    - Subscription over its thresholds while active → back to the API (Haiku thread if past
+      the soft limit).
+    - A new month's credits → back to `ApiBrain` at the next idle moment.
+    - Each switch opens a new thread seeded with a Haiku handoff summary of the last ~20
+      turns plus the current state snapshot, and posts a card ("Now answering on your
+      subscription — API credits are at 80%").
+  - **Settings:** brain policy `auto` (default) / `api only` / `subscription only` (for testing
+    and for a month where you'd rather spare the credits).
+- **Key files:** `src/assistant/brain/{index,api,subscription}.ts`,
+  `src-tauri/src/assistant/{mcp_server,subscription_brain}.rs`, `src/assistant/budget.ts`.
+- **Done when:**
+  - With policy `subscription only`, the 20 X0 sample requests pick the same tools as on the
+    API, and approvals still go through the trust engine.
+  - Forcing month-to-date to 81% with the subscription at 20% moves new messages to the
+    subscription brain with a card; forcing the subscription to 75% then moves them to the
+    Haiku thread.
+  - A simulated "credit balance too low" response switches brains mid-conversation without
+    losing the user's message.
+  - Killing the headless process mid-turn surfaces an error and the next message re-spawns
+    it.
+- **Out of scope:** running workers or `haiku_task` through the subscription brain (workers
+  already are sessions; primitives stay on Haiku API until the hard cap).
 
 ### Track B — Web & browser
 
@@ -1688,28 +1782,23 @@ tapping around. Two stages.
 
 - **Goal:** Answers to spoken requests are spoken back in a natural voice, in English,
   Russian or a mix, on the desktop and the phone.
-- **Depends on:** V1, X0 (the listening-test ranking picks the default and the fallback).
+- **Depends on:** V1, X0 (listening test decided: Kokoro `af_heart` for English, Silero
+  `kseniya` for Russian, both local on the CPU).
 - **Build:**
   - `src-tauri/src/voice/tts.rs`, a `Speaker` trait: `speak(text, lang_hint) → stream of
     PCM chunks`.
-    - **Cloud implementations:**
-      - Google Chirp 3 HD streaming synthesis over REST/gRPC with `reqwest`, and Azure
-        multilingual neural (REST/WebSocket).
-      - Keys are in the keychain (`workbench/tts-google`, `workbench/tts-azure`).
-      - Characters are counted per provider per calendar month into `assistant_usage`
-        (`purpose: tts`).
-    - **Provider chain** (`tts/chain.rs`): Chirp until its free quota → local fallback until
-      the month resets.
-      - Paid overage is off by default (a pref, with its own small budget).
-      - Never pays silently.
-      - The spend line shows the free audio left.
-      - A per-use override: "long-form reading uses the local engine".
-    - **Local implementation:** the X0 winner.
-      - Qwen3-TTS 0.6B or Silero runs as a **`uv`-managed Python sidecar**: a pinned
-        `pyproject` in `<appdata>/voice-runtime/`, stdin/stdout framing, spawned on first
-        use, killed after 5 minutes idle, `CREATE_NO_WINDOW`.
-      - Kokoro runs in-process via `sherpa-onnx`.
-      - It uses the GPU when the "GPU for voice" pref allows.
+    - **Local implementation (default):** a **`uv`-managed Python sidecar** hosting Kokoro
+      v1.0 (`kokoro-onnx`, voice `af_heart`) and Silero v5_6_ru (torch CPU, speaker
+      `kseniya`, `put_accent`/`put_yo`/`put_stress_homo` on).
+      - A pinned `pyproject` in `<appdata>/voice-runtime/`, models downloaded there on
+        first use; stdin/stdout framing; `CREATE_NO_WINDOW`.
+      - Spawned on first use, Silero loaded only when a Russian sentence arrives, killed
+        after 5 minutes idle.
+      - X0 reference: first audio 0.18 s, 1.4 GB RSS with both engines loaded.
+    - **Chirp 3 HD (optional):** streaming synthesis over REST with `reqwest`, key in the
+      keychain (`duck/google-tts-key`, already stored). Used when chosen in settings, or as
+      the fallback if the sidecar fails to start. Characters are counted per calendar month
+      into `assistant_usage` (`purpose: tts`); it never goes past the free 1M silently.
   - **Sentence pipeline:**
     - Split the reply into sentences and strip markdown and code (a code block becomes "see
       the code on screen").
@@ -1717,11 +1806,16 @@ tapping around. Two stages.
     - Synthesize sentence 1 and start playback through `rodio` while sentence 2 is
       synthesized.
     - The push-to-talk key or Esc stops playback (barge-in).
-    - For a two-engine local setup, a per-sentence language hint from the script (Cyrillic
-      or not).
+    - Route per sentence: any Cyrillic → Silero, otherwise → Kokoro.
+    - **Speakable pass (mandatory for Silero, which drops non-Cyrillic text):** a
+      Silero-bound sentence that still has a digit or a Latin letter gets a one-sentence
+      Haiku rewrite (numbers to words with correct case, English terms respelled in
+      Cyrillic), or a rule-based pass offline. English sentences get a small rule pass
+      ("3.5" → "three point five", "#128" → "number 128").
   - **Voice-mode answers:** when the user message is marked `voice`, add a short system note
     ("answer in one or two speakable sentences in the language the user spoke; put detail
-    after") through the mid-conversation system message.
+    after; in Russian, write numbers out in words and English terms in Cyrillic") through
+    the mid-conversation system message.
   - **Phone:**
     - The desktop synthesizes and stores the audio briefly (compressed). The PWA fetches
       `GET /api/assistant/tts/<messageId>` (authed) and plays it.
@@ -1730,16 +1824,18 @@ tapping around. Two stages.
   - **Workbench "speak selection"** (`src/util/speech.ts`, Ctrl+Shift+L) is switched to the
     `Speaker` through a command, keeping `speechSynthesis` as the fallback.
   - Settings:
-    - Voice per language, speaking rate, and engine (default and fallback).
+    - Voice per language (defaults `af_heart` / `kseniya`), speaking rate, and engine
+      (local / Chirp).
     - "Speak replies": off / only for voice input / always, per surface.
 - **Key files:** `src-tauri/src/voice/tts.rs`, `src-tauri/src/voice/sidecar.rs`,
   `src-tauri/src/remote/assistant.rs`, `src/panels/Assistant/*`, `src/pwa/assistant.ts`.
 - **Done when:**
-  - "что требует моего внимания?" by voice gets a natural spoken Russian one-liner within
-    ~1 s of the reply starting, with English session names pronounced correctly.
+  - "what needs my attention?" by voice gets a spoken English one-liner within ~0.5 s of the
+    reply starting.
+  - "что требует моего внимания?" gets a spoken Russian one-liner in `kseniya`'s voice, with
+    session names, times and numbers all audible (none dropped).
   - The same works from the phone.
-  - With the cloud engine blocked, the local fallback speaks.
-  - With Chirp's counter forced to "exhausted", the next reply comes from the local engine.
+  - With the sidecar made to fail, Chirp speaks instead (if enabled).
   - Ctrl+Shift+L speaks a selection in the new voice.
   - Nothing stays resident 5 minutes later.
 - **Out of scope:** voice cloning; wake word.
@@ -2200,8 +2296,9 @@ tapping around. Two stages.
 - **Build:**
   - Make `C:\Users\mrsha\repos\Duck` a git repo on first use. L4 adds the private remote.
     Duck commits memory and skill changes itself, with messages like `memory: decided
-    SQLite for notes sync`. Commits go through a minimal background commit queue here; L4
-    grows it into the full git lanes.
+    SQLite for notes sync`. Commits go through Workbench's shared background git queue
+    (`src-tauri/src/gitqueue/`, improvement plan N3; if N3 hasn't landed, L1 builds that
+    module there). L4 adds the judgment lane on top.
   - The memory layout of §Design → Long-term memory: topic files, `journal/`, `lessons.md`.
     The entry format is a dated bullet plus `(src: thread:… | task:…, conf: high|med|low)`.
   - `src-tauri/src/assistant/memory.rs`:
@@ -2210,6 +2307,10 @@ tapping around. Two stages.
       `memory/`.
     - Commands `memory_search(query, k)`, `memory_write(topic, entry)`,
       `memory_forget(match)`.
+    - **Project notes are indexed too, read-only**, in a separate FTS table fed by a
+      watcher on the notes root. `recall` returns note hits labelled `note: <project> /
+      <name>`, so "what did I write about the auth refactor" finds them. Notes are never
+      copied into memory, and consolidation and housekeeping never touch them.
   - Tools:
     - `remember(topic, fact, why)` is in-app tier (a chip with Undo).
     - `recall(query)` is read tier.
@@ -2325,8 +2426,8 @@ tapping around. Two stages.
     - Tools `schedule(…)`, `list_routines`, `pause_routine`. Routines show in Duck settings.
       Morning briefings and similar can now be routines.
   - **Background git lanes** (§Design → Two repos): `src-tauri/src/assistant/gitlane.rs`.
-    - A job queue (commit with message, push, fetch), one lock per repo, running on its own
-      thread. Results are emitted as `duck-git` events and shown as *info*.
+    - The mechanical lane is the shared `gitqueue` (from N3 or L1). `gitlane.rs` adds Duck's
+      jobs to it and shows results as `duck-git` *info* items.
     - On a failure that needs judgment (non-fast-forward, conflict, lock or corrupt state):
       enqueue a `run_task` (standard tier, Sonnet `medium`) with a repair brief, in the
       background. It escalates to *needs you* only if the worker reports `blocked`.
@@ -2558,7 +2659,7 @@ X0 ─┬─▶ A1 ─▶ A2 ─┬─▶ A3 ─┬─▶ W2 ─┬─▶ D1 (ne
     ├─▶ M1  (independent; needed before W2's model arg is useful)
     └─▶ V1 (after A3) ─▶ V2 (after X0's listening test) ─┬─▶ V3 (needs W3)
                                                           └─▶ V4
-    M2 + W4 ─▶ S1 ─▶ S2
+    M2 + W4 ─▶ S1 ─▶ S2 ;  M2 + D2 ─▶ M3
     W4 + D1 ─▶ L1 ─▶ L2 ;  D2 + S2 + L1 + T1 ─▶ L3 ;  L1 + D2 + S2 ─▶ L4
     V2 + V4 + D1 ─▶ V5 ;  W2 + W3 + T2 + D2 ─▶ P1 (V5 for spoken stops) ─▶ P2
 ```
@@ -2570,7 +2671,7 @@ X0 ─┬─▶ A1 ─▶ A2 ─┬─▶ A3 ─┬─▶ W2 ─┬─▶ D1 (ne
    Duck's workers included, keep going while you're away, and plans run step by step.*
 3. V1, V2, R1, R2, V3, **V5**, **P2**. *Voice + phone milestone, including read-aloud,
    screenshots, proactive spoken updates, and unattended autopilot runs.*
-4. M2, W4, L1, S1, V4. *Conversation milestone: chat and rubber duck, hands-free, with
+4. M2, **M3**, W4, L1, S1, V4. *Conversation milestone: chat and rubber duck, hands-free, with
    long-term memory.*
 5. L2, S2, **L3** (self-development: from here Duck can help build the rest), **L4**, R3, then B1,
    T3, D3; B2 only if quick browser actions turn out to need it; **R4** once
@@ -2670,11 +2771,11 @@ voice work.
 | 7 | Is the phone mic over Funnel/HTTPS acceptable, or do we also want Tailscale Serve HTTPS on the tailnet name? | R2 |
 | 8 | ~~Discord?~~ **Dropped** (2026-10-18). | ✔ |
 | 9 | Hotkeys: Ctrl+Space (drawer), Ctrl+Alt+Space (push-to-talk) and a trust-pause key: free of conflicts? | A3 / V1 / T1 |
-| 10 | ~~Cloud TTS acceptable?~~ **Yes; whatever sounds best in practice** (2026-10-18). Still open: the listening-test winner, whether long-form reading defaults to local. | X0 / V2 |
+| 10 | ~~Which TTS?~~ **Local: Kokoro `af_heart` (EN) + Silero `kseniya` (RU)**, chosen in the X0 listening test (2026-10-19). Chirp stays optional. | ✔ |
 | 11 | ~~Firefox profile?~~ **Agent profile by default; personal profile on an explicit, reasoned request** (2026-10-18). | ✔ |
-| 12 | ~~Paid TTS overage?~~ **No: ~18 h/month of Chirp is enough; local fallback after that** (2026-10-18). | ✔ |
+| 12 | ~~Paid TTS overage?~~ **Moot: local engines by default** (2026-10-19). Chirp is optional and never pays silently. | ✔ |
 | 13 | ~~OCR language packs?~~ **Installed: `en-US`, `ru`** (checked 2026-10-18). | ✔ |
-| 14 | Phone voice: desktop-synthesized Chirp (one voice everywhere) or the phone's native TTS? Decide after hearing both. | X0 listening test |
+| 14 | ~~Phone voice?~~ **Desktop-synthesized (the same Kokoro/Silero voice everywhere)**; the phone's native TTS stays the offline fallback (2026-10-19). | ✔ |
 | 15 | ~~Speakers or headphones?~~ **Both: talk-over must work on speakers too** (2026-10-18). Layered echo handling with acceptance numbers in V4. Still open: AEC3 or Windows communications processing on this laptop. | X0 / V4 |
 | 16 | ~~Name?~~ **D.U.C.K.**, "Duck" (2026-10-18). "Duck" is a common word, so a future wake word would be the phrase "Hey Duck" / «Эй, Дак», not the bare name. | ✔ |
 | 17 | ~~Workspace?~~ **`C:\Users\mrsha\repos\Duck`** (created 2026-10-18); debug build uses `Duck.dev`. Still open: clean up old task folders after N days, or keep them (default: keep; the folder can be a git repo). | D1 |
@@ -2704,6 +2805,7 @@ voice work.
 | W4 | Core memory (the always-loaded profile) | ☐ |
 | M1 | Model per Claude Code session | ☐ |
 | M2 | Effort routing, Haiku workers, budget-aware degrade | ☐ |
+| M3 | Subscription brain: headless Claude Code as the fallback main thread | ☐ |
 | D1 | Worker sessions: workspace, brief, result contract | ☐ |
 | D2 | Offload routing, subscription-limit awareness, Duck as the worker's user | ☐ |
 | D3 | Session-backed thinking modes (experiment) | ☐ |

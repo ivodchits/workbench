@@ -1220,6 +1220,64 @@ filesystem path. There is no `draggable` / `dataTransfer` use anywhere in `src/`
     Clicking a line showed its markup; ticking a box edited the text; switching
     modes kept the text. In the editor, README.md read cleanly with the toggle on.
 
+#### Step N3 — Notes sync across machines
+
+- **Goal:** The same project notes on every PC that runs Workbench, kept in a private git
+  repo, with no lost text when two machines edit the same note.
+- **Depends on:** N1.
+- **Decided (2026-10-19):** notes stay Workbench's data and sync on their own. They don't
+  move into Duck's data repo (`assistant-plan.md` §Two repos): Duck reorganizes its own
+  repo automatically, while notes are yours, and notes sync must work with Duck off or not
+  set up on a machine.
+- **Build:**
+  - **Project identity.** A project's id is random per machine, so notes are keyed by a
+    **notes key** instead.
+    - A new `projects.notes_key` column. On this machine the existing folders keep their
+      names: each project's notes key is its current project id, so nothing is renamed.
+    - Each notes folder gets `project.json`: `{name, origin}`, where `origin` is the
+      project's normalized `origin` URL (read with the existing git commands, local or
+      SSH; `https`/`ssh` forms and a trailing `.git` normalize to one string).
+    - Opening notes for a project with no notes key: a folder whose `origin` matches is
+      linked automatically ("linked to notes from <machine>"). With several matches, or a
+      project without a remote, the panel offers **link to existing notes…** (a list of
+      unlinked folders by name) or **start new notes**.
+    - The notes module and its rules don't change. `note_path` resolves the folder
+      through the notes key, so the phone (R8) is unaffected.
+  - **The notes root is a git repo** (release build only; `notes.dev/` never syncs).
+    - Setup, in Settings → Notes sync, off by default: **create** runs `git init` and
+      `gh repo create <name> --private` (after you confirm), or **join** clones an
+      existing remote. Joining a machine that already has notes merges them in.
+    - Commits: 30 s after the last change to the folder, or when a note is closed, with
+      messages like `notes: <project> / <note>`. Pushes follow each commit.
+    - Pulls: on start, when the window gains focus after ≥5 min, and before a push. No
+      polling while the app is idle.
+    - A pulled change emits `notes-changed`, so open panels reload as they do today
+      (the unsaved-edits banner covers a note you're editing).
+  - **Conflicts never lose text.**
+    - Merges are by file. A note changed on both machines keeps your version under its
+      name, and the other one is saved as `<name> (from <machine>).md` and committed. An
+      *info* item names both.
+    - An edit beats a delete: a note deleted on one machine and edited on the other comes
+      back.
+    - A failed push or pull (offline, auth) retries with backoff and shows as *info*
+      after an hour. It never blocks saving: notes always save locally first.
+  - **A shared background git queue**, `src-tauri/src/gitqueue/`: per-repo jobs (commit,
+    fetch, merge, push), one lock per repo, its own thread, results as events. Notes sync
+    is its first user. Duck's data repo uses the same queue (assistant plan L1, L4); if L1
+    lands first, it builds this module and N3 reuses it.
+- **Key files:** `src-tauri/src/notes/` (notes key, `project.json`), new
+  `src-tauri/src/notes/sync.rs`, new `src-tauri/src/gitqueue/`, a migration adding
+  `projects.notes_key`, `src/panels/Notes/` (link UI), Settings.
+- **Done when:**
+  - Two machines (or two Windows users) share notes for the same repo, linked by its
+    remote with no manual step.
+  - Editing the same note on both while offline ends with both texts kept and one *info*
+    item.
+  - Saving a note with the network off works, and syncs once it's back.
+  - The phone still reads and writes notes unchanged.
+- **Out of scope:** real-time co-editing; merging inside a note (line-level merge of
+  prose produces surprises; a conflict copy is clearer); syncing anything else.
+
 ---
 
 ### Track R — Remote
@@ -2023,7 +2081,7 @@ T0 ─ T1 ─ T2 ─ T3 ─ T4
 D1 (─ D2)                      │
 V1 ─ V2                        │
    └ V3 ─ A1                   │
-N1 (─ N2)                      │
+N1 (─ N2) ─ N3                 │
 N1 ─ R8 (also needs R1)        │
 R2 ─ R3 ─ R6                   │
 T2 ─ R1 ─ R4 ─────────────── R5
@@ -2033,7 +2091,9 @@ M1
 ```
 
 Suggested order: **C1 → T0 → T1 → T2 → T3 → T4 → T5 → C2 → C3 → D1 → R1 → R7 → R2 → R3 → R4 →
-R5 → V1 → V2 → V3 → N1 → R8 → P1 → R6 → A1**, with M1, N2 and D2 whenever convenient.
+R5 → V1 → V2 → V3 → N1 → R8 → P1 → R6 → A1**, with M1, N2 and D2 whenever convenient. N3
+is needed once there's a second machine. Whichever of N3 and the assistant plan's L1 comes
+first builds the shared git queue.
 
 C2/C3 sit after the transcript view on purpose: once T3 exists there is a clean way to read
 any session, which lowers the urgency and makes the terminal bugs easier to compare against.
@@ -2075,6 +2135,7 @@ any session, which lowers the urgency and makes the terminal bugs easier to comp
 | V3 | Inline comments to the agent | ☑ |
 | N1 | Project notes panel | ☑ |
 | N2 | Rendered-while-editing markdown | ☑ |
+| N3 | Notes sync across machines | ☐ |
 | R1 | PWA build | ☑ |
 | R2 | Pairing / auth hardening | ☑ |
 | R3 | Tailscale Funnel | ☑ |
