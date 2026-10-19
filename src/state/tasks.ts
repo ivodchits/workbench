@@ -47,11 +47,13 @@ export interface TaskSession extends TaskDescriptor {
 
 interface TasksState {
   open: TaskSession[];
-  /** The task to bring to front; only a new value moves focus. */
+  /** The task to bring to front. */
   activeId: string | null;
+  /** Bumped by every run, so running the same task again brings it back to front. */
+  focusSeq: number;
 }
 
-let state: TasksState = { open: [], activeId: null };
+let state: TasksState = { open: [], activeId: null, focusSeq: 0 };
 const listeners = new Set<() => void>();
 
 function emit(next: TasksState): void {
@@ -86,6 +88,10 @@ export function getActiveTaskId(): string | null {
   return state.activeId;
 }
 
+export function getTaskFocusSeq(): number {
+  return state.focusSeq;
+}
+
 export function getTask(taskId: string): TaskSession | undefined {
   return state.open.find((t) => t.taskId === taskId);
 }
@@ -112,7 +118,7 @@ export function startTask(desc: TaskDescriptor, spawn: TaskSpawn): void {
   const open = existing
     ? state.open.map((t) => (t.taskId === desc.taskId ? { ...t, ...fresh, run: t.run + 1 } : t))
     : [...state.open, { ...fresh, run: 1 }];
-  emit({ open, activeId: desc.taskId });
+  emit({ open, activeId: desc.taskId, focusSeq: state.focusSeq + 1 });
 }
 
 /** The backend spawned run `run`: record what it ran. */
@@ -174,6 +180,7 @@ export function hydrateTasks(descriptors: TaskDescriptor[]): void {
 export function closeTask(taskId: string): void {
   if (!getTask(taskId)) return;
   emit({
+    ...state,
     open: state.open.filter((t) => t.taskId !== taskId),
     activeId: state.activeId === taskId ? null : state.activeId,
   });

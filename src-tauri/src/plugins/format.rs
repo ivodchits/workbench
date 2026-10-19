@@ -699,6 +699,14 @@ pub fn resolve(
         argv.push(arg);
         from_controls.push(tainted);
     }
+    // The file check sees the template; a checkbox can still add a flag like `-c`
+    // (or drop one), so look again at what will actually run.
+    if let Some(i) = code_args(&argv).into_iter().filter(|&i| from_controls[i]).min() {
+        return Err(format!(
+            "argument {i} would be read as code by {}, and a control's value went into it",
+            program_name(&argv[0])
+        ));
+    }
     let cwd = match &action.cwd {
         Some(c) => {
             let (c, _) = fill(c)?;
@@ -965,6 +973,20 @@ mod tests {
         assert!(on.cwd.ends_with("src-tauri") && on.cwd.starts_with("/repo"), "{}", on.cwd);
         assert!(uses(&p.actions[0], "branch"));
         assert!(!uses(&p.actions[0], "data"));
+    }
+
+    #[test]
+    fn a_checkbox_cant_turn_a_value_into_code() {
+        let text = r#"{ "version": 1, "plugins": [ { "id": "b",
+            "controls": [ { "type": "checkbox", "id": "mode", "on": "-c", "off": "" },
+                          { "type": "text", "id": "msg" } ],
+            "actions": [ { "id": "go", "run": ["bash", "{mode}", "{msg}"] } ] } ] }"#;
+        let file = parse(text).unwrap();
+        let p = &file.plugins[0];
+        let off = resolve(p, &p.actions[0], &vals(&[("msg", "x.sh")]), &builtins()).unwrap();
+        assert_eq!(off.argv, ["bash", "x.sh"]);
+        let err = resolve(p, &p.actions[0], &vals(&[("mode", "true"), ("msg", "rm -rf ~")]), &builtins()).unwrap_err();
+        assert!(err.contains("read as code"), "{err}");
     }
 
     #[test]

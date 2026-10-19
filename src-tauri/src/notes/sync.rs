@@ -27,7 +27,28 @@ use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager};
 
 use crate::db::Db;
-use crate::gitqueue::{output, run, run_network};
+use crate::git::run::Output;
+
+/// Settings from the user's own git config that would break a background sync:
+/// signing can prompt or fail, and line-ending conversion would make a note's bytes
+/// differ between a checkout and a merge (and between machines).
+const ISOLATE: [&str; 4] = ["-c", "commit.gpgsign=false", "-c", "core.autocrlf=false"];
+
+fn isolated<'a>(args: &[&'a str]) -> Vec<&'a str> {
+    ISOLATE.iter().copied().chain(args.iter().copied()).collect()
+}
+
+fn run(root: &Path, args: &[&str]) -> Result<String, String> {
+    crate::gitqueue::run(root, &isolated(args))
+}
+
+fn run_network(root: &Path, args: &[&str]) -> Result<String, String> {
+    crate::gitqueue::run_network(root, &isolated(args))
+}
+
+fn output(root: &Path, args: &[&str]) -> Result<Output, String> {
+    crate::gitqueue::output(root, &isolated(args))
+}
 
 pub const STATUS_EVENT: &str = "notes-sync-status";
 pub const NOTICE_EVENT: &str = "notes-sync-notice";
@@ -88,6 +109,9 @@ struct Shared {
     failures: u32,
     retry_at: Option<Instant>,
     reported_failing: bool,
+    /// Whether a sync has gone through since sync was turned on, and the linking
+    /// that follows the first one has run.
+    linked: bool,
 }
 
 fn shared() -> &'static OnceLock<Mutex<Shared>> {
@@ -208,7 +232,7 @@ pub fn commit_all(root: &Path, machine: &str) -> Result<bool, String> {
         return Ok(false);
     }
     let msg = commit_message(root, &paths);
-    run_as(root, machine, &["commit", "-q", "-m", &msg])?;
+    run_as(root, machine, &["commit", "-q", "--no-verify", "-m", &msg])?;
     Ok(true)
 }
 
@@ -442,13 +466,14 @@ pub fn init(app: &AppHandle) {
         failures: 0,
         retry_at: None,
         reported_failing: false,
+        linked: false,
     }));
     std::thread::Builder::new()
         .name("notes sync timer".into())
         .spawn(timer)
         .expect("spawn the notes sync timer");
     if remote.is_some() {
-        request(true);
+        request(Why::Full);
     } else {
         // No sync: link what's obvious now (with sync, after the first pull).
         let app = app.clone();
@@ -477,7 +502,7 @@ pub fn focused() {
         s.status.remote.is_some() && s.last_pull.is_none_or(|t| t.elapsed() >= FOCUS_PULL_AGE)
     });
     if stale {
-        request(false);
+        request(Why::Full);
     }
 }
 
@@ -496,27 +521,51 @@ fn timer() {
             if retry {
                 s.retry_at = None;
             }
-            quiet || retry
+            match (quiet, retry) {
+                (_, true) => Some(Why::Full),
+                (true, false) => Some(Why::Quiet),
+                _ => None,
+            }
         };
-        if due {
-            request(false);
+        if let Some(why) = due {
+            request(why);
         }
     }
 }
 
+/// Why a sync runs.
+#[derive(Clone, Copy, PartialEq)]
+pub enum Why {
+    /// Pull and push: at start, on focus, on a retry, or when asked.
+    Full,
+    /// The folder went quiet after changes: commit them, and go on to pull and push
+    /// only if that made something to push. The sync's own writes land here too.
+    Quiet,
+}
+
 /// Queue a sync on the notes repo's git queue.
-pub fn request(first: bool) {
+pub fn request(why: Why) {
     let Some(m) = shared().get() else { return };
     let app = m.lock().unwrap().app.clone();
     if !enabled() {
         return;
     }
     let Ok(root) = super::notes_root(&app) else { return };
-    crate::gitqueue::submit(&root, move |root| run_sync(&app, root, first));
+    crate::gitqueue::submit(&root, move |root| run_sync(&app, root, why));
 }
 
-fn run_sync(app: &AppHandle, root: &Path, first: bool) {
+/// Commit what changed; `true` when that leaves nothing to push.
+fn nothing_to_push(root: &Path, machine: &str) -> bool {
+    let _guard = super::write_lock();
+    matches!(commit_all(root, machine), Ok(false)) && rev(root, "HEAD") == rev(root, &format!("refs/remotes/origin/{BRANCH}"))
+}
+
+fn run_sync(app: &AppHandle, root: &Path, why: Why) {
     let Some(m) = shared().get() else { return };
+    let machine = machine_name();
+    if why == Why::Quiet && nothing_to_push(root, &machine) {
+        return;
+    }
     {
         let mut s = m.lock().unwrap();
         if s.status.remote.is_none() {
@@ -526,7 +575,6 @@ fn run_sync(app: &AppHandle, root: &Path, first: bool) {
         s.dirty_since = None;
         emit_status(&s);
     }
-    let machine = machine_name();
     let result = sync_once(root, &machine, &|work| {
         let _guard = super::write_lock();
         work()
@@ -544,10 +592,12 @@ fn run_sync(app: &AppHandle, root: &Path, first: bool) {
             for (kind, text) in report.notices.clone() {
                 notice(&mut s, kind, text);
             }
+            let link = !s.linked || !report.changed.is_empty();
+            s.linked = true;
             emit_status(&s);
             drop(s);
             announce(app, &report.changed);
-            if first || !report.changed.is_empty() {
+            if link {
                 after_pull(app);
             }
         }
@@ -555,7 +605,7 @@ fn run_sync(app: &AppHandle, root: &Path, first: bool) {
             let since = *s.failing_since.get_or_insert_with(Instant::now);
             s.failures += 1;
             // 30 s, 1 min, 2 min, … up to 15 min between tries.
-            let wait = Duration::from_secs(30u64.saturating_mul(1 << s.failures.min(5).saturating_sub(1))).min(Duration::from_secs(900));
+            let wait = Duration::from_secs(30u64.saturating_mul(1 << s.failures.min(6).saturating_sub(1))).min(Duration::from_secs(900));
             s.retry_at = Some(Instant::now() + wait);
             s.status.state = "failing";
             s.status.error = Some(e.clone());
@@ -619,6 +669,7 @@ fn set_remote(app: &AppHandle, remote: Option<String>) -> Result<(), String> {
         s.status.remote = remote;
         s.status.error = None;
         s.retry_at = None;
+        s.linked = false;
         emit_status(&s);
     }
     Ok(())
@@ -678,7 +729,7 @@ pub async fn notes_sync_create(app: AppHandle, name: String) -> Result<(), Strin
     .await
     .map_err(|e| e.to_string())?
     .and_then(|url| set_remote(&app, Some(url)))?;
-    request(true);
+    request(Why::Full);
     Ok(())
 }
 
@@ -707,7 +758,7 @@ pub async fn notes_sync_join(app: AppHandle, url: String) -> Result<(), String> 
     .await
     .map_err(|e| e.to_string())??;
     set_remote(&app, Some(url))?;
-    request(true);
+    request(Why::Full);
     Ok(())
 }
 
@@ -720,7 +771,7 @@ pub fn notes_sync_disable(app: AppHandle) -> Result<(), String> {
 /// Sync now (a note was closed, or "sync now").
 #[tauri::command]
 pub fn notes_sync_now() {
-    request(false);
+    request(Why::Full);
 }
 
 /// The window came back into focus.
@@ -880,6 +931,22 @@ mod tests {
         let b = lab.machine("b");
         lab.sync(&b, "PC-B");
         assert_eq!(get(&b, "p/n.md").as_deref(), Some("two"));
+    }
+
+    #[test]
+    fn a_quiet_sync_with_nothing_new_skips_the_network() {
+        let lab = Lab::new("quiet");
+        let a = lab.machine("a");
+        put(&a, "p/plan.md", "one");
+        lab.sync(&a, "A");
+        // A pull's own writes (or none at all) leave nothing to push.
+        assert!(nothing_to_push(&a, "A"));
+        put(&a, "p/plan.md", "two");
+        assert!(!nothing_to_push(&a, "A"));
+        // Committed above but not pushed yet: still something to push.
+        assert!(!nothing_to_push(&a, "A"));
+        lab.sync(&a, "A");
+        assert!(nothing_to_push(&a, "A"));
     }
 
     #[test]

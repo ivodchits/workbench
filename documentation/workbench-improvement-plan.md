@@ -1283,9 +1283,12 @@ filesystem path. There is no `draggable` / `dataTransfer` use anywhere in `src/`
   prose produces surprises; a conflict copy is clearer); syncing anything else.
 - **As built (2026-10-19):**
   - **Notes key:**
-    - Migration v12 adds `projects.notes_key` and sets it to each existing project's
-      id, so no folder was renamed. A project registered later has none until its
-      notes are linked or started.
+    - Migration v12 adds `projects.notes_key`, empty. A project with no key uses its
+      own id's folder, so no folder was renamed, and one that has such a folder is
+      linked to it at start. A project with no folder stays unlinked, so another
+      machine's notes for the same repo can still match it once a pull brings them.
+      (Setting every key to the id would have linked each project to an empty folder
+      on a second machine, and it would never match.)
     - The notes module keeps a project → key map, loaded at start and after every
       change. `folder_of(projectId)` gives the key, or the id while there is none.
       `note_path`, `list` and the plugin file (K1) resolve through it, so the phone
@@ -1302,10 +1305,15 @@ filesystem path. There is no `draggable` / `dataTransfer` use anywhere in `src/`
       2. else the one unlinked folder whose origin matches;
       3. with several matches, or no remote and folders to choose from, the panel
          asks;
-      4. else it starts new notes.
-    - The notes panel runs this when it opens (`notes_link_status`). After every
-      pull, `link_obvious` links the clear cases (1 and 2) but never starts new
-      notes, so a machine that is still joining doesn't fork every project's notes.
+      4. else it uses its own id's folder, but doesn't link until that folder
+         exists (its first note), so a machine that is still joining doesn't fork
+         its notes.
+    - The notes panel runs this when it opens (`notes_link_status`, off the main
+      thread, since the origin can take an SSH round trip). After the first sync
+      that goes through, and after every pull that changes files, `link_obvious`
+      links the clear cases (1 and 2). Without sync it runs at start.
+    - An unlinked project's own id counts as taken, so its folder is never offered
+      to another project.
     - The panel's ask screen lists the unlinked folders by name and note count, with
       **start new notes** below them.
     - `describe_folders` writes `project.json` into each linked folder that lacks one
@@ -1318,7 +1326,12 @@ filesystem path. There is no `draggable` / `dataTransfer` use anywhere in `src/`
       on one PC.
     - Commits come 30 s after the last change: the notes module's writes, plus a
       watcher on the root (shared with K1's), which ignores `.git`. A save in the
-      panel syncs at once when you leave that note.
+      panel syncs at once when you leave that note. A quiet-time sync that finds
+      nothing to commit and nothing to push stops there, so the files a pull wrote
+      don't cost another fetch.
+    - Git runs with `commit.gpgsign=false` and `core.autocrlf=false` and commits with
+      `--no-verify`, so the user's global signing, line-ending conversion and hooks
+      don't reach the notes repo.
     - Messages read `notes: <project> / <note>` (`… and N more` for several files),
       authored as the machine name.
     - Pulls happen at start, on window focus after five minutes or more, and before

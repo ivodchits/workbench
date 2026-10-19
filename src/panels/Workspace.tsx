@@ -115,6 +115,7 @@ import {
 import {
   closeTask,
   getActiveTaskId,
+  getTaskFocusSeq,
   getOpenTasks,
   hydrateTasks,
   useTasks,
@@ -664,7 +665,7 @@ function Workspace() {
   // Same reconcile for task panels (step K1), keyed by project like the notes panel.
   // Removing one releases its pooled terminal (the remove handler below), which
   // stops a run that is still going.
-  const taskFocusRef = useRef<string | null>(null);
+  const taskFocusRef = useRef(0);
   const reconcileTasks = useCallback((a: DockviewApi) => {
     const projId = displayedProjectRef.current;
     const openTasks = getOpenTasks();
@@ -686,9 +687,10 @@ function Workspace() {
       if (id && !allTaskIds.has(id)) a.removePanel(panel);
     }
     const aTask = getActiveTaskId();
-    if (aTask && a.getPanel(aTask) && aTask !== taskFocusRef.current) {
+    const seq = getTaskFocusSeq();
+    if (aTask && a.getPanel(aTask) && seq !== taskFocusRef.current) {
       a.getPanel(aTask)?.api.setActive();
-      taskFocusRef.current = aTask;
+      taskFocusRef.current = seq;
     }
   }, []);
 

@@ -215,11 +215,11 @@ const MIGRATIONS: &[&str] = &[
     ALTER TABLE projects ADD COLUMN default_model TEXT;
     "#,
     // v11 -> v12: the folder a project's notes live in, shared across machines (step
-    // N3). Existing projects keep their folders: their notes key is their own id. A
-    // project registered later has none until its notes are linked or started.
+    // N3). It starts empty: a project with no key uses its own id's folder, and one
+    // that has such a folder is linked to it at start. A project with no folder stays
+    // unlinked, so it can still match another machine's notes once they arrive.
     r#"
     ALTER TABLE projects ADD COLUMN notes_key TEXT;
-    UPDATE projects SET notes_key = id;
     "#,
 ];
 

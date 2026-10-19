@@ -8,7 +8,9 @@
 //! - otherwise the one unlinked folder whose origin matches its own;
 //! - with several matches, or no remote and folders to choose from, the notes panel
 //!   asks (link to one of them, or start new notes);
-//! - with nothing to choose from, it starts new notes (its key is its own id).
+//! - with nothing to choose from, it uses its own id's folder, unlinked until
+//!   that folder exists (its first note), so a project with no notes yet can still
+//!   match another machine's folder once a pull brings it in.
 //!
 //! Linking only sets `projects.notes_key`; the notes module resolves the folder
 //! through it ([`super::folder_of`]), so nothing else changes.
@@ -221,7 +223,7 @@ fn taken(app: &AppHandle) -> Result<HashSet<String>, String> {
     let db = app.state::<Db>();
     let conn = db.conn.lock().map_err(|_| "db lock poisoned")?;
     let projects = crate::registry::list_projects(&conn).map_err(|e| e.to_string())?;
-    Ok(projects.into_iter().filter_map(|p| p.notes_key).collect())
+    Ok(projects.into_iter().map(|p| p.notes_key.unwrap_or(p.id)).collect())
 }
 
 /// Link `project_id` to `folder`, write the folder's `project.json` if it has none,
@@ -253,8 +255,16 @@ pub fn status(app: &AppHandle, project_id: &str) -> Result<LinkStatus, String> {
     }
     let root = notes_root(app)?;
     let unlinked = unlinked_folders(&root, &taken(app)?);
-    let origin = project_origin(&project);
-    match decide(project_id, root.join(project_id).is_dir(), origin.as_deref(), &unlinked) {
+    let own = root.join(project_id).is_dir();
+    // Only look the origin up (git, maybe over SSH) when there's something it could match.
+    let origin = if own || unlinked.is_empty() { None } else { project_origin(&project) };
+    match decide(project_id, own, origin.as_deref(), &unlinked) {
+        // New notes: use its own id's folder without linking it, so another
+        // machine's folder can still match once it arrives. Writing a note makes
+        // the folder, and the folder links it.
+        Decision::Use(_) if !own => {
+            Ok(LinkStatus { linked: true, linked_to: None, candidates: Vec::new() })
+        }
         Decision::Use(folder) => {
             set_key(app, &root, &project, &folder)?;
             Ok(LinkStatus { linked: true, linked_to: None, candidates: Vec::new() })
@@ -324,28 +334,29 @@ pub fn describe_folders(app: &AppHandle) {
 }
 
 // --- commands ---------------------------------------------------------------------------
+// Off the main thread: finding a project's origin can mean a slow SSH round trip.
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn notes_link_status(app: AppHandle, project_id: String) -> Result<LinkStatus, String> {
     status(&app, &project_id)
 }
 
 /// Link a project to an existing notes folder (the panel's "link to existing notes…").
-#[tauri::command]
+#[tauri::command(async)]
 pub fn notes_link(app: AppHandle, project_id: String, folder: String) -> Result<(), String> {
     let project = project(&app, &project_id)?;
     let root = notes_root(&app)?;
-    if !taken(&app)?.contains(&folder) && !root.join(&folder).is_dir() {
+    if !root.join(&folder).is_dir() {
         return Err("that notes folder doesn't exist".into());
     }
-    if taken(&app)?.contains(&folder) {
+    if folder != project_id && taken(&app)?.contains(&folder) {
         return Err("another project here already uses those notes".into());
     }
     set_key(&app, &root, &project, &folder)
 }
 
 /// Start a project's own notes (the panel's "start new notes").
-#[tauri::command]
+#[tauri::command(async)]
 pub fn notes_start_new(app: AppHandle, project_id: String) -> Result<(), String> {
     let project = project(&app, &project_id)?;
     let root = notes_root(&app)?;
