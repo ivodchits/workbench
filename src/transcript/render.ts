@@ -27,6 +27,7 @@ import type {
   ToolStatus,
   UserItem,
 } from "./model";
+import { inputStr, toolTarget, toolTitle } from "./summary";
 
 /** Output longer than this is cut, with a "show all" button. */
 const CLIP_LINES = 40;
@@ -118,17 +119,6 @@ function labelled(label: string, body: Node): HTMLElement {
   return el("div", "wb-tx-section", el("div", "wb-tx-label", label), body);
 }
 
-/** The last two segments of a path — enough to recognise a file on one line. */
-function shortPath(path: string): string {
-  const parts = path.split(/[\\/]/).filter(Boolean);
-  return parts.length <= 2 ? path : `…/${parts.slice(-2).join("/")}`;
-}
-
-function oneLine(text: string, max = 140): string {
-  const first = text.trim().split("\n")[0] ?? "";
-  const more = text.trim().includes("\n");
-  return first.length > max ? `${first.slice(0, max)}…` : more ? `${first} …` : first;
-}
 
 function tokens(n: number): string {
   return n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n);
@@ -182,11 +172,6 @@ const STATUS_WORD: Record<ToolStatus, string> = {
   error: "failed",
   denied: "denied",
 };
-
-function inputStr(item: ToolItem, key: string): string {
-  const v = item.input[key];
-  return typeof v === "string" ? v : "";
-}
 
 /** The change a file tool makes: the recorded patch, or — while the call is still
  *  waiting (a permission prompt) — what its input says it will do. */
@@ -245,57 +230,6 @@ function diffBlock(hunks: DiffHunk[]): HTMLElement {
     block.append(more);
   }
   return block;
-}
-
-/** The one-line target of a tool call: what it acted on. */
-function toolTarget(item: ToolItem): string {
-  switch (item.name) {
-    case "Bash":
-      return oneLine(inputStr(item, "command"));
-    case "Edit":
-    case "Write":
-    case "Read":
-    case "NotebookEdit":
-      return shortPath(inputStr(item, "file_path") || inputStr(item, "notebook_path"));
-    case "Grep": {
-      const where = inputStr(item, "path") || inputStr(item, "glob");
-      return `${inputStr(item, "pattern")}${where ? `  in ${shortPath(where)}` : ""}`;
-    }
-    case "Glob":
-      return inputStr(item, "pattern");
-    case "Agent":
-    case "Task":
-      return item.agent?.description ?? "";
-    case "AskUserQuestion": {
-      const q = item.questions?.[0];
-      if (!q) return "";
-      const extra = (item.questions?.length ?? 1) > 1 ? ` (+${(item.questions?.length ?? 1) - 1})` : "";
-      return q.answer === null ? `${q.question}${extra}` : `${q.question} → ${q.answer}${extra}`;
-    }
-    case "ExitPlanMode":
-      return oneLine(inputStr(item, "plan").replace(/^#+\s*/, ""));
-    case "WebFetch":
-      return inputStr(item, "url");
-    case "WebSearch":
-    case "ToolSearch":
-      return inputStr(item, "query");
-    case "Skill":
-      return inputStr(item, "skill");
-    default: {
-      // Unknown tool: the first short string argument usually names its target.
-      const first = Object.values(item.input).find((v) => typeof v === "string" && v.length > 0);
-      return typeof first === "string" ? oneLine(first, 100) : "";
-    }
-  }
-}
-
-function toolTitle(item: ToolItem): string {
-  if (item.agent) return item.agent.type || "Agent";
-  if (item.name === "AskUserQuestion") return "Question";
-  if (item.name === "ExitPlanMode") return "Plan";
-  // `mcp__server__tool` reads better as `server: tool`.
-  const mcp = /^mcp__(.+?)__(.+)$/.exec(item.name);
-  return mcp ? `${mcp[1]}: ${mcp[2]}` : item.name;
 }
 
 function questionBlock(q: AskedQuestion): HTMLElement {

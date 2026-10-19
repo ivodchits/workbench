@@ -12,7 +12,7 @@ import {
   type StreamFn,
   type StreamLike,
 } from "./engine";
-import type { WorkbenchPort } from "./port";
+import { fakePort } from "./fakePort.test-util";
 import type { DuckEvent } from "./protocol";
 import { createThreadStore, type ThreadBackend } from "./threads";
 import { getTime } from "./tools/getTime";
@@ -75,7 +75,7 @@ function memoryBackend(): ThreadBackend & { rows: StoredMessage[] } {
   };
 }
 
-const port: WorkbenchPort = { listProjects: () => [], listSessions: () => [] };
+const port = fakePort();
 
 function message(
   content: Block[],

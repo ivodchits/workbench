@@ -22,12 +22,17 @@ import {
 import { createTurnMeter } from "./spend";
 import { createThreadStore, ipcBackend, type ThreadStore } from "./threads";
 import { getTime } from "./tools/getTime";
+import { READ_TOOLS } from "./tools/read";
 import { createRegistry } from "./tools/registry";
 import { testConfirm } from "./tools/testConfirm";
 
 /** Every tool Duck has. Order doesn't matter: the registry sorts them. The
  *  confirmation test tool exists in dev builds only. */
-const TOOLS = import.meta.env.DEV ? [getTime, testConfirm] : [getTime];
+const TOOLS = [
+  getTime,
+  ...READ_TOOLS,
+  ...(import.meta.env.DEV ? [testConfirm] : []),
+];
 
 /** Where the spend comes from: the ledger commands in the app, fakes in tests. */
 export interface SpendSource {

@@ -1871,6 +1871,31 @@ tapping around. Two stages.
   "what changed in project X today?" are answered correctly against live sessions, and each
   tool has a unit test with fixture stores.
 - **Out of scope:** anything that writes.
+- **As built (2026-10-19):**
+  - Nine tools in `src/assistant/tools/read.ts`, all read tier: `list_projects` (with
+    session and needs-you counts), `list_sessions(project?)`, `get_pending_choice`,
+    `read_session(session, maxItems=20)`, `usage_limits`, `git_overview(project,
+    session?, since?, commits?)`, `list_notes`, `read_note`, and `duck_spend` (named for
+    Duck rather than `assistant_spend`, so the model reads it as its own cost).
+  - Projects and sessions can be named by id **or name** (a session title must be unique,
+    or come with its project), so "what is the backend one doing?" needs no lookup round.
+    A miss or an ambiguity lists the candidates in the error.
+  - `git_overview` also reads a session's worktree (`session`), lists the agent branches
+    checked out in worktrees, and takes git's `since` syntax ("midnight") for "what
+    changed today". A remote (SSH) project is refused: its repo isn't on this machine.
+  - `read_session` uses the new `src/transcript/plainText.ts`: it pages back until it
+    has enough items, writes one line per item (tool calls as `tool Bash: npm test
+    [error]`, with a failure's reason or a subagent's report under it), and caps at
+    12,000 characters from the oldest end. The tool-summary helpers moved from
+    `render.ts` to `src/transcript/summary.ts` so both share them. The output is wrapped
+    `<transcript … untrusted>` and a `</transcript>` inside is defused.
+  - The model column waits for M1. The port grew the members these tools need; tests
+    use `fakePort` (`src/assistant/fakePort.test-util.ts`), and the engine test moved to it.
+  - The system prompt gained one line: re-read session state with the tools, since earlier
+    results in the thread go stale.
+  - **Verified:** 14 new vitest cases (9 tools over fixture stores, including the
+    wrapper that can't be closed from inside; 5 for `plainText` over the T0 session),
+    tsc and eslint clean.
 
 #### Step W2 — Action tools + the confirmation policy
 
@@ -3258,7 +3283,7 @@ voice work.
 | A2 | Assistant engine: loop, tool registry, threads | ☑ |
 | A3 | The Assistant drawer (desktop UI) | ☑ |
 | A4 | Deleting threads | ☑ |
-| W1 | Read tools | ☐ |
+| W1 | Read tools | ☑ |
 | W2 | Action tools + the confirmation policy | ☐ |
 | W3 | Session summaries | ☐ |
 | W4 | Core memory (the always-loaded profile) | ☐ |

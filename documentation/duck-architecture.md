@@ -5,7 +5,7 @@ behind each decision are in `assistant-plan.md`. This file describes the code, a
 Duck step updates it as part of its Done when. Duck's self-development sessions (L3)
 read it first.
 
-Last updated: step A4 (2026-10-19).
+Last updated: step W1 (2026-10-19).
 
 ## The shape
 
@@ -39,10 +39,22 @@ Last updated: step A4 (2026-10-19).
 | `threads.ts` | `createThreadStore(backend)`: threads, messages (loaded per thread on first use) and parked tool batches, in memory and persisted. Appends to one thread are serialized so each gets the next `seq`. |
 | `client.ts` | `getClient()` (the SDK at the proxy, with the launch token as its key), `purpose()`, `capMessage()`, `errorMessage()`, and `oneShot(name, input, {schema?})` for Haiku primitives. |
 | `prompt.ts` | The frozen system prompt, `MAIN_MODEL` / `PRIMITIVE_MODEL`, and `PRIMITIVES` (one frozen prompt per Haiku job; the key is its `x-wb-purpose`). |
-| `port.ts` / `port.local.ts` | `WorkbenchPort` and its one implementation over the stores. The only file under `src/assistant/` allowed to import `src/state/**` or `src/panels/**`. |
+| `port.ts` / `port.local.ts` | `WorkbenchPort` and its one implementation over the stores. The only file under `src/assistant/` allowed to import `src/state/**` or `src/panels/**`. Members: projects, sessions (live phase, pending choice, worktree, last activity), transcript paging, usage limits, a git snapshot of a directory, notes list/read, Duck's spend. |
+| `fakePort.test-util.ts` | `fakePort(data)` and the `project()` / `session()` builders: a port over fixture data for the engine's and the tools' tests. |
 | `tools/registry.ts` | `defineTool({name, description, schema, tier, timeoutMs?, run})` and `createRegistry(tools)`: the API tool list sorted by name, built once; `tierOf(name)`. |
-| `tools/getTime.ts` | The stub tool, `get_time` (read tier). |
+| `tools/getTime.ts` | `get_time` (read tier): the local date, time and zone. |
+| `tools/read.ts` | The W1 read tools: `list_projects`, `list_sessions`, `get_pending_choice`, `read_session`, `usage_limits`, `git_overview`, `list_notes`, `read_note`, `duck_spend`. Compact JSON, empty fields left out; projects and sessions are named by id or name (`findProject` / `findSession`, which list the choices on a miss or an ambiguity). |
 | `tools/testConfirm.ts` | `test_confirm`, a consequential tool that does nothing, for trying the confirmation card. Registered in dev builds only. |
+
+Outside the folder, `src/transcript/plainText.ts` (`readPlainText`) writes a session's
+recent items as text for `read_session`: user, Claude, one line per tool call, cut to a
+character cap from the oldest end. It shares `src/transcript/summary.ts` (a tool call's
+target and title) with the DOM renderer.
+
+**Untrusted text:** `read_session` wraps the transcript in `<transcript … untrusted>`, and
+any `</transcript>` inside is defused, so a session's text can't close the wrapper.
+Questions in pending choices and note contents come back as plain JSON data; the system
+prompt's safety rules cover them.
 
 ### Rust: `src-tauri/src/assistant/`
 
@@ -193,6 +205,6 @@ Both rules are in `prompt.ts`.
 
 - The Sonnet toggle (M2, once there is a Haiku thread to step up from); the drawer has
   "think hard" (effort `high`) instead.
-- Real tools (W1, W2), the trust policy (T1, which replaces `tierGate`), and effort
+- Action tools (W2), the session's model in `list_sessions` (M1), the trust policy (T1, which replaces `tierGate`), and effort
   routing (M2).
 - The WebSocket transport (R1).
