@@ -1980,6 +1980,36 @@ tapping around. Two stages.
   the line.
 - **Out of scope:** the long-term store and recall (L1), automatic extraction (L2).
 
+#### Step W5 — Project toolbar tools
+
+- **Goal:** Duck runs, adds and edits a project's toolbar plugins (improvement plan
+  Track K): "start an installer build and tell me when it's done", "add a deploy
+  button to the game project".
+- **Depends on:** W2 (the confirmation policy and `wait_for_session`), the improvement
+  plan's K1 merged.
+- **Build:**
+  - Read tier: `list_plugins(project)`, the parsed toolbar with each control's current
+    value and each action's run state. `read_plugins(project)` gives the raw file and its
+    revision.
+  - `run_plugin_action(project, plugin, action, values?)`: **consequential**, since it
+    runs a command on your PC. Until T1, always a card. The card shows the exact argv after
+    substitution. It returns a handle at once. Completion (the exit code and the task
+    panel's last lines) comes back as a follow-up message in the thread, through the same
+    mechanism as `wait_for_session`.
+  - `write_plugins(project, text, baseRevision)`: **consequential**. The card shows a diff
+    of `plugins.json`. It goes through `plugins_write`, so a stale base is refused and Duck
+    re-reads. A validation error comes back as the tool's error, with the JSON path, so
+    Duck fixes it in the next round. Duck writes a script the plugin needs into the
+    project's `scripts/` folder through the same card.
+  - A chip "Duck edited the build toolbar" with **show diff** and **undo**, as for notes
+    (W2).
+  - The file is data to Duck: a plugin's labels or `confirm` text can't instruct it.
+- **Key files:** `src/assistant/tools/plugins.ts`, `src/assistant/port.ts` /
+  `port.local.ts`.
+- **Done when:** both requests in the goal work end to end, a refused card runs nothing,
+  and an invalid edit is fixed by Duck without your help.
+- **Out of scope:** trusting plugin actions without a card (that is T1's job, per action).
+
 ### Track M — Models
 
 #### Step M1 — Model per Claude Code session
@@ -3145,10 +3175,11 @@ X0 ─┬─▶ A1 ─▶ A2 ─┬─▶ A3 ─┬─▶ W2 ─┬─▶ D1 (ne
     M2 + W4 ─▶ S1 ─▶ S2 ;  M2 + D2 ─▶ M3
     W4 + D1 ─▶ L1 ─▶ L2 ;  D2 + S2 + L1 + T1 ─▶ L3 ;  L1 + D2 + S2 ─▶ L4
     V2 + V4 + D1 ─▶ V5 ;  W2 + W3 + T2 + D2 ─▶ P1 (V5 for spoken stops) ─▶ P2
+    W2 + K1 (improvement plan, built in parallel) ─▶ W5
 ```
 
 **Suggested order:**
-1. X0, A1, A2, A3, A4, W1, M1, W2, **D1**. *First milestone: text control of the app, with heavy
+1. X0, A1, A2, A3, A4, W1, M1, W2, **D1**, then W5 once K1 is merged. *First milestone: text control of the app, with heavy
    work offloaded to sessions from day one.*
 2. W3, T1, T2 (shadow mode first), **D2**, **P1**. *Trust + autopilot milestone: sessions,
    Duck's workers included, keep going while you're away, and plans run step by step.*
@@ -3287,6 +3318,7 @@ voice work.
 | W2 | Action tools + the confirmation policy | ☐ |
 | W3 | Session summaries | ☐ |
 | W4 | Core memory (the always-loaded profile) | ☐ |
+| W5 | Project toolbar tools | ☐ |
 | M1 | Model per Claude Code session | ☐ |
 | M2 | Effort routing, Haiku workers, budget-aware degrade | ☐ |
 | M3 | Subscription brain: headless Claude Code as the fallback main thread | ☐ |

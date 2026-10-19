@@ -1253,6 +1253,10 @@ filesystem path. There is no `draggable` / `dataTransfer` use anywhere in `src/`
       polling while the app is idle.
     - A pulled change emits `notes-changed`, so open panels reload as they do today
       (the unsaved-edits banner covers a note you're editing).
+    - The project's `plugins.json` and `scripts/` (Track K) live in the same folder and
+      sync with the notes. A pulled change to them emits `plugins-changed`. A conflict
+      keeps your version and saves the other as `plugins (from <machine>).json`, which
+      the toolbar ignores.
   - **Conflicts never lose text.**
     - Merges are by file. A note changed on both machines keeps your version under its
       name, and the other one is saved as `<name> (from <machine>).md` and committed. An
@@ -2070,6 +2074,115 @@ filesystem path. There is no `draggable` / `dataTransfer` use anywhere in `src/`
   fit the same route.
 - **Done when:** the summary shows after a turn, and the usage meter still works.
 
+### Track K — Project toolbar (plugins)
+
+Per-project controls in the title bar that run project-specific logic: "build the
+installer" and "run a dev instance" for Workbench, a dropdown plus a text field plus a
+button for another project. Asked for on 2026-10-19.
+
+**Decided (2026-10-19):**
+- **Declarative, not code.** A plugin is a JSON description of controls and the actions
+  they run. Workbench draws the controls itself. No plugin code ever runs in the webview,
+  so a plugin can't reach the PTYs, git or Duck's proxy token. Real logic lives in
+  scripts that the actions run as ordinary processes. No rebuild is needed: the file is
+  read at runtime and reloaded when it changes. Code plugins (a sandboxed custom panel)
+  can come later if a real need shows up.
+- **Stored with the project's notes**, `<app data>/notes/<project folder>/plugins.json`,
+  next to N3's `project.json`. It syncs across machines with the notes (N3), stays out of
+  the repo, and doesn't appear in the notes list (the list shows `.md` files only).
+  Scripts the plugins call can live in the same folder (`scripts/`), so they sync too.
+- **Built in parallel with Duck**, in its own worktree session (`agent/plugins`), and
+  merged into `main` when done. The overlap with Duck's steps is small: `App.tsx`'s title
+  bar, the `lib.rs` command list and `Workspace.tsx`'s components. Duck's plugin tools
+  (assistant plan W5) wait for the merge.
+
+#### Step K1 — Plugin file, toolbar and task runs
+
+- **Goal:** Buttons, dropdowns and text fields in the title bar that run a project's
+  commands, defined in a file you (or Duck) can edit without rebuilding.
+- **Depends on:** N1 (the notes folder). N3 isn't needed: until it lands, the folder is
+  the project id's.
+- **Format** (`version: 1`; unknown fields are refused, so a typo doesn't silently do
+  nothing):
+
+  ```json
+  { "version": 1,
+    "plugins": [
+      { "id": "build", "label": "build",
+        "actions": [
+          { "id": "installer", "label": "installer", "run": ["npm", "run", "tauri:build"] },
+          { "id": "dev", "label": "dev", "run": ["npm", "run", "tauri:dev"], "long": true } ] },
+      { "id": "deploy",
+        "controls": [
+          { "id": "env", "type": "select", "options": ["staging", "prod"], "default": "staging" },
+          { "id": "tag", "type": "text", "placeholder": "tag", "pattern": "^v\\d+\\.\\d+\\.\\d+$" } ],
+        "actions": [
+          { "id": "go", "label": "deploy",
+            "run": ["pwsh", "-File", "{data}/scripts/deploy.ps1", "-Env", "{env}", "-Tag", "{tag}"],
+            "confirm": "Deploy {tag} to {env}?" } ] } ] }
+  ```
+
+  - Controls: `button` (an action), `select`, `text`, `checkbox`. The values of `select`,
+    `text` and `checkbox` are kept per project in prefs, so a field keeps its last value.
+  - `run` is an **argv array, never a shell string**. `{control}` placeholders are
+    substituted inside single arguments only, so a text field's value can't become a
+    second command (guardrail: no shell interpolation of user strings). Whoever wants a
+    shell writes `["pwsh", "-Command", "…"]` themselves, with no placeholders inside it.
+  - Also substituted: `{root}` (the project root), `{data}` (the project's notes folder,
+    for synced scripts) and `{branch}`. `cwd` defaults to `{root}`.
+  - An action may set `confirm` (a question shown before it runs), `long` (it keeps
+    running until stopped, like a dev server) and `env` (extra variables).
+  - A `text` control may set `pattern`; the action stays disabled until the value
+    matches.
+- **Build:**
+  - **Backend** `src-tauri/src/plugins/`:
+    - `plugins_read(projectId)` → the parsed file, or the validation errors with their
+      JSON paths.
+    - `plugins_write(projectId, text, baseRevision)` uses the same revision rule as notes
+      (a stale base is refused). Duck's writes and the editor go through it.
+    - A `notify` watcher on the notes root emits `plugins-changed { projectId }`.
+  - **Toolbar** (`src/panels/ProjectToolbar.tsx`): the active project's plugins, in the
+    title bar left of palette / templates / layout, with a separator before them. Same
+    mono style as `PaletteButton`.
+    - Each plugin is a group of its controls.
+    - When they don't fit, the last groups fold into a "▾ more" menu.
+    - An invalid file shows a single "⚠ plugins" item that opens the file and lists the
+      errors.
+    - Every action is also a palette entry ("build: installer").
+  - **Task runs:**
+    - An action runs in a **task panel**, a terminal panel titled after the action. It
+      spawns the argv directly: a new `SpawnKind::Task` with `argv`, `cwd` and `env`,
+      using `CREATE_NO_WINDOW` like the other children.
+    - Running it again reuses its panel. If the previous run is still going, it asks
+      first.
+    - The PTY gains a `pty-exited { id, code }` event (it has none today).
+    - The button shows the run's state: running (spinner), then ✓ or ✗ with the exit
+      code for a minute. A `long` action's button becomes ■ stop while it runs.
+    - Task panels round-trip in layouts and presets like shells. A task that was
+      running when the app closed comes back dormant (not restarted).
+  - **Hot reload:** saving the file (from anywhere: the editor, Duck, a sync pull)
+    redraws the toolbar within a second, with nothing compiled and no window reload.
+    "Plugins: reload" in the palette re-reads the file for the rare missed event.
+    "Plugins: edit" opens `plugins.json` in the editor panel.
+  - **SSH projects:** v1 runs actions on this machine. Running them on the host through
+    the remote shell path is a later option.
+- **Key files:** new `src-tauri/src/plugins/`, `src-tauri/src/pty/mod.rs` (task kind,
+  exit event), new `src/ipc/plugins.ts`, new `src/state/plugins.ts`, new
+  `src/panels/ProjectToolbar.tsx` and the task panel, `src/App.tsx` (`TitleBar`),
+  `src/panels/Workspace.tsx`, `src/state/layout.ts`, the palette.
+- **Done when:**
+  - Workbench's own `plugins.json` gives an "installer" button that runs a release build
+    in a task panel and ends ✓, and a "dev" button that starts a dev instance and stops
+    it.
+  - A select + text + button plugin passes both values as single arguments: a test with
+    `a & calc` in the text field prints that literal string.
+  - Editing the file updates the toolbar without a restart, and a broken file shows the
+    ⚠ item with the error's path.
+  - Unit tests cover the parser (unknown fields, placeholders, patterns) and argv
+    substitution.
+- **Out of scope:** code plugins; actions on the SSH host; plugin output parsed into
+  anything beyond the exit code.
+
 ---
 
 ## Sequencing
@@ -2088,11 +2201,13 @@ T2 ─ R1 ─ R4 ─────────────── R5
      └ R7
 T2 ─ P1
 M1
+N1 ─ K1 (parallel with the assistant plan, in its own worktree)
 ```
 
 Suggested order: **C1 → T0 → T1 → T2 → T3 → T4 → T5 → C2 → C3 → D1 → R1 → R7 → R2 → R3 → R4 →
 R5 → V1 → V2 → V3 → N1 → R8 → P1 → R6 → A1**, with M1, N2 and D2 whenever convenient. N3
-is needed once there's a second machine. Whichever of N3 and the assistant plan's L1 comes
+is needed once there's a second machine. K1 runs in parallel with Duck's steps, in its own
+worktree session. Whichever of N3 and the assistant plan's L1 comes
 first builds the shared git queue.
 
 C2/C3 sit after the transcript view on purpose: once T3 exists there is a clean way to read
@@ -2147,3 +2262,4 @@ any session, which lowers the urgency and makes the terminal bugs easier to comp
 | P1 | Open plan on demand | ☑ |
 | A1 | Review with a fresh agent | ☑ |
 | M1 | Run summary on done (mod) | ☐ |
+| K1 | Project toolbar: plugin file, toolbar, task runs | ☐ |
