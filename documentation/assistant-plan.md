@@ -2228,6 +2228,23 @@ tapping around. Two stages.
 - **Out of scope:** running workers or `haiku_task` through the subscription brain (workers
   already are sessions; primitives stay on Haiku API until the hard cap).
 
+#### Step M4 — Permission mode at launch
+
+- **Goal:** A project (or one session) can start Claude Code in a chosen permission mode,
+  so fewer prompts come up in the first place.
+- **Depends on:** M1 (same path).
+- **Build:**
+  - `instances.permission_mode` and `projects.default_permission_mode` (nullable), passed as
+    `claude --permission-mode <m>` on launch and resume, looked up in `pty_spawn` like
+    the model, and validated against the modes the installed Claude Code lists.
+  - The picker beside M1's model on the card and in the project dialog; `create_session`
+    takes it too (an Assistant pref for coding work, like the model).
+- **Done when:** a session launched with `acceptEdits` shows it in its status line, and
+  resume keeps it.
+- **Out of scope:** switching the mode of a running session (decided 2026-10-19: no
+  in-session switcher. Shift+Tab stays in the terminal, and the trust policy covers the
+  prompts).
+
 ### Track B — Web & browser
 
 #### Step B1 — Web search and fetch
@@ -3155,10 +3172,19 @@ tapping around. Two stages.
 
 ### Track T — Trust
 
+**The principle (decided 2026-10-19, after W2's live test):** Duck exists to speed you up,
+so a card for every small action defeats it. Guardrails come from rules, a short built-in
+floor, a decision log you can read afterwards, and a kill switch, not from asking. A card
+is for what the floor and the rules can't settle. Reliability matters as much as the
+rules: every failure found in a live test becomes a regression test (W2's string option
+and the dropped first Enter are the first two), and anything that drives the TUI is
+checked in the scratch PTY first.
+
 #### Step T1 — Trust engine for the Assistant's own actions
 
 - **Goal:** Replace W2's tier → card mapping with the trust engine (§Design → Trust policy)
-  for the Assistant's own consequential tools, with an audit log and a kill switch.
+  for the Assistant's own consequential tools, with an audit log and a kill switch. Duck acts
+  without a card on what the rules allow.
 - **Depends on:** W2.
 - **Build:**
   - `src/assistant/trust/`:
@@ -3174,15 +3200,30 @@ tapping around. Two stages.
   - Kill switch: a `toggleTrust` command (palette + hotkey), a tray menu item, and a state
     shown in the drawer header. `meta` `assistant_trust_paused`.
   - Per-project mode: **off** (everything asks), **shadow** (decide and log, still ask),
-    **live**. New projects default to shadow.
+    **live**. New projects default to **live** on the starter rules (changed 2026-10-19
+    from shadow); shadow is there for a project you want to watch first.
+  - **Starter rules** (global, editable):
+    - Allow: `assistant:send_prompt`, `assistant:create_session`, `assistant:append_note`,
+      `assistant:create_note`, `assistant:write_note`, `assistant:interrupt_session`, and
+      `assistant:answer_choice` when the request is covered by a mandate (T2) or the
+      answer is a question's option.
+    - Ask: `assistant:stop_session` on a working session, `assistant:delete_note`,
+      `assistant:resume_session` over a running session.
+    - The floor (always ask, can't be overridden by a rule): anything that pushes,
+      force-anything, deletes outside a worktree, touches credentials or `~/.claude`.
+  - **Explicit permission in the request counts.** "Tell it to continue, and approve it if
+    it asks" is a mandate for that session: the matching answers run without a card and
+    are logged against the message that granted them.
   - UI: Assistant settings → Trust (rules table, floor, mode per project). Drawer →
     **Decisions** view, with Make a rule / Always ask for this.
 - **Key files:** `src/assistant/trust/*`, `src/assistant/policy.ts` (now a thin adapter),
   `src-tauri/src/assistant/trust.rs`, `src-tauri/src/db/mod.rs`, `src/panels/Assistant/*`.
 - **Done when:**
   - Unit tests cover rule matching, precedence, and the floor overriding an allow rule.
-  - With `assistant:write_note` allowed in project X, a note write runs without a card and
-    shows in Decisions.
+  - On the starter rules, a note rewrite and an interrupt run without a card and show in
+    Decisions.
+  - "Approve it if it asks" lets the next permission answer run without a card; a request
+    without that line still asks.
   - Pausing trust brings the cards back immediately.
 - **Out of scope:** Claude Code prompts (T2).
 
@@ -3190,7 +3231,8 @@ tapping around. Two stages.
 
 - **Goal:** Sessions keep working while you're away: the Assistant answers their permission
   prompts under the policy.
-- **Depends on:** T1, W3 (mandate text and summaries), M1.
+- **Depends on:** T1, M1. (W3's summaries make the mandate richer but aren't needed: the
+  mandate is the request that started the session, or its first prompt.)
 - **Build:**
   - A watcher on `hook-event` `PermissionRequest` (+ `pendingChoice` for the option
     list):
@@ -3220,7 +3262,9 @@ tapping around. Two stages.
 - **Key files:** `src/assistant/trust/watcher.ts`, `src/assistant/trust/judge.ts`,
   `src/state/pendingChoice.ts` (read only), `src/state/remoteActions.ts` (exports only).
 - **Done when:**
-  - In shadow mode for a day, Decisions shows what it would have done, and you agree with it.
+  - A replay of the past week's permission prompts (from transcripts) through `decide`
+    agrees with what you answered, or the differences are rules you accept. This replaces
+    the day in shadow mode.
   - In live mode, a session running tests and edits in its worktree goes 30 minutes without
     needing you.
   - A `git push --force` request still asks.
@@ -3259,27 +3303,30 @@ tapping around. Two stages.
 ## Sequencing
 
 ```
-X0 ─┬─▶ A1 ─▶ A2 ─┬─▶ A3 ─┬─▶ W2 ─┬─▶ D1 (needs M1) ─▶ D2 (needs W3, T2) ─▶ D3 (needs S1, V4)
+X0 ─┬─▶ A1 ─▶ A2 ─┬─▶ A3 ─┬─▶ W2 ─┬─▶ T1 ─▶ T2 (needs M1) ─▶ T3
+    │             │       │       ├─▶ D1 (needs M1) ─▶ D2 (needs W3, T2) ─▶ D3 (needs S1, V4)
     │             │       │       ├─▶ M2 ─┬─▶ B1
     │             │       │       │       └─▶ B2 (after D1, only if needed)
     │             └─▶ W1 ─┴───────┤
-    │                     └─▶ W3 ─┼─▶ T1 ─▶ T2 (needs W3, M1) ─▶ T3
+    │                     └─▶ W3 ─┤
     │                             ├─▶ W4
     │                             └─▶ R1 ─▶ R2 (needs V1) ─▶ R3 (needs V4) ─▶ R4 (gate: real phone use)
-    ├─▶ M1  (independent; needed before W2's model arg is useful)
+    ├─▶ M1 ─▶ M4 (permission mode at launch)
     └─▶ V1 (after A3) ─▶ V2 (after X0's listening test) ─┬─▶ V3 (needs W3)
                                                           └─▶ V4
     M2 + W4 ─▶ S1 ─▶ S2 ;  M2 + D2 ─▶ M3
     W4 + D1 ─▶ L1 ─▶ L2 ;  D2 + S2 + L1 + T1 ─▶ L3 ;  L1 + D2 + S2 ─▶ L4
     V2 + V4 + D1 ─▶ V5 ;  W2 + W3 + T2 + D2 ─▶ P1 (V5 for spoken stops) ─▶ P2
-    W2 + K1 (improvement plan, built in parallel) ─▶ W5
+    W2 + K1 (improvement plan; merged 2026-10-19) ─▶ W5
 ```
 
 **Suggested order:**
-1. X0, A1, A2, A3, A4, W1, M1, W2, **D1**, then W5 once K1 is merged. *First milestone: text control of the app, with heavy
-   work offloaded to sessions from day one.*
-2. W3, T1, T2 (shadow mode first), **D2**, **P1**. *Trust + autopilot milestone: sessions,
-   Duck's workers included, keep going while you're away, and plans run step by step.*
+1. X0, A1, A2, A3, A4, W1, M1, W2 (done), then **T1**, **T2**, W5, M4, **D1**. *First
+   milestone: text control of the app that acts without asking about the small things,
+   with heavy work offloaded to sessions.* (Reordered 2026-10-19: trust moved ahead of
+   D1, because a card for every action defeats the point of Duck.)
+2. W3, **D2**, **P1**. *Autopilot milestone: sessions, Duck's workers included, keep going
+   while you're away, and plans run step by step.*
 3. V1, V2, R1, R2, V3, **V5**, **P2**. *Voice + phone milestone, including read-aloud,
    screenshots, proactive spoken updates, and unattended autopilot runs.*
 4. M2, **M3**, W4, L1, S1, V4. *Conversation milestone: chat and rubber duck, hands-free, with
@@ -3288,8 +3335,8 @@ X0 ─┬─▶ A1 ─▶ A2 ─┬─▶ A3 ─┬─▶ W2 ─┬─▶ D1 (ne
    T3, D3; B2 only if quick browser actions turn out to need it; **R4** once
    R3 shows you really use Duck from the phone.
 
-T2 runs in shadow mode for a few days before any project goes live, which overlaps with the
-voice work.
+T2 goes live after the replay check in its done-when (the past week's prompts through
+`decide`), not after days in shadow mode. Shadow stays available per project.
 
 ---
 
@@ -3378,7 +3425,7 @@ voice work.
 | 3 | ~~Haiku or Sonnet as the main model?~~ **Sonnet; Haiku for summaries and other primitives** (2026-10-18). About $60 a month at moderate use; the soft limit degrades to Haiku on heavy months. Still open: the measured per-turn cost. | X0 |
 | 4 | Do the consoles here bill to the subscription (so Opus sessions cost no API credits)? | X0 |
 | 5 | ~~Budget defaults?~~ **Soft limit 80%, hard cap $90** (agreed 2026-10-18). | ✔ |
-| 6 | ~~May the Assistant answer prompts?~~ **Yes, most of them, under the trust policy** (track T; decided 2026-10-18). Still open: which rules to start with per project, settled during T2's shadow run. | T2 |
+| 6 | ~~May the Assistant answer prompts?~~ **Yes, most of them, under the trust policy** (track T; decided 2026-10-18). The starter rules are in T1; they're tuned with the replay in T2. | T2 |
 | 7 | Is the phone mic over Funnel/HTTPS acceptable, or do we also want Tailscale Serve HTTPS on the tailnet name? | R2 |
 | 8 | ~~Discord?~~ **Dropped** (2026-10-18). | ✔ |
 | 9 | Hotkeys: Ctrl+Space (drawer), Ctrl+Alt+Space (push-to-talk) and a trust-pause key: free of conflicts? | A3 / V1 / T1 |
@@ -3419,6 +3466,7 @@ voice work.
 | M1 | Model per Claude Code session | ☑ |
 | M2 | Effort routing, Haiku workers, budget-aware degrade | ☐ |
 | M3 | Subscription brain: headless Claude Code as the fallback main thread | ☐ |
+| M4 | Permission mode at launch | ☐ |
 | D1 | Worker sessions: workspace, brief, result contract | ☐ |
 | D2 | Offload routing, subscription-limit awareness, Duck as the worker's user | ☐ |
 | D3 | Session-backed thinking modes (experiment) | ☐ |
