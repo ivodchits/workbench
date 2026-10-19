@@ -848,7 +848,9 @@ function Workspace() {
   ]);
 
   return (
-    <div style={{ flex: 1, minWidth: 0, minHeight: 0 }}>
+    // `isolation` keeps dockview's own layers (floating groups sit at z-index 999)
+    // inside the dock, so Duck's drawer (step A3) covers every layout.
+    <div style={{ flex: 1, minWidth: 0, minHeight: 0, isolation: "isolate" }}>
       <DockviewReact
         components={COMPONENTS}
         watermarkComponent={Watermark}

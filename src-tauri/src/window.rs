@@ -13,6 +13,10 @@
 
 use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindowBuilder};
 
+/// Passed by the login entry (step A3, `tauri-plugin-autostart`): start with the
+/// main window hidden; the tray icon shows it.
+pub const MINIMIZED_ARG: &str = "--minimized";
+
 const BROWSER_ARGS: &str = "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection \
      --disable-background-timer-throttling --disable-renderer-backgrounding \
      --disable-backgrounding-occluded-windows";
@@ -35,7 +39,8 @@ fn profile<'a, M: Manager<tauri::Wry>>(
 }
 
 /// Build the main window from its `tauri.conf.json` entry (which has
-/// `create: false`, so Tauri leaves it to us).
+/// `create: false`, so Tauri leaves it to us). Started at login, it stays hidden
+/// until the tray icon is clicked; Duck's engine runs either way.
 pub fn build_main(app: &AppHandle) -> tauri::Result<()> {
     let config = app
         .config()
@@ -45,8 +50,20 @@ pub fn build_main(app: &AppHandle) -> tauri::Result<()> {
         .find(|w| w.label == "main")
         .cloned()
         .expect("tauri.conf.json defines the main window");
-    profile(app, WebviewWindowBuilder::from_config(app, &config)?).build()?;
+    let hidden = std::env::args().any(|a| a == MINIMIZED_ARG);
+    profile(app, WebviewWindowBuilder::from_config(app, &config)?)
+        .visible(!hidden)
+        .build()?;
     Ok(())
+}
+
+/// Show the main window (the tray icon's click): restored, unminimized, focused.
+pub fn show_main(app: &AppHandle) {
+    if let Some(win) = app.get_webview_window("main") {
+        let _ = win.show();
+        let _ = win.unminimize();
+        let _ = win.set_focus();
+    }
 }
 
 /// Open a torn-off panel's window (step 4.2) with the main window's profile.

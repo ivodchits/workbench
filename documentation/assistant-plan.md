@@ -27,8 +27,11 @@ browser options, API surface) are condensed into §Design and §Research notes, 
 document stands on its own.
 
 **Machine (measured 2026-10-18):** Ryzen AI 9 HX 370 (12 cores / 24 threads), 31 GB RAM,
-NVIDIA RTX 4060 Laptop (8 GB VRAM) plus Radeon 890M iGPU. Languages: **English and
-Russian.**
+NVIDIA RTX 4060 Laptop (8 GB VRAM) plus Radeon 890M iGPU. Languages: **you write and speak
+English, Russian or Spanish (you're learning it); Duck always answers in English**, and
+uses another language only when the conversation calls for it (a word being discussed or
+translated, or an explicit request). Decided 2026-10-19, after Duck switched to Russian
+mid-thread: the English voice is the better one, and a fixed reply language is predictable.
 
 ---
 
@@ -507,6 +510,9 @@ match yours.
   recordings: **Parakeet won** (Whisper was worse in Russian and 5× slower), and both write
   English terms in Cyrillic («пул реквест»). Duck's model reads those fine; a name fixer maps
   your project and session names back (V1).
+- **Spanish** (added 2026-10-19) is a supported input too. Parakeet v3 covers it, but X0
+  recorded no Spanish, so V1 adds a few Spanish clips to its check. Replies stay English
+  (see Languages above), so no Spanish voice is needed.
 - **Resource rules (the GPU is a laptop dGPU):**
   - Nothing loads at startup. The model loads when the hotkey goes down, in parallel with
     recording; waking the sleeping dGPU (Optimus) adds ~0.6 s (X0).
@@ -1752,6 +1758,76 @@ tapping around. Two stages.
   - The drawer works over any layout, and reopening it restores the thread and scroll
     position.
 - **Out of scope:** voice, the phone.
+- **As built (2026-10-19):**
+  - **Button:** `DuckButton` at the far left of the title bar with your duck icon (a CSS
+    mask in the theme's accent; the eyeless version below 20 px, the one with the eye in
+    the drawer header). The tooltip spells out the acronym and shows the bound shortcut.
+    Status light: a red badge counting open confirmations (any thread), and an amber/red
+    tint past the soft limit/cap.
+  - **Hotkey:** `toggleAssistant` defaults to **Ctrl+Shift+Space**, not Ctrl+Space:
+    Ctrl+Space is a terminal control code (NUL), PowerShell's MenuComplete, and fails the
+    keymap's own global-safety rule. `Space` became a mappable key.
+  - **Drawer** (`src/panels/Assistant/`): left side, over the rail and the dock, resizable,
+    width in prefs. Always mounted, only hidden, so closing and reopening keeps the thread
+    and its scroll; the open thread is restored after a restart. The dock's root got
+    `isolation: isolate`, so floating dock groups stay under the drawer and modals above.
+    - Thread view: markdown replies (`renderMarkdown`: marked + DOMPurify) streaming in,
+      tool chips (name + one-line input, expanding to input and output), notices.
+    - Confirmation cards (Allow / Deny with the exact input); a confirmation in another
+      thread shows as a line that opens it.
+    - Spend line: this turn's cost, month / cap. The protocol gained a `spend` event
+      (on `sync` and after every metered call); `spend.ts` bills each `thread` call to the
+      one turn that is calling.
+    - Composer: Enter sends, Shift+Enter is a newline, Esc stops a running reply (and
+      closes the drawer when idle). A message sent mid-reply shows as a dashed "queued"
+      bubble; the ⚙ setting makes it interrupt instead.
+    - Thread list (▾ on the title) and "+ new" (the thread is created by its first
+      message).
+    - **"think hard" instead of "Sonnet":** the main thread is already Sonnet, so the
+      toggle raises the next message's effort to `high`. The Sonnet toggle waits for M2's
+      Haiku thread.
+  - **Session links:** the system prompt asks Duck to link a session it names as
+    `[name](#session/<id>)`; clicking one opens that console (`setActiveProject` +
+    `openConsole` + `activatePanel`) and closes the drawer. Live only once W1 gives Duck
+    session ids.
+  - **Start at login, minimized to the tray:** `tauri-plugin-autostart` **pinned
+    `~2.5.1`** (2.6+ needs Tauri 2.12, which would have pulled a wry upgrade into this
+    step), launched with `--minimized`; `window::build_main` then builds the main window
+    hidden. The tray icon had no click action, so a left click now shows the window. The
+    setting is disabled in dev builds (it would register the debug binary).
+  - **Stub:** `test_confirm`, a consequential tool that does nothing, in dev builds only.
+  - **Language rule** (from the first live test, where Duck switched to Russian
+    mid-thread): Duck always answers in English; you may write English, Russian or
+    Spanish. Titles are English too. See Languages at the top.
+  - The ◆ duck status-bar menu lost its "try duck" box (`AssistantTry.tsx` deleted).
+  - **Verified:** vitest 223 (6 new: the turn meter, `toItems`, links), cargo 169,
+    clippy and tsc clean. Live, by you: chat with `get_time`, stop mid-stream, an
+    approved `test_confirm`, the spend line, threads, close/reopen and restart keeping
+    the thread and scroll, the icon and tooltip.
+
+#### Step A4 — Deleting threads
+
+- **Goal:** Clear out threads you don't want to keep (asked for after A3, 2026-10-19).
+- **Depends on:** A3.
+- **Build:**
+  - `assistant_thread_delete(thread_id)`: one transaction removing the thread, its messages
+    and its parked batches from `duck.db`. Messages stay append-only while a thread exists;
+    the trigger refuses UPDATE only, so a whole-thread DELETE is allowed.
+  - Protocol: a `thread.delete` client message and a `threadDeleted` event, so every
+    surface drops it. The engine refuses while the thread has a turn running (stop it
+    first) and drops its queue and any open confirmations.
+  - Drawer: a delete control on each row of the thread list (and for the open thread),
+    with an inline "delete? yes / no" confirm; deleting the open thread opens the next
+    most recent one, or a new thread.
+  - Spend rows in `assistant_usage` stay: they are the month's record, not the thread's.
+  - Later steps that derive data from threads (memory in W4/L) say what a delete does to
+    it; until then a delete simply removes the conversation.
+- **Key files:** `src-tauri/src/assistant/threads.rs`, `src/assistant/threads.ts`,
+  `engine.ts`, `protocol.ts`, `index.ts`, `src/panels/Assistant/*`.
+- **Done when:** a thread deleted in the drawer is gone after a restart, its parked
+  confirmation is gone from the button's badge, and a test covers the store, the
+  engine's refusal mid-turn, and the Rust delete.
+- **Out of scope:** archiving, bulk delete, undo.
 
 ### Track W — Workbench tools
 
@@ -2076,7 +2152,7 @@ tapping around. Two stages.
 
 #### Step V1 — Push-to-talk with local STT on the GPU (desktop)
 
-- **Goal:** Hold a key anywhere, speak English, Russian or a mix, and the words go to the
+- **Goal:** Hold a key anywhere, speak English, Russian, Spanish or a mix, and the words go to the
   Assistant within a second of release.
 - **Depends on:** A3, X0 (engine choice and measurements).
 - **Build:**
@@ -2161,8 +2237,9 @@ tapping around. Two stages.
       Cyrillic), or a rule-based pass offline. English sentences get a small rule pass
       ("3.5" → "three point five", "#128" → "number 128").
   - **Voice-mode answers:** when the user message is marked `voice`, add a short system note
-    ("answer in one or two speakable sentences in the language the user spoke; put detail
-    after; in Russian, write numbers out in words and English terms in Cyrillic") through
+    ("answer in one or two speakable English sentences, whatever language the user spoke;
+    put detail after; any Russian you must quote is written speakably: numbers in words,
+    English terms in Cyrillic") through
     the mid-conversation system message.
   - **Phone:**
     - The desktop synthesizes and stores the audio briefly (compressed). The PWA fetches
@@ -3035,7 +3112,7 @@ X0 ─┬─▶ A1 ─▶ A2 ─┬─▶ A3 ─┬─▶ W2 ─┬─▶ D1 (ne
 ```
 
 **Suggested order:**
-1. X0, A1, A2, A3, W1, M1, W2, **D1**. *First milestone: text control of the app, with heavy
+1. X0, A1, A2, A3, A4, W1, M1, W2, **D1**. *First milestone: text control of the app, with heavy
    work offloaded to sessions from day one.*
 2. W3, T1, T2 (shadow mode first), **D2**, **P1**. *Trust + autopilot milestone: sessions,
    Duck's workers included, keep going while you're away, and plans run step by step.*
@@ -3168,7 +3245,8 @@ voice work.
 | X0 | Spike: check the assumptions | ☑ (the phone echo run waits for R2) |
 | A1 | API key in the keychain + loopback proxy + usage ledger | ☑ |
 | A2 | Assistant engine: loop, tool registry, threads | ☑ |
-| A3 | The Assistant drawer (desktop UI) | ☐ |
+| A3 | The Assistant drawer (desktop UI) | ☑ |
+| A4 | Deleting threads | ☐ |
 | W1 | Read tools | ☐ |
 | W2 | Action tools + the confirmation policy | ☐ |
 | W3 | Session summaries | ☐ |

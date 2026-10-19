@@ -58,6 +58,7 @@ export type CommandId =
   | "speakSelection"
   | "toggleTranscriptView"
   | "copyLastResponse"
+  | "toggleAssistant"
   // git panel (G5) — handled by the most recently activated Git panel
   | "gitRefresh"
   | "gitFetch"
@@ -180,6 +181,11 @@ const RAW_BINDINGS: RawBinding[] = [
   // works in either view, since it reads the session's transcript.
   { chord: "Ctrl+Shift+H", command: "toggleTranscriptView", scope: "global", title: "Console: switch between terminal and transcript" },
   { chord: "Ctrl+Shift+Y", command: "copyLastResponse", scope: "global", title: "Console: copy the last response" },
+  // Duck's drawer (step A3). Not the planned Ctrl+Space: that is a terminal control
+  // code (NUL, readline's set-mark) and PowerShell's MenuComplete, so it fails the
+  // global-safety rule below. Ctrl+Shift+Space is free in the shell, the TUI and
+  // CodeMirror.
+  { chord: "Ctrl+Shift+Space", command: "toggleAssistant", scope: "global", title: "Duck: open or close the drawer" },
   // Attention navigation (wired to the status engine in Phase 2). Modifiers must
   // be written in `eventToChord`'s canonical order (Ctrl → Alt → Shift) or the
   // string match in `matchCommand` never fires — hence `Alt+Shift`, not `Shift+Alt`.
@@ -337,6 +343,7 @@ function mainKey(e: KeyboardEvent): string | null {
   if (code.startsWith("Key")) return code.slice(3); // KeyW → "W"
   if (code.startsWith("Digit")) return code.slice(5); // Digit1 → "1"
   if (code === "Backslash") return "\\";
+  if (code === "Space") return "Space";
   switch (e.key) {
     case "Tab":
       return "Tab";

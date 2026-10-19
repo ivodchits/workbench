@@ -6,7 +6,7 @@
 // Surfaces send `ClientMessage`s and render `DuckEvent`s; they never reach into the
 // engine or the thread store directly.
 
-import type { StoredMessage, ThreadRow } from "../ipc/assistant";
+import type { Spend, StoredMessage, ThreadRow } from "../ipc/assistant";
 
 export const PROTOCOL_VERSION = 1;
 
@@ -61,7 +61,8 @@ export type ClientMessage =
       allow: boolean;
     }
   | { type: "thread.new"; mode?: string }
-  /** Ask for the thread list and the open confirmations (a surface connecting). */
+  /** Ask for the thread list, the open confirmations and the spend (a surface
+   *  connecting). */
   | { type: "sync" }
   /** Ask for a thread's stored messages. */
   | { type: "thread.open"; threadId: string };
@@ -98,6 +99,9 @@ export type DuckEvent =
   /** A confirmation was answered (here or on another surface). */
   | { type: "confirmed"; threadId: string; toolUseId: string; allow: boolean }
   | { type: "turnState"; threadId: string; state: TurnState; queued: number }
+  /** The month's API spend, after every metered call and on `sync`. `turns` holds
+   *  each thread's latest turn cost (since the app started), in USD. */
+  | { type: "spend"; spend: Spend; turns: Record<string, number> }
   /** A request from a surface failed (an unknown thread, storage down, …). */
   | { type: "error"; message: string };
 

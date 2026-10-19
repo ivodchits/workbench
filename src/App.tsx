@@ -4,6 +4,8 @@ import AppearanceMenu from "./panels/AppearanceMenu";
 import RemoteAccessMenu from "./panels/RemoteAccessMenu";
 import NotificationsMenu from "./panels/NotificationsMenu";
 import AssistantMenu from "./panels/AssistantMenu";
+import AssistantDrawer from "./panels/Assistant/Drawer";
+import DuckButton from "./panels/Assistant/DuckButton";
 import { initAssistant } from "./assistant";
 import RemoteMirror from "./panels/RemoteMirror";
 import Workspace from "./panels/Workspace";
@@ -204,6 +206,7 @@ function App() {
         color: "var(--wb-text)",
         font: "12.5px var(--wb-mono)",
         overflow: "hidden",
+        position: "relative",
       }}
     >
       <TitleBar context={activeProject ? activeProject.name : "no project"} />
@@ -218,6 +221,10 @@ function App() {
       </div>
 
       <StatusBar openCount={liveCount} sessionId={active?.sessionId ?? null} />
+
+      {/* Duck's drawer (step A3): over the rail and the dock, under the Duck
+          button. Always mounted, so it keeps its thread and scroll while closed. */}
+      <AssistantDrawer />
 
       {/* Prompt template library (step 3.4): always mounted so Ctrl+Shift+P can
           open it; renders the modal only while open. */}
@@ -355,6 +362,7 @@ function TitleBar({ context }: { context: string }) {
         color: "var(--wb-text)",
       }}
     >
+      <DuckButton />
       <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }}>
         <span style={{ color: "var(--wb-textFaint)", fontSize: 11 }}>╶</span>
         <span style={{ color: "var(--wb-textDim2)", fontSize: 11.5 }}>{context}</span>

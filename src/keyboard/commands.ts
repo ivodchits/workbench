@@ -61,6 +61,7 @@ export function runAction(command: CommandId, arg?: number): void {
     case "speakSelection":
     case "toggleTranscriptView":
     case "copyLastResponse":
+    case "toggleAssistant":
     case "gitRefresh":
     case "gitFetch":
     case "gitPull":

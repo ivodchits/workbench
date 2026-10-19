@@ -3,6 +3,12 @@
 // transport. Started with the app like the other engines (App.tsx), not when a
 // surface first opens, so Duck is there for every surface from the start.
 
+import {
+  getSpend,
+  onUsage,
+  type Spend,
+  type UsageRecord,
+} from "../ipc/assistant";
 import { errorMessage, getClient, oneShot } from "./client";
 import { createEngine, type Engine } from "./engine";
 import { localPort } from "./port.local";
@@ -13,18 +19,40 @@ import {
   type DuckEvent,
   type Transport,
 } from "./protocol";
+import { createTurnMeter } from "./spend";
 import { createThreadStore, ipcBackend, type ThreadStore } from "./threads";
 import { getTime } from "./tools/getTime";
 import { createRegistry } from "./tools/registry";
+import { testConfirm } from "./tools/testConfirm";
 
-/** Every tool Duck has. Order doesn't matter: the registry sorts them. */
-const TOOLS = [getTime];
+/** Every tool Duck has. Order doesn't matter: the registry sorts them. The
+ *  confirmation test tool exists in dev builds only. */
+const TOOLS = import.meta.env.DEV ? [getTime, testConfirm] : [getTime];
+
+/** Where the spend comes from: the ledger commands in the app, fakes in tests. */
+export interface SpendSource {
+  get(): Promise<Spend>;
+  /** Every metered call; returns the unsubscribe. */
+  onUsage(cb: (r: UsageRecord) => void): () => void;
+}
+
+const ledger: SpendSource = {
+  get: getSpend,
+  onUsage(cb) {
+    const off = onUsage(cb);
+    return () => void off.then((f) => f());
+  },
+};
 
 let started: Promise<void> | null = null;
 let duck: Transport | null = null;
 
 /** Connect a surface to an engine over the protocol. */
-export function endpoint(e: Engine, s: ThreadStore): DuckEndpoint {
+export function endpoint(
+  e: Engine,
+  s: ThreadStore,
+  spend?: SpendSource,
+): DuckEndpoint {
   const listeners = new Set<(ev: DuckEvent) => void>();
   const say = (ev: DuckEvent) => {
     for (const l of listeners) l(ev);
@@ -32,6 +60,20 @@ export function endpoint(e: Engine, s: ThreadStore): DuckEndpoint {
   const fail = (err: unknown) =>
     say({ type: "error", message: errorMessage(err) });
   e.onEvent(say);
+
+  // The spend line: the month from the ledger, each turn from the meter.
+  const meter = createTurnMeter();
+  e.onEvent((ev) => {
+    if (ev.type === "turnState") meter.state(ev.threadId, ev.state);
+  });
+  const sendSpend = async () => {
+    if (spend)
+      say({ type: "spend", spend: await spend.get(), turns: meter.turns() });
+  };
+  spend?.onUsage((r) => {
+    meter.usage(r.purpose, r.costUsd);
+    void sendSpend().catch(fail);
+  });
 
   async function handle(msg: ClientMessage): Promise<void> {
     switch (msg.type) {
@@ -51,6 +93,7 @@ export function endpoint(e: Engine, s: ThreadStore): DuckEndpoint {
         say({ type: "threads", threads: [...s.threads()] });
         for (const request of e.pendingRequests())
           say({ type: "confirm", request });
+        await sendSpend();
         return;
       case "thread.open": {
         if (!s.thread(msg.threadId))
@@ -92,7 +135,7 @@ export function initAssistant(): Promise<void> {
         (await getClient()).beta.messages.stream(params, opts),
       nameThread: (text) => oneShot("title", text.slice(0, 2000)),
     });
-    duck = createLocalTransport(endpoint(engine, s));
+    duck = createLocalTransport(endpoint(engine, s, ledger));
   })().catch((e: unknown) => {
     started = null;
     console.error("duck: init failed", e);

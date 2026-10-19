@@ -1,0 +1,781 @@
+// Duck's drawer (step A3): a left-side drawer under the Duck button, over the dock,
+// for talking to Duck from anywhere in the app. Not a dock panel: Duck is global,
+// not per project. Toggled by the button, `toggleAssistant` and Esc.
+//
+// It stays mounted while closed (only hidden), so reopening it finds the same thread
+// at the same scroll position; the open thread and the width persist in prefs. It
+// speaks only the Duck Protocol, through `duckState`.
+
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { registerCommand } from "../../keyboard";
+import { getKeyStatus } from "../../ipc/assistant";
+import { openUrl } from "../../ipc/os";
+import { focusActivePanel, activatePanel } from "../../state/dock";
+import { getRegistry } from "../../state/registry";
+import { setActiveProject } from "../../state/activeProject";
+import { openConsole } from "../../state/consoles";
+import { formatAgo } from "../../util/format";
+import { renderMarkdown } from "../Editor/markdown";
+import "../../theme/markdown.css";
+import "../../theme/assistant.css";
+import type { ConfirmRequest } from "../../assistant/protocol";
+import DuckIcon from "./DuckIcon";
+import DrawerSettings from "./DrawerSettings";
+import {
+  answer,
+  connectDuck,
+  isBusy,
+  openThread,
+  sendMessage,
+  setDrawerOpen,
+  setDrawerWidth,
+  stopTurn,
+  toggleDrawer,
+  useDuckState,
+  type DuckState,
+} from "./duckState";
+import { oneLine, sessionLink, toItems, type Item } from "./view";
+
+const MIN_WIDTH = 320;
+const usd = (n: number) => (n < 1 ? `$${n.toFixed(3)}` : `$${n.toFixed(2)}`);
+const STATE_LABEL = {
+  thinking: "thinking…",
+  streaming: "replying…",
+  tool: "running a tool…",
+  waiting: "waiting for your answer",
+} as const;
+
+/** Open a session's console (a `#session/<id>` link in a reply). */
+function focusSession(instanceId: string): boolean {
+  const inst = getRegistry().instances.find((i) => i.id === instanceId);
+  if (!inst) return false;
+  setActiveProject(inst.projectId);
+  openConsole(inst);
+  activatePanel(inst.id);
+  return true;
+}
+
+export default function AssistantDrawer() {
+  const duck = useDuckState();
+  const [width, setWidth] = useState<number | null>(null);
+  const [noKey, setNoKey] = useState(false);
+  const composerRef = useRef<HTMLTextAreaElement>(null);
+  const returnFocus = useRef<HTMLElement | null>(null);
+
+  useEffect(() => void connectDuck(), []);
+  useEffect(() => registerCommand("toggleAssistant", toggleDrawer), []);
+
+  // Opening: remember where the keyboard was, check the key, focus the composer.
+  // Closing: hand the keyboard back.
+  useEffect(() => {
+    if (duck.open) {
+      const active = document.activeElement;
+      returnFocus.current = active instanceof HTMLElement ? active : null;
+      requestAnimationFrame(() => composerRef.current?.focus());
+      void getKeyStatus()
+        .then((k) => setNoKey(!k.present))
+        .catch(() => {});
+    } else if (returnFocus.current) {
+      const el = returnFocus.current;
+      returnFocus.current = null;
+      if (el.isConnected && !el.closest("[data-wb-duck]")) el.focus();
+      else focusActivePanel();
+    }
+  }, [duck.open]);
+
+  const max = Math.max(MIN_WIDTH, window.innerWidth - 120);
+  const w = Math.min(max, Math.max(MIN_WIDTH, width ?? duck.prefs.width));
+
+  const startResize = (e: React.PointerEvent) => {
+    e.preventDefault();
+    const startX = e.clientX;
+    const startW = w;
+    let last = startW;
+    const move = (ev: PointerEvent) => {
+      last = Math.min(max, Math.max(MIN_WIDTH, startW + ev.clientX - startX));
+      setWidth(last);
+    };
+    const up = () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+      setDrawerWidth(last);
+      setWidth(null);
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+  };
+
+  const current = duck.current;
+  const thread = duck.threads.find((t) => t.id === current) ?? null;
+  const busy = isBusy(current);
+
+  return (
+    <div
+      data-wb-duck
+      aria-hidden={!duck.open}
+      onKeyDown={(e) => {
+        if (e.key !== "Escape" || e.defaultPrevented) return;
+        e.preventDefault();
+        if (busy) stopTurn();
+        else setDrawerOpen(false);
+      }}
+      style={{
+        position: "absolute",
+        top: 36,
+        bottom: 28,
+        left: 0,
+        width: w,
+        zIndex: 60,
+        visibility: duck.open ? "visible" : "hidden",
+        display: "flex",
+        flexDirection: "column",
+        background: "var(--wb-panel)",
+        borderRight: "1px solid var(--wb-border)",
+        boxShadow: "6px 0 24px rgba(0,0,0,0.45)",
+        font: "12px var(--wb-mono)",
+        color: "var(--wb-text)",
+      }}
+    >
+      <Header
+        duck={duck}
+        title={thread ? thread.title || "untitled" : "new thread"}
+      />
+      {noKey && (
+        <div style={{ ...banner, color: "var(--wb-needs)" }}>
+          No API key yet. Add one from the ◆ duck menu in the status bar.
+        </div>
+      )}
+      <ThreadBody duck={duck} />
+      <Asks duck={duck} />
+      <SpendLine duck={duck} />
+      <Composer duck={duck} busy={busy} inputRef={composerRef} />
+      <div
+        onPointerDown={startResize}
+        title="drag to resize"
+        style={{
+          position: "absolute",
+          top: 0,
+          bottom: 0,
+          right: -3,
+          width: 6,
+          cursor: "col-resize",
+        }}
+      />
+    </div>
+  );
+}
+
+function Header({ duck, title }: { duck: DuckState; title: string }) {
+  const [menu, setMenu] = useState<"threads" | "settings" | null>(null);
+  const rootRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!menu) return;
+    const onDown = (e: MouseEvent) => {
+      if (!rootRef.current?.contains(e.target as Node)) setMenu(null);
+    };
+    document.addEventListener("mousedown", onDown);
+    return () => document.removeEventListener("mousedown", onDown);
+  }, [menu]);
+  useEffect(() => {
+    if (!duck.open) setMenu(null);
+  }, [duck.open]);
+
+  return (
+    <div
+      ref={rootRef}
+      style={{
+        position: "relative",
+        flex: "0 0 auto",
+        display: "flex",
+        alignItems: "center",
+        gap: 8,
+        padding: "7px 10px",
+        borderBottom: "1px solid var(--wb-border)",
+      }}
+    >
+      <DuckIcon size={22} />
+      <button
+        type="button"
+        onClick={() => setMenu(menu === "threads" ? null : "threads")}
+        title="threads"
+        style={{
+          ...plainBtn,
+          flex: 1,
+          minWidth: 0,
+          textAlign: "left",
+          display: "flex",
+          gap: 6,
+        }}
+      >
+        <span
+          style={{
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+            whiteSpace: "nowrap",
+          }}
+        >
+          {title}
+        </span>
+        <span style={{ color: "var(--wb-textFaint)" }}>▾</span>
+      </button>
+      <button
+        type="button"
+        style={btn}
+        title="start a new thread"
+        onClick={() => {
+          openThread(null);
+          setMenu(null);
+        }}
+      >
+        + new
+      </button>
+      <button
+        type="button"
+        style={btn}
+        title="settings"
+        aria-label="settings"
+        onClick={() => setMenu(menu === "settings" ? null : "settings")}
+      >
+        ⚙
+      </button>
+      <button
+        type="button"
+        style={btn}
+        title="close (Esc)"
+        aria-label="close"
+        onClick={() => setDrawerOpen(false)}
+      >
+        ×
+      </button>
+
+      {menu === "threads" && (
+        <div
+          style={{
+            ...popover,
+            left: 8,
+            right: 8,
+            maxHeight: 360,
+            overflowY: "auto",
+          }}
+        >
+          {duck.threads.length === 0 && (
+            <div style={{ padding: "4px 12px", color: "var(--wb-textFaint)" }}>
+              no threads yet
+            </div>
+          )}
+          {duck.threads.map((t) => (
+            <button
+              key={t.id}
+              type="button"
+              onClick={() => {
+                openThread(t.id);
+                setMenu(null);
+              }}
+              style={{
+                ...plainBtn,
+                width: "100%",
+                display: "flex",
+                gap: 8,
+                padding: "4px 12px",
+                background:
+                  t.id === duck.current ? "var(--wb-sel)" : "transparent",
+              }}
+            >
+              <span
+                style={{
+                  flex: 1,
+                  textAlign: "left",
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                  whiteSpace: "nowrap",
+                }}
+              >
+                {t.title || "untitled"}
+              </span>
+              {duck.asks.some((a) => a.threadId === t.id) && (
+                <span style={{ color: "var(--wb-needs)" }}>●</span>
+              )}
+              <span style={{ color: "var(--wb-textFaint)" }}>
+                {formatAgo(Math.floor(t.updated / 1000))}
+              </span>
+            </button>
+          ))}
+        </div>
+      )}
+      {menu === "settings" && (
+        <div style={{ ...popover, right: 8, width: 300 }}>
+          <DrawerSettings duck={duck} />
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── the thread ──────────────────────────────────────────────────────────────
+
+/** Scroll positions per thread, so switching back lands where you were. */
+const scrolls = new Map<string, number>();
+
+function ThreadBody({ duck }: { duck: DuckState }) {
+  const ref = useRef<HTMLDivElement>(null);
+  const stick = useRef(true);
+  const shown = useRef<string | null>(null);
+  const id = duck.current;
+  const messages = id ? duck.messages[id] : undefined;
+  const items = messages ? toItems(messages) : [];
+  const streaming = id ? duck.streaming[id] : "";
+  const queued = id ? (duck.queued[id] ?? []) : [];
+  const state = id ? (duck.states[id] ?? "idle") : "idle";
+
+  // Switching threads: save the old position, restore the new one (or the end).
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el || shown.current === id || (id && !messages)) return;
+    shown.current = id;
+    const saved = id ? scrolls.get(id) : undefined;
+    el.scrollTop = saved ?? el.scrollHeight;
+    stick.current =
+      saved === undefined ||
+      el.scrollHeight - el.scrollTop - el.clientHeight < 24;
+  }, [id, messages]);
+
+  // New content: follow it if you were at the end.
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (el && stick.current) el.scrollTop = el.scrollHeight;
+  }, [items.length, streaming, queued.length, state]);
+
+  return (
+    <div
+      ref={ref}
+      onScroll={(e) => {
+        const el = e.currentTarget;
+        stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 24;
+        if (id && shown.current === id) scrolls.set(id, el.scrollTop);
+      }}
+      onClick={(e) => {
+        const a = (e.target as HTMLElement).closest("a");
+        if (!a) return;
+        e.preventDefault();
+        const href = a.getAttribute("href");
+        const session = sessionLink(href);
+        if (session) {
+          if (focusSession(session)) setDrawerOpen(false);
+        } else if (href && /^https?:\/\//i.test(href))
+          void openUrl(href).catch(() => {});
+      }}
+      style={{ flex: 1, minHeight: 0, overflowY: "auto", padding: "10px 0" }}
+    >
+      {!id && (
+        <div style={{ padding: "18px 16px", color: "var(--wb-textFaint)" }}>
+          A new thread. Ask Duck anything about your sessions.
+        </div>
+      )}
+      {items.map((it) => (
+        <ItemView key={it.key} item={it} active={state !== "idle"} />
+      ))}
+      {streaming && <Reply text={streaming} />}
+      {state !== "idle" && !streaming && (
+        <div style={{ padding: "2px 16px", color: "var(--wb-textFaint)" }}>
+          {STATE_LABEL[state]}
+        </div>
+      )}
+      {queued.map((q, i) => (
+        <UserBubble key={`q${i}`} text={q} queued />
+      ))}
+    </div>
+  );
+}
+
+function ItemView({ item, active }: { item: Item; active: boolean }) {
+  switch (item.kind) {
+    case "user":
+      return <UserBubble text={item.text} source={item.source} />;
+    case "reply":
+      return <Reply text={item.text} />;
+    case "tool":
+      return <ToolChip item={item} active={active} />;
+    case "notice":
+      return (
+        <div
+          style={{
+            margin: "4px 16px",
+            color:
+              item.notice.kind === "stopped"
+                ? "var(--wb-textFaint)"
+                : "var(--wb-needs)",
+          }}
+        >
+          ! {item.notice.text}
+        </div>
+      );
+  }
+}
+
+function UserBubble({
+  text,
+  source,
+  queued,
+}: {
+  text: string;
+  source?: string;
+  queued?: boolean;
+}) {
+  return (
+    <div
+      style={{
+        display: "flex",
+        justifyContent: "flex-end",
+        padding: "4px 12px 4px 40px",
+      }}
+    >
+      <div
+        style={{
+          whiteSpace: "pre-wrap",
+          wordBreak: "break-word",
+          background: "var(--wb-sel)",
+          border: `1px ${queued ? "dashed" : "solid"} var(--wb-border)`,
+          color: queued ? "var(--wb-textDim2)" : "var(--wb-text)",
+          padding: "5px 9px",
+        }}
+      >
+        {text}
+        {(queued || (source && source !== "desktop")) && (
+          <div
+            style={{
+              marginTop: 3,
+              fontSize: 10.5,
+              color: "var(--wb-textFaint)",
+            }}
+          >
+            {queued ? "queued: sent when Duck finishes" : `from ${source}`}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function Reply({ text }: { text: string }) {
+  return (
+    <div
+      className="wb-md wb-duck-md"
+      // Sanitized by DOMPurify in `renderMarkdown`.
+      dangerouslySetInnerHTML={{ __html: renderMarkdown(text) }}
+    />
+  );
+}
+
+function ToolChip({
+  item,
+  active,
+}: {
+  item: Extract<Item, { kind: "tool" }>;
+  active: boolean;
+}) {
+  const [open, setOpen] = useState(false);
+  const r = item.result;
+  const mark = r ? (r.isError ? "✕" : "✓") : active ? "◌" : "–";
+  const color = r?.isError
+    ? "var(--wb-needs)"
+    : r
+      ? "var(--wb-done)"
+      : "var(--wb-textFaint)";
+  return (
+    <div style={{ margin: "3px 16px" }}>
+      <button
+        type="button"
+        onClick={() => setOpen(!open)}
+        aria-expanded={open}
+        style={{
+          ...plainBtn,
+          maxWidth: "100%",
+          display: "inline-flex",
+          gap: 6,
+          border: "1px solid var(--wb-border)",
+          padding: "1px 7px",
+          color: "var(--wb-textDim2)",
+        }}
+      >
+        <span style={{ color }}>{mark}</span>
+        <span style={{ color: "var(--wb-accent)" }}>{item.name}</span>
+        <span
+          style={{
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+            whiteSpace: "nowrap",
+          }}
+        >
+          {oneLine(item.input)}
+        </span>
+      </button>
+      {open && (
+        <div style={{ ...pre, marginTop: 4 }}>
+          <div style={{ color: "var(--wb-textFaint)" }}>input</div>
+          {JSON.stringify(item.input, null, 2)}
+          <div style={{ color: "var(--wb-textFaint)", marginTop: 6 }}>
+            {r ? (r.isError ? "error" : "output") : "no result"}
+          </div>
+          {r?.text}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── confirmations, spend, composer ──────────────────────────────────────────
+
+function Asks({ duck }: { duck: DuckState }) {
+  if (duck.asks.length === 0) return null;
+  const here = duck.asks.filter((a) => a.threadId === duck.current);
+  const elsewhere = duck.asks.filter((a) => a.threadId !== duck.current);
+  return (
+    <div
+      style={{
+        flex: "0 0 auto",
+        maxHeight: "45%",
+        overflowY: "auto",
+        borderTop: "1px solid var(--wb-border)",
+      }}
+    >
+      {here.map((a) => (
+        <ConfirmCard key={a.toolUseId} ask={a} />
+      ))}
+      {elsewhere.length > 0 && (
+        <button
+          type="button"
+          onClick={() => openThread(elsewhere[0].threadId)}
+          style={{ ...plainBtn, padding: "6px 12px", color: "var(--wb-needs)" }}
+        >
+          ● {elsewhere.length} waiting in{" "}
+          {duck.threads.find((t) => t.id === elsewhere[0].threadId)?.title ||
+            "another thread"}{" "}
+          — open
+        </button>
+      )}
+    </div>
+  );
+}
+
+function ConfirmCard({ ask }: { ask: ConfirmRequest }) {
+  return (
+    <div
+      style={{
+        margin: "8px 12px",
+        border: "1px solid var(--wb-needs)",
+        padding: "8px 10px",
+        display: "flex",
+        flexDirection: "column",
+        gap: 6,
+      }}
+    >
+      <div>
+        <span style={{ color: "var(--wb-needs)" }}>● Duck wants to run </span>
+        <span style={{ color: "var(--wb-accent)" }}>{ask.name}</span>
+      </div>
+      <div style={{ ...pre, maxHeight: 160 }}>
+        {JSON.stringify(ask.input, null, 2)}
+      </div>
+      <div style={{ display: "flex", gap: 8 }}>
+        <button
+          type="button"
+          style={{
+            ...btn,
+            borderColor: "var(--wb-done)",
+            color: "var(--wb-done)",
+          }}
+          onClick={() => answer(ask, true)}
+        >
+          allow
+        </button>
+        <button type="button" style={btn} onClick={() => answer(ask, false)}>
+          deny
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function SpendLine({ duck }: { duck: DuckState }) {
+  const s = duck.spend;
+  if (!s) return null;
+  const turn = duck.current ? duck.turns[duck.current] : undefined;
+  const tone = s.capReached
+    ? "var(--wb-needs)"
+    : s.softReached
+      ? "var(--wb-working)"
+      : "var(--wb-textFaint)";
+  return (
+    <div
+      title={`today ${usd(s.todayUsd)}`}
+      style={{
+        flex: "0 0 auto",
+        display: "flex",
+        gap: 12,
+        padding: "3px 12px",
+        borderTop: "1px solid var(--wb-border)",
+        fontSize: 10.5,
+        color: "var(--wb-textFaint)",
+      }}
+    >
+      {turn !== undefined && <span>this turn {usd(turn)}</span>}
+      <span style={{ marginLeft: "auto", color: tone }}>
+        month {usd(s.monthUsd)} / {usd(s.limits.hardCapUsd)}
+      </span>
+    </div>
+  );
+}
+
+function Composer({
+  duck,
+  busy,
+  inputRef,
+}: {
+  duck: DuckState;
+  busy: boolean;
+  inputRef: React.RefObject<HTMLTextAreaElement | null>;
+}) {
+  const [draft, setDraft] = useState("");
+  const [hard, setHard] = useState(false);
+
+  // Grow with the text, up to about eight lines.
+  useLayoutEffect(() => {
+    const el = inputRef.current;
+    if (!el) return;
+    el.style.height = "auto";
+    el.style.height = `${Math.min(el.scrollHeight, 150)}px`;
+  }, [draft, inputRef]);
+
+  const send = () => {
+    const text = draft.trim();
+    if (!text || !duck.ready) return;
+    sendMessage(text, hard ? "high" : undefined);
+    setDraft("");
+    setHard(false);
+  };
+
+  return (
+    <div
+      style={{
+        flex: "0 0 auto",
+        borderTop: "1px solid var(--wb-border)",
+        padding: 8,
+        display: "flex",
+        flexDirection: "column",
+        gap: 6,
+      }}
+    >
+      <textarea
+        ref={inputRef}
+        value={draft}
+        rows={1}
+        placeholder={
+          duck.ready
+            ? "ask duck…  (Enter sends, Shift+Enter new line)"
+            : "Duck is starting…"
+        }
+        onChange={(e) => setDraft(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
+            e.preventDefault();
+            send();
+          }
+        }}
+        style={{
+          resize: "none",
+          background: "var(--wb-bg)",
+          border: "1px solid var(--wb-border)",
+          color: "var(--wb-text)",
+          font: "12px/1.5 var(--wb-mono)",
+          padding: "5px 8px",
+          outline: "none",
+        }}
+      />
+      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+        <button
+          type="button"
+          aria-pressed={hard}
+          title="Think harder about the next message (higher effort; slower and costs more)"
+          onClick={() => setHard(!hard)}
+          style={{
+            ...btn,
+            borderColor: hard ? "var(--wb-accent)" : "var(--wb-border)",
+            color: hard ? "var(--wb-accent)" : "var(--wb-textDim2)",
+          }}
+        >
+          {hard ? "◆" : "◇"} think hard
+        </button>
+        <span style={{ flex: 1 }} />
+        {busy && (
+          <button
+            type="button"
+            style={btn}
+            title="stop the reply (Esc)"
+            onClick={stopTurn}
+          >
+            ■ stop
+          </button>
+        )}
+        <button
+          type="button"
+          style={{
+            ...btn,
+            color: "var(--wb-accent)",
+            borderColor: "var(--wb-accent)",
+          }}
+          disabled={!draft.trim() || !duck.ready}
+          onClick={send}
+        >
+          {busy ? (duck.prefs.interrupt ? "interrupt" : "queue") : "send"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+const btn: React.CSSProperties = {
+  background: "transparent",
+  border: "1px solid var(--wb-border)",
+  color: "var(--wb-text)",
+  font: "11px var(--wb-mono)",
+  padding: "2px 8px",
+  cursor: "pointer",
+};
+
+const plainBtn: React.CSSProperties = {
+  background: "transparent",
+  border: "none",
+  color: "var(--wb-text)",
+  font: "inherit",
+  padding: 0,
+  cursor: "pointer",
+};
+
+const popover: React.CSSProperties = {
+  position: "absolute",
+  top: "calc(100% + 2px)",
+  zIndex: 10,
+  background: "var(--wb-panel)",
+  border: "1px solid var(--wb-border)",
+  boxShadow: "0 4px 18px rgba(0,0,0,0.55)",
+  padding: "6px 0",
+};
+
+const pre: React.CSSProperties = {
+  whiteSpace: "pre-wrap",
+  wordBreak: "break-word",
+  background: "var(--wb-bg)",
+  border: "1px solid var(--wb-border)",
+  padding: "6px 8px",
+  fontSize: 11,
+  color: "var(--wb-textDim2)",
+  overflowY: "auto",
+  maxHeight: 240,
+};
+
+const banner: React.CSSProperties = {
+  flex: "0 0 auto",
+  padding: "6px 12px",
+  borderBottom: "1px solid var(--wb-border)",
+};

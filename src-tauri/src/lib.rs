@@ -32,6 +32,13 @@ pub fn run() {
         .plugin(tauri_plugin_store::Builder::default().build())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())
+        // "Start Workbench at login, minimized to tray" (step A3): the login entry
+        // passes the flag `window::build_main` hides the main window for.
+        .plugin(
+            tauri_plugin_autostart::Builder::new()
+                .args([window::MINIMIZED_ARG])
+                .build(),
+        )
         // Paths of files dropped in from the OS (step D2).
         .plugin(filedrop::plugin())
         .setup(|app| {

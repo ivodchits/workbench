@@ -5,13 +5,13 @@ behind each decision are in `assistant-plan.md`. This file describes the code, a
 Duck step updates it as part of its Done when. Duck's self-development sessions (L3)
 read it first.
 
-Last updated: step A2 (2026-10-19).
+Last updated: step A3 (2026-10-19).
 
 ## The shape
 
 ```
  surfaces ── Duck Protocol ──▶ engine (TS, main webview) ──▶ SDK ──▶ /anthropic proxy (Rust) ──▶ API
- (A3 drawer,  protocol.ts      engine.ts: the loop          client.ts   key, token, ledger, cap
+ (drawer,     protocol.ts      engine.ts: the loop          client.ts   key, token, ledger, cap
   phone R1)                    tools/: registry + tools
                                threads.ts ──▶ assistant_* commands ──▶ duck.db
                                port.ts ──▶ port.local.ts ──▶ Workbench stores
@@ -32,8 +32,9 @@ Last updated: step A2 (2026-10-19).
 
 | File | What it is |
 |---|---|
-| `index.ts` | `initAssistant()` (called from `App.tsx` with the other engines) builds the store, the registry and the engine; `getDuck()` returns the in-process transport. `endpoint()` maps protocol messages onto the engine. |
-| `protocol.ts` | The Duck Protocol, version 1: `ClientMessage` (send, stop, confirm, thread.new, sync, thread.open) and `DuckEvent` (threads, history, thread, message, delta, tool, confirm, confirmed, turnState, error). `createLocalTransport` stamps `v`. |
+| `index.ts` | `initAssistant()` (called from `App.tsx` with the other engines) builds the store, the registry and the engine; `getDuck()` returns the in-process transport. `endpoint()` maps protocol messages onto the engine and adds the spend (from a `SpendSource`: the ledger commands and `assistant-usage` events). |
+| `protocol.ts` | The Duck Protocol, version 1: `ClientMessage` (send, stop, confirm, thread.new, sync, thread.open) and `DuckEvent` (threads, history, thread, message, delta, tool, confirm, confirmed, turnState, spend, error). `createLocalTransport` stamps `v`. |
+| `spend.ts` | `createTurnMeter()`: bills each metered `thread` call to the one turn that is calling (none if two are), giving each thread's latest turn cost for the `spend` event. |
 | `engine.ts` | The loop. Pure helpers `toApiMessages`, `effectiveEffort` and `buildParams` are exported for tests. |
 | `threads.ts` | `createThreadStore(backend)`: threads, messages (loaded per thread on first use) and parked tool batches, in memory and persisted. Appends to one thread are serialized so each gets the next `seq`. |
 | `client.ts` | `getClient()` (the SDK at the proxy, with the launch token as its key), `purpose()`, `capMessage()`, `errorMessage()`, and `oneShot(name, input, {schema?})` for Haiku primitives. |
@@ -41,6 +42,7 @@ Last updated: step A2 (2026-10-19).
 | `port.ts` / `port.local.ts` | `WorkbenchPort` and its one implementation over the stores. The only file under `src/assistant/` allowed to import `src/state/**` or `src/panels/**`. |
 | `tools/registry.ts` | `defineTool({name, description, schema, tier, timeoutMs?, run})` and `createRegistry(tools)`: the API tool list sorted by name, built once; `tierOf(name)`. |
 | `tools/getTime.ts` | The stub tool, `get_time` (read tier). |
+| `tools/testConfirm.ts` | `test_confirm`, a consequential tool that does nothing, for trying the confirmation card. Registered in dev builds only. |
 
 ### Rust: `src-tauri/src/assistant/`
 
@@ -54,12 +56,35 @@ Last updated: step A2 (2026-10-19).
 | `threads.rs` | Threads, append-only messages and parked batches in `duck.db`. |
 | `db.rs` | `duck.db` / `duck.dev.db` and its append-only migrations. |
 
+### The desktop surface: `src/panels/Assistant/`
+
+| File | What it is |
+|---|---|
+| `duckState.ts` | The desktop's one subscription to the protocol, an external store shared by the button and the drawer: threads, the open thread, loaded messages, streaming text, turn states, locally queued messages, confirmations, spend. Actions (`sendMessage`, `stopTurn`, `answer`, `openThread`, …) only send protocol messages. Persists `assistantDrawer` prefs (width, open thread, interrupt). |
+| `view.ts` | `toItems(messages)`: stored messages → display items (user text, reply text, a tool chip with its result attached, notices; thinking and system messages hidden). `sessionLink()` reads `#session/<id>` links. |
+| `DuckButton.tsx` | The title-bar button: toggles the drawer, the acronym tooltip, a confirmation-count badge, an amber/red tint past the soft limit/cap. |
+| `Drawer.tsx` | The drawer: header (thread list, new, settings, close), thread view (markdown replies, tool chips, queued bubbles), confirmation cards, spend line, composer (Enter / Shift+Enter / Esc, "think hard" = effort `high` for one message). Always mounted and only hidden, so the thread and scroll survive closing. |
+| `DrawerSettings.tsx` | Queue-or-interrupt, and "start at login, minimized to the tray" (`@tauri-apps/plugin-autostart`; disabled in dev builds). |
+| `DuckIcon.tsx` | The icon as a CSS mask in the accent colour; the eyeless version below 20 px. Images in `src/assets/duck/`. |
+
+`src/panels/` is outside the boundary rule, so the drawer may use the stores directly
+(it opens a `#session/<id>` link's console with `setActiveProject` + `openConsole` +
+`activatePanel`). Everything it learns about Duck still comes through the protocol.
+
 ### Outside the Duck tree
 
 - `src-tauri/src/window.rs` builds every webview (the main window and tear-offs) with
   one WebView2 profile, including the no-throttling args that keep the engine's timers
   running while the window is hidden. The debug build has its own profile folder.
-- `src/App.tsx` calls `initAssistant()`; `eslint.config.js` holds the boundary rule.
+- `src/App.tsx` calls `initAssistant()` and mounts the button and the drawer;
+  `eslint.config.js` holds the boundary rule.
+- `toggleAssistant` (default Ctrl+Shift+Space) is in `keyboard/keymap.ts`; the drawer
+  registers its handler.
+- The dock's root has `isolation: isolate`, so dockview's layers (floating groups at
+  z-index 999) stay under the drawer (z-index 60) while modals (100) stay above it.
+- Start at login: `tauri-plugin-autostart` (pinned `~2.5.1`; later versions need Tauri
+  2.12) registers the app with `--minimized`; `window::build_main` then builds the main
+  window hidden, and a left click on the tray icon shows it (`window::show_main`).
 
 ### `duck.db` tables
 
@@ -153,10 +178,17 @@ One turn on a thread (`engine.ts`):
 - Never send an unmetered endpoint: the proxy allows only messages, count_tokens and
   models.
 
+## Language
+
+Duck always replies in English, whatever language you write in (English, Russian or
+Spanish). It uses another language only when the conversation calls for it: a word
+being discussed or translated, or an explicit request. Thread titles are English too.
+Both rules are in `prompt.ts`.
+
 ## Not built yet
 
-- The drawer (A3). Until then, the ◆ duck status-bar menu has a minimal "try duck" box
-  (`src/panels/AssistantTry.tsx`) that speaks the protocol.
+- The Sonnet toggle (M2, once there is a Haiku thread to step up from); the drawer has
+  "think hard" (effort `high`) instead.
 - Real tools (W1, W2), the trust policy (T1, which replaces `tierGate`), and effort
   routing (M2).
 - The WebSocket transport (R1).

@@ -53,6 +53,19 @@ impl TrayState {
 /// We copy the window icon's raw RGBA bytes into an owned `Image<'static>` so
 /// the borrow on `app` (from `default_window_icon`) ends before we pass `app`
 /// into `TrayIconBuilder::build`.
+/// A left click on the tray icon brings the main window back, which matters when
+/// Workbench started at login hidden (step A3).
+fn on_tray_event(tray: &tauri::tray::TrayIcon, event: tauri::tray::TrayIconEvent) {
+    if let tauri::tray::TrayIconEvent::Click {
+        button: tauri::tray::MouseButton::Left,
+        button_state: tauri::tray::MouseButtonState::Up,
+        ..
+    } = event
+    {
+        crate::window::show_main(tray.app_handle());
+    }
+}
+
 pub fn setup_tray(app: &AppHandle) {
     let icon_opt = app.default_window_icon().map(|img| {
         tauri::image::Image::new_owned(img.rgba().to_vec(), img.width(), img.height())
@@ -62,6 +75,7 @@ pub fn setup_tray(app: &AppHandle) {
             tauri::tray::TrayIconBuilder::new()
                 .tooltip("Workbench")
                 .icon(icon)
+                .on_tray_icon_event(on_tray_event)
                 .build(app)
                 .map_err(|e| eprintln!("[tray] build: {e}"))
                 .ok()
@@ -71,6 +85,7 @@ pub fn setup_tray(app: &AppHandle) {
             // (shouldn't happen in a real build, but fine to degrade gracefully).
             tauri::tray::TrayIconBuilder::new()
                 .tooltip("Workbench")
+                .on_tray_icon_event(on_tray_event)
                 .build(app)
                 .map_err(|e| eprintln!("[tray] build (no icon): {e}"))
                 .ok()

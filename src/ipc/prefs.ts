@@ -40,6 +40,19 @@ export interface Prefs {
   reviewPrompts: Record<string, string>;
   /** The editor shows markdown files formatted while editing (step N2). Absent = off. */
   editorLiveMarkdown: boolean;
+  /** Duck's drawer (step A3): its width, the thread it shows, and what a message
+   *  typed mid-reply does. */
+  assistantDrawer: AssistantDrawerPrefs;
+}
+
+export interface AssistantDrawerPrefs {
+  /** Width in px. */
+  width: number;
+  /** The thread open in the drawer; `null` = a new thread. */
+  threadId: string | null;
+  /** A message sent while Duck replies stops the reply and is answered instead.
+   *  Off = it waits its turn. */
+  interrupt: boolean;
 }
 
 /** One column with the old lines above the new, or the two versions side by side. */

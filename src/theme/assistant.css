@@ -1,0 +1,18 @@
+/* Duck's drawer (step A3): replies use the markdown preview's styles (`.wb-md`),
+   tightened for a chat column. */
+
+.wb-duck-md {
+  font-size: 12.5px;
+  line-height: 1.55;
+  padding: 4px 16px;
+}
+
+.wb-duck-md p {
+  margin: 0.35em 0;
+}
+
+.wb-duck-md a[href^="#session/"] {
+  color: var(--wb-accent);
+  text-decoration: underline dotted;
+  cursor: pointer;
+}
