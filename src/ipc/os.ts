@@ -26,6 +26,27 @@ export function openScratchpad(rootPath: string): Promise<void> {
   return invoke("open_scratchpad", { rootPath });
 }
 
+/** The folder images pasted into the composer are saved in. */
+export function pastedImageDir(): Promise<string> {
+  return invoke("pasted_image_dir");
+}
+
+/** Save a pasted image (`subtype` as in its MIME type: `png`, `jpeg`, …) and
+ *  resolve with its file name in `pastedImageDir`. Rejects for a non-image type. */
+export function savePastedImage(data: Uint8Array, subtype: string): Promise<string> {
+  return invoke("save_pasted_image", { data: Array.from(data), subtype });
+}
+
+/** Delete pasted images by file name (a sent prompt's). */
+export function deletePastedImages(names: string[]): Promise<void> {
+  return invoke("delete_pasted_images", { names });
+}
+
+/** Delete every pasted image but the named ones. */
+export function prunePastedImages(keep: string[]): Promise<void> {
+  return invoke("prune_pasted_images", { keep });
+}
+
 /** Open a web or mail link in the user's browser (step T3). The backend refuses
  *  every other scheme — links come from untrusted transcript text. */
 export function openUrl(url: string): Promise<void> {

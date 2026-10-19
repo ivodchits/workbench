@@ -8,6 +8,8 @@
 //! opens arbitrary registered working dirs, which a fixed front-end scope can't
 //! enumerate ahead of time.
 
+pub mod pasted;
+
 use std::path::{Path, PathBuf};
 
 use tauri::AppHandle;

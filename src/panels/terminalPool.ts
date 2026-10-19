@@ -37,7 +37,8 @@ import {
   type SpawnResult,
   type Subscribed,
 } from "../ipc/pty";
-import { encodePaste } from "../state/composer";
+import { deletePastedImages, pastedImageDir } from "../ipc/os";
+import { encodePaste, promptChunks } from "../state/composer";
 import { markInterrupted } from "../state/status";
 import { mirrorInstanceTaskNote } from "../state/registry";
 import { isSpeaking, speak, stopSpeaking } from "../util/speech";
@@ -626,10 +627,16 @@ export function submitToTerminal(instanceId: string, text: string): boolean {
   const entry = pool.get(instanceId);
   if (!entry) return false;
   void clearInput(instanceId)
-    .then(() => {
+    .then(async () => {
       if (pool.get(instanceId) !== entry) return; // released meanwhile
-      pasteIntoTerminal(instanceId, text);
-      return ptyWrite(instanceId, ENTER_KEY);
+      const landed = await pasteChunks(
+        text,
+        (chunk) => void pasteIntoTerminal(instanceId, chunk),
+        (count) => imageLanded(instanceId, count),
+      );
+      await ptyWrite(instanceId, ENTER_KEY);
+      // The TUI holds a landed image in memory: its file has done its job.
+      if (landed.length > 0) void deletePastedImages(landed);
     })
     .catch(() => {}); // the PTY is gone: nothing to send to
   return true;
@@ -640,14 +647,90 @@ export function submitToTerminal(instanceId: string, text: string): boolean {
  * holds a terminal for it. The transcript view can be on screen with no pooled
  * terminal at all — a console docked back from its own window, or a torn-off
  * window that opened straight into the transcript — so when there is none the
- * same bytes a paste produces are written to the PTY directly.
+ * same bytes a paste produces are written to the PTY directly. With no screen to
+ * watch, an image is given a fixed time to load and its file is left for the
+ * startup prune.
  */
 export function submitPrompt(instanceId: string, text: string): void {
   if (submitToTerminal(instanceId, text)) return;
   void clearInput(instanceId)
-    .then(() => ptyWrite(instanceId, encodePaste(text)))
+    .then(() =>
+      pasteChunks(
+        text,
+        (chunk) => ptyWrite(instanceId, encodePaste(chunk)),
+        () => new Promise<boolean>((resolve) => setTimeout(() => resolve(false), IMAGE_SETTLE_MS)),
+      ),
+    )
     .then(() => ptyWrite(instanceId, ENTER_KEY))
     .catch(() => {}); // no such PTY: the session is gone, nothing to send to
+}
+
+/** How long an image pasted with no screen to watch is given to load. */
+const IMAGE_SETTLE_MS = 1000;
+/** How long to watch the screen for a pasted image's chip before going on. */
+const IMAGE_LOAD_TIMEOUT_MS = 5000;
+
+let imageDir: Promise<string> | null = null;
+
+/**
+ * Paste `text` with `paste`, its image tokens (`state/composer`) as their files'
+ * paths, each on its own — the TUI turns a paste that is just an image path into
+ * an `[Image #N]` attachment. The TUI loads the image asynchronously and an Enter
+ * sent meanwhile goes without it, so after each image `landed(n)` waits until the
+ * input holds `n` attachments (false: it didn't see them). Resolves with the
+ * images known to have landed.
+ */
+async function pasteChunks(
+  text: string,
+  paste: (chunk: string) => unknown,
+  landed: (count: number) => Promise<boolean>,
+): Promise<string[]> {
+  const chunks = promptChunks(text);
+  if (!chunks.some((c) => c.kind === "image")) {
+    await paste(text);
+    return [];
+  }
+  imageDir ??= pastedImageDir();
+  const dir = await imageDir;
+  const sent: string[] = [];
+  let count = 0;
+  for (const chunk of chunks) {
+    if (chunk.kind === "text") {
+      await paste(chunk.text);
+      continue;
+    }
+    await paste(`${dir}${dir.includes("\\") ? "\\" : "/"}${chunk.name}`);
+    if (await landed(++count)) sent.push(chunk.name);
+  }
+  return sent;
+}
+
+/** Wait until the TUI's input shows `count` image attachments; false on timeout. */
+function imageLanded(instanceId: string, count: number): Promise<boolean> {
+  const deadline = Date.now() + IMAGE_LOAD_TIMEOUT_MS;
+  return new Promise((resolve) => {
+    const check = () => {
+      const screen = readScreen(instanceId);
+      if (!screen) return resolve(false);
+      if (inputAttachments(screen) >= count) return resolve(true);
+      if (Date.now() > deadline) return resolve(false);
+      setTimeout(check, 50);
+    };
+    check();
+  });
+}
+
+/** The `[Image #N]` chips in the TUI's input box: below its last `❯` prompt row
+ *  (earlier prompts on screen carry chips of their own). */
+function inputAttachments(screen: string[]): number {
+  let from = 0;
+  for (let y = screen.length - 1; y >= 0; y--) {
+    if (screen[y].trimStart().startsWith("❯")) {
+      from = y;
+      break;
+    }
+  }
+  return screen.slice(from).reduce((n, row) => n + row.split("[Image #").length - 1, 0);
 }
 
 /** How long the cleared input is left before the prompt is pasted. Arriving in one

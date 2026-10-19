@@ -36,6 +36,8 @@ import { initTearOff } from "./state/tearoff";
 import { initRemoteActions } from "./state/remoteActions";
 import { initNotifications } from "./state/notifications";
 import { initRemoteServer } from "./state/remoteServer";
+import { draftImageNames } from "./state/composer";
+import { prunePastedImages } from "./ipc/os";
 import RemoteApprovalHost from "./panels/RemoteApproval";
 import type { RateWindow } from "./ipc/usageLimits";
 import { formatCountdown, formatAgo } from "./util/format";
@@ -93,6 +95,9 @@ function App() {
     initNotifications();
     // Per-console terminal/transcript choice (step T3), restored from prefs.
     void initViewModes();
+    // Images pasted into a composer are deleted once sent; this collects the ones
+    // a draft let go of, or a send couldn't confirm.
+    void prunePastedImages(draftImageNames()).catch(() => {});
   }, []);
 
   // The global keymap listener (Ctrl+Shift / Alt / Ctrl+Tab chords). Rail single

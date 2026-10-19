@@ -110,6 +110,44 @@ export function encodePaste(text: string): Uint8Array {
   return new TextEncoder().encode(`${ESC}[200~${body}${ESC}[201~`);
 }
 
+/** A pasted image in a draft: `[image 1a2b3c4d.png]`, naming its file in the
+ *  pasted-image folder (`ipc/os`). On send its path is pasted on its own, which
+ *  the TUI turns into an `[Image #N]` attachment. */
+const IMAGE_TOKEN = /\[image ([0-9a-f]{8}\.(?:png|jpg|gif|webp))\]/g;
+
+export function imageToken(name: string): string {
+  return `[image ${name}]`;
+}
+
+export type PromptChunk = { kind: "text"; text: string } | { kind: "image"; name: string };
+
+/** `text` cut at its image tokens, in order; empty text between them dropped. */
+export function promptChunks(text: string): PromptChunk[] {
+  const chunks: PromptChunk[] = [];
+  let at = 0;
+  for (const m of text.matchAll(IMAGE_TOKEN)) {
+    if (m.index > at) chunks.push({ kind: "text", text: text.slice(at, m.index) });
+    chunks.push({ kind: "image", name: m[1] });
+    at = m.index + m[0].length;
+  }
+  if (at < text.length) chunks.push({ kind: "text", text: text.slice(at) });
+  return chunks;
+}
+
+/** The pasted images every saved draft still refers to — the ones a prune keeps. */
+export function draftImageNames(): string[] {
+  const texts = [...drafts.values()];
+  try {
+    for (let i = 0; i < localStorage.length; i++) {
+      const key = localStorage.key(i);
+      if (key?.startsWith(KEY_PREFIX)) texts.push(localStorage.getItem(key) ?? "");
+    }
+  } catch {
+    // storage unavailable: only this window's drafts hold images
+  }
+  return [...new Set(texts.flatMap((t) => [...t.matchAll(IMAGE_TOKEN)].map((m) => m[1])))];
+}
+
 /** Built-in commands that, typed bare, answer inside the TUI — a menu to pick
  *  from, or a screen that is never written to the transcript. Sent from the
  *  composer they would leave the session waiting in a dialog the transcript view

@@ -1,7 +1,17 @@
 // @vitest-environment jsdom
 import { beforeEach, describe, expect, it } from "vitest";
 
-import { encodePaste, getDraft, insertIntoDraft, setDraft, spliceText, terminalCommand } from "./composer";
+import {
+  draftImageNames,
+  encodePaste,
+  getDraft,
+  imageToken,
+  insertIntoDraft,
+  promptChunks,
+  setDraft,
+  spliceText,
+  terminalCommand,
+} from "./composer";
 import { atRest } from "./queue";
 import type { LiveStatus } from "./status";
 
@@ -89,5 +99,28 @@ describe("at rest", () => {
     expect(atRest(live({ phase: "working" }))).toBe(false);
     expect(atRest(live({ phase: "needs_you" }))).toBe(false);
     expect(atRest(live({ phase: "done", compacting: true }))).toBe(false);
+  });
+});
+
+describe("pasted images", () => {
+  beforeEach(() => localStorage.clear());
+
+  it("cuts a prompt at its image tokens, in order", () => {
+    expect(promptChunks(`look at ${imageToken("1a2b3c4d.png")} and ${imageToken("00ff00ff.jpg")}`)).toEqual([
+      { kind: "text", text: "look at " },
+      { kind: "image", name: "1a2b3c4d.png" },
+      { kind: "text", text: " and " },
+      { kind: "image", name: "00ff00ff.jpg" },
+    ]);
+    expect(promptChunks("no images [image ../x.png]")).toEqual([
+      { kind: "text", text: "no images [image ../x.png]" },
+    ]);
+  });
+
+  it("keeps the images saved drafts still hold", () => {
+    setDraft("a", `${imageToken("1a2b3c4d.png")} see`);
+    localStorage.setItem("wb-draft:b", imageToken("00ff00ff.webp"));
+    localStorage.setItem("other", imageToken("deadbeef.png"));
+    expect(draftImageNames().sort()).toEqual(["00ff00ff.webp", "1a2b3c4d.png"]);
   });
 });

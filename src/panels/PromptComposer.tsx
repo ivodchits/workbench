@@ -12,7 +12,16 @@ import { GLYPH } from "../theme";
 import { INTERRUPT_KEY, ptyWrite } from "../ipc/pty";
 import { submitPrompt } from "./terminalPool";
 import { deliverQueued, sendOrQueue } from "./promptDelivery";
-import { COMPOSER_ATTR, setDraft, spliceText, terminalCommand, useDraft } from "../state/composer";
+import { savePastedImage } from "../ipc/os";
+import {
+  COMPOSER_ATTR,
+  imageToken,
+  insertReferences,
+  setDraft,
+  spliceText,
+  terminalCommand,
+  useDraft,
+} from "../state/composer";
 import { atRest, cancelQueued, useQueued } from "../state/queue";
 import { markInterrupted, type LiveStatus } from "../state/status";
 import { useTemplates, type PromptTemplate } from "../state/templates";
@@ -101,6 +110,22 @@ function PromptComposer({ instanceId, live, onShowTerminal, onSent }: PromptComp
     field?.focus();
   };
 
+  /** An image on the clipboard is saved to a temp file and put at the caret as an
+   *  `[image …]` token, which becomes an attachment when the prompt is sent
+   *  (`terminalPool`). Text pastes are left to the field. */
+  const onPaste = (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
+    const images = Array.from(e.clipboardData.files).filter((f) => f.type.startsWith("image/"));
+    if (images.length === 0) return;
+    e.preventDefault();
+    void Promise.all(
+      images.map(async (f) =>
+        savePastedImage(new Uint8Array(await f.arrayBuffer()), f.type.slice("image/".length)),
+      ),
+    )
+      .then((names) => insertReferences(instanceId, names.map((n) => `${imageToken(n)} `).join("")))
+      .catch((err) => flash(`couldn't paste the image: ${String(err)}`));
+  };
+
   const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     // Enter sends, Shift+Enter is a line break — as in the terminal (step C1).
     // Not while an input method is composing: there Enter confirms the word.
@@ -161,6 +186,7 @@ function PromptComposer({ instanceId, live, onShowTerminal, onSent }: PromptComp
         aria-label="prompt"
         onChange={(e) => setDraft(instanceId, e.target.value)}
         onKeyDown={onKeyDown}
+        onPaste={onPaste}
       />
       <div className="wb-cmp-bar">
         <span className="wb-cmp-hint">
