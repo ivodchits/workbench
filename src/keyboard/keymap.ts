@@ -59,6 +59,8 @@ export type CommandId =
   | "toggleTranscriptView"
   | "copyLastResponse"
   | "toggleAssistant"
+  | "pluginsReload"
+  | "pluginsEdit"
   // git panel (G5) — handled by the most recently activated Git panel
   | "gitRefresh"
   | "gitFetch"
@@ -186,6 +188,10 @@ const RAW_BINDINGS: RawBinding[] = [
   // global-safety rule below. Ctrl+Shift+Space is free in the shell, the TUI and
   // CodeMirror.
   { chord: "Ctrl+Shift+Space", command: "toggleAssistant", scope: "global", title: "Duck: open or close the drawer" },
+  // The project toolbar (step K1). Unbound: the file reloads itself when saved, so
+  // these are for the rare missed change and for opening the file.
+  { chord: "", command: "pluginsReload", scope: "global", title: "Plugins: reload" },
+  { chord: "", command: "pluginsEdit", scope: "global", title: "Plugins: edit" },
   // Attention navigation (wired to the status engine in Phase 2). Modifiers must
   // be written in `eventToChord`'s canonical order (Ctrl → Alt → Shift) or the
   // string match in `matchCommand` never fires — hence `Alt+Shift`, not `Shift+Alt`.

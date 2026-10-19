@@ -36,6 +36,7 @@ import {
   type SpawnKind,
   type SpawnResult,
   type Subscribed,
+  type TaskSpawn,
 } from "../ipc/pty";
 import { deletePastedImages, pastedImageDir } from "../ipc/os";
 import { encodePaste, promptChunks } from "../state/composer";
@@ -121,6 +122,8 @@ export interface AcquireOptions {
   /** When set, drive a remote claude over SSH+tmux instead of a local child
    *  (step 3.12). Null for a local launch / shell. */
   remote: RemoteSpawn | null;
+  /** The plugin action a `task` PTY runs (step K1). */
+  task?: TaskSpawn | null;
   /**
    * Attach to an **already-live** PTY instead of spawning a new child (step 4.2 —
    * OS-window tear-off). True for a torn-off window's terminal and for docking a
@@ -546,6 +549,7 @@ export function acquire(container: HTMLDivElement, opts: AcquireOptions): void {
       opts.remote,
       term.cols,
       term.rows,
+      opts.task ?? null,
     )
       .then(async (result) => {
         opts.onSpawned(result);

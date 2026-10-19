@@ -47,6 +47,9 @@ if-addrs = "0.13"
 # and the debouncer's serde support; we do our own coalescing in the watcher module
 # and send events over Tauri's event bus, not a channel we'd have to poll.
 notify = { version = "8", default-features = false, features = ["macos_fsevent"] }
+# Step K1: a plugin text field's `pattern`, checked when the file is read and again
+# before an action runs (the toolbar checks the same pattern with a JS RegExp).
+regex = "1"
 # Step R3: the QR code beside the public (Funnel) address in the Remote Access menu,
 # rendered as an SVG string. `default-features = false` drops the `image` crate.
 qrcode = { version = "0.14.1", default-features = false, features = ["svg"] }

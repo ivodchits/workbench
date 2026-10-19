@@ -2182,6 +2182,109 @@ button for another project. Asked for on 2026-10-19.
     substitution.
 - **Out of scope:** code plugins; actions on the SSH host; plugin output parsed into
   anything beyond the exit code.
+- **As built (2026-10-19):**
+  - **The file:** `<app data>/notes/<projectId>/plugins.json` (`notes.dev/` for a debug
+    build), as decided. The format is the one above, with these additions:
+    - A `button` control is `{ "type": "button", "action": "<action id>" }`. It places that
+      action among the fields; actions no button places are drawn after the fields.
+    - A `checkbox` fills `{id}` with its `on` / `off` text (default `"true"` /
+      `"false"`). An argument that is exactly `{id}` and comes out empty is dropped, so
+      `"on": "--release", "off": ""` adds a flag or nothing.
+    - Only `{` + an id + `}` is a placeholder. Any other brace is text, so pwsh blocks
+      and JSON pass through, and `{{` / `}}` are a literal brace.
+    - Every problem is reported at its JSON path (`plugins[1].controls[0].pattern`):
+      unknown fields, a missing or wrong `version`, bad ids, duplicates, a select
+      default that isn't an option, a pattern that isn't a regex, unknown placeholders,
+      a button naming no action.
+  - **Rules that keep a value from becoming a command**, in
+    `src-tauri/src/plugins/format.rs`:
+    - The webview never sends an argv. A run names the plugin, the action and the field
+      values. `pty_spawn` (kind `task`) re-reads the file, checks the values (the select
+      option, the text pattern) and fills the placeholders itself.
+    - The program (`run[0]`) can only use `{root}`, `{data}` and `{branch}`.
+    - A control's placeholder is refused where an interpreter reads it as code: after
+      `cmd /c`, after `pwsh -Command` (and abbreviations), in the script after
+      `bash -c` (or `-lc`), `node -e`, `python -c`, `ruby`/`perl -e`.
+    - A batch file (`npm` resolves to `npm.cmd`) runs as `cmd.exe /d /c call <path>
+      …`, because `call` keeps cmd from stripping the quotes around a path with spaces.
+      Batch files re-read their arguments as a command line, so a control value
+      holding `& | < > ^ ( ) % ! "` or a control character is refused there. An `.exe`
+      gets any value as one argument. A `.ps1` runs through `pwsh -File` (or
+      `powershell.exe` when pwsh isn't installed).
+  - **Backend** `src-tauri/src/plugins/`:
+    - `plugins_read` returns `{ path, revision, file, problems }`.
+    - `plugins_write(projectId, text, baseRevision)` follows the notes revision rule
+      (a stale base gives `stale:`). It also refuses text that doesn't parse, and
+      returns the problems, so Duck (W5) can't leave the toolbar broken.
+    - `plugins_init` creates the file with a starter `git status` action when there
+      is none.
+    - A `notify` watcher on the notes root emits `plugins-changed { projectId }`,
+      coalesced over 150 ms.
+  - **PTY:**
+    - `SpawnKind::Task`; the spawn result carries the filled argv for the panel.
+    - `pty-exited { id, code }` comes from a per-spawn watcher that polls the child
+      every 250 ms. It doesn't wait for the end of the output, because under ConPTY
+      the pipe can stay open after the child is gone. Each spawn has a generation, so
+      a killed or respawned child reports nothing.
+    - Stopping a task kills its whole tree with `taskkill /T /F` (`kill -TERM -pgid`
+      on Unix): `cmd → npm → node → vite` would otherwise outlive the stop.
+    - `CREATE_NO_WINDOW` doesn't apply to ConPTY children, which have no console
+      window; it is used for `taskkill`.
+  - **Frontend:**
+    - `state/plugins.ts` holds the last read per project and the field values
+      (prefs `pluginValues`, keyed `pluginId.controlId`). `state/pluginModel.ts` has
+      the pure helpers, tested in `pluginModel.test.ts`. `state/tasks.ts` holds the
+      task panels. `panels/pluginRun.ts` has run, stop and edit, and the confirm
+      questions.
+    - `panels/ProjectToolbar.tsx`:
+      - The groups are measured in an off-screen row, and the ones that don't fit
+        fold into "▾ more". The project name gives up the room down to 120 px.
+      - A broken file shows "⚠ plugins": it opens the file and lists the problems
+        with their paths.
+      - A button shows a spinner while its run goes, "■ stop …" for a `long`
+        action, then ✓ or ✗ with the exit code for a minute.
+      - Enter in a text field runs the plugin's first action.
+    - `panels/TaskPanel.tsx`:
+      - A header shows the label, the argv that ran and the working dir. A footer
+        shows the state, with **stop** and **run again**.
+      - The terminal is keyed on the run number, so a re-run starts on a clean screen
+        in the same panel. A stopped run keeps its output.
+      - Task panels round-trip in layouts and presets (`tasks`, defaulting to `[]`,
+        no schema bump) and come back dormant.
+    - The palette lists every action of the active project, plus **Plugins: reload**
+      and **Plugins: edit** (unbound keymap commands).
+  - **Not as planned:** the editor saves `plugins.json` through its usual
+    `write_file`, like any other file, not through `plugins_write`. The editor has no
+    revisions. The watcher redraws the toolbar either way.
+  - **SSH projects:** actions run on this machine. A `cwd` that only exists on the host
+    fails with a message saying so.
+  - **Tests:**
+    - `plugins::format`: the parser (unknown fields, problems at their paths, ids,
+      placeholders, the program and shell-code rules, patterns) and substitution (single
+      arguments, checkboxes, stale values, the batch-file wrapping and refusals).
+    - `plugins`: read, write and init.
+    - `pluginModel.test.ts`.
+  - **Checked live** (debug app; a `plugins.json` for the workbench project, with
+    `cwd` pointed at this worktree):
+    - **echo** (a select, a text field, and
+      `node -e "console.log(JSON.stringify(process.argv.slice(1)))" {mode} {text}`)
+      with `a & calc` printed `["one","a & calc"]` and ended ✓. No calculator
+      started.
+    - The same value into a `.cmd` script was refused with the reason, and nothing ran.
+    - Adding an unknown field to the file turned the toolbar into "⚠ plugins" within
+      a second; its list showed `plugins[0].actions[1].lon`. Restoring the file brought
+      the toolbar back.
+    - A `long` action running `npx vite --port 1441` showed "■ stop dev". Stop freed
+      the port and ended the vite process (a grandchild); the output stayed, marked
+      "■ stopped".
+    - After a restart, every task panel came back dormant, and the text field kept its
+      value.
+    - The real "dev" action (`npm run tauri:dev`) wasn't run from the debug app: it
+      would fight that app's own dev server for port 1430. Vite stood in for it.
+    - **installer** (`npm run tauri:build`) ran the release build in its task panel,
+      wrote `Workbench_2.0.3_x64-setup.exe`, and ended ✓ with exit 0. The button showed
+      the spinner, then ✓.
+    - **Plugins: edit** from the palette opened `plugins.json` in the project's editor.
 
 ---
 
@@ -2262,4 +2365,4 @@ any session, which lowers the urgency and makes the terminal bugs easier to comp
 | P1 | Open plan on demand | ☑ |
 | A1 | Review with a fresh agent | ☑ |
 | M1 | Run summary on done (mod) | ☐ |
-| K1 | Project toolbar: plugin file, toolbar, task runs | ☐ |
+| K1 | Project toolbar: plugin file, toolbar, task runs | ☑ |

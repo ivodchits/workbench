@@ -7,7 +7,7 @@
 
 import { useEffect, useRef } from "react";
 import { acquire, detach, refitSoon } from "./terminalPool";
-import type { RemoteSpawn, SpawnKind, SpawnResult } from "../ipc/pty";
+import type { RemoteSpawn, SpawnKind, SpawnResult, TaskSpawn } from "../ipc/pty";
 
 interface ConsoleProps {
   /** The instance this console is bound to — the key for the pooled terminal. */
@@ -22,6 +22,9 @@ interface ConsoleProps {
   resumeSessionId: string | null;
   /** When set, drive a remote claude over SSH+tmux instead of a local child (3.12). */
   remote: RemoteSpawn | null;
+  /** The plugin action a `task` console runs (step K1). Keep its reference stable,
+   *  like `remote`, or the effect re-acquires every render. */
+  task?: TaskSpawn | null;
   /** Attach to an already-live PTY instead of spawning (step 4.2 — a torn-off
    *  window, or a torn-off panel docking back into the main dock). */
   attach?: boolean;
@@ -31,7 +34,7 @@ interface ConsoleProps {
   onError?: (message: string) => void;
 }
 
-function Console({ instanceId, kind, cwd, webgl, resumeSessionId, remote, attach, onSpawned, onError }: ConsoleProps) {
+function Console({ instanceId, kind, cwd, webgl, resumeSessionId, remote, task, attach, onSpawned, onError }: ConsoleProps) {
   const containerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -47,6 +50,7 @@ function Console({ instanceId, kind, cwd, webgl, resumeSessionId, remote, attach
       webgl,
       resumeSessionId,
       remote,
+      task,
       attach,
       onSpawned: (r) => onSpawned?.(r),
       onError: (m) => onError?.(m),
@@ -61,7 +65,7 @@ function Console({ instanceId, kind, cwd, webgl, resumeSessionId, remote, attach
       // teardown happens via the pool's `release`, called when the console closes.
       detach(container, instanceId);
     };
-  }, [instanceId, kind, cwd, webgl, resumeSessionId, remote, attach, onSpawned, onError]);
+  }, [instanceId, kind, cwd, webgl, resumeSessionId, remote, task, attach, onSpawned, onError]);
 
   return (
     <div

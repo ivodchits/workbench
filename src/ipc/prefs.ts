@@ -45,6 +45,9 @@ export interface Prefs {
   assistantDrawer: AssistantDrawerPrefs;
   /** Duck's settings (step W2), as `src/assistant/settings.ts` keeps them. */
   assistant: Partial<{ confirmPrompts: boolean; codingModel: string }>;
+  /** The project toolbar's field values (step K1): project id → `pluginId.controlId`
+   *  → the last value (text for a select or text field, a flag for a checkbox). */
+  pluginValues: Record<string, Record<string, string | boolean>>;
 }
 
 export interface AssistantDrawerPrefs {

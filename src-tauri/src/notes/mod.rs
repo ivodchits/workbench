@@ -86,7 +86,7 @@ pub fn revision_of(bytes: &[u8]) -> String {
 }
 
 /// Project ids are UUIDs; anything that could name another folder is refused.
-fn check_project(project_id: &str) -> Result<(), String> {
+pub(crate) fn check_project(project_id: &str) -> Result<(), String> {
     let ok = !project_id.is_empty()
         && project_id.len() <= 64
         && project_id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');

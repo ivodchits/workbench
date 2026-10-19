@@ -36,6 +36,7 @@ import McpManagerPanel, { type McpPanelParams } from "./MCPManager";
 import SkillManagerPanel, { type SkillPanelParams } from "./SkillManager";
 import GitPanel, { type GitPanelParams } from "./Git";
 import NotesPanel, { type NotesPanelParams } from "./Notes";
+import TaskPanel, { type TaskPanelParams } from "./TaskPanel";
 import PreviewPanel from "./PreviewPanel";
 import PlanPanel from "./PlanPanel";
 import { GLYPH } from "../theme";
@@ -111,6 +112,14 @@ import {
   type NotesDescriptor,
   type NotesSession,
 } from "../state/notes";
+import {
+  closeTask,
+  getActiveTaskId,
+  getOpenTasks,
+  hydrateTasks,
+  useTasks,
+  type TaskDescriptor,
+} from "../state/tasks";
 import { useActiveProject } from "../state/activeProject";
 import {
   loadLayout,
@@ -134,6 +143,7 @@ interface LayoutSnapshot {
   skills: SkillDescriptor[];
   gits: GitDescriptor[];
   notes: NotesDescriptor[];
+  tasks: TaskDescriptor[];
 }
 
 const COMPONENTS = {
@@ -153,6 +163,9 @@ const COMPONENTS = {
   git: GitPanel as React.FunctionComponent<IDockviewPanelProps>,
   // Notes panels (step N1) — project-bound; the note text is re-read from disk.
   notes: NotesPanel as React.FunctionComponent<IDockviewPanelProps>,
+  // Task panels (step K1) — a plugin action's PTY, pooled like a shell's; restored
+  // dormant from a saved layout.
+  task: TaskPanel as React.FunctionComponent<IDockviewPanelProps>,
   // Markdown Preview panels carry no backing store/PTY and use `ownerEditorId` (not
   // `editorId`) in params, so the reconcilers above ignore them — they persist and
   // restore purely as part of the dockview tree.
@@ -210,6 +223,12 @@ function notesPanelId(panel: { params?: Record<string, unknown> }): string | nul
   return typeof id === "string" ? id : null;
 }
 
+/** A task panel carries its `task:<project>:<plugin>:<action>` id in params. */
+function taskPanelId(panel: { params?: Record<string, unknown> }): string | null {
+  const id = panel.params?.taskId;
+  return typeof id === "string" ? id : null;
+}
+
 /**
  * Restore a saved dock tree, resiliently. `dockview.fromJSON` restores the docked
  * grid *and* floating groups in one transaction and reverts the whole layout if
@@ -244,6 +263,7 @@ function Workspace() {
   const { open: skillsOpen, activeId: activeSkillId } = useSkills();
   const { open: gitsOpen, activeId: activeGitId } = useGits();
   const { open: notesOpen, activeId: activeNotesId } = useNotes();
+  const { open: tasksOpen, activeId: activeTaskId } = useTasks();
   const { instances } = useRegistry();
   const activeProjectId = useActiveProject();
 
@@ -308,6 +328,17 @@ function Workspace() {
     const gits: GitDescriptor[] = getOpenGits().filter((g) => present.has(g.gitId));
     // Notes panels persist their binding and the note they showed.
     const notes: NotesDescriptor[] = getOpenNotes().filter((n) => present.has(n.notesId));
+    // Task panels persist their action binding; a restore brings them back dormant.
+    const tasks: TaskDescriptor[] = getOpenTasks()
+      .filter((t) => present.has(t.taskId))
+      .map(({ taskId, projectId, pluginId, actionId, label, long }) => ({
+        taskId,
+        projectId,
+        pluginId,
+        actionId,
+        label,
+        long,
+      }));
     // Torn-off console/shell panels (step 4.2) have no panel in this dock, but they
     // belong to the displayed project and must survive a restart — persist their ids
     // so they return as ordinary dormant placeholders in the main dock on relaunch
@@ -330,6 +361,7 @@ function Workspace() {
       skills,
       gits,
       notes,
+      tasks,
     };
   }, []);
 
@@ -338,8 +370,8 @@ function Workspace() {
     (a: DockviewApi) => {
       const key = displayedProjectRef.current;
       if (!key) return; // no project on screen → nothing to persist
-      const { tree, consoleIds, shells, editors, diffs, mcps, skills, gits, notes } = collect(a);
-      saveLayoutDebounced(tree, consoleIds, shells, editors, diffs, mcps, skills, gits, notes, key);
+      const { tree, consoleIds, shells, editors, diffs, mcps, skills, gits, notes, tasks } = collect(a);
+      saveLayoutDebounced(tree, consoleIds, shells, editors, diffs, mcps, skills, gits, notes, tasks, key);
     },
     [collect],
   );
@@ -629,6 +661,37 @@ function Workspace() {
     }
   }, []);
 
+  // Same reconcile for task panels (step K1), keyed by project like the notes panel.
+  // Removing one releases its pooled terminal (the remove handler below), which
+  // stops a run that is still going.
+  const taskFocusRef = useRef<string | null>(null);
+  const reconcileTasks = useCallback((a: DockviewApi) => {
+    const projId = displayedProjectRef.current;
+    const openTasks = getOpenTasks();
+    for (const t of openTasks.filter((t) => t.projectId === projId)) {
+      if (a.getPanel(t.taskId)) continue;
+      const params: TaskPanelParams = { taskId: t.taskId };
+      const position = a.panels.length > 0 ? ({ direction: "right" } as const) : undefined;
+      a.addPanel({
+        id: t.taskId,
+        component: "task",
+        title: `task · ${t.label}`,
+        params,
+        ...(position ? { position } : {}),
+      });
+    }
+    const allTaskIds = new Set(openTasks.map((t) => t.taskId));
+    for (const panel of [...a.panels]) {
+      const id = taskPanelId(panel);
+      if (id && !allTaskIds.has(id)) a.removePanel(panel);
+    }
+    const aTask = getActiveTaskId();
+    if (aTask && a.getPanel(aTask) && aTask !== taskFocusRef.current) {
+      a.getPanel(aTask)?.api.setActive();
+      taskFocusRef.current = aTask;
+    }
+  }, []);
+
   // Layout presets (step 3.3) snapshot/restore the live dock. Capturing is just
   // `collect` stamped with the schema version; applying mirrors the project-swap's
   // restore sequence but *stays on the same project* — so it hydrates the preset's
@@ -637,8 +700,8 @@ function Workspace() {
   // preset's tree didn't include and persists the result as the project's layout.
   const snapshotLayout = useCallback((): SavedLayout | null => {
     if (!api) return null;
-    const { tree, consoleIds, shells, editors, diffs, mcps, skills, gits, notes } = collect(api);
-    return { version: SCHEMA_VERSION, tree, consoleInstanceIds: consoleIds, shells, editors, diffs, mcps, skills, gits, notes };
+    const { tree, consoleIds, shells, editors, diffs, mcps, skills, gits, notes, tasks } = collect(api);
+    return { version: SCHEMA_VERSION, tree, consoleInstanceIds: consoleIds, shells, editors, diffs, mcps, skills, gits, notes, tasks };
   }, [api, collect]);
 
   const applyLayout = useCallback(
@@ -654,6 +717,7 @@ function Workspace() {
       hydrateSkills(saved.skills ?? []); // presets predate `skills` — default for old snapshots
       hydrateGits(saved.gits ?? []); // presets predate `gits` — default for old snapshots
       hydrateNotes(saved.notes ?? []); // and `notes`
+      hydrateTasks(saved.tasks ?? []); // and `tasks`
       restoreTree(api, saved.tree);
       switchingRef.current = false;
       restoredRef.current = true;
@@ -665,9 +729,10 @@ function Workspace() {
       reconcileSkills(api);
       reconcileGits(api);
       reconcileNotes(api);
+      reconcileTasks(api);
       persist(api); // the applied arrangement becomes the project's current layout
     },
-    [api, persist, reconcileConsoles, reconcileShells, reconcileEditors, reconcileDiffs, reconcileMcps, reconcileSkills, reconcileGits, reconcileNotes],
+    [api, persist, reconcileConsoles, reconcileShells, reconcileEditors, reconcileDiffs, reconcileMcps, reconcileSkills, reconcileGits, reconcileNotes, reconcileTasks],
   );
 
   // A notes panel's open note is part of its saved binding, and picking another
@@ -721,7 +786,8 @@ function Workspace() {
         const skillId = skillPanelId(panel);
         const gitId = gitPanelId(panel);
         const notesId = notesPanelId(panel);
-        const id = consoleId ?? shellId ?? editorId ?? diffId ?? mcpId ?? skillId ?? gitId ?? notesId;
+        const taskId = taskPanelId(panel);
+        const id = consoleId ?? shellId ?? editorId ?? diffId ?? mcpId ?? skillId ?? gitId ?? notesId ?? taskId;
         if (!id) return;
         queueMicrotask(() => {
           if (switchingRef.current) return;
@@ -739,8 +805,9 @@ function Workspace() {
           else if (skillId) closeSkills(skillId);
           else if (gitId) closeGit(gitId);
           else if (notesId) closeNotes(notesId);
-          // Editors/diffs/mcps/skills own no pooled terminal, so only console/shell ids release one.
-          if (consoleId || shellId) release(id);
+          else if (taskId) closeTask(taskId);
+          // Editors/diffs/mcps/skills own no pooled terminal, so only console/shell/task ids release one.
+          if (consoleId || shellId || taskId) release(id);
         });
       }),
     );
@@ -767,6 +834,7 @@ function Workspace() {
       reconcileSkills(api);
       reconcileGits(api);
       reconcileNotes(api);
+      reconcileTasks(api);
       return;
     }
 
@@ -781,8 +849,8 @@ function Workspace() {
 
       restoredRef.current = false; // suspend persist during the swap
       if (prev != null) {
-        const { tree, consoleIds, shells, editors, diffs, mcps, skills, gits, notes } = collect(api);
-        saveLayoutNow(tree, consoleIds, shells, editors, diffs, mcps, skills, gits, notes, prev);
+        const { tree, consoleIds, shells, editors, diffs, mcps, skills, gits, notes, tasks } = collect(api);
+        saveLayoutNow(tree, consoleIds, shells, editors, diffs, mcps, skills, gits, notes, tasks, prev);
       }
       switchingRef.current = true; // keep the outgoing project's PTYs alive
       if (saved) {
@@ -794,6 +862,7 @@ function Workspace() {
         hydrateSkills(saved.skills);
         hydrateGits(saved.gits);
         hydrateNotes(saved.notes);
+        hydrateTasks(saved.tasks);
         // `fromJSON` replaces the whole layout (removing the outgoing project's
         // panels itself) — don't `clear()` first, or it can fail and lose the
         // saved grouping (tabbed consoles would rebuild as separate columns).
@@ -815,6 +884,7 @@ function Workspace() {
       reconcileSkills(api);
       reconcileGits(api);
       reconcileNotes(api);
+      reconcileTasks(api);
     })();
   }, [
     api,
@@ -827,6 +897,7 @@ function Workspace() {
     skillsOpen,
     gitsOpen,
     notesOpen,
+    tasksOpen,
     activeId,
     activeShellId,
     activeEditorId,
@@ -835,6 +906,7 @@ function Workspace() {
     activeSkillId,
     activeGitId,
     activeNotesId,
+    activeTaskId,
     instances,
     collect,
     reconcileConsoles,
@@ -845,6 +917,7 @@ function Workspace() {
     reconcileSkills,
     reconcileGits,
     reconcileNotes,
+    reconcileTasks,
   ]);
 
   return (

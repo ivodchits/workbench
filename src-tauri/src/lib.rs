@@ -14,6 +14,7 @@ mod hooks;
 mod layout;
 mod mcp;
 mod notes;
+mod plugins;
 mod pty;
 mod registry;
 mod remote;
@@ -89,6 +90,9 @@ pub fn run() {
             // JSONL and surface cumulative tokens on its card/console header. A
             // background thread; failures only degrade the token readout.
             transcript::init(app.handle());
+            // Watch the notes folders for plugin files changing (step K1), so the
+            // project toolbar redraws however the file was saved.
+            plugins::init_watcher(app.handle());
             // Install the WebView2 accelerator handler on the main window: suppress
             // the built-in reload chords (F5 / Ctrl+R / Ctrl+Shift+R) so a stray
             // keypress can't reload the renderer and drop every live console, and
@@ -169,6 +173,9 @@ pub fn run() {
             notes::notes_create_with,
             notes::notes_rename,
             notes::notes_delete,
+            plugins::plugins_read,
+            plugins::plugins_write,
+            plugins::plugins_init,
             git::git_log,
             git::git_branches,
             git::git_status_entries,

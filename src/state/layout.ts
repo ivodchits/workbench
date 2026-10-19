@@ -18,6 +18,7 @@ import type { McpDescriptor } from "./mcp";
 import type { SkillDescriptor } from "./skills";
 import type { GitDescriptor } from "./git";
 import type { NotesDescriptor } from "./notes";
+import type { TaskDescriptor } from "./tasks";
 
 /**
  * The workspace key the MVP persists under. Layout is global for now; the schema
@@ -28,8 +29,8 @@ export const WORKSPACE_KEY = "__global__";
 
 /** Bump if the saved-payload shape changes incompatibly. (v2 added `shells`;
  *  v3 made shells project-scoped; v4 added `editors`.) `diffs` (step 2.7),
- *  `mcps` (step 3.7), `skills` (step 3.7b), `gits` (step 3.11) and `notes` (step N1) were added
- *  without a bump — every reader defaults them to `[]` when absent, so old and
+ *  `mcps` (step 3.7), `skills` (step 3.7b), `gits` (step 3.11), `notes` (step N1)
+ *  and `tasks` (step K1) were added without a bump — every reader defaults them to `[]` when absent, so old and
  *  new blobs interoperate.
  *  Exported because layout presets (step 3.3) stamp the same version onto the
  *  `SavedLayout` snapshots they store. */
@@ -54,6 +55,8 @@ export interface SavedLayout {
   gits: GitDescriptor[];
   /** Notes panels (project binding + the open note) — re-read on restore. */
   notes: NotesDescriptor[];
+  /** Task panels (step K1) — restored dormant, never re-run. */
+  tasks: TaskDescriptor[];
 }
 
 /** Load and validate the saved layout for `key`; null when absent or unreadable. */
@@ -81,6 +84,7 @@ export async function loadLayout(key: string = WORKSPACE_KEY): Promise<SavedLayo
       skills: Array.isArray(parsed.skills) ? parsed.skills : [],
       gits: Array.isArray(parsed.gits) ? parsed.gits : [],
       notes: Array.isArray(parsed.notes) ? parsed.notes : [],
+      tasks: Array.isArray(parsed.tasks) ? parsed.tasks : [],
     };
   } catch {
     return null; // corrupt blob — start from an empty workspace
@@ -100,6 +104,7 @@ function write(
   skills: SkillDescriptor[],
   gits: GitDescriptor[],
   notes: NotesDescriptor[],
+  tasks: TaskDescriptor[],
 ): Promise<void> {
   const payload: SavedLayout = {
     version: SCHEMA_VERSION,
@@ -112,6 +117,7 @@ function write(
     skills,
     gits,
     notes,
+    tasks,
   };
   return setLayout(key, JSON.stringify(payload)).catch(() => {
     // Persisting layout is best-effort; a failed write just means the next
@@ -134,13 +140,14 @@ export function saveLayoutDebounced(
   skills: SkillDescriptor[],
   gits: GitDescriptor[],
   notes: NotesDescriptor[],
+  tasks: TaskDescriptor[],
   key: string = WORKSPACE_KEY,
   delayMs = 400,
 ): void {
   if (saveTimer) clearTimeout(saveTimer);
   saveTimer = setTimeout(() => {
     saveTimer = null;
-    void write(key, tree, consoleInstanceIds, shells, editors, diffs, mcps, skills, gits, notes);
+    void write(key, tree, consoleInstanceIds, shells, editors, diffs, mcps, skills, gits, notes, tasks);
   }, delayMs);
 }
 
@@ -159,11 +166,12 @@ export function saveLayoutNow(
   skills: SkillDescriptor[],
   gits: GitDescriptor[],
   notes: NotesDescriptor[],
+  tasks: TaskDescriptor[],
   key: string,
 ): void {
   if (saveTimer) {
     clearTimeout(saveTimer);
     saveTimer = null;
   }
-  void write(key, tree, consoleInstanceIds, shells, editors, diffs, mcps, skills, gits, notes);
+  void write(key, tree, consoleInstanceIds, shells, editors, diffs, mcps, skills, gits, notes, tasks);
 }

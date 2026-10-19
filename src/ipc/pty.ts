@@ -5,17 +5,33 @@
 // will use.
 
 import { Channel, invoke } from "@tauri-apps/api/core";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
 // Tauri serializes the Rust `Vec<u8>` as a JS number array over the IPC channel.
 export type PtyChunk = number[];
 
-/** What the PTY runs: the interactive `claude` TUI, or a plain shell. */
-export type SpawnKind = "claude" | "shell";
+/** What the PTY runs: the interactive `claude` TUI, a plain shell, or a project
+ *  toolbar action (step K1). */
+export type SpawnKind = "claude" | "shell" | "task";
 
 /** Returned at spawn. `sessionId` is the minted `--session-id` for `claude`. */
 export interface SpawnResult {
   sessionId: string | null;
   cwd: string;
+  /** A task's argv with its placeholders filled in (null for other kinds). */
+  argv: string[] | null;
+}
+
+/**
+ * The plugin action a task PTY runs (step K1): which one, and the toolbar fields'
+ * values (a checkbox's as "true"/"false"). The backend reads the argv, working dir
+ * and environment from the project's plugin file — the webview never sends them.
+ */
+export interface TaskSpawn {
+  projectId: string;
+  pluginId: string;
+  actionId: string;
+  values: Record<string, string>;
 }
 
 /**
@@ -37,6 +53,7 @@ export interface RemoteSpawn {
 interface RawSpawnResult {
   session_id: string | null;
   cwd: string;
+  argv: string[] | null;
 }
 
 /**
@@ -46,7 +63,8 @@ interface RawSpawnResult {
  * when set, launch `claude --resume <id>` to continue that session instead of
  * minting a fresh one; null = fresh. `remote` (step 3.12): when set, drive a remote
  * `claude` over SSH+tmux instead of a local child (and no session id is minted —
- * the result's `sessionId` is null).
+ * the result's `sessionId` is null). `task` (kind `"task"` only, step K1): the
+ * plugin action to run.
  */
 export async function ptySpawn(
   instanceId: string,
@@ -56,6 +74,7 @@ export async function ptySpawn(
   remote: RemoteSpawn | null,
   cols: number,
   rows: number,
+  task: TaskSpawn | null = null,
 ): Promise<SpawnResult> {
   const raw = await invoke<RawSpawnResult>("pty_spawn", {
     instanceId,
@@ -63,10 +82,17 @@ export async function ptySpawn(
     cwd,
     resumeSessionId,
     remote,
+    task,
     cols,
     rows,
   });
-  return { sessionId: raw.session_id, cwd: raw.cwd };
+  return { sessionId: raw.session_id, cwd: raw.cwd, argv: raw.argv };
+}
+
+/** Fired when a PTY's child exits on its own (not when Workbench kills it), with
+ *  its exit code (step K1). */
+export function onPtyExited(cb: (id: string, code: number) => void): Promise<UnlistenFn> {
+  return listen<{ id: string; code: number }>("pty-exited", (e) => cb(e.payload.id, e.payload.code));
 }
 
 /** What attaching to a live PTY returns. */

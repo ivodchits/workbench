@@ -10,6 +10,9 @@ import { initAssistant } from "./assistant";
 import RemoteMirror from "./panels/RemoteMirror";
 import Workspace from "./panels/Workspace";
 import PresetsBar from "./panels/PresetsBar";
+import ProjectToolbar from "./panels/ProjectToolbar";
+import { initPlugins } from "./state/plugins";
+import { initTasks } from "./state/tasks";
 import TemplateLibraryHost from "./panels/TemplateLibrary";
 import QueuePromptHost from "./panels/QueuePromptDialog";
 import CommandPaletteHost from "./panels/CommandPalette";
@@ -102,6 +105,10 @@ function App() {
     void initAssistant();
     // Per-console terminal/transcript choice (step T3), restored from prefs.
     void initViewModes();
+    // The project toolbar (step K1): follow plugin files changing, and task runs
+    // ending.
+    initPlugins();
+    initTasks();
     // Images pasted into a composer are deleted once sent; this collects the ones
     // a draft let go of, or a send couldn't confirm.
     void prunePastedImages(draftImageNames()).catch(() => {});
@@ -363,10 +370,20 @@ function TitleBar({ context }: { context: string }) {
       }}
     >
       <DuckButton />
-      <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }}>
+      {/* The one item that gives up room: the project toolbar measures the bar
+          without it (`data-wb-titlebar-flex`) to know how many groups fit. */}
+      <div
+        data-wb-titlebar-flex
+        style={{ flex: 1, minWidth: 0, display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }}
+      >
         <span style={{ color: "var(--wb-textFaint)", fontSize: 11 }}>╶</span>
-        <span style={{ color: "var(--wb-textDim2)", fontSize: 11.5 }}>{context}</span>
+        <span
+          style={{ color: "var(--wb-textDim2)", fontSize: 11.5, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
+        >
+          {context}
+        </span>
       </div>
+      <ProjectToolbar />
       <PaletteButton />
       <TemplatesButton />
       <PresetsBar />

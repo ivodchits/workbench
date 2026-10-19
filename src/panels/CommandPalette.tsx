@@ -17,6 +17,7 @@ import { registerCommand } from "../keyboard/bus";
 import { runAction } from "../keyboard/commands";
 import { useBindings, type Binding } from "../keyboard/keymap";
 import { prettyChord } from "./keymapFormat";
+import { usePluginCommands } from "./pluginRun";
 
 /** Always-mounted host: opens the palette on the `openCommandPalette` command. */
 export default function CommandPaletteHost() {
@@ -26,14 +27,21 @@ export default function CommandPaletteHost() {
   return <CommandPalette onClose={() => setOpen(false)} />;
 }
 
-interface Action {
-  binding: Binding;
-  /** Lower-cased haystack for matching: title + chord. */
-  hay: string;
-}
+/** A keymap command, or one of the active project's plugin actions (step K1). */
+type Action =
+  | {
+      kind: "binding";
+      key: string;
+      title: string;
+      binding: Binding;
+      /** Lower-cased haystack for matching: title + chord. */
+      hay: string;
+    }
+  | { kind: "plugin"; key: string; title: string; run: () => void; hay: string };
 
 function CommandPalette({ onClose }: { onClose: () => void }) {
   const bindings = useBindings();
+  const pluginCommands = usePluginCommands();
   const [query, setQuery] = useState("");
   const [selected, setSelected] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -49,11 +57,22 @@ function CommandPalette({ onClose }: { onClose: () => void }) {
       const prev = byCmd.get(key);
       if (!prev || (prev.chord === "" && b.chord !== "")) byCmd.set(key, b);
     }
-    return Array.from(byCmd.values()).map((binding) => ({
+    const commands: Action[] = Array.from(byCmd.values()).map((binding) => ({
+      kind: "binding",
+      key: binding.id,
+      title: binding.title,
       binding,
       hay: `${binding.title} ${binding.chord}`.toLowerCase(),
     }));
-  }, [bindings]);
+    const plugins: Action[] = pluginCommands.map((c) => ({
+      kind: "plugin",
+      key: c.id,
+      title: c.title,
+      run: c.run,
+      hay: c.title.toLowerCase(),
+    }));
+    return [...commands, ...plugins];
+  }, [bindings, pluginCommands]);
 
   const results = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -61,7 +80,7 @@ function CommandPalette({ onClose }: { onClose: () => void }) {
     return actions
       .map((a) => ({ a, score: fuzzyScore(a.hay, q) }))
       .filter((r) => r.score >= 0)
-      .sort((x, y) => x.score - y.score || x.a.binding.title.localeCompare(y.a.binding.title))
+      .sort((x, y) => x.score - y.score || x.a.title.localeCompare(y.a.title))
       .map((r) => r.a);
   }, [actions, query]);
 
@@ -73,7 +92,8 @@ function CommandPalette({ onClose }: { onClose: () => void }) {
   const run = (a: Action | undefined) => {
     if (!a) return;
     onClose();
-    runAction(a.binding.command, a.binding.arg);
+    if (a.kind === "plugin") a.run();
+    else runAction(a.binding.command, a.binding.arg);
   };
 
   const onKeyDown = (e: React.KeyboardEvent) => {
@@ -119,7 +139,7 @@ function CommandPalette({ onClose }: { onClose: () => void }) {
           ) : (
             results.map((a, i) => (
               <ActionRow
-                key={a.binding.id}
+                key={a.key}
                 action={a}
                 selected={i === selected}
                 onHover={() => setSelected(i)}
@@ -157,7 +177,7 @@ function ActionRow({
   useEffect(() => {
     if (selected) rowRef.current?.scrollIntoView({ block: "nearest" });
   }, [selected]);
-  const { chord } = action.binding;
+  const chord = action.kind === "binding" ? action.binding.chord : "";
   return (
     <div
       ref={rowRef}
@@ -177,9 +197,11 @@ function ActionRow({
       }}
     >
       <span style={{ flex: 1, minWidth: 0, font: "12.5px var(--wb-mono)", color: "var(--wb-text)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-        {action.binding.title}
+        {action.title}
       </span>
-      {chord ? (
+      {action.kind === "plugin" ? (
+        <span style={{ font: "10px var(--wb-mono)", color: "var(--wb-textFaint)" }}>plugin</span>
+      ) : chord ? (
         <KeyCap chord={chord} />
       ) : (
         <span style={{ font: "10px var(--wb-mono)", color: "var(--wb-textFaint)", fontStyle: "italic" }}>

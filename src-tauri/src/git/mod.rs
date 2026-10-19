@@ -1775,7 +1775,7 @@ fn default_remote(root: &Path) -> Option<String> {
 }
 
 /// The checked-out branch's name, or `None` when HEAD is detached.
-fn current_branch(root: &Path) -> Option<String> {
+pub fn current_branch(root: &Path) -> Option<String> {
     git_output(root, &["rev-parse", "--abbrev-ref", "HEAD"]).filter(|b| b != "HEAD")
 }
 

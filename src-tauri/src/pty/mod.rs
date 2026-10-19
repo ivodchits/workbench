@@ -16,8 +16,10 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::ffi::OsStr;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
+use std::time::Duration;
 
 use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
 use serde::{Deserialize, Serialize};
@@ -301,6 +303,28 @@ struct PtySession {
     /// The remote one-shot command path (`remote_cmd_spawn`) keeps an empty hub —
     /// it streams to its own channel directly and is never multiplexed.
     hub: Arc<Mutex<OutputHub>>,
+    /// Which spawn this is ([`NEXT_GEN`]). A respawn under the same instance id is
+    /// another generation, so the previous child's exit watcher stands down instead
+    /// of reporting on the new one.
+    gen: u64,
+    /// Stop the child's whole process tree, not just the child (a task: `npm` →
+    /// `node` → a dev server would outlive its `cmd.exe`).
+    kill_tree: bool,
+}
+
+/// Generations for [`PtySession::gen`].
+static NEXT_GEN: AtomicU64 = AtomicU64::new(1);
+
+/// How often an exit watcher looks at its child. Fast enough that a task's button
+/// turns ✓ or ✗ promptly, slow enough to cost nothing.
+const EXIT_POLL: Duration = Duration::from_millis(250);
+
+/// Emitted (event `pty-exited`) when a child exits on its own; a child that
+/// Workbench killed (closed, stopped, respawned) emits nothing.
+#[derive(Clone, Serialize)]
+struct PtyExited {
+    id: String,
+    code: u32,
 }
 
 /// Tauri-managed state holding every active PTY, keyed by `instance_id`, plus the
@@ -531,11 +555,13 @@ fn norm_dir(p: &str) -> String {
 
 /// What to run in the PTY. `Shell` is the 0.2 spike path (debugging convenience);
 /// `Claude` is the real target — an interactive `claude` TUI for one instance.
+/// `Task` is a project toolbar action (step K1): the argv its plugin file gives.
 #[derive(Debug, Clone, Copy, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum SpawnKind {
     Shell,
     Claude,
+    Task,
 }
 
 /// Remote launch descriptor (step 3.12). When present on `pty_spawn`, the child is
@@ -566,6 +592,9 @@ pub struct SpawnResult {
     session_id: Option<String>,
     /// The resolved working directory the child was launched in.
     cwd: String,
+    /// For a `Task`: the action's argv with its placeholders filled in, for the
+    /// task panel to show what ran.
+    argv: Option<Vec<String>>,
 }
 
 /// Spawn `kind` for `instance_id` in `cwd` inside a fresh PTY and stream its
@@ -581,12 +610,17 @@ pub struct SpawnResult {
 /// The model (step M1) isn't a parameter: it's looked up in the registry from
 /// `instance_id` (the instance's own, else its project's default), so a fresh
 /// launch, a resume and a relaunch after a restart all pick up the same one.
+///
+/// `task` (`Task` only, step K1) names a plugin action and its field values; the
+/// argv, working dir and environment come from the project's plugin file, read
+/// here, never from the caller. `cwd` and `remote` don't apply to a task.
 // Each parameter is part of the IPC contract the frontend invokes with (the
 // per-PTY output channel, the spawn kind, dimensions, …), so they can't be folded
 // into a struct without obscuring the boundary — over clippy's 7-arg advisory.
 #[allow(clippy::too_many_arguments)]
 #[tauri::command]
 pub fn pty_spawn(
+    app: AppHandle,
     state: State<'_, PtyManager>,
     db: State<'_, crate::db::Db>,
     instance_id: String,
@@ -594,14 +628,27 @@ pub fn pty_spawn(
     cwd: Option<String>,
     resume_session_id: Option<String>,
     remote: Option<RemoteSpawn>,
+    task: Option<crate::plugins::TaskRequest>,
     cols: u16,
     rows: u16,
 ) -> Result<SpawnResult, String> {
+    // A task's whole command comes from the plugin file. v1 runs it on this
+    // machine, so an SSH project's remote descriptor doesn't apply.
+    let task = match kind {
+        SpawnKind::Task => {
+            let req = task.ok_or("a task spawn needs the action to run")?;
+            Some(crate::plugins::prepare_task(&app, &req)?)
+        }
+        _ => None,
+    };
+    let remote = if task.is_some() { None } else { remote };
     // The local cwd for the child process. For a remote launch the child is a local
     // `ssh` process (the working dir lives on the host), so the passed `cwd` is a
     // remote path that won't exist locally — anchor the ssh client at the home dir
     // instead and skip the local existence check.
-    let cwd = if remote.is_some() {
+    let cwd = if let Some(t) = &task {
+        t.cwd.clone()
+    } else if remote.is_some() {
         home_dir().ok_or("no home dir to anchor the local ssh process")?
     } else {
         let c = cwd
@@ -620,7 +667,7 @@ pub fn pty_spawn(
             .lock()
             .ok()
             .and_then(|conn| crate::registry::launch_model(&conn, &instance_id)),
-        SpawnKind::Shell => None,
+        SpawnKind::Shell | SpawnKind::Task => None,
     };
 
     // Build the command up front so a resolution failure (e.g. `claude` not on
@@ -634,10 +681,19 @@ pub fn pty_spawn(
             SpawnKind::Claude => {
                 Some(resume_session_id.clone().unwrap_or_else(|| uuid::Uuid::new_v4().to_string()))
             }
-            SpawnKind::Shell => None,
+            SpawnKind::Shell | SpawnKind::Task => None,
         }
     };
-    let candidates = if let Some(r) = &remote {
+    let candidates = if let Some(t) = &task {
+        let mut cmd = CommandBuilder::from_argv(t.argv.iter().map(Into::into).collect());
+        cmd.cwd(&cwd);
+        cmd.env("TERM", "xterm-256color");
+        cmd.env("COLORTERM", "truecolor");
+        for (k, v) in &t.env {
+            cmd.env(k, v);
+        }
+        vec![cmd]
+    } else if let Some(r) = &remote {
         vec![remote_command(r, &cwd, kind, model.as_deref())]
     } else {
         match kind {
@@ -655,6 +711,7 @@ pub fn pty_spawn(
                 vec![cmd]
             }
             SpawnKind::Shell => shell_candidates(&cwd),
+            SpawnKind::Task => unreachable!("a task's command is built above"),
         }
     };
 
@@ -731,21 +788,51 @@ pub fn pty_spawn(
             .insert(sid.clone(), instance_id.clone());
     }
     let cwd_str = cwd.to_string_lossy().into_owned();
+    let gen = NEXT_GEN.fetch_add(1, Ordering::Relaxed);
     state.sessions.lock().unwrap().insert(
-        instance_id,
+        instance_id.clone(),
         PtySession {
             master: pair.master,
             writer,
             child,
             cwd: cwd_str.clone(),
             hub,
+            gen,
+            kill_tree: task.is_some(),
         },
     );
+    watch_exit(app, instance_id, gen);
 
     Ok(SpawnResult {
         session_id,
         cwd: cwd_str,
+        argv: task.map(|t| t.shown),
     })
+}
+
+/// Report the child of spawn `gen` exiting on its own, as `pty-exited`. The reader
+/// thread reaching the end of the output isn't the signal: under ConPTY the pipe can
+/// stay open after the child is gone. So this looks at the child itself, and stops
+/// looking once the session is gone or replaced (killed, closed, respawned).
+fn watch_exit(app: AppHandle, instance_id: String, gen: u64) {
+    thread::spawn(move || loop {
+        thread::sleep(EXIT_POLL);
+        let Some(mgr) = app.try_state::<PtyManager>() else { return };
+        let code = {
+            let mut guard = mgr.sessions.lock().unwrap();
+            let Some(session) = guard.get_mut(&instance_id) else { return };
+            if session.gen != gen {
+                return;
+            }
+            match session.child.try_wait() {
+                Ok(Some(status)) => status.exit_code(),
+                Ok(None) => continue,
+                Err(_) => return,
+            }
+        };
+        let _ = app.emit("pty-exited", PtyExited { id: instance_id, code });
+        return;
+    });
 }
 
 /// What [`pty_subscribe`] hands back.
@@ -966,6 +1053,8 @@ pub fn remote_cmd_spawn(
             // only so `remote_cmd_spawn` shares the `PtySession` map (and thus
             // `pty_write`/`pty_resize`/`pty_kill`) with consoles.
             hub: Arc::new(Mutex::new(OutputHub::default())),
+            gen: NEXT_GEN.fetch_add(1, Ordering::Relaxed),
+            kill_tree: false,
         },
     );
 
@@ -1095,7 +1184,7 @@ fn remote_command(
                 cmd.arg(arg);
             }
         }
-        SpawnKind::Shell => {
+        SpawnKind::Shell | SpawnKind::Task => {
             // One pre-quoted token after `--` (ssh space-joins argv, so quoting has
             // to survive the remote shell's re-parse): land in the dir, then replace
             // the process with the user's login shell so it's a normal interactive
@@ -1148,6 +1237,11 @@ fn home_dir() -> Option<PathBuf> {
 fn kill_instance(mgr: &PtyManager, instance_id: &str) {
     let removed = mgr.sessions.lock().unwrap().remove(instance_id);
     if let Some(mut session) = removed {
+        if session.kill_tree {
+            if let Some(pid) = session.child.process_id() {
+                kill_tree(pid);
+            }
+        }
         let _ = session.child.kill();
         // Purge every session id mapping to this instance — the minted one and any
         // adopted after a `/clear` rotation — so no stale id lingers.
@@ -1155,6 +1249,29 @@ fn kill_instance(mgr: &PtyManager, instance_id: &str) {
         // Drop any pending-rotation flag too, so a stray session in this dir can't
         // be adopted into a now-dead instance.
         mgr.pending_rotation.lock().unwrap().remove(instance_id);
+    }
+}
+
+/// Stop `pid` and every process it started. A task's child is often only the first
+/// link (`cmd.exe` → `npm` → `node` → a dev server), and killing it alone leaves the
+/// rest running.
+fn kill_tree(pid: u32) {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        let _ = std::process::Command::new("taskkill")
+            .args(["/PID", &pid.to_string(), "/T", "/F"])
+            .creation_flags(CREATE_NO_WINDOW)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status();
+    }
+    #[cfg(not(windows))]
+    {
+        // The child leads its own session (portable-pty starts it that way), so its
+        // process group is the tree.
+        let _ = std::process::Command::new("kill").args(["-TERM", &format!("-{pid}")]).status();
     }
 }
 
