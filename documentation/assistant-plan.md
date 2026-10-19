@@ -1280,7 +1280,8 @@ tapping around. Two stages.
 - **Out of scope:** any UI.
 - **As built (2026-10-18 – 2026-10-19).** The throwaway code and raw data were in a
   temporary session scratchpad (`x0/`: `rust/`, `api/`, `workers/`, `voice/`, each with a
-  `FINDINGS.md`); everything that matters is summarized here. Machine:
+  `FINDINGS.md`); everything that matters is summarized here. The voice scripts were kept in
+  `tools/voice-eval/`, with their data (your recordings) in `~/repos/Duck/voice-eval`. Machine:
   Ryzen AI 9 HX 370 (12 cores / 24 threads, Zen 5), 31 GB RAM, RTX 4060 Laptop 8 GB (Optimus) +
   Radeon 890M; Claude Code 2.1.303; WebView2 155.
   - **Hidden window:** no throttling after 12.9 minutes with `window.hide()` or `minimize()`:
@@ -2153,9 +2154,8 @@ tapping around. Two stages.
 - **Key files:** `src-tauri/src/voice/conversation.rs`, `src-tauri/src/voice/aec.rs`,
   `src/assistant/engine.ts` (provisional turns), `src/panels/Assistant/*`,
   `src/pwa/assistant.ts`, `Cargo.toml` (`ort`, the AEC3 binding).
-- **Test kit from X0:** `voice/record_echo.py` and `voice/score_echo.py` (the AEC3 / gate /
-  self-voice scorer) and the 10 monologues are the regression set. Copy them into the repo
-  under `tools/voice-eval/` at the start of V4; the session scratchpad doesn't last.
+- **Test kit from X0:** `tools/voice-eval/` (`record_echo.py`, `score_echo.py`,
+  `score_turns.py`) and the recordings in `~/repos/Duck/voice-eval` are the regression set.
 - **Done when:**
   - A 2-minute rubber-duck monologue with 4–6 s pauses is sent as one turn.
   - A quick "what needs me?" is answered with < 1.5 s from end of speech to the start of the
