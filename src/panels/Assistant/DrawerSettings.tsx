@@ -1,9 +1,15 @@
-// The drawer's settings (step A3): what a message typed mid-reply does, the ASCII
-// duck's look, and "Start Workbench at login, minimized to tray", which keeps Duck
-// there whenever the PC is on. Duck's own settings (W2: confirm every prompt, the coding model;
-// D1: its workers) go to the engine over the protocol. The login entry is the OS's own (`tauri-plugin-autostart`), so its
-// state is read back from the OS rather than kept in prefs. A dev build can't set
-// it: the entry would point at the debug binary.
+// The drawer's settings (step A3), in tabs that scroll on their own:
+// - drawer: what a message typed mid-reply does, the ASCII duck's look, and "Start
+//   Workbench at login, minimized to tray", which keeps Duck there whenever the PC
+//   is on;
+// - sessions: Duck's prompts and permission answers, summaries, the coding model
+//   (W2, T2, W3, M4);
+// - workers: D1's worker sessions;
+// - voice: push-to-talk and speech to text (V1).
+// Duck's own settings go to the engine over the protocol. The login entry is the
+// OS's own (`tauri-plugin-autostart`), so its state is read back from the OS rather
+// than kept in prefs. A dev build can't set it: the entry would point at the debug
+// binary.
 
 import { useEffect, useState } from "react";
 import { disable, enable, isEnabled } from "@tauri-apps/plugin-autostart";
@@ -12,7 +18,15 @@ import { DUCK_PERMISSION_MODES, EFFORTS, SESSION_MODELS } from "../../util/model
 import { setAvatar, setDuckSettings, setInterrupt, type DuckState } from "./duckState";
 import VoiceSettings from "./VoiceSettings";
 
+/** The settings' categories, in tab order. */
+const TABS = ["drawer", "sessions", "workers", "voice"] as const;
+type Tab = (typeof TABS)[number];
+
+/** The tab last shown, kept while the app runs. */
+let lastTab: Tab = "drawer";
+
 export default function DrawerSettings({ duck }: { duck: DuckState }) {
+  const [tab, setTab] = useState<Tab>(lastTab);
   const [autostart, setAutostart] = useState<boolean | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -32,148 +46,193 @@ export default function DrawerSettings({ duck }: { duck: DuckState }) {
     }
   };
 
+  const show = (t: Tab) => {
+    lastTab = t;
+    setTab(t);
+  };
+
   return (
-    <div
-      style={{
-        display: "flex",
-        flexDirection: "column",
-        gap: 8,
-        padding: "4px 12px",
-      }}
-    >
-      <label style={row}>
-        <input
-          type="checkbox"
-          checked={duck.prefs.interrupt}
-          onChange={(e) => setInterrupt(e.target.checked)}
-        />
-        <span>
-          A message sent while Duck replies interrupts the reply
-          <span style={hint}> (off: it waits its turn)</span>
-        </span>
-      </label>
-      <Avatar duck={duck} />
-      {duck.settings && (
-        <>
-          <label style={row}>
-            <input
-              type="checkbox"
-              checked={duck.settings.confirmPrompts}
-              onChange={(e) =>
-                setDuckSettings({ confirmPrompts: e.target.checked })
-              }
-            />
-            <span>
-              Ask before every prompt Duck sends to a session
-              <span style={hint}>
-                {" "}
-                (off: prompts follow the trust rules)
+    <div style={{ display: "flex", flexDirection: "column", minHeight: 0, flex: "1 1 auto" }}>
+      <div role="tablist" style={{ display: "flex", gap: 2, padding: "0 8px 6px", borderBottom: "1px solid var(--wb-border)" }}>
+        {TABS.map((t) => (
+          <button
+            key={t}
+            type="button"
+            role="tab"
+            aria-selected={tab === t}
+            onClick={() => show(t)}
+            style={{
+              background: "transparent",
+              border: "none",
+              borderBottom: `2px solid ${tab === t ? "var(--wb-accent)" : "transparent"}`,
+              color: tab === t ? "var(--wb-text)" : "var(--wb-textDim2)",
+              font: "11px var(--wb-mono)",
+              padding: "3px 6px",
+              cursor: "pointer",
+            }}
+          >
+            {t}
+          </button>
+        ))}
+      </div>
+      <div
+        role="tabpanel"
+        style={{
+          display: "flex",
+          flexDirection: "column",
+          gap: 8,
+          padding: "8px 12px 4px",
+          overflowY: "auto",
+          minHeight: 0,
+          flex: "1 1 auto",
+        }}
+      >
+        {tab === "drawer" && (
+          <>
+            <label style={row}>
+              <input
+                type="checkbox"
+                checked={duck.prefs.interrupt}
+                onChange={(e) => setInterrupt(e.target.checked)}
+              />
+              <span>
+                A message sent while Duck replies interrupts the reply
+                <span style={hint}> (off: it waits its turn)</span>
               </span>
-            </span>
-          </label>
-          <label style={row}>
-            <input
-              type="checkbox"
-              checked={duck.settings.answerSessionPrompts}
-              onChange={(e) =>
-                setDuckSettings({ answerSessionPrompts: e.target.checked })
-              }
-            />
-            <span>
-              Answer sessions' permission prompts under the trust rules
-              <span style={hint}>
-                {" "}
-                (off: Duck only logs what it would do; run the replay in
-                decisions first)
+            </label>
+            <Avatar duck={duck} />
+            <label style={{ ...row, opacity: import.meta.env.DEV ? 0.55 : 1 }}>
+              <input
+                type="checkbox"
+                disabled={import.meta.env.DEV || autostart === null}
+                checked={!!autostart}
+                onChange={(e) => void toggleAutostart(e.target.checked)}
+              />
+              <span>
+                Start Workbench at login, minimized to the tray
+                {import.meta.env.DEV && (
+                  <span style={hint}> (installed builds only)</span>
+                )}
               </span>
-            </span>
-          </label>
-          <label style={row}>
-            <input
-              type="checkbox"
-              checked={duck.settings.summaryOnDone}
-              onChange={(e) =>
-                setDuckSettings({ summaryOnDone: e.target.checked })
-              }
-            />
-            <span>
-              Summarize a session when it finishes, for the done alert
-              <span style={hint}>
-                {" "}
-                (a Haiku call per alert, about $0.002)
-              </span>
-            </span>
-          </label>
-          <label style={{ ...row, alignItems: "center" }}>
-            <span>Sessions Duck starts for coding run on</span>
-            <select
-              value={duck.settings.codingModel}
-              onChange={(e) =>
-                setDuckSettings({
-                  codingModel: e.target
-                    .value as (typeof SESSION_MODELS)[number],
-                })
-              }
-              style={{
-                background: "var(--wb-bg)",
-                color: "var(--wb-text)",
-                border: "1px solid var(--wb-border)",
-                font: "inherit",
-              }}
-            >
-              {SESSION_MODELS.map((m) => (
-                <option key={m} value={m}>
-                  {m}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label style={{ ...row, alignItems: "center" }}>
-            <span>…in permission mode</span>
-            <select
-              value={duck.settings.codingPermissionMode ?? ""}
-              onChange={(e) =>
-                setDuckSettings({
-                  codingPermissionMode: (e.target.value ||
-                    null) as (typeof DUCK_PERMISSION_MODES)[number] | null,
-                })
-              }
-              style={{
-                background: "var(--wb-bg)",
-                color: "var(--wb-text)",
-                border: "1px solid var(--wb-border)",
-                font: "inherit",
-              }}
-            >
-              <option value="">the project's default</option>
-              {DUCK_PERMISSION_MODES.map((m) => (
-                <option key={m} value={m}>
-                  {m}
-                </option>
-              ))}
-            </select>
-          </label>
-          <Workers settings={duck.settings} />
-        </>
-      )}
-      <VoiceSettings />
-      <label style={{ ...row, opacity: import.meta.env.DEV ? 0.55 : 1 }}>
-        <input
-          type="checkbox"
-          disabled={import.meta.env.DEV || autostart === null}
-          checked={!!autostart}
-          onChange={(e) => void toggleAutostart(e.target.checked)}
-        />
-        <span>
-          Start Workbench at login, minimized to the tray
-          {import.meta.env.DEV && (
-            <span style={hint}> (installed builds only)</span>
-          )}
-        </span>
-      </label>
-      {error && <div style={{ color: "var(--wb-needs)" }}>{error}</div>}
+            </label>
+          </>
+        )}
+        {tab === "sessions" &&
+          (duck.settings ? (
+            <>
+              <label style={row}>
+                <input
+                  type="checkbox"
+                  checked={duck.settings.confirmPrompts}
+                  onChange={(e) =>
+                    setDuckSettings({ confirmPrompts: e.target.checked })
+                  }
+                />
+                <span>
+                  Ask before every prompt Duck sends to a session
+                  <span style={hint}>
+                    {" "}
+                    (off: prompts follow the trust rules)
+                  </span>
+                </span>
+              </label>
+              <label style={row}>
+                <input
+                  type="checkbox"
+                  checked={duck.settings.answerSessionPrompts}
+                  onChange={(e) =>
+                    setDuckSettings({ answerSessionPrompts: e.target.checked })
+                  }
+                />
+                <span>
+                  Answer sessions' permission prompts under the trust rules
+                  <span style={hint}>
+                    {" "}
+                    (off: Duck only logs what it would do; run the replay in
+                    decisions first)
+                  </span>
+                </span>
+              </label>
+              <label style={row}>
+                <input
+                  type="checkbox"
+                  checked={duck.settings.summaryOnDone}
+                  onChange={(e) =>
+                    setDuckSettings({ summaryOnDone: e.target.checked })
+                  }
+                />
+                <span>
+                  Summarize a session when it finishes, for the done alert
+                  <span style={hint}>
+                    {" "}
+                    (a Haiku call per alert, about $0.002)
+                  </span>
+                </span>
+              </label>
+              <label style={{ ...row, alignItems: "center" }}>
+                <span>Sessions Duck starts for coding run on</span>
+                <select
+                  value={duck.settings.codingModel}
+                  onChange={(e) =>
+                    setDuckSettings({
+                      codingModel: e.target
+                        .value as (typeof SESSION_MODELS)[number],
+                    })
+                  }
+                  style={{
+                    background: "var(--wb-bg)",
+                    color: "var(--wb-text)",
+                    border: "1px solid var(--wb-border)",
+                    font: "inherit",
+                  }}
+                >
+                  {SESSION_MODELS.map((m) => (
+                    <option key={m} value={m}>
+                      {m}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label style={{ ...row, alignItems: "center" }}>
+                <span>…in permission mode</span>
+                <select
+                  value={duck.settings.codingPermissionMode ?? ""}
+                  onChange={(e) =>
+                    setDuckSettings({
+                      codingPermissionMode: (e.target.value ||
+                        null) as (typeof DUCK_PERMISSION_MODES)[number] | null,
+                    })
+                  }
+                  style={{
+                    background: "var(--wb-bg)",
+                    color: "var(--wb-text)",
+                    border: "1px solid var(--wb-border)",
+                    font: "inherit",
+                  }}
+                >
+                  <option value="">the project's default</option>
+                  {DUCK_PERMISSION_MODES.map((m) => (
+                    <option key={m} value={m}>
+                      {m}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            </>
+          ) : (
+            <Waiting />
+          ))}
+        {tab === "workers" && (duck.settings ? <Workers settings={duck.settings} /> : <Waiting />)}
+        {tab === "voice" && <VoiceSettings />}
+        {error && <div style={{ color: "var(--wb-needs)" }}>{error}</div>}
+      </div>
     </div>
   );
+}
+
+/** Duck's own settings come from the engine once it's connected. */
+function Waiting() {
+  return <div style={hint}>Duck is starting…</div>;
 }
 
 /** The ASCII duck above the thread: shown or not, and how it's drawn. */

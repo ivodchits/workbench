@@ -481,7 +481,17 @@ function Header({
         </div>
       )}
       {menu === "settings" && (
-        <div style={{ ...popover, right: 8, width: 300 }}>
+        <div
+          style={{
+            ...popover,
+            right: 8,
+            width: 320,
+            // Taller than the window allows, its tabs scroll.
+            maxHeight: "calc(100vh - 96px)",
+            display: "flex",
+            flexDirection: "column",
+          }}
+        >
           <DrawerSettings duck={duck} />
           <div style={{ display: "flex", gap: 8, padding: "6px 12px 2px" }}>
             {(["trust", "decisions"] as const).map((v) => (
