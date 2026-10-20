@@ -62,6 +62,7 @@ export const DEFAULT_DRAWER: AssistantDrawerPrefs = {
   width: 440,
   threadId: null,
   interrupt: false,
+  avatar: { show: true, ink: "color", chars: "classic", cols: 72, fps: 20 },
 };
 
 let state: DuckState = {
@@ -372,6 +373,10 @@ export function setDrawerWidth(width: number): void {
 
 export function setInterrupt(interrupt: boolean): void {
   savePrefs({ interrupt });
+}
+
+export function setAvatar(patch: Partial<AssistantDrawerPrefs["avatar"]>): void {
+  savePrefs({ avatar: { ...state.prefs.avatar, ...patch } });
 }
 
 /** Change Duck's settings; the engine answers with the settings now in force. */

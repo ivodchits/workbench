@@ -62,6 +62,19 @@ export interface AssistantDrawerPrefs {
   /** A message sent while Duck replies stops the reply and is answered instead.
    *  Off = it waits its turn. */
   interrupt: boolean;
+  /** The ASCII duck at the top of the thread, and how it's drawn. */
+  avatar: DuckAvatarPrefs;
+}
+
+export interface DuckAvatarPrefs {
+  show: boolean;
+  /** Duck yellow with an orange beak, or the theme's text color. */
+  ink: "color" | "mono";
+  /** The character ramp, dim to bright. */
+  chars: "classic" | "blocks";
+  /** Character columns across the drawer; rows follow from the height. */
+  cols: number;
+  fps: number;
 }
 
 /** One column with the old lines above the new, or the two versions side by side. */

@@ -1,6 +1,6 @@
-// The drawer's settings (step A3): what a message typed mid-reply does, and
-// "Start Workbench at login, minimized to tray", which keeps Duck there whenever
-// the PC is on. Duck's own settings (W2: confirm every prompt, the coding model;
+// The drawer's settings (step A3): what a message typed mid-reply does, the ASCII
+// duck's look, and "Start Workbench at login, minimized to tray", which keeps Duck
+// there whenever the PC is on. Duck's own settings (W2: confirm every prompt, the coding model;
 // D1: its workers) go to the engine over the protocol. The login entry is the OS's own (`tauri-plugin-autostart`), so its
 // state is read back from the OS rather than kept in prefs. A dev build can't set
 // it: the entry would point at the debug binary.
@@ -9,7 +9,7 @@ import { useEffect, useState } from "react";
 import { disable, enable, isEnabled } from "@tauri-apps/plugin-autostart";
 import { MAX_WORKERS, TIERS, type DuckSettings } from "../../assistant/settings";
 import { DUCK_PERMISSION_MODES, EFFORTS, SESSION_MODELS } from "../../util/models";
-import { setDuckSettings, setInterrupt, type DuckState } from "./duckState";
+import { setAvatar, setDuckSettings, setInterrupt, type DuckState } from "./duckState";
 
 export default function DrawerSettings({ duck }: { duck: DuckState }) {
   const [autostart, setAutostart] = useState<boolean | null>(null);
@@ -51,6 +51,7 @@ export default function DrawerSettings({ duck }: { duck: DuckState }) {
           <span style={hint}> (off: it waits its turn)</span>
         </span>
       </label>
+      <Avatar duck={duck} />
       {duck.settings && (
         <>
           <label style={row}>
@@ -170,6 +171,67 @@ export default function DrawerSettings({ duck }: { duck: DuckState }) {
       </label>
       {error && <div style={{ color: "var(--wb-needs)" }}>{error}</div>}
     </div>
+  );
+}
+
+/** The ASCII duck above the thread: shown or not, and how it's drawn. */
+function Avatar({ duck }: { duck: DuckState }) {
+  const a = duck.prefs.avatar;
+  return (
+    <>
+      <label style={row}>
+        <input type="checkbox" checked={a.show} onChange={(e) => setAvatar({ show: e.target.checked })} />
+        <span>Show the duck above the thread</span>
+      </label>
+      {a.show && (
+        <>
+          <label style={{ ...row, alignItems: "center" }}>
+            <span style={{ width: 64 }}>Ink</span>
+            <select
+              value={a.ink}
+              onChange={(e) => setAvatar({ ink: e.target.value as typeof a.ink })}
+              style={select}
+            >
+              <option value="color">duck yellow</option>
+              <option value="mono">console</option>
+            </select>
+            <select
+              value={a.chars}
+              onChange={(e) => setAvatar({ chars: e.target.value as typeof a.chars })}
+              style={select}
+            >
+              <option value="classic">.:-=+*#%@</option>
+              <option value="blocks">░▒▓█</option>
+            </select>
+          </label>
+          <label style={{ ...row, alignItems: "center" }}>
+            <span style={{ width: 64 }}>Columns</span>
+            <input
+              type="range"
+              min={40}
+              max={130}
+              step={2}
+              value={a.cols}
+              onChange={(e) => setAvatar({ cols: Number(e.target.value) })}
+              style={{ flex: 1, minWidth: 0 }}
+            />
+            <span style={{ width: 44, textAlign: "right" }}>{a.cols}</span>
+          </label>
+          <label style={{ ...row, alignItems: "center" }}>
+            <span style={{ width: 64 }}>Frames</span>
+            <input
+              type="range"
+              min={8}
+              max={60}
+              value={a.fps}
+              onChange={(e) => setAvatar({ fps: Number(e.target.value) })}
+              style={{ flex: 1, minWidth: 0 }}
+            />
+            <span style={{ width: 44, textAlign: "right" }}>{a.fps} fps</span>
+          </label>
+        </>
+      )}
+    </>
   );
 }
 

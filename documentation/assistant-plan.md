@@ -2698,6 +2698,10 @@ tapping around. Two stages.
       `GET /api/assistant/tts/<messageId>` (authed) and plays it.
     - A per-surface setting: "desktop voice" (default) or "phone native voice".
       `speechSynthesis` is the offline fallback in both cases.
+  - **The ASCII duck** (`DuckAvatar.tsx`, built 2026-10-20) moves its beak to a stand-in
+    rhythm while a reply streams. V2 feeds it the playback loudness instead (the `level`
+    argument of `Animator.step`), so the beak opens on the syllables actually spoken, and
+    it talks while audio plays rather than while text streams.
   - **Workbench "speak selection"** (`src/util/speech.ts`, Ctrl+Shift+L) is switched to the
     `Speaker` through a command, keeping `speechSynthesis` as the fallback.
   - Settings:

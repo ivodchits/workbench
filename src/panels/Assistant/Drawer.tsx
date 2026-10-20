@@ -37,7 +37,10 @@ import type {
   NoteEdit,
   PluginsEdit,
   ReviewItem,
+  TurnState,
 } from "../../assistant/protocol";
+import DuckAvatar from "./DuckAvatar";
+import type { DuckMode } from "./duck3d";
 import DuckIcon from "./DuckIcon";
 import DrawerSettings from "./DrawerSettings";
 import { DecisionsPanel, TrustPanel } from "./TrustViews";
@@ -78,6 +81,16 @@ const STATE_LABEL = {
   tool: "running a tool…",
   waiting: "waiting for your answer",
 } as const;
+
+/** What the duck does for each turn state: spins while working, talks while the
+ *  reply streams, and looks up at you while a confirmation waits. */
+const AVATAR_MODE: Record<TurnState, DuckMode> = {
+  idle: "idle",
+  thinking: "thinking",
+  tool: "thinking",
+  streaming: "talking",
+  waiting: "listening",
+};
 
 /** Open a session's console (a `#session/<id>` link in a reply). */
 function focusSession(instanceId: string): boolean {
@@ -200,6 +213,21 @@ export default function AssistantDrawer() {
           >
             ×
           </button>
+        </div>
+      )}
+      {view === "thread" && duck.prefs.avatar.show && (
+        <div
+          style={{
+            flex: "0 0 auto",
+            height: "clamp(120px, 32%, 320px)",
+            borderBottom: "1px solid var(--wb-border)",
+          }}
+        >
+          <DuckAvatar
+            mode={AVATAR_MODE[current ? (duck.states[current] ?? "idle") : "idle"]}
+            prefs={duck.prefs.avatar}
+            running={duck.open}
+          />
         </div>
       )}
       {view === "thread" && <ThreadBody duck={duck} />}
