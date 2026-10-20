@@ -161,4 +161,14 @@ const MIGRATIONS: &[&str] = &[
         mode        TEXT NOT NULL CHECK (mode IN ('off', 'shadow', 'live'))
     );
     "#,
+    // Step D1: the tasks Duck handed to worker sessions. `data` is the engine's
+    // JSON record (instance, folder, state, timestamps, the result's headline);
+    // `updated_at` (epoch ms) orders the list.
+    r#"
+    CREATE TABLE assistant_tasks (
+        id          TEXT PRIMARY KEY,
+        data        TEXT NOT NULL,
+        updated_at  INTEGER NOT NULL
+    );
+    "#,
 ];

@@ -3,7 +3,8 @@
 //! ([`usage`]) and the monthly budget ([`budget`]), over Duck's own database
 //! ([`db`]). Step A2: conversation threads ([`threads`]), stored for the engine that
 //! runs in the webview (`src/assistant/`). Step T1: the trust engine's rules, modes,
-//! kill switch and decision log ([`trust`]).
+//! kill switch and decision log ([`trust`]). Step D1: the worker sessions' workspace,
+//! task folders, launch flags and task records ([`workspace`]).
 //!
 //! The webview never holds the key. It asks [`assistant_proxy_info`] for the proxy's
 //! base URL and a per-launch token, and calls the API through the hook server with
@@ -18,6 +19,7 @@ pub mod replay;
 mod threads;
 mod trust;
 mod usage;
+pub mod workspace;
 
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -276,6 +278,52 @@ pub fn assistant_mandate_set(ctx: Db<'_>, instance_id: String, mandate: Option<S
 #[tauri::command]
 pub fn assistant_mandate_get(ctx: Db<'_>, instance_id: String) -> Result<Option<String>, String> {
     trust::mandate(&lock(&ctx), &instance_id)
+}
+
+// ── worker sessions (step D1) ──
+
+/// Make Duck's workspace (`dir`, else the default) and return its path.
+#[tauri::command]
+pub fn assistant_workspace_prepare(dir: Option<String>) -> Result<String, String> {
+    let d = workspace::resolve(dir.as_deref())?;
+    workspace::prepare(&d)?;
+    Ok(d.to_string_lossy().into_owned())
+}
+
+/// A new task folder in the workspace, with its brief; returns the folder.
+#[tauri::command]
+pub fn assistant_task_folder(workspace: String, date: String, title: String, brief: String) -> Result<String, String> {
+    let d = workspace::resolve(Some(&workspace))?;
+    Ok(workspace::new_task(&d, &date, &title, &brief)?.to_string_lossy().into_owned())
+}
+
+/// A task's result files.
+#[tauri::command]
+pub fn assistant_task_result(workspace: String, folder: String) -> Result<workspace::TaskResult, String> {
+    workspace::result(&workspace::resolve(Some(&workspace))?, &folder)
+}
+
+/// Register a new instance as a worker, before its first launch.
+#[tauri::command]
+pub fn assistant_worker_register(
+    app: AppHandle,
+    db: State<'_, crate::db::Db>,
+    instance_id: String,
+    spec: workspace::WorkerSpec,
+) -> Result<(), String> {
+    let conn = db.conn.lock().map_err(|_| "database lock poisoned")?;
+    workspace::register(&app, &conn, &instance_id, &spec)
+}
+
+#[tauri::command]
+pub fn assistant_task_put(ctx: Db<'_>, id: String, data: String) -> Result<(), String> {
+    workspace::put_task(&lock(&ctx), &id, &data, now_ms())
+}
+
+/// The latest task records, newest first.
+#[tauri::command]
+pub fn assistant_task_list(ctx: Db<'_>, limit: u32) -> Result<Vec<String>, String> {
+    workspace::list_tasks(&lock(&ctx), limit.clamp(1, 500))
 }
 
 /// The past `days`' Claude Code tool calls for the trust replay (step T2), at most

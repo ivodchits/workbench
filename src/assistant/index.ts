@@ -13,7 +13,7 @@ import {
   type UsageRecord,
 } from "../ipc/assistant";
 import { errorMessage, getClient, oneShot, structured } from "./client";
-import { createEngine, type Engine } from "./engine";
+import { createEngine, eventText, type Engine } from "./engine";
 import { createPolicy } from "./policy";
 import { localPort } from "./port.local";
 import {
@@ -21,6 +21,7 @@ import {
   type ClientMessage,
   type DuckEndpoint,
   type DuckEvent,
+  type TaskView,
   type Transport,
   type TrustView,
 } from "./protocol";
@@ -32,6 +33,8 @@ import { PLUGIN_TOOLS } from "./tools/plugins";
 import { getTime } from "./tools/getTime";
 import { READ_TOOLS } from "./tools/read";
 import { createRegistry } from "./tools/registry";
+import { TASK_TOOLS } from "./tools/tasks";
+import { createTaskManager, ipcTaskBackend, type Task, type TaskManager } from "./tasks";
 import { testConfirm } from "./tools/testConfirm";
 import { FLOOR } from "./trust/floor";
 import { replay, type ReplayReport } from "./trust/replay";
@@ -56,6 +59,7 @@ const TOOLS = [
   ...READ_TOOLS,
   ...ACT_TOOLS,
   ...PLUGIN_TOOLS,
+  ...TASK_TOOLS,
   ...(import.meta.env.DEV ? [testConfirm] : []),
 ];
 
@@ -88,6 +92,24 @@ const REPLAY_MAX_CALLS = 20_000;
 let started: Promise<void> | null = null;
 let duck: Transport | null = null;
 
+export function taskView(t: Task): TaskView {
+  return {
+    id: t.id,
+    threadId: t.threadId,
+    title: t.title,
+    kind: t.kind,
+    state: t.state,
+    model: t.model,
+    effort: t.effort,
+    tier: t.tier,
+    instanceId: t.instanceId,
+    folder: t.folder,
+    started: t.started,
+    finished: t.finished,
+    headline: t.headline,
+  };
+}
+
 /** Connect a surface to an engine over the protocol. */
 export function endpoint(
   e: Engine,
@@ -96,6 +118,7 @@ export function endpoint(
   settings?: SettingsStore,
   trust?: TrustStore | null,
   replayer?: Replayer,
+  tasks?: TaskManager,
 ): DuckEndpoint {
   const listeners = new Set<(ev: DuckEvent) => void>();
   const say = (ev: DuckEvent) => {
@@ -123,6 +146,10 @@ export function endpoint(
     if (c.decision) say({ type: "decision", row: c.decision });
     else say({ type: "trust", trust: trustView(trust) });
   });
+  const sendTasks = () => {
+    if (tasks) say({ type: "tasks", tasks: tasks.list().map(taskView) });
+  };
+  tasks?.subscribe(sendTasks);
   const needTrust = () => {
     if (!trust) throw new Error("Duck's trust settings didn't load.");
     return trust;
@@ -151,6 +178,7 @@ export function endpoint(
           say({ type: "confirm", request });
         if (settings) say({ type: "settings", settings: settings.get() });
         if (trust) say({ type: "trust", trust: trustView(trust) });
+        sendTasks();
         await sendSpend();
         return;
       case "settings.set":
@@ -193,6 +221,10 @@ export function endpoint(
         say({ type: "replay", done: report.judged, of: report.judged, report });
         return;
       }
+      case "task.close":
+        if (!tasks) throw new Error("Worker tasks aren't available here.");
+        await tasks.close(msg.taskId);
+        return;
       case "thread.open": {
         if (!s.thread(msg.threadId))
           throw new Error(`no thread ${msg.threadId}`);
@@ -231,7 +263,20 @@ export function initAssistant(): Promise<void> {
       console.error("duck: trust didn't load; every consequential call asks", e);
       return null;
     });
+    // Worker tasks (D1) report into their thread as Workbench events; the engine
+    // that takes them is made just below.
+    let engineRef: Engine | null = null;
+    const tasks = createTaskManager({
+      port: localPort,
+      backend: ipcTaskBackend,
+      settings: settings.get,
+      tell: (threadId, text) =>
+        void engineRef
+          ?.send({ threadId, text: eventText(text), source: "event" })
+          .catch((e: unknown) => console.warn("duck: a task report was dropped", e)),
+    });
     const engine = createEngine({
+      tasks,
       store: s,
       registry: createRegistry(TOOLS),
       port: localPort,
@@ -264,7 +309,9 @@ export function initAssistant(): Promise<void> {
             progress,
           })
       : undefined;
-    duck = createLocalTransport(endpoint(engine, s, ledger, settings, trust, replayer));
+    engineRef = engine;
+    await tasks.load().catch((e: unknown) => console.error("duck: worker tasks didn't load", e));
+    duck = createLocalTransport(endpoint(engine, s, ledger, settings, trust, replayer, tasks));
   })().catch((e: unknown) => {
     started = null;
     console.error("duck: init failed", e);

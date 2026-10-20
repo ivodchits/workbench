@@ -96,12 +96,34 @@ export interface Notice {
     /** Duck edited a project's toolbar (W5). */
     | "plugins"
     /** The trust engine says something about this thread (the rate guard). */
-    | "trust";
+    | "trust"
+    /** A worker task started here (D1): the thread shows its live card. */
+    | "task";
   text: string;
   /** `note` only. */
   note?: NoteEdit;
   /** `plugins` only. */
   plugins?: PluginsEdit;
+  /** `task` only. */
+  task?: { id: string };
+}
+
+/** A worker task as a surface shows it (step D1). */
+export interface TaskView {
+  id: string;
+  threadId: string;
+  title: string;
+  kind: string;
+  state: string;
+  model: string;
+  effort: string;
+  tier: string;
+  instanceId: string | null;
+  folder: string;
+  /** Epoch ms. */
+  started: number | null;
+  finished: number | null;
+  headline: string | null;
 }
 
 // ── surface → Duck ──────────────────────────────────────────────────────────
@@ -150,7 +172,9 @@ export type ClientMessage =
   | { type: "trust.decisions"; before: number | null }
   /** Replay the past `days`' Claude Code tool calls through the prompt policy
    *  (step T2), with the judge on up to `judgeMax` of them. */
-  | { type: "trust.replay"; days: number; judgeMax: number };
+  | { type: "trust.replay"; days: number; judgeMax: number }
+  /** Close a worker task (step D1): its console closes, its files stay. */
+  | { type: "task.close"; taskId: string };
 
 // ── Duck → surface ──────────────────────────────────────────────────────────
 
@@ -203,6 +227,9 @@ export type DuckEvent =
     }
   /** A decision was just logged. */
   | { type: "decision"; row: DecisionRow }
+  /** Duck's worker tasks (step D1), newest first, on `sync` and after every
+   *  change. */
+  | { type: "tasks"; tasks: TaskView[] }
   /** The replay's progress (`report` null, judged so far), then its report. */
   | { type: "replay"; done: number; of: number; report: ReplayReport | null }
   /** A request from a surface failed (an unknown thread, storage down, …). */

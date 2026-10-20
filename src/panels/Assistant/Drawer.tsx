@@ -45,6 +45,7 @@ import type { ThreadRow } from "../../ipc/assistant";
 import {
   answer,
   clearError,
+  closeTask,
   connectDuck,
   deleteThread,
   isBusy,
@@ -632,6 +633,8 @@ function ItemView({ item, active }: { item: Item; active: boolean }) {
           staleText="can't undo: the plugin file changed since"
         />
       );
+    case "task":
+      return <TaskCard taskId={item.taskId} text={item.text} />;
     case "notice":
       return (
         <div
@@ -647,6 +650,78 @@ function ItemView({ item, active }: { item: Item; active: boolean }) {
         </div>
       );
   }
+}
+
+const TASK_STATE: Record<string, string> = {
+  queued: "waiting for a free worker",
+  running: "working",
+  done: "done",
+  blocked: "blocked",
+  needs_decision: "needs a decision",
+  failed: "failed",
+  closed: "closed",
+};
+
+function elapsed(from: number | null, to: number | null): string {
+  if (from === null) return "";
+  const s = Math.max(0, Math.round(((to ?? Date.now()) - from) / 1000));
+  return s < 60 ? `${s}s` : s < 3600 ? `${Math.floor(s / 60)}m ${s % 60}s` : `${Math.floor(s / 3600)}h ${Math.floor((s % 3600) / 60)}m`;
+}
+
+/** A worker task's card (D1): its state, worker, time, and a way to its console. */
+function TaskCard({ taskId, text }: { taskId: string; text: string }) {
+  const task = useDuckState().tasks.find((t) => t.id === taskId);
+  const [, tick] = useState(0);
+  const live = task?.state === "running";
+  useEffect(() => {
+    if (!live) return;
+    const t = setInterval(() => tick((n) => n + 1), 1000);
+    return () => clearInterval(t);
+  }, [live]);
+  if (!task)
+    return <div style={{ margin: "4px 16px", color: "var(--wb-textFaint)" }}>⚙ {text}</div>;
+  const color =
+    task.state === "running" || task.state === "queued"
+      ? "var(--wb-working)"
+      : task.state === "done"
+        ? "var(--wb-accent)"
+        : task.state === "closed"
+          ? "var(--wb-textFaint)"
+          : "var(--wb-needs)";
+  const open = task.state !== "closed" && task.instanceId;
+  return (
+    <div style={{ margin: "4px 16px", padding: "6px 9px", border: "1px solid var(--wb-border)", background: "var(--wb-panel)" }}>
+      <div style={{ display: "flex", gap: 8, alignItems: "baseline", flexWrap: "wrap" }}>
+        <span style={{ color: "var(--wb-text)", fontWeight: 600 }}>⚙ {task.title}</span>
+        <span style={{ color }}>{TASK_STATE[task.state] ?? task.state}</span>
+        <span style={{ color: "var(--wb-textFaint)" }}>
+          {task.model} · {task.effort}
+          {task.started !== null && ` · ${elapsed(task.started, task.finished)}`}
+        </span>
+      </div>
+      {task.headline && (
+        <div style={{ marginTop: 3, color: "var(--wb-textDim2)", whiteSpace: "pre-wrap" }}>{task.headline}</div>
+      )}
+      <div style={{ marginTop: 3, display: "flex", gap: 10 }}>
+        {open && (
+          <button
+            type="button"
+            style={linkBtn}
+            onClick={() => {
+              if (focusSession(task.instanceId!)) setDrawerOpen(false);
+            }}
+          >
+            open console
+          </button>
+        )}
+        {task.state !== "closed" && (
+          <button type="button" style={linkBtn} onClick={() => closeTask(task.id)}>
+            close
+          </button>
+        )}
+      </div>
+    </div>
+  );
 }
 
 function UserBubble({

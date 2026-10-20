@@ -118,6 +118,9 @@ function sessionSummary(s: SessionRef, projects: ProjectRef[], now: number) {
     task: s.taskNote,
     worktree: s.worktreeBranch,
     model: s.model,
+    permissionMode: s.permissionMode,
+    // A session Duck started for a worker task (run_task), and which task.
+    workerTask: s.duckTask,
     compacting: s.compacting,
     subagents: s.subagents || null,
     lastActivity: s.lastActivity ? when(s.lastActivity * 1000, now) : null,

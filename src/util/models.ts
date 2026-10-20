@@ -4,6 +4,9 @@
 
 export const SESSION_MODELS = ["opus", "sonnet", "haiku", "fable"] as const;
 
+/** Claude Code's `--effort` levels (a worker's, step D1). */
+export const EFFORTS = ["low", "medium", "high", "xhigh", "max"] as const;
+
 /** The permission modes Duck may start a session in (step M4: `create_session` and
  *  its coding pref). Never `bypassPermissions`: that would step around the trust
  *  policy (track T). The pickers list what the installed Claude Code accepts

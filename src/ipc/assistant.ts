@@ -183,6 +183,37 @@ export const mandateGet = (instanceId: string): Promise<string | null> =>
 export const replayCalls = (days: number, max: number): Promise<ReplayCall[]> =>
   invoke("assistant_replay_calls", { days, max });
 
+// ── worker sessions (step D1) ──
+
+/** Make Duck's workspace (`dir`, else the default) and return its path. */
+export const workspacePrepare = (dir: string | null): Promise<string> =>
+  invoke("assistant_workspace_prepare", { dir });
+/** A new task folder (`tasks/<date>-<slug>`) with its brief; returns the folder. */
+export const taskFolder = (workspace: string, date: string, title: string, brief: string): Promise<string> =>
+  invoke("assistant_task_folder", { workspace, date, title, brief });
+
+export interface TaskResultFiles {
+  json: string | null;
+  /** When `result.json` was last written, epoch ms. */
+  jsonModified: number | null;
+  md: string | null;
+}
+export const taskResult = (workspace: string, folder: string): Promise<TaskResultFiles> =>
+  invoke("assistant_task_result", { workspace, folder });
+
+/** How a worker launches: its task folder, effort, and kind (`browser` keeps your
+ *  MCP servers, `code` works in a project in its own mode). */
+export interface WorkerSpec {
+  workspace: string;
+  folder: string;
+  effort: string;
+  kind: string;
+}
+export const workerRegister = (instanceId: string, spec: WorkerSpec): Promise<void> =>
+  invoke("assistant_worker_register", { instanceId, spec });
+export const taskPut = (id: string, data: string): Promise<void> => invoke("assistant_task_put", { id, data });
+export const taskList = (limit: number): Promise<string[]> => invoke("assistant_task_list", { limit });
+
 /** The kill switch flipped (from the tray, or any surface). */
 export function onTrustPaused(cb: (paused: boolean) => void): Promise<UnlistenFn> {
   return listen<boolean>("assistant-trust-paused", (event) => cb(event.payload));

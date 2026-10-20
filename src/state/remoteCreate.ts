@@ -111,6 +111,26 @@ export function inputHolds(screen: readonly string[], text: string): boolean {
   return head.length > 0 && input.startsWith(head.slice(0, Math.min(head.length, input.length)));
 }
 
+const TRUST_YES = /Yes, I trust this folder/;
+const CARET = /^\s*❯/;
+
+/**
+ * The folder-trust dialog's cursor against its "Yes, I trust this folder" option:
+ * 0 on it, a positive count of rows when it's below the cursor, negative above;
+ * null when the screen shows no such dialog. Claude Code has drawn it both ways
+ * (`❯ 1. Yes…` first, and `❯ No, exit` first), so the option is found by its words.
+ */
+export function trustDialogOffset(screen: readonly string[]): number | null {
+  const yes = screen.findIndex((l) => TRUST_YES.test(l));
+  if (yes < 0) return null;
+  for (let d = 0; d <= 4; d++) {
+    for (const y of d === 0 ? [yes] : [yes - d, yes + d]) {
+      if (y >= 0 && y < screen.length && CARET.test(screen[y])) return yes - y;
+    }
+  }
+  return null;
+}
+
 /** True when the screen's last line with text asks for a password or passphrase —
  *  an SSH login (remote project) that only the terminal can answer. */
 export function asksForPassword(screen: readonly string[]): boolean {

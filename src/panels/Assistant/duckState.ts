@@ -14,6 +14,7 @@ import type {
   ConfirmRequest,
   DuckEvent,
   Effort,
+  TaskView,
   TrustView,
   TurnState,
 } from "../../assistant/protocol";
@@ -53,6 +54,8 @@ export interface DuckState {
   decisionsMore: boolean;
   /** The trust replay (step T2): running (judged `done` of `of`), or its report. */
   replay: { running: boolean; done: number; of: number; report: ReplayReport | null } | null;
+  /** Duck's worker tasks (step D1), newest first. */
+  tasks: TaskView[];
 }
 
 export const DEFAULT_DRAWER: AssistantDrawerPrefs = {
@@ -80,6 +83,7 @@ let state: DuckState = {
   decisions: [],
   decisionsMore: false,
   replay: null,
+  tasks: [],
 };
 const listeners = new Set<() => void>();
 /** A send with no thread is waiting for the engine to name the new one. */
@@ -246,6 +250,9 @@ function onEvent(e: DuckEvent): void {
     case "decision":
       set({ decisions: [e.row, ...state.decisions.filter((d) => d.id !== e.row.id)] });
       break;
+    case "tasks":
+      set({ tasks: e.tasks });
+      break;
     case "replay":
       set({ replay: { running: !e.report, done: e.done, of: e.of, report: e.report } });
       break;
@@ -410,4 +417,9 @@ export function runReplay(days: number, judgeMax: number): void {
 /** The newest page of the decision log (`null`), or the page before an id. */
 export function loadDecisions(before: number | null): void {
   post({ type: "trust.decisions", before });
+}
+
+/** Close a worker task (D1): its console closes, its files stay. */
+export function closeTask(taskId: string): void {
+  post({ type: "task.close", taskId });
 }

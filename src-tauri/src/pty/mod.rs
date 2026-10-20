@@ -714,14 +714,24 @@ pub fn pty_spawn(
                     args.extend(["--model", m]);
                 }
                 // A session Duck started to draft a toolbar (W5) gets its skill, its
-                // draft folder and the allow rule for it, at every launch and resume.
+                // draft folder and the allow rule for it, at every launch and resume;
+                // a worker (D1) its effort, mode, allow list and MCP flags.
                 let extra = match db.conn.lock() {
-                    Ok(conn) => crate::plugins::draft::launch_args(&app, &conn, &instance_id),
+                    Ok(conn) => {
+                        let draft = crate::plugins::draft::launch_args(&app, &conn, &instance_id);
+                        if draft.is_empty() {
+                            crate::assistant::workspace::launch_args(&app, &conn, &instance_id)
+                        } else {
+                            draft
+                        }
+                    }
                     Err(_) => Vec::new(),
                 };
-                // Its own `--permission-mode default` wins over a picked mode: the
-                // draft's allow rule is only a fence in that mode.
-                let mode = permission_mode.as_deref().filter(|_| extra.is_empty());
+                // Their own mode (`default` for a draft, `dontAsk` for a worker in
+                // Duck's workspace) wins over a picked one: the allow rules are only a
+                // fence in that mode.
+                let forced = extra.iter().any(|a| a == "--permission-mode");
+                let mode = permission_mode.as_deref().filter(|_| !forced);
                 if let Some(m) = mode {
                     // A mode this Claude Code doesn't list would stop it at launch,
                     // so it's left out; an unreadable list lets it through.

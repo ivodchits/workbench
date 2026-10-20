@@ -24,6 +24,7 @@ import type {
 import type { Notice } from "./protocol";
 import { DEFAULT_SETTINGS, type DuckSettings } from "./settings";
 import type { ToolContext } from "./tools/registry";
+import type { TaskManager } from "./tasks";
 
 export interface FakePortData {
   projects?: ProjectRef[];
@@ -47,6 +48,8 @@ export interface FakePortData {
   drafts?: Record<string, { text: string | null; scripts: { name: string; text: string }[] }>;
   /** What `sessionContext` answers, per session id. */
   contexts?: Record<string, Partial<SessionContext>>;
+  /** What `lastResponse` answers, per session id. */
+  replies?: Record<string, string | null>;
 }
 
 export interface FakePlugins {
@@ -108,6 +111,8 @@ export function session(
     subagents: 0,
     worktreeBranch: null,
     model: null,
+    permissionMode: null,
+    duckTask: null,
     workingDir: `C:/src/${s.projectId}`,
     lastActivity: null,
     choice: null,
@@ -132,6 +137,7 @@ export function fakePort(data: FakePortData = {}): FakePort {
   };
   const record = (name: string, ...args: unknown[]) =>
     port.calls.push({ name, args });
+  let made = 0;
   const port: FakePort = {
     reads: 0,
     calls: [],
@@ -199,11 +205,11 @@ export function fakePort(data: FakePortData = {}): FakePort {
       if (!data.projects?.some((p) => p.id === opts.projectId))
         return Promise.reject(new Error(`no project with id ${opts.projectId}`));
       record("createSession", opts);
-      return Promise.resolve({
-        id: "new-1",
-        title: opts.title ?? "1",
-        message: null,
-      });
+      const id = `new-${++made}`;
+      // A worker is looked up again later, so it joins the sessions.
+      if (opts.worker)
+        (data.sessions ??= []).push(session({ id, projectId: opts.projectId, title: opts.title ?? id, phase: "offline" }));
+      return Promise.resolve({ id, title: opts.title ?? "1", message: null });
     },
     startSession(id) {
       sessionOf(id);
@@ -403,6 +409,24 @@ export function fakePort(data: FakePortData = {}): FakePort {
     noteSession(id, line) {
       port.lines.push({ id, ...line });
     },
+    ensureProject(name, rootPath) {
+      const same = (p: string) => p.replace(/\\/g, "/").toLowerCase();
+      let p = data.projects?.find((x) => same(x.rootPath) === same(rootPath));
+      if (!p) {
+        p = project({ id: `p-${name.toLowerCase()}`, name, rootPath });
+        (data.projects ??= []).push(p);
+        record("ensureProject", name, rootPath);
+      }
+      return Promise.resolve(p);
+    },
+    lastResponse(id) {
+      return Promise.resolve(data.replies?.[id] ?? null);
+    },
+    setDuckTask(id, task) {
+      record("setDuckTask", id, task);
+      const s = data.sessions?.find((x) => x.id === id);
+      if (s) s.duckTask = task;
+    },
   };
   return port;
 }
@@ -419,6 +443,7 @@ export function toolCtx(
     signal: new AbortController().signal,
     settings: { ...DEFAULT_SETTINGS, ...settings },
     request: null as string | null,
+    tasks: null as TaskManager | null,
     notices: [] as Notice[],
     posted: [] as string[],
     notice(n: Notice) {

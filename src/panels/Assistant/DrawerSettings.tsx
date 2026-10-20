@@ -1,13 +1,14 @@
 // The drawer's settings (step A3): what a message typed mid-reply does, and
 // "Start Workbench at login, minimized to tray", which keeps Duck there whenever
-// the PC is on. Duck's own settings (W2: confirm every prompt, the coding model)
-// go to the engine over the protocol. The login entry is the OS's own (`tauri-plugin-autostart`), so its
+// the PC is on. Duck's own settings (W2: confirm every prompt, the coding model;
+// D1: its workers) go to the engine over the protocol. The login entry is the OS's own (`tauri-plugin-autostart`), so its
 // state is read back from the OS rather than kept in prefs. A dev build can't set
 // it: the entry would point at the debug binary.
 
 import { useEffect, useState } from "react";
 import { disable, enable, isEnabled } from "@tauri-apps/plugin-autostart";
-import { DUCK_PERMISSION_MODES, SESSION_MODELS } from "../../util/models";
+import { MAX_WORKERS, TIERS, type DuckSettings } from "../../assistant/settings";
+import { DUCK_PERMISSION_MODES, EFFORTS, SESSION_MODELS } from "../../util/models";
 import { setDuckSettings, setInterrupt, type DuckState } from "./duckState";
 
 export default function DrawerSettings({ duck }: { duck: DuckState }) {
@@ -134,6 +135,7 @@ export default function DrawerSettings({ duck }: { duck: DuckState }) {
               ))}
             </select>
           </label>
+          <Workers settings={duck.settings} />
         </>
       )}
       <label style={{ ...row, opacity: import.meta.env.DEV ? 0.55 : 1 }}>
@@ -154,6 +156,79 @@ export default function DrawerSettings({ duck }: { duck: DuckState }) {
     </div>
   );
 }
+
+/** Duck's worker sessions (D1): how many at once, where, and each tier's worker. */
+function Workers({ settings }: { settings: DuckSettings }) {
+  const [workspace, setWorkspace] = useState(settings.workspace ?? "");
+  useEffect(() => setWorkspace(settings.workspace ?? ""), [settings.workspace]);
+  const setTier = (tier: (typeof TIERS)[number], patch: Partial<DuckSettings["tiers"]["standard"]>) =>
+    setDuckSettings({ tiers: { ...settings.tiers, [tier]: { ...settings.tiers[tier], ...patch } } });
+  return (
+    <>
+      <label style={{ ...row, alignItems: "center" }}>
+        <span>Worker sessions at once</span>
+        <select
+          value={settings.maxWorkers}
+          onChange={(e) => setDuckSettings({ maxWorkers: Number(e.target.value) })}
+          style={select}
+        >
+          {Array.from({ length: MAX_WORKERS }, (_, i) => i + 1).map((n) => (
+            <option key={n} value={n}>
+              {n}
+            </option>
+          ))}
+        </select>
+        <span style={hint}>(more tasks wait)</span>
+      </label>
+      <label style={{ ...row, alignItems: "center" }}>
+        <span style={{ flex: "0 0 auto" }}>Workspace</span>
+        <input
+          value={workspace}
+          placeholder={import.meta.env.DEV ? "~/repos/Duck.dev" : "~/repos/Duck"}
+          onChange={(e) => setWorkspace(e.target.value)}
+          onBlur={() => {
+            if (workspace.trim() !== (settings.workspace ?? "")) setDuckSettings({ workspace: workspace.trim() || null });
+          }}
+          style={{ ...select, flex: 1, minWidth: 0, padding: "1px 4px" }}
+        />
+      </label>
+      {TIERS.map((tier) => (
+        <label key={tier} style={{ ...row, alignItems: "center" }}>
+          <span style={{ width: 64 }}>{tier}</span>
+          <select
+            value={settings.tiers[tier].model}
+            onChange={(e) => setTier(tier, { model: e.target.value as (typeof SESSION_MODELS)[number] })}
+            style={select}
+          >
+            {SESSION_MODELS.map((m) => (
+              <option key={m} value={m}>
+                {m}
+              </option>
+            ))}
+          </select>
+          <select
+            value={settings.tiers[tier].effort}
+            onChange={(e) => setTier(tier, { effort: e.target.value as (typeof EFFORTS)[number] })}
+            style={select}
+          >
+            {EFFORTS.map((m) => (
+              <option key={m} value={m}>
+                {m}
+              </option>
+            ))}
+          </select>
+        </label>
+      ))}
+    </>
+  );
+}
+
+const select: React.CSSProperties = {
+  background: "var(--wb-bg)",
+  color: "var(--wb-text)",
+  border: "1px solid var(--wb-border)",
+  font: "inherit",
+};
 
 const row: React.CSSProperties = {
   display: "flex",

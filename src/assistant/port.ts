@@ -9,7 +9,7 @@
 // (W1: status, pending choices, transcripts, git, notes, limits; W2: prompts,
 // sessions, notes writes; …).
 
-import type { Spend } from "../ipc/assistant";
+import type { Spend, WorkerSpec } from "../ipc/assistant";
 import type { Branches, Commit, StatusEntry } from "../ipc/git";
 import type { Note, NoteMeta } from "../ipc/notes";
 import type { PluginsDraft, PluginsText, PluginsView, Problem } from "../ipc/plugins";
@@ -69,6 +69,11 @@ export interface SessionRef {
   /** The model it launches on (its own, else the project's default); null for
    *  Claude Code's default. */
   model: string | null;
+  /** The permission mode it launches in (its own, else the project's); null for
+   *  Claude Code's default. */
+  permissionMode: string | null;
+  /** The task it works on for Duck (step D1); null for a session of yours. */
+  duckTask: string | null;
   workingDir: string;
   /** Last activity, epoch seconds (the live status, else the stored one). */
   lastActivity: number | null;
@@ -138,6 +143,11 @@ export interface WorkbenchPort {
      *  (T2's judge reads its prompts against this). */
     mandate?: Mandate;
     permissionMode?: string | null;
+    /** A worker (step D1): registered before its first launch, so every launch
+     *  gets its effort, mode, allow list and MCP flags. */
+    worker?: WorkerSpec;
+    /** Answer the folder-trust dialog (Duck's own workspace only). */
+    trustFolder?: boolean;
   }): Promise<{ id: string; title: string; message: string | null }>;
   /** Open (or focus) a session's console, starting a fresh Claude Code session if
    *  none is running. */
@@ -234,6 +244,17 @@ export interface WorkbenchPort {
   sessionContext(instanceId: string): Promise<SessionContext>;
   /** A line under the session's card in the rail ("auto-approved `npm test`"). */
   noteSession(instanceId: string, line: { text: string; acted: boolean }): void;
+
+  // ── worker sessions (D1) ──
+
+  /** The project at `rootPath` (same folder, any slash style or case), made with
+   *  `name` when there is none. */
+  ensureProject(name: string, rootPath: string): Promise<ProjectRef>;
+  /** The session's last reply in its transcript; null when there is none. */
+  lastResponse(instanceId: string): Promise<string | null>;
+  /** Mark a session as Duck's worker on `task` (null: yours again): its card says
+   *  so, and its alerts go to Duck instead of you. */
+  setDuckTask(instanceId: string, task: string | null): void;
 }
 
 /** What a session was started for (step T2). */

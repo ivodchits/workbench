@@ -22,6 +22,7 @@ import {
 import Panel from "../../theme/Panel";
 import { GLYPH } from "../../theme";
 import type { Group, Instance, Project } from "../../ipc/registry";
+import { useDuckTasks } from "../../state/duckOwned";
 import type { ConsoleStatus } from "../../state/consoles";
 import {
   closeConsole,
@@ -457,14 +458,17 @@ function InstanceManager({ onCollapse }: InstanceManagerProps) {
   // non-blocking "shared working dir" warning + one-click isolate (step 2.6).
   // Remote instances are excluded: they're isolated by their own tmux session, and
   // they all carry the same remote dir, which would otherwise flag them all (3.12).
+  // So are Duck's workers (D1): they share its workspace by design, each writing
+  // only in its own task folder.
+  const duckTasks = useDuckTasks();
   const sharedInstanceIds = useMemo(() => {
     const remoteProjectIds = new Set(
       projects.filter((p) => p.remoteSshDest != null).map((p) => p.id),
     );
     return sharedWorkingDirInstances(
-      instances.filter((i) => !remoteProjectIds.has(i.projectId)),
+      instances.filter((i) => !remoteProjectIds.has(i.projectId) && !duckTasks.has(i.id)),
     );
-  }, [instances, projects]);
+  }, [instances, projects, duckTasks]);
 
   // When the filter is active, only show instances that currently need you.
   // Projects with no matching instances are hidden from the section list.

@@ -43,6 +43,7 @@ import type {
 } from "./tools/registry";
 import type { TrustFacts } from "./trust/decide";
 import { lastUserText } from "./trust/mandate";
+import type { TaskManager } from "./tasks";
 
 type Params = Anthropic.Beta.Messages.MessageCreateParamsStreaming;
 type ApiMessage = Anthropic.Beta.BetaMessageParam;
@@ -114,6 +115,8 @@ const verdictOf = (a: GateAnswer) => (typeof a === "string" ? { verdict: a } : a
 
 export interface EngineDeps {
   stream: StreamFn;
+  /** Duck's worker tasks (step D1), for the task tools. */
+  tasks?: TaskManager;
   registry: Registry;
   port: WorkbenchPort;
   store: ThreadStore;
@@ -603,6 +606,7 @@ export function createEngine(deps: EngineDeps): Engine {
           threadId,
           signal: turn.ctl.signal,
           settings: settings(),
+          tasks: deps.tasks ?? null,
           request: lastUserText(store.loaded(threadId)),
           prepared,
           notice: (n) => notice(threadId, n).then(() => {}),

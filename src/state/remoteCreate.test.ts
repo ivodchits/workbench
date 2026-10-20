@@ -8,6 +8,7 @@ import {
   inputHolds,
   promptBoxReady,
   resetCreated,
+  trustDialogOffset,
   updateCreate,
 } from "./remoteCreate";
 
@@ -120,5 +121,20 @@ describe("inputHolds", () => {
     expect(inputHolds(READY, "hello")).toBe(false);
     expect(inputHolds(box("❯ something else"), "hello")).toBe(false);
     expect(inputHolds(TRUST, "hello")).toBe(false);
+  });
+});
+
+describe("trustDialogOffset", () => {
+  it("finds the cursor against the Yes option, drawn either way", () => {
+    expect(trustDialogOffset(TRUST)).toBe(0);
+    const noFirst = [RULE, " Quick safety check: Is this a project you created or one you trust?", "", "  ❯ No, exit", "    Yes, I trust this folder", "", "  Enter to confirm · Esc to cancel"];
+    expect(trustDialogOffset(noFirst)).toBe(1);
+    expect(trustDialogOffset(["   2. No, exit", " ❯ 1. Yes, I trust this folder"].reverse())).toBe(0);
+    expect(trustDialogOffset([" ❯ 3. Something", "   1. Yes, I trust this folder"])).toBe(1);
+  });
+
+  it("is null without the dialog", () => {
+    expect(trustDialogOffset(READY)).toBeNull();
+    expect(trustDialogOffset([RULE, " Bash command", "❯ 1. Yes", "  2. No"])).toBeNull();
   });
 });

@@ -2949,6 +2949,89 @@ tapping around. Two stages.
   - The worker never pinged you directly.
   - With 3 tasks requested, the third waits for a free slot.
 - **Out of scope:** routing heuristics and limit awareness (D2).
+- **As built (2026-10-20):**
+  - **Workspace** (`src-tauri/src/assistant/workspace.rs`): `~/repos/Duck`
+    (`Duck.dev` in a debug build) or the folder in Duck's settings. Made on first use
+    with `tasks/` and a `CLAUDE.md` (the worker's role and the result contract; one
+    you've edited is left alone), and registered as the project "Duck" when its first
+    worker starts (`port.ensureProject`, once even when workers start together).
+    - **Not a git repo** (left out; the folders are plain files).
+    - **The allow list isn't in the workspace's `.claude/settings.json`**, as planned,
+      but in a per-worker settings file in app data (`duck-sessions[.dev]/workers/
+      <instance>.json`, passed with `--settings`), so a worker can't rewrite its own
+      permissions. Rules are absolute (`Read/Edit/Write(//c/…/Duck/**)`), plus
+      `WebSearch`, `WebFetch`, and for a browser task X0's Firefox tools.
+  - **Launch flags:** a worker is registered by instance id (`worker_sessions`,
+    main-DB migration v15) in `startNewSession`'s `beforeLaunch`, and `pty_spawn` adds
+    `workspace::launch_args` at every launch and resume: `--effort`,
+    `--permission-mode dontAsk`, `--settings <file>`, and for research / writing /
+    analysis `--strict-mcp-config --mcp-config <no servers>`. The model goes through
+    M1's `instances.model`.
+    - Checked with the CLI first (Haiku, `-p`): `permissionMode: dontAsk`, no MCP
+      servers, a write in the workspace allowed, and a write one folder up refused
+      ("denied because Claude Code is running in don't ask mode").
+    - **No `effort` column or picker** on instances: effort is a worker's launch
+      flag only.
+    - A worker's own mode wins over a picked one, as for drafting sessions.
+  - **Code tasks** run in the target project's own worktree (`worktree: true`), in the
+    project's own mode (so T2 judges their prompts), with the user's MCP servers, and
+    `--add-dir <task folder>` plus an allow rule for that folder only. Remote projects
+    are refused.
+  - **Pre-trust:** no write to `~/.claude.json`. `deliverWhenReady` takes
+    `trustFolder`, which answers the folder-trust dialog by its "Yes, I trust this
+    folder" option (found by its words, since Claude Code has drawn it with Yes first
+    and with No first). Only Duck's workspace asks for it.
+  - **Background start:** a worker doesn't switch your project or take the focus.
+    `openConsole(…, {background})` opens it unfocused, and `BackgroundConsoles` (mounted
+    in `App.tsx`) holds its terminal off screen until it's running, since the dock only
+    mounts the shown project's consoles. It docks normally when you open the project.
+    A follow-up to a worker whose console isn't running starts it the same way.
+  - **Tasks** (`src/assistant/tasks.ts`, `createTaskManager`): records in
+    `assistant_tasks` (duck.db, JSON). States: queued, running, done, blocked,
+    needs_decision, failed, closed.
+    - **Concurrency:** `maxWorkers` (setting, default 3, up to 5; raised from the planned 2 on 2026-10-20: ~430 MB per worker). A start takes its slot
+      before its first await, so tasks asked for together start side by side, and the
+      rest queue in order.
+    - **Turn end:** a fresh `result.json` (written after the run began, valid against
+      `{status, headline, question?}`) settles the task. Otherwise one nudge prompt,
+      then the last reply (`port.lastResponse`) stands in (`resultFrom: "reply"`). A
+      session that ends without a result fails the task.
+    - **Reporting:** every outcome goes to the asking thread as a
+      `<workbench_event>`, so Duck tells you without being asked. A worker waiting on a
+      prompt is reported once per prompt. Report wording drops the worker's own
+      trailing full stop.
+    - **Follow-up:** the same session, the task back to running, and only a result
+      newer than the follow-up counts.
+    - **After a restart:** a task that was running is settled from its result files,
+      or failed with a word on how to go on (its console went with the app).
+  - **Tools** (`src/assistant/tools/tasks.ts`): `run_task(title, brief, kind, tier,
+    project?, model?, effort?)` (reversible; posts the task card), `task_status(task,
+    progress?)` (with `progress`, the start of the latest reply rather than a Haiku
+    summary), `task_followup`, `task_close`, `list_tasks`. Tasks are named by id or
+    exact title. The tier phrases ("quick", "thoroughly", «это важно») are in
+    `run_task`'s description, and the system prompt has one line on offloading.
+  - **Ownership:** no `owner` column. `state/duckOwned.ts` holds instance → task,
+    filled by the task manager (and again from the records at start). It drives the
+    card's "duck ·" mark, keeps `notifications.ts` quiet (needs-you, escalation,
+    stuck and done), and drops the "shared" warning (workers share the workspace by
+    design). Closing a task gives the session back to you.
+  - **UI:** the task card in the thread (state, `model · effort`, elapsed time, the
+    headline, "open console", "close"); the `tasks` event and `task.close` message in
+    the protocol; settings for workers at once, the workspace and each tier's model
+    and effort. `list_sessions` now reports each session's permission mode and
+    `workerTask` (M4's leftover).
+  - **Verified:**
+    - 19 vitest cases (task manager and tools; 368 in all) and 2 for the trust
+      dialog; 6 Rust tests (222 in all). tsc, eslint and clippy are clean.
+    - **Live in the dev app:** "research how other Tauri apps do auto-update and
+      recommend one" ran as a Sonnet `medium` worker with the planned flags, without
+      leaving your project. It finished in 1m 14s, and Duck announced the headline
+      unprompted. Duck's own turns cost $0.039; the research ran on the subscription.
+      A follow-up went into the same session and updated the result. Three haikus asked
+      for at once: two ran together and the third started the moment one finished. The
+      cards kept their "duck ·" mark after a restart, and the card's "close" worked.
+  - **Not verified live:** that a worker's done or needs-you raises no toast (the
+    path is the same check as `watching()`); a code task; a browser task.
 
 #### Step D2 — Offload routing, subscription-limit awareness, Duck as the worker's user
 
@@ -3606,7 +3689,7 @@ X0 ─┬─▶ A1 ─▶ A2 ─┬─▶ A3 ─┬─▶ W2 ─┬─▶ T1 ─
 ```
 
 **Suggested order:**
-1. X0, A1, A2, A3, A4, W1, M1, W2, T1, W5, T2, M4 (done), then **D1**. *First
+1. X0, A1, A2, A3, A4, W1, M1, W2, T1, W5, T2, M4, D1 (done). *First
    milestone: text control of the app that acts without asking about the small things,
    with heavy work offloaded to sessions.* (Reordered 2026-10-19: trust moved ahead of
    D1, because a card for every action defeats the point of Duck. W5 moved ahead of T2
@@ -3754,7 +3837,7 @@ T2 goes live after the replay check in its done-when (the past week's prompts th
 | M2 | Effort routing, Haiku workers, budget-aware degrade | ☐ |
 | M3 | Subscription brain: headless Claude Code as the fallback main thread | ☐ |
 | M4 | Permission mode at launch | ☑ |
-| D1 | Worker sessions: workspace, brief, result contract | ☐ |
+| D1 | Worker sessions: workspace, brief, result contract | ☑ |
 | D2 | Offload routing, subscription-limit awareness, Duck as the worker's user | ☐ |
 | D3 | Session-backed thinking modes (experiment) | ☐ |
 | B1 | Web search and fetch | ☐ |

@@ -35,6 +35,7 @@ import { remotePushSend } from "../ipc/remote";
 import { getPref, setPref, type NotificationPrefs } from "../ipc/prefs";
 import { onTurnEnded, type TurnEnded } from "../ipc/transcript";
 import { getActivePanelId } from "./dock";
+import { duckTask } from "./duckOwned";
 import { shouldTell } from "./promptHold";
 
 export type { NotificationPrefs };
@@ -244,11 +245,17 @@ function watching(id: string): boolean {
   return document.hasFocus() && getActivePanelId() === id;
 }
 
+/** No alert of its own: you're looking at it, or it's Duck's worker (step D1), whose
+ *  news Duck hears and reports in its thread. */
+function quiet(id: string): boolean {
+  return watching(id) || duckTask(id) !== null;
+}
+
 /** A fresh needs-you transition → route to the enabled destinations: the desktop
  *  toast, and a push to subscribed phones (step R6) — the dashboard shows it from
  *  the snapshot too, but only while it is open. */
 function deliverNeedsYou(id: string): void {
-  if (watching(id)) return;
+  if (quiet(id)) return;
   const r = resolve(id);
   if (!r) return;
   if (config.desktop) void notifyNeedsYou(r.project, r.title, r.note).catch(() => {});
@@ -258,7 +265,7 @@ function deliverNeedsYou(id: string): void {
 /** Escalation: the card has sat in needs-you past the threshold. A louder desktop
  *  re-ping and a push; the open dashboard also shows it via the alerts store. */
 function escalateNeedsYou(id: string, mins: number): void {
-  if (watching(id)) return;
+  if (quiet(id)) return;
   const r = resolve(id);
   if (!r) return;
   const title = `⚠ Still waiting · ${label(r)}`;
@@ -269,7 +276,7 @@ function escalateNeedsYou(id: string, mins: number): void {
 
 /** Stuck flag: the card has run in working past the threshold (possibly hung). */
 function flagStuck(id: string, mins: number): void {
-  if (!config.desktop || watching(id)) return;
+  if (!config.desktop || quiet(id)) return;
   const r = resolve(id);
   if (!r) return;
   void notifyAlert(
@@ -351,7 +358,7 @@ function onDoneTurnEnded({ instanceId: id, pendingBackground }: TurnEnded): void
 
 /** The agent finished: a desktop toast and a phone push, on the enabled routes. */
 function deliverDone(id: string, body: string): void {
-  if (watching(id)) return;
+  if (quiet(id)) return;
   const r = resolve(id);
   if (!r) return;
   const title = `○ done · ${label(r)}`;

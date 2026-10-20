@@ -26,6 +26,7 @@ import {
   beginCreate,
   inputHolds,
   promptBoxReady,
+  trustDialogOffset,
   updateCreate,
 } from "./remoteCreate";
 import { provisionWorktree } from "./worktree";
@@ -188,6 +189,9 @@ export async function startNewSession(
      *  its first launch): Duck's drafting session registers itself here (W5). A
      *  throw deletes the instance. */
     beforeLaunch?: (instance: Instance) => Promise<void>;
+    /** Start it without showing it (Duck's workers, D1): no project switch, no
+     *  focus; `BackgroundConsoles` launches it. */
+    background?: boolean;
   },
   onCreated?: (instanceId: string) => void,
 ): Promise<{ instance: Instance; message: string | null }> {
@@ -231,6 +235,10 @@ export async function startNewSession(
     }
   }
 
+  if (opts.background) {
+    openConsole(instance, { background: true });
+    return { instance, message };
+  }
   // As the rail does it: show the project, open the console, focus its panel.
   setActiveProject(project.id);
   openConsole(instance);
@@ -291,17 +299,29 @@ async function createSession(action: RemoteCreateAction): Promise<void> {
  * instance's queued prompt, editable and cancellable on its card, rather than being
  * dropped. `password` hears that the screen asked for an SSH password (the wait is
  * longer then).
+ *
+ * `trustFolder` answers Claude Code's folder-trust dialog with "Yes, I trust this
+ * folder": only for a folder Workbench made itself (Duck's workspace, step D1).
  */
 export function deliverWhenReady(
   instanceId: string,
   text: string,
-  on: { password?: () => void; done?: (state: FirstPromptState) => void } = {},
+  on: { password?: () => void; done?: (state: FirstPromptState) => void; trustFolder?: boolean } = {},
 ): void {
   const started = Date.now();
   let password = false;
   let readySince: number | null = null;
+  let trustKeys = 0;
+  let trustKeyAt = 0;
   const tick = () => {
     const screen = readScreen(instanceId);
+    const offset = on.trustFolder && screen ? trustDialogOffset(screen) : null;
+    // One key at a time, and a handful at most: the dialog redraws between them.
+    if (offset !== null && trustKeys < TRUST_KEYS_MAX && Date.now() - trustKeyAt >= TRUST_KEY_GAP_MS) {
+      trustKeys++;
+      trustKeyAt = Date.now();
+      void ptyWrite(instanceId, offset === 0 ? ENTER_KEY : offset > 0 ? DOWN_KEY : UP_KEY);
+    }
     if (screen && promptBoxReady(screen)) {
       readySince ??= Date.now();
       if (Date.now() - readySince >= READY_SETTLE_MS) {
@@ -329,6 +349,11 @@ export function deliverWhenReady(
   };
   tick();
 }
+
+const DOWN_KEY = new Uint8Array([0x1b, 0x5b, 0x42]);
+const UP_KEY = new Uint8Array([0x1b, 0x5b, 0x41]);
+const TRUST_KEYS_MAX = 6;
+const TRUST_KEY_GAP_MS = 400;
 
 function errorText(e: unknown): string {
   return e instanceof Error ? e.message : String(e);

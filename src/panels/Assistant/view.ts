@@ -13,6 +13,8 @@ export type Item =
   | { kind: "event"; key: string; text: string }
   | { kind: "note"; key: string; text: string; edit: NoteEdit }
   | { kind: "plugins"; key: string; text: string; edit: PluginsEdit }
+  /** A worker task started here (D1): its card shows the task's live state. */
+  | { kind: "task"; key: string; text: string; taskId: string }
   | { kind: "reply"; key: string; text: string }
   | {
       kind: "tool";
@@ -72,6 +74,8 @@ export function toItems(messages: readonly StoredMessage[]): Item[] {
         items.push({ kind: "note", key, text: n.text, edit: n.note });
       else if (n.kind === "plugins" && n.plugins)
         items.push({ kind: "plugins", key, text: n.text, edit: n.plugins });
+      else if (n.kind === "task" && n.task)
+        items.push({ kind: "task", key, text: n.text, taskId: n.task.id });
       else items.push({ kind: "notice", key, notice: n });
       continue;
     }

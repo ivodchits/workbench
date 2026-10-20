@@ -11,6 +11,7 @@ import DuckButton from "./panels/Assistant/DuckButton";
 import { initAssistant } from "./assistant";
 import RemoteMirror from "./panels/RemoteMirror";
 import Workspace from "./panels/Workspace";
+import BackgroundConsoles from "./panels/BackgroundConsoles";
 import PresetsBar from "./panels/PresetsBar";
 import ProjectToolbar from "./panels/ProjectToolbar";
 import { initPlugins } from "./state/plugins";
@@ -231,6 +232,8 @@ function App() {
         )}
         <Workspace />
       </div>
+      {/* Duck's workers start here, off screen, while their project isn't shown. */}
+      <BackgroundConsoles />
 
       <StatusBar openCount={liveCount} sessionId={active?.sessionId ?? null} />
 

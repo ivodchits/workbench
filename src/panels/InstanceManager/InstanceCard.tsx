@@ -30,6 +30,7 @@ import { updateInstance } from "../../state/registry";
 import { markInterrupted } from "../../state/status";
 import { cancelQueued, useQueued } from "../../state/queue";
 import { useTrustLine } from "../../state/trustLines";
+import { useDuckTask } from "../../state/duckOwned";
 import { openQueueDialog } from "../queueDialogControl";
 import { mergeStatus, relativeTime } from "./status";
 import { contextWindowTokens, formatTokens, tokenBreakdown } from "../../util/format";
@@ -88,6 +89,7 @@ function InstanceCard({
   const view = mergeStatus(consoleStatus, live, instance.status);
   const queued = useQueued().get(instance.id) ?? null;
   const trustLine = useTrustLine(instance.id);
+  const duckTask = useDuckTask(instance.id);
   const dim = !live && !consoleStatus && instance.status === "closed";
   const showActions = hover || editingNote || editingTitle || pickingAccent || pickingModel;
 
@@ -190,8 +192,19 @@ function InstanceCard({
             fontSize: 13,
             flex: 1,
             minWidth: 0,
+            display: "flex",
+            alignItems: "baseline",
+            gap: 5,
           }}
         >
+          {duckTask !== null && (
+            <span
+              title="Duck's worker: its news goes to Duck, not to you"
+              style={{ font: "600 10px var(--wb-mono)", color: "var(--wb-accent)", flex: "0 0 auto" }}
+            >
+              duck ·
+            </span>
+          )}
           <InlineEdit
             value={instance.title}
             editing={editingTitle}
@@ -199,7 +212,7 @@ function InstanceCard({
             onCommit={(next) => void updateInstance(instance.id, { title: next })}
             required
             ariaLabel="rename instance"
-            style={{ fontWeight: 600, fontSize: 13, color: "var(--wb-text)" }}
+            style={{ fontWeight: 600, fontSize: 13, color: "var(--wb-text)", flex: 1, minWidth: 0 }}
             textStyle={{
               display: "block",
               overflow: "hidden",

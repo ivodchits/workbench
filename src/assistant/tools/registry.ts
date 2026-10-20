@@ -18,6 +18,7 @@ import type Anthropic from "@anthropic-ai/sdk";
 import type { WorkbenchPort } from "../port";
 import type { Notice, ReviewItem } from "../protocol";
 import type { DuckSettings } from "../settings";
+import type { TaskManager } from "../tasks";
 import type { TrustFacts } from "../trust/decide";
 
 export type Tier = "read" | "reversible" | "consequential";
@@ -36,6 +37,8 @@ export interface ToolContext {
   /** Post a follow-up into the thread later, as a Workbench event that starts a
    *  turn of its own: how start + notify tools report back. */
   later(text: string): void;
+  /** Duck's worker tasks (step D1); null where there are none (some tests). */
+  tasks: TaskManager | null;
 }
 
 /** A tool may return text, API content blocks (e.g. an image), or any JSON value. */

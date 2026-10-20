@@ -4,7 +4,7 @@
 
 import { homeDir } from "@tauri-apps/api/path";
 
-import { getSpend, mandateGet, mandateSet } from "../ipc/assistant";
+import { getSpend, mandateGet, mandateSet, workerRegister } from "../ipc/assistant";
 import {
   gitBranches,
   gitLog,
@@ -32,6 +32,7 @@ import {
 import { INTERRUPT_KEY, ptyWrite } from "../ipc/pty";
 import type { Instance } from "../ipc/registry";
 import { readTranscript, readTranscriptBack } from "../ipc/transcript";
+import { readLastResponse } from "../transcript/feed";
 import { getUsageLimits } from "../ipc/usageLimits";
 import { startPluginRunFor } from "../panels/pluginRun";
 import { sendOrQueue } from "../panels/promptDelivery";
@@ -56,7 +57,8 @@ import {
   type PendingChoice,
 } from "../state/pendingChoice";
 import { setPromptHold, shouldTell } from "../state/promptHold";
-import { deleteInstance, getRegistry, renumberInstances } from "../state/registry";
+import { duckTask, setDuckOwned } from "../state/duckOwned";
+import { addProject, deleteInstance, getRegistry, loadRegistry, renumberInstances } from "../state/registry";
 import {
   answerChoice,
   answerChoiceText,
@@ -195,6 +197,9 @@ export const localPort: WorkbenchPort = {
           subagents: s?.subagents ?? 0,
           worktreeBranch: i.worktreeOn ? i.branch : null,
           model: effectiveModel(i, projects.find((p) => p.id === i.projectId)),
+          permissionMode:
+            i.permissionMode ?? projects.find((p) => p.id === i.projectId)?.defaultPermissionMode ?? null,
+          duckTask: duckTask(i.id),
           workingDir: i.workingDir,
           lastActivity: s?.updatedAt ?? i.lastActivityAt,
           choice: choice ? choiceRef(choice) : null,
@@ -220,11 +225,13 @@ export const localPort: WorkbenchPort = {
   async sendPrompt(id, text) {
     const i = instance(id);
     if (running(id)) return sendOrQueue(id, text);
-    show(i);
+    // A worker (D1) starts again out of your way, like the first time.
+    if (duckTask(id)) openConsole(i, { background: true });
+    else show(i);
     deliverWhenReady(id, text);
     return "starting";
   },
-  async createSession({ projectId, title, prompt, worktree, model, permissionMode, mandate }) {
+  async createSession({ projectId, title, prompt, worktree, model, permissionMode, mandate, worker, trustFolder }) {
     const project = getRegistry().projects.find((p) => p.id === projectId);
     if (!project) throw new Error(`no project with id ${projectId}`);
     const { instance: i, message } = await startNewSession(project, {
@@ -232,9 +239,12 @@ export const localPort: WorkbenchPort = {
       worktree,
       model,
       permissionMode,
+      beforeLaunch: worker ? (inst) => workerRegister(inst.id, worker) : undefined,
+      // A worker starts out of your way; you open it from its card or Duck's.
+      background: !!worker,
     });
     if (mandate?.text.trim()) rememberMandate(i.id, mandate);
-    if (prompt?.trim()) deliverWhenReady(i.id, prompt.trim());
+    if (prompt?.trim()) deliverWhenReady(i.id, prompt.trim(), { trustFolder });
     return { id: i.id, title: i.title, message };
   },
   startSession(id) {
@@ -454,6 +464,20 @@ export const localPort: WorkbenchPort = {
   noteSession(id, line) {
     setTrustLine(id, { ...line, at: Date.now() });
   },
+  async ensureProject(name, rootPath) {
+    const same = (p: string) => p.replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
+    const find = () => localPort.listProjects().find((p) => !p.remote && same(p.rootPath) === same(rootPath));
+    // Before the registry has loaded, every project would look missing.
+    if (!getRegistry().loaded) await loadRegistry();
+    const known = find();
+    if (known) return known;
+    await addProject({ name, rootPath });
+    const made = find();
+    if (!made) throw new Error(`Could not register ${rootPath} as a project: ${getRegistry().error ?? "unknown error"}`);
+    return made;
+  },
+  lastResponse: (id) => readLastResponse((before) => readTranscriptBack(id, before)),
+  setDuckTask: (id, task) => setDuckOwned(id, task),
   readPluginsDraft: pluginsDraftRead,
   clearPluginsDraft: pluginsDraftClear,
   onTaskEnd(taskId, cb) {

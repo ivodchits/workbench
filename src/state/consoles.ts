@@ -53,6 +53,10 @@ export interface ConsoleSession {
    *  terminal was released without killing the child. The Workspace reconciler skips
    *  it (no main-dock panel) until it docks back. */
   tornOff?: boolean;
+  /** Started for Duck without being shown (a worker, step D1): while its project
+   *  isn't on screen, a hidden holder (`BackgroundConsoles`) mounts it so it
+   *  spawns; it joins the dock like any console when you open its project. */
+  background?: boolean;
   /** Monotonic focus stamp; the active console has the highest. */
   focusSeq: number;
 }
@@ -133,11 +137,14 @@ function liveWebglCount(): number {
  * it if it was a dormant placeholder. A fresh/relaunched console starts in
  * `spawning`; the hosting panel drives the PTY and reports back via
  * `markSpawned` / `markError`.
+ *
+ * `background` starts it without focusing it (see `ConsoleSession.background`);
+ * one already live is left as it is.
  */
-export function openConsole(instance: Instance): void {
+export function openConsole(instance: Instance, opts: { background?: boolean } = {}): void {
   const existing = state.open.find((c) => c.instanceId === instance.id);
   if (existing && existing.status !== "dormant") {
-    focusConsole(instance.id);
+    if (!opts.background) focusConsole(instance.id);
     return;
   }
 
@@ -150,18 +157,20 @@ export function openConsole(instance: Instance): void {
     resumeSessionId: null,
     remote: remoteSpawnFor(instance),
     error: null,
-    focusSeq: ++focusSeq,
+    focusSeq: opts.background ? 0 : ++focusSeq,
+    background: opts.background || undefined,
   };
+  const activeId = opts.background ? state.activeId : instance.id;
 
   if (existing) {
     // Relaunch a dormant placeholder in place — the panel already exists.
     patchSession(instance.id, live);
-    emit({ ...state, activeId: instance.id });
+    emit({ ...state, activeId });
     return;
   }
 
   const session: ConsoleSession = { instanceId: instance.id, ...live };
-  emit({ open: [...state.open, session], activeId: instance.id });
+  emit({ open: [...state.open, session], activeId });
 }
 
 /**

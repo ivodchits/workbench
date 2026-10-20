@@ -238,6 +238,18 @@ const MIGRATIONS: &[&str] = &[
     ALTER TABLE instances ADD COLUMN permission_mode TEXT;
     ALTER TABLE projects ADD COLUMN default_permission_mode TEXT;
     "#,
+    // v14 -> v15: Duck's worker sessions (assistant plan D1). Each launch of one adds
+    // its effort, permission mode, allow list and MCP flags
+    // (`assistant::workspace::launch_args`). No foreign key, as for drafts.
+    r#"
+    CREATE TABLE worker_sessions (
+        instance_id     TEXT PRIMARY KEY,
+        effort          TEXT NOT NULL,
+        permission_mode TEXT,
+        strict_mcp      INTEGER NOT NULL DEFAULT 0,
+        add_dir         TEXT
+    );
+    "#,
 ];
 
 /// Apply any migrations the database hasn't seen yet, advancing
