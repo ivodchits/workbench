@@ -14,6 +14,10 @@
 // The transcript view relies on the same property: showing it unmounts `Console`,
 // which only *detaches* the pooled terminal. The session runs on underneath and
 // its scrollback is intact when you switch back.
+//
+// A headless worker's console (step D4) has no terminal at all: it is the
+// transcript view, its composer sending over the protocol, with "take over" to
+// continue the session in a terminal.
 
 import { useCallback, useEffect } from "react";
 import type { IDockviewPanelProps } from "dockview";
@@ -38,6 +42,7 @@ import {
   type ConsoleSession,
 } from "../state/consoles";
 import { setViewMode, toggleViewMode, useViewMode, type ViewMode } from "../state/viewMode";
+import { takeOverHeadless } from "../state/headless";
 import { getBindings } from "../keyboard/keymap";
 import { prettyChord } from "./keymapFormat";
 
@@ -69,7 +74,9 @@ function ConsolePanel(props: IDockviewPanelProps<ConsolePanelParams>) {
   // Only a running local session has a transcript to show. A console that is
   // still spawning stays on its terminal — mounting that is what launches claude.
   const hasTranscript = canShowTranscript(session);
-  const showTranscript = hasTranscript && viewMode === "transcript";
+  const headless = !!session?.headless;
+  const showTranscript = hasTranscript && (headless || viewMode === "transcript");
+  const takeOver = () => void takeOverHeadless(instanceId);
 
   // No onMouseDown→setActive here: that stole DOM focus from xterm's input on
   // every click. dockview activates the group natively when its content gains
@@ -92,15 +99,24 @@ function ConsolePanel(props: IDockviewPanelProps<ConsolePanelParams>) {
         sessionId={session?.sessionId ?? instance.lastSessionId ?? null}
         status={session?.status ?? "dormant"}
         live={live}
-        viewMode={hasTranscript ? viewMode : null}
+        viewMode={hasTranscript && !headless ? viewMode : null}
         onToggleView={() => toggleViewMode(instanceId)}
         plans={hasTranscript}
+        onTakeOver={headless && session.status !== "spawning" ? takeOver : undefined}
       />
       <div style={{ flex: "1 1 auto", minHeight: 0 }}>
         {dormant ? (
           <Dormant instance={instance} />
+        ) : headless && session.status === "error" ? (
+          <HeadlessEnded message={session.error} onTakeOver={takeOver} />
         ) : session.status === "error" ? (
           <ErrorBody message={session.error} />
+        ) : headless && session.status === "spawning" ? (
+          <div style={centeredBody}>
+            <span style={{ color: "var(--wb-working)", font: "12px var(--wb-mono)" }}>
+              <Spinner size={10} /> starting the worker
+            </span>
+          </div>
         ) : (
           // A file dragged from another panel lands here as an `@` reference (D1).
           // Not for a session on another host: these paths are this machine's.
@@ -114,7 +130,7 @@ function ConsolePanel(props: IDockviewPanelProps<ConsolePanelParams>) {
               <TranscriptView
                 instanceId={instanceId}
                 live={live}
-                onShowTerminal={() => setViewMode(instanceId, "terminal")}
+                onShowTerminal={headless ? takeOver : () => setViewMode(instanceId, "terminal")}
               />
             ) : (
               <LiveConsole instanceId={instanceId} session={session} />
@@ -171,6 +187,7 @@ function HeaderStrip({
   viewMode,
   onToggleView,
   plans,
+  onTakeOver,
 }: {
   project: Project | null;
   instance: Instance;
@@ -182,6 +199,8 @@ function HeaderStrip({
   onToggleView: () => void;
   /** The session's transcript is readable here, so its plans can be offered (P1). */
   plans: boolean;
+  /** A headless worker: continue it in a terminal. */
+  onTakeOver?: () => void;
 }) {
   const branch = instance.branch ?? project?.defaultBranch ?? null;
   return (
@@ -224,6 +243,17 @@ function HeaderStrip({
       <span style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 10, paddingLeft: 12 }}>
         <PlanButton instanceId={instance.id} enabled={plans} />
         {viewMode && <ViewToggle mode={viewMode} onToggle={onToggleView} />}
+        {onTakeOver && (
+          <button
+            type="button"
+            onMouseDown={(e) => e.preventDefault()}
+            onClick={onTakeOver}
+            title="Duck's worker runs headless; continue its session in a terminal"
+            style={headerButton}
+          >
+            take over
+          </button>
+        )}
         {status === "spawning" ? (
           <span style={{ color: "var(--wb-working)" }}>
             <Spinner size={10} /> spawning
@@ -254,15 +284,7 @@ export function ViewToggle({ mode, onToggle }: { mode: ViewMode; onToggle: () =>
       onMouseDown={(e) => e.preventDefault()}
       onClick={onToggle}
       title={`show the ${target}${chord ? ` (${prettyChord(chord).join("+")})` : ""}`}
-      style={{
-        background: "transparent",
-        border: "1px solid var(--wb-border)",
-        color: "var(--wb-textDim2)",
-        font: "10.5px var(--wb-mono)",
-        cursor: "pointer",
-        padding: "0 7px",
-        lineHeight: 1.5,
-      }}
+      style={headerButton}
     >
       {target}
     </button>
@@ -336,6 +358,23 @@ function ErrorBody({ message }: { message: string | null }) {
   );
 }
 
+/** A headless worker whose process ended (or never started). */
+function HeadlessEnded({ message, onTakeOver }: { message: string | null; onTakeOver: () => void }) {
+  return (
+    <div style={centeredBody}>
+      <div style={{ color: "var(--wb-textDim2)", font: "12px var(--wb-mono)" }}>
+        <span style={{ color: "var(--wb-closed)" }}>○</span> {message ?? "the worker isn't running"}
+      </div>
+      <div style={{ color: "var(--wb-textFaint)", font: "11px var(--wb-mono)", maxWidth: 420, textAlign: "center" }}>
+        a follow-up from Duck starts it again; or continue its session yourself
+      </div>
+      <button onClick={onTakeOver} style={relaunchButton}>
+        <span style={{ color: "var(--wb-accent)" }}>{GLYPH.run}</span> open in a terminal
+      </button>
+    </div>
+  );
+}
+
 function MissingInstance() {
   return (
     <div style={centeredBody}>
@@ -358,6 +397,16 @@ const centeredBody: React.CSSProperties = {
   gap: 10,
   padding: 24,
   background: "var(--wb-bg)",
+};
+
+const headerButton: React.CSSProperties = {
+  background: "transparent",
+  border: "1px solid var(--wb-border)",
+  color: "var(--wb-textDim2)",
+  font: "10.5px var(--wb-mono)",
+  cursor: "pointer",
+  padding: "0 7px",
+  lineHeight: 1.5,
 };
 
 const relaunchButton: React.CSSProperties = {

@@ -9,7 +9,6 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 
 import { GLYPH } from "../theme";
-import { INTERRUPT_KEY, ptyWrite } from "../ipc/pty";
 import { submitPrompt } from "./terminalPool";
 import { deliverQueued, sendOrQueue } from "./promptDelivery";
 import { savePastedImage } from "../ipc/os";
@@ -23,7 +22,9 @@ import {
   useDraft,
 } from "../state/composer";
 import { atRest, cancelQueued, useQueued } from "../state/queue";
-import { markInterrupted, type LiveStatus } from "../state/status";
+import type { LiveStatus } from "../state/status";
+import { isHeadless } from "../state/headless";
+import { interruptSession } from "../state/remoteActions";
 import { useTemplates, type PromptTemplate } from "../state/templates";
 import { flash } from "../util/flash";
 
@@ -69,7 +70,12 @@ function PromptComposer({ instanceId, live, onShowTerminal, onSent }: PromptComp
     if (!canSend) return;
     const command = terminalCommand(draft);
     if (command) {
-      // Its menu (or its output) only exists in the TUI.
+      // Its menu (or its output) only exists in the TUI, which a headless worker
+      // (D4) doesn't have.
+      if (isHeadless(instanceId)) {
+        flash(`/${command} needs a terminal — take the worker over first`);
+        return;
+      }
       if (!resting) {
         flash(`/${command} answers in the terminal — send it when this turn has finished`);
         return;
@@ -86,8 +92,7 @@ function PromptComposer({ instanceId, live, onShowTerminal, onSent }: PromptComp
   };
 
   const interrupt = () => {
-    void ptyWrite(instanceId, INTERRUPT_KEY);
-    markInterrupted(instanceId); // interrupting fires no hook — update the dot ourselves
+    interruptSession(instanceId);
     fieldRef.current?.focus();
   };
 

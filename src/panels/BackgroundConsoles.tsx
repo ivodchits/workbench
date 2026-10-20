@@ -23,6 +23,7 @@ export default function BackgroundConsoles() {
   const held = open.filter(
     (c) =>
       c.background &&
+      !c.headless &&
       c.status === "spawning" &&
       !c.tornOff &&
       instances.find((i) => i.id === c.instanceId)?.projectId !== shown,

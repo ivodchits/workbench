@@ -258,6 +258,17 @@ function Workers({ settings }: { settings: DuckSettings }) {
         </select>
         <span style={hint}>(more tasks wait)</span>
       </label>
+      <label style={row}>
+        <input
+          type="checkbox"
+          checked={settings.headlessWorkers}
+          onChange={(e) => setDuckSettings({ headlessWorkers: e.target.checked })}
+        />
+        <span>
+          Run workers headless
+          <span style={hint}> (no terminal: their console is the transcript, with "take over" for one)</span>
+        </span>
+      </label>
       <label style={{ ...row, alignItems: "center" }}>
         <span style={{ flex: "0 0 auto" }}>Workspace</span>
         <input

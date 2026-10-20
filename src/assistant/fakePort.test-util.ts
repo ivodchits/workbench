@@ -459,6 +459,9 @@ export function fakePort(data: FakePortData = {}): FakePort {
       const s = data.sessions?.find((x) => x.id === id);
       if (s) s.duckTask = task;
     },
+    setHeadless(id, on) {
+      record("setHeadless", id, on);
+    },
   };
   return port;
 }

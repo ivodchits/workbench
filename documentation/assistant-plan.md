@@ -3348,6 +3348,101 @@ tapping around. Two stages.
   opens the same conversation in a terminal.
 - **Out of scope:** your own sessions (they stay terminals: you use slash commands and
   the full TUI).
+- **Check first, done (2026-10-20, Claude Code 2.1.304, scratch harness on Haiku):**
+  - `claude -p --input-format stream-json --output-format stream-json --verbose
+    --permission-prompt-tool stdio`, after an `initialize` control request:
+    - Anything that would prompt arrives as a `can_use_tool` control request.
+    - Allow (`updatedInput`) and deny (`message`, which reaches the model as the
+      tool's error) both work.
+    - `AskUserQuestion` is answered by allowing it with `updatedInput.answers`
+      (`{question: label}`).
+  - **Hooks fire headless** (`UserPromptSubmit`, `PreToolUse`, `PermissionRequest`,
+    `PostToolUse`, `Stop`, `SessionEnd`). `SessionStart` and `Notification` don't.
+  - The `PermissionRequest` hook and `can_use_tool` race:
+    - A hook decision makes the CLI cancel the request (`control_cancel_request`).
+    - An empty hook reply leaves the request to the host.
+    - So T4's hold and the trust watcher work unchanged.
+  - A user message between turns starts the next turn; each turn ends in a `result`.
+  - The `interrupt` control request stops generation or a foreground tool (the tool
+    is killed and the turn ends `error_during_execution`). The session takes the next
+    message as usual.
+  - `/compact` (the `status: compacting` messages, `compact_boundary`) and `/cost` work
+    as messages.
+  - `--resume <id>` with stream-json keeps the conversation and the session id.
+  - Memory: about 280–300 MB per headless process, against 260–460 MB for the TUI
+    sessions that were running.
+- **As built (2026-10-20):**
+  - **The process** (`src-tauri/src/assistant/headless.rs`, `HeadlessManager`): one
+    `claude -p` per instance, with no window.
+    - It launches with the arguments its terminal would have. The model, mode and
+      worker flags moved out of `pty_spawn` into `pty::session_args`, which both use.
+    - It carries `WORKBENCH_INSTANCE_ID`. Its session id is mapped in `PtyManager`
+      (`register_session`), so hooks, the transcript stream and summaries treat it as
+      any session.
+    - On start it sends `initialize`, then the first prompt.
+    - Its stdout's control requests, cancels, results and `system` messages are
+      forwarded to the webview as `headless-event`. The conversation comes from the
+      transcript, as for a terminal.
+    - A process that ends on its own emits `headless-exited` with its last stderr
+      lines. Every worker is stopped when the app quits.
+    - Commands: `headless_spawn`, `headless_send`, `headless_interrupt`,
+      `headless_answer`, `headless_kill`.
+  - **The console** (`state/headless.ts`, `state/headlessFlag.ts`): a console opened for
+    an instance flagged headless has `headless: true`.
+    - Its process follows the console: started when it opens (taking the launch
+      prompt), stopped when it closes. Each instance's backend calls are chained, so a
+      relaunch's stop and start can't pass each other.
+    - `ConsolePanel` shows it as the transcript view, with no terminal or view toggle,
+      "starting the worker" while it starts, and a **take over** button.
+    - Take over stops the process and resumes the same session in a terminal
+      (`resumeConsole` with its id).
+    - A dead worker shows its exit and an "open in a terminal" button.
+    - `BackgroundConsoles` doesn't mount it, and it can't be torn off.
+  - **What isn't a hook is made up for the status engine:** `SessionStart` when the
+    process is up, `Stop` on a `result` if the card still says working, `PreCompact` /
+    `PostCompact` from the `status` messages, and `SessionEnd` when the process dies.
+  - **Delivery:** `submitToTerminal` (so the composer, the queue, the outbox and the
+    phone) sends a headless worker's prompt as a protocol message.
+    - The outbox hands it any first prompt at launch (no command-line length limit, no
+      trust dialog), sends later ones as messages, and waits on the same
+      `UserPromptSubmit` signal.
+    - Interrupts go through one `interruptSession` (composer, phone, Duck's port).
+    - Slash commands whose menu exists only in the TUI are refused in the composer
+      with "take the worker over first".
+  - **Answers:** `can_use_tool` requests are kept per instance and dropped when
+    cancelled.
+    - A card's or Duck's answer takes T4's hold first, as before. When there is none,
+      `answerHeadless` sends it over the protocol:
+      - a permission: allow with its input;
+      - a question: its option's label (or typed text) in `answers`;
+      - a denial: `interrupt: true`, which ends the turn as Esc does.
+    - No keys are sent to a headless worker. A plan's card offers "Yes, go ahead with
+      the plan" (a plain allow), since there is no menu to read.
+    - Duck's `read_screen` / `press_keys` refuse a headless worker with a pointer to
+      `answer_choice`.
+  - **Tasks:** `headlessWorkers` (Duck settings, on by default). A session worker starts
+    headless and its task records `headless`. After a restart a follow-up relaunches it
+    headless with `--resume`. Closing a task hands the session back as a terminal one.
+  - **Verified:** 10 new vitest cases (436 in all) covering:
+    - the process following its console, with its launch prompt;
+    - a question, typed text, a permission and a denial answered over the protocol;
+    - a cancelled request;
+    - the turn's end and the process's death;
+    - a plan's approval;
+    - take-over;
+    - outbox delivery;
+    - the phone's actions;
+    - the setting.
+
+    One Rust test (227 in all). tsc, eslint and clippy are clean.
+  - **Not verified live:** the done-when in the app: a research task and a code task
+    headless end to end, a follow-up, an interrupt, a permission answered without a
+    menu, and take over.
+  - **Known gaps:**
+    - An image pasted into a headless worker's composer goes as its path text.
+    - A worker taken over and then relaunched after a restart is headless again: the
+      task's flag isn't cleared by a take-over.
+    - The protocol's `rate_limit_event` is not read yet (M3 plans to).
 
 ### Track L — Learning & self-development
 

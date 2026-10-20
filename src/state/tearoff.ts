@@ -24,7 +24,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { TauriEvent } from "@tauri-apps/api/event";
 
-import { registerConsoleTornCloser, setConsoleTornOff } from "./consoles";
+import { getOpenConsoles, registerConsoleTornCloser, setConsoleTornOff } from "./consoles";
 import { registerShellTornCloser, setShellTornOff } from "./shells";
 import { release } from "../panels/terminalPool";
 
@@ -64,6 +64,8 @@ export function tearOff(kind: TornKind, id: string, title: string): void {
     return;
   }
   if (opening.has(key)) return;
+  // A headless worker (D4) has no terminal for the window to attach to.
+  if (kind === "console" && getOpenConsoles().some((c) => c.instanceId === id && c.headless)) return;
 
   // Flag it (drops the main-dock panel via the reconciler) and release the dock's
   // terminal *without* killing the child — the new window becomes its subscriber.

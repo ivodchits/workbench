@@ -121,6 +121,8 @@ pub fn run() {
             Ok(())
         })
         .manage(pty::PtyManager::default())
+        // Duck's headless workers (step D4).
+        .manage(assistant::headless::HeadlessManager::default())
         // Account-wide usage-limit snapshot, fed by the managed statusline (step 3.2).
         // Managed up front so the ingest route can write it before setup completes.
         .manage(statusline::LimitsState::default())
@@ -177,6 +179,11 @@ pub fn run() {
             assistant::assistant_worker_register,
             assistant::assistant_task_put,
             assistant::assistant_task_list,
+            assistant::headless::headless_spawn,
+            assistant::headless::headless_send,
+            assistant::headless::headless_interrupt,
+            assistant::headless::headless_answer,
+            assistant::headless::headless_kill,
             window::window_open_torn,
             remote::remote_start,
             remote::remote_stop,
@@ -332,6 +339,7 @@ pub fn run() {
         .run(|app, event| {
             if let tauri::RunEvent::Exit = event {
                 hooks::uninstall_dev(app);
+                assistant::headless::kill_all(app);
             }
         });
 }

@@ -7,6 +7,8 @@ const hooks: ((env: HookEnvelope) => void)[] = [];
 const transitions: ((id: string, phase: StatusPhase, prev: StatusPhase | null) => void)[] = [];
 const live = new Map<string, { phase: StatusPhase; compacting: boolean }>();
 let screen: string[] | null = null;
+const headless = new Set<string>();
+const headlessSent: [string, string][] = [];
 
 vi.mock("../ipc/pty", () => ({ ENTER_KEY: new Uint8Array([13]), ptyWrite: vi.fn(() => Promise.resolve()) }));
 vi.mock("../ipc/hooks", () => ({
@@ -18,6 +20,13 @@ vi.mock("../ipc/hooks", () => ({
 vi.mock("../panels/terminalPool", () => ({
   readScreen: () => screen,
   submitPrompt: vi.fn(),
+}));
+vi.mock("./headless", () => ({
+  isHeadless: (id: string) => headless.has(id),
+  sendHeadless: (id: string, text: string) => {
+    headlessSent.push([id, text]);
+    return Promise.resolve();
+  },
 }));
 vi.mock("./status", () => ({
   getLiveStatuses: () => live,
@@ -170,5 +179,30 @@ describe("prompt outbox", () => {
     expect(submitPrompt).toHaveBeenCalledWith(long.t.instanceId, text);
     submitted(long.t.instanceId);
     expect(await l.done).toEqual({ ok: true });
+  });
+
+  it("gives a headless worker (D4) any first prompt at launch, and the next ones as messages", async () => {
+    const w = target(false);
+    headless.add(w.t.instanceId);
+    const text = "x".repeat(LAUNCH_PROMPT_MAX + 1);
+    const first = deliverPrompt({ ...w.target, trustFolder: true }, text);
+    // On its launch, however long, and no screen is watched for a dialog.
+    expect(takeLaunchPrompt(w.t.instanceId)).toBe(text);
+    expect(w.t.launches).toBe(1);
+    submitted(w.t.instanceId);
+    expect(await first.done).toEqual({ ok: true });
+    phase(w.t.instanceId, "done");
+
+    const next = deliverPrompt(w.target, "and the follow-up");
+    await vi.advanceTimersByTimeAsync(0);
+    expect(headlessSent).toEqual([[w.t.instanceId, "and the follow-up"]]);
+    expect(submitPrompt).not.toHaveBeenCalled();
+    submitted(w.t.instanceId);
+    expect(await next.done).toEqual({ ok: true });
+
+    phase(w.t.instanceId, "done");
+    const lost = deliverPrompt(w.target, "never taken");
+    await vi.advanceTimersByTimeAsync(16_000);
+    expect(await lost.done).toEqual({ ok: false, why: "it was sent to the worker, but Claude Code didn't take it" });
   });
 });

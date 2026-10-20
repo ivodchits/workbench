@@ -18,6 +18,7 @@ import { addInstance, deleteInstance, getRegistry, nextInstanceTitle } from "./r
 import { markInterrupted } from "./status";
 import { getPendingChoice, markChoiceSent, takeHold } from "./pendingChoice";
 import { closeConsole, openConsole } from "./consoles";
+import { answerHeadless, interruptHeadless, isHeadless } from "./headless";
 import { setActiveProject } from "./activeProject";
 import { activatePanel } from "./dock";
 import { encodePaste } from "./composer";
@@ -60,15 +61,16 @@ export function handleRemoteAction(action: RemoteAction): void {
       // Not a plan: its first option can be "yes, and use auto mode", so a plan is
       // only approved through one of its options read off the screen (`choose`).
       if (getPendingChoice(instanceId)?.kind === "plan") break;
-      void ptyWrite(instanceId, ENTER_KEY);
+      if (isHeadless(instanceId)) answerChoice(instanceId, { option: 1 });
+      else void ptyWrite(instanceId, ENTER_KEY);
       break;
     case "deny":
       // ESC dismisses the permission prompt (the turn continues / is declined).
-      void ptyWrite(instanceId, INTERRUPT_KEY);
+      if (isHeadless(instanceId)) answerChoice(instanceId, "deny");
+      else void ptyWrite(instanceId, INTERRUPT_KEY);
       break;
     case "interrupt":
-      void ptyWrite(instanceId, INTERRUPT_KEY);
-      markInterrupted(instanceId); // interrupting fires no hook — update the dot ourselves
+      interruptSession(instanceId);
       break;
     case "start":
       startInstance(instanceId);
@@ -97,6 +99,10 @@ const TYPED_ENTER_MS = 300;
  * PTY against Claude Code 2.1.304 (single question: digit n+1, then the text).
  */
 export function answerChoiceText(instanceId: string, key: number, text: string): void {
+  if (isHeadless(instanceId)) {
+    answerHeadless(instanceId, { text }, USER_DENIED);
+    return;
+  }
   if (!Number.isInteger(key) || key < 1 || key > 9) return;
   const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
   void ptyWrite(instanceId, new TextEncoder().encode(String(key)))
@@ -141,8 +147,12 @@ export function answerChoice(instanceId: string, answer: ChoiceAnswer): void {
   pressAnswer(instanceId, answer);
 }
 
-/** `answerChoice`'s keys. */
+/** `answerChoice`'s keys; a headless worker's answer goes over the protocol (D4). */
 function pressAnswer(instanceId: string, answer: ChoiceAnswer): void {
+  if (isHeadless(instanceId)) {
+    answerHeadless(instanceId, answer, USER_DENIED);
+    return;
+  }
   if (answer === "deny") {
     void ptyWrite(instanceId, INTERRUPT_KEY);
     markInterrupted(instanceId); // dismissing fires no hook — update the dot ourselves
@@ -170,6 +180,17 @@ function chooseRemote(action: RemoteChooseAction): void {
   if (!picked) return;
   answerChoice(instanceId, { option: picked.key });
   markChoiceSent(instanceId, choiceId, picked.label);
+}
+
+/** Stop a session's turn: Esc in its terminal, or a headless worker's interrupt.
+ *  Interrupting fires no hook, so the dot is updated here. */
+export function interruptSession(instanceId: string): void {
+  if (isHeadless(instanceId)) {
+    interruptHeadless(instanceId);
+    return;
+  }
+  void ptyWrite(instanceId, INTERRUPT_KEY);
+  markInterrupted(instanceId);
 }
 
 /** Open (or focus) the console for an instance resolved from the registry. No-op if

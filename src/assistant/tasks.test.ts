@@ -192,6 +192,7 @@ describe("run", () => {
       model: "sonnet",
       worktree: false,
       trustFolder: true,
+      headless: true,
       worker: { workspace: WS, folder: t.folder, effort: "medium", kind: "research" },
       mandate: { text: "research how other Tauri apps do auto-update", threadId: "th1" },
     });
@@ -468,8 +469,22 @@ describe("load", () => {
     expect(tasks.get(lost.id)?.error).toContain("Workbench closed while it ran");
     expect(tasks.get("q1")?.state).toBe("running");
     expect(told).toHaveLength(2);
-    // Its worker is still marked as Duck's.
+    // Its worker is still marked as Duck's, and headless for its next launch.
     expect(port.calls.some((c) => c.name === "setDuckTask" && c.args[0] === "new-1")).toBe(true);
+    expect(port.calls.some((c) => c.name === "setHeadless" && c.args[0] === "new-1" && c.args[1] === true)).toBe(true);
+  });
+
+  it("runs a worker in a terminal when headless workers are off, and closing hands a headless one back as a terminal", async () => {
+    const off = setup({ settings: { headlessWorkers: false } });
+    const a = await off.tasks.run(req());
+    expect(a.headless).toBe(false);
+    expect(off.port.calls.find((c) => c.name === "createSession")?.args[0]).toMatchObject({ headless: false });
+
+    const on = setup();
+    const b = await on.tasks.run(req());
+    expect(b.headless).toBe(true);
+    await on.tasks.close(b.id);
+    expect(on.port.calls.find((c) => c.name === "setHeadless")?.args).toEqual(["new-1", false]);
   });
 });
 

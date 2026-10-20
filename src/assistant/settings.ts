@@ -31,6 +31,9 @@ export interface DuckSettings {
   codingPermissionMode: (typeof DUCK_PERMISSION_MODES)[number] | null;
   /** Worker sessions running at once (step D1); more tasks wait for a free slot. */
   maxWorkers: number;
+  /** Workers run headless (step D4): `claude -p` over stream-json, their console
+   *  the transcript view. Off, each gets a terminal (D1). */
+  headlessWorkers: boolean;
   /** Duck's workspace folder; null is the default (`~/repos/Duck`, `Duck.dev` in a
    *  dev build). */
   workspace: string | null;
@@ -53,6 +56,7 @@ export const DEFAULT_SETTINGS: DuckSettings = {
   answerSessionPrompts: false,
   codingPermissionMode: null,
   maxWorkers: 3,
+  headlessWorkers: true,
   workspace: null,
   tiers: DEFAULT_TIERS,
   summaryOnDone: false,
@@ -67,6 +71,7 @@ export function cleanSettings(raw: unknown): Partial<DuckSettings> {
   if (typeof r.confirmPrompts === "boolean") out.confirmPrompts = r.confirmPrompts;
   if (typeof r.answerSessionPrompts === "boolean") out.answerSessionPrompts = r.answerSessionPrompts;
   if (typeof r.summaryOnDone === "boolean") out.summaryOnDone = r.summaryOnDone;
+  if (typeof r.headlessWorkers === "boolean") out.headlessWorkers = r.headlessWorkers;
   if (SESSION_MODELS.includes(r.codingModel as DuckSettings["codingModel"]))
     out.codingModel = r.codingModel as DuckSettings["codingModel"];
   const mode = r.codingPermissionMode;

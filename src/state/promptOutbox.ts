@@ -18,6 +18,8 @@
 //   could answer: that one waits like the rest.
 // - Typed prompts whose Enter wasn't taken get up to two more Enters while the box
 //   holds text. A prompt still not taken is reported, never claimed as sent.
+// - A headless worker (step D4) has no box: its prompts go in as protocol messages,
+//   the first one with its launch, and the same hook says they were taken.
 //
 // State layer that writes to terminals, as `remoteActions.ts` does.
 
@@ -25,6 +27,7 @@ import { ENTER_KEY, ptyWrite } from "../ipc/pty";
 import { onHookEvent } from "../ipc/hooks";
 import { readScreen, submitPrompt } from "../panels/terminalPool";
 import { clearLaunchPrompt, LAUNCH_PROMPT_MAX, setLaunchPrompt } from "./launchPrompt";
+import { isHeadless, sendHeadless } from "./headless";
 import { atRest } from "./queue";
 import { inputHasText, inputHolds, promptBoxReady, trustDialogOffset } from "./remoteCreate";
 import { getLiveStatuses, onCompactionEnd, onStatusTransition } from "./status";
@@ -149,6 +152,7 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
  *  the text leaving the box is the sign: Claude Code queues it for its next step,
  *  and the hook comes only then. */
 async function typeIn(id: string, text: string, midTurn: boolean): Promise<Outcome> {
+  if (isHeadless(id)) return sendIn(id, text, midTurn);
   const t = whenTaken(id, ENTER_RETRY_MS * (ENTER_RETRIES + 1) + 1_000);
   submitPrompt(id, text);
   for (let i = 0; i <= ENTER_RETRIES; i++) {
@@ -163,6 +167,26 @@ async function typeIn(id: string, text: string, midTurn: boolean): Promise<Outco
   }
   t.cancel();
   return { ok: false, why: "it was typed into the session's prompt box, but Claude Code didn't take it" };
+}
+
+/** How long a headless worker gets to take a prompt sent between turns. */
+const HEADLESS_ACK_MS = 15_000;
+
+/** A prompt into a headless worker, as a protocol message. Mid-turn, Claude Code
+ *  queues it for its next step; between turns, the hook says it was taken. */
+async function sendIn(id: string, text: string, midTurn: boolean): Promise<Outcome> {
+  const t = whenTaken(id, HEADLESS_ACK_MS);
+  try {
+    await sendHeadless(id, text);
+  } catch (e) {
+    t.cancel();
+    return { ok: false, why: e instanceof Error ? e.message : String(e) };
+  }
+  if (midTurn) {
+    t.cancel();
+    return { ok: true };
+  }
+  return (await t.promise) ? { ok: true } : { ok: false, why: "it was sent to the worker, but Claude Code didn't take it" };
 }
 
 /** Watch a starting console: answer the trust dialog when asked to, and resolve
@@ -192,7 +216,9 @@ async function untilReady(id: string, trustFolder: boolean, ms: number, stop?: (
 /** Start the session with the prompt and wait for it to be taken. */
 async function launchWith(target: Target, text: string): Promise<Outcome> {
   const id = target.instanceId;
-  if (target.typedOnly || text.length > LAUNCH_PROMPT_MAX) {
+  // A headless worker's launch takes any prompt, and shows no dialog.
+  const headless = isHeadless(id);
+  if (!headless && (target.typedOnly || text.length > LAUNCH_PROMPT_MAX)) {
     target.launch();
     if (!(await untilReady(id, !!target.trustFolder, 60_000)))
       return { ok: false, why: "the session's prompt box never appeared, so the prompt wasn't typed" };
@@ -203,7 +229,7 @@ async function launchWith(target: Target, text: string): Promise<Outcome> {
   target.launch();
   // The prompt waits in claude's command line; only the trust dialog needs a hand.
   let settled = false;
-  if (target.trustFolder) void untilReady(id, true, LAUNCH_ACK_MS, () => settled);
+  if (target.trustFolder && !headless) void untilReady(id, true, LAUNCH_ACK_MS, () => settled);
   const ok = await t.promise;
   settled = true;
   clearLaunchPrompt(id); // not taken by a spawn (the console didn't start)

@@ -159,6 +159,8 @@ export interface WorkbenchPort {
     worker?: WorkerSpec;
     /** Answer the folder-trust dialog (Duck's own workspace only). */
     trustFolder?: boolean;
+    /** Run it headless (step D4): `claude -p` over stream-json, no terminal. */
+    headless?: boolean;
   }): Promise<{ id: string; title: string; message: string | null }>;
   /** Open (or focus) a session's console, starting a fresh Claude Code session if
    *  none is running. */
@@ -280,6 +282,8 @@ export interface WorkbenchPort {
   /** Mark a session as Duck's worker on `task` (null: yours again): its card says
    *  so, and its alerts go to Duck instead of you. */
   setDuckTask(instanceId: string, task: string | null): void;
+  /** Whether the session's next launches are headless (step D4). */
+  setHeadless(instanceId: string, on: boolean): void;
 
   // ── summaries (W3) ──
 

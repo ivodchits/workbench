@@ -19,6 +19,15 @@ vi.mock("../ipc/pty", () => ({
 vi.mock("../ipc/remote", () => ({ onRemoteAction: vi.fn() }));
 vi.mock("../ipc/hooks", () => ({ onHookEvent: vi.fn(async () => () => {}), answerPermission: vi.fn() }));
 vi.mock("./status", () => ({ markInterrupted: vi.fn() }));
+const headless = vi.hoisted(() => ({ ids: new Set<string>(), answers: [] as unknown[][], interrupts: [] as string[] }));
+vi.mock("./headless", () => ({
+  isHeadless: (id: string) => headless.ids.has(id),
+  answerHeadless: (...a: unknown[]) => {
+    headless.answers.push(a);
+    return true;
+  },
+  interruptHeadless: (id: string) => headless.interrupts.push(id),
+}));
 vi.mock("./activeProject", () => ({ setActiveProject: (id: string) => calls.push(`project ${id}`) }));
 vi.mock("./dock", () => ({ activatePanel: (id: string) => calls.push(`activate ${id}`) }));
 vi.mock("./consoles", () => ({
@@ -215,6 +224,26 @@ describe("answering a prompt from the phone", () => {
   beforeEach(() => {
     vi.mocked(ptyWrite).mockClear();
     clearPendingChoice("i1");
+  });
+
+  it("answers, denies and interrupts a headless worker (D4) over the protocol, never with keys", () => {
+    headless.ids.add("i1");
+    try {
+      permission();
+      handleRemoteAction({ type: "approve", instanceId: "i1" } as never);
+      handleRemoteAction({ type: "deny", instanceId: "i1" } as never);
+      answerChoiceText("i1", 3, "Off white");
+      handleRemoteAction({ type: "interrupt", instanceId: "i1" } as never);
+      expect(headless.answers).toEqual([
+        ["i1", { option: 1 }, "The user denied this."],
+        ["i1", "deny", "The user denied this."],
+        ["i1", { text: "Off white" }, "The user denied this."],
+      ]);
+      expect(headless.interrupts).toEqual(["i1"]);
+      expect(ptyWrite).not.toHaveBeenCalled();
+    } finally {
+      headless.ids.delete("i1");
+    }
   });
 
   it("types a free answer: the Type-something digit, the text as a paste, then Enter", async () => {

@@ -524,6 +524,19 @@ impl PtyManager {
         }
     }
 
+    /// Map a headless worker's session (step D4) to its instance, as a spawned
+    /// console's is: its hooks pass the filter and its transcript is followed.
+    pub fn register_session(&self, session_id: &str, instance_id: &str) {
+        let mut map = self.by_session.lock().unwrap();
+        map.retain(|_, v| v != instance_id);
+        map.insert(session_id.to_string(), instance_id.to_string());
+    }
+
+    /// Drop every session mapped to `instance_id` (a headless worker that ended).
+    pub fn forget_instance(&self, instance_id: &str) {
+        self.by_session.lock().unwrap().retain(|_, v| v != instance_id);
+    }
+
     /// Write input bytes to an instance's PTY. Shared by the `pty_write` command and
     /// the remote terminal's raw-keyboard path (step 4.5), so remote keystrokes reach
     /// the child through the same single write path as the desktop console.
@@ -721,40 +734,9 @@ pub fn pty_spawn(
             SpawnKind::Claude => {
                 let sid = session_id.as_deref().unwrap();
                 let flag = if resume_session_id.is_some() { "--resume" } else { "--session-id" };
+                let own = session_args(&app, &db, &instance_id, model.as_deref(), permission_mode.as_deref());
                 let mut args = vec![flag, sid];
-                if let Some(m) = &model {
-                    args.extend(["--model", m]);
-                }
-                // A session Duck started to draft a toolbar (W5) gets its skill, its
-                // draft folder and the allow rule for it, at every launch and resume;
-                // a worker (D1) its effort, mode, allow list and MCP flags.
-                let extra = match db.conn.lock() {
-                    Ok(conn) => {
-                        let draft = crate::plugins::draft::launch_args(&app, &conn, &instance_id);
-                        if draft.is_empty() {
-                            crate::assistant::workspace::launch_args(&app, &conn, &instance_id)
-                        } else {
-                            draft
-                        }
-                    }
-                    Err(_) => Vec::new(),
-                };
-                // Their own mode (`default` for a draft, `dontAsk` for a worker in
-                // Duck's workspace) wins over a picked one: the allow rules are only a
-                // fence in that mode.
-                let forced = extra.iter().any(|a| a == "--permission-mode");
-                let mode = permission_mode.as_deref().filter(|_| !forced);
-                if let Some(m) = mode {
-                    // A mode this Claude Code doesn't list would stop it at launch,
-                    // so it's left out; an unreadable list lets it through.
-                    let known = permission_modes();
-                    if known.is_empty() || known.iter().any(|k| k == m) {
-                        args.extend(["--permission-mode", m]);
-                    } else {
-                        eprintln!("[pty] {instance_id}: claude doesn't know permission mode {m:?}");
-                    }
-                }
-                args.extend(extra.iter().map(String::as_str));
+                args.extend(own.iter().map(String::as_str));
                 if let Some(p) = initial_prompt.as_deref().filter(|p| !p.trim().is_empty()) {
                     args.extend(["--", p]);
                 }
@@ -862,6 +844,52 @@ pub fn pty_spawn(
         cwd: cwd_str,
         argv: task.map(|t| t.shown),
     })
+}
+
+/// The arguments a local Claude Code session of `instance_id` launches with after
+/// its session flag: its model, its permission mode, and a draft's or a worker's
+/// own flags. Shared by the terminal ([`pty_spawn`]) and a headless worker (step D4).
+pub(crate) fn session_args(
+    app: &AppHandle,
+    db: &crate::db::Db,
+    instance_id: &str,
+    model: Option<&str>,
+    permission_mode: Option<&str>,
+) -> Vec<String> {
+    let mut args: Vec<String> = Vec::new();
+    if let Some(m) = model {
+        args.extend(["--model".into(), m.into()]);
+    }
+    // A session Duck started to draft a toolbar (W5) gets its skill, its draft
+    // folder and the allow rule for it, at every launch and resume; a worker (D1) its
+    // effort, mode, allow list and MCP flags.
+    let extra = match db.conn.lock() {
+        Ok(conn) => {
+            let draft = crate::plugins::draft::launch_args(app, &conn, instance_id);
+            if draft.is_empty() {
+                crate::assistant::workspace::launch_args(app, &conn, instance_id)
+            } else {
+                draft
+            }
+        }
+        Err(_) => Vec::new(),
+    };
+    // Their own mode (`default` for a draft, `dontAsk` for a worker in Duck's
+    // workspace) wins over a picked one: the allow rules are only a fence in that
+    // mode.
+    let forced = extra.iter().any(|a| a == "--permission-mode");
+    if let Some(m) = permission_mode.filter(|_| !forced) {
+        // A mode this Claude Code doesn't list would stop it at launch, so it's left
+        // out; an unreadable list lets it through.
+        let known = permission_modes();
+        if known.is_empty() || known.iter().any(|k| k == m) {
+            args.extend(["--permission-mode".into(), m.into()]);
+        } else {
+            eprintln!("[pty] {instance_id}: claude doesn't know permission mode {m:?}");
+        }
+    }
+    args.extend(extra);
+    args
 }
 
 /// Report the child of spawn `gen` exiting on its own, as `pty-exited`. The reader
@@ -1168,7 +1196,7 @@ fn claude_command(session_args: &[&str], cwd: &Path) -> Result<CommandBuilder, S
 
 /// The argv that runs the installed `claude`, before its own arguments: the exe
 /// itself, or the shell that runs its `.cmd` / `.ps1` shim (see [`claude_command`]).
-fn claude_launcher() -> Result<Vec<std::ffi::OsString>, String> {
+pub(crate) fn claude_launcher() -> Result<Vec<std::ffi::OsString>, String> {
     let exe = which::which("claude")
         .map_err(|e| format!("`claude` not found on PATH ({e}). Is Claude Code installed?"))?;
     let ext = exe
@@ -1375,7 +1403,7 @@ fn kill_instance(mgr: &PtyManager, instance_id: &str) {
 /// Stop `pid` and every process it started. A task's child is often only the first
 /// link (`cmd.exe` → `npm` → `node` → a dev server), and killing it alone leaves the
 /// rest running.
-fn kill_tree(pid: u32) {
+pub(crate) fn kill_tree(pid: u32) {
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;

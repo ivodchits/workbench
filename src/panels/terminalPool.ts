@@ -43,6 +43,7 @@ import { encodePaste, promptChunks } from "../state/composer";
 import { markInterrupted } from "../state/status";
 import { mirrorInstanceTaskNote } from "../state/registry";
 import { takeLaunchPrompt } from "../state/launchPrompt";
+import { isHeadless, sendHeadless } from "../state/headless";
 import { isSpeaking, speak, stopSpeaking } from "../util/speech";
 
 interface TermEntry {
@@ -636,6 +637,11 @@ export function pasteIntoTerminal(instanceId: string, text: string): boolean {
  * prompt an interrupt left there isn't sent along with this one.
  */
 export function submitToTerminal(instanceId: string, text: string): boolean {
+  if (isHeadless(instanceId)) {
+    // A headless worker (D4) takes it as a protocol message.
+    void sendHeadless(instanceId, text).catch(() => {});
+    return true;
+  }
   const entry = pool.get(instanceId);
   if (!entry) return false;
   void clearInput(instanceId)

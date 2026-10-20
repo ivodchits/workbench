@@ -20,6 +20,7 @@ import { applyInstanceUsage, getRegistry, updateInstance } from "./registry";
 import { clearLiveStatus } from "./status";
 import { cancelQueued } from "./queue";
 import { release } from "../panels/terminalPool";
+import { isHeadless } from "./headlessFlag";
 
 /** Browsers cap live WebGL contexts (~16); we reserve a margin (design §5 /
  *  decision 14). The first `WEBGL_CAP` *live* consoles render via WebGL; the rest
@@ -57,6 +58,9 @@ export interface ConsoleSession {
    *  isn't on screen, a hidden holder (`BackgroundConsoles`) mounts it so it
    *  spawns; it joins the dock like any console when you open its project. */
   background?: boolean;
+  /** A headless worker (step D4): `claude -p` over stream-json, no PTY. It shows
+   *  the transcript view; `state/headless` runs the process. */
+  headless?: boolean;
   /** Monotonic focus stamp; the active console has the highest. */
   focusSeq: number;
 }
@@ -106,6 +110,11 @@ function subscribe(cb: () => void): () => void {
 
 function getSnapshot(): ConsolesState {
   return state;
+}
+
+/** Hear every change to the open consoles (the headless workers follow them). */
+export function onConsolesChanged(cb: () => void): () => void {
+  return subscribe(cb);
 }
 
 /** Read the open consoles outside React (used by the Workspace's swap reconcile,
@@ -159,6 +168,7 @@ export function openConsole(instance: Instance, opts: { background?: boolean } =
     error: null,
     focusSeq: opts.background ? 0 : ++focusSeq,
     background: opts.background || undefined,
+    headless: isHeadless(instance.id) || undefined,
   };
   const activeId = opts.background ? state.activeId : instance.id;
 
@@ -214,6 +224,7 @@ export function resumeConsole(
     error: null,
     focusSeq: opts.background ? 0 : ++focusSeq,
     background: opts.background || undefined,
+    headless: isHeadless(instance.id) || undefined,
   };
   emit({ open: [...state.open, session], activeId: opts.background ? state.activeId : instance.id });
 }

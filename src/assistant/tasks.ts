@@ -21,6 +21,9 @@
 //   the card. Code tasks still take a session (an API worker has no files to work
 //   on), with a word to the thread. Past Duck's own API soft limit too, the task
 //   waits until the window that's over resets.
+// - Headless (step D4, on by default): a session's worker is `claude -p` over
+//   stream-json, with no terminal. Everything above works on it as on a terminal
+//   session: the port routes its prompts, answers and interrupts over the protocol.
 
 import { z } from "zod";
 
@@ -97,6 +100,9 @@ export const Task = z.object({
   costUsd: z.number().nullable().default(null),
   /** A queued task waiting for a limit to reset doesn't start before this. */
   notBefore: z.number().nullable().default(null),
+  /** Its worker runs headless (step D4), so a relaunch (a follow-up after a
+   *  restart) is headless too. */
+  headless: z.boolean().default(false),
   /** The worker's questions Duck answered, and why (step D2). */
   answers: z
     .array(z.object({ question: z.string(), answer: z.string(), reason: z.string(), at: z.number() }))
@@ -420,7 +426,8 @@ export function createTaskManager(deps: TaskDeps): TaskManager {
       startApi(t.id, t.brief, `over subscription limit: ${where.why}`);
       return;
     }
-    update(t.id, { runner: "session", why: where.why });
+    const headless = deps.settings().headlessWorkers;
+    update(t.id, { runner: "session", why: where.why, headless });
     if (where.why)
       deps.tell(t.threadId, `Task ${label(t)} is a code task, so it runs in a session although ${where.why}. Mention it to the user.`);
     try {
@@ -435,6 +442,7 @@ export function createTaskManager(deps: TaskDeps): TaskManager {
         worker: { workspace: t.workspace, folder: t.folder, effort: t.effort, kind: t.kind },
         // Duck made the workspace; a project of yours was trusted when you added it.
         trustFolder: t.kind !== "code",
+        headless,
       });
       port.setDuckTask(made.id, t.title);
       // The clock starts once the prompt is on its way.
@@ -555,7 +563,10 @@ export function createTaskManager(deps: TaskDeps): TaskManager {
       for (const t of stored) {
         tasks.set(t.id, t);
         // Still Duck's until closed: a follow-up may come.
-        if (t.instanceId && t.state !== "closed") port.setDuckTask(t.instanceId, t.title);
+        if (t.instanceId && t.state !== "closed") {
+          port.setDuckTask(t.instanceId, t.title);
+          if (t.headless) port.setHeadless(t.instanceId, true);
+        }
       }
       changed();
       // A task that was running when the app quit: its console went with the app, so
@@ -617,6 +628,7 @@ export function createTaskManager(deps: TaskDeps): TaskManager {
         why: null,
         costUsd: null,
         notBefore: null,
+        headless: false,
         answers: [],
       });
       void pump();
@@ -663,8 +675,9 @@ export function createTaskManager(deps: TaskDeps): TaskManager {
       if (t.instanceId) {
         const s = port.listSessions().find((x) => x.id === t.instanceId);
         if (s && s.phase !== "offline" && s.phase !== "ended") port.stopSession(t.instanceId);
-        // Resumed from the rail after this, it's your session.
+        // Resumed from the rail after this, it's your session, in a terminal.
         port.setDuckTask(t.instanceId, null);
+        port.setHeadless(t.instanceId, false);
       }
       // An unfinished one frees its slot; a finished one keeps its headline.
       if (!isFinished(t.state)) finish(id, { state: "closed" });

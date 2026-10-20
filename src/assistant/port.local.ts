@@ -29,7 +29,7 @@ import {
   pluginsText,
   pluginsWrite,
 } from "../ipc/plugins";
-import { INTERRUPT_KEY, ptyWrite } from "../ipc/pty";
+import { ptyWrite } from "../ipc/pty";
 import type { Instance } from "../ipc/registry";
 import { answerPermission, holdPermissions } from "../ipc/hooks";
 import { readTranscript, readTranscriptBack } from "../ipc/transcript";
@@ -58,6 +58,7 @@ import {
   takeHold,
   type PendingChoice,
 } from "../state/pendingChoice";
+import { isHeadless, markHeadless } from "../state/headless";
 import { setPromptHold, shouldTell } from "../state/promptHold";
 import { setDoneSummary } from "../state/notifications";
 import { duckTask, setDuckOwned } from "../state/duckOwned";
@@ -66,6 +67,7 @@ import {
   answerChoice,
   answerChoiceText,
   deliverWhenReady,
+  interruptSession as interruptConsole,
   startNewSession,
 } from "../state/remoteActions";
 import {
@@ -118,6 +120,10 @@ function requireRunning(i: Instance): void {
 /** A running console that is Claude Code's (not a shell). */
 function requireClaude(i: Instance): void {
   requireRunning(i);
+  if (isHeadless(i.id))
+    throw new Error(
+      `"${i.title}" is one of your headless workers: it has no screen or keys. Answer its prompts with answer_choice, and send it prompts or interrupt it as usual.`,
+    );
   if (getOpenConsoles().some((c) => c.instanceId === i.id && c.kind !== "claude"))
     throw new Error(`"${i.title}"'s console is a shell, not Claude Code.`);
 }
@@ -273,7 +279,7 @@ export const localPort: WorkbenchPort = {
     });
     return d.state;
   },
-  async createSession({ projectId, title, prompt, worktree, model, permissionMode, mandate, worker, trustFolder }) {
+  async createSession({ projectId, title, prompt, worktree, model, permissionMode, mandate, worker, trustFolder, headless }) {
     const project = getRegistry().projects.find((p) => p.id === projectId);
     if (!project) throw new Error(`no project with id ${projectId}`);
     const { instance: i, message } = await startNewSession(project, {
@@ -283,6 +289,7 @@ export const localPort: WorkbenchPort = {
       permissionMode,
       beforeLaunch: async (inst) => {
         if (worker) await workerRegister(inst.id, worker);
+        if (headless) markHeadless(inst.id, true);
         // Its console opens next: the first prompt goes on claude's command line.
         if (prompt?.trim())
           void deliverPrompt(
@@ -349,8 +356,7 @@ export const localPort: WorkbenchPort = {
   },
   interruptSession(id) {
     requireRunning(instance(id));
-    void ptyWrite(id, INTERRUPT_KEY);
-    markInterrupted(id); // interrupting fires no hook — update the dot ourselves
+    interruptConsole(id);
   },
   readScreen(id) {
     requireClaude(instance(id));
@@ -560,6 +566,7 @@ export const localPort: WorkbenchPort = {
   },
   lastResponse: (id) => readLastResponse((before) => readTranscriptBack(id, before)),
   setDuckTask: (id, task) => setDuckOwned(id, task),
+  setHeadless: (id, on) => markHeadless(id, on),
   setDoneSummary,
   readPluginsDraft: pluginsDraftRead,
   clearPluginsDraft: pluginsDraftClear,

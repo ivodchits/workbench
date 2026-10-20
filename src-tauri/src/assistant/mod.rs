@@ -4,7 +4,8 @@
 //! ([`db`]). Step A2: conversation threads ([`threads`]), stored for the engine that
 //! runs in the webview (`src/assistant/`). Step T1: the trust engine's rules, modes,
 //! kill switch and decision log ([`trust`]). Step D1: the worker sessions' workspace,
-//! task folders, launch flags and task records ([`workspace`]).
+//! task folders, launch flags and task records ([`workspace`]). Step D4: headless
+//! workers over stream-json ([`headless`]).
 //!
 //! The webview never holds the key. It asks [`assistant_proxy_info`] for the proxy's
 //! base URL and a per-launch token, and calls the API through the hook server with
@@ -13,6 +14,7 @@
 
 mod budget;
 mod db;
+pub mod headless;
 mod key;
 mod proxy;
 mod summaries;
