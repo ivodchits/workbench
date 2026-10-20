@@ -242,12 +242,24 @@ impl Cursor {
             }
             Target::Session { session_id, path } => {
                 if self.session_id.as_deref() == Some(session_id.as_str()) {
-                    // Same session; its file may only now have appeared. It is new,
-                    // so it is read from the top and nobody needs to start over.
-                    if self.path.is_none() {
-                        self.path = path;
-                    }
-                    return false;
+                    return match (&self.path, path) {
+                        // Its file may only now have appeared. It is new, so it is
+                        // read from the top and nobody needs to start over.
+                        (None, path) => {
+                            self.path = path;
+                            false
+                        }
+                        // Its file moved (the session entered a worktree, whose
+                        // transcripts live in another project folder). The consumer
+                        // may hold nothing from a file it could no longer read, so
+                        // it starts over on the new one.
+                        (Some(old), Some(new)) if *old != new => {
+                            self.offset = start_offset(&new);
+                            self.path = Some(new);
+                            true
+                        }
+                        _ => false,
+                    };
                 }
                 let offset = path.as_deref().map_or(0, start_offset);
                 *self = Cursor { session_id: Some(session_id), path, offset };
@@ -359,8 +371,14 @@ fn target(app: &AppHandle, instance_id: &str) -> Target {
         return Target::Keep;
     };
     let reported = app.state::<Streams>().inner.lock().unwrap().paths.get(&session_id).cloned();
-    let path = reported
-        .or_else(|| claude_projects_dir().and_then(|dir| resolve_transcript(&dir, &session_id)));
+    // A reported file that isn't there (not written yet, or moved by entering a
+    // worktree) is looked for by session id before being trusted.
+    let path = match reported {
+        Some(p) if p.is_file() => Some(p),
+        reported => claude_projects_dir()
+            .and_then(|dir| resolve_transcript(&dir, &session_id))
+            .or(reported),
+    };
     Target::Session { session_id, path }
 }
 
@@ -379,14 +397,13 @@ pub fn on_hook(
     if let Some(path) = transcript_path
         .and_then(|p| claude_projects_dir().and_then(|dir| accept_hook_path(&dir, p)))
     {
-        if !inner.paths.contains_key(session_id) {
-            // Sessions come and go; keep the map to the ones that are still live.
-            if inner.paths.len() >= 64 {
-                let pty = app.state::<PtyManager>();
-                inner.paths.retain(|sid, _| pty.instance_for_session(sid).is_some());
-            }
-            inner.paths.insert(session_id.to_string(), path);
+        // Sessions come and go; keep the map to the ones that are still live.
+        if !inner.paths.contains_key(session_id) && inner.paths.len() >= 64 {
+            let pty = app.state::<PtyManager>();
+            inner.paths.retain(|sid, _| pty.instance_for_session(sid).is_some());
         }
+        // Always the latest: entering a worktree moves the session's transcript.
+        inner.paths.insert(session_id.to_string(), path);
     }
     if cleared {
         inner.cleared.insert(instance_id.to_string());
@@ -954,6 +971,14 @@ mod tests {
         std::fs::write(&big, session_fixture()).unwrap();
         assert!(cur.retarget(Target::Session { session_id: "b".into(), path: Some(big.clone()) }));
         assert_eq!(cur.offset, std::fs::metadata(&big).unwrap().len());
+
+        // The same session's file moved (entering a worktree): start over on it.
+        let moved = dir.join("moved-b.jsonl");
+        std::fs::rename(&big, &moved).unwrap();
+        assert!(cur.retarget(Target::Session { session_id: "b".into(), path: Some(moved.clone()) }));
+        assert_eq!(cur.path.as_deref(), Some(moved.as_path()));
+        assert_eq!(cur.offset, std::fs::metadata(&moved).unwrap().len());
+        assert!(!cur.retarget(Target::Session { session_id: "b".into(), path: Some(moved.clone()) }));
         std::fs::remove_dir_all(&dir).ok();
     }
 

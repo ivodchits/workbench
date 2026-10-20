@@ -468,29 +468,37 @@ fn read_session_summary(path: &Path, target_norm: &str) -> Option<SessionSummary
     })
 }
 
+/// The `~/.claude/projects` subfolders that may hold sessions started in
+/// `working_dir`. Fast path: its own encoded folder plus its worktrees' folders —
+/// a session that enters a worktree (`<dir>/.claude/worktrees/<name>`) has its
+/// transcript moved to that worktree's folder. Every folder when the encoded one is
+/// absent (e.g. an encoding edge case).
+fn session_folders(projects_dir: &Path, working_dir: &str) -> std::io::Result<Vec<PathBuf>> {
+    let encoded = encode_cwd_to_folder(working_dir);
+    let worktree_prefix = format!("{encoded}--claude-worktrees-");
+    let fast_path = projects_dir.join(&encoded).is_dir();
+    Ok(std::fs::read_dir(projects_dir)?
+        .flatten()
+        .filter(|e| e.file_type().map(|t| t.is_dir()).unwrap_or(false))
+        .filter(|e| {
+            let name = e.file_name();
+            let name = name.to_string_lossy();
+            !fast_path || name == encoded || name.starts_with(&worktree_prefix)
+        })
+        .map(|e| e.path())
+        .collect())
+}
+
 /// List every Claude session whose working directory is `working_dir` — the original
 /// session plus every `/clear` rotation child (they share the cwd) — newest first.
-/// Backs the resume picker. Scans the encoded `~/.claude/projects` subfolder when it
-/// exists, else falls back to every subfolder; either way each file's recorded `cwd`
+/// Backs the resume picker. Each file's recorded `cwd` (where the session started)
 /// is the real filter, so worktree/encoding quirks can't leak foreign sessions.
 #[tauri::command]
 pub fn list_project_sessions(working_dir: String) -> Result<Vec<SessionSummary>, String> {
     let projects_dir = claude_projects_dir().ok_or("no home directory found")?;
     let target_norm = norm_dir(&working_dir);
-
-    // Fast path: the directory's own encoded folder. Fall back to scanning every
-    // project folder if it's absent (e.g. an encoding edge case).
-    let encoded = projects_dir.join(encode_cwd_to_folder(&working_dir));
-    let folders: Vec<PathBuf> = if encoded.is_dir() {
-        vec![encoded]
-    } else {
-        std::fs::read_dir(&projects_dir)
-            .map_err(|e| format!("reading {}: {e}", projects_dir.display()))?
-            .flatten()
-            .filter(|e| e.file_type().map(|t| t.is_dir()).unwrap_or(false))
-            .map(|e| e.path())
-            .collect()
-    };
+    let folders = session_folders(&projects_dir, &working_dir)
+        .map_err(|e| format!("reading {}: {e}", projects_dir.display()))?;
 
     let mut out: Vec<SessionSummary> = Vec::new();
     for folder in folders {
@@ -577,7 +585,10 @@ fn run(app: AppHandle) {
                     );
                 }
                 Ok(false) => {}
-                Err(_) => {} // file vanished mid-session etc. — try again next tick
+                // Moved (the session entered a worktree): find it again next tick.
+                // The content moved with it, so the offset still holds.
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => tail.path = None,
+                Err(_) => {} // briefly unreadable — try again next tick
             }
         }
     }
@@ -706,6 +717,38 @@ mod tests {
         .unwrap();
         assert!(read_session_summary(&other_path, &norm_dir(target)).is_none());
 
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// The picker looks in the directory's own folder and its worktrees' folders
+    /// (where a session that entered a worktree ends up), not in other projects —
+    /// and in every folder when the directory has none of its own.
+    #[test]
+    fn session_folders_include_worktrees() {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("wb-folders-{nanos}"));
+        for name in [
+            "C--repo",
+            "C--repo--claude-worktrees-m4",
+            "C--repo-other",
+            "C--elsewhere",
+        ] {
+            std::fs::create_dir_all(dir.join(name)).unwrap();
+        }
+        let names = |working_dir: &str| {
+            let mut v: Vec<String> = session_folders(&dir, working_dir)
+                .unwrap()
+                .iter()
+                .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
+                .collect();
+            v.sort();
+            v
+        };
+        assert_eq!(names(r"C:\repo"), vec!["C--repo", "C--repo--claude-worktrees-m4"]);
+        assert_eq!(names(r"C:\missing").len(), 4);
         std::fs::remove_dir_all(&dir).ok();
     }
 
