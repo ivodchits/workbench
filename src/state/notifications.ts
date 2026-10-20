@@ -35,6 +35,7 @@ import { remotePushSend } from "../ipc/remote";
 import { getPref, setPref, type NotificationPrefs } from "../ipc/prefs";
 import { onTurnEnded, type TurnEnded } from "../ipc/transcript";
 import { getActivePanelId } from "./dock";
+import { autopilotRunning } from "./autopilotBadges";
 import { duckTask } from "./duckOwned";
 import { shouldTell } from "./promptHold";
 
@@ -398,11 +399,23 @@ function deliverDone(id: string, body: string, reply: string | null): void {
 }
 
 function sendDone(id: string, body: string): void {
+  // A step's end on autopilot (step P1) is Duck's to judge; it tells you when it stops.
+  if (autopilotRunning(id)) return;
   const r = resolve(id);
   if (!r) return;
   const title = `○ done · ${label(r)}`;
   if (config.desktop) void notifyAlert(title, body).catch(() => {});
   if (config.phone) void remotePushSend(id, title, body).catch(() => {});
+}
+
+/** Duck's word about a session (its autopilot stopped, step P1): a desktop toast
+ *  and a phone push, on the enabled routes, unless you're looking at it. */
+export function alertAbout(id: string, title: string, body: string): void {
+  if (watching(id)) return;
+  const r = resolve(id);
+  const head = r ? `${title} · ${label(r)}` : title;
+  if (config.desktop) void notifyAlert(head, body).catch(() => {});
+  if (config.phone) void remotePushSend(id, head, body).catch(() => {});
 }
 
 // --- lifecycle --------------------------------------------------------------

@@ -285,11 +285,34 @@ export interface WorkbenchPort {
   /** Whether the session's next launches are headless (step D4). */
   setHeadless(instanceId: string, on: boolean): void;
 
+  // ── plan autopilot (P1) ──
+
+  /** Run `/compact` (with a focus line) in a session between turns, and resolve when
+   *  the compaction ends. Throws when it's mid-turn, didn't start compacting, or
+   *  ended meanwhile. */
+  compactSession(instanceId: string, focus: string | null): Promise<void>;
+  /** How full the session's context is (percent), as its statusline last said;
+   *  null when unknown. */
+  contextUsed(instanceId: string): Promise<number | null>;
+  /** The autopilot line under the session's card (null: none). A session on a
+   *  running autopilot gets no done alerts. */
+  setAutopilotBadge(instanceId: string, badge: AutopilotBadgeRef | null): void;
+  /** A desktop toast and phone push about a session, on the user's routes. */
+  alertUser(instanceId: string, title: string, body: string): void;
+
   // ── summaries (W3) ──
 
   /** Give the app's done alerts a body maker (the turn's summary headline; null keeps
    *  the last line), or take it back with null. */
   setDoneSummary(fn: ((instanceId: string, reply: string) => Promise<string | null>) | null): void;
+}
+
+/** A session's autopilot as its card shows it. */
+export interface AutopilotBadgeRef {
+  state: "running" | "paused" | "stopped";
+  text: string;
+  why: string | null;
+  threadId: string;
 }
 
 /** What a session was started for (step T2). */

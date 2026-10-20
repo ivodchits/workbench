@@ -5,13 +5,15 @@
 //! runs in the webview (`src/assistant/`). Step T1: the trust engine's rules, modes,
 //! kill switch and decision log ([`trust`]). Step D1: the worker sessions' workspace,
 //! task folders, launch flags and task records ([`workspace`]). Step D4: headless
-//! workers over stream-json ([`headless`]).
+//! workers over stream-json ([`headless`]). Step P1: plan autopilot records
+//! ([`autopilot`]).
 //!
 //! The webview never holds the key. It asks [`assistant_proxy_info`] for the proxy's
 //! base URL and a per-launch token, and calls the API through the hook server with
 //! that token. See `documentation/assistant-plan.md`, "Calling the API without
 //! exposing the key".
 
+mod autopilot;
 mod budget;
 mod db;
 pub mod headless;
@@ -345,6 +347,23 @@ pub fn assistant_task_put(ctx: Db<'_>, id: String, data: String) -> Result<(), S
 #[tauri::command]
 pub fn assistant_task_list(ctx: Db<'_>, limit: u32) -> Result<Vec<String>, String> {
     workspace::list_tasks(&lock(&ctx), limit.clamp(1, 500))
+}
+
+/// Store a session's autopilot record (step P1).
+#[tauri::command]
+pub fn assistant_autopilot_put(ctx: Db<'_>, instance_id: String, data: String) -> Result<(), String> {
+    autopilot::put(&lock(&ctx), &instance_id, &data, now_ms())
+}
+
+/// Every autopilot record, newest first.
+#[tauri::command]
+pub fn assistant_autopilot_list(ctx: Db<'_>) -> Result<Vec<String>, String> {
+    autopilot::list(&lock(&ctx))
+}
+
+#[tauri::command]
+pub fn assistant_autopilot_delete(ctx: Db<'_>, instance_id: String) -> Result<(), String> {
+    autopilot::delete(&lock(&ctx), &instance_id)
 }
 
 /// The past `days`' Claude Code tool calls for the trust replay (step T2), at most

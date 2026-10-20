@@ -29,6 +29,19 @@ export function getUsageLimits(): Promise<RateLimits | null> {
   return invoke("usage_limits");
 }
 
+/** A session's context fill, as its statusline last reported it (step P1). */
+export interface ContextFill {
+  usedPercentage: number;
+  /** Epoch seconds. */
+  at: number;
+}
+
+/** The context fill of the session in `instanceId`; null until its statusline
+ *  reports one (a headless worker never does). */
+export function getSessionContext(instanceId: string): Promise<ContextFill | null> {
+  return invoke("session_context", { instanceId });
+}
+
 /** Subscribe to account-wide limit updates. Returns an unlisten function. */
 export function onUsageLimits(cb: (limits: RateLimits) => void): Promise<UnlistenFn> {
   return listen<RateLimits>("usage-limits-updated", (event) => cb(event.payload));

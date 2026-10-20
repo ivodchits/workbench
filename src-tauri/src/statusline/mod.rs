@@ -14,7 +14,12 @@
 //! `claude` run outside Workbench) wins, and the app shows one header/tray meter. Unlike
 //! hook events this is *not* session-filtered: the figures are the same for every
 //! session, foreign or not.
+//!
+//! The same POST carries the session's own context fill
+//! (`context_window.used_percentage`), which plan autopilot reads (step P1). That one
+//! *is* per session: kept by instance ([`ContextState`]) for sessions Workbench runs.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -107,6 +112,26 @@ impl RateLimits {
 #[derive(Default)]
 pub struct LimitsState(pub Mutex<Option<RateLimits>>);
 
+/// A session's context fill as its statusline last reported it.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ContextFill {
+    pub used_percentage: f64,
+    /// When it was reported (epoch seconds).
+    pub at: i64,
+}
+
+/// Instance id → its session's latest context fill (step P1).
+#[derive(Default)]
+pub struct ContextState(pub Mutex<HashMap<String, ContextFill>>);
+
+/// The POST's session id and context fill, when it has both.
+fn context_fill(v: &Value) -> Option<(&str, f64)> {
+    let session = v.get("session_id").and_then(Value::as_str)?;
+    let used = v.get("context_window")?.get("used_percentage").and_then(Value::as_f64)?;
+    Some((session, used))
+}
+
 /// Fold one statusline POST into the global snapshot and notify the frontend. Pure
 /// observation: any malformed or empty payload is silently ignored (older clients, or
 /// a session before its first API response, carry no `rate_limits`).
@@ -114,6 +139,16 @@ pub fn ingest(app: &AppHandle, body: &[u8]) {
     let Ok(v) = serde_json::from_slice::<Value>(body) else {
         return;
     };
+    if let Some((session, used)) = context_fill(&v) {
+        let instance = app
+            .try_state::<crate::pty::PtyManager>()
+            .and_then(|pty| pty.instance_for_session(session));
+        if let (Some(instance), Some(state)) = (instance, app.try_state::<ContextState>()) {
+            if let Ok(mut map) = state.0.lock() {
+                map.insert(instance, ContextFill { used_percentage: used, at: now() });
+            }
+        }
+    }
     let Some(rl) = v.get("rate_limits") else {
         return;
     };
@@ -164,6 +199,13 @@ pub fn restore(app: &AppHandle) {
 #[tauri::command]
 pub fn usage_limits(state: State<'_, LimitsState>) -> Option<RateLimits> {
     state.0.lock().ok().and_then(|g| g.clone())
+}
+
+/// The session's context fill in `instance_id`, or `None` when its statusline hasn't
+/// reported one (a headless worker has none).
+#[tauri::command]
+pub fn session_context(state: State<'_, ContextState>, instance_id: String) -> Option<ContextFill> {
+    state.0.lock().ok().and_then(|m| m.get(&instance_id).cloned())
 }
 
 /// Install (or refresh) the managed statusline pointing at `port`. Writes the script
@@ -431,6 +473,15 @@ mod tests {
         assert_eq!(back.five_hour.unwrap().used_percentage, 41.0);
         assert_eq!(back.seven_day.unwrap().resets_at, 1781608663);
         assert_eq!(back.received_at, limits.received_at);
+    }
+
+    /// The context fill comes with its session id; a POST without either has none.
+    #[test]
+    fn reads_the_context_fill() {
+        let v = json!({ "session_id": "s1", "context_window": { "used_percentage": 63.5 } });
+        assert_eq!(context_fill(&v), Some(("s1", 63.5)));
+        assert_eq!(context_fill(&json!({ "context_window": { "used_percentage": 1.0 } })), None);
+        assert_eq!(context_fill(&json!({ "session_id": "s1" })), None);
     }
 
     /// A missing window is `None`, not an error — either window may be absent.

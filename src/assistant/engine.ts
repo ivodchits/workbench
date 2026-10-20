@@ -45,6 +45,7 @@ import type { TrustFacts } from "./trust/decide";
 import { lastUserText } from "./trust/mandate";
 import type { Summarizer } from "./summarize";
 import type { TaskManager } from "./tasks";
+import type { AutopilotManager } from "./autopilot";
 
 type Params = Anthropic.Beta.Messages.MessageCreateParamsStreaming;
 type ApiMessage = Anthropic.Beta.BetaMessageParam;
@@ -120,6 +121,8 @@ export interface EngineDeps {
   tasks?: TaskManager;
   /** Session summaries (step W3), for the summary tools. */
   summaries?: Summarizer;
+  /** Plan autopilots (step P1), for the autopilot tools. */
+  autopilot?: AutopilotManager;
   registry: Registry;
   port: WorkbenchPort;
   store: ThreadStore;
@@ -639,6 +642,7 @@ export function createEngine(deps: EngineDeps): Engine {
           settings: settings(),
           tasks: deps.tasks ?? null,
           summaries: deps.summaries ?? null,
+          autopilot: deps.autopilot ?? null,
           request: lastUserText(store.loaded(threadId)),
           prepared,
           notice: (n) => notice(threadId, n).then(() => {}),

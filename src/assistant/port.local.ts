@@ -34,10 +34,13 @@ import type { Instance } from "../ipc/registry";
 import { answerPermission, holdPermissions } from "../ipc/hooks";
 import { readTranscript, readTranscriptBack } from "../ipc/transcript";
 import { readLastResponse } from "../transcript/feed";
-import { getUsageLimits } from "../ipc/usageLimits";
+import { getSessionContext, getUsageLimits } from "../ipc/usageLimits";
 import { startPluginRunFor } from "../panels/pluginRun";
 import { deliverPrompt } from "../state/promptOutbox";
-import { lastTypedAt, readScreen, readTail, release } from "../panels/terminalPool";
+import { lastTypedAt, readScreen, readTail, release, submitPrompt } from "../panels/terminalPool";
+import { setAutopilotBadge } from "../state/autopilotBadges";
+import { alertAbout } from "../state/notifications";
+import { atRest } from "../state/queue";
 import { setActiveProject } from "../state/activeProject";
 import {
   closeConsole,
@@ -73,6 +76,7 @@ import {
 import {
   getLiveStatuses,
   markInterrupted,
+  onCompactionEnd,
   onStatusTransition,
 } from "../state/status";
 import { getOpenTasks, getTask, isLive, onTasksChange } from "../state/tasks";
@@ -137,6 +141,10 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 const TAIL_LINES = 15;
 /** The PTY's exit can come just before its last output reaches the terminal. */
 const TAIL_SETTLE_MS = 300;
+/** How long `/compact` gets to start compacting, and to finish. */
+const COMPACT_START_MS = 30_000;
+const COMPACT_MAX_MS = 15 * 60_000;
+const COMPACT_POLL_MS = 250;
 
 // ── mandates (T2) ──
 
@@ -567,6 +575,44 @@ export const localPort: WorkbenchPort = {
   lastResponse: (id) => readLastResponse((before) => readTranscriptBack(id, before)),
   setDuckTask: (id, task) => setDuckOwned(id, task),
   setHeadless: (id, on) => markHeadless(id, on),
+  compactSession(id, focus) {
+    const i = instance(id);
+    requireRunning(i);
+    if (isRemote(i)) return Promise.reject(new Error(`"${i.title}" is remote: its compaction can't be followed (no hooks).`));
+    if (!atRest(getLiveStatuses().get(id)))
+      return Promise.reject(new Error(`"${i.title}" is mid-turn or waiting on a prompt; compaction waits for a finished turn.`));
+    const line = focus?.replace(/\s+/g, " ").trim();
+    return new Promise<void>((resolve, reject) => {
+      let started = false;
+      const finish = (err: Error | null) => {
+        off();
+        clearInterval(poll);
+        clearTimeout(startBy);
+        clearTimeout(endBy);
+        if (err) reject(err);
+        else resolve();
+      };
+      const off = onCompactionEnd((x, live) => {
+        if (x !== id) return;
+        if (live.phase === "ended") finish(new Error(`"${i.title}" ended while it compacted.`));
+        else finish(null);
+      });
+      // PreCompact and PostCompact paint at once; a poll is enough to see it began.
+      const poll = setInterval(() => {
+        if (getLiveStatuses().get(id)?.compacting) started = true;
+      }, COMPACT_POLL_MS);
+      const startBy = setTimeout(() => {
+        if (!started) finish(new Error("Claude Code didn't start compacting"));
+      }, COMPACT_START_MS);
+      const endBy = setTimeout(() => finish(new Error("the compaction didn't finish in 15 minutes")), COMPACT_MAX_MS);
+      submitPrompt(id, line ? `/compact ${line}` : "/compact");
+    });
+  },
+  async contextUsed(id) {
+    return (await getSessionContext(id))?.usedPercentage ?? null;
+  },
+  setAutopilotBadge,
+  alertUser: alertAbout,
   setDoneSummary,
   readPluginsDraft: pluginsDraftRead,
   clearPluginsDraft: pluginsDraftClear,

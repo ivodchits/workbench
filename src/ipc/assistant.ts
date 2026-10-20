@@ -226,6 +226,13 @@ export const workerRegister = (instanceId: string, spec: WorkerSpec): Promise<vo
 export const taskPut = (id: string, data: string): Promise<void> => invoke("assistant_task_put", { id, data });
 export const taskList = (limit: number): Promise<string[]> => invoke("assistant_task_list", { limit });
 
+// Plan autopilot records (step P1), one per session.
+export const autopilotPut = (instanceId: string, data: string): Promise<void> =>
+  invoke("assistant_autopilot_put", { instanceId, data });
+export const autopilotList = (): Promise<string[]> => invoke("assistant_autopilot_list");
+export const autopilotDelete = (instanceId: string): Promise<void> =>
+  invoke("assistant_autopilot_delete", { instanceId });
+
 /** The kill switch flipped (from the tray, or any surface). */
 export function onTrustPaused(cb: (paused: boolean) => void): Promise<UnlistenFn> {
   return listen<boolean>("assistant-trust-paused", (event) => cb(event.payload));

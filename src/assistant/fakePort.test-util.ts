@@ -9,6 +9,7 @@ import type { PluginFile, Problem } from "../ipc/plugins";
 import type { TranscriptPage } from "../ipc/transcript";
 import type { RateLimits } from "../ipc/usageLimits";
 import type {
+  AutopilotBadgeRef,
   ChoiceRef,
   GitSnapshot,
   ProjectRef,
@@ -26,6 +27,7 @@ import { DEFAULT_SETTINGS, type DuckSettings } from "./settings";
 import type { ToolContext } from "./tools/registry";
 import type { Summarizer } from "./summarize";
 import type { TaskManager } from "./tasks";
+import type { AutopilotManager } from "./autopilot";
 
 export interface FakePortData {
   projects?: ProjectRef[];
@@ -57,6 +59,10 @@ export interface FakePortData {
   onKeys?: (instanceId: string, keys: string[]) => void;
   /** What `answerHeld` reports for a held prompt (default true: delivered). */
   heldOk?: boolean;
+  /** `compactSession` fails with this. */
+  compactError?: string;
+  /** What `contextUsed` answers, per session id. */
+  contextUsed?: Record<string, number>;
 }
 
 export interface FakePlugins {
@@ -97,6 +103,8 @@ export interface FakePort extends WorkbenchPort {
   lines: { id: string; text: string; acted: boolean }[];
   /** Whether permission prompts are held (`holdPermissions`). */
   holding: boolean;
+  /** The autopilot lines shown (`setAutopilotBadge`). */
+  badges: Map<string, AutopilotBadgeRef | null>;
 }
 
 export function project(p: Partial<ProjectRef> & { id: string }): ProjectRef {
@@ -153,6 +161,7 @@ export function fakePort(data: FakePortData = {}): FakePort {
     hold: null,
     lines: [],
     holding: false,
+    badges: new Map(),
     listProjects: () => data.projects ?? [],
     listSessions: (projectId?: string) =>
       (data.sessions ?? []).filter(
@@ -462,6 +471,17 @@ export function fakePort(data: FakePortData = {}): FakePort {
     setHeadless(id, on) {
       record("setHeadless", id, on);
     },
+    compactSession(id, focus) {
+      record("compactSession", id, focus);
+      return data.compactError ? Promise.reject(new Error(data.compactError)) : Promise.resolve();
+    },
+    contextUsed: (id) => Promise.resolve(data.contextUsed?.[id] ?? null),
+    setAutopilotBadge(id, badge) {
+      port.badges.set(id, badge);
+    },
+    alertUser(id, title, body) {
+      record("alertUser", id, title, body);
+    },
   };
   return port;
 }
@@ -480,6 +500,7 @@ export function toolCtx(
     request: null as string | null,
     tasks: null as TaskManager | null,
     summaries: null as Summarizer | null,
+    autopilot: null as AutopilotManager | null,
     notices: [] as Notice[],
     posted: [] as string[],
     notice(n: Notice) {

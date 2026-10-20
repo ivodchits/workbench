@@ -12,6 +12,8 @@ import {
   type Spend,
   type UsageRecord,
 } from "../ipc/assistant";
+import { readFile } from "../ipc/fs";
+import { createAutopilot, ipcAutopilotBackend, type AutopilotManager } from "./autopilot";
 import { errorMessage, getClient, oneShot, structured } from "./client";
 import { createEngine, eventText, type Engine } from "./engine";
 import { createPolicy } from "./policy";
@@ -37,6 +39,7 @@ import { SCREEN_TOOLS } from "./tools/screen";
 import { SUMMARY_TOOLS } from "./tools/summaries";
 import { createRegistry } from "./tools/registry";
 import { TASK_TOOLS } from "./tools/tasks";
+import { AUTOPILOT_TOOLS } from "./tools/autopilot";
 import { createTaskManager, ipcTaskBackend, type Task, type TaskManager } from "./tasks";
 import { testConfirm } from "./tools/testConfirm";
 import { FLOOR } from "./trust/floor";
@@ -65,6 +68,7 @@ const TOOLS = [
   ...TASK_TOOLS,
   ...SUMMARY_TOOLS,
   ...SCREEN_TOOLS,
+  ...AUTOPILOT_TOOLS,
   ...(import.meta.env.DEV ? [testConfirm] : []),
 ];
 
@@ -128,6 +132,7 @@ export function endpoint(
   trust?: TrustStore | null,
   replayer?: Replayer,
   tasks?: TaskManager,
+  autopilot?: AutopilotManager,
 ): DuckEndpoint {
   const listeners = new Set<(ev: DuckEvent) => void>();
   const say = (ev: DuckEvent) => {
@@ -238,6 +243,13 @@ export function endpoint(
         if (!tasks) throw new Error("Worker tasks aren't available here.");
         await tasks.rerun(msg.taskId);
         return;
+      case "autopilot": {
+        if (!autopilot) throw new Error("Autopilot isn't available here.");
+        if (msg.action === "pause") autopilot.pause(msg.instanceId);
+        else if (msg.action === "stop") autopilot.stop(msg.instanceId);
+        else await autopilot.resume(msg.instanceId);
+        return;
+      }
       case "thread.open": {
         if (!s.thread(msg.threadId))
           throw new Error(`no thread ${msg.threadId}`);
@@ -288,6 +300,21 @@ export function initAssistant(): Promise<void> {
           ?.send({ threadId, text: eventText(text), source: "event" })
           .catch((e: unknown) => console.warn("duck: a task report was dropped", e)),
     });
+    // Plan autopilots (P1) report the same way; their step log is notices.
+    const autopilot = createAutopilot({
+      port: localPort,
+      backend: ipcAutopilotBackend,
+      review: (r) => structured(r),
+      readFile,
+      tell: (threadId, text) =>
+        void engineRef
+          ?.send({ threadId, text: eventText(text), source: "event" })
+          .catch((e: unknown) => console.warn("duck: an autopilot report was dropped", e)),
+      notice: (threadId, text) =>
+        void engineRef
+          ?.notice(threadId, { kind: "autopilot", text })
+          .catch((e: unknown) => console.warn("duck: an autopilot step line was dropped", e)),
+    });
     const summaries = createSummarizer({
       port: localPort,
       backend: ipcSummaryBackend,
@@ -301,6 +328,7 @@ export function initAssistant(): Promise<void> {
     });
     const engine = createEngine({
       tasks,
+      autopilot,
       summaries,
       store: s,
       registry: createRegistry(TOOLS),
@@ -336,7 +364,8 @@ export function initAssistant(): Promise<void> {
       : undefined;
     engineRef = engine;
     await tasks.load().catch((e: unknown) => console.error("duck: worker tasks didn't load", e));
-    duck = createLocalTransport(endpoint(engine, s, ledger, settings, trust, replayer, tasks));
+    await autopilot.load().catch((e: unknown) => console.error("duck: autopilots didn't load", e));
+    duck = createLocalTransport(endpoint(engine, s, ledger, settings, trust, replayer, tasks, autopilot));
   })().catch((e: unknown) => {
     started = null;
     console.error("duck: init failed", e);

@@ -177,4 +177,13 @@ const MIGRATIONS: &[&str] = &[
     r#"
     ALTER TABLE assistant_decisions ADD COLUMN answered_by TEXT;
     "#,
+    // Step P1: plan autopilots, one per session. `data` is the engine's JSON record
+    // (plan, state, steps done, the step log); `updated_at` (epoch ms) orders them.
+    r#"
+    CREATE TABLE assistant_autopilots (
+        instance_id  TEXT PRIMARY KEY,
+        data         TEXT NOT NULL,
+        updated_at   INTEGER NOT NULL
+    );
+    "#,
 ];

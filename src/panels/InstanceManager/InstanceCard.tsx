@@ -31,6 +31,8 @@ import { markInterrupted } from "../../state/status";
 import { cancelQueued, useQueued } from "../../state/queue";
 import { useTrustLine } from "../../state/trustLines";
 import { useDuckTask } from "../../state/duckOwned";
+import { useAutopilotBadge } from "../../state/autopilotBadges";
+import { askForAutopilot, controlAutopilot, showDuckThread } from "../Assistant/duckState";
 import { openQueueDialog } from "../queueDialogControl";
 import { mergeStatus, relativeTime } from "./status";
 import { contextWindowTokens, formatTokens, tokenBreakdown } from "../../util/format";
@@ -90,6 +92,7 @@ function InstanceCard({
   const queued = useQueued().get(instance.id) ?? null;
   const trustLine = useTrustLine(instance.id);
   const duckTask = useDuckTask(instance.id);
+  const autopilot = useAutopilotBadge(instance.id);
   const dim = !live && !consoleStatus && instance.status === "closed";
   const showActions = hover || editingNote || editingTitle || pickingAccent || pickingModel;
 
@@ -296,6 +299,15 @@ function InstanceCard({
                 {GLYPH.queue}
               </RowAction>
             )}
+            {/* Plan autopilot (P1): your own local sessions, while Claude Code runs. */}
+            {!isRemote && duckTask === null && autopilot === null && consoleStatus === "running" && (
+              <RowAction
+                label="run its plan on autopilot (Duck reviews each step)"
+                onClick={() => askForAutopilot(instance.id, instance.title)}
+              >
+                ⟳
+              </RowAction>
+            )}
             {!isRemote && (
               <RowAction label="review changes (diff)" onClick={onReview}>
                 ±
@@ -396,6 +408,39 @@ function InstanceCard({
           }}
         >
           duck: {trustLine.text} · {relativeTime(Math.floor(trustLine.at / 1000))}
+        </div>
+      )}
+
+      {/* Plan autopilot (P1): where it is, and its buttons. */}
+      {autopilot && (
+        <div
+          style={{
+            display: "flex",
+            alignItems: "baseline",
+            gap: 7,
+            margin: "2px 0 0 20px",
+            font: "10.5px var(--wb-mono)",
+            color: autopilot.state === "paused" ? "var(--wb-needs)" : "var(--wb-textDim2)",
+          }}
+        >
+          <span
+            title={autopilot.why ?? autopilot.text}
+            style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
+          >
+            ⟳ autopilot · {autopilot.text}
+          </span>
+          <RowAction
+            label={autopilot.state === "paused" ? "resume the autopilot" : "pause the autopilot"}
+            onClick={() => controlAutopilot(instance.id, autopilot.state === "paused" ? "resume" : "pause")}
+          >
+            {autopilot.state === "paused" ? "▶" : "❚❚"}
+          </RowAction>
+          <RowAction label="stop the autopilot" onClick={() => controlAutopilot(instance.id, "stop")}>
+            ■
+          </RowAction>
+          <RowAction label="step log (Duck's thread)" onClick={() => showDuckThread(autopilot.threadId)}>
+            ≡
+          </RowAction>
         </div>
       )}
 

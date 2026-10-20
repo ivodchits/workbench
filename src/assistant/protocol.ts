@@ -100,7 +100,9 @@ export interface Notice {
     /** A worker task started here (D1): the thread shows its live card. */
     | "task"
     /** Duck pressed keys in a session's terminal (W6). */
-    | "keys";
+    | "keys"
+    /** A line of a session autopilot's step log (P1). */
+    | "autopilot";
   text: string;
   /** `note` only. */
   note?: NoteEdit;
@@ -185,7 +187,9 @@ export type ClientMessage =
   /** Close a worker task (step D1): its console closes, its files stay. */
   | { type: "task.close"; taskId: string }
   /** Run a worker task again one tier up (step D2), as a new task. */
-  | { type: "task.rerun"; taskId: string };
+  | { type: "task.rerun"; taskId: string }
+  /** A session autopilot's buttons on its card (step P1). */
+  | { type: "autopilot"; instanceId: string; action: "pause" | "resume" | "stop" };
 
 // ── Duck → surface ──────────────────────────────────────────────────────────
 

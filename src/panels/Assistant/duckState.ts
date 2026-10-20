@@ -433,3 +433,22 @@ export function closeTask(taskId: string): void {
 export function rerunTask(taskId: string): void {
   post({ type: "task.rerun", taskId });
 }
+
+/** A session autopilot's buttons on its card (P1). */
+export function controlAutopilot(instanceId: string, action: "pause" | "resume" | "stop"): void {
+  post({ type: "autopilot", instanceId, action });
+}
+
+/** Open the drawer on a thread: an autopilot's step log. */
+export function showDuckThread(threadId: string): void {
+  set({ open: true });
+  openThread(threadId);
+}
+
+/** Ask Duck, in a new thread, to put a session on autopilot (the card's button):
+ *  it finds the plan and confirms it with you before starting. */
+export function askForAutopilot(instanceId: string, title: string): void {
+  set({ open: true });
+  openThread(null);
+  sendMessage(`Put my session "${title}" (id ${instanceId}) on autopilot through its plan.`);
+}

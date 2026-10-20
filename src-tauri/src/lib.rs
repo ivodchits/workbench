@@ -126,6 +126,7 @@ pub fn run() {
         // Account-wide usage-limit snapshot, fed by the managed statusline (step 3.2).
         // Managed up front so the ingest route can write it before setup completes.
         .manage(statusline::LimitsState::default())
+        .manage(statusline::ContextState::default())
         // Per-instance transcript follows (step T1); empty until a view asks for one.
         .manage(transcript::stream::Streams::default())
         .invoke_handler(tauri::generate_handler![
@@ -179,6 +180,10 @@ pub fn run() {
             assistant::assistant_worker_register,
             assistant::assistant_task_put,
             assistant::assistant_task_list,
+            assistant::assistant_autopilot_put,
+            assistant::assistant_autopilot_list,
+            assistant::assistant_autopilot_delete,
+            statusline::session_context,
             assistant::headless::headless_spawn,
             assistant::headless::headless_send,
             assistant::headless::headless_interrupt,

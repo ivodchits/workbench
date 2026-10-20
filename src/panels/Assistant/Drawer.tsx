@@ -35,6 +35,7 @@ import "../../theme/assistant.css";
 import type {
   ConfirmRequest,
   NoteEdit,
+  Notice,
   PluginsEdit,
   ReviewItem,
   TurnState,
@@ -739,16 +740,18 @@ function ItemView({ item, active }: { item: Item; active: boolean }) {
           style={{
             margin: "4px 16px",
             color:
-              item.notice.kind === "stopped" || item.notice.kind === "keys"
+              item.notice.kind === "stopped" || item.notice.kind === "keys" || item.notice.kind === "autopilot"
                 ? "var(--wb-textFaint)"
                 : "var(--wb-needs)",
           }}
         >
-          {item.notice.kind === "keys" ? "⌨" : "!"} {item.notice.text}
+          {NOTICE_GLYPH[item.notice.kind] ?? "!"} {item.notice.text}
         </div>
       );
   }
 }
+
+const NOTICE_GLYPH: Partial<Record<Notice["kind"], string>> = { keys: "⌨", autopilot: "⟳" };
 
 const TASK_STATE: Record<string, string> = {
   queued: "waiting for a free worker",

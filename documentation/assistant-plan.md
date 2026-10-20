@@ -53,6 +53,7 @@ mid-thread: the English voice is the better one, and a fixed reply language is p
 | **P — Plan autopilot** | Duck runs your "step → `/compact` → continue" loop on a session and only comes back when something needs you; unattended runs with limits, windows, stall detection and a morning summary |
 | **S — Modes & skills** | Chat and rubber-duck modes; user-defined skills and modes, so the Assistant can grow without code |
 | **R — Remote** | The Assistant on the phone (chat + voice) through the existing remote server; the PWA as a real app (shortcuts, share target); later an Android companion app (assistant gesture, tile, widget, background conversation) |
+| **H — Everyday and home** | Duck beyond Workbench: tools that run where they act (PC, phone, home server); Steam, the PC's media keys, weather; YouTube Music and YouTube, Spotify later; Duck's own reminders and timers; the phone's actions as the default assistant; Duck's core on an always-on home server; a fallback brain on the phone |
 
 **Out of scope (decided 2026-10-18):** an always-on wake word (opt-in later at most; see V1),
 local LLMs, computer use (screenshots and clicks on the desktop), driving Claude Code agents
@@ -60,7 +61,10 @@ any way other than the PTY, cloud STT in v1 (left pluggable), **Discord** (dropp
 review: bots can't act for your account and self-bots are against Discord's ToS, so it
 adds little over the phone remote), Playwright / Chrome browser automation (Firefox MCP
 covers it), the system SAPI / `speechSynthesis` voices for spoken replies (tried in
-Workbench; not natural enough).
+Workbench; not natural enough). Added 2026-10-20: an Android accessibility service that
+operates other apps' screens (the phone's version of computer use), and Chromecast, smart
+TV and smart-home control (none in the house; Home Assistant's MCP server is the way in
+if that changes).
 
 **Supersedes:** `workbench-improvement-plan.md` listed *voice dictation* as out of scope
 (2026-10-12). This plan brings it back in, but only as input to the Assistant (V1). Dictating
@@ -176,6 +180,9 @@ mechanical job later.** Splitting now would cost a lot for little gain:
 another machine, or controlling things beyond Workbench. The path then: Duck core runs
 headless (a Node or Rust process), `WorkbenchPort` goes over the remote API, and Workbench
 becomes one more Duck client.
+
+**Trigger met (2026-10-20):** an always-on home server is planned, and Duck is to be the
+phone's default assistant, so it must work while the PC is off. Extraction is step H6.
 
 ### Calling the API without exposing the key
 
@@ -1060,6 +1067,86 @@ tapping around. Two stages.
   Firebase; a WebSocket kept open by the foreground service covers conversation time.
 - **It only makes sense if stage 1 proves Duck is something you reach for from the phone
   often.** That's the "if it proves good" gate you described.
+- **Phone actions** (timers, alarms, messages, media) make the app a device Duck acts on,
+  not only a way to talk to it. See *Everyday and home*; they're step H5.
+
+### Everyday and home (track H, added 2026-10-20)
+
+Duck as the phone's default assistant and a general helper, not only Workbench's. Three
+decisions shape it.
+
+**1. Tools run where they act.** Today every tool runs in the main webview. A timer has to
+be set on the phone and a game launched on the PC, so each tool gets a **host**:
+`workbench` (needs the app), `pc` (needs the desktop OS), `phone`, or `any` (runs
+wherever the engine is).
+- A host connects over the Duck Protocol and announces the tools it offers (`hello
+  {host, tools}`). The engine sends `device.call {id, tool, input}`, and the host answers
+  `device.result {id, ok, output}`.
+- **The tool list sent to the model never changes with what's connected**, so the cache
+  stays. Host tools sit behind tool search (`defer_loading`), like the browser tools. A
+  call to a host that isn't connected fails at once with "the phone isn't connected";
+  with H6, a sleeping PC is woken first (below).
+- Host calls go through the gate like any other call. The trust facts come from the
+  engine's side, not from what the host says.
+
+**2. Duck's core moves to an always-on home server** (H6). The PC can then be off:
+- The engine, `duck.db`, the API key, the proxy and the budget run on the server. Its
+  own tools (reminders, weather, music search) are `any`.
+- Workbench becomes a host. When it's running it connects and offers the Workbench
+  tools through a remote `WorkbenchPort`, which the boundary from A2 was built for.
+- The server can wake the PC (Wake-on-LAN) when a `pc` or `workbench` call needs it,
+  then wait for Workbench to connect, up to a limit.
+- The surfaces (drawer, PWA, Android app) connect to the server. Until H6 the desktop
+  is the server, and everything in H1–H5 works with the PC on.
+
+**3. The phone has a fallback brain** (H7, decided 2026-10-20). When the server can't be
+reached, the Android app calls the API itself:
+- It uses its own key: a separate Console workspace with a monthly spend limit, stored in
+  the Android Keystore.
+- It gets only the phone tools and reminders. Reminders made offline sync to the server
+  later.
+- A fast path for simple commands runs before any model, also offline: "timer 10
+  minutes", "alarm at 7", "flashlight", "pause". It uses a small parser over the phone's
+  on-device speech recognition.
+
+**What Android allows** (the app is sideloaded, so permissions Play restricts are fine):
+
+| Capability | How |
+|---|---|
+| Timers, alarms | `AlarmClock.ACTION_SET_TIMER` / `ACTION_SET_ALARM` with `EXTRA_SKIP_UI`; the clock app keeps them |
+| Reminders | Android has no reminders API (Google keeps its own private). Duck owns reminders (H4): stored by Duck, delivered by Web Push and, with the app, an exact `AlarmManager` alarm on the phone so they fire offline |
+| Calendar | `CalendarContract` on the phone, or the Google Calendar API from the engine |
+| "What's on my screen?" | The assist session gets the current screen's text and a screenshot, when allowed in the system's assistant settings |
+| Notifications, replies | `NotificationListenerService`: read what's new; reply through a notification's own reply action (works for WhatsApp, Telegram, SMS) |
+| Media | `MediaSessionManager` (through the notification listener): play, pause, skip, now playing, in any app |
+| Calls, SMS | `ACTION_CALL`, `SmsManager`; always ask (a floor entry) |
+| Navigation, flashlight, DND, volume | `geo:` / navigation intents, `CameraManager.setTorchMode`, notification policy access, `AudioManager` |
+| Not possible | Wi-Fi / Bluetooth toggles (settings panels only since Android 10); the low-power always-on hotword (system apps only); Google's private integrations |
+
+**Music: YouTube Music now, Spotify maybe later** (decided 2026-10-20). YouTube Music
+comes with the YouTube subscription but has no playback API:
+- **Search** uses the YouTube Data API (a key in the keychain; a search costs 100 of the
+  10,000 free daily units).
+- **Playing** opens `music.youtube.com/watch?v=<id>`. On the phone, the YouTube Music app
+  plays it; on the PC, the browser does. After that, the media tools (Android
+  `MediaSessionManager`, Windows SMTC) handle pause, skip and "what's playing".
+- **What's missing:** your library and playlists, the queue, and moving playback from one
+  device to another.
+- **Spotify** (Premium needed for playback) would add those through an official API
+  (Web API: search, library, queue, play on any Spotify Connect device). So music goes
+  behind a `MusicProvider` interface, and Spotify is a second provider if you switch.
+  YouTube videos use the same search and "open on phone / PC".
+
+**Steam** (`pc` host) needs nothing from Valve to start:
+- The library comes from `libraryfolders.vdf` and the `appmanifest_*.acf` files.
+- `steam://rungameid/<id>` launches a game; `steam://install/<id>` installs one ("start
+  downloading X so it's ready when I'm home").
+- An optional Steam Web API key adds playtime, recently played games, achievements and
+  friends online. That's enough for "what should I play tonight?".
+
+**Also fits:** the shopping list as a note (`append_note` exists); a morning briefing
+(weather from Open-Meteo, the calendar, what finished overnight) as an L4 routine; trivia
+and voiced text adventures as user-defined modes (S2).
 
 ### Browser and web
 
@@ -3676,6 +3763,92 @@ tapping around. Two stages.
   - Your spoken answer resumes it.
   - The step log shows every verdict.
 - **Out of scope:** multiple sessions, time windows, limits (P2).
+- **As built (2026-10-20):**
+  - **The loop** (`src/assistant/autopilot.ts`, `createAutopilot`): one autopilot per
+    session, in `duck.db` (`assistant_autopilots`, JSON with the step log, the last 100
+    entries).
+    - It acts on each `done` of a running autopilot's session. After 3 s, so the turn's
+      last reply has reached the transcript, it reads the turn:
+      - the transcript text since the prompt it sent (`readPlainText`), or, for the first
+        review, from the last user prompt;
+      - the plan's outline, its progress section (a "progress / tracker / status"
+        heading, else its checkbox lines) and the sections of the step just sent on to
+        and the one before (`planContext`);
+      - the context fill;
+      - the checklist;
+      - the run's last five verdicts.
+    - **The review:** Sonnet, low effort, adaptive thinking, `x-wb-purpose:
+      autopilot-review`, with a frozen prompt (`REVIEW_SYSTEM`).
+      - The output is `{verdict, stepId, nextStepId, summary, reason, question,
+        compact, compactReason, compactFocus, nextPrompt}`.
+      - The plan and the activity are fenced as data.
+    - **`continue`:**
+      - It compacts by the autopilot's policy: `review` (the default, the review's
+        `compact`), `always` or `never`. `port.compactSession` types `/compact <focus>`
+        into a session at rest and resolves on `onCompactionEnd`. It refuses when the
+        compaction doesn't start in 30 s, takes over 15 minutes, or the session ends
+        meanwhile.
+      - Then it sends the next prompt with `sendPrompt`: the review's `nextPrompt` when
+        situational prompts are allowed (the default), else your phrasings in turn
+        ("continue the implementation", "proceed to the next step").
+      - Waiting for the compaction to end, rather than queueing beside it, settles X0's
+        race.
+      - At `maxSteps` (default 5) it stops instead.
+    - **`needs_you`** pauses. The thread gets a Workbench event with the reason and the
+      question, and you get an alert (toast and push on your routes, `alertAbout`).
+      `resume_autopilot` with your answer sends it as the next turn; without one, the
+      last turn is reviewed again.
+    - **`plan_done`** stops it, with the same report.
+    - A failed review, compaction or send pauses it with why.
+    - A session that ends stops it.
+    - A permission prompt shows "waiting on you" (not a failure).
+    - A question with options is put to the thread so Duck can answer it from the plan,
+      as for D2's workers.
+    - One that was running when the app quit is paused at start ("Workbench
+      restarted"). Stopped ones are dropped after 30 days.
+    - It refuses a Duck worker, a session that isn't running, a second run on the same
+      session, and a plan file it can't read.
+  - **Tools** (`tools/autopilot.ts`): `start_autopilot(session, plan, max_steps?,
+    compact?, fixed_prompts?, prompts?)` (the plan relative to the session's folder or
+    absolute), `autopilot_status`, `pause_autopilot`, `resume_autopilot(prompt?,
+    steps?)` and `stop_autopilot`, all `reversible`.
+    - The tool tells Duck to find the plan (read_session) and confirm it when you didn't
+      name it. The system prompt has an example.
+  - **The step log:** every verdict, and every start, pause and stop, is a notice in the
+    thread that runs it (kind `autopilot`, ⟳), which the model never sees.
+  - **The card** (`state/autopilotBadges.ts`):
+    - A line "⟳ autopilot · step 2 of 5 (P1) · reviewing the step", or "paused · …" with
+      why.
+    - Buttons: pause / resume, stop, and step log (opens Duck's thread), over a new
+      `autopilot` client message.
+    - Your own running local sessions get a ⟳ row action that opens the drawer and asks
+      Duck in a new thread to put the session on autopilot.
+    - A session on a running autopilot gets no done alerts; its needs-you alerts are
+      unchanged.
+  - **From X0:**
+    - `statusline::ingest` keeps `context_window.used_percentage` per instance
+      (`ContextState`, `session_context`). Headless workers have no statusline, so
+      theirs is unknown.
+    - The `SessionStart{source: compact}` reducer fix was already in (`status.ts`).
+  - **Verified:** 12 new vitest cases (448 in all) covering:
+    - the plan's context;
+    - continue with compaction and the fixed phrasings in turn;
+    - a situational prompt, and the `never` policy;
+    - a needs-you pause, its alert, and a resume with the answer;
+    - plan done, and the step limit;
+    - a failed review, and a failed compaction;
+    - waiting on a prompt, and a question handed to the thread;
+    - the session ending, and a restart;
+    - the refusals;
+    - the tools.
+
+    Two Rust tests (229 pass). tsc, eslint and clippy are clean.
+  - **Not verified live:** the done-when: three consecutive steps of a real plan run
+    unattended, a stop with a clear question, and the card's buttons in the app.
+  - **Known gaps:**
+    - A spoken answer waits for V1 (typed answers through Duck work).
+    - The phone dashboard doesn't show the autopilot yet.
+    - The checklist is the generic default; P2 detects one per plan.
 
 #### Step P2 — Unattended runs: limits, windows, stalls, checklists, several sessions
 
@@ -4083,6 +4256,181 @@ checked in the scratch PTY first.
 
 ---
 
+### Track H — Everyday and home
+
+#### Step H1 — Host-bound tools
+
+- **Goal:** A tool can run on the machine it acts on (the PC, the phone), not only in the
+  main webview.
+- **Depends on:** W2, R1 (the WebSocket a remote host connects over).
+- **Build:**
+  - `defineTool` gains `host: 'workbench' | 'pc' | 'phone' | 'any'` (default
+    `workbench`). The registry keeps a host tool's schema and `trust` in the engine and
+    only its `run` on the host.
+  - Protocol: `hello {host, tools, version}` from a host; `device.call {id, tool, input}`
+    down, `device.result {id, ok, output}` up. The desktop's `pc` tools use the
+    in-process transport; the phone's use R1's socket.
+  - Host tools are deferred (`defer_loading`, tool search), so the fixed prefix doesn't
+    grow and doesn't change with what's connected. A call to a missing host or tool
+    fails at once with a plain reason ("the phone isn't connected").
+  - Timeouts and stops as for any tool: a call left unanswered is an `is_error` result,
+    and a stop sends `device.cancel {id}`.
+  - Trust: the gate runs in the engine with the engine's facts; a host only runs what it
+    was sent, and refuses a tool it didn't announce.
+- **Key files:** `src/assistant/tools/registry.ts`, `src/assistant/protocol.ts`,
+  `src/assistant/engine.ts`, `src/assistant/hosts.ts` (new).
+- **Done when:** a fake host over a scripted WS client announces a tool, runs a call and
+  answers; a stop cancels a running call; a call while the host is away fails cleanly; the
+  request's tool list is byte-identical with and without the host connected.
+- **Out of scope:** the real phone host (H5), waking the PC (H6).
+
+#### Step H2 — PC tools: Steam, media keys, weather
+
+- **Goal:** "Launch Hades", "what have I been playing?", "pause the music", "is it going
+  to rain?".
+- **Depends on:** W2 (H1 for the `pc` host tag; before H1 these run as `workbench`
+  tools and move over unchanged).
+- **Build:**
+  - **Steam** (Rust, `src-tauri/src/assistant/steam.rs`): find Steam from the registry
+    (`HKCU\Software\Valve\Steam\SteamPath`), parse `libraryfolders.vdf` and the
+    `appmanifest_*.acf` files (installed games, size, last played). Tools:
+    `steam_library` (read), `steam_launch` and `steam_install` (reversible; open
+    `steam://rungameid/<id>` / `steam://install/<id>`), the game named by fuzzy match with
+    the choices on a miss. An optional Steam Web API key (`duck/steam-api-key`) adds
+    `steam_activity` (playtime, recently played, achievements, friends online).
+  - **Media keys** (Rust, the `windows` crate's
+    `GlobalSystemMediaTransportControlsSessionManager`): `media_now_playing` (read),
+    `media_control` (play, pause, next, previous; reversible), across whatever app plays.
+  - **`open_on_pc`**: a URL in the default browser (reversible; `http(s)` and `steam://`
+    only).
+  - **`weather`** (`any`): Open-Meteo, no key; the place from a pref, or named.
+- **Key files:** `src-tauri/src/assistant/steam.rs`, `src-tauri/src/assistant/media.rs`,
+  `src/assistant/tools/pc.ts`.
+- **Done when:** a game launches and another starts installing by name; "what's playing"
+  names a YouTube Music tab in the browser, and pause pauses it; the weather answers for
+  home and for a named city.
+- **Out of scope:** Steam store prices and wishlists, Big Picture.
+
+#### Step H3 — Music and video
+
+- **Goal:** "Play Bohemian Rhapsody", "play some lo-fi on the PC", "put on that video about
+  …".
+- **Depends on:** H2; H5 for playing on the phone.
+- **Build:**
+  - A `MusicProvider` interface (`search`, `play(item, device)`); the first provider is
+    **YouTube Music**: search through the YouTube Data API (`duck/youtube-api-key`; music
+    category, top results with title, artist and length), play by opening
+    `music.youtube.com/watch?v=<id>` on the target.
+  - Tools: `play_music {query, on: phone | pc}` (reversible; the top match, or the choices
+    when the match is weak), `find_video {query}` (read), `play_video {id, on}`.
+  - Where it plays: `phone` when the request came from the phone, else `pc`; said aloud
+    overrides it.
+  - After it starts, pause, skip and "what's this" are the media tools (H2 on the PC, H5
+    on the phone).
+  - **Spotify** stays a second provider, written only if you switch (Web API with PKCE,
+    refresh token in the keychain, Connect devices, Premium for playback).
+- **Key files:** `src/assistant/music/`, `src/assistant/tools/media.ts`.
+- **Done when:** a song asked for by name plays in YouTube Music on the PC and on the
+  phone; a video plays on the named device; the day's quota use is in the spend line's
+  details.
+- **Out of scope:** your YouTube Music library and playlists (no official API).
+
+#### Step H4 — Duck's reminders and timers
+
+- **Goal:** "Remind me to call the bank tomorrow at 10", "remind me when I get home" (later),
+  "10-minute timer", with nothing lost when a device sleeps.
+- **Depends on:** W2. Web Push from the remote (exists). H5 adds phone delivery.
+- **Build:**
+  - `assistant_reminders (id, text, due, repeat, created_by_thread, state, delivered)` in
+    `duck.db`; the scheduler in the engine's host (the desktop now, the server after
+    H6), which catches up on missed ones at start and says they're late.
+  - Tools (`any`): `remind {text, when, repeat?}` (reversible; `when` parsed by the model
+    to an absolute time, read back in the reply), `list_reminders`, `cancel_reminder`,
+    `snooze_reminder`. A timer is a reminder with a duration.
+  - Delivery, every channel at once: a thread notice, a Web Push to the phone (with Done
+    and Snooze actions), and a spoken line when Speak is on (V5). With the phone app
+    (H5) the reminder is also handed to the phone as an exact alarm, so it fires with
+    the server unreachable.
+  - Optional mirror to Google Calendar (later; its own key).
+- **Key files:** `src/assistant/reminders.ts`, `src-tauri/src/assistant/reminders.rs`,
+  `src-tauri/src/remote/push.rs`.
+- **Done when:** a reminder set from the drawer arrives on the phone as a push on time;
+  one due while the app was closed arrives at the next start, marked late; Snooze from
+  the notification moves it.
+- **Out of scope:** location reminders (need the phone app's geofencing; a follow-up to
+  H5).
+
+#### Step H5 — The phone as a host (with R4)
+
+- **Goal:** Duck does on the phone what a default assistant does.
+- **Depends on:** H1, R4 (built together: R4 adds a host role to the app).
+- **Build** (Kotlin plugin, `phone` tools):
+  - **Clock:** `set_timer`, `set_alarm`, `show_alarms` (`AlarmClock` intents,
+    `EXTRA_SKIP_UI`).
+  - **Reminders:** the app takes H4's reminders as exact `AlarmManager` alarms
+    (`USE_EXACT_ALARM`) and shows them as notifications with Done and Snooze.
+  - **Media:** `phone_media_now_playing`, `phone_media_control` over `MediaSessionManager`.
+  - **Notifications:** `NotificationListenerService`; `list_notifications` (read; text
+    wrapped as untrusted), `reply_to_notification` (consequential; through the
+    notification's own reply action).
+  - **Calls, SMS, contacts:** `call`, `send_sms` (consequential; floor entries so they
+    always ask), `find_contact` (read).
+  - **Small things:** `flashlight`, `do_not_disturb`, `volume`, `navigate_to`, `open_app`,
+    `open_url`.
+  - **Screen context:** when Duck is summoned with the assistant gesture, the session's
+    screen text and screenshot go with the first message ("what's this?").
+  - **Fast path:** timers, alarms, flashlight and media commands parsed on the phone
+    before any model, so they work with the server unreachable.
+  - Each permission is asked for when its first tool is used, not at install.
+- **Key files:** `duck-android/` (the R4 app), its Kotlin plugin.
+- **Done when:** by voice from the power-button gesture: a timer and an alarm are set
+  without the clock app opening; "pause" pauses YouTube Music; "what did I miss?" reads
+  the new notifications, and a reply to a Telegram message goes after a card; a reminder
+  fires with the phone in airplane mode.
+- **Out of scope:** the accessibility service; Wi-Fi and Bluetooth toggles (not allowed).
+
+#### Step H6 — Duck on the home server
+
+- **Goal:** Duck works while the PC is off; Workbench is one more host.
+- **Depends on:** H1, H4. **Gate:** the server exists. **Design first:** a design pass
+  fills in this step before any code (the server's OS and hardware, the process model,
+  migrating `duck.db`).
+- **Build** (outline):
+  - The engine runs headless under Node on the server, with its own proxy, budget, key
+    and `duck.db` (moved over once). Pairing and device tokens move there too, with the
+    Funnel endpoint the phone uses.
+  - `port.remote.ts`: Workbench connects as the `workbench` and `pc` host and serves the
+    port over the protocol; the Workbench tools are host tools from then on.
+  - Wake-on-LAN: a call to `pc` / `workbench` while it's away sends the magic packet,
+    then waits up to a limit (default 90 s) for the host to connect, and says so in the
+    thread.
+  - The drawer becomes a remote surface; the voice engines (STT, TTS) stay on the PC
+    or move with the server, settled in the design pass.
+- **Done when:** with the PC asleep, the phone sets a reminder and plays music; "launch
+  Hades" wakes the PC and launches it; a thread started on the phone continues in the
+  drawer.
+- **Out of scope:** running Claude Code sessions on the server.
+
+#### Step H7 — The phone's fallback brain
+
+- **Goal:** When the server can't be reached, Duck on the phone still talks and acts.
+- **Depends on:** H5. Most useful after H6.
+- **Build:**
+  - A phone key from its own Console workspace with a monthly spend limit (set in the
+    Console, plus the app's own cap), entered once and kept in the Android Keystore.
+  - The engine's loop, compiled for the app from the shared TypeScript, with only the
+    `phone` tools and a local reminder store; the same system prompt with a note that
+    it's the offline brain.
+  - Offline reminders and the thread's messages sync to the server when it's back
+    (reminders by id; messages as a separate thread marked "offline").
+  - The app shows which brain answers (server or phone).
+- **Done when:** with the server stopped, a voice request sets a reminder and replies; the
+  reminder shows up on the server after it's back; the phone key's spend shows in the
+  app.
+- **Out of scope:** Workbench tools offline.
+
+---
+
 ## Sequencing
 
 ```
@@ -4101,6 +4449,7 @@ X0 ─┬─▶ A1 ─▶ A2 ─┬─▶ A3 ─┬─▶ W2 ─┬─▶ T1 ─
     W4 + D1 ─▶ L1 ─▶ L2 ;  D2 + S2 + L1 + T1 ─▶ L3 ;  L1 + D2 + S2 ─▶ L4
     V2 + V4 + D1 ─▶ V5 ;  W2 + W3 + T2 + D2 ─▶ P1 (V5 for spoken stops) ─▶ P2
     W2 + K1 (improvement plan; merged 2026-10-19) ─▶ W5
+    W2 ─▶ H2 ─▶ H3 ;  W2 ─▶ H4 ;  W2 + R1 ─▶ H1 ─▶ H5 (with R4) ─▶ H7 ;  H1 + H4 ─▶ H6 (gate: the server)
 ```
 
 **Suggested order:**
@@ -4122,6 +4471,11 @@ X0 ─┬─▶ A1 ─▶ A2 ─┬─▶ A3 ─┬─▶ W2 ─┬─▶ T1 ─
 5. L2, S2, **L3** (self-development: from here Duck can help build the rest), **L4**, R3, then B1,
    T3, D3; B2 only if quick browser actions turn out to need it; **R4** once
    R3 shows you really use Duck from the phone.
+
+Track H (added 2026-10-20) runs alongside: H2 and H4 are small and need only W2, so they
+can slot in anywhere for an early taste; H1 with R1; H3 after H2; H5 with R4, whose gate
+it widens (the phone as the default assistant counts as real use); H6 when the home
+server exists; H7 after H5.
 
 T2 goes live after the replay check in its done-when (the past week's prompts through
 `decide`), not after days in shadow mode. Shadow stays available per project.
@@ -4234,6 +4588,9 @@ T2 goes live after the replay check in its done-when (the past week's prompts th
 | 24 | ~~Housekeeping cadence?~~ **Weekly on Sunday; if missed, on the next Duck start** (2026-10-18). Retention default: keep results, prune bulky intermediates after 30 days. | ✔ |
 | 25 | ~~Autopilot defaults?~~ **Compact only after a finished step, judged per step (usually yes); never mid-job. Continue with "continue the implementation" / "proceed to the next step", or a situational prompt** (2026-10-18). Max steps per run: default 5, adjustable. | ✔ |
 | 26 | ~~Quiet hours?~~ **All etiquette is configurable; quiet hours optional and off by default; manual DND (with durations and a voice command) is the main control; a master Speak toggle gates all voice output** (2026-10-18). | ✔ |
+| 27 | ~~Music service?~~ **YouTube Music** (comes with the YouTube subscription), behind a provider interface; **Spotify** only if you switch for its API (2026-10-20). | ✔ |
+| 28 | ~~Duck with the PC off?~~ **An always-on home server runs Duck's core** (H6), **plus a fallback brain on the phone with its own capped key** (H7) (2026-10-20). Still open: the server's hardware and OS. | H6 |
+| 29 | Steam Web API key for playtime and friends, or the local files only? | H2 |
 
 ---
 
@@ -4283,3 +4640,10 @@ T2 goes live after the replay check in its done-when (the past week's prompts th
 | T4 | Permission answers through the `PermissionRequest` hook | ☑ |
 | P1 | Autopilot loop for one session | ☐ |
 | P2 | Unattended runs: limits, windows, stalls, checklists, several sessions | ☐ |
+| H1 | Host-bound tools | ☐ |
+| H2 | PC tools: Steam, media keys, weather | ☐ |
+| H3 | Music and video | ☐ |
+| H4 | Duck's reminders and timers | ☐ |
+| H5 | The phone as a host (with R4) | ☐ |
+| H6 | Duck on the home server (gate: the server) | ☐ |
+| H7 | The phone's fallback brain | ☐ |

@@ -20,6 +20,7 @@ import type { Notice, ReviewItem } from "../protocol";
 import type { DuckSettings } from "../settings";
 import type { Summarizer } from "../summarize";
 import type { TaskManager } from "../tasks";
+import type { AutopilotManager } from "../autopilot";
 import type { TrustFacts } from "../trust/decide";
 
 export type Tier = "read" | "reversible" | "consequential";
@@ -42,6 +43,8 @@ export interface ToolContext {
   tasks: TaskManager | null;
   /** Session summaries (step W3); null where there are none (some tests). */
   summaries: Summarizer | null;
+  /** Plan autopilots (step P1); null where there are none (some tests). */
+  autopilot: AutopilotManager | null;
 }
 
 /** A tool may return text, API content blocks (e.g. an image), or any JSON value. */
