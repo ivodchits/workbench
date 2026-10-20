@@ -12,7 +12,7 @@
 import type { Spend } from "../ipc/assistant";
 import type { Branches, Commit, StatusEntry } from "../ipc/git";
 import type { Note, NoteMeta } from "../ipc/notes";
-import type { PluginsText, PluginsView, Problem } from "../ipc/plugins";
+import type { PluginsDraft, PluginsText, PluginsView, Problem } from "../ipc/plugins";
 import type { TranscriptPage } from "../ipc/transcript";
 import type { RateLimits } from "../ipc/usageLimits";
 
@@ -193,6 +193,21 @@ export interface WorkbenchPort {
   /** Hear the end of the run just started in `taskId`, once; returns the
    *  unsubscribe. */
   onTaskEnd(taskId: string, cb: (end: TaskEnd) => void): () => void;
+  /** A new session that drafts the project's toolbar (local projects only): a
+   *  fresh draft (a copy of the live file and scripts) is made and the session is
+   *  registered for it before its first launch, so it starts with the drafting
+   *  skill and may edit the draft folder only. `prompt` gets the draft folder and
+   *  goes in once the prompt box shows. */
+  startPluginsDraft(opts: {
+    projectId: string;
+    title: string;
+    model: string | null;
+    prompt: (draftDir: string) => string;
+  }): Promise<{ id: string; title: string; draftDir: string }>;
+  /** The project's draft as its session left it. */
+  readPluginsDraft(projectId: string): Promise<PluginsDraft>;
+  /** Drop the draft; its sessions launch as ordinary ones from then on. */
+  clearPluginsDraft(projectId: string): Promise<void>;
 }
 
 export interface PluginRunRequest {

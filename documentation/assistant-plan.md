@@ -2123,6 +2123,36 @@ tapping around. Two stages.
     toolbar" when one plugin changed (else the project's toolbar); undo writes the old
     file back at the new revision (or removes a file Duck made), then restores each
     script still as Duck wrote it.
+  - **Delegated edits** (added after the first build, on review: a change that needs
+    the project's code read, or a script written, is coding work, and Duck's turns are
+    on API credits). `delegate_plugins_edit(project, request)` starts a Claude Code
+    session in the project on the coding model, and `apply_plugins_draft(project)`
+    shows its result on the same diff card as `write_plugins`. A small edit whose
+    commands Duck knows still goes through `write_plugins`.
+    - **The skill.** Workbench ships a Claude Code plugin with one skill,
+      `workbench:plugins` (`src-tauri/resources/claude-plugin/`: the drafting workflow
+      in `SKILL.md`, the file format in `reference.md`). It is written to
+      `<app data>/duck-sessions/claude-plugin/workbench/` at start and loaded with
+      `--plugin-dir` by drafting sessions only. Nothing is installed, and neither the
+      repos nor `~/.claude` are touched.
+    - **The draft.** `<app data>/duck-sessions/plugin-drafts/<project>/`, outside the
+      notes folder (a draft never syncs). It starts as a copy of the live file and
+      scripts; the session edits the copy, and `apply_plugins_draft` reads it from
+      disk, so the file never goes through Duck's tokens. A draft with problems fails
+      before any card, telling Duck to send them to the session.
+    - **The session's permissions.** It is registered by instance id (migration v13,
+      `plugin_draft_sessions`), so every launch and resume gets `--permission-mode
+      default --plugin-dir … --add-dir <draft> --settings <file>`. The settings file
+      holds one rule, `Edit(//c/…/plugin-drafts/<project>/**)` (an Edit rule covers
+      every file tool, Write included), and lives outside the draft folder, so the
+      session can't rewrite its own permissions. The default mode is forced because
+      the user's own default (`auto`) would let it write anywhere; checked with the
+      CLI: a write in the draft goes through, a write beside it is refused. Anything
+      else it asks for comes to Duck as a `<workbench_event>`, and Duck answers only
+      what the user's request covers, quoting it in `grantedBy`.
+    - `startNewSession` gained `beforeLaunch`, awaited before the console opens, so
+      the session is registered before its first launch. Applying a draft clears it
+      and the registration, so later resumes are ordinary sessions.
 
 ### Track M — Models
 

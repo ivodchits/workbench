@@ -21,8 +21,8 @@
 import { z } from "zod";
 import { isStale } from "../../ipc/notes";
 import type { Control, Plugin, PluginFile, Problem } from "../../ipc/plugins";
-import type { TaskEnd, TaskRun } from "../port";
-import { compact, findProject, projectArg } from "./read";
+import type { SessionRef, TaskEnd, TaskRun } from "../port";
+import { choiceLine, compact, findProject, projectArg } from "./read";
 import { defineTool, type ToolContext } from "./registry";
 
 const cut = (s: string, n: number) => (s.length > n ? `${s.slice(0, n - 1)}…` : s);
@@ -371,13 +371,16 @@ export const runPluginAction = defineTool({
 const SCRIPT_NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$/;
 const FILE_CHARS = 256 * 1024;
 
+/** A change to the plugin file and its scripts, as its card shows it, kept with the
+ *  call until it runs. */
 interface PreparedWrite {
   projectId: string;
   project: string;
   /** The file's text and revision now; null when there is none. */
   before: string | null;
   revision: string | null;
-  scripts: { name: string; before: string | null }[];
+  text: string;
+  scripts: { name: string; before: string | null; after: string }[];
 }
 
 /** The chip's words: the one plugin the edit changed, else the project. */
@@ -395,9 +398,57 @@ function editTitle(project: string, before: string | null, after: string): strin
   return `Duck edited ${project}'s toolbar`;
 }
 
+// The card, the trust facts and the write, shared by write_plugins and
+// apply_plugins_draft: everything is in what `prepare` worked out.
+
+function describeWrite(w: PreparedWrite): string {
+  const what = w.before === null ? "make its plugin file" : "edit plugins.json";
+  const extra = w.scripts.length ? ` and write ${w.scripts.map((s) => `scripts/${s.name}`).join(", ")}` : "";
+  return `Change the toolbar of ${w.project}: ${what}${extra}. After: ${outline(parseFile(w.text))}.`;
+}
+
+function reviewWrite(w: PreparedWrite) {
+  return [
+    { label: "plugins.json", before: w.before, after: w.text },
+    ...w.scripts.map((s) => ({ label: `scripts/${s.name}`, before: s.before, after: s.after })),
+  ];
+}
+
+const trustWrite = (w: PreparedWrite) => ({
+  projectId: w.projectId,
+  texts: [w.text, ...w.scripts.map((s) => s.after)],
+});
+
+async function commitWrite(w: PreparedWrite, ctx: ToolContext) {
+  const cur = await ctx.port.pluginsText(w.projectId);
+  if (cur.revision !== w.revision)
+    throw new Error("stale: the plugin file changed since the card was shown, so nothing was written. Read it again.");
+  // Scripts first, so the file never names one that isn't there yet.
+  for (const s of w.scripts) await ctx.port.writeScript(w.projectId, s.name, s.after);
+  const revision = await ctx.port.writePlugins(w.projectId, w.text, w.revision);
+  await ctx.notice({
+    kind: "plugins",
+    text: editTitle(w.project, w.before, w.text),
+    plugins: {
+      projectId: w.projectId,
+      project: w.project,
+      before: w.before,
+      after: w.text,
+      revision,
+      scripts: w.scripts,
+    },
+  });
+  return compact({
+    project: w.project,
+    revision,
+    scripts: w.scripts.length ? w.scripts.map((s) => s.name) : null,
+    toolbar: outline(parseFile(w.text)),
+  });
+}
+
 export const writePlugins = defineTool({
   name: "write_plugins",
-  description: `Replace a project's plugin file (plugins.json), which draws its toolbar, and optionally write scripts its actions call. Pass the revision read_plugins gave (null when there is no file yet); if the file changed since, the call is refused: read it again and redo the edit. The text must be a valid file: if it isn't, the error lists each problem at its JSON path; fix them and call again. The user confirms the change on a card with its diff.
+  description: `Replace a project's plugin file (plugins.json), which draws its toolbar, and optionally write scripts its actions call. For small edits whose commands you already know; when the project's code has to be read to find them, or a script written, use delegate_plugins_edit instead. Pass the revision read_plugins gave (null when there is no file yet); if the file changed since, the call is refused: read it again and redo the edit. The text must be a valid file: if it isn't, the error lists each problem at its JSON path; fix them and call again. The user confirms the change on a card with its diff.
 
 The format (JSON): {"version": 1, "plugins": [plugin, ...]}.
 - plugin: {"id", "label"?, "controls"?: [control, ...], "actions": [action, ...]}. Ids start with a letter and hold letters, digits, - and _.
@@ -444,50 +495,158 @@ The format (JSON): {"version": 1, "plugins": [plugin, ...]}.
       project: p.name,
       before: cur.text,
       revision: cur.revision,
-      scripts: (scripts ?? []).map((s, i) => ({ name: s.name, before: befores[i] })),
+      text,
+      scripts: (scripts ?? []).map((s, i) => ({ name: s.name, before: befores[i], after: s.text })),
     };
   },
-  describe({ text, scripts }, _port, w) {
-    const what = w.before === null ? "make its plugin file" : "edit plugins.json";
-    const extra = scripts?.length ? ` and write ${scripts.map((s) => `scripts/${s.name}`).join(", ")}` : "";
-    return `Change the toolbar of ${w.project}: ${what}${extra}. After: ${outline(parseFile(text))}.`;
-  },
-  review({ text, scripts }, w) {
-    return [
-      { label: "plugins.json", before: w.before, after: text },
-      ...(scripts ?? []).map((s, i) => ({ label: `scripts/${s.name}`, before: w.scripts[i]?.before ?? null, after: s.text })),
-    ];
-  },
-  trust({ text, scripts }, _port, w) {
-    return { projectId: w.projectId, texts: [text, ...(scripts ?? []).map((s) => s.text)] };
-  },
-  async run({ text, scripts }, ctx) {
-    const w = ctx.prepared;
-    const cur = await ctx.port.pluginsText(w.projectId);
-    if (cur.revision !== w.revision)
-      throw new Error("stale: the plugin file changed since the card was shown, so nothing was written. Read it again.");
-    // Scripts first, so the file never names one that isn't there yet.
-    for (const s of scripts ?? []) await ctx.port.writeScript(w.projectId, s.name, s.text);
-    const revision = await ctx.port.writePlugins(w.projectId, text, w.revision);
-    await ctx.notice({
-      kind: "plugins",
-      text: editTitle(w.project, w.before, text),
-      plugins: {
-        projectId: w.projectId,
-        project: w.project,
-        before: w.before,
-        after: text,
-        revision,
-        scripts: (scripts ?? []).map((s, i) => ({ name: s.name, before: w.scripts[i]?.before ?? null, after: s.text })),
-      },
+  describe: (_i, _p, w) => describeWrite(w),
+  review: (_i, w) => reviewWrite(w),
+  trust: (_i, _p, w) => trustWrite(w),
+  run: (_i, ctx) => commitWrite(ctx.prepared, ctx),
+});
+
+// ── delegating ──────────────────────────────────────────────────────────────
+//
+// A change that needs the project's code read (to find the real commands) or a
+// script written is coding work: it goes to a Claude Code session on the coding
+// model, on the subscription, not to Duck's API turn. The session runs the
+// `workbench:plugins` skill (Workbench's own, loaded for that session only) and may
+// edit only its draft folder, a copy of the live file and scripts. When it's done,
+// `apply_plugins_draft` reads the draft from disk (it never passes through Duck's
+// tokens) and shows the same diff card as `write_plugins`.
+
+/** The drafting session of each project Duck started one for (this app run). */
+const drafters = new Map<string, string>();
+const draftWatches = new Map<string, () => void>();
+
+/** Stop every draft watch (tests). */
+export function clearDraftWatches(): void {
+  for (const stop of [...draftWatches.values()]) stop();
+  drafters.clear();
+}
+
+const isLiveSession = (s: SessionRef | undefined) => !!s && s.phase !== "offline" && s.phase !== "ended";
+
+function watchDraft(ctx: ToolContext, project: string, id: string, title: string, timeoutMin: number): void {
+  draftWatches.get(id)?.();
+  const name = `"${title}" (id ${id}), drafting ${project}'s toolbar`;
+  const off = ctx.port.onPhase((sid, phase) => {
+    if (sid !== id) return;
+    if (phase === "done") {
+      stop();
+      ctx.later(`Session ${name} finished. Call apply_plugins_draft for ${project} to show the user the draft.`);
+    } else if (phase === "needs_you") {
+      // It carries on once answered, so the watch stays.
+      const c = ctx.port.listSessions().find((s) => s.id === id)?.choice;
+      ctx.later(
+        `Session ${name} is waiting on a prompt${c ? `: ${choiceLine(c)}` : ""}. Answer it with answer_choice only if the user's request clearly covers it (quote their words in grantedBy); otherwise tell the user.`,
+      );
+    } else if (phase === "ended") {
+      stop();
+      ctx.later(`Session ${name} ended. Try apply_plugins_draft, or tell the user.`);
+    }
+  });
+  const timer = setTimeout(() => {
+    stop();
+    ctx.later(`Session ${name} is still going after ${timeoutMin} minutes; stopped watching it.`);
+  }, timeoutMin * 60_000);
+  function stop() {
+    off();
+    clearTimeout(timer);
+    if (draftWatches.get(id) === stop) draftWatches.delete(id);
+  }
+  draftWatches.set(id, stop);
+}
+
+export const delegatePluginsEdit = defineTool({
+  name: "delegate_plugins_edit",
+  description:
+    "Hand a toolbar change to a new Claude Code session in the project, on the coding model: it reads the project to find the real commands, writes plugins.json and any scripts as a draft (never the live toolbar), and stops. Use it for anything beyond a small edit whose commands you already know (\"add a deploy button\", a build with options, a script). Returns at once; a <workbench_event> says when the draft is ready (then call apply_plugins_draft) or when the session waits on a prompt. Local projects only.",
+  schema: z.object({
+    project: projectArg,
+    request: z
+      .string()
+      .trim()
+      .min(1)
+      .max(4000)
+      .describe("What the toolbar should do, in the user's terms, with anything they said about it."),
+    timeoutMin: z.number().int().min(5).max(240).default(60).describe("Stop watching after this many minutes."),
+  }),
+  tier: "reversible",
+  // Making the session, and its draft, before its console opens.
+  timeoutMs: 30_000,
+  trust: ({ project, request }, port) => ({ projectId: findProject(port, project).id, texts: [request] }),
+  async run({ project, request, timeoutMin }, ctx) {
+    const { port } = ctx;
+    const p = findProject(port, project);
+    const prior = drafters.get(p.id);
+    const priorSession = prior ? port.listSessions(p.id).find((s) => s.id === prior) : undefined;
+    // A new draft replaces the folder the running one is writing in.
+    if (isLiveSession(priorSession))
+      throw new Error(
+        `"${priorSession!.title}" is still drafting ${p.name}'s toolbar. Wait for it, send it the change with send_prompt, or kill it first.`,
+      );
+    const made = await port.startPluginsDraft({
+      projectId: p.id,
+      title: "toolbar draft",
+      model: ctx.settings.codingModel,
+      prompt: (dir) => `/workbench:plugins ${request}\n\nThe draft folder: ${dir}\nThe project: ${p.name}, at ${p.rootPath}`,
     });
-    return compact({
-      project: w.project,
-      revision,
-      scripts: scripts?.length ? scripts.map((s) => s.name) : null,
-      toolbar: outline(parseFile(text)),
-    });
+    drafters.set(p.id, made.id);
+    watchDraft(ctx, p.name, made.id, made.title, timeoutMin);
+    return {
+      session: made.title,
+      id: made.id,
+      project: p.name,
+      report: "a <workbench_event> arrives when the draft is ready or the session waits on a prompt",
+    };
   },
 });
 
-export const PLUGIN_TOOLS = [listPlugins, readPlugins, runPluginAction, writePlugins];
+export const applyPluginsDraft = defineTool({
+  name: "apply_plugins_draft",
+  description:
+    "Show the user the toolbar draft a delegate_plugins_edit session wrote, as a diff against the live toolbar, and put it live if they allow it (with an undo chip). The draft is read from disk: don't copy it. If it has problems, the error lists them: send them to the drafting session with send_prompt to fix, and call this again once it's done.",
+  schema: z.object({ project: projectArg }),
+  tier: "consequential",
+  async prepare({ project }, port): Promise<PreparedWrite> {
+    const p = findProject(port, project);
+    const draft = await port.readPluginsDraft(p.id);
+    const session = drafters.get(p.id);
+    const via = session ? ` (session id ${session})` : "";
+    if (draft.text === null)
+      throw new Error(`There is no draft plugins.json for ${p.name}: the drafting session${via} hasn't written one.`);
+    const problems = await port.checkPlugins(draft.text);
+    if (problems.length)
+      throw new Error(
+        `The draft has problems, so it can't go live. Send them to the drafting session${via} with send_prompt to fix in the draft:\n${problems.map(problemLine).join("\n")}`,
+      );
+    const cur = await port.pluginsText(p.id);
+    const scripts: PreparedWrite["scripts"] = [];
+    for (const s of draft.scripts) {
+      const before = await port.readScript(p.id, s.name);
+      if (before !== s.text) scripts.push({ name: s.name, before, after: s.text });
+    }
+    if (cur.text === draft.text && scripts.length === 0)
+      throw new Error(`The draft is the same as ${p.name}'s live toolbar: there is nothing to apply.`);
+    return { projectId: p.id, project: p.name, before: cur.text, revision: cur.revision, text: draft.text, scripts };
+  },
+  describe: (_i, _p, w) => describeWrite(w),
+  review: (_i, w) => reviewWrite(w),
+  trust: (_i, _p, w) => trustWrite(w),
+  async run(_i, ctx) {
+    const out = await commitWrite(ctx.prepared, ctx);
+    await ctx.port.clearPluginsDraft(ctx.prepared.projectId);
+    drafters.delete(ctx.prepared.projectId);
+    return out;
+  },
+});
+
+export const PLUGIN_TOOLS = [
+  listPlugins,
+  readPlugins,
+  runPluginAction,
+  writePlugins,
+  delegatePluginsEdit,
+  applyPluginsDraft,
+];

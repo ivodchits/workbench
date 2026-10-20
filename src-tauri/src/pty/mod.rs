@@ -704,6 +704,13 @@ pub fn pty_spawn(
                 if let Some(m) = &model {
                     args.extend(["--model", m]);
                 }
+                // A session Duck started to draft a toolbar (W5) gets its skill, its
+                // draft folder and the allow rule for it, at every launch and resume.
+                let extra = match db.conn.lock() {
+                    Ok(conn) => crate::plugins::draft::launch_args(&app, &conn, &instance_id),
+                    Err(_) => Vec::new(),
+                };
+                args.extend(extra.iter().map(String::as_str));
                 let mut cmd = claude_command(&args, &cwd)?;
                 // Lets this console's hooks name it even under a session id we
                 // didn't mint (an in-console `/resume`, or a `/clear` after one).

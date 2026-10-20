@@ -41,6 +41,8 @@ export interface FakePortData {
   plugins?: Record<string, FakePlugins>;
   /** Scripts by `projectId/name`. */
   scripts?: Record<string, string>;
+  /** Toolbar drafts by project id. */
+  drafts?: Record<string, { text: string | null; scripts: { name: string; text: string }[] }>;
 }
 
 export interface FakePlugins {
@@ -332,6 +334,24 @@ export function fakePort(data: FakePortData = {}): FakePort {
       return () => {
         if (taskEnds.get(taskId) === cb) taskEnds.delete(taskId);
       };
+    },
+    startPluginsDraft(opts) {
+      if (!data.projects?.some((p) => p.id === opts.projectId))
+        return Promise.reject(new Error(`no project with id ${opts.projectId}`));
+      const draftDir = `drafts/${opts.projectId}`;
+      record("startPluginsDraft", { ...opts, prompt: opts.prompt(draftDir) });
+      (data.drafts ??= {})[opts.projectId] = { text: pluginsOf(opts.projectId)?.text ?? null, scripts: [] };
+      (data.sessions ??= []).push(session({ id: "draft-1", projectId: opts.projectId, title: opts.title, phase: "offline" }));
+      return Promise.resolve({ id: "draft-1", title: opts.title, draftDir });
+    },
+    readPluginsDraft(projectId) {
+      const d = data.drafts?.[projectId];
+      return Promise.resolve({ path: `drafts/${projectId}`, text: d?.text ?? null, scripts: d?.scripts ?? [] });
+    },
+    clearPluginsDraft(projectId) {
+      record("clearPluginsDraft", projectId);
+      delete data.drafts?.[projectId];
+      return Promise.resolve();
     },
     endTask(taskId, end) {
       const cb = taskEnds.get(taskId);

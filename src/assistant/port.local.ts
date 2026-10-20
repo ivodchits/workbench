@@ -18,6 +18,9 @@ import {
 } from "../ipc/notes";
 import {
   pluginsCheck,
+  pluginsDraftClear,
+  pluginsDraftRead,
+  pluginsDraftStart,
   pluginsPreview,
   pluginsScriptRead,
   pluginsScriptWrite,
@@ -331,6 +334,24 @@ export const localPort: WorkbenchPort = {
     const r = await startPluginRunFor(req.projectId, req.pluginId, req.actionId, req.values, req.revision);
     return { taskId: r.taskId, label: r.label };
   },
+  async startPluginsDraft({ projectId, title, model, prompt }) {
+    const project = getRegistry().projects.find((p) => p.id === projectId);
+    if (!project) throw new Error(`no project with id ${projectId}`);
+    if (project.remoteSshDest)
+      throw new Error(`${project.name} is a remote project: its sessions can't reach the draft on this machine.`);
+    let draftDir = "";
+    const { instance: i } = await startNewSession(project, {
+      title,
+      model,
+      beforeLaunch: async (inst) => {
+        draftDir = await pluginsDraftStart(projectId, inst.id);
+      },
+    });
+    deliverWhenReady(i.id, prompt(draftDir));
+    return { id: i.id, title: i.title, draftDir };
+  },
+  readPluginsDraft: pluginsDraftRead,
+  clearPluginsDraft: pluginsDraftClear,
   onTaskEnd(taskId, cb) {
     const run = getTask(taskId)?.run ?? 0;
     const started = Date.now();

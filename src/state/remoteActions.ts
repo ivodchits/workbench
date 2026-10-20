@@ -179,7 +179,15 @@ export type FirstPromptState = "sent" | "queued";
  */
 export async function startNewSession(
   project: Project,
-  opts: { title?: string; worktree?: boolean; model?: string | null },
+  opts: {
+    title?: string;
+    worktree?: boolean;
+    model?: string | null;
+    /** Awaited after the instance exists and before its console opens (so before
+     *  its first launch): Duck's drafting session registers itself here (W5). A
+     *  throw deletes the instance. */
+    beforeLaunch?: (instance: Instance) => Promise<void>;
+  },
   onCreated?: (instanceId: string) => void,
 ): Promise<{ instance: Instance; message: string | null }> {
   const title = opts.title?.trim() || nextInstanceTitle(getRegistry().instances, project.id);
@@ -206,6 +214,15 @@ export async function startNewSession(
     }
     const id = instance.id;
     instance = getRegistry().instances.find((i) => i.id === id) ?? instance;
+  }
+
+  if (opts.beforeLaunch) {
+    try {
+      await opts.beforeLaunch(instance);
+    } catch (e) {
+      await deleteInstance(instance.id).catch(() => {});
+      throw new Error(`Could not prepare the session: ${errorText(e)}`);
+    }
   }
 
   // As the rail does it: show the project, open the console, focus its panel.

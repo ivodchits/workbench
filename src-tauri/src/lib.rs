@@ -99,6 +99,9 @@ pub fn run() {
             // Watch the notes folders for plugin files changing (step K1), so the
             // project toolbar redraws however the file was saved.
             plugins::init_watcher(app.handle());
+            if let Err(e) = plugins::draft::ensure_skill(app.handle()) {
+                eprintln!("[plugins] drafting skill not written: {e}");
+            }
             // Notes sync (step N3): pull now and commit after changes, when it's
             // set up; otherwise just link the projects whose notes are obvious.
             notes::sync::init(app.handle());
@@ -209,6 +212,9 @@ pub fn run() {
             plugins::plugins_preview,
             plugins::plugins_script_read,
             plugins::plugins_script_write,
+            plugins::draft::plugins_draft_start,
+            plugins::draft::plugins_draft_read,
+            plugins::draft::plugins_draft_clear,
             git::git_log,
             git::git_branches,
             git::git_status_entries,

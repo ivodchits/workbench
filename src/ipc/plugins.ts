@@ -126,3 +126,28 @@ export function pluginsScriptRead(projectId: string, name: string): Promise<stri
 export function pluginsScriptWrite(projectId: string, name: string, text: string | null): Promise<void> {
   return invoke("plugins_script_write", { projectId, name, text });
 }
+
+// --- toolbar drafts (W5, delegated edits) ------------------------------------------
+
+/** A toolbar draft a drafting session left: its `plugins.json` (null when none)
+ *  and the scripts in its `scripts/`. */
+export interface PluginsDraft {
+  path: string;
+  text: string | null;
+  scripts: { name: string; text: string }[];
+}
+
+/** Make a fresh draft (a copy of the live file and scripts) and register
+ *  `instanceId` as its drafting session; returns the draft folder. */
+export function pluginsDraftStart(projectId: string, instanceId: string): Promise<string> {
+  return invoke("plugins_draft_start", { projectId, instanceId });
+}
+
+export function pluginsDraftRead(projectId: string): Promise<PluginsDraft> {
+  return invoke("plugins_draft_read", { projectId });
+}
+
+/** Drop the draft, and launch its sessions as ordinary ones from then on. */
+export function pluginsDraftClear(projectId: string): Promise<void> {
+  return invoke("plugins_draft_clear", { projectId });
+}

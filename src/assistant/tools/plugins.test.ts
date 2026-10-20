@@ -4,7 +4,10 @@ import { fakePort, project, toolCtx, type FakePortData } from "../fakePort.test-
 import { decide, type TrustConfig } from "../trust/decide";
 import type { Rule } from "../trust/rules";
 import {
+  applyPluginsDraft,
+  clearDraftWatches,
   clearRunWatches,
+  delegatePluginsEdit,
   listPlugins,
   mergeValues,
   PLUGIN_TOOLS,
@@ -77,6 +80,7 @@ const cfg = (rules: Partial<Rule>[] = []): TrustConfig => ({
 
 afterEach(() => {
   clearRunWatches();
+  clearDraftWatches();
   vi.useRealTimers();
 });
 
@@ -88,6 +92,8 @@ describe("plugin tools", () => {
       ["read_plugins", "read"],
       ["run_plugin_action", "consequential"],
       ["write_plugins", "consequential"],
+      ["delegate_plugins_edit", "reversible"],
+      ["apply_plugins_draft", "consequential"],
     ]);
   });
 
@@ -269,5 +275,58 @@ describe("plugin tools", () => {
       expect(
         writePlugins.schema.safeParse({ project: "Hollow", text, baseRevision: null, scripts: [{ name, text: "" }] }).success,
       ).toBe(false);
+  });
+
+  it("delegates a change to a drafting session and tells Duck when it's done", async () => {
+    const d = data();
+    const port = fakePort(d);
+    const ctx = toolCtx(port, { codingModel: "opus" });
+    const input = delegatePluginsEdit.schema.parse({ project: "Hollow", request: "add a deploy button" });
+    const out = await delegatePluginsEdit.run(input, { ...ctx, prepared: undefined });
+    expect(out).toMatchObject({ session: "toolbar draft", id: "draft-1", project: "Hollow" });
+    expect(port.calls[0]).toEqual({
+      name: "startPluginsDraft",
+      args: [
+        {
+          projectId: "p1",
+          title: "toolbar draft",
+          model: "opus",
+          prompt: "/workbench:plugins add a deploy button\n\nThe draft folder: drafts/p1\nThe project: Hollow, at C:/src/p1",
+        },
+      ],
+    });
+    // A second one while the first is drafting would replace its folder.
+    d.sessions!.find((x) => x.id === "draft-1")!.phase = "working";
+    await expect(delegatePluginsEdit.run(input, { ...ctx, prepared: undefined })).rejects.toThrow(/still drafting/);
+    port.phase("draft-1", "done", "working");
+    expect(ctx.posted).toEqual([
+      'Session "toolbar draft" (id draft-1), drafting Hollow\'s toolbar finished. Call apply_plugins_draft for Hollow to show the user the draft.',
+    ]);
+  });
+
+  it("applies a draft from disk with the same card, sends problems back, and clears it", async () => {
+    const d = data();
+    d.drafts = { p1: { text: '{"plugins": []}', scripts: [] } };
+    await expect(call(applyPluginsDraft, { project: "Hollow" }, d)).rejects.toThrow(
+      /^The draft has problems, so it can't go live\. Send them to the drafting session/,
+    );
+    d.drafts = { p1: { text, scripts: [] } };
+    await expect(call(applyPluginsDraft, { project: "Hollow" }, d)).rejects.toThrow(/nothing to apply/);
+
+    const next = text.replace('"label": "ship"', '"label": "ship it"');
+    d.drafts = { p1: { text: next, scripts: [{ name: "deploy.ps1", text: "git push" }] } };
+    d.scripts = { "p1/old.ps1": "x" };
+    const c = await call(applyPluginsDraft, { project: "Hollow" }, d);
+    expect(c.summary).toBe(
+      "Change the toolbar of Hollow: edit plugins.json and write scripts/deploy.ps1. After: build (go, ship, dev).",
+    );
+    expect(c.review).toEqual([
+      { label: "plugins.json", before: text, after: next },
+      { label: "scripts/deploy.ps1", before: null, after: "git push" },
+    ]);
+    expect(c.facts).toEqual({ projectId: "p1", texts: [next, "git push"] });
+    expect(await c.exec()).toMatchObject({ revision: "p-4", scripts: ["deploy.ps1"] });
+    expect(c.port.calls.map((x) => x.name)).toEqual(["writeScript", "writePlugins", "clearPluginsDraft"]);
+    expect(c.ctx.notices[0].text).toBe("Duck edited the build toolbar");
   });
 });

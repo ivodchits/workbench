@@ -16,6 +16,7 @@
 //! project's file changes, however it was written (the editor, Duck, a sync pull),
 //! and the toolbar redraws from a fresh read.
 
+pub mod draft;
 pub mod format;
 
 use std::collections::{HashMap, HashSet};
@@ -37,7 +38,7 @@ pub const FILE: &str = "plugins.json";
 pub const EVENT: &str = "plugins-changed";
 
 /// A plugin file is a page of JSON, not data.
-const MAX_FILE_BYTES: usize = 256 * 1024;
+pub(crate) const MAX_FILE_BYTES: usize = 256 * 1024;
 
 /// How long the watcher gathers events before it emits: one save is often several
 /// (a temp file, a rename).
@@ -80,7 +81,7 @@ struct Changed {
 
 /// The project's notes folder (by its notes key, step N3): the plugin file, and
 /// `{data}` in an action.
-fn data_dir(root: &Path, project_id: &str) -> Result<PathBuf, String> {
+pub(crate) fn data_dir(root: &Path, project_id: &str) -> Result<PathBuf, String> {
     check_project(project_id)?;
     Ok(root.join(crate::notes::folder_of(project_id)))
 }
@@ -200,7 +201,7 @@ pub fn remove(root: &Path, project_id: &str, base: &str) -> Result<(), String> {
 
 /// The folder next to the file for scripts its actions call (`{data}/scripts/…`),
 /// so they sync with it.
-const SCRIPTS: &str = "scripts";
+pub(crate) const SCRIPTS: &str = "scripts";
 
 /// A script's path: one plain file name, no folders.
 fn script_path(root: &Path, project_id: &str, name: &str) -> Result<PathBuf, String> {

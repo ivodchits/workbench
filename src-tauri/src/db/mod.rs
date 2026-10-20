@@ -221,6 +221,16 @@ const MIGRATIONS: &[&str] = &[
     r#"
     ALTER TABLE projects ADD COLUMN notes_key TEXT;
     "#,
+    // v12 -> v13: the sessions Duck started to draft a project's toolbar (assistant
+    // plan W5). Each launch of one adds the drafting skill and its draft folder
+    // (`plugins::draft::launch_args`). No foreign key: a row outliving its instance
+    // is never read again.
+    r#"
+    CREATE TABLE plugin_draft_sessions (
+        instance_id TEXT PRIMARY KEY,
+        project_id  TEXT NOT NULL
+    );
+    "#,
 ];
 
 /// Apply any migrations the database hasn't seen yet, advancing
