@@ -2251,6 +2251,39 @@ tapping around. Two stages.
       the session is registered before its first launch. Applying a draft clears it
       and the registration, so later resumes are ordinary sessions.
 
+#### Step W6 — Screen and keys: Duck's hands on the terminal
+
+- **Goal:** Duck can do at a session's terminal what you can: see the screen and press
+  keys. Asked for on 2026-10-20, after a prompt sat unsent in a session's input box and
+  Duck had no way to press Enter ("it still bothers me a little that there are things
+  that Duck can't do in its own home environment").
+- **Depends on:** W2, T1 (the trust rules).
+- **Build:**
+  - Tool `read_screen(session)` (read tier): the terminal's rendered screen as text
+    (`terminalPool.readScreen`, the visible rows, trimmed), with a short hash of it.
+    It shows what the transcript doesn't: the folder-trust dialog, `/login`, pickers,
+    menus, the input box's contents, Claude Code's own error lines. Wrapped as
+    untrusted, as transcripts are.
+  - Tool `press_keys(session, keys, screenHash)` (consequential): named keys (`enter`,
+    `escape`, `up`, `down`, `left`, `right`, `tab`, `shift+tab`, `backspace`, `ctrl+c`,
+    `ctrl+u`, digits, `y`, `n`) and short text, at most a few dozen per call, written
+    with small gaps (a burst is read as a paste: see the PTY harness notes).
+    - **Stale screen refused:** the call names the hash Duck read; if the screen has
+      changed since, nothing is sent and Duck reads again.
+    - **Through the trust rules:** keys sent while a permission prompt or question is
+      open answer it, so the call is judged as `answer_choice` would be (the floor, the
+      rules, `grantedBy`). Elsewhere it's an ordinary consequential call, with the
+      keys and the screen's last lines on its card.
+    - Never into a session's terminal while you're typing in it: refused if the
+      console has had your keystrokes in the last few seconds.
+  - A chip in the thread: "Duck pressed Enter in backend".
+- **Key files:** `src/assistant/tools/screen.ts`, `src/panels/terminalPool.ts`,
+  `src/assistant/port.ts` / `port.local.ts`.
+- **Done when:** Duck finds a prompt sitting unsent and presses Enter; answers the
+  folder-trust dialog when asked to; a stale hash sends nothing; keys into an open
+  permission prompt go through the trust rules.
+- **Out of scope:** reading or driving shells and task panels (Claude consoles only).
+
 ### Track M — Models
 
 #### Step M1 — Model per Claude Code session
@@ -3192,6 +3225,40 @@ tapping around. Two stages.
   it.
 - **Out of scope:** making it the default before the measurements.
 
+#### Step D4 — Headless workers over stream-json
+
+- **Goal:** Duck's workers run without a terminal: Claude Code speaking its structured
+  protocol (`claude -p --input-format stream-json --output-format stream-json`, as the
+  Agent SDK does), so Duck sends messages, sees every event, answers permission
+  requests as data and interrupts cleanly. No screen reading and no timing guesses.
+  Asked for on 2026-10-20 with W6 and T4.
+- **Depends on:** D1, D2; shares the stream-json process code with M3.
+- **Build:**
+  - **A worker kind of session** with no PTY: a backend process per worker, its
+    stdin/stdout framed as stream-json; events go to the webview as they arrive. The
+    session id, the transcript file and the hooks stay as for any session, so the
+    status engine, summaries (W3) and the trust log keep working.
+  - **The transcript view is its console:** the drawer's "open console" opens the
+    transcript view (it already renders transcripts), with its composer sending
+    through the protocol. A "take over" turns it into a normal terminal session
+    (`--resume` in a PTY) when you want the TUI.
+  - **Permissions as data:** `--permission-prompt-tool` (a tool on Duck's MCP server,
+    M3) or the protocol's own permission requests go to the trust watcher; no menu,
+    no keys.
+  - **Delivery:** follow-ups are messages on stdin, taken when Claude Code says so;
+    `interrupt` is a protocol message. `promptOutbox` is not needed for them.
+  - The worker's flags (effort, allow list, MCP, `--add-dir`) carry over from D1.
+- **Check first:** which slash commands work headless (`/compact` at least), whether
+  `--resume` with stream-json keeps the conversation, and what a long run costs in
+  memory against a PTY session.
+- **Key files:** `src-tauri/src/assistant/` (a worker process module), `src/assistant/tasks.ts`,
+  the transcript view.
+- **Done when:** a research task and a code task run headless end to end, a follow-up and
+  an interrupt work, a permission request is answered without a menu, and "take over"
+  opens the same conversation in a terminal.
+- **Out of scope:** your own sessions (they stay terminals: you use slash commands and
+  the full TUI).
+
 ### Track L — Learning & self-development
 
 #### Step L1 — Long-term memory: files, index, recall
@@ -3763,6 +3830,30 @@ checked in the scratch PTY first.
 - **Out of scope:** editing Claude Code's global (user-level) settings; promotion is
   per-project only.
 
+#### Step T4 — Permission answers through the `PermissionRequest` hook
+
+- **Goal:** T2 answers Claude Code's permission prompts as data, not keystrokes, so an
+  approval can't miss its menu, land in the wrong dialog, or race your own typing.
+- **Depends on:** T2.
+- **Build:**
+  - **Check first** (the CLI on the installed version, before any code): whether a
+    `PermissionRequest` hook can return a decision (`allow` / `deny`, with a message)
+    that Claude Code acts on without showing its menu, how long it waits for the hook,
+    and what it does when the hook gives no decision. Workbench already installs the
+    hook and receives the event (`hooks/install.rs`); today it only observes it.
+  - **Hold the response:** the hook server keeps the HTTP response for that event open
+    while the trust watcher decides (rules, then the judge: a few seconds), and answers
+    with the decision. No decision in time (the judge is slow, Duck is off, the policy
+    leaves it to you) answers "no decision", so the menu shows as now.
+  - `answerChoice` keystrokes stay for questions and plans, and as the fallback when
+    the hook can't decide.
+  - The decision log gains how each prompt was answered (`hook` or `keys`).
+- **Key files:** `src-tauri/src/hooks/`, `src/assistant/trust/watcher.ts`.
+- **Done when:** an allowed prompt never shows its menu in the terminal, a denied one
+  reaches Claude Code with its reason, one left to you shows its menu as before, and a
+  week's decisions show no keystroke answers for permission prompts.
+- **Out of scope:** questions (`AskUserQuestion`) and plan approvals.
+
 ---
 
 ## Sequencing
@@ -3792,8 +3883,11 @@ X0 ─┬─▶ A1 ─▶ A2 ─┬─▶ A3 ─┬─▶ W2 ─┬─▶ T1 ─
    D1, because a card for every action defeats the point of Duck. W5 moved ahead of T2
    once K1 merged: its plugin runs are Duck's own consequential tools, so T1's rules
    already cover them per action, while T2 is the larger step.)
-2. W3 (done), **D2**, **P1**. *Autopilot milestone: sessions, Duck's workers included, keep going
-   while you're away, and plans run step by step.*
+2. W3 (done), W6, T4, **D2**, D4, **P1**. *Autopilot milestone: sessions, Duck's workers
+   included, keep going while you're away, and plans run step by step.* (W6, T4 and D4
+   added 2026-10-20: Duck's control of sessions without guessing from the screen. W6 is
+   small and comes first; T4 starts with a CLI check and is dropped if the hook can't
+   decide; D4 follows D2, when the workers' reliability matters most.)
 3. V1, V2, R1, R2, V3, **V5**, **P2**. *Voice + phone milestone, including read-aloud,
    screenshots, proactive spoken updates, and unattended autopilot runs.*
 4. M2, **M3**, W4, L1, S1, V4. *Conversation milestone: chat and rubber duck, hands-free, with
@@ -3930,6 +4024,7 @@ T2 goes live after the replay check in its done-when (the past week's prompts th
 | W3 | Session summaries | ☑ |
 | W4 | Core memory (the always-loaded profile) | ☐ |
 | W5 | Project toolbar tools | ☑ |
+| W6 | Screen and keys: Duck's hands on the terminal | ☐ |
 | M1 | Model per Claude Code session | ☑ |
 | M2 | Effort routing, Haiku workers, budget-aware degrade | ☐ |
 | M3 | Subscription brain: headless Claude Code as the fallback main thread | ☐ |
@@ -3937,6 +4032,7 @@ T2 goes live after the replay check in its done-when (the past week's prompts th
 | D1 | Worker sessions: workspace, brief, result contract | ☑ |
 | D2 | Offload routing, subscription-limit awareness, Duck as the worker's user | ☐ |
 | D3 | Session-backed thinking modes (experiment) | ☐ |
+| D4 | Headless workers over stream-json | ☐ |
 | B1 | Web search and fetch | ☐ |
 | B2 | MCP host + your Firefox | ☐ |
 | V1 | Push-to-talk with local STT on the GPU (desktop) | ☐ |
@@ -3957,5 +4053,6 @@ T2 goes live after the replay check in its done-when (the past week's prompts th
 | T1 | Trust engine for the Assistant's own actions | ☑ |
 | T2 | Auto-answering Claude Code permission prompts | ☑ |
 | T3 | Learning loop: promote rules, questions and plans | ☐ |
+| T4 | Permission answers through the `PermissionRequest` hook | ☐ |
 | P1 | Autopilot loop for one session | ☐ |
 | P2 | Unattended runs: limits, windows, stalls, checklists, several sessions | ☐ |
