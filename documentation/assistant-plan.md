@@ -48,14 +48,15 @@ mid-thread: the English voice is the better one, and a fixed reply language is p
 | **T — Trust** | A configurable trust policy so the Assistant can approve most things itself, both its own actions and Claude Code permission prompts, with an audit log and a kill switch |
 | **M — Models** | Per-session Claude Code model (`--model opus`); Sonnet main thread with per-message effort, Haiku workers, budget-aware degrade |
 | **B — Web & browser** | Server-side web search/fetch; your real Firefox through the Firefox MCP bridge you already use |
-| **V — Voice** | Push-to-talk dictation with local STT on the GPU; natural-sounding spoken replies (one voice on the desktop and the phone); read-aloud and screenshots; hands-free conversation mode with end-of-turn detection; proactive spoken updates when background work finishes |
+| **V — Voice** | Push-to-talk dictation with local STT on the GPU; natural-sounding spoken replies (one voice on the desktop and the phone); read-aloud and screenshots; hands-free conversation mode with end-of-turn detection; proactive spoken updates when background work finishes; an experimental wake word on the PC |
 | **L — Learning & self-development** | Long-term memory as readable files with a search index, daily consolidation, lessons from corrections; routines, a backed-up data repo and weekly housekeeping; Duck growing its own skills; improving its own prompts and code through Opus sessions, with you approving every merge |
 | **P — Plan autopilot** | Duck runs your "step → `/compact` → continue" loop on a session and only comes back when something needs you; unattended runs with limits, windows, stall detection and a morning summary |
 | **S — Modes & skills** | Chat and rubber-duck modes; user-defined skills and modes, so the Assistant can grow without code |
 | **R — Remote** | The Assistant on the phone (chat + voice) through the existing remote server; the PWA as a real app (shortcuts, share target); later an Android companion app (assistant gesture, tile, widget, background conversation) |
 | **H — Everyday and home** | Duck beyond Workbench: tools that run where they act (PC, phone, home server); Steam, the PC's media keys, weather; YouTube Music and YouTube, Spotify later; Duck's own reminders and timers; the phone's actions as the default assistant; Duck's core on an always-on home server; a fallback brain on the phone |
 
-**Out of scope (decided 2026-10-18):** an always-on wake word (opt-in later at most; see V1),
+**Out of scope (decided 2026-10-18):** a wake word on the phone (on the PC it's an
+experimental opt-in, V6, added 2026-10-20),
 local LLMs, computer use (screenshots and clicks on the desktop), driving Claude Code agents
 any way other than the PTY, cloud STT in v1 (left pluggable), **Discord** (dropped after
 review: bots can't act for your account and self-bots are against Discord's ToS, so it
@@ -2716,6 +2717,10 @@ and voiced text adventures as user-defined modes (S2).
       debug build), with progress events, a checksum, and resume.
     - Silero VAD trims leading and trailing silence (required, see above).
   - `tauri-plugin-global-shortcut`: hold-to-talk (default Ctrl+Alt+Space, rebindable).
+    **The dedicated desk button** (2026-10-20) is the main way in: set it to send a key
+    nothing else uses (F13–F24) and bind that as the push-to-talk key with no modifiers.
+    Hold is push-to-talk, using the plugin's pressed and released states. A double tap
+    toggles conversation mode (V4) if the button sends key up and down events.
     Release → transcribe → emit `voice-transcript {text, source: "desktop"}` → the engine
     submits it to the current thread, marked `voice`.
   - A small "listening…" / "transcribing…" HUD: the drawer opens if closed; with the window
@@ -2738,8 +2743,7 @@ and voiced text adventures as user-defined modes (S2).
   - After the timeout, idle RSS and VRAM return to the pre-voice baseline and the dGPU can
     sleep.
   - No mic indicator shows in Windows while the key isn't held.
-- **Out of scope:** wake word (if wanted later: the sherpa-onnx keyword spotter, opt-in);
-  dictation into consoles.
+- **Out of scope:** wake word (V6, experimental); dictation into consoles.
 
 #### Step V2 — Natural spoken replies
 
@@ -3013,6 +3017,49 @@ and voiced text adventures as user-defined modes (S2).
   - Saying "read it" in the reply window starts read-aloud.
   - Away from the PC, the phone gets the push.
 - **Out of scope:** calendar-aware quiet times (possible later through an MCP server).
+
+#### Step V6 — Wake word on the PC (experimental)
+
+- **Goal:** Say "Hey Duck" / «Эй, Дак» and talk, without reaching for the button. This is
+  an experiment: the desk button and the hotkey stay the main way in, and V6 stays only
+  if it meets the numbers below (decided 2026-10-20).
+- **Depends on:** V1 (capture, VAD, STT). Uses V2 to stay deaf while Duck speaks, and
+  V4's echo cancellation when it's there.
+- **Build:**
+  - `voice/wake.rs`: when enabled, the mic stays open (16 kHz mono). Silero VAD gates
+    the **sherpa-onnx keyword spotter** (open vocabulary: the two phrases given as text, no
+    training), one CPU thread at below-normal priority, never the GPU. If its accuracy
+    falls short, **openWakeWord** is the second engine (a custom model trained once
+    offline; only the ONNX file ships).
+  - **Confirmed by the transcript, at no extra cost:** a spotter hit starts recording
+    quietly, from ~1 s before the hit to the end of speech (VAD), and V1 transcribes it.
+    - The phrase at the start (fuzzy, either language): it's cut off and the rest is
+      sent like push-to-talk.
+    - The phrase alone ("Hey Duck" … pause): a chime, then listening as with the button.
+    - No phrase: dropped silently and logged as a false trigger. Nothing reaches Duck.
+  - **Stays deaf:**
+    - while Duck speaks (unless V4's echo cancellation is running);
+    - while another app uses the mic (a call or meeting);
+    - while a fullscreen app is in front (pref, on by default);
+    - on battery (pref, on by default, like "GPU for voice").
+  - **Controls:**
+    - A setting (off by default) with a sensitivity slider.
+    - A tray check item "Listen for 'Hey Duck'".
+    - A small ear icon on the Duck button while listening.
+  - **A trigger log** (time, score, confirmed or not) for tuning. Audio is kept only with a
+    "keep false-trigger clips" pref, in the voice-eval folder.
+- **Key files:** `src-tauri/src/voice/wake.rs`, `src-tauri/src/voice/mod.rs`,
+  `src/panels/Assistant/DrawerSettings.tsx`, `src-tauri/src/attention.rs` (tray).
+- **Done when** (measured; results in As built):
+  - Under 1 false trigger per 10 hours, from a test run that plays TV, YouTube and call
+    audio into the room, plus everyday use.
+  - At least 9 in 10 real attempts caught at desk distance, in English and Russian.
+  - Under 2% of one core on average while enabled.
+  - A false trigger never sends anything.
+  - The button and the hotkey work as before while it's on.
+  - If it misses the numbers after tuning, it ships off, with the numbers recorded.
+- **Out of scope:** the phone (not wanted, 2026-10-20); speaker identification; other
+  wake phrases.
 
 ### Track R — Remote
 
@@ -4387,7 +4434,8 @@ checked in the scratch PTY first.
   without the clock app opening; "pause" pauses YouTube Music; "what did I miss?" reads
   the new notifications, and a reply to a Telegram message goes after a card; a reminder
   fires with the phone in airplane mode.
-- **Out of scope:** the accessibility service; Wi-Fi and Bluetooth toggles (not allowed).
+- **Out of scope:** the accessibility service; Wi-Fi and Bluetooth toggles (not allowed);
+  a wake word (not wanted on the phone, 2026-10-20).
 
 #### Step H6 — Duck on the home server
 
@@ -4445,6 +4493,7 @@ X0 ─┬─▶ A1 ─▶ A2 ─┬─▶ A3 ─┬─▶ W2 ─┬─▶ T1 ─
     ├─▶ M1 ─▶ M4 (permission mode at launch)
     └─▶ V1 (after A3) ─▶ V2 (after X0's listening test) ─┬─▶ V3 (needs W3)
                                                           └─▶ V4
+    V1 ─▶ V6 (experimental; better after V2, V4)
     M2 + W4 ─▶ S1 ─▶ S2 ;  M2 + D2 ─▶ M3
     W4 + D1 ─▶ L1 ─▶ L2 ;  D2 + S2 + L1 + T1 ─▶ L3 ;  L1 + D2 + S2 ─▶ L4
     V2 + V4 + D1 ─▶ V5 ;  W2 + W3 + T2 + D2 ─▶ P1 (V5 for spoken stops) ─▶ P2
@@ -4475,7 +4524,8 @@ X0 ─┬─▶ A1 ─▶ A2 ─┬─▶ A3 ─┬─▶ W2 ─┬─▶ T1 ─
 Track H (added 2026-10-20) runs alongside: H2 and H4 are small and need only W2, so they
 can slot in anywhere for an early taste; H1 with R1; H3 after H2; H5 with R4, whose gate
 it widens (the phone as the default assistant counts as real use); H6 when the home
-server exists; H7 after H5.
+server exists; H7 after H5. V6 is an experiment for any time after V1, best after V2 and
+V4.
 
 T2 goes live after the replay check in its done-when (the past week's prompts through
 `decide`), not after days in shadow mode. Shadow stays available per project.
@@ -4624,6 +4674,7 @@ T2 goes live after the replay check in its done-when (the past week's prompts th
 | V3 | Read-aloud and screen reading | ☐ |
 | V4 | Hands-free conversation mode | ☐ |
 | V5 | Proactive announcements | ☐ |
+| V6 | Wake word on the PC (experimental) | ☐ |
 | L1 | Long-term memory: files, index, recall | ☐ |
 | L2 | Consolidation, journal, and recall quality | ☐ |
 | L3 | Self-development through Opus sessions | ☐ |
