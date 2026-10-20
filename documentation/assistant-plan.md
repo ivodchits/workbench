@@ -4709,7 +4709,7 @@ T2 goes live after the replay check in its done-when (the past week's prompts th
 | D1 | Worker sessions: workspace, brief, result contract | ☑ |
 | D2 | Offload routing, subscription-limit awareness, Duck as the worker's user | ☐ |
 | D3 | Session-backed thinking modes (experiment) | ☐ |
-| D4 | Headless workers over stream-json | ☐ |
+| D4 | Headless workers over stream-json | ☑ |
 | B1 | Web search and fetch | ☐ |
 | B2 | MCP host + your Firefox | ☐ |
 | V1 | Push-to-talk with local STT on the GPU (desktop) | ☐ |
@@ -4732,7 +4732,7 @@ T2 goes live after the replay check in its done-when (the past week's prompts th
 | T2 | Auto-answering Claude Code permission prompts | ☑ |
 | T3 | Learning loop: promote rules, questions and plans | ☐ |
 | T4 | Permission answers through the `PermissionRequest` hook | ☑ |
-| P1 | Autopilot loop for one session | ☐ |
+| P1 | Autopilot loop for one session | ☑ |
 | P2 | Unattended runs: limits, windows, stalls, checklists, several sessions | ☐ |
 | H1 | Host-bound tools | ☐ |
 | H2 | PC tools: Steam, media keys, weather | ☐ |
