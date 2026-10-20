@@ -105,6 +105,8 @@ export interface FakePort extends WorkbenchPort {
   holding: boolean;
   /** The autopilot lines shown (`setAutopilotBadge`). */
   badges: Map<string, AutopilotBadgeRef | null>;
+  /** `onUserBack` listeners: call them for "the user is back". */
+  back: Set<() => void>;
 }
 
 export function project(p: Partial<ProjectRef> & { id: string }): ProjectRef {
@@ -162,6 +164,7 @@ export function fakePort(data: FakePortData = {}): FakePort {
     lines: [],
     holding: false,
     badges: new Map(),
+    back: new Set(),
     listProjects: () => data.projects ?? [],
     listSessions: (projectId?: string) =>
       (data.sessions ?? []).filter(
@@ -481,6 +484,10 @@ export function fakePort(data: FakePortData = {}): FakePort {
     },
     alertUser(id, title, body) {
       record("alertUser", id, title, body);
+    },
+    onUserBack(cb) {
+      port.back.add(cb);
+      return () => port.back.delete(cb);
     },
   };
   return port;

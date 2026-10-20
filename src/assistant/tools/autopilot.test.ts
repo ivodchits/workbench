@@ -20,7 +20,7 @@ describe("autopilot tools", () => {
     const autopilot = createAutopilot({
       port,
       backend: { put: async () => {}, list: async () => [], remove: async () => {} },
-      review: () => Promise.reject(new Error("not called")),
+      call: () => Promise.reject(new Error("not called")),
       readFile: async (p) => {
         read.push(p);
         return "# Plan";

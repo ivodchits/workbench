@@ -304,7 +304,7 @@ export function initAssistant(): Promise<void> {
     const autopilot = createAutopilot({
       port: localPort,
       backend: ipcAutopilotBackend,
-      review: (r) => structured(r),
+      call: (r) => structured(r),
       readFile,
       tell: (threadId, text) =>
         void engineRef

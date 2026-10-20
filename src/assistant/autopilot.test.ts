@@ -1,6 +1,13 @@
 import { describe, expect, it } from "vitest";
 
-import { createAutopilot, planContext, type Autopilot, type Review, type ReviewRequest } from "./autopilot";
+import {
+  createAutopilot,
+  planContext,
+  type Autopilot,
+  type AutopilotCall,
+  type QuestionAnswer,
+  type Review,
+} from "./autopilot";
 import { fakePort, project, session, type FakePortData } from "./fakePort.test-util";
 import type { ChoiceRef, SessionPhase } from "./port";
 
@@ -30,6 +37,7 @@ const flush = async () => {
 function verdict(v: Partial<Review> = {}): Review {
   return {
     verdict: "continue",
+    finished: true,
     stepId: "A1",
     nextStepId: "A2",
     summary: "Built the core; tests pass.",
@@ -39,11 +47,37 @@ function verdict(v: Partial<Review> = {}): Review {
     compactReason: "a new step",
     compactFocus: "keep the plan path",
     nextPrompt: null,
+    decisions: [],
     ...v,
   };
 }
 
-function setup(opts: { reviews?: (Review | Error)[]; data?: FakePortData; phase?: SessionPhase; stored?: Autopilot[] } = {}) {
+const QUESTION = {
+  id: "c1",
+  kind: "question",
+  toolName: "AskUserQuestion",
+  input: {},
+  at: 1,
+  questions: [{ header: "DB", question: "Which database?", multiSelect: false, options: [] }],
+  options: [
+    { key: 1, label: "SQLite", detail: "", typed: false },
+    { key: 2, label: "Postgres", detail: "", typed: false },
+  ],
+  terminalOnly: null,
+  sent: null,
+  optionsFrom: "hook",
+  held: false,
+} satisfies ChoiceRef;
+
+function setup(
+  opts: {
+    reviews?: (Review | Error)[];
+    answers?: QuestionAnswer[];
+    data?: FakePortData;
+    phase?: SessionPhase;
+    stored?: Autopilot[];
+  } = {},
+) {
   const s = session({ id: "w", projectId: "p", title: "workbench", phase: opts.phase ?? "done" });
   const port = fakePort({
     projects: [project({ id: "p", name: "Workbench" })],
@@ -52,7 +86,8 @@ function setup(opts: { reviews?: (Review | Error)[]; data?: FakePortData; phase?
     ...opts.data,
   });
   const reviews = [...(opts.reviews ?? [])];
-  const asked: ReviewRequest[] = [];
+  const answers = [...(opts.answers ?? [])];
+  const asked: AutopilotCall<never>[] = [];
   const told: string[] = [];
   const notices: string[] = [];
   const stored = new Map<string, Autopilot>();
@@ -66,11 +101,12 @@ function setup(opts: { reviews?: (Review | Error)[]; data?: FakePortData; phase?
       list: async () => [...stored.values()],
       remove: async (id) => void removed.push(id),
     },
-    review: async (r) => {
-      asked.push(r);
+    call: async (r) => {
+      asked.push(r as AutopilotCall<never>);
+      if (r.purpose === "autopilot-question") return answers.shift() as never;
       const next = reviews.shift() ?? verdict();
       if (next instanceof Error) throw next;
-      return next;
+      return next as never;
     },
     readFile: async (path) => {
       if (path !== "C:/src/p/plan.md") throw new Error(`no file ${path}`);
@@ -199,31 +235,99 @@ describe("autopilot", () => {
     expect(u.calls("sendPrompt")).toEqual([]);
   });
 
-  it("waits on a prompt without failing, and hands a question to the thread", async () => {
+  it("waits on a permission prompt without failing", async () => {
     const t = setup({ phase: "working" });
     await start(t);
     await flush();
     expect(t.asked).toHaveLength(0);
-    const choice = {
-      id: "c1",
-      kind: "question",
-      toolName: "AskUserQuestion",
-      input: {},
-      at: 1,
-      questions: [{ header: "DB", question: "Which database?", multiSelect: false, options: [] }],
-      options: [{ key: 1, label: "SQLite", detail: "", typed: false }],
-      terminalOnly: null,
-      sent: null,
-      optionsFrom: "hook",
-      held: false,
-    } satisfies ChoiceRef;
-    t.port.setChoice("w", choice);
     t.port.phase("w", "needs_you", "working");
     expect(t.ap.get("w")?.doing).toBe("waiting");
     expect(t.port.badges.get("w")?.text).toContain("waiting on you");
-    expect(last(t.told)).toContain('asks: Which database? Options: 1. SQLite. If the plan (C:/src/p/plan.md)');
     t.port.phase("w", "working", "needs_you");
     expect(t.ap.get("w")?.doing).toBe("working");
+  });
+
+  it("answers a small question itself, records it and alerts; a serious one pauses", async () => {
+    const t = setup({
+      phase: "working",
+      answers: [
+        { serious: false, option: 1, text: null, why: "The plan keeps everything local." },
+        { serious: true, option: null, text: null, why: "It changes the data model." },
+      ],
+    });
+    await start(t);
+    t.s.choice = QUESTION;
+    t.port.phase("w", "needs_you", "working");
+    await flush();
+    expect(t.asked[0]).toMatchObject({ purpose: "autopilot-question" });
+    expect(t.asked[0].input).toContain("Which database?\nOptions:\n1. SQLite\n2. Postgres");
+    expect(t.calls("answerChoice")).toEqual([["w", "c1", 1]]);
+    expect(t.ap.get("w")?.decisions).toMatchObject([
+      { question: "Which database?", decision: "SQLite", by: "question", reported: false },
+    ]);
+    expect(t.calls("alertUser")).toEqual([["w", "Autopilot decided", "Which database? → SQLite"]]);
+    expect(last(t.notices)).toBe("Autopilot decided: Which database? → SQLite · The plan keeps everything local.");
+    expect(t.ap.get("w")?.state).toBe("running");
+
+    t.s.choice = { ...QUESTION, id: "c2" };
+    t.port.phase("w", "working", "needs_you");
+    t.port.phase("w", "needs_you", "working");
+    await flush();
+    expect(t.calls("answerChoice")).toHaveLength(1);
+    expect(t.ap.get("w")).toMatchObject({ state: "paused", why: "the session asks a question that's yours to decide" });
+    // The pause reports what was settled so far, once.
+    expect(last(t.told)).toContain("settled 1 small question(s) on its own");
+    expect(last(t.told)).toContain("1. Which database? → SQLite (The plan keeps everything local)");
+    expect(t.ap.get("w")?.decisions[0].reported).toBe(true);
+  });
+
+  it("settles a turn's small questions, tells the agent, and doesn't count a fix-up as a step", async () => {
+    const t = setup({
+      reviews: [
+        verdict({
+          finished: false,
+          compact: false,
+          nextStepId: "A1",
+          decisions: [{ question: "Name the table?", decision: "cache_entries", why: "Matches the other tables." }],
+        }),
+        verdict({ finished: false, compact: false, nextPrompt: "the tracker isn't ticked: tick it, then proceed" }),
+        verdict({ finished: false, compact: false }),
+        verdict({ finished: false, compact: false }),
+      ],
+      data: { contextUsed: { w: 30 } },
+    });
+    await start(t);
+    await flush();
+    expect(t.calls("sendPrompt")).toEqual([["w", "continue the implementation\n\nOn the open questions: Name the table: cache_entries."]]);
+    expect(t.ap.get("w")).toMatchObject({ stepsDone: 0, turnsOnStep: 1, step: "A1" });
+    expect(t.port.badges.get("w")?.text).toBe("step 1 of 5 (A1) · working · 1 decided");
+    expect(t.asked[0].input).toContain("Context used: 30%");
+    t.turnEnds();
+    await flush();
+    expect(t.calls("sendPrompt")[1]).toEqual(["w", "the tracker isn't ticked: tick it, then proceed"]);
+    t.turnEnds();
+    await flush();
+    t.turnEnds();
+    await flush();
+    // Four turns without a finished step: it's going in circles.
+    expect(t.ap.get("w")).toMatchObject({ state: "paused", why: "4 turns went by without finishing a step" });
+    expect(t.calls("sendPrompt")).toHaveLength(3);
+  });
+
+  it("reports what it decided when the user comes back", async () => {
+    const t = setup({
+      reviews: [verdict({ decisions: [{ question: "Retry count?", decision: "3", why: "The plan's default." }] })],
+      data: {},
+    });
+    await start(t, { notifyDecisions: false });
+    await flush();
+    expect(t.calls("alertUser")).toEqual([]);
+    for (const cb of t.port.back) cb();
+    expect(last(t.told)).toContain("The user is back.");
+    expect(last(t.told)).toContain("1. [A1] Retry count? → 3 (The plan's default)");
+    const n = t.told.length;
+    for (const cb of t.port.back) cb();
+    expect(t.told).toHaveLength(n);
   });
 
   it("stops when the session ends, and pauses a run the app quit during", async () => {

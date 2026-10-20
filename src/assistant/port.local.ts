@@ -145,6 +145,8 @@ const TAIL_SETTLE_MS = 300;
 const COMPACT_START_MS = 30_000;
 const COMPACT_MAX_MS = 15 * 60_000;
 const COMPACT_POLL_MS = 250;
+/** Away from the window this long, and coming back is "the user is back". */
+const AWAY_MS = 10 * 60_000;
 
 // ── mandates (T2) ──
 
@@ -613,6 +615,22 @@ export const localPort: WorkbenchPort = {
   },
   setAutopilotBadge,
   alertUser: alertAbout,
+  onUserBack(cb) {
+    let awaySince: number | null = document.hasFocus() ? null : Date.now();
+    const away = () => {
+      awaySince ??= Date.now();
+    };
+    const back = () => {
+      if (awaySince !== null && Date.now() - awaySince >= AWAY_MS) cb();
+      awaySince = null;
+    };
+    window.addEventListener("blur", away);
+    window.addEventListener("focus", back);
+    return () => {
+      window.removeEventListener("blur", away);
+      window.removeEventListener("focus", back);
+    };
+  },
   setDoneSummary,
   readPluginsDraft: pluginsDraftRead,
   clearPluginsDraft: pluginsDraftClear,

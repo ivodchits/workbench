@@ -37,6 +37,7 @@ import { onTurnEnded, type TurnEnded } from "../ipc/transcript";
 import { getActivePanelId } from "./dock";
 import { autopilotRunning } from "./autopilotBadges";
 import { duckTask } from "./duckOwned";
+import { getPendingChoice } from "./pendingChoice";
 import { shouldTell } from "./promptHold";
 
 export type { NotificationPrefs };
@@ -257,6 +258,9 @@ function quiet(id: string): boolean {
  *  the snapshot too, but only while it is open. */
 function deliverNeedsYou(id: string): void {
   if (quiet(id)) return;
+  // A question on autopilot (step P1) is Duck's to settle; a serious one reaches you
+  // as the autopilot's own pause alert.
+  if (autopilotRunning(id) && getPendingChoice(id)?.kind === "question") return;
   const r = resolve(id);
   if (!r) return;
   if (config.desktop) void notifyNeedsYou(r.project, r.title, r.note).catch(() => {});
@@ -267,6 +271,7 @@ function deliverNeedsYou(id: string): void {
  *  re-ping and a push; the open dashboard also shows it via the alerts store. */
 function escalateNeedsYou(id: string, mins: number): void {
   if (quiet(id)) return;
+  if (autopilotRunning(id) && getPendingChoice(id)?.kind === "question") return;
   const r = resolve(id);
   if (!r) return;
   const title = `⚠ Still waiting · ${label(r)}`;

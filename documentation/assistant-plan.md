@@ -3896,6 +3896,49 @@ and voiced text adventures as user-defined modes (S2).
     - A spoken answer waits for V1 (typed answers through Duck work).
     - The phone dashboard doesn't show the autopilot yet.
     - The checklist is the generic default; P2 detects one per plan.
+- **Revised after the first run (2026-10-20):** you found that Duck paused after
+  nearly every turn over small questions. Autopilot is meant to leave you out until
+  something serious comes up, so it now settles the small ones itself and tells you
+  about them instead of waiting.
+  - **Small or serious.** Both prompts share one definition (`SMALL_AND_SERIOUS`).
+    - *Small* is settled by Duck, by the plan first, then the project's conventions,
+      then the simpler and more reversible option. It covers naming, layout, minor
+      implementation choices, defaults, the order of work, and "shall I go on?".
+    - *Serious* pauses the run. It covers:
+      - a change of the plan's goals or scope;
+      - costly-to-reverse architecture or data-model choices the plan leaves open;
+      - anything destructive or hard to undo;
+      - money or outside accounts;
+      - security, privacy or licensing;
+      - your own taste or vision where the plan doesn't settle it;
+      - the same thing failing twice.
+  - **The review** continues through fix-ups and small questions.
+    - It lists each question it settles in `decisions`, and the next prompt gives the
+      agent the answers, in the review's own prompt or added to your phrasing.
+    - `finished` says whether the turn completed a step. Only finished steps count
+      toward the step limit.
+    - Four turns without a finished step pause the run as going in circles.
+  - **A question the session asks mid-turn** (one question, one pick) is answered by a
+    second Sonnet call (`autopilot-question`, `QUESTION_SYSTEM`) with `answerChoice`,
+    unless it's serious, which pauses the run with the question.
+    - A question with several parts goes to Duck's thread as before, now told to settle
+      it unless it's serious.
+    - The app's own needs-you toast is skipped for a question on a running autopilot.
+  - **Each decision is recorded** with the autopilot (`decisions`: step, question,
+    decision, why, and whether you've been told).
+    - It shows as a notice in the thread, and as an alert ("Autopilot decided: …") so
+      you can steer. `notify_decisions: false` turns the alerts off.
+    - The card counts the ones not yet reported ("· 2 decided").
+    - `autopilot_status` lists them.
+  - **The digest:** the decisions not yet reported go to Duck's thread with each pause
+    and stop. Coming back to the window after 10 minutes away (`port.onUserBack`) sends
+    them too. Duck lists them for you, and a change you ask for goes to the session.
+  - **Verified:** 3 more vitest cases (451 in all) cover:
+    - a question answered with an alert, and a serious one pausing with the digest;
+    - a turn's decisions reaching the agent, with fix-ups not counted as steps and the
+      four-turn guard;
+    - the digest on your return, given once.
+  - **Not verified live.**
 
 #### Step P2 — Unattended runs: limits, windows, stalls, checklists, several sessions
 
