@@ -51,6 +51,10 @@ export interface FakePortData {
   contexts?: Record<string, Partial<SessionContext>>;
   /** What `lastResponse` answers, per session id. */
   replies?: Record<string, string | null>;
+  /** Terminal screens per session id (`readScreen`); a session without one has no
+   *  terminal in this window. `pressKeys` may change them through `onKeys`. */
+  screens?: Record<string, string[]>;
+  onKeys?: (instanceId: string, keys: string[]) => void;
 }
 
 export interface FakePlugins {
@@ -233,6 +237,15 @@ export function fakePort(data: FakePortData = {}): FakePort {
     interruptSession(id) {
       sessionOf(id);
       record("interruptSession", id);
+    },
+    readScreen(id) {
+      sessionOf(id);
+      return data.screens?.[id] ?? null;
+    },
+    async pressKeys(id, keys, gapMs) {
+      sessionOf(id);
+      record("pressKeys", id, keys, gapMs);
+      data.onKeys?.(id, keys);
     },
     stopSession(id) {
       sessionOf(id);

@@ -98,7 +98,9 @@ export interface Notice {
     /** The trust engine says something about this thread (the rate guard). */
     | "trust"
     /** A worker task started here (D1): the thread shows its live card. */
-    | "task";
+    | "task"
+    /** Duck pressed keys in a session's terminal (W6). */
+    | "keys";
   text: string;
   /** `note` only. */
   note?: NoteEdit;

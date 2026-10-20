@@ -48,6 +48,9 @@ export interface TrustFacts {
   /** Why this call always asks, whatever the rules say (a plugin action whose
    *  file asks to confirm it). Treated as the floor. */
   asks?: string;
+  /** Match rules as this tool instead (`assistant:answer_choice` for keys pressed
+   *  into an open prompt, W6): the call does what that tool does. */
+  asTool?: string;
 }
 
 export interface TrustConfig {
@@ -130,7 +133,7 @@ export function decide(req: TrustRequest, cfg: TrustConfig, deps: DecideDeps): D
     return out({ outcome: "ask", layer: "setting", reason: "you asked to confirm every prompt" });
 
   const hit = evaluate(cfg.rules, {
-    tool: req.tool,
+    tool: req.facts.asTool ?? req.tool,
     projectId: req.facts.projectId,
     specifier: req.facts.specifier,
   });

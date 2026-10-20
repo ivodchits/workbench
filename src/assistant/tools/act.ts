@@ -48,7 +48,7 @@ const DELIVERY: Record<PromptDelivery, string> = {
   starting:
     "starting: the session wasn't running, so it was started with this prompt, continuing its last conversation",
   unsent:
-    "unsent: it was typed into the session's prompt box but Claude Code didn't take it; tell the user it's sitting there unsent",
+    "unsent: it was typed into the session's prompt box but Claude Code didn't take it; check with read_screen, and press Enter there with press_keys if it's sitting in the input box",
 };
 
 const sessionArgs = { session: sessionArg, project: projectArg.optional() };

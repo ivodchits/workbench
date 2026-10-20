@@ -51,6 +51,8 @@ interface TermEntry {
   term: Terminal;
   fit: FitAddon;
   dataSub: { dispose(): void };
+  /** Stamps `typedAt` on each key the user presses in this terminal. */
+  keySub: { dispose(): void };
   resizeSub: { dispose(): void };
   /** This terminal's PTY output subscription id (step 4.1), set once `ptySubscribe`
    *  resolves after spawn. Passed to `ptyResize` (min-size arbitration) and to
@@ -439,6 +441,9 @@ export function acquire(container: HTMLDivElement, opts: AcquireOptions): void {
       markInterrupted(opts.instanceId);
     }
   });
+  // Keys only: a paste the app makes (`pasteIntoTerminal`) comes through `onData`
+  // but isn't the user typing.
+  const keySub = term.onKey(() => typedAt.set(opts.instanceId, Date.now()));
   const resizeSub = term.onResize(({ cols, rows }) => {
     // Taking the PTY's own size for a replay is not a request to resize it.
     if (pool.get(opts.instanceId)?.replaying) return;
@@ -462,7 +467,7 @@ export function acquire(container: HTMLDivElement, opts: AcquireOptions): void {
     });
   }
 
-  const entry: TermEntry = { host, term, fit, dataSub, resizeSub, titleSub };
+  const entry: TermEntry = { host, term, fit, dataSub, keySub, resizeSub, titleSub };
   entry.replaying = !!opts.attach;
   pool.set(opts.instanceId, entry);
 
@@ -771,6 +776,15 @@ export function readScreen(instanceId: string): string[] | null {
   return out;
 }
 
+/** instance id → when the user last pressed a key in its terminal, epoch ms. */
+const typedAt = new Map<string, number>();
+
+/** When the user last pressed a key in the instance's terminal in this window
+ *  (epoch ms), or null: Duck's keys (W6) never go in while you're typing. */
+export function lastTypedAt(instanceId: string): number | null {
+  return typedAt.get(instanceId) ?? null;
+}
+
 /** The last `n` lines with text in the instance's terminal (scrollback included),
  *  or null when this window holds no terminal for it: what a task printed last,
  *  for Duck's report when a run ends (W5). */
@@ -952,6 +966,8 @@ export function release(instanceId: string, opts?: { keepPty?: boolean }): void 
   if (lastFocusedInstanceId === instanceId) lastFocusedInstanceId = null;
   entry.visSub?.disconnect();
   entry.dataSub.dispose();
+  entry.keySub.dispose();
+  typedAt.delete(instanceId);
   entry.resizeSub.dispose();
   entry.titleSub?.dispose();
   clearTitleMirror(instanceId);

@@ -33,6 +33,7 @@ import { ACT_TOOLS } from "./tools/act";
 import { PLUGIN_TOOLS } from "./tools/plugins";
 import { getTime } from "./tools/getTime";
 import { READ_TOOLS } from "./tools/read";
+import { SCREEN_TOOLS } from "./tools/screen";
 import { SUMMARY_TOOLS } from "./tools/summaries";
 import { createRegistry } from "./tools/registry";
 import { TASK_TOOLS } from "./tools/tasks";
@@ -63,6 +64,7 @@ const TOOLS = [
   ...PLUGIN_TOOLS,
   ...TASK_TOOLS,
   ...SUMMARY_TOOLS,
+  ...SCREEN_TOOLS,
   ...(import.meta.env.DEV ? [testConfirm] : []),
 ];
 

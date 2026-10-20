@@ -2283,6 +2283,31 @@ tapping around. Two stages.
   folder-trust dialog when asked to; a stale hash sends nothing; keys into an open
   permission prompt go through the trust rules.
 - **Out of scope:** reading or driving shells and task panels (Claude consoles only).
+- **As built (2026-10-20):**
+  - **`src/assistant/tools/screen.ts`:** `read_screen` (read tier) returns the visible
+    rows, trailing blanks cut, at most 8,000 characters, as `<screen … hash="…"
+    untrusted>`. The hash (FNV-1a, 8 hex) leaves out digits and the spinner's glyphs,
+    so a working session's counters don't make every read stale.
+  - `press_keys` (consequential): named keys (also `space`) and `{text}` (no control
+    characters: a newline is `enter`), at most 40, written 80 ms apart. Its `prepare`
+    keeps the screen's last lines for the card. On a stale hash it sends nothing and
+    returns the screen as it is now in the error. After the keys it waits 400 ms and
+    returns the new screen, and leaves a `keys` notice ("Duck pressed Enter in api",
+    a faint ⌨ line in the thread).
+  - **Trust:** `TrustFacts.asTool` makes the rules match the call as another tool.
+    With a prompt open, `press_keys` is `assistant:answer_choice` with the prompt's
+    kind as the specifier, the picked options' labels and typed text for the floor,
+    and the permission's call unless the keys only back out (Esc, Ctrl+C, `n`). A
+    quoted `grantedBy` doesn't count when a digit picks a "don't ask again" option or
+    the keys move a menu's highlight (what Enter then picks can't be told). Away from
+    a prompt it's specifier `screen`. The log still says `assistant:press_keys`.
+  - **Port:** `readScreen` and `pressKeys(id, keys, gapMs)`, Claude consoles only.
+    `terminalPool` stamps `lastTypedAt` from xterm's `onKey` (your keys, not the
+    app's pastes); `pressKeys` checks it before every key and stops if you've typed
+    there in the last 5 s. An Esc or Ctrl+C marks the session interrupted, as typed.
+  - `send_prompt`'s "unsent" result now points Duck at `read_screen` and Enter.
+  - Not yet checked in the running app against a real unsent prompt or the
+    folder-trust dialog (unit tests only).
 
 ### Track M — Models
 
@@ -4024,7 +4049,7 @@ T2 goes live after the replay check in its done-when (the past week's prompts th
 | W3 | Session summaries | ☑ |
 | W4 | Core memory (the always-loaded profile) | ☐ |
 | W5 | Project toolbar tools | ☑ |
-| W6 | Screen and keys: Duck's hands on the terminal | ☐ |
+| W6 | Screen and keys: Duck's hands on the terminal | ☑ |
 | M1 | Model per Claude Code session | ☑ |
 | M2 | Effort routing, Haiku workers, budget-aware degrade | ☐ |
 | M3 | Subscription brain: headless Claude Code as the fallback main thread | ☐ |

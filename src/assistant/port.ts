@@ -171,6 +171,14 @@ export interface WorkbenchPort {
   ): string;
   /** Esc: stop the session's current turn. */
   interruptSession(instanceId: string): void;
+  /** The session's terminal screen as text, one string per row (step W6); null when
+   *  this window holds no terminal for it. Throws for a session whose Claude Code
+   *  console isn't running. */
+  readScreen(instanceId: string): string[] | null;
+  /** Write keys into the session's terminal, each its own write `gapMs` apart (a
+   *  burst would be read as a paste). Refused while the user has typed there in the
+   *  last few seconds. */
+  pressKeys(instanceId: string, keys: string[], gapMs: number): Promise<void>;
   /** Close the console and end its process. */
   stopSession(instanceId: string): void;
   /** The rail's "kill instance": stop it, close its review panel, and remove it from

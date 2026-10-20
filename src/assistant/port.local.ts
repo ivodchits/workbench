@@ -36,7 +36,7 @@ import { readLastResponse } from "../transcript/feed";
 import { getUsageLimits } from "../ipc/usageLimits";
 import { startPluginRunFor } from "../panels/pluginRun";
 import { deliverPrompt } from "../state/promptOutbox";
-import { readTail, release } from "../panels/terminalPool";
+import { lastTypedAt, readScreen, readTail, release } from "../panels/terminalPool";
 import { setActiveProject } from "../state/activeProject";
 import {
   closeConsole,
@@ -111,6 +111,18 @@ const running = (id: string) =>
 function requireRunning(i: Instance): void {
   if (!running(i.id)) throw new Error(`"${i.title}" isn't running.`);
 }
+
+/** A running console that is Claude Code's (not a shell). */
+function requireClaude(i: Instance): void {
+  requireRunning(i);
+  if (getOpenConsoles().some((c) => c.instanceId === i.id && c.kind !== "claude"))
+    throw new Error(`"${i.title}"'s console is a shell, not Claude Code.`);
+}
+
+/** How long after your last keystroke in a console Duck's keys are refused. */
+const TYPING_QUIET_MS = 5_000;
+
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /** How many of a task's last lines Duck's report carries. */
 const TAIL_LINES = 15;
@@ -336,6 +348,27 @@ export const localPort: WorkbenchPort = {
     requireRunning(instance(id));
     void ptyWrite(id, INTERRUPT_KEY);
     markInterrupted(id); // interrupting fires no hook — update the dot ourselves
+  },
+  readScreen(id) {
+    requireClaude(instance(id));
+    return readScreen(id);
+  },
+  async pressKeys(id, keys, gapMs) {
+    const i = instance(id);
+    requireClaude(i);
+    const enc = new TextEncoder();
+    for (let n = 0; n < keys.length; n++) {
+      // Checked before every key: you may start typing halfway through.
+      const typed = lastTypedAt(id);
+      if (typed !== null && Date.now() - typed < TYPING_QUIET_MS)
+        throw new Error(
+          `The user is typing in "${i.title}"${n ? ` (stopped after ${n} of ${keys.length} keys)` : ""}; nothing more was sent. Try again once they've stopped, or ask them.`,
+        );
+      if (n > 0) await sleep(gapMs);
+      await ptyWrite(id, enc.encode(keys[n]));
+      // As a key typed in the console: Esc or Ctrl+C interrupts and fires no hook.
+      if (keys[n] === "\x1b" || keys[n] === "\x03") markInterrupted(id);
+    }
   },
   stopSession(id) {
     instance(id);

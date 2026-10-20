@@ -641,12 +641,12 @@ function ItemView({ item, active }: { item: Item; active: boolean }) {
           style={{
             margin: "4px 16px",
             color:
-              item.notice.kind === "stopped"
+              item.notice.kind === "stopped" || item.notice.kind === "keys"
                 ? "var(--wb-textFaint)"
                 : "var(--wb-needs)",
           }}
         >
-          ! {item.notice.text}
+          {item.notice.kind === "keys" ? "⌨" : "!"} {item.notice.text}
         </div>
       );
   }
