@@ -23,6 +23,7 @@ mod skills;
 mod statusline;
 mod sys;
 mod transcript;
+mod voice;
 mod window;
 
 use tauri::Manager;
@@ -71,6 +72,8 @@ pub fn run() {
             if let Err(e) = assistant::init(app.handle(), &dir) {
                 eprintln!("[assistant] init failed: {e}");
             }
+            // Voice (step V1): nothing loads until it's used.
+            app.manage(voice::VoiceState::new(voice::models_root(app.handle())));
 
             // Seed the account-wide usage meter from the last persisted snapshot so it
             // shows the most recent figures at launch instead of staying blank until a
@@ -184,6 +187,12 @@ pub fn run() {
             assistant::assistant_autopilot_list,
             assistant::assistant_autopilot_delete,
             statusline::session_context,
+            voice::voice_status,
+            voice::voice_prepare,
+            voice::voice_preload,
+            voice::voice_transcribe_wav,
+            voice::voice_keep_warm,
+            voice::voice_unload,
             assistant::headless::headless_spawn,
             assistant::headless::headless_send,
             assistant::headless::headless_interrupt,

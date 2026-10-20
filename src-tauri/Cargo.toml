@@ -72,6 +72,14 @@ rand_core = { version = "0.6", features = ["getrandom"] }
 reqwest = { version = "0.13", default-features = false, features = ["stream", "native-tls", "http2"] }
 futures-util = "0.3"
 tauri-plugin-autostart = "~2.5.1"
+# Step V1: speech to text on the device. `ort` is pinned to rc.12 (rc.14 broke
+# transcribe-rs in X0, and our Parakeet runner is adapted from it); `load-dynamic`
+# loads onnxruntime.dll from the models folder on first use, so nothing is linked
+# into the app and nothing is in memory until voice is used. `ndarray` matches ort's.
+# `zip` unpacks the runtime from its wheel.
+ort = { version = "=2.0.0-rc.12", default-features = false, features = ["std", "ndarray", "load-dynamic", "api-24"] }
+ndarray = "0.17"
+zip = { version = "2", default-features = false, features = ["deflate"] }
 
 # Windows-only: intercept WebView2 accelerator keys so we can suppress the engine's
 # built-in reload shortcuts (F5 / Ctrl+R / Ctrl+Shift+R), which would otherwise
@@ -84,5 +92,8 @@ windows = { version = "0.61", features = [
     "Win32_UI_Input_KeyboardAndMouse",
     "Win32_Security_Credentials",
     "Win32_Foundation",
+    # Step V1: DirectML.dll loaded by path; AC power for the GPU preference.
+    "Win32_System_LibraryLoader",
+    "Win32_System_Power",
 ] }
 

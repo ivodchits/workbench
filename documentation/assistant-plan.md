@@ -505,7 +505,11 @@ match yours.
   utterance in hands-free "conversation mode".
 - **STT engine:** `transcribe-rs` (MIT, used in production by Handy, a Tauri v2 dictation
   app) running **NVIDIA Parakeet TDT 0.6B v3 (ONNX) on the RTX 4060**, with the CPU as
-  fallback.
+  fallback. *Revised in V1 (2026-10-20):*
+  - Our own runner over `ort` decodes TDT durations, and with that **the CPU int8 path
+    is faster than the GPU**, idle and under load.
+  - The CPU is now the default, and DirectML on the RTX is opt-in.
+  - See V1's As built.
   - On your own recordings (X0): 3.4% WER in English and 0% in Russian.
   - On the GPU through ONNX Runtime's **CUDA** execution provider (`ort-cuda`): ~0.1 s per
     command (measured), almost no CPU. It measured 3.6 GB VRAM, which V1 brings down.
@@ -2744,6 +2748,69 @@ and voiced text adventures as user-defined modes (S2).
     sleep.
   - No mic indicator shows in Windows while the key isn't held.
 - **Out of scope:** wake word (V6, experimental); dictation into consoles.
+- **As built, part 1: the engine (2026-10-20).** Microphone capture, the push-to-talk
+  key, the HUD and the name fixer are part 2.
+  - **Our own Parakeet runner** (`src-tauri/src/voice/parakeet.rs`), adapted from
+    `transcribe-rs` 0.3.12 (MIT) on `ort` `=2.0.0-rc.12`, for two reasons:
+    - **TDT durations.** The joint network's logits past the vocabulary are the duration
+      head, and their argmax is the number of encoder frames to skip, as `onnx-asr`
+      decodes it. `transcribe-rs` ignores them and steps one frame at a time. That was
+      X0's "2.5–3× slower than Python". The decoder now takes 4–20 ms per command.
+    - **Our sessions:** the provider, the GPU adapter and the CPU threads are ours to
+      set. `transcribe-rs` always takes DirectML's default adapter, which is the iGPU
+      here.
+  - **ONNX Runtime 1.24.2 is downloaded, not linked** (`load-dynamic`):
+    - `onnxruntime.dll` and `DirectML.dll` come from PyPI's `onnxruntime-directml`
+      wheel: 25 MB, where NuGet's DirectML package alone is 200 MB.
+    - Our `DirectML.dll` is loaded by full path first, since System32 has an older one.
+    - **The CUDA path is dropped.** ORT's CUDA provider needs cuDNN 9, which this PC has
+      only inside Python caches. X0's CUDA timings relied on it.
+  - **Downloads** (`voice/assets.rs`) go to `<app local data>/models/` (`models.dev/` in
+    debug). Every file is pinned by URL, size and SHA-256:
+    - the Hugging Face repo at a fixed commit;
+    - Silero VAD v6.2.1 (the X0 model).
+
+    A download goes to a `.part` file and resumes with `Range`, and only a matching
+    hash is renamed into place. Progress comes as `voice-download` events.
+  - **The engine** (`voice/engine.rs`):
+    - Silero VAD trims each clip to its speech plus 200 ms each side (`vad.rs`).
+    - An empty int8 result is retried once in fp32 when those files are there. On X0's
+      20 trimmed recordings int8 never came back empty.
+    - The model loads on first use or `voice_preload`, and is dropped after 3 minutes
+      idle unless `voice_keep_warm` holds it. `GpuPref` is always / on AC power only /
+      never.
+    - A GPU that fails falls back to the CPU, with the reason shown in settings.
+  - **Measured on X0's 20 recordings** (`voice_bench`, an ignored test):
+
+    | Path | Idle PC | CPU fully loaded (22 busy threads) | Memory |
+    |---|---|---|---|
+    | **CPU int8, 3 threads** | **0.09–0.38 s** | **0.10–0.57 s** | ~0.8 GB RAM while loaded |
+    | GPU fp32, DirectML on the RTX (decoder on the CPU) | 0.21–0.50 s | 0.60–1.10 s | +2.5 GB VRAM, a 2.5 GB download |
+
+    - Accuracy is the same on both paths and matches X0: English and Russian nearly
+      exact, mixed sentences with English terms in Cyrillic («колодкод», «Сиай»), which
+      is the name fixer's job in part 2.
+    - **So the CPU is the default** (`GpuPref::Never`), and the GPU is opt-in. This
+      reverses the design's GPU-first plan, which rested on X0's slow Rust decoder.
+    - Keeping the decoder on DirectML too was no faster, and its first call took 2.5 s
+      to warm up.
+    - Loading takes ~2 s on the CPU and ~6.7 s on the GPU.
+  - **Commands:** `voice_status`, `voice_prepare` (download), `voice_preload`,
+    `voice_transcribe_wav` (16 kHz WAV, the format R2's phone uploads), `voice_keep_warm`
+    and `voice_unload`.
+  - **The UI:** a Voice section in Duck's settings (`VoiceSettings.tsx`) with the GPU
+    choice, the download and its progress, which engine is in use, and "transcribe a
+    WAV file…" to check it.
+  - **Verified:**
+    - 9 Rust unit tests: the duration pick, the vocabulary, the VAD bounds, the
+      provider choice, the pins, the WAV reader;
+    - the network test of the pinned downloads with a resume;
+    - the benchmark above.
+
+    238 Rust tests pass; clippy, tsc and eslint are clean.
+  - **Not verified yet:** the download of the 670 MB / 2.5 GB model files from inside
+    the app (the dev models folder was seeded with hard links to X0's copies), and
+    RSS/VRAM returning to baseline after the idle unload.
 
 #### Step V2 — Natural spoken replies
 

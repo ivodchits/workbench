@@ -10,6 +10,7 @@ import { disable, enable, isEnabled } from "@tauri-apps/plugin-autostart";
 import { MAX_WORKERS, TIERS, type DuckSettings } from "../../assistant/settings";
 import { DUCK_PERMISSION_MODES, EFFORTS, SESSION_MODELS } from "../../util/models";
 import { setAvatar, setDuckSettings, setInterrupt, type DuckState } from "./duckState";
+import VoiceSettings from "./VoiceSettings";
 
 export default function DrawerSettings({ duck }: { duck: DuckState }) {
   const [autostart, setAutostart] = useState<boolean | null>(null);
@@ -155,6 +156,7 @@ export default function DrawerSettings({ duck }: { duck: DuckState }) {
           <Workers settings={duck.settings} />
         </>
       )}
+      <VoiceSettings />
       <label style={{ ...row, opacity: import.meta.env.DEV ? 0.55 : 1 }}>
         <input
           type="checkbox"
