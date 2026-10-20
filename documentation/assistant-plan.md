@@ -1138,10 +1138,17 @@ tapping around. Two stages.
 
 ## Guardrails (settled — don't violate)
 
-- **Claude Code agents are still driven only through the PTY.** The Assistant is a new,
-  separate use of the API for *itself*; it never runs Claude Code headless, through the Agent
-  SDK, or with `claude -p`. Everything it does to a session goes through
-  `remoteActions.ts` / `promptDelivery.ts`, the same keystrokes the phone sends.
+- **Your sessions are driven only through the PTY.** Every session you start or can type
+  into is a terminal, and everything Duck does to one goes through `remoteActions.ts` /
+  `promptDelivery.ts`, the same keystrokes the phone sends. Duck runs Claude Code headless
+  (`claude -p` with stream-json) in exactly two places, both on your subscription:
+  - **its own workers** (D4), which have no terminal until you "take over", and then
+    become ordinary PTY sessions;
+  - **the subscription brain** (M3), Duck's fallback main thread.
+
+  Nothing else: no Agent SDK, no headless runs of your sessions, no other `claude -p` use.
+  (Revised 2026-10-20 when D4 was planned; until then it said Duck never runs Claude Code
+  headless, which M3 already contradicted.)
 - **Duck's main thread never blocks on long work.**
   - Every tool has a time budget (default 10 s). Anything that can take longer is started
     as a background task or job, and returns at once with a task card. Waiting is done by
@@ -1154,9 +1161,12 @@ tapping around. Two stages.
 - **Duck never changes itself unreviewed.** Config changes need an approved diff; code changes come from an Opus worker on a branch, and **merging Duck's own code is always yours** (trust floor), with a second confirm when the safety layer is touched. It never hot-patches itself while running. Every Duck step keeps `documentation/duck-architecture.md` current.
 - **Memory never stores secrets** (a filter before every write), and lives in a local git repo with no remote unless you add one.
 - **Worker sessions are ordinary sessions.**
-  - They are created, prompted and answered through the same `create_session` /
-    `sendOrQueue` / `answerChoice` paths as everything else, and are visible in the instance
-    manager.
+  - They are visible in the instance manager, with the same session id, transcript and
+    hooks as any session, so status, summaries and the trust log work the same.
+  - A PTY worker is created, prompted and answered through the same `create_session` /
+    `sendOrQueue` / `answerChoice` paths as everything else. A headless worker (D4) is
+    prompted and answered over stream-json instead, and permission requests still go
+    through the trust policy.
   - They differ only in ownership: notifications go to Duck first.
   - Results are exchanged through files in the task folder, never by scraping the terminal.
 - **Status from hooks, content from the transcript.** The Assistant answers "is X done?" from
@@ -3980,7 +3990,7 @@ T2 goes live after the replay check in its done-when (the past week's prompts th
   - The Messages API MCP connector reaches only public URL servers, not local stdio, hence
     the local `rmcp` host.
   - The Agent SDK spawns a Claude Code process per session and carries a coding-agent system
-    prompt; wrong shape for a light assistant, and the guardrails rule it out for agents.
+    prompt; wrong shape for a light assistant, and the guardrails rule it out.
 - **No official Rust SDK.** The official TS SDK in the webview through the proxy gets typed,
   maintained API coverage without hand-written Rust types.
 - **Firefox MCP bridge:**
