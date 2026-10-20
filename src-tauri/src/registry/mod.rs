@@ -91,6 +91,9 @@ pub struct Project {
     /// The model new sessions in this project run on unless they pick their own
     /// (step M1); `None` leaves Claude Code's default.
     pub default_model: Option<String>,
+    /// The permission mode new sessions in this project start in unless they pick
+    /// their own (step M4); `None` leaves Claude Code's default.
+    pub default_permission_mode: Option<String>,
     /// The folder this project's notes live in, shared across machines (step N3);
     /// `None` until its notes are linked or started.
     pub notes_key: Option<String>,
@@ -130,6 +133,10 @@ pub struct Instance {
     /// The model this session launches and resumes on (`claude --model`, step M1);
     /// `None` inherits the project's `default_model`.
     pub model: Option<String>,
+    /// The permission mode this session launches and resumes in
+    /// (`claude --permission-mode`, step M4); `None` inherits the project's
+    /// `default_permission_mode`.
+    pub permission_mode: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -160,6 +167,8 @@ pub struct NewProject {
     pub remote_dir: Option<String>,
     #[serde(default)]
     pub default_model: Option<String>,
+    #[serde(default)]
+    pub default_permission_mode: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -174,6 +183,7 @@ pub struct ProjectPatch {
     pub remote_ssh_dest: Option<Option<String>>,
     pub remote_dir: Option<Option<String>>,
     pub default_model: Option<Option<String>>,
+    pub default_permission_mode: Option<Option<String>>,
     pub sort_order: Option<i64>,
 }
 
@@ -194,6 +204,9 @@ pub struct NewInstance {
     /// The model to run on (step M1); omit to inherit the project's default.
     #[serde(default)]
     pub model: Option<String>,
+    /// The permission mode to start in (step M4); omit to inherit the project's.
+    #[serde(default)]
+    pub permission_mode: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -222,6 +235,8 @@ pub struct InstancePatch {
     /// The session's model (step M1), applied at its next launch or resume;
     /// `Some(None)` goes back to the project default.
     pub model: Option<Option<String>>,
+    /// The session's permission mode (step M4), likewise.
+    pub permission_mode: Option<Option<String>>,
 }
 
 // ---------------------------------------------------------------------------
@@ -257,6 +272,26 @@ fn clean_model(m: Option<String>) -> rusqlite::Result<Option<String>> {
     match m.map(|s| s.trim().to_owned()).filter(|s| !s.is_empty()) {
         Some(v) if !valid_model(&v) => Err(rusqlite::Error::ToSqlConversionFailure(
             format!("not a model name: {v:?}").into(),
+        )),
+        m => Ok(m),
+    }
+}
+
+/// Whether `m` reads as a `claude --permission-mode` value (step M4): a short
+/// camelCase word (`acceptEdits`, `plan`, …). Which words the installed Claude Code
+/// accepts is checked at launch (`pty::permission_modes`); this only keeps a value
+/// from reading as another flag or as shell syntax.
+pub fn valid_permission_mode(m: &str) -> bool {
+    m.len() <= 32
+        && m.starts_with(|c: char| c.is_ascii_lowercase())
+        && m.chars().all(|c| c.is_ascii_alphabetic())
+}
+
+/// Normalize a permission-mode field like [`clean_model`].
+fn clean_permission_mode(m: Option<String>) -> rusqlite::Result<Option<String>> {
+    match m.map(|s| s.trim().to_owned()).filter(|s| !s.is_empty()) {
+        Some(v) if !valid_permission_mode(&v) => Err(rusqlite::Error::ToSqlConversionFailure(
+            format!("not a permission mode: {v:?}").into(),
         )),
         m => Ok(m),
     }
@@ -345,12 +380,13 @@ fn row_to_project(r: &Row) -> rusqlite::Result<Project> {
         created_at: r.get(10)?,
         default_model: r.get(11)?,
         notes_key: r.get(12)?,
+        default_permission_mode: r.get(13)?,
     })
 }
 
 const PROJECT_COLS: &str = "id, group_id, name, root_path, default_branch, \
     worktree_setup_command, worktree_copy_env, remote_ssh_dest, remote_dir, \
-    sort_order, created_at, default_model, notes_key";
+    sort_order, created_at, default_model, notes_key, default_permission_mode";
 
 pub fn insert_project(conn: &Connection, input: NewProject) -> rusqlite::Result<Project> {
     // Normalize an empty/whitespace setup command to NULL so "configured" is a
@@ -380,6 +416,7 @@ pub fn insert_project(conn: &Connection, input: NewProject) -> rusqlite::Result<
         remote_ssh_dest,
         remote_dir,
         default_model: clean_model(input.default_model)?,
+        default_permission_mode: clean_permission_mode(input.default_permission_mode)?,
         notes_key: None,
         sort_order: 0,
         created_at: now(),
@@ -387,8 +424,8 @@ pub fn insert_project(conn: &Connection, input: NewProject) -> rusqlite::Result<
     conn.execute(
         "INSERT INTO projects (id, group_id, name, root_path, default_branch,
             worktree_setup_command, worktree_copy_env, remote_ssh_dest, remote_dir,
-            sort_order, created_at, default_model)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+            sort_order, created_at, default_model, default_permission_mode)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
         rusqlite::params![
             project.id,
             project.group_id,
@@ -402,6 +439,7 @@ pub fn insert_project(conn: &Connection, input: NewProject) -> rusqlite::Result<
             project.sort_order,
             project.created_at,
             project.default_model,
+            project.default_permission_mode,
         ],
     )?;
     Ok(project)
@@ -453,6 +491,9 @@ pub fn update_project(
     if let Some(m) = patch.default_model {
         p.default_model = clean_model(m)?;
     }
+    if let Some(m) = patch.default_permission_mode {
+        p.default_permission_mode = clean_permission_mode(m)?;
+    }
     if let Some(sort_order) = patch.sort_order {
         p.sort_order = sort_order;
     }
@@ -460,7 +501,8 @@ pub fn update_project(
         "UPDATE projects
          SET group_id = ?2, name = ?3, root_path = ?4, default_branch = ?5,
              worktree_setup_command = ?6, worktree_copy_env = ?7,
-             remote_ssh_dest = ?8, remote_dir = ?9, sort_order = ?10, default_model = ?11
+             remote_ssh_dest = ?8, remote_dir = ?9, sort_order = ?10, default_model = ?11,
+             default_permission_mode = ?12
          WHERE id = ?1",
         rusqlite::params![
             p.id,
@@ -474,6 +516,7 @@ pub fn update_project(
             p.remote_dir,
             p.sort_order,
             p.default_model,
+            p.default_permission_mode,
         ],
     )?;
     Ok(p)
@@ -510,13 +553,14 @@ fn row_to_instance(r: &Row) -> rusqlite::Result<Instance> {
         accent: r.get(18)?,
         remote_tmux_session: r.get(19)?,
         model: r.get(20)?,
+        permission_mode: r.get(21)?,
     })
 }
 
 const INSTANCE_COLS: &str = "id, project_id, title, task_note, worktree_on, branch, \
     last_session_id, working_dir, status, input_tokens, output_tokens, \
     cache_creation_tokens, cache_read_tokens, cost_usd, sort_order, created_at, \
-    last_activity_at, task_note_auto, accent, remote_tmux_session, model";
+    last_activity_at, task_note_auto, accent, remote_tmux_session, model, permission_mode";
 
 pub fn insert_instance(conn: &Connection, input: NewInstance) -> rusqlite::Result<Instance> {
     // Resolve the parent project once: its root path is the default working dir,
@@ -564,13 +608,15 @@ pub fn insert_instance(conn: &Connection, input: NewInstance) -> rusqlite::Resul
         accent: None,
         remote_tmux_session,
         model: clean_model(input.model)?,
+        permission_mode: clean_permission_mode(input.permission_mode)?,
     };
     conn.execute(
         "INSERT INTO instances (id, project_id, title, task_note, worktree_on, branch,
             last_session_id, working_dir, status, input_tokens, output_tokens,
             cache_creation_tokens, cache_read_tokens, cost_usd, sort_order, created_at,
-            last_activity_at, task_note_auto, accent, remote_tmux_session, model)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21)",
+            last_activity_at, task_note_auto, accent, remote_tmux_session, model,
+            permission_mode)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22)",
         rusqlite::params![
             instance.id,
             instance.project_id,
@@ -593,6 +639,7 @@ pub fn insert_instance(conn: &Connection, input: NewInstance) -> rusqlite::Resul
             instance.accent,
             instance.remote_tmux_session,
             instance.model,
+            instance.permission_mode,
         ],
     )?;
     Ok(instance)
@@ -690,13 +737,16 @@ pub fn update_instance(
     if let Some(v) = patch.model {
         i.model = clean_model(v)?;
     }
+    if let Some(v) = patch.permission_mode {
+        i.permission_mode = clean_permission_mode(v)?;
+    }
     conn.execute(
         "UPDATE instances SET
             title = ?2, task_note = ?3, worktree_on = ?4, branch = ?5, last_session_id = ?6,
             working_dir = ?7, status = ?8, input_tokens = ?9, output_tokens = ?10,
             cache_creation_tokens = ?11, cache_read_tokens = ?12, cost_usd = ?13,
             sort_order = ?14, last_activity_at = ?15, task_note_auto = ?16, accent = ?17,
-            remote_tmux_session = ?18, model = ?19
+            remote_tmux_session = ?18, model = ?19, permission_mode = ?20
          WHERE id = ?1",
         rusqlite::params![
             i.id,
@@ -718,6 +768,7 @@ pub fn update_instance(
             i.accent,
             i.remote_tmux_session,
             i.model,
+            i.permission_mode,
         ],
     )?;
     Ok(i)
@@ -754,6 +805,17 @@ pub fn launch_model(conn: &Connection, instance_id: &str) -> Option<String> {
         None => get_project(conn, &i.project_id).ok()?.default_model?,
     };
     valid_model(&m).then_some(m)
+}
+
+/// The permission mode `instance_id` launches in (step M4), resolved like
+/// [`launch_model`].
+pub fn launch_permission_mode(conn: &Connection, instance_id: &str) -> Option<String> {
+    let i = get_instance(conn, instance_id).ok()?;
+    let m = match i.permission_mode {
+        Some(m) => m,
+        None => get_project(conn, &i.project_id).ok()?.default_permission_mode?,
+    };
+    valid_permission_mode(&m).then_some(m)
 }
 
 pub fn delete_instance(conn: &Connection, id: &str) -> rusqlite::Result<()> {
@@ -935,6 +997,7 @@ mod tests {
                 remote_dir: None,
                 group_id: Some(group.id.clone()),
                 default_model: None,
+                default_permission_mode: None,
             },
         )
         .unwrap();
@@ -951,6 +1014,7 @@ mod tests {
                 working_dir: None,
                 remote_tmux_session: None,
                 model: None,
+                permission_mode: None,
             },
         )
         .unwrap();
@@ -984,6 +1048,7 @@ mod tests {
                 remote_dir: None,
                 group_id: None,
                 default_model: None,
+                default_permission_mode: None,
             },
         )
         .unwrap();
@@ -998,6 +1063,7 @@ mod tests {
                 working_dir: None,
                 remote_tmux_session: None,
                 model: None,
+                permission_mode: None,
             },
         )
         .unwrap();
@@ -1052,6 +1118,7 @@ mod tests {
                 remote_dir: None,
                 group_id: None,
                 default_model: None,
+                default_permission_mode: None,
             },
         )
         .unwrap();
@@ -1067,6 +1134,7 @@ mod tests {
                 working_dir: None,
                 remote_tmux_session: None,
                 model: None,
+                permission_mode: None,
             },
         )
         .unwrap();
@@ -1111,6 +1179,7 @@ mod tests {
                 working_dir: None,
                 remote_tmux_session: None,
                 model: None,
+                permission_mode: None,
             },
         )
         .unwrap();
@@ -1133,6 +1202,7 @@ mod tests {
                 remote_dir: Some("/home/me/proj".into()),
                 group_id: None,
                 default_model: None,
+                default_permission_mode: None,
             },
         )
         .unwrap();
@@ -1150,6 +1220,7 @@ mod tests {
                 working_dir: None,
                 remote_tmux_session: None,
                 model: None,
+                permission_mode: None,
             },
         )
         .unwrap();
@@ -1169,6 +1240,7 @@ mod tests {
                 working_dir: None,
                 remote_tmux_session: Some("old-session".into()),
                 model: None,
+                permission_mode: None,
             },
         )
         .unwrap();
@@ -1187,6 +1259,7 @@ mod tests {
                 remote_dir: None,
                 group_id: None,
                 default_model: None,
+                default_permission_mode: None,
             },
         )
         .unwrap();
@@ -1201,6 +1274,7 @@ mod tests {
                 working_dir: None,
                 remote_tmux_session: None,
                 model: None,
+                permission_mode: None,
             },
         )
         .unwrap();
@@ -1222,6 +1296,7 @@ mod tests {
                 remote_dir: None,
                 group_id: None,
                 default_model: None,
+                default_permission_mode: None,
             },
         )
         .unwrap();
@@ -1236,6 +1311,7 @@ mod tests {
                 working_dir: None,
                 remote_tmux_session: None,
                 model: None,
+                permission_mode: None,
             },
         )
         .unwrap();
@@ -1267,6 +1343,7 @@ mod tests {
                 remote_dir: None,
                 group_id: Some(group.id.clone()),
                 default_model: None,
+                default_permission_mode: None,
             },
         )
         .unwrap();
@@ -1305,6 +1382,7 @@ mod tests {
                 remote_dir: None,
                 group_id: None,
                 default_model: None,
+                default_permission_mode: None,
             },
         )
         .unwrap();
@@ -1317,6 +1395,7 @@ mod tests {
             working_dir: None,
             remote_tmux_session: None,
             model: model.map(str::to_owned),
+            permission_mode: None,
         };
         let own = insert_instance(&c, new(Some("opus"))).unwrap();
         let inherits = insert_instance(&c, new(None)).unwrap();
@@ -1338,5 +1417,61 @@ mod tests {
 
         let bad = InstancePatch { model: Some(Some("op us".into())), ..Default::default() };
         assert!(update_instance(&c, &own.id, bad).is_err());
+    }
+
+    #[test]
+    fn launch_permission_mode_inherits_and_is_validated() {
+        for ok in ["acceptEdits", "plan", "dontAsk", "default"] {
+            assert!(valid_permission_mode(ok), "{ok}");
+        }
+        for bad in ["", "-x", "--model", "Plan", "plan;x", "accept edits", "auto'", "a1"] {
+            assert!(!valid_permission_mode(bad), "{bad:?}");
+        }
+
+        let c = conn();
+        let project = insert_project(
+            &c,
+            NewProject {
+                name: "p".into(),
+                root_path: "/p".into(),
+                default_branch: None,
+                worktree_setup_command: None,
+                worktree_copy_env: false,
+                remote_ssh_dest: None,
+                remote_dir: None,
+                group_id: None,
+                default_model: None,
+                default_permission_mode: Some(" acceptEdits ".into()),
+            },
+        )
+        .unwrap();
+        assert_eq!(project.default_permission_mode.as_deref(), Some("acceptEdits"));
+        let new = |mode: Option<&str>| NewInstance {
+            project_id: project.id.clone(),
+            title: "i".into(),
+            task_note: None,
+            worktree_on: None,
+            branch: None,
+            working_dir: None,
+            remote_tmux_session: None,
+            model: None,
+            permission_mode: mode.map(str::to_owned),
+        };
+        let own = insert_instance(&c, new(Some("plan"))).unwrap();
+        let inherits = insert_instance(&c, new(None)).unwrap();
+        assert!(insert_instance(&c, new(Some("--dangerously-skip-permissions"))).is_err());
+
+        assert_eq!(launch_permission_mode(&c, &own.id).as_deref(), Some("plan"));
+        assert_eq!(launch_permission_mode(&c, &inherits.id).as_deref(), Some("acceptEdits"));
+        assert_eq!(launch_permission_mode(&c, "a-project-shell"), None);
+
+        // Clearing the project's default leaves Claude Code's own.
+        let patch = ProjectPatch { default_permission_mode: Some(None), ..Default::default() };
+        update_project(&c, &project.id, patch).unwrap();
+        assert_eq!(launch_permission_mode(&c, &inherits.id), None);
+
+        let patch = InstancePatch { permission_mode: Some(None), ..Default::default() };
+        update_instance(&c, &own.id, patch).unwrap();
+        assert_eq!(launch_permission_mode(&c, &own.id), None);
     }
 }

@@ -231,6 +231,13 @@ const MIGRATIONS: &[&str] = &[
         project_id  TEXT NOT NULL
     );
     "#,
+    // v13 -> v14: the permission mode a session starts in (assistant plan M4),
+    // passed to `claude --permission-mode` at every launch and resume and inherited
+    // like the model: NULL takes the project's default, NULL there Claude Code's own.
+    r#"
+    ALTER TABLE instances ADD COLUMN permission_mode TEXT;
+    ALTER TABLE projects ADD COLUMN default_permission_mode TEXT;
+    "#,
 ];
 
 /// Apply any migrations the database hasn't seen yet, advancing

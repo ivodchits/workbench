@@ -16,7 +16,7 @@
 
 import { z } from "zod";
 import { isStale } from "../../ipc/notes";
-import { SESSION_MODELS } from "../../util/models";
+import { DUCK_PERMISSION_MODES, SESSION_MODELS } from "../../util/models";
 import type { PromptDelivery, SessionPhase, SessionRef, WorkbenchPort } from "../port";
 import type { NoteEdit } from "../protocol";
 import {
@@ -102,7 +102,7 @@ export const sendPrompt = defineTool({
 export const createSession = defineTool({
   name: "create_session",
   description:
-    "Start a new Workbench session (a Claude Code console) in a project, optionally with a first prompt and in its own git worktree. Leave `model` out for coding or other professional work: it then runs on the coding model from Duck's settings. Pass `project` to use the project's own default model instead, or a model name when the user asks for one. The new session gets the focus, as when the user makes one.",
+    "Start a new Workbench session (a Claude Code console) in a project, optionally with a first prompt and in its own git worktree. Leave `model` out for coding or other professional work: it then runs on the coding model from Duck's settings. Pass `project` to use the project's own default model instead, or a model name when the user asks for one. `permissionMode` works the same way: leave it out for Duck's coding setting, `project` for the project's default, or a mode when the user asks for one (`acceptEdits` takes file edits without asking, `plan` only plans). The new session gets the focus, as when the user makes one.",
   schema: z.object({
     project: projectArg,
     prompt: z
@@ -120,6 +120,7 @@ export const createSession = defineTool({
       .optional()
       .describe("Isolate it in a new git worktree (local projects only)."),
     model: z.enum([...SESSION_MODELS, "project"]).optional(),
+    permissionMode: z.enum([...DUCK_PERMISSION_MODES, "project"]).optional(),
   }),
   tier: "reversible",
   // A worktree's setup command (an install) can take a while.
@@ -129,17 +130,23 @@ export const createSession = defineTool({
     return `Start a session in ${p.name}${prompt?.trim() ? ` and send: ${cut(prompt, 240)}` : ""}`;
   },
   trust: (input, port) => ({ ...onProject(input, port), texts: input.prompt ? [input.prompt] : [] }),
-  async run({ project, prompt, title, worktree, model }, { port, settings, request, threadId }) {
+  async run(
+    { project, prompt, title, worktree, model, permissionMode },
+    { port, settings, request, threadId },
+  ) {
     const p = findProject(port, project);
     if (worktree && p.remote)
       throw new Error(`${p.name} is a remote project: worktrees are local only.`);
     const m = model === "project" ? null : (model ?? settings.codingModel);
+    const mode =
+      permissionMode === "project" ? null : (permissionMode ?? settings.codingPermissionMode);
     const made = await port.createSession({
       projectId: p.id,
       title,
       prompt,
       worktree,
       model: m,
+      permissionMode: mode,
       // What the session is for, in the user's words: its prompts are judged by it.
       mandate: request ? { text: request, threadId } : undefined,
     });
@@ -148,6 +155,7 @@ export const createSession = defineTool({
       title: made.title,
       project: p.name,
       model: m ?? "the project's default",
+      permissionMode: mode ?? "the project's default",
       worktree: worktree ?? null,
       prompt: prompt?.trim() ? "sent once Claude Code is ready (queued on its card if it never is)" : null,
       warning: made.message,

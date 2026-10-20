@@ -11,6 +11,7 @@ import { detectRepo } from "../../ipc/git";
 import type { Group, Project } from "../../ipc/registry";
 import { addGroup, addProject, updateProject } from "../../state/registry";
 import { SESSION_MODELS } from "../../util/models";
+import { usePermissionModes } from "../../util/permissionModes";
 import Modal from "./Modal";
 
 interface ProjectDialogProps {
@@ -42,6 +43,8 @@ function ProjectDialog({ project, groups, onClose }: ProjectDialogProps) {
   const [setupCommand, setSetupCommand] = useState(project?.worktreeSetupCommand ?? "");
   const [copyEnv, setCopyEnv] = useState(project?.worktreeCopyEnv ?? false);
   const [model, setModel] = useState(project?.defaultModel ?? "");
+  const [permissionMode, setPermissionMode] = useState(project?.defaultPermissionMode ?? "");
+  const permissionModes = usePermissionModes(permissionMode || null);
   const [gitRepo, setGitRepo] = useState<boolean | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -126,6 +129,7 @@ function ProjectDialog({ project, groups, onClose }: ProjectDialogProps) {
             remoteSshDest: sshDest.trim(),
             remoteDir: remoteDir.trim(),
             defaultModel: model || null,
+            defaultPermissionMode: permissionMode || null,
           }
         : {
             name: name.trim(),
@@ -137,6 +141,7 @@ function ProjectDialog({ project, groups, onClose }: ProjectDialogProps) {
             remoteSshDest: null,
             remoteDir: null,
             defaultModel: model || null,
+            defaultPermissionMode: permissionMode || null,
           };
       if (editing && project) {
         await updateProject(project.id, fields);
@@ -163,6 +168,7 @@ function ProjectDialog({ project, groups, onClose }: ProjectDialogProps) {
     setupCommand,
     copyEnv,
     model,
+    permissionMode,
     onClose,
   ]);
 
@@ -293,6 +299,23 @@ function ProjectDialog({ project, groups, onClose }: ProjectDialogProps) {
             {model && !(SESSION_MODELS as readonly string[]).includes(model) && (
               <option value={model}>{model}</option>
             )}
+          </select>
+        </Field>
+
+        {/* The permission mode new sessions start in (step M4), from the modes the
+            installed Claude Code lists; each session can pick its own on its card. */}
+        <Field label="default permission mode">
+          <select
+            value={permissionMode}
+            onChange={(e) => setPermissionMode(e.target.value)}
+            style={inputStyle}
+          >
+            <option value="">(Claude Code's default)</option>
+            {permissionModes.map((m) => (
+              <option key={m} value={m}>
+                {m}
+              </option>
+            ))}
           </select>
         </Field>
 

@@ -2314,6 +2314,43 @@ tapping around. Two stages.
 - **Out of scope:** switching the mode of a running session (decided 2026-10-19: no
   in-session switcher. Shift+Tab stays in the terminal, and the trust policy covers the
   prompts).
+- **As built:**
+  - Migration v14: `instances.permission_mode`, `projects.default_permission_mode` (both
+    nullable), cleaned like the model: trimmed, blank stored as NULL, anything
+    `valid_permission_mode` refuses is an error (a camelCase word of at most 32 letters,
+    so it can't read as a flag or shell syntax).
+  - **Launch:** `pty_spawn` looks it up itself (`registry::launch_permission_mode`: the
+    instance's own, else the project's), so launch, every resume and a relaunch after a
+    restart agree, as for the model.
+    - **Which modes:** `pty::permission_modes` reads the choices from the installed
+      Claude Code's `--help` once per run (2.1.304: `acceptEdits auto bypassPermissions
+      manual dontAsk plan`). A stored mode it doesn't list is left out of the launch
+      (and logged) rather than stopping Claude Code at start; an unreadable list lets it
+      through. `default` isn't listed any more but still works (it means `manual`), so
+      it's always accepted; W5's drafting session launches with it.
+    - **Drafting sessions** (W5) keep their own `--permission-mode default`: a picked
+      mode is ignored for them, since the draft's allow rule is only a fence in that
+      mode.
+    - **Over SSH** the mode joins the remote shell text like the model
+      (`"claude --model '<m>' --permission-mode '<p>'"`). The host's Claude Code isn't
+      asked which modes it knows.
+  - **Pickers:** the card's `◇` popover now has two rows, model and permission mode
+    (default / the listed modes, `default` hidden as the alias it is), and the meta line
+    shows the mode beside the model (dimmer when inherited). The project dialog has a
+    "default permission mode" select. Both read the list through
+    `claude_permission_modes` (`src/util/permissionModes.ts`, fetched once).
+  - **Duck:** `create_session` takes `permissionMode` (`acceptEdits | auto | manual |
+    dontAsk | plan | project`), and a new Duck setting, "…in permission mode" under the
+    coding model, is used when the request names none (default: the project's).
+    `bypassPermissions` isn't offered to Duck: it would step around track T.
+  - **Not done:** the phone's new-session sheet has no mode select, and
+    `list_sessions` doesn't report the mode (left out so as not to collide with T2's
+    port changes; add with D1).
+  - **Verified:** registry tests (validation, inheritance, clearing), the `--help` parser
+    and the SSH quoting; the `create_session` test covers the setting, an explicit mode
+    and a refused `bypassPermissions`. Live in the dev app: a session set to
+    `acceptEdits` on its card showed "accept edits on", and its resume ran as
+    `claude --resume <id> --model opus --permission-mode acceptEdits`.
 
 ### Track B — Web & browser
 
@@ -3569,7 +3606,7 @@ X0 ─┬─▶ A1 ─▶ A2 ─┬─▶ A3 ─┬─▶ W2 ─┬─▶ T1 ─
 ```
 
 **Suggested order:**
-1. X0, A1, A2, A3, A4, W1, M1, W2, T1, W5, T2 (done), then M4, **D1**. *First
+1. X0, A1, A2, A3, A4, W1, M1, W2, T1, W5, T2, M4 (done), then **D1**. *First
    milestone: text control of the app that acts without asking about the small things,
    with heavy work offloaded to sessions.* (Reordered 2026-10-19: trust moved ahead of
    D1, because a card for every action defeats the point of Duck. W5 moved ahead of T2
@@ -3716,7 +3753,7 @@ T2 goes live after the replay check in its done-when (the past week's prompts th
 | M1 | Model per Claude Code session | ☑ |
 | M2 | Effort routing, Haiku workers, budget-aware degrade | ☐ |
 | M3 | Subscription brain: headless Claude Code as the fallback main thread | ☐ |
-| M4 | Permission mode at launch | ☐ |
+| M4 | Permission mode at launch | ☑ |
 | D1 | Worker sessions: workspace, brief, result contract | ☐ |
 | D2 | Offload routing, subscription-limit awareness, Duck as the worker's user | ☐ |
 | D3 | Session-backed thinking modes (experiment) | ☐ |

@@ -669,6 +669,15 @@ pub fn pty_spawn(
             .and_then(|conn| crate::registry::launch_model(&conn, &instance_id)),
         SpawnKind::Shell | SpawnKind::Task => None,
     };
+    // The permission mode (step M4) is looked up the same way.
+    let permission_mode = match kind {
+        SpawnKind::Claude => db
+            .conn
+            .lock()
+            .ok()
+            .and_then(|conn| crate::registry::launch_permission_mode(&conn, &instance_id)),
+        SpawnKind::Shell | SpawnKind::Task => None,
+    };
 
     // Build the command up front so a resolution failure (e.g. `claude` not on
     // PATH) reports cleanly before we touch the PTY. A resumed claude keeps the id
@@ -694,7 +703,7 @@ pub fn pty_spawn(
         }
         vec![cmd]
     } else if let Some(r) = &remote {
-        vec![remote_command(r, &cwd, kind, model.as_deref())]
+        vec![remote_command(r, &cwd, kind, model.as_deref(), permission_mode.as_deref())]
     } else {
         match kind {
             SpawnKind::Claude => {
@@ -710,6 +719,19 @@ pub fn pty_spawn(
                     Ok(conn) => crate::plugins::draft::launch_args(&app, &conn, &instance_id),
                     Err(_) => Vec::new(),
                 };
+                // Its own `--permission-mode default` wins over a picked mode: the
+                // draft's allow rule is only a fence in that mode.
+                let mode = permission_mode.as_deref().filter(|_| extra.is_empty());
+                if let Some(m) = mode {
+                    // A mode this Claude Code doesn't list would stop it at launch,
+                    // so it's left out; an unreadable list lets it through.
+                    let known = permission_modes();
+                    if known.is_empty() || known.iter().any(|k| k == m) {
+                        args.extend(["--permission-mode", m]);
+                    } else {
+                        eprintln!("[pty] {instance_id}: claude doesn't know permission mode {m:?}");
+                    }
+                }
                 args.extend(extra.iter().map(String::as_str));
                 let mut cmd = claude_command(&args, &cwd)?;
                 // Lets this console's hooks name it even under a session id we
@@ -1104,29 +1126,8 @@ pub fn remote_cmd_spawn(
 /// it's run through `cmd.exe /c`, and a `.ps1` shim through PowerShell. We pass
 /// `TERM`/`COLORTERM` so the Ink TUI renders color under ConPTY.
 fn claude_command(session_args: &[&str], cwd: &Path) -> Result<CommandBuilder, String> {
-    let exe = which::which("claude")
-        .map_err(|e| format!("`claude` not found on PATH ({e}). Is Claude Code installed?"))?;
-    let ext = exe
-        .extension()
-        .and_then(OsStr::to_str)
-        .map(str::to_ascii_lowercase);
-
-    let mut cmd = match ext.as_deref() {
-        Some("cmd") | Some("bat") => {
-            let mut c = CommandBuilder::new("cmd.exe");
-            c.arg("/c");
-            c.arg(&exe);
-            c
-        }
-        Some("ps1") => {
-            let mut c = CommandBuilder::new("pwsh.exe");
-            c.arg("-NoLogo");
-            c.arg("-File");
-            c.arg(&exe);
-            c
-        }
-        _ => CommandBuilder::new(&exe),
-    };
+    let launcher = claude_launcher()?;
+    let mut cmd = CommandBuilder::from_argv(launcher);
     for arg in session_args {
         cmd.arg(arg);
     }
@@ -1134,6 +1135,80 @@ fn claude_command(session_args: &[&str], cwd: &Path) -> Result<CommandBuilder, S
     cmd.env("TERM", "xterm-256color");
     cmd.env("COLORTERM", "truecolor");
     Ok(cmd)
+}
+
+/// The argv that runs the installed `claude`, before its own arguments: the exe
+/// itself, or the shell that runs its `.cmd` / `.ps1` shim (see [`claude_command`]).
+fn claude_launcher() -> Result<Vec<std::ffi::OsString>, String> {
+    let exe = which::which("claude")
+        .map_err(|e| format!("`claude` not found on PATH ({e}). Is Claude Code installed?"))?;
+    let ext = exe
+        .extension()
+        .and_then(OsStr::to_str)
+        .map(str::to_ascii_lowercase);
+    let exe = exe.into_os_string();
+    Ok(match ext.as_deref() {
+        Some("cmd") | Some("bat") => vec!["cmd.exe".into(), "/c".into(), exe],
+        Some("ps1") => vec!["pwsh.exe".into(), "-NoLogo".into(), "-File".into(), exe],
+        _ => vec![exe],
+    })
+}
+
+/// The `--permission-mode` values the installed Claude Code accepts (step M4), read
+/// from its `--help` once per run. Empty when that can't be read, which callers take
+/// as "unknown" rather than "none". `default` is always included: Claude Code still
+/// accepts it (as `manual`) although its help no longer lists it, and the toolbar
+/// drafting session (W5) launches with it.
+pub fn permission_modes() -> Vec<String> {
+    static MODES: Mutex<Option<Vec<String>>> = Mutex::new(None);
+    if let Some(m) = MODES.lock().unwrap().as_ref() {
+        return m.clone();
+    }
+    let modes = read_permission_modes().unwrap_or_default();
+    // Only a successful read is kept, so a failure (claude not installed yet) is
+    // tried again next time.
+    if !modes.is_empty() {
+        *MODES.lock().unwrap() = Some(modes.clone());
+    }
+    modes
+}
+
+fn read_permission_modes() -> Option<Vec<String>> {
+    let argv = claude_launcher().ok()?;
+    let mut cmd = std::process::Command::new(&argv[0]);
+    cmd.args(&argv[1..]).arg("--help").stdin(std::process::Stdio::null());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    let out = cmd.output().ok()?;
+    let mut modes = parse_permission_modes(&String::from_utf8_lossy(&out.stdout))?;
+    if !modes.iter().any(|m| m == "default") {
+        modes.push("default".into());
+    }
+    Some(modes)
+}
+
+/// Pull the choices out of `--help`'s `--permission-mode` entry, which reads
+/// `(choices: "acceptEdits", "auto", …)` and may wrap across lines.
+fn parse_permission_modes(help: &str) -> Option<Vec<String>> {
+    let entry = &help[help.find("--permission-mode")?..];
+    let list = &entry[entry.find("(choices:")? + "(choices:".len()..];
+    let list = &list[..list.find(')')?];
+    let modes: Vec<String> = list
+        .split(',')
+        .map(|s| s.trim().trim_matches('"').to_owned())
+        .filter(|s| crate::registry::valid_permission_mode(s))
+        .collect();
+    (!modes.is_empty()).then_some(modes)
+}
+
+/// The permission modes for the session card's and project dialog's pickers.
+#[tauri::command]
+pub async fn claude_permission_modes() -> Vec<String> {
+    tauri::async_runtime::spawn_blocking(permission_modes).await.unwrap_or_default()
 }
 
 /// Build the local `ssh` child that drives a remote `claude` over tmux (step 3.12).
@@ -1160,19 +1235,28 @@ fn claude_command(session_args: &[&str], cwd: &Path) -> Result<CommandBuilder, S
 /// with spaces and the remote shell re-parses it, so the double quotes keep it one
 /// argument to tmux → `bash -lc`, and the single quotes keep a `[1m]` suffix from
 /// globbing there. That's safe because `registry::valid_model` admits no quote.
+/// A permission mode (step M4) adds `--permission-mode '<m>'` the same way; the
+/// host's Claude Code isn't asked which modes it knows.
 fn remote_command(
     r: &RemoteSpawn,
     cwd: &Path,
     kind: SpawnKind,
     model: Option<&str>,
+    permission_mode: Option<&str>,
 ) -> CommandBuilder {
     let mut cmd = CommandBuilder::new("ssh");
     match kind {
         SpawnKind::Claude => {
-            let run = match model {
-                Some(m) if crate::registry::valid_model(m) => format!("\"claude --model '{m}'\""),
-                _ => "claude".to_owned(),
-            };
+            let mut run = "claude".to_owned();
+            if let Some(m) = model.filter(|m| crate::registry::valid_model(m)) {
+                run.push_str(&format!(" --model '{m}'"));
+            }
+            if let Some(m) = permission_mode.filter(|m| crate::registry::valid_permission_mode(m)) {
+                run.push_str(&format!(" --permission-mode '{m}'"));
+            }
+            if run.contains(' ') {
+                run = format!("\"{run}\"");
+            }
             for arg in [
                 "-tt",
                 &r.dest,
@@ -1285,6 +1369,33 @@ fn kill_tree(pid: u32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn permission_modes_are_read_from_help() {
+        // 2.1.304's entry, wrapped as `--help` prints it.
+        let help = "  --model <model>  Model\n  --permission-mode <mode>              Permission mode to use for the session\n                                        (choices: \"acceptEdits\", \"auto\",\n                                        \"bypassPermissions\", \"manual\",\n                                        \"dontAsk\", \"plan\")\n  --plugin-dir <path>  (choices: \"x\")\n";
+        assert_eq!(
+            parse_permission_modes(help).unwrap(),
+            ["acceptEdits", "auto", "bypassPermissions", "manual", "dontAsk", "plan"]
+        );
+        assert_eq!(parse_permission_modes("  --model <m>\n"), None);
+    }
+
+    #[test]
+    fn remote_launch_quotes_model_and_mode() {
+        let r = RemoteSpawn { dest: "h".into(), session: "wb-1".into(), dir: "/d".into() };
+        let last = |model, mode| {
+            let cmd = remote_command(&r, Path::new("/"), SpawnKind::Claude, model, mode);
+            cmd.get_argv().last().unwrap().to_string_lossy().into_owned()
+        };
+        assert_eq!(last(None, None), "claude");
+        assert_eq!(last(Some("opus"), None), "\"claude --model 'opus'\"");
+        assert_eq!(
+            last(Some("opus"), Some("acceptEdits")),
+            "\"claude --model 'opus' --permission-mode 'acceptEdits'\""
+        );
+        assert_eq!(last(None, Some("plan; rm")), "claude");
+    }
 
     /// The ring buffer caps at `RING_CAP`, evicting the oldest bytes so a late
     /// subscriber replays only the most recent window (step 4.1 scrollback). Push

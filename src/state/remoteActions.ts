@@ -183,6 +183,7 @@ export async function startNewSession(
     title?: string;
     worktree?: boolean;
     model?: string | null;
+    permissionMode?: string | null;
     /** Awaited after the instance exists and before its console opens (so before
      *  its first launch): Duck's drafting session registers itself here (W5). A
      *  throw deletes the instance. */
@@ -193,7 +194,12 @@ export async function startNewSession(
   const title = opts.title?.trim() || nextInstanceTitle(getRegistry().instances, project.id);
   let instance: Instance;
   try {
-    instance = await addInstance({ projectId: project.id, title, model: opts.model ?? null });
+    instance = await addInstance({
+      projectId: project.id,
+      title,
+      model: opts.model ?? null,
+      permissionMode: opts.permissionMode ?? null,
+    });
   } catch (e) {
     throw new Error(`Could not create the session: ${errorText(e)}`);
   }

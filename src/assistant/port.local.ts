@@ -224,13 +224,14 @@ export const localPort: WorkbenchPort = {
     deliverWhenReady(id, text);
     return "starting";
   },
-  async createSession({ projectId, title, prompt, worktree, model, mandate }) {
+  async createSession({ projectId, title, prompt, worktree, model, permissionMode, mandate }) {
     const project = getRegistry().projects.find((p) => p.id === projectId);
     if (!project) throw new Error(`no project with id ${projectId}`);
     const { instance: i, message } = await startNewSession(project, {
       title,
       worktree,
       model,
+      permissionMode,
     });
     if (mandate?.text.trim()) rememberMandate(i.id, mandate);
     if (prompt?.trim()) deliverWhenReady(i.id, prompt.trim());

@@ -1014,6 +1014,7 @@ function ProjectNode({
               isRemote={isRemote}
               remoteDest={project.remoteSshDest}
               projectModel={project.defaultModel}
+              projectPermissionMode={project.defaultPermissionMode}
               onActivate={() => onActivate(i)}
               onToggleWorktree={() => onToggleWorktree(i)}
               onReview={() => onReview(i)}

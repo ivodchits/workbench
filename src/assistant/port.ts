@@ -137,6 +137,7 @@ export interface WorkbenchPort {
     /** What the session is for: the user's request in the thread that started it
      *  (T2's judge reads its prompts against this). */
     mandate?: Mandate;
+    permissionMode?: string | null;
   }): Promise<{ id: string; title: string; message: string | null }>;
   /** Open (or focus) a session's console, starting a fresh Claude Code session if
    *  none is running. */

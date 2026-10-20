@@ -7,7 +7,7 @@
 
 import { useEffect, useState } from "react";
 import { disable, enable, isEnabled } from "@tauri-apps/plugin-autostart";
-import { SESSION_MODELS } from "../../util/models";
+import { DUCK_PERMISSION_MODES, SESSION_MODELS } from "../../util/models";
 import { setDuckSettings, setInterrupt, type DuckState } from "./duckState";
 
 export default function DrawerSettings({ duck }: { duck: DuckState }) {
@@ -103,6 +103,31 @@ export default function DrawerSettings({ duck }: { duck: DuckState }) {
               }}
             >
               {SESSION_MODELS.map((m) => (
+                <option key={m} value={m}>
+                  {m}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label style={{ ...row, alignItems: "center" }}>
+            <span>…in permission mode</span>
+            <select
+              value={duck.settings.codingPermissionMode ?? ""}
+              onChange={(e) =>
+                setDuckSettings({
+                  codingPermissionMode: (e.target.value ||
+                    null) as (typeof DUCK_PERMISSION_MODES)[number] | null,
+                })
+              }
+              style={{
+                background: "var(--wb-bg)",
+                color: "var(--wb-text)",
+                border: "1px solid var(--wb-border)",
+                font: "inherit",
+              }}
+            >
+              <option value="">the project's default</option>
+              {DUCK_PERMISSION_MODES.map((m) => (
                 <option key={m} value={m}>
                   {m}
                 </option>

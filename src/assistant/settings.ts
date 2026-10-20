@@ -4,7 +4,7 @@
 // copy is always the one in force.
 
 import { getPref, setPref } from "../ipc/prefs";
-import { SESSION_MODELS } from "../util/models";
+import { DUCK_PERMISSION_MODES, SESSION_MODELS } from "../util/models";
 
 export interface DuckSettings {
   /** Ask before every prompt Duck sends to a session. Off = only consequential
@@ -17,12 +17,16 @@ export interface DuckSettings {
    *  project is in shadow mode for them: decided and logged, left to the user.
    *  Off until the user has checked the replay. */
   answerSessionPrompts: boolean;
+  /** The permission mode such a session starts in (step M4); null leaves the
+   *  project's default. */
+  codingPermissionMode: (typeof DUCK_PERMISSION_MODES)[number] | null;
 }
 
 export const DEFAULT_SETTINGS: DuckSettings = {
   confirmPrompts: false,
   codingModel: "opus",
   answerSessionPrompts: false,
+  codingPermissionMode: null,
 };
 
 /** Keep only known keys with valid values, so a hand-edited pref can't break Duck. */
@@ -33,6 +37,9 @@ export function cleanSettings(raw: unknown): Partial<DuckSettings> {
   if (typeof r.answerSessionPrompts === "boolean") out.answerSessionPrompts = r.answerSessionPrompts;
   if (SESSION_MODELS.includes(r.codingModel as DuckSettings["codingModel"]))
     out.codingModel = r.codingModel as DuckSettings["codingModel"];
+  const mode = r.codingPermissionMode;
+  if (mode === null || DUCK_PERMISSION_MODES.includes(mode as (typeof DUCK_PERMISSION_MODES)[number]))
+    out.codingPermissionMode = mode as DuckSettings["codingPermissionMode"];
   return out;
 }
 

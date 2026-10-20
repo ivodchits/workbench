@@ -34,6 +34,7 @@ import { openQueueDialog } from "../queueDialogControl";
 import { mergeStatus, relativeTime } from "./status";
 import { contextWindowTokens, formatTokens, tokenBreakdown } from "../../util/format";
 import { SESSION_MODELS } from "../../util/models";
+import { usePermissionModes } from "../../util/permissionModes";
 import InlineEdit from "./InlineEdit";
 
 interface InstanceCardProps {
@@ -52,6 +53,8 @@ interface InstanceCardProps {
   remoteDest: string | null;
   /** The project's default model (step M1), shown when the instance has none. */
   projectModel: string | null;
+  /** The project's default permission mode (step M4), likewise. */
+  projectPermissionMode: string | null;
   /** Launch or focus this instance's console (row click / Enter). */
   onActivate: () => void;
   /** Provision (or revert) this instance's worktree — opens a confirm (step 2.4). */
@@ -69,6 +72,7 @@ function InstanceCard({
   isRemote,
   remoteDest,
   projectModel,
+  projectPermissionMode,
   onActivate,
   onToggleWorktree,
   onReview,
@@ -80,6 +84,7 @@ function InstanceCard({
   const [pickingAccent, setPickingAccent] = useState(false);
   const [pickingModel, setPickingModel] = useState(false);
   const model = instance.model ?? projectModel;
+  const permissionMode = instance.permissionMode ?? projectPermissionMode;
   const view = mergeStatus(consoleStatus, live, instance.status);
   const queued = useQueued().get(instance.id) ?? null;
   const trustLine = useTrustLine(instance.id);
@@ -284,12 +289,12 @@ function InstanceCard({
               </RowAction>
             )}
             <RowAction
-              label="model"
+              label="model and permission mode"
               onClick={() => {
                 setPickingAccent(false);
                 setPickingModel((v) => !v);
               }}
-              active={instance.model != null}
+              active={instance.model != null || instance.permissionMode != null}
             >
               ◇
             </RowAction>
@@ -334,13 +339,12 @@ function InstanceCard({
       )}
 
       {pickingModel && (
-        <ModelPicker
-          current={instance.model}
+        <LaunchPicker
+          model={instance.model}
           projectModel={projectModel}
-          onPick={(m) => {
-            void updateInstance(instance.id, { model: m });
-            setPickingModel(false);
-          }}
+          permissionMode={instance.permissionMode}
+          projectPermissionMode={projectPermissionMode}
+          onPick={(patch) => void updateInstance(instance.id, patch)}
           onClose={() => setPickingModel(false)}
         />
       )}
@@ -487,6 +491,21 @@ function InstanceCard({
             }
           >
             {model}
+          </span>
+        )}
+        {permissionMode && (
+          <span
+            style={{
+              flex: "0 0 auto",
+              color: instance.permissionMode ? "var(--wb-textDim2)" : "var(--wb-textFaint)",
+            }}
+            title={
+              instance.permissionMode
+                ? `starts in ${permissionMode} mode`
+                : `starts in ${permissionMode} mode (the project's default)`
+            }
+          >
+            {permissionMode}
           </span>
         )}
         {/* Token readout comes from the transcript tailer, which doesn't reach a
@@ -636,28 +655,41 @@ function AccentPicker({
   );
 }
 
-/** The model popover (step M1): the project's default or one of Claude Code's
- *  aliases. A change applies at the session's next launch or resume; a running
- *  session keeps its model until then (or switches with `/model`). */
-function ModelPicker({
-  current,
+/** The launch popover: a row for the model (step M1), the project's default or
+ *  one of Claude Code's aliases, and a row for the permission mode (step M4), from
+ *  the modes the installed Claude Code lists. A change applies at the session's
+ *  next launch or resume; a running session keeps both until then (or switches
+ *  with `/model` and Shift+Tab). */
+function LaunchPicker({
+  model,
   projectModel,
+  permissionMode,
+  projectPermissionMode,
   onPick,
   onClose,
 }: {
-  current: string | null;
+  model: string | null;
   projectModel: string | null;
-  onPick: (model: string | null) => void;
+  permissionMode: string | null;
+  projectPermissionMode: string | null;
+  onPick: (patch: { model: string | null } | { permissionMode: string | null }) => void;
   onClose: () => void;
 }) {
-  const choices: { model: string | null; label: string }[] = [
-    { model: null, label: `default${projectModel ? ` (${projectModel})` : ""}` },
-    ...SESSION_MODELS.map((m) => ({ model: m, label: m })),
+  const models: { value: string | null; label: string }[] = [
+    { value: null, label: `default${projectModel ? ` (${projectModel})` : ""}` },
+    ...SESSION_MODELS.map((m) => ({ value: m, label: m })),
   ];
   // A full model id set elsewhere (by Duck, say) stays visible as the current pick.
-  if (current && !choices.some((c) => c.model === current)) {
-    choices.push({ model: current, label: current });
+  if (model && !models.some((c) => c.value === model)) {
+    models.push({ value: model, label: model });
   }
+  const modes = [
+    {
+      value: null,
+      label: `default${projectPermissionMode ? ` (${projectPermissionMode})` : ""}`,
+    },
+    ...usePermissionModes(permissionMode).map((m) => ({ value: m, label: m })),
+  ];
   return (
     <>
       <div
@@ -676,7 +708,7 @@ function ModelPicker({
           right: 11,
           zIndex: 51,
           display: "flex",
-          alignItems: "center",
+          flexDirection: "column",
           gap: 4,
           padding: "5px 6px",
           background: "var(--wb-panel)",
@@ -684,29 +716,54 @@ function ModelPicker({
           boxShadow: "0 4px 16px rgba(0,0,0,0.5)",
         }}
       >
-        {choices.map((c) => (
-          <button
-            key={c.model ?? ""}
-            type="button"
-            onClick={(e) => {
-              e.stopPropagation();
-              onPick(c.model);
-            }}
-            style={{
-              padding: "2px 6px",
-              cursor: "pointer",
-              background: "transparent",
-              font: "10.5px var(--wb-mono)",
-              color: current === c.model ? "var(--wb-text)" : "var(--wb-textDim2)",
-              border:
-                current === c.model ? "1px solid var(--wb-accent)" : "1px solid transparent",
-            }}
-          >
-            {c.label}
-          </button>
-        ))}
+        <PickerRow
+          choices={models}
+          current={model}
+          onPick={(value) => onPick({ model: value })}
+        />
+        <PickerRow
+          choices={modes}
+          current={permissionMode}
+          onPick={(value) => onPick({ permissionMode: value })}
+        />
       </div>
     </>
+  );
+}
+
+function PickerRow({
+  choices,
+  current,
+  onPick,
+}: {
+  choices: { value: string | null; label: string }[];
+  current: string | null;
+  onPick: (value: string | null) => void;
+}) {
+  return (
+    <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 4 }}>
+      {choices.map((c) => (
+        <button
+          key={c.value ?? ""}
+          type="button"
+          onClick={(e) => {
+            e.stopPropagation();
+            onPick(c.value);
+          }}
+          style={{
+            padding: "2px 6px",
+            cursor: "pointer",
+            background: "transparent",
+            font: "10.5px var(--wb-mono)",
+            color: current === c.value ? "var(--wb-text)" : "var(--wb-textDim2)",
+            border:
+              current === c.value ? "1px solid var(--wb-accent)" : "1px solid transparent",
+          }}
+        >
+          {c.label}
+        </button>
+      ))}
+    </div>
   );
 }
 

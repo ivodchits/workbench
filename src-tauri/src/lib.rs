@@ -128,6 +128,7 @@ pub fn run() {
         .manage(transcript::stream::Streams::default())
         .invoke_handler(tauri::generate_handler![
             pty::pty_spawn,
+            pty::claude_permission_modes,
             pty::pty_subscribe,
             pty::pty_unsubscribe,
             pty::pty_write,

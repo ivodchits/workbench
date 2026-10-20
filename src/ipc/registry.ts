@@ -33,6 +33,9 @@ export interface Project {
   /** The model new sessions run on unless they pick one (step M1); null leaves
    *  Claude Code's default. */
   defaultModel: string | null;
+  /** The permission mode new sessions start in unless they pick one (step M4);
+   *  null leaves Claude Code's default. */
+  defaultPermissionMode: string | null;
   /** The folder its notes live in, shared across machines (step N3); null until
    *  its notes are linked or started. */
   notesKey: string | null;
@@ -69,6 +72,9 @@ export interface Instance {
   /** The model this session launches and resumes on (step M1); null inherits the
    *  project's `defaultModel`. */
   model: string | null;
+  /** The permission mode this session launches and resumes in (step M4); null
+   *  inherits the project's `defaultPermissionMode`. */
+  permissionMode: string | null;
 }
 
 // --- inputs -----------------------------------------------------------------
@@ -93,6 +99,7 @@ export interface NewProject {
   /** Working directory on the remote host (step 3.12). */
   remoteDir?: string | null;
   defaultModel?: string | null;
+  defaultPermissionMode?: string | null;
 }
 
 export interface ProjectPatch {
@@ -105,6 +112,7 @@ export interface ProjectPatch {
   remoteSshDest?: string | null;
   remoteDir?: string | null;
   defaultModel?: string | null;
+  defaultPermissionMode?: string | null;
   sortOrder?: number;
 }
 
@@ -121,6 +129,8 @@ export interface NewInstance {
   remoteTmuxSession?: string;
   /** The model to run on (step M1); omit to inherit the project's default. */
   model?: string | null;
+  /** The permission mode to start in (step M4); omit to inherit the project's. */
+  permissionMode?: string | null;
 }
 
 export interface InstancePatch {
@@ -146,6 +156,9 @@ export interface InstancePatch {
   /** Set the session's model, or null to inherit the project's (step M1). Takes
    *  effect at its next launch or resume. */
   model?: string | null;
+  /** Set the session's permission mode, or null to inherit the project's (step
+   *  M4). Takes effect at its next launch or resume. */
+  permissionMode?: string | null;
 }
 
 // --- groups -----------------------------------------------------------------

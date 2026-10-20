@@ -133,6 +133,24 @@ describe("action tools", () => {
     const inherit = await run(createSession, { project: "Backend", model: "project" });
     expect(inherit.port.calls[0].args[0]).toMatchObject({ model: null });
     expect(inherit.out.model).toBe("the project's default");
+    expect(inherit.port.calls[0].args[0]).toMatchObject({ permissionMode: null });
+
+    // The permission mode follows the same rule (step M4).
+    const mode = await run(
+      createSession,
+      { project: "backend" },
+      { settings: { codingPermissionMode: "acceptEdits" } },
+    );
+    expect(mode.port.calls[0].args[0]).toMatchObject({ permissionMode: "acceptEdits" });
+    const plan = await run(
+      createSession,
+      { project: "backend", permissionMode: "plan" },
+      { settings: { codingPermissionMode: "acceptEdits" } },
+    );
+    expect(plan.port.calls[0].args[0]).toMatchObject({ permissionMode: "plan" });
+    await expect(
+      run(createSession, { project: "backend", permissionMode: "bypassPermissions" }),
+    ).rejects.toThrow();
 
     await expect(run(createSession, { project: "Box", worktree: true })).rejects.toThrow(
       /remote project/,

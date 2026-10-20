@@ -4,6 +4,12 @@
 
 export const SESSION_MODELS = ["opus", "sonnet", "haiku", "fable"] as const;
 
+/** The permission modes Duck may start a session in (step M4: `create_session` and
+ *  its coding pref). Never `bypassPermissions`: that would step around the trust
+ *  policy (track T). The pickers list what the installed Claude Code accepts
+ *  (`util/permissionModes.ts`). */
+export const DUCK_PERMISSION_MODES = ["acceptEdits", "auto", "manual", "dontAsk", "plan"] as const;
+
 /** The model a session launches on: its own, else its project's default; null
  *  leaves Claude Code's default. Mirrors `registry::launch_model`. */
 export function effectiveModel(
