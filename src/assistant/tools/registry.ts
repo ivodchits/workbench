@@ -6,13 +6,14 @@
 //
 // Tiers (design → Tools): `read` and `reversible` run without asking; a
 // `consequential` call waits for a confirmation unless the trust policy (T1) says
-// otherwise.
+// otherwise. A tool's `trust` tells that policy what a call is about.
 
 import { z } from "zod";
 import type Anthropic from "@anthropic-ai/sdk";
 import type { WorkbenchPort } from "../port";
 import type { Notice } from "../protocol";
 import type { DuckSettings } from "../settings";
+import type { TrustFacts } from "../trust/decide";
 
 export type Tier = "read" | "reversible" | "consequential";
 
@@ -47,6 +48,9 @@ export interface ToolDef<S extends z.ZodType = z.ZodType> {
   tierFor?(input: z.infer<S>, port: WorkbenchPort): Tier;
   /** One sentence for the confirmation card: what this call will do. */
   describe?(input: z.infer<S>, port: WorkbenchPort): string;
+  /** What the trust engine needs about the call: its project, a specifier for
+   *  rules, text for the floor. `{projectId: null}` when absent or when it throws. */
+  trust?(input: z.infer<S>, port: WorkbenchPort): TrustFacts;
   /** The longest the turn waits for `run`. Work that can take longer is written as
    *  start + notify: return a handle at once, report completion later as a new
    *  message in the thread. */
@@ -75,6 +79,8 @@ export interface Registry {
   callTier(name: string, input: unknown, port: WorkbenchPort): Tier;
   /** The confirmation card's sentence for this call, when the tool has one. */
   describe(name: string, input: unknown, port: WorkbenchPort): string | undefined;
+  /** The call's facts for the trust engine (`ToolDef.trust`). */
+  trustFacts(name: string, input: unknown, port: WorkbenchPort): TrustFacts;
 }
 
 function inputSchema(schema: z.ZodType): Anthropic.Beta.BetaTool.InputSchema {
@@ -126,6 +132,16 @@ export function createRegistry(tools: readonly ToolDef[]): Registry {
         return t.describe(parsed.data, port);
       } catch {
         return undefined;
+      }
+    },
+    trustFacts(name, input, port) {
+      const t = byName.get(name);
+      const parsed = t?.schema.safeParse(input);
+      if (!t?.trust || !parsed?.success) return { projectId: null };
+      try {
+        return t.trust(parsed.data, port);
+      } catch {
+        return { projectId: null };
       }
     },
   };

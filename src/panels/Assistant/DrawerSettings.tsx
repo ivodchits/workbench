@@ -64,8 +64,7 @@ export default function DrawerSettings({ duck }: { duck: DuckState }) {
               Ask before every prompt Duck sends to a session
               <span style={hint}>
                 {" "}
-                (off: only answering prompts, interrupting, stopping and note
-                rewrites ask)
+                (off: prompts follow the trust rules)
               </span>
             </span>
           </label>

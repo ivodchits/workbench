@@ -2,7 +2,8 @@
 //! loopback proxy that is the only way to the API ([`proxy`]), the usage ledger
 //! ([`usage`]) and the monthly budget ([`budget`]), over Duck's own database
 //! ([`db`]). Step A2: conversation threads ([`threads`]), stored for the engine that
-//! runs in the webview (`src/assistant/`).
+//! runs in the webview (`src/assistant/`). Step T1: the trust engine's rules, modes,
+//! kill switch and decision log ([`trust`]).
 //!
 //! The webview never holds the key. It asks [`assistant_proxy_info`] for the proxy's
 //! base URL and a per-launch token, and calls the API through the hook server with
@@ -14,6 +15,7 @@ mod db;
 mod key;
 mod proxy;
 mod threads;
+mod trust;
 mod usage;
 
 use std::sync::Arc;
@@ -23,7 +25,7 @@ use axum::Router;
 use rand_core::{OsRng, RngCore};
 use serde::Serialize;
 use serde_json::Value;
-use tauri::{AppHandle, Manager, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 
 pub use budget::{Limits, Spend};
 use db::DuckDb;
@@ -195,4 +197,79 @@ pub fn assistant_pending_clear(ctx: Db<'_>, id: String) -> Result<(), String> {
 #[tauri::command]
 pub fn assistant_thread_delete(ctx: Db<'_>, thread_id: String) -> Result<(), String> {
     threads::delete(&mut lock(&ctx), &thread_id)
+}
+
+// ── trust (step T1) ─────────────────────────────────────────────────────────
+
+/// Whether Duck's trust is paused (the kill switch), for the tray at startup.
+pub fn trust_paused(app: &AppHandle) -> bool {
+    app.try_state::<Arc<Assistant>>()
+        .is_some_and(|ctx| trust::paused(&ctx.db))
+}
+
+/// Flip the kill switch from anywhere (the drawer, the palette, the tray): store
+/// it, tick the tray item, and tell the webview.
+pub fn set_trust_paused(app: &AppHandle, paused: bool) -> Result<bool, String> {
+    let ctx = app
+        .try_state::<Arc<Assistant>>()
+        .ok_or("Duck's database isn't open")?;
+    trust::set_paused_flag(&ctx.db, paused)?;
+    crate::attention::set_trust_check(app, paused);
+    let _ = app.emit("assistant-trust-paused", paused);
+    Ok(paused)
+}
+
+#[tauri::command]
+pub fn assistant_trust_load(ctx: Db<'_>) -> Result<trust::TrustState, String> {
+    trust::load(&lock(&ctx))
+}
+
+/// Write the starter rules if they never were; returns the state either way.
+#[tauri::command]
+pub fn assistant_trust_seed(ctx: Db<'_>, rules: Vec<trust::Rule>) -> Result<trust::TrustState, String> {
+    trust::seed(&mut lock(&ctx), &rules)
+}
+
+#[tauri::command]
+pub fn assistant_trust_pause(app: AppHandle, paused: bool) -> Result<bool, String> {
+    set_trust_paused(&app, paused)
+}
+
+#[tauri::command]
+pub fn assistant_rule_add(ctx: Db<'_>, rule: trust::Rule) -> Result<(), String> {
+    trust::add_rule(&lock(&ctx), &rule)
+}
+
+#[tauri::command]
+pub fn assistant_rule_remove(ctx: Db<'_>, id: String) -> Result<(), String> {
+    trust::remove_rule(&lock(&ctx), &id)
+}
+
+#[tauri::command]
+pub fn assistant_trust_mode_set(
+    ctx: Db<'_>,
+    project_id: String,
+    mode: Option<String>,
+) -> Result<(), String> {
+    trust::set_mode(&lock(&ctx), &project_id, mode.as_deref())
+}
+
+/// Turn a floor entry off or back on; returns the entries now off.
+#[tauri::command]
+pub fn assistant_floor_set(ctx: Db<'_>, id: String, enabled: bool) -> Result<Vec<String>, String> {
+    trust::set_floor(&lock(&ctx), &id, enabled)
+}
+
+#[tauri::command]
+pub fn assistant_decision_add(ctx: Db<'_>, decision: trust::Decision) -> Result<i64, String> {
+    trust::add_decision(&lock(&ctx), &decision)
+}
+
+#[tauri::command]
+pub fn assistant_decisions(
+    ctx: Db<'_>,
+    before: Option<i64>,
+    limit: u32,
+) -> Result<Vec<trust::Decision>, String> {
+    trust::decisions(&lock(&ctx), before, limit)
 }

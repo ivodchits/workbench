@@ -7,7 +7,8 @@
 //      system message carrying it, which keeps the cache).
 //   2. Stream a reply, emitting text deltas. Append the reply as it ended.
 //   3. On `tool_use`: validate every call against its tool's schema, ask the gate
-//      whether it may run, and run the ones that may, in parallel, each within its
+//      (the trust policy) whether it may run, fail the ones it refuses, and run the
+//      ones that may, in parallel, each within its
 //      time budget. If any must be confirmed, park the batch (persisted) and stop;
 //      `confirm()` resumes it once every call is answered. All results go back in one
 //      user message, failures marked `is_error`.
@@ -40,6 +41,7 @@ import type {
   ToolDef,
   ToolOutput,
 } from "./tools/registry";
+import type { TrustFacts } from "./trust/decide";
 
 type Params = Anthropic.Beta.Messages.MessageCreateParamsStreaming;
 type ApiMessage = Anthropic.Beta.BetaMessageParam;
@@ -79,16 +81,35 @@ export type StreamFn = (
   opts: { signal: AbortSignal; headers: Record<string, string> },
 ) => StreamLike | Promise<StreamLike>;
 
-/** The trust gate: may this call run now, or must someone confirm it? T1's policy
- *  replaces the default, which asks for every consequential call. */
-export type Gate = (call: {
+/** One call as the gate sees it. */
+export interface GateCall {
   name: string;
   input: unknown;
   tier: Tier;
-}) => "run" | "ask";
+  threadId: string;
+  toolUseId: string;
+  /** The card's sentence, when the tool has one. */
+  summary?: string;
+  /** What the tool says about the call, for the trust rules and the floor. */
+  facts?: TrustFacts;
+}
+
+/** Run now, ask on a card, or refuse (the reason is the call's error result). A
+ *  `notice` is shown in the thread. */
+export type GateAnswer =
+  | "run"
+  | "ask"
+  | { verdict: "run" | "ask" | "deny"; reason?: string; notice?: string };
+
+/** The trust gate: may this call run now, or must someone confirm it? The policy
+ *  (`policy.ts`, over the trust engine) replaces the default, which asks for every
+ *  consequential call. */
+export type Gate = (call: GateCall) => GateAnswer;
 
 export const tierGate: Gate = ({ tier }) =>
   tier === "consequential" ? "ask" : "run";
+
+const verdictOf = (a: GateAnswer) => (typeof a === "string" ? { verdict: a } : a);
 
 export interface EngineDeps {
   stream: StreamFn;
@@ -491,28 +512,34 @@ export function createEngine(deps: EngineDeps): Engine {
     uses: ToolUse[],
   ): Promise<ToolResult[] | null> {
     setState(threadId, "tool");
+    const notices: string[] = [];
     const calls: BatchCall[] = uses.map((u) => {
       const tool = registry.get(u.name);
+      const call: BatchCall = { id: u.id, name: u.name, input: u.input, state: "done" };
       // A call whose input doesn't fit its schema can't run: it fails at once
       // with the reason rather than asking the user to allow it.
-      const ask =
-        tool &&
-        tool.schema.safeParse(u.input).success &&
+      if (!tool || !tool.schema.safeParse(u.input).success) return call;
+      const tier = registry.callTier(u.name, u.input, port);
+      const a = verdictOf(
         gate({
           name: u.name,
           input: u.input,
-          tier: registry.callTier(u.name, u.input, port),
-        }) === "ask";
-      return {
-        id: u.id,
-        name: u.name,
-        input: u.input,
-        state: ask ? "ask" : "done",
-      };
+          tier,
+          threadId,
+          toolUseId: u.id,
+          summary: tier === "read" ? undefined : registry.describe(u.name, u.input, port),
+          facts: tier === "read" ? undefined : registry.trustFacts(u.name, u.input, port),
+        }),
+      );
+      if (a.notice) notices.push(a.notice);
+      if (a.verdict === "ask") call.state = "ask";
+      if (a.verdict === "deny") call.result = errorResult(u.id, a.reason ?? DECLINED);
+      return call;
     });
+    for (const text of notices) await notice(threadId, { kind: "trust", text });
     await Promise.all(
       calls.map(async (c, i) => {
-        if (c.state !== "done") return;
+        if (c.state !== "done" || c.result) return;
         c.result = await execute(threadId, turn, uses[i]);
       }),
     );

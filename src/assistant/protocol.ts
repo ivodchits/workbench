@@ -6,8 +6,18 @@
 // Surfaces send `ClientMessage`s and render `DuckEvent`s; they never reach into the
 // engine or the thread store directly.
 
-import type { Spend, StoredMessage, ThreadRow } from "../ipc/assistant";
+import type { DecisionRow, Spend, StoredMessage, ThreadRow } from "../ipc/assistant";
 import type { DuckSettings } from "./settings";
+import type { Mode, TrustConfig } from "./trust/decide";
+import type { Effect } from "./trust/rules";
+
+export type { DecisionRow };
+
+/** The trust engine's state as a surface shows it. */
+export interface TrustView extends TrustConfig {
+  /** The built-in floor, with whether each entry is on. */
+  floor: { id: string; label: string; on: boolean }[];
+}
 
 export const PROTOCOL_VERSION = 1;
 
@@ -58,7 +68,9 @@ export interface Notice {
     | "context"
     | "error"
     | "rounds"
-    | "note";
+    | "note"
+    /** The trust engine says something about this thread (the rate guard). */
+    | "trust";
   text: string;
   /** `note` only. */
   note?: NoteEdit;
@@ -91,7 +103,23 @@ export type ClientMessage =
   /** Ask for a thread's stored messages. */
   | { type: "thread.open"; threadId: string }
   /** Change Duck's settings (step W2). */
-  | { type: "settings.set"; settings: Partial<DuckSettings> };
+  | { type: "settings.set"; settings: Partial<DuckSettings> }
+  // Trust (step T1). Each change is answered with a `trust` event.
+  /** The kill switch. */
+  | { type: "trust.pause"; paused: boolean }
+  | {
+      type: "trust.rule.add";
+      effect: Effect;
+      pattern: string;
+      /** null: global. */
+      projectId: string | null;
+    }
+  | { type: "trust.rule.remove"; id: string }
+  | { type: "trust.mode"; projectId: string; mode: Mode }
+  /** Turn a floor entry off or back on (the surface asks for a typed confirm). */
+  | { type: "trust.floor"; id: string; enabled: boolean }
+  /** A page of the decision log, newest first, older than `before` (an id). */
+  | { type: "trust.decisions"; before: number | null };
 
 // ── Duck → surface ──────────────────────────────────────────────────────────
 
@@ -132,6 +160,18 @@ export type DuckEvent =
   | { type: "spend"; spend: Spend; turns: Record<string, number> }
   /** Duck's settings, on `sync` and after every change. */
   | { type: "settings"; settings: DuckSettings }
+  /** The trust engine's state (step T1), on `sync` and after every change. */
+  | { type: "trust"; trust: TrustView }
+  /** Answer to `trust.decisions`. */
+  | {
+      type: "decisions";
+      rows: DecisionRow[];
+      before: number | null;
+      /** Older rows exist. */
+      more: boolean;
+    }
+  /** A decision was just logged. */
+  | { type: "decision"; row: DecisionRow }
   /** A request from a surface failed (an unknown thread, storage down, …). */
   | { type: "error"; message: string };
 

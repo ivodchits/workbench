@@ -1,8 +1,8 @@
 // The Duck button (step A3), at the far left of the title bar ("D.U.C.K.", with the
 // duck icon beside it): opens and closes the drawer, spells out the acronym on
 // hover, and doubles as Duck's status light. A badge counts the tool calls waiting for your confirmation (in any thread), and
-// the label turns amber past the budget's soft limit and red at the cap. Trust
-// pause (T1) and the voice state (V1/V4) join it later.
+// the label turns amber past the budget's soft limit and red at the cap. A pause
+// mark shows while trust is paused (T1). The voice state (V1/V4) joins it later.
 
 import { useEffect, useRef, useState } from "react";
 import { runCommand, useBindings } from "../../keyboard";
@@ -40,9 +40,11 @@ export default function DuckButton() {
     : duck.spend?.softReached
       ? "Past the budget's soft limit."
       : null;
+  const paused = !!duck.trust?.paused;
   const label =
     `Duck: ${ACRONYM.map(([l, r]) => l + r).join(", ")}. ${shortcut}` +
-    (asks ? `. ${asks} waiting for your confirmation` : "");
+    (asks ? `. ${asks} waiting for your confirmation` : "") +
+    (paused ? ". Trust paused" : "");
 
   return (
     <div
@@ -85,6 +87,7 @@ export default function DuckButton() {
         }}
       >
         D.U.C.K.
+        {paused && <span title="trust paused">⏸</span>}
         {asks > 0 && (
           <span
             style={{
@@ -147,6 +150,11 @@ export default function DuckButton() {
           )}
           {budgetNote && (
             <span style={{ color: tone ?? undefined }}>{budgetNote}</span>
+          )}
+          {paused && (
+            <span style={{ color: "var(--wb-needs)" }}>
+              Trust paused: every consequential action asks.
+            </span>
           )}
         </div>
       )}

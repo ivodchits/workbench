@@ -6,7 +6,10 @@
 // Tiers: in-app actions that can be undone are `reversible` and run at once (the
 // policy can still ask for prompts, a setting); answering a prompt, interrupting or
 // stopping a session, replacing or deleting a note, and resuming over a running
-// session are `consequential`, so the user confirms them on a card.
+// session are `consequential`: they ask on a card unless a trust rule allows them,
+// or the user's own words asked for that call (`grantedBy`, step T1). Each tool's
+// `trust` names the call's project, and what the floor should read (a prompt's
+// text, the command a permission answer lets through).
 //
 // Notes writes carry the revision Duck read, so they never overwrite an edit made
 // since, and each leaves a "Duck edited" chip in the thread with a diff and undo.
@@ -48,6 +51,31 @@ const DELIVERY: Record<PromptDelivery, string> = {
 
 const sessionArgs = { session: sessionArg, project: projectArg.optional() };
 
+/** The trust facts of a call on one session, or on one project. */
+const onSession = (
+  { session, project }: { session: string; project?: string },
+  port: WorkbenchPort,
+) => ({ projectId: findSession(port, session, project).projectId });
+const onProject = ({ project }: { project: string }, port: WorkbenchPort) => ({
+  projectId: findProject(port, project).id,
+});
+
+/** The user's own words that ask for the call: with them a consequential call runs
+ *  without a card (the trust engine checks they're really in the user's messages). */
+const grantArg = z
+  .string()
+  .max(500)
+  .optional()
+  .describe(
+    "The user's own words in this thread that ask for or allow this exact call, quoted exactly (e.g. \"stop api and tests\"). With them it runs at once; leave it out when they didn't say so.",
+  );
+
+/** Trust facts for a session call that may carry the user's words. */
+const onSessionGranted = (
+  input: { session: string; project?: string; grantedBy?: string },
+  port: WorkbenchPort,
+) => ({ ...onSession(input, port), grant: input.grantedBy?.trim() || undefined });
+
 // ── sessions ────────────────────────────────────────────────────────────────
 
 export const sendPrompt = defineTool({
@@ -63,6 +91,7 @@ export const sendPrompt = defineTool({
     const s = findSession(port, session, project);
     return `Send to "${s.title}": ${cut(text, 240)}`;
   },
+  trust: (input, port) => ({ ...onSession(input, port), texts: [input.text] }),
   async run({ session, project, text }, { port }) {
     const s = findSession(port, session, project);
     const delivery = await port.sendPrompt(s.id, text);
@@ -99,6 +128,7 @@ export const createSession = defineTool({
     const p = findProject(port, project);
     return `Start a session in ${p.name}${prompt?.trim() ? ` and send: ${cut(prompt, 240)}` : ""}`;
   },
+  trust: (input, port) => ({ ...onProject(input, port), texts: input.prompt ? [input.prompt] : [] }),
   async run({ project, prompt, title, worktree, model }, { port, settings }) {
     const p = findProject(port, project);
     if (worktree && p.remote)
@@ -129,6 +159,7 @@ export const startSession = defineTool({
     "Open a session's console and show it: starts Claude Code there if it isn't running (a fresh conversation), else just brings it to the front.",
   schema: z.object(sessionArgs),
   tier: "reversible",
+  trust: onSession,
   run({ session, project }, { port }) {
     const s = findSession(port, session, project);
     port.startSession(s.id);
@@ -143,6 +174,7 @@ export const resumeSession = defineTool({
   schema: z.object({
     ...sessionArgs,
     sessionId: z.string().optional().describe("A past Claude Code session id."),
+    grantedBy: grantArg,
   }),
   tier: "reversible",
   tierFor({ session, project }, port) {
@@ -152,6 +184,7 @@ export const resumeSession = defineTool({
     const s = findSession(port, session, project);
     return `${isLive(s) ? "Restart" : "Resume"} "${s.title}" on ${sessionId ? `session ${sessionId}` : "its last conversation"}`;
   },
+  trust: onSessionGranted,
   run({ session, project, sessionId }, { port }) {
     const s = findSession(port, session, project);
     port.resumeSession(s.id, sessionId);
@@ -194,7 +227,7 @@ function choiceLabel(s: SessionRef, answer: Answer): string {
 export const answerChoice = defineTool({
   name: "answer_choice",
   description:
-    "Answer the prompt a session is waiting on (a permission request, a question or a plan approval) with one of its options, or deny it. A question also takes a free-form answer in `text` (its \"Type something\" choice) instead of an option. Call get_pending_choice first: it gives the choiceId and the options. The user confirms every answer.",
+    "Answer the prompt a session is waiting on (a permission request, a question or a plan approval) with one of its options, or deny it. A question also takes a free-form answer in `text` (its \"Type something\" choice) instead of an option. Call get_pending_choice first: it gives the choiceId and the options. Answering a permission request or a plan asks the user on a card, unless their own message already allowed it (\"approve it if it asks\"): then quote those words in `grantedBy` and it runs at once. Never quote words that aren't the user's, and never pick a \"don't ask again\" option on their behalf.",
   schema: z.object({
     ...sessionArgs,
     choiceId: z.string().describe("The prompt's choiceId from get_pending_choice."),
@@ -204,6 +237,7 @@ export const answerChoice = defineTool({
       .max(2000)
       .optional()
       .describe("A free-form answer to a question, instead of an option."),
+    grantedBy: grantArg,
   }).superRefine(({ option, text }, ctx) => {
     // Checked with the schema, so a call that names no answer fails before a card.
     try {
@@ -217,6 +251,21 @@ export const answerChoice = defineTool({
     const s = findSession(port, session, project);
     const what = s.choice ? choiceLine(s.choice) : "its prompt";
     return `Answer "${s.title}" — ${what} — with: ${choiceLabel(s, answerOf(option, text))}`;
+  },
+  trust({ session, project, option, text, grantedBy }, port) {
+    const s = findSession(port, session, project);
+    const c = s.choice;
+    const answer = answerOf(option, text);
+    const label = typeof answer === "number" ? (c?.options.find((o) => o.key === answer)?.label ?? "") : "";
+    return {
+      projectId: s.projectId,
+      specifier: c?.kind ?? "none",
+      texts: typeof answer === "object" ? [answer.text] : label ? [label] : [],
+      // What a "yes" lets the session do; a denial lets nothing through.
+      call: c?.kind === "permission" && answer !== "deny" ? { tool: c.toolName, input: c.input } : undefined,
+      // "Don't ask again" writes a rule into Claude Code: never on a quoted permission.
+      grant: grantedBy?.trim() && !/don.?t ask again|always allow/i.test(label) ? grantedBy : undefined,
+    };
   },
   run({ session, project, choiceId, option, text }, { port }) {
     const s = findSession(port, session, project);
@@ -234,6 +283,7 @@ export const interruptSession = defineTool({
   describe({ session, project }, port) {
     return `Interrupt "${findSession(port, session, project).title}" (Esc)`;
   },
+  trust: onSession,
   run({ session, project }, { port }) {
     const s = findSession(port, session, project);
     port.interruptSession(s.id);
@@ -245,15 +295,33 @@ export const stopSession = defineTool({
   name: "stop_session",
   description:
     "Close a session's console and end its Claude Code process. The session stays on the rail and can be resumed.",
-  schema: z.object(sessionArgs),
+  schema: z.object({ ...sessionArgs, grantedBy: grantArg }),
   tier: "consequential",
   describe({ session, project }, port) {
     return `Stop "${findSession(port, session, project).title}" (close its console)`;
   },
+  trust: onSessionGranted,
   run({ session, project }, { port }) {
     const s = findSession(port, session, project);
     port.stopSession(s.id);
     return { session: s.title, stopped: true };
+  },
+});
+
+export const killSession = defineTool({
+  name: "kill_session",
+  description:
+    "Kill a session: end its Claude Code process and remove it from the rail for good (the rail's \"kill instance\"). Use it to clear away sessions that are finished or dead; use stop_session to keep one around for later. Its past conversations stay on disk. Refused for a session with a worktree, and for a remote one in tmux: the user does those from the rail.",
+  schema: z.object({ ...sessionArgs, grantedBy: grantArg }),
+  tier: "consequential",
+  describe({ session, project }, port) {
+    return `Kill "${findSession(port, session, project).title}" (remove it from the rail)`;
+  },
+  trust: onSessionGranted,
+  async run({ session, project }, { port }) {
+    const s = findSession(port, session, project);
+    await port.killSession(s.id);
+    return { session: s.title, killed: true };
   },
 });
 
@@ -267,6 +335,7 @@ export const openPanel = defineTool({
     session: sessionArg.optional(),
   }),
   tier: "reversible",
+  trust: onProject,
   run({ project, kind, session }, { port }) {
     const p = findProject(port, project);
     const s = session ? findSession(port, session, p.id) : undefined;
@@ -308,6 +377,7 @@ export const waitForSession = defineTool({
       .describe("Give up after this many minutes, with a message saying so."),
   }),
   tier: "reversible",
+  trust: onSession,
   run({ session, project, until, timeoutMin }, ctx: ToolContext) {
     const { port, threadId } = ctx;
     const s = findSession(port, session, project);
@@ -361,6 +431,7 @@ export const createNote = defineTool({
     content: z.string().max(100_000),
   }),
   tier: "reversible",
+  trust: onProject,
   async run({ project, name, content }, ctx) {
     const p = findProject(ctx.port, project);
     const n = await ctx.port.createNote(p.id, name, content);
@@ -386,6 +457,7 @@ export const appendNote = defineTool({
     text: z.string().trim().min(1).max(50_000),
   }),
   tier: "reversible",
+  trust: onProject,
   async run({ project, name, text }, ctx) {
     const p = findProject(ctx.port, project);
     // One retry: a save landing between the read and the write moves the revision.
@@ -414,7 +486,7 @@ export const appendNote = defineTool({
 export const writeNote = defineTool({
   name: "write_note",
   description:
-    "Replace a note's whole text. Pass the revision read_note gave: if the user saved since, the write is refused, and you read the note again and redo the edit on its current text. For adding to a note use append_note instead. The user confirms every rewrite.",
+    "Replace a note's whole text. Pass the revision read_note gave: if the user saved since, the write is refused, and you read the note again and redo the edit on its current text. For adding to a note use append_note instead.",
   schema: z.object({
     project: projectArg,
     name: noteName,
@@ -426,6 +498,7 @@ export const writeNote = defineTool({
     const p = findProject(port, project);
     return `Rewrite note "${name}" in ${p.name} (${content.length} characters)`;
   },
+  trust: onProject,
   async run({ project, name, content, baseRevision }, ctx) {
     const p = findProject(ctx.port, project);
     const n = await ctx.port.readNote(p.id, name);
@@ -452,12 +525,14 @@ export const writeNote = defineTool({
 
 export const deleteNote = defineTool({
   name: "delete_note",
-  description: "Delete a note. The user confirms it.",
-  schema: z.object({ project: projectArg, name: noteName }),
+  description:
+    "Delete a note. The user is asked first, unless a trust rule allows it or their own words asked for it (`grantedBy`).",
+  schema: z.object({ project: projectArg, name: noteName, grantedBy: grantArg }),
   tier: "consequential",
   describe({ project, name }, port) {
     return `Delete note "${name}" in ${findProject(port, project).name}`;
   },
+  trust: (input, port) => ({ ...onProject(input, port), grant: input.grantedBy?.trim() || undefined }),
   async run({ project, name }, ctx) {
     const p = findProject(ctx.port, project);
     const n = await ctx.port.readNote(p.id, name);
@@ -482,6 +557,7 @@ export const ACT_TOOLS = [
   answerChoice,
   interruptSession,
   stopSession,
+  killSession,
   openPanel,
   waitForSession,
   createNote,

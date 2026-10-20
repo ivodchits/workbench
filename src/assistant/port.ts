@@ -148,6 +148,10 @@ export interface WorkbenchPort {
   interruptSession(instanceId: string): void;
   /** Close the console and end its process. */
   stopSession(instanceId: string): void;
+  /** The rail's "kill instance": stop it, close its review panel, and remove it from
+   *  the rail. Refused for a session with a worktree (it would be left on disk) and
+   *  for a remote one whose tmux session needs the user's SSH password. */
+  killSession(instanceId: string): Promise<void>;
   /** Open (or focus) a panel. `diff` and `console` need a session. */
   openPanel(projectId: string, kind: PanelKind, instanceId?: string): void;
   /** Write a note. `baseRevision` is the revision it was read at; the write is

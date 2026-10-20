@@ -4,10 +4,12 @@
 //
 // It stays mounted while closed (only hidden), so reopening it finds the same thread
 // at the same scroll position; the open thread and the width persist in prefs. It
-// speaks only the Duck Protocol, through `duckState`.
+// speaks only the Duck Protocol, through `duckState`. The header's trust pill is
+// the kill switch (T1); the trust and decisions views take the thread's place.
 
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import { registerCommand } from "../../keyboard";
+import { registerCommand, useBindings } from "../../keyboard";
+import { chordText } from "../keymapFormat";
 import { getKeyStatus } from "../../ipc/assistant";
 import {
   notesCreateWith,
@@ -27,6 +29,7 @@ import "../../theme/assistant.css";
 import type { ConfirmRequest, NoteEdit } from "../../assistant/protocol";
 import DuckIcon from "./DuckIcon";
 import DrawerSettings from "./DrawerSettings";
+import { DecisionsPanel, TrustPanel } from "./TrustViews";
 import type { ThreadRow } from "../../ipc/assistant";
 import {
   answer,
@@ -39,8 +42,10 @@ import {
   sendMessage,
   setDrawerOpen,
   setDrawerWidth,
+  setTrustPaused,
   stopTurn,
   toggleDrawer,
+  toggleTrust,
   useDuckState,
   type DuckState,
 } from "./duckState";
@@ -76,11 +81,13 @@ export default function AssistantDrawer() {
   const duck = useDuckState();
   const [width, setWidth] = useState<number | null>(null);
   const [noKey, setNoKey] = useState(false);
+  const [view, setView] = useState<View>("thread");
   const composerRef = useRef<HTMLTextAreaElement>(null);
   const returnFocus = useRef<HTMLElement | null>(null);
 
   useEffect(() => void connectDuck(), []);
   useEffect(() => registerCommand("toggleAssistant", toggleDrawer), []);
+  useEffect(() => registerCommand("toggleTrust", toggleTrust), []);
 
   // Opening: remember where the keyboard was, check the key, focus the composer.
   // Closing: hand the keyboard back.
@@ -156,6 +163,7 @@ export default function AssistantDrawer() {
       <Header
         duck={duck}
         title={thread ? thread.title || "untitled" : "new thread"}
+        onView={setView}
       />
       {noKey && (
         <div style={{ ...banner, color: "var(--wb-needs)" }}>
@@ -182,7 +190,11 @@ export default function AssistantDrawer() {
           </button>
         </div>
       )}
-      <ThreadBody duck={duck} />
+      {view === "thread" && <ThreadBody duck={duck} />}
+      {view === "trust" && <TrustPanel duck={duck} onBack={() => setView("thread")} />}
+      {view === "decisions" && (
+        <DecisionsPanel duck={duck} onBack={() => setView("thread")} />
+      )}
       <Asks duck={duck} />
       <SpendLine duck={duck} />
       <Composer duck={duck} busy={busy} inputRef={composerRef} />
@@ -202,7 +214,44 @@ export default function AssistantDrawer() {
   );
 }
 
-function Header({ duck, title }: { duck: DuckState; title: string }) {
+type View = "thread" | "trust" | "decisions";
+
+/** The kill switch: on, or paused (every consequential call asks). */
+function TrustPill({ duck }: { duck: DuckState }) {
+  const bindings = useBindings();
+  const t = duck.trust;
+  if (!t) return null;
+  const chord = bindings.find((b) => b.command === "toggleTrust")?.chord;
+  const key = chord ? ` (${chordText(chord)})` : "";
+  return (
+    <button
+      type="button"
+      onClick={() => setTrustPaused(!t.paused)}
+      title={
+        t.paused
+          ? `Trust is paused: every consequential call asks. Click to resume${key}.`
+          : `Duck acts without a card on what the rules allow. Click to pause${key}.`
+      }
+      style={{
+        ...btn,
+        color: t.paused ? "var(--wb-needs)" : "var(--wb-textDim2)",
+        borderColor: t.paused ? "var(--wb-needs)" : "var(--wb-border)",
+      }}
+    >
+      {t.paused ? "⏸ paused" : "trust"}
+    </button>
+  );
+}
+
+function Header({
+  duck,
+  title,
+  onView,
+}: {
+  duck: DuckState;
+  title: string;
+  onView: (v: View) => void;
+}) {
   const [menu, setMenu] = useState<"threads" | "settings" | null>(null);
   const rootRef = useRef<HTMLDivElement>(null);
 
@@ -262,11 +311,13 @@ function Header({ duck, title }: { duck: DuckState; title: string }) {
         title="start a new thread"
         onClick={() => {
           openThread(null);
+          onView("thread");
           setMenu(null);
         }}
       >
         + new
       </button>
+      <TrustPill duck={duck} />
       <button
         type="button"
         style={btn}
@@ -308,6 +359,7 @@ function Header({ duck, title }: { duck: DuckState; title: string }) {
               duck={duck}
               onOpen={() => {
                 openThread(t.id);
+                onView("thread");
                 setMenu(null);
               }}
             />
@@ -317,6 +369,21 @@ function Header({ duck, title }: { duck: DuckState; title: string }) {
       {menu === "settings" && (
         <div style={{ ...popover, right: 8, width: 300 }}>
           <DrawerSettings duck={duck} />
+          <div style={{ display: "flex", gap: 8, padding: "6px 12px 2px" }}>
+            {(["trust", "decisions"] as const).map((v) => (
+              <button
+                key={v}
+                type="button"
+                style={btn}
+                onClick={() => {
+                  onView(v);
+                  setMenu(null);
+                }}
+              >
+                {v === "trust" ? "trust rules…" : "decisions…"}
+              </button>
+            ))}
+          </div>
         </div>
       )}
     </div>

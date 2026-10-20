@@ -17,8 +17,19 @@ const INHERITED_CLAUDE_SESSION_VARS: &[&str] = &[
     "CLAUDE_CODE_MESSAGING_TOKEN",
 ];
 
+/// What a Claude Code tool shell adds for its own commands rather than for you:
+/// `NO_COLOR=1` would turn every session's TUI plain white. Dropped only when the
+/// app was launched from such a shell (`CLAUDECODE` is set), so a `NO_COLOR` you
+/// set yourself still applies.
+const CLAUDE_TOOL_SHELL_VARS: &[&str] = &["NO_COLOR"];
+
 fn main() {
     // Still single-threaded here, so mutating the process env is sound.
+    if std::env::var_os("CLAUDECODE").is_some() {
+        for var in CLAUDE_TOOL_SHELL_VARS {
+            std::env::remove_var(var);
+        }
+    }
     for var in INHERITED_CLAUDE_SESSION_VARS {
         std::env::remove_var(var);
     }

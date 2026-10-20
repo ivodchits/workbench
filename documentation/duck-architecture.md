@@ -5,7 +5,7 @@ behind each decision are in `assistant-plan.md`. This file describes the code, a
 Duck step updates it as part of its Done when. Duck's self-development sessions (L3)
 read it first.
 
-Last updated: step W2 (2026-10-19).
+Last updated: step T1 (2026-10-19).
 
 ## The shape
 
@@ -32,21 +32,26 @@ Last updated: step W2 (2026-10-19).
 
 | File | What it is |
 |---|---|
-| `index.ts` | `initAssistant()` (called from `App.tsx` with the other engines) builds the store, the registry and the engine; `getDuck()` returns the in-process transport. `endpoint()` maps protocol messages onto the engine and adds the spend (from a `SpendSource`: the ledger commands and `assistant-usage` events). |
-| `protocol.ts` | The Duck Protocol, version 1: `ClientMessage` (send, stop, confirm, thread.new, thread.delete, sync, thread.open, settings.set) and `DuckEvent` (threads, history, thread, threadDeleted, message, delta, tool, confirm, confirmed, turnState, spend, settings, error). A `ConfirmRequest` carries the tool's one-line `summary`; a `note` notice carries a `NoteEdit` (before, after, revision) for the drawer's chip. Source `event` marks a follow-up from Workbench, not the user. `createLocalTransport` stamps `v`. |
+| `index.ts` | `initAssistant()` (called from `App.tsx` with the other engines) builds the store, the trust store, the registry and the engine; `getDuck()` returns the in-process transport. `endpoint()` maps protocol messages onto the engine and adds the spend (from a `SpendSource`: the ledger commands and `assistant-usage` events) and the trust messages (`trustView()` adds the floor's labels). |
+| `protocol.ts` | The Duck Protocol, version 1: `ClientMessage` (send, stop, confirm, thread.new, thread.delete, sync, thread.open, settings.set, trust.pause, trust.rule.add, trust.rule.remove, trust.mode, trust.floor, trust.decisions) and `DuckEvent` (threads, history, thread, threadDeleted, message, delta, tool, confirm, confirmed, turnState, spend, settings, trust, decisions, decision, error). A `ConfirmRequest` carries the tool's one-line `summary`; a `note` notice carries a `NoteEdit` (before, after, revision) for the drawer's chip. Source `event` marks a follow-up from Workbench, not the user. `createLocalTransport` stamps `v`. |
 | `settings.ts` | Duck's settings (pref `assistant`): `confirmPrompts` (ask before every prompt sent to a session) and `codingModel` (what `create_session` uses for coding work). Loaded at start, changed only through `settings.set`. |
-| `policy.ts` | `createPolicy(settings)`: the gate. Consequential calls ask; prompts ask too when `confirmPrompts` is on. T1 replaces it behind the same `Gate`. |
+| `policy.ts` | `createPolicy({settings, trust, messages})`: the gate, an adapter over the trust engine. It builds a `TrustRequest`, runs `decide`, applies the rate guard and logs the decision. A `deny` becomes the call's error, and a rate-guard trip a `trust` notice. Without a trust store it is W2's: consequential calls ask, and prompts too when `confirmPrompts` is on. |
+| `trust/rules.ts` | Rules in Claude Code's syntax (`assistant:write_note`, `assistant:answer_choice(question)`, `Bash(npm test:*)`, `Edit(src/**)`, `WebFetch(domain:x)`): `parseRule`, `matches`, `evaluate` (deny > ask > allow, global plus the call's project). |
+| `trust/floor.ts` | `FLOOR`: the always-ask entries as data, each with must-catch and must-pass examples; `floorHit(texts, off)`. |
+| `trust/mandate.ts` | `findGrant(messages, quote, now)`: the user's own recent message a `grantedBy` quote comes from. |
+| `trust/decide.ts` | `decide(request, config, {grant})`, in this order: kill switch / project `off` / tripped thread (W2's answer), floor, the confirm-prompts setting, rules, mandate, tier. `baseline()` is W2's answer. |
+| `trust/store.ts` | `createTrustStore(backend)`: rules, modes, floor-off and the kill switch in memory, written through to duck.db. It seeds `STARTER_RULES` once, holds the in-memory rate guard, and keeps the decision log. |
 | `spend.ts` | `createTurnMeter()`: bills each metered `thread` call to the one turn that is calling (none if two are), giving each thread's latest turn cost for the `spend` event. |
-| `engine.ts` | The loop. Pure helpers `toApiMessages`, `effectiveEffort`, `buildParams` and `eventText` are exported for tests. Each tool call gets a `ToolContext` with the settings, `notice()` (a thread item the model never sees) and `later(text)` (a follow-up sent into the thread as a `<workbench_event>` user message with source `event`, which runs its own turn). The gate is asked with the call's own tier (`registry.callTier`). |
+| `engine.ts` | The loop. Pure helpers `toApiMessages`, `effectiveEffort`, `buildParams` and `eventText` are exported for tests. Each tool call gets a `ToolContext` with the settings, `notice()` (a thread item the model never sees) and `later(text)` (a follow-up sent into the thread as a `<workbench_event>` user message with source `event`, which runs its own turn). The gate is asked with the call's own tier (`registry.callTier`), the card's summary and the tool's trust facts (`registry.trustFacts`). It answers run, ask, or deny with a reason, and an optional notice. |
 | `threads.ts` | `createThreadStore(backend)`: threads, messages (loaded per thread on first use) and parked tool batches, in memory and persisted. Appends to one thread are serialized so each gets the next `seq`. |
 | `client.ts` | `getClient()` (the SDK at the proxy, with the launch token as its key), `purpose()`, `capMessage()`, `errorMessage()`, and `oneShot(name, input, {schema?})` for Haiku primitives. |
 | `prompt.ts` | The frozen system prompt, `MAIN_MODEL` / `PRIMITIVE_MODEL`, and `PRIMITIVES` (one frozen prompt per Haiku job; the key is its `x-wb-purpose`). |
-| `port.ts` / `port.local.ts` | `WorkbenchPort` and its one implementation over the stores. The only file under `src/assistant/` allowed to import `src/state/**` or `src/panels/**`. Members: projects, sessions (live phase, pending choice with its id, worktree, model, last activity), transcript paging, usage limits, a git snapshot of a directory, notes list/read, Duck's spend; and the W2 actions: `sendPrompt` (`sendOrQueue`, or start the console and deliver when ready), `createSession` (`startNewSession` from `state/remoteActions`, shared with the phone), start/resume/interrupt/stop, `answerChoice` (refused unless the named prompt is still open), `openPanel`, note writes, `onPhase`. |
+| `port.ts` / `port.local.ts` | `WorkbenchPort` and its one implementation over the stores. The only file under `src/assistant/` allowed to import `src/state/**` or `src/panels/**`. Members: projects, sessions (live phase, pending choice with its id, worktree, model, last activity), transcript paging, usage limits, a git snapshot of a directory, notes list/read, Duck's spend; and the W2 actions: `sendPrompt` (`sendOrQueue`, or start the console and deliver when ready), `createSession` (`startNewSession` from `state/remoteActions`, shared with the phone), start/resume/interrupt/stop/kill, `answerChoice` (refused unless the named prompt is still open), `openPanel`, note writes, `onPhase`. |
 | `fakePort.test-util.ts` | `fakePort(data)` and the `project()` / `session()` builders: a port over fixture data for the engine's and the tools' tests. Actions are recorded in `calls`, notes writes keep the revision check, `phase()` fires `onPhase`. `toolCtx(port)` is a tool context that records notices and follow-ups. |
-| `tools/registry.ts` | `defineTool({name, description, schema, tier, tierFor?, describe?, timeoutMs?, run})` and `createRegistry(tools)`: the API tool list sorted by name, built once; `tierOf(name)`, `callTier(name, input, port)` (a tier that depends on the input or state), `describe(...)` (the confirmation card's sentence). |
+| `tools/registry.ts` | `defineTool({name, description, schema, tier, tierFor?, describe?, trust?, timeoutMs?, run})` and `createRegistry(tools)`: the API tool list sorted by name, built once; `tierOf(name)`, `callTier(name, input, port)` (a tier that depends on the input or state), `describe(...)` (the confirmation card's sentence), `trustFacts(...)` (the call's project, rule specifier, and text for the floor). |
 | `tools/getTime.ts` | `get_time` (read tier): the local date, time and zone. |
 | `tools/read.ts` | The W1 read tools: `list_projects`, `list_sessions`, `get_pending_choice`, `read_session`, `usage_limits`, `git_overview`, `list_notes`, `read_note`, `duck_spend`. Compact JSON, empty fields left out; projects and sessions are named by id or name (`findProject` / `findSession`, which list the choices on a miss or an ambiguity). |
-| `tools/act.ts` | The W2 action tools. Reversible: `send_prompt`, `create_session`, `start_session`, `open_panel`, `wait_for_session`, `create_note`, `append_note`, and `resume_session` on a stopped session. Consequential: `answer_choice`, `interrupt_session`, `stop_session`, `write_note`, `delete_note`, and `resume_session` over a running session. Note writes leave a "Duck edited" chip. |
+| `tools/act.ts` | The W2 action tools. Reversible: `send_prompt`, `create_session`, `start_session`, `open_panel`, `wait_for_session`, `create_note`, `append_note`, and `resume_session` on a stopped session. Consequential: `answer_choice`, `interrupt_session`, `stop_session`, `kill_session` (the rail's kill: removes the row; refused with a worktree or a remote tmux session), `write_note`, `delete_note`, and `resume_session` over a running session. Note writes leave a "Duck edited" chip. Each tool's `trust` names its project. `answer_choice`'s facts carry the prompt's kind as the specifier, the Claude Code call a "yes" would allow (for the floor), and `grantedBy` (never for a "don't ask again" option). `stop_session`, `kill_session`, `resume_session` and `delete_note` take `grantedBy` too: the user's words asking for that call. |
 | `tools/testConfirm.ts` | `test_confirm`, a consequential tool that does nothing, for trying the confirmation card. Registered in dev builds only. |
 
 Outside the folder, `src/transcript/plainText.ts` (`readPlainText`) writes a session's
@@ -69,6 +74,7 @@ prompt's safety rules cover them.
 | `usage.rs` | The price table, the stream meter, and ledger rows. |
 | `budget.rs` | Limits, month-to-date spend, and the cap rule (at the cap only Haiku with a purpose other than `thread` passes). |
 | `threads.rs` | Threads, append-only messages and parked batches in `duck.db`; `delete` removes a thread with its messages and batches in one transaction. |
+| `trust.rs` | Rules, project modes, floor-off, the seeded flag, the kill switch (`meta` `assistant_trust_paused`) and the decision log. `set_trust_paused` in `mod.rs` writes the flag, ticks the tray item (`attention::set_trust_check`) and emits `assistant-trust-paused`. |
 | `db.rs` | `duck.db` / `duck.dev.db` and its append-only migrations. |
 
 ### The desktop surface: `src/panels/Assistant/`
@@ -77,8 +83,9 @@ prompt's safety rules cover them.
 |---|---|
 | `duckState.ts` | The desktop's one subscription to the protocol, an external store shared by the button and the drawer: threads, the open thread, loaded messages, streaming text, turn states, locally queued messages, confirmations, spend. Actions (`sendMessage`, `stopTurn`, `answer`, `openThread`, …) only send protocol messages. Persists `assistantDrawer` prefs (width, open thread, interrupt). |
 | `view.ts` | `toItems(messages)`: stored messages → display items (user text, reply text, a tool chip with its result attached, notices; thinking and system messages hidden). `sessionLink()` reads `#session/<id>` links. |
-| `DuckButton.tsx` | The title-bar button ("D.U.C.K.", the icon beside it): toggles the drawer, the acronym tooltip, a confirmation-count badge, an amber/red tint past the soft limit/cap. |
-| `Drawer.tsx` | The drawer: header (thread list, new, settings, close), thread view (markdown replies, tool chips, queued bubbles), confirmation cards, spend line, composer (Enter / Shift+Enter / Esc, "think hard" = effort `high` for one message). Always mounted and only hidden, so the thread and scroll survive closing. |
+| `DuckButton.tsx` | The title-bar button ("D.U.C.K.", the icon beside it): toggles the drawer, the acronym tooltip, a confirmation-count badge, an amber/red tint past the soft limit/cap, ⏸ while trust is paused. |
+| `TrustViews.tsx` | `TrustPanel` (kill switch, rules, project modes, the floor with a typed confirmation) and `DecisionsPanel` (the log with make-a-rule / always-ask). Opened from the settings popover; they take the thread's place. |
+| `Drawer.tsx` | The drawer: header (thread list, new, the trust pill that is the kill switch, settings, close), thread view (markdown replies, tool chips, queued bubbles), confirmation cards, spend line, composer (Enter / Shift+Enter / Esc, "think hard" = effort `high` for one message). Always mounted and only hidden, so the thread and scroll survive closing. |
 | `DrawerSettings.tsx` | Queue-or-interrupt, and "start at login, minimized to the tray" (`@tauri-apps/plugin-autostart`; disabled in dev builds). |
 | `DuckIcon.tsx` | The icon as a CSS mask in the accent colour; the eyeless version below 20 px. Images in `src/assets/duck/`. |
 
@@ -93,8 +100,10 @@ prompt's safety rules cover them.
   running while the window is hidden. The debug build has its own profile folder.
 - `src/App.tsx` calls `initAssistant()` and mounts the button and the drawer;
   `eslint.config.js` holds the boundary rule.
-- `toggleAssistant` (default Ctrl+Shift+Space) is in `keyboard/keymap.ts`; the drawer
-  registers its handler.
+- `toggleAssistant` (default Ctrl+Shift+Space) and `toggleTrust` (Ctrl+Alt+Shift+Space)
+  are in `keyboard/keymap.ts`; the drawer registers their handlers.
+- The tray (`attention.rs`) has a right-click menu: Show Workbench, and "Pause Duck's
+  trust", a check item that flips the kill switch in Rust.
 - The dock's root has `isolation: isolate`, so dockview's layers (floating groups at
   z-index 999) stay under the drawer (z-index 60) while modals (100) stay above it.
 - Start at login: `tauri-plugin-autostart` (pinned `~2.5.1`; later versions need Tauri
@@ -110,6 +119,11 @@ prompt's safety rules cover them.
   trigger refuses UPDATE, and `append` refuses any `seq` but the next. `role` is `user`,
   `assistant`, `system` (a mid-conversation system message) or `notice` (shown, never sent).
 - `assistant_pending (id, thread_id, created, data JSON)`: one row per parked tool batch.
+- `assistant_rules (id, effect, pattern, project_id, created)`: a null project is global.
+- `assistant_decisions (id, ts, thread_id, tool_use_id, project_id, tool, summary, input,
+  decision, layer, reason, rule_id, shadow)`: the audit log, the last 5000 rows, kept
+  after a thread is deleted.
+- `assistant_trust_modes (project_id, mode)`: only projects that aren't `live`.
 
 ## The engine loop
 
@@ -136,11 +150,12 @@ One turn on a thread (`engine.ts`):
      with `stop_details.explanation`.
    - `model_context_window_exceeded`: show a notice.
 4. **Tools:**
-   - Each call is validated with its zod schema, then the gate decides:
+   - Each call is validated with its zod schema, then the gate (the trust policy) decides:
      - `run` (default for the read and reversible tiers): runs now. All calls that may
        run do so in parallel, each within its time budget (default 10 s; a timeout
        becomes an `is_error` result and aborts the tool's signal).
-     - `ask` (default for the consequential tier): the batch is **parked**, written to
+     - `deny` (a trust rule): the call fails at once with the gate's reason.
+     - `ask` (default for the consequential tier when no rule allows it): the batch is **parked**, written to
        `assistant_pending` with the results so far, and a `confirm` event goes out for
        each ask.
    - `confirm()` records each answer. Once every ask is answered it runs the allowed
@@ -184,7 +199,9 @@ dropped. Every surface gets `threadDeleted`. Spend rows are kept.
    message in the thread.
 2. If it needs app state or actions, add a member to `WorkbenchPort` and implement it in
    `port.local.ts`. Never import a store from the tool.
-3. Add it to `TOOLS` in `index.ts`.
+3. Give a non-read tool a `trust(input, port)` that names the call's project (and any
+   text the floor should read), so per-project rules and modes apply to it.
+4. Add it to `TOOLS` in `index.ts`.
 
    Adding or changing a tool changes the cached prefix, so the next request in every
    thread re-writes the cache once.
@@ -208,6 +225,6 @@ Both rules are in `prompt.ts`.
 
 - The Sonnet toggle (M2, once there is a Haiku thread to step up from); the drawer has
   "think hard" (effort `high`) instead.
-- The trust policy (T1, which replaces `createPolicy`) and effort routing (M2).
+- Effort routing (M2), and the trust engine's judge and session mandates (T2).
 - Git writes from Duck (left out of W2 on purpose).
 - The WebSocket transport (R1).

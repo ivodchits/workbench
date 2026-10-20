@@ -3226,6 +3226,88 @@ checked in the scratch PTY first.
     without that line still asks.
   - Pausing trust brings the cards back immediately.
 - **Out of scope:** Claude Code prompts (T2).
+- **As built (2026-10-19):**
+  - `src/assistant/trust/`:
+    - `rules.ts`: `parseRule`, `matches` and `evaluate`. Bash is matched by a `:*` prefix
+      (whole words) or `*` anywhere; file tools by a path glob relative to the root, with
+      `//` absolute (`//C:/…` on Windows) and `~/` home; `WebFetch(domain:x)` covers
+      subdomains; `assistant:<tool>(specifier)` matches what the tool says about the call.
+      Deny > ask > allow; global rules plus the call's own project's. A rule that doesn't
+      parse never matches, and `addRule` refuses one.
+    - `floor.ts`: nine entries as data (push, force, branch-delete, delete-outside,
+      credentials, claude-config, pipe-to-shell, publish, message-people), each with the
+      examples it must and mustn't catch, which the tests hold it to. The floor reads text:
+      a prompt Duck sends, a typed answer, and the command, path or URL a permission
+      answer would let through.
+    - `mandate.ts`: `findGrant`. The quote (at least 6 characters, quote marks and end
+      punctuation stripped, case and spacing ignored) must be in a message the user typed
+      or said in this thread (source desktop, phone or voice: never `event` or a tool
+      result) within 12 hours.
+    - `decide.ts`: the layers in order. Paused, a project set to `off`, and a thread the
+      rate guard tripped all fall back to W2's cards. Then the floor, the confirm-prompts
+      setting, the rules, the mandate, and the tier as the default. The judge (layer 5) and
+      session mandates are T2's. Shadow mode decides, and the card shows anyway.
+    - `store.ts`: the config in memory, written through to duck.db. The starter rules are
+      seeded once on the first load, so a rule you delete stays deleted. The rate guard
+      (more than 30 automatic approvals in one thread in 10 minutes) is in memory, cleared
+      by resuming trust.
+  - The starter rules are the allow list above, with `answer_choice(question)` as the
+    question case. There are no ask rules: an ask rule beats the user's words, so
+    "stop api and tests" would still have shown a card. Stopping, killing, deleting a
+    note, resuming over a running session and answering a permission prompt or a plan
+    have no rule, so they ask unless a grant covers them.
+  - **Grants** (`grantedBy`) are on every one of those calls, not only `answer_choice`.
+    The user's request for the call ("stop api and tests") counts as much as a
+    permission given ahead of time ("approve it if it asks"). A grant never covers a
+    "don't ask again" option.
+  - **Fixes from the first live test:**
+    - Duck asked to stop sessions you had told it to stop, and the turn waited on those
+      cards before the next task. This is fixed by the grants above.
+    - New tool `kill_session` (consequential): the rail's "kill instance" (close the
+      console, end the process, close its review panel, remove the row, renumber). It
+      refuses a session with a worktree, which would be left on disk, and a remote one
+      in tmux, which needs your SSH password: those go through the rail.
+      `renumberInstances` moved from the rail into `state/registry.ts` so both share it.
+    - A session started from the dev build rendered plain white. The app had been
+      launched from a Claude Code shell, and its `NO_COLOR=1` reached every console.
+      `main.rs` already dropped the session markers (`CLAUDECODE`, …); it now also
+      drops `NO_COLOR` when `CLAUDECODE` shows the app came from such a shell.
+  - `policy.ts` is now the adapter: it builds the request, runs `decide`, applies the rate
+    guard, and logs every decision except calls that would have run under W2 anyway. A
+    `deny` becomes the call's error result ("Not done: a trust rule refuses this…"),
+    and the rate guard's trip is a `trust` notice in the thread. Without a trust store (it
+    failed to load), the gate is W2's.
+  - Engine:
+    - The gate gets `threadId`, `toolUseId`, the card's `summary`, and the tool's
+      `facts` (`ToolDef.trust`, read through `registry.trustFacts`).
+    - It may answer `{verdict: run | ask | deny, reason?, notice?}`.
+    - Every action tool now declares its project, and `send_prompt` / `create_session`
+      their prompt text.
+    - `answer_choice` takes `grantedBy`.
+  - Storage: duck.db migration v3 (`assistant_rules`, `assistant_decisions` keeping the
+    last 5000 rows and outliving their thread, `assistant_trust_modes`). The kill switch,
+    the floor entries turned off, and the seeded flag are in `meta`
+    (`src-tauri/src/assistant/trust.rs` and its commands).
+  - Kill switch, in four places:
+    - the drawer header's pill;
+    - `toggleTrust` (Ctrl+Alt+Shift+Space, also in the palette);
+    - the tray's new right-click menu ("Pause Duck's trust", a check item; left click
+      still shows the window);
+    - a ⏸ on the title-bar Duck button.
+    The flag lives in Rust, so the tray works with no window, and `assistant-trust-paused`
+    keeps the webview in step.
+  - UI: drawer settings → **trust rules…** (kill switch, rules with add and remove, a
+    mode per project, the floor with a typed confirmation to turn an entry off), and
+    **decisions…** (newest first, "auto-approved today", **make a rule** on an ask, and
+    **always ask for this** on an allow). Undo per decision isn't built: a note edit
+    already has its chip's undo.
+  - **Verified:**
+    - 38 new vitest cases: 8 rules, 11 floor, 17 policy end to end over the real tools
+      and a fake port, 1 engine, 1 for `kill_session`; the fallback test was rewritten.
+      307 passing.
+    - 5 new Rust tests (205 passing).
+    - tsc, eslint and clippy are clean.
+    - Checked live by the user, with the fixes above.
 
 #### Step T2 — Auto-answering Claude Code permission prompts
 
@@ -3321,10 +3403,12 @@ X0 ─┬─▶ A1 ─▶ A2 ─┬─▶ A3 ─┬─▶ W2 ─┬─▶ T1 ─
 ```
 
 **Suggested order:**
-1. X0, A1, A2, A3, A4, W1, M1, W2 (done), then **T1**, **T2**, W5, M4, **D1**. *First
+1. X0, A1, A2, A3, A4, W1, M1, W2, T1 (done), then W5, **T2**, M4, **D1**. *First
    milestone: text control of the app that acts without asking about the small things,
    with heavy work offloaded to sessions.* (Reordered 2026-10-19: trust moved ahead of
-   D1, because a card for every action defeats the point of Duck.)
+   D1, because a card for every action defeats the point of Duck. W5 moved ahead of T2
+   once K1 merged: its plugin runs are Duck's own consequential tools, so T1's rules
+   already cover them per action, while T2 is the larger step.)
 2. W3, **D2**, **P1**. *Autopilot milestone: sessions, Duck's workers included, keep going
    while you're away, and plans run step by step.*
 3. V1, V2, R1, R2, V3, **V5**, **P2**. *Voice + phone milestone, including read-aloud,
@@ -3487,7 +3571,7 @@ T2 goes live after the replay check in its done-when (the past week's prompts th
 | R2 | PWA Assistant tab with mic | ☐ |
 | R3 | The PWA as an app: shortcuts, share target, Duck start view | ☐ |
 | R4 | Android companion app (gate: R3 sees real use) | ☐ |
-| T1 | Trust engine for the Assistant's own actions | ☐ |
+| T1 | Trust engine for the Assistant's own actions | ☑ |
 | T2 | Auto-answering Claude Code permission prompts | ☐ |
 | T3 | Learning loop: promote rules, questions and plans | ☐ |
 | P1 | Autopilot loop for one session | ☐ |

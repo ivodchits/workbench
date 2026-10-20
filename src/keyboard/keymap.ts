@@ -59,6 +59,7 @@ export type CommandId =
   | "toggleTranscriptView"
   | "copyLastResponse"
   | "toggleAssistant"
+  | "toggleTrust"
   | "pluginsReload"
   | "pluginsEdit"
   // git panel (G5) — handled by the most recently activated Git panel
@@ -188,6 +189,9 @@ const RAW_BINDINGS: RawBinding[] = [
   // global-safety rule below. Ctrl+Shift+Space is free in the shell, the TUI and
   // CodeMirror.
   { chord: "Ctrl+Shift+Space", command: "toggleAssistant", scope: "global", title: "Duck: open or close the drawer" },
+  // Duck's kill switch (step T1): one more modifier on the drawer's chord, so it is
+  // easy to find and hard to hit by accident.
+  { chord: "Ctrl+Alt+Shift+Space", command: "toggleTrust", scope: "global", title: "Duck: pause or resume trust" },
   // The project toolbar (step K1). Unbound: the file reloads itself when saved, so
   // these are for the rare missed change and for opening the file.
   { chord: "", command: "pluginsReload", scope: "global", title: "Plugins: reload" },

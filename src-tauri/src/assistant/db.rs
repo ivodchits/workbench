@@ -124,4 +124,41 @@ const MIGRATIONS: &[&str] = &[
         data       TEXT NOT NULL
     );
     "#,
+    // v2 -> v3 (step T1): the trust engine. `assistant_rules` holds your rules in
+    // Claude Code's syntax (`assistant:write_note`, `Bash(npm test:*)`); a null
+    // `project_id` is global. `assistant_decisions` is the audit log: every call the
+    // engine decided, kept after its thread is deleted (no foreign key). `shadow` = it
+    // was only logged, the card still showed. `assistant_trust_modes` holds a
+    // project's mode when it isn't the default (`live`).
+    r#"
+    CREATE TABLE assistant_rules (
+        id          TEXT PRIMARY KEY,
+        effect      TEXT NOT NULL CHECK (effect IN ('allow', 'ask', 'deny')),
+        pattern     TEXT NOT NULL,
+        project_id  TEXT,
+        created     INTEGER NOT NULL
+    );
+
+    CREATE TABLE assistant_decisions (
+        id           INTEGER PRIMARY KEY,
+        ts           INTEGER NOT NULL,
+        thread_id    TEXT NOT NULL,
+        tool_use_id  TEXT NOT NULL,
+        project_id   TEXT,
+        tool         TEXT NOT NULL,
+        summary      TEXT NOT NULL,
+        input        TEXT NOT NULL,
+        decision     TEXT NOT NULL,
+        layer        TEXT NOT NULL,
+        reason       TEXT NOT NULL,
+        rule_id      TEXT,
+        shadow       INTEGER NOT NULL DEFAULT 0
+    );
+    CREATE INDEX idx_assistant_decisions_ts ON assistant_decisions(ts);
+
+    CREATE TABLE assistant_trust_modes (
+        project_id  TEXT PRIMARY KEY,
+        mode        TEXT NOT NULL CHECK (mode IN ('off', 'shadow', 'live'))
+    );
+    "#,
 ];

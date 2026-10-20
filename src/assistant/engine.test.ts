@@ -10,6 +10,8 @@ import {
   eventText,
   toApiMessages,
   type Engine,
+  type Gate,
+  type GateCall,
   type StreamFn,
   type StreamLike,
 } from "./engine";
@@ -157,6 +159,7 @@ async function setup(
   steps: Step[],
   tools: ToolDef[] = [getTime, sendPrompt],
   backend = memoryBackend(),
+  gate?: Gate,
 ) {
   const store = createThreadStore(backend);
   await store.load();
@@ -166,6 +169,7 @@ async function setup(
     registry: createRegistry(tools),
     port,
     store,
+    gate,
   });
   const events: DuckEvent[] = [];
   engine.onEvent((e) => events.push(e));
@@ -653,5 +657,33 @@ describe("engine hooks for action tools (W2)", () => {
     });
     expect(engine.pendingRequests()[0].summary).toBe("Restart a running session");
     expect(engine.state(id)).toBe("waiting");
+  });
+
+  it("fails a call the gate refuses, with its reason, and shows the gate's notice", async () => {
+    const seen: GateCall[] = [];
+    const gate: Gate = (call) => {
+      seen.push(call);
+      return { verdict: "deny", reason: "Not done: a rule refuses it.", notice: "Trust said no." };
+    };
+    const { engine, store, events } = await setup(
+      [
+        message([toolUse("t1", "send_prompt", { session: "api", text: "x" })], "tool_use"),
+        message([text("It was refused.")], "end_turn"),
+      ],
+      undefined,
+      undefined,
+      gate,
+    );
+    const id = await turn(engine, "send it");
+    expect(seen[0]).toMatchObject({ name: "send_prompt", threadId: id, toolUseId: "t1" });
+    expect(seen[0].facts).toEqual({ projectId: null });
+    expect(events.some((e) => e.type === "confirm")).toBe(false);
+    const ms = store.loaded(id);
+    expect(ms.find((m) => m.role === "notice")?.content).toEqual({ kind: "trust", text: "Trust said no." });
+    const results = ms.find((m) => m.role === "user" && m.source === "duck")?.content as {
+      is_error?: boolean;
+      content: string;
+    }[];
+    expect(results[0]).toMatchObject({ is_error: true, content: "Not done: a rule refuses it." });
   });
 });

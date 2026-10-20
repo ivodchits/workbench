@@ -17,6 +17,7 @@ import {
   clearWatches,
   createSession,
   deleteNote,
+  killSession,
   resumeSession,
   sendPrompt,
   waitForSession,
@@ -87,6 +88,7 @@ describe("action tools", () => {
       "answer_choice",
       "interrupt_session",
       "stop_session",
+      "kill_session",
       "write_note",
       "delete_note",
     ])
@@ -148,6 +150,16 @@ describe("action tools", () => {
     await expect(
       run(answerChoice, { session: "api", choiceId: "c6", option: 1 }),
     ).rejects.toThrow(/no longer open/);
+  });
+
+  it("kill_session removes the session, and refuses one with a worktree", async () => {
+    const d = data();
+    d.sessions!.push(session({ id: "i4", projectId: "p1", title: "wt", worktreeBranch: "wb/4" }));
+    const { out, port } = await run(killSession, { session: "old" }, { d });
+    expect(port.calls).toEqual([{ name: "killSession", args: ["i3"] }]);
+    expect(out).toEqual({ session: "old", killed: true });
+    expect(port.listSessions().map((s) => s.id)).not.toContain("i3");
+    await expect(run(killSession, { session: "wt" }, { d })).rejects.toThrow(/worktree/);
   });
 
   it("resume_session passes the chosen conversation on", async () => {
@@ -267,21 +279,19 @@ describe("notes tools", () => {
   });
 });
 
-describe("policy", () => {
-  it("asks for consequential calls, and for prompts only when set to", () => {
+describe("policy without a trust store", () => {
+  it("falls back to W2: consequential calls ask, and prompts only when set to", () => {
     let settings = DEFAULT_SETTINGS;
-    const gate = createPolicy(() => settings);
-    const prompt = { name: "send_prompt", input: { text: "x" }, tier: "reversible" as const };
-    expect(gate({ name: "stop_session", input: {}, tier: "consequential" })).toBe("ask");
-    expect(gate(prompt)).toBe("run");
+    const gate = createPolicy({ settings: () => settings });
+    const call = (name: string, input: unknown, tier: "reversible" | "consequential") =>
+      gate({ name, input, tier, threadId: "t1", toolUseId: "u1" });
+    const prompt = () => call("send_prompt", { text: "x" }, "reversible");
+    expect(call("stop_session", {}, "consequential")).toBe("ask");
+    expect(prompt()).toBe("run");
     settings = { ...settings, confirmPrompts: true };
-    expect(gate(prompt)).toBe("ask");
-    expect(
-      gate({ name: "create_session", input: { project: "p" }, tier: "reversible" }),
-    ).toBe("run");
-    expect(
-      gate({ name: "create_session", input: { prompt: "fix it" }, tier: "reversible" }),
-    ).toBe("ask");
-    expect(gate({ name: "open_panel", input: {}, tier: "reversible" })).toBe("run");
+    expect(prompt()).toBe("ask");
+    expect(call("create_session", { project: "p" }, "reversible")).toBe("run");
+    expect(call("create_session", { prompt: "fix it" }, "reversible")).toBe("ask");
+    expect(call("open_panel", {}, "reversible")).toBe("run");
   });
 });

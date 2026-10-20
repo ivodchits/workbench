@@ -66,16 +66,74 @@ fn on_tray_event(tray: &tauri::tray::TrayIcon, event: tauri::tray::TrayIconEvent
     }
 }
 
+/// The tray menu's "Pause Duck's trust" item (step T1), kept so the kill switch can
+/// tick it when it's flipped elsewhere.
+struct TrustItem(tauri::menu::CheckMenuItem<tauri::Wry>);
+
+const MENU_SHOW: &str = "show";
+const MENU_TRUST: &str = "duck-trust";
+
+/// The right-click menu: bring the window back, and Duck's kill switch, which
+/// works with the window hidden.
+fn tray_menu(app: &AppHandle) -> tauri::Result<tauri::menu::Menu<tauri::Wry>> {
+    use tauri::menu::{CheckMenuItem, Menu, MenuItem};
+    let show = MenuItem::with_id(app, MENU_SHOW, "Show Workbench", true, None::<&str>)?;
+    let trust = CheckMenuItem::with_id(
+        app,
+        MENU_TRUST,
+        "Pause Duck's trust",
+        true,
+        crate::assistant::trust_paused(app),
+        None::<&str>,
+    )?;
+    let menu = Menu::with_items(app, &[&show, &trust])?;
+    app.manage(TrustItem(trust));
+    Ok(menu)
+}
+
+fn on_menu_event(app: &AppHandle, event: tauri::menu::MenuEvent) {
+    match event.id().as_ref() {
+        MENU_SHOW => crate::window::show_main(app),
+        MENU_TRUST => {
+            let paused = !crate::assistant::trust_paused(app);
+            if let Err(e) = crate::assistant::set_trust_paused(app, paused) {
+                eprintln!("[tray] trust: {e}");
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Tick or clear the tray's kill-switch item (the menu toggles it on its own click;
+/// this keeps it right when the drawer or a hotkey flips it).
+pub fn set_trust_check(app: &AppHandle, paused: bool) {
+    if let Some(item) = app.try_state::<TrustItem>() {
+        let _ = item.0.set_checked(paused);
+    }
+}
+
 pub fn setup_tray(app: &AppHandle) {
     let icon_opt = app.default_window_icon().map(|img| {
         tauri::image::Image::new_owned(img.rgba().to_vec(), img.width(), img.height())
     });
+    let menu = tray_menu(app)
+        .map_err(|e| eprintln!("[tray] menu: {e}"))
+        .ok();
+    let builder = || {
+        let b = tauri::tray::TrayIconBuilder::new()
+            .tooltip("Workbench")
+            .on_tray_icon_event(on_tray_event)
+            .on_menu_event(on_menu_event)
+            .show_menu_on_left_click(false);
+        match &menu {
+            Some(m) => b.menu(m),
+            None => b,
+        }
+    };
     let tray = icon_opt
         .and_then(|icon| {
-            tauri::tray::TrayIconBuilder::new()
-                .tooltip("Workbench")
+            builder()
                 .icon(icon)
-                .on_tray_icon_event(on_tray_event)
                 .build(app)
                 .map_err(|e| eprintln!("[tray] build: {e}"))
                 .ok()
@@ -83,9 +141,7 @@ pub fn setup_tray(app: &AppHandle) {
         .or_else(|| {
             // Fall back to a tray without an icon if the window icon isn't set
             // (shouldn't happen in a real build, but fine to degrade gracefully).
-            tauri::tray::TrayIconBuilder::new()
-                .tooltip("Workbench")
-                .on_tray_icon_event(on_tray_event)
+            builder()
                 .build(app)
                 .map_err(|e| eprintln!("[tray] build (no icon): {e}"))
                 .ok()

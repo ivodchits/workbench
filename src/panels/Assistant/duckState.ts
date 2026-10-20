@@ -14,10 +14,13 @@ import type {
   ConfirmRequest,
   DuckEvent,
   Effort,
+  TrustView,
   TurnState,
 } from "../../assistant/protocol";
 import type { DuckSettings } from "../../assistant/settings";
-import type { Spend, StoredMessage, ThreadRow } from "../../ipc/assistant";
+import type { Mode } from "../../assistant/trust/decide";
+import type { Effect } from "../../assistant/trust/rules";
+import type { DecisionRow, Spend, StoredMessage, ThreadRow } from "../../ipc/assistant";
 import { getPref, setPref, type AssistantDrawerPrefs } from "../../ipc/prefs";
 
 export interface DuckState {
@@ -42,6 +45,11 @@ export interface DuckState {
   prefs: AssistantDrawerPrefs;
   /** Duck's own settings (step W2), as the engine has them; null until synced. */
   settings: DuckSettings | null;
+  /** The trust engine's state (step T1); null until synced, or if it didn't load. */
+  trust: TrustView | null;
+  /** The decision log pages loaded so far, newest first, and whether more exist. */
+  decisions: DecisionRow[];
+  decisionsMore: boolean;
 }
 
 export const DEFAULT_DRAWER: AssistantDrawerPrefs = {
@@ -65,6 +73,9 @@ let state: DuckState = {
   error: null,
   prefs: DEFAULT_DRAWER,
   settings: null,
+  trust: null,
+  decisions: [],
+  decisionsMore: false,
 };
 const listeners = new Set<() => void>();
 /** A send with no thread is waiting for the engine to name the new one. */
@@ -219,6 +230,18 @@ function onEvent(e: DuckEvent): void {
     case "settings":
       set({ settings: e.settings });
       break;
+    case "trust":
+      set({ trust: e.trust });
+      break;
+    case "decisions": {
+      // A first page replaces the list; an older page goes after it.
+      const kept = e.before === null ? [] : state.decisions.filter((d) => d.id >= e.before!);
+      set({ decisions: [...kept, ...e.rows], decisionsMore: e.more });
+      break;
+    }
+    case "decision":
+      set({ decisions: [e.row, ...state.decisions.filter((d) => d.id !== e.row.id)] });
+      break;
     case "error":
       set({ error: e.message });
       break;
@@ -339,4 +362,37 @@ export function setInterrupt(interrupt: boolean): void {
 /** Change Duck's settings; the engine answers with the settings now in force. */
 export function setDuckSettings(settings: Partial<DuckSettings>): void {
   post({ type: "settings.set", settings });
+}
+
+// ── trust (step T1) ─────────────────────────────────────────────────────────
+
+/** The kill switch: pause trust (every consequential call asks), or resume it. */
+export function setTrustPaused(paused: boolean): void {
+  post({ type: "trust.pause", paused });
+}
+
+export function toggleTrust(): void {
+  if (state.trust) setTrustPaused(!state.trust.paused);
+}
+
+export function addTrustRule(effect: Effect, pattern: string, projectId: string | null): void {
+  set({ error: null });
+  post({ type: "trust.rule.add", effect, pattern, projectId });
+}
+
+export function removeTrustRule(id: string): void {
+  post({ type: "trust.rule.remove", id });
+}
+
+export function setTrustMode(projectId: string, mode: Mode): void {
+  post({ type: "trust.mode", projectId, mode });
+}
+
+export function setFloorEntry(id: string, enabled: boolean): void {
+  post({ type: "trust.floor", id, enabled });
+}
+
+/** The newest page of the decision log (`null`), or the page before an id. */
+export function loadDecisions(before: number | null): void {
+  post({ type: "trust.decisions", before });
 }

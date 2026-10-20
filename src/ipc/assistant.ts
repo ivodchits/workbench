@@ -114,6 +114,68 @@ export const pendingList = (): Promise<PendingRow[]> =>
 export const pendingClear = (id: string): Promise<void> =>
   invoke("assistant_pending_clear", { id });
 
+// Trust (step T1), stored in duck.db: the rules, each project's mode when it isn't
+// `live`, the floor entries turned off, the kill switch, and the decision log.
+
+export interface RuleRow {
+  id: string;
+  effect: "allow" | "ask" | "deny";
+  pattern: string;
+  /** null: global. */
+  projectId: string | null;
+  created: number;
+}
+
+export interface TrustStateRow {
+  paused: boolean;
+  rules: RuleRow[];
+  modes: { projectId: string; mode: "off" | "shadow" | "live" }[];
+  floorOff: string[];
+  seeded: boolean;
+}
+
+export interface DecisionRow {
+  id: number;
+  ts: number;
+  threadId: string;
+  toolUseId: string;
+  projectId: string | null;
+  /** `assistant:<tool>`. */
+  tool: string;
+  /** The card's sentence, or the tool name. */
+  summary: string;
+  input: unknown;
+  decision: "allow" | "ask" | "deny";
+  layer: string;
+  reason: string;
+  ruleId: string | null;
+  /** Logged only: the card showed anyway. */
+  shadow: boolean;
+}
+
+export const trustLoad = (): Promise<TrustStateRow> => invoke("assistant_trust_load");
+export const trustSeed = (rules: RuleRow[]): Promise<TrustStateRow> =>
+  invoke("assistant_trust_seed", { rules });
+export const trustPause = (paused: boolean): Promise<boolean> =>
+  invoke("assistant_trust_pause", { paused });
+export const ruleAdd = (rule: RuleRow): Promise<void> => invoke("assistant_rule_add", { rule });
+export const ruleRemove = (id: string): Promise<void> => invoke("assistant_rule_remove", { id });
+export const trustModeSet = (
+  projectId: string,
+  mode: "off" | "shadow" | null,
+): Promise<void> => invoke("assistant_trust_mode_set", { projectId, mode });
+export const floorSet = (id: string, enabled: boolean): Promise<string[]> =>
+  invoke("assistant_floor_set", { id, enabled });
+export const decisionAdd = (decision: DecisionRow): Promise<number> =>
+  invoke("assistant_decision_add", { decision });
+export const decisions = (before: number | null, limit: number): Promise<DecisionRow[]> =>
+  invoke("assistant_decisions", { before, limit });
+
+/** The kill switch flipped (from the tray, or any surface). */
+export function onTrustPaused(cb: (paused: boolean) => void): Promise<UnlistenFn> {
+  return listen<boolean>("assistant-trust-paused", (event) => cb(event.payload));
+}
+
 export function onUsage(cb: (r: UsageRecord) => void): Promise<UnlistenFn> {
   return listen<UsageRecord>("assistant-usage", (event) => cb(event.payload));
 }

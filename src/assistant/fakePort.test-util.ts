@@ -178,6 +178,12 @@ export function fakePort(data: FakePortData = {}): FakePort {
       sessionOf(id);
       record("stopSession", id);
     },
+    async killSession(id) {
+      const s = sessionOf(id);
+      if (s.worktreeBranch) throw new Error(`"${s.title}" has a worktree`);
+      record("killSession", id);
+      data.sessions = data.sessions?.filter((x) => x.id !== id);
+    },
     openPanel(projectId, kind, instanceId) {
       record("openPanel", projectId, kind, instanceId);
     },

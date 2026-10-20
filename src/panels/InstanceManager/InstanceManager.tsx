@@ -53,7 +53,7 @@ import {
   getRegistry,
   loadRegistry,
   nextInstanceTitle,
-  updateInstance,
+  renumberInstances,
   useRegistry,
 } from "../../state/registry";
 import {
@@ -81,19 +81,6 @@ async function spawnInstance(project: Project): Promise<void> {
   setActiveProject(instance.projectId);
   openConsole(instance);
   activatePanel(instance.id);
-}
-
-// After an auto-numbered instance is removed, close the gap so the numeric titles
-// stay contiguous (remove 2 from 1·2·3·4·5 → 1·2·3·4). Only purely-numeric titles
-// reflow — instances you've renamed keep their names and are skipped over. The plan
-// is built from one snapshot up front, then applied in ascending order so a rename
-// never lands on a number that's still in use.
-async function renumberInstances(projectId: string): Promise<void> {
-  const renames = getRegistry()
-    .instances.filter((i) => i.projectId === projectId && /^\d+$/.test(i.title.trim()))
-    .map((inst, idx) => ({ id: inst.id, want: String(idx + 1), have: inst.title.trim() }))
-    .filter((r) => r.want !== r.have);
-  for (const r of renames) await updateInstance(r.id, { title: r.want });
 }
 
 /** A group with its projects, plus a synthetic "ungrouped" bucket (id `null`). */

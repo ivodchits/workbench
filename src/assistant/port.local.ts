@@ -29,7 +29,7 @@ import {
   openConsole,
   resumeConsole,
 } from "../state/consoles";
-import { openDiff } from "../state/diffs";
+import { closeDiff, diffIdFor, openDiff } from "../state/diffs";
 import { activatePanel } from "../state/dock";
 import { openGit } from "../state/git";
 import { openNotes } from "../state/notes";
@@ -38,7 +38,7 @@ import {
   markChoiceSent,
   type PendingChoice,
 } from "../state/pendingChoice";
-import { getRegistry } from "../state/registry";
+import { deleteInstance, getRegistry, renumberInstances } from "../state/registry";
 import {
   answerChoice,
   answerChoiceText,
@@ -215,6 +215,24 @@ export const localPort: WorkbenchPort = {
     // The rail's kill path: close the panel, then end the process.
     closeConsole(id);
     release(id);
+  },
+  async killSession(id) {
+    const i = instance(id);
+    if (i.worktreeOn)
+      throw new Error(
+        `"${i.title}" has a worktree, which killing it would leave on disk. Ask the user to remove the worktree from the rail first, or to kill it there.`,
+      );
+    const project = getRegistry().projects.find((p) => p.id === i.projectId);
+    if (project?.remoteSshDest && i.remoteTmuxSession)
+      throw new Error(
+        `"${i.title}" runs in a tmux session on ${project.remoteSshDest}; ending it needs the user's SSH password. Ask them to kill it from the rail.`,
+      );
+    // The rail's kill path (KillConfirm), without the dialog.
+    closeConsole(id);
+    release(id);
+    closeDiff(diffIdFor(id));
+    await deleteInstance(id);
+    await renumberInstances(i.projectId);
   },
   openPanel(projectId, kind, instanceId) {
     const project = getRegistry().projects.find((p) => p.id === projectId);
