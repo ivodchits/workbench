@@ -56,6 +56,20 @@ export function findGrant(
   return null;
 }
 
+/** Where `quote` is in the user's latest message: that message's source (desktop,
+ *  phone, voice), or null when it isn't in it. How Duck splits your request into
+ *  threads of their own (`start_thread`) without putting words in your mouth. */
+export function quotedFromLatest(messages: readonly StoredMessage[], quote: string): string | null {
+  const q = unquote(quote);
+  if (q.length < MIN_QUOTE) return null;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i];
+    if (m.role !== "user" || !USER_SOURCES.has(m.source)) continue;
+    return norm(textOf(m)).includes(q) ? m.source : null;
+  }
+  return null;
+}
+
 /** The user's latest message in the thread (what a session Duck starts is for:
  *  its mandate, step T2), or null. Events and Duck's own messages don't count. */
 export function lastUserText(messages: readonly StoredMessage[]): string | null {

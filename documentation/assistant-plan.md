@@ -1942,6 +1942,86 @@ and voiced text adventures as user-defined modes (S2).
     confirmation, queue and batch go), 1 Rust test (only that thread's rows go; the id
     can be reused).
 
+#### Step A5 — Several threads at once: unread, the overview, threads Duck starts
+
+- **Goal:** One Duck, many small conversations. You can see at a glance which threads
+  have news and what each runs. One message can hand separate jobs to threads of their
+  own, so no single thread grows huge and costly.
+- **Decided (2026-10-20):**
+  - **One topic per thread, no master thread.** A thread that watched all the others
+    would have to receive every event, and would become the huge conversation this
+    avoids. Its cost grows every turn.
+  - **The overview is a view, not a conversation:** it costs no model calls.
+  - Cross-thread questions ("what's going on everywhere?") get a tool that reads cheap
+    summaries of the other threads (below, with V4).
+- **Depends on:** A3, D1, P1.
+- **As built (2026-10-20):**
+  - **Unread** (`duckState.ts`):
+    - A reply in a thread you aren't looking at counts as one unread per turn. "Looking
+      at" means the drawer is open on that thread in a visible window.
+    - Its first line becomes the thread's news.
+    - Opening the thread clears it. Both are kept in the drawer's prefs across
+      restarts.
+    - Shown as "● n" on Duck's title-bar button, a dot on the thread list's rows, and a
+      count on the header's **all** button.
+  - **Breadcrumbs:**
+    - A "news in ● workbench plan ● tiny wizard" line under the drawer's header, each a
+      click away.
+    - A desktop toast "Duck · <thread>" with the news, when such a thread finishes its
+      turn and you aren't watching the drawer.
+    - The autopilot's own alerts already name their session.
+  - **The overview** (`OverviewView.tsx`, the header's **all**):
+    - Every thread with its unread count, its latest news, "replying…", and the
+      autopilots and running tasks it owns.
+    - Ordered unread first, then those at work, then the most recent. A row opens its
+      thread.
+    - The engine now publishes `autopilots` (`AutopilotView`) on sync and on every
+      change.
+  - **`start_thread(words)`** (`tools/threads.ts`): Duck opens a new thread for one part
+    of your request, and that thread works on it alongside this one.
+    - `words` must be your own words from your latest message here
+      (`quotedFromLatest`). The new thread's first message keeps that message's source
+      (desktop, phone or voice), so the job's mandate and any grant in your words hold
+      there.
+    - A fixed line says where it was split from. Anything else is refused, so Duck
+      can't put words in your mouth.
+    - The system prompt has the "continue on demiurge, then in a separate thread …"
+      example.
+  - **Verified:** an engine test (a voice message split, its source kept, invented
+    words refused) and the overview's ordering (457 vitest cases).
+- **Later:**
+  - With V4's voice routing:
+    1. the open thread;
+    2. a recent thread (a message in the last 10–15 minutes);
+    3. otherwise a Haiku pick among the recent threads, or "new" (it also hears "in a new
+       thread").
+
+    The same summaries serve a `threads_overview` tool for "what's going on
+    everywhere?".
+  - The long-thread cost is A6.
+
+#### Step A6 — Thread compaction (future)
+
+- **Goal:** A long thread stays cheap. Each turn re-sends the whole conversation;
+  caching softens that, but the cost still grows with length.
+- **Build:**
+  - Past a threshold (for example 60% of the context, or a token count set in Duck's
+    settings), Duck compacts the thread between turns, as `/compact` does for a Claude
+    Code session:
+    - a Sonnet summary of the older turns: decisions, open work, the tasks and
+      autopilots in flight, names and paths;
+    - the summary replaces them in what is sent;
+    - the last few turns are kept verbatim.
+  - The stored messages stay, so the drawer still shows the whole history, with a "—
+    compacted here —" line. Only the request changes.
+  - The cache is rebuilt once after a compaction. Compact rarely, and in one step.
+  - Manually too: "compact this thread", or a drawer menu item. A thread that is only a
+    log (events, notices) can instead be offered "start fresh with a summary".
+- **Depends on:** A2, A5.
+- **Done when:** a thread past the threshold is compacted between turns. The next turn's
+  input is under the threshold and the conversation goes on correctly; the summary keeps
+  what a test conversation's later turn needs.
+
 ### Track W — Workbench tools
 
 #### Step W1 — Read tools
@@ -4816,6 +4896,8 @@ T2 goes live after the replay check in its done-when (the past week's prompts th
 | A2 | Assistant engine: loop, tool registry, threads | ☑ |
 | A3 | The Assistant drawer (desktop UI) | ☑ |
 | A4 | Deleting threads | ☑ |
+| A5 | Several threads at once: unread, the overview, threads Duck starts | ☐ |
+| A6 | Thread compaction | ☐ |
 | W1 | Read tools | ☑ |
 | W2 | Action tools + the confirmation policy | ☑ |
 | W3 | Session summaries | ☑ |

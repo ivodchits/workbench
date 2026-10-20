@@ -3,13 +3,22 @@
 // the drawer's thread agree and nothing is missed while the drawer is closed.
 // An external store in the house pattern (snapshots replaced, never mutated).
 //
+// Unread (2026-10-20): a reply that lands in a thread you aren't looking at (the
+// drawer closed, another thread open, the window hidden) counts as unread there,
+// with its first line as the thread's news. Opening the thread clears it. When such
+// a thread finishes its turn and you're not watching the drawer, a desktop toast
+// names the thread. Both persist with the drawer's prefs.
+//
 // Like every surface it only speaks the protocol: `sync` on connect, `thread.open`
 // for a thread's history, then live events. The open thread, the drawer's width
 // and the queue-or-interrupt choice persist in prefs.
 
 import { useSyncExternalStore } from "react";
 import { getDuck, initAssistant } from "../../assistant";
+import { notifyAlert } from "../../ipc/attention";
+import { getNotificationConfig } from "../../state/notifications";
 import type {
+  AutopilotView,
   ClientMessage,
   ConfirmRequest,
   DuckEvent,
@@ -57,6 +66,12 @@ export interface DuckState {
   replay: { running: boolean; done: number; of: number; report: ReplayReport | null } | null;
   /** Duck's worker tasks (step D1), newest first. */
   tasks: TaskView[];
+  /** The autopilots not stopped (step P1). */
+  autopilots: AutopilotView[];
+  /** Replies not seen yet, per thread. */
+  unread: Record<string, number>;
+  /** Each thread's latest reply, its first line. */
+  news: Record<string, string>;
 }
 
 export const DEFAULT_DRAWER: AssistantDrawerPrefs = {
@@ -86,6 +101,9 @@ let state: DuckState = {
   decisionsMore: false,
   replay: null,
   tasks: [],
+  autopilots: [],
+  unread: {},
+  news: {},
 };
 const listeners = new Set<() => void>();
 /** A send with no thread is waiting for the engine to name the new one. */
@@ -117,6 +135,58 @@ function savePrefs(patch: Partial<AssistantDrawerPrefs>): void {
   const prefs = { ...state.prefs, ...patch };
   set({ prefs });
   void setPref("assistantDrawer", prefs);
+}
+
+/** You can see this thread: the drawer is open on it, in a visible window. */
+function onScreen(threadId: string): boolean {
+  return state.open && state.current === threadId && document.visibilityState === "visible";
+}
+
+/** The thread is on screen now: nothing in it is unread. */
+function seen(threadId: string | null): void {
+  if (!threadId || !state.unread[threadId] || !onScreen(threadId)) return;
+  const unread = { ...state.unread };
+  delete unread[threadId];
+  set({ unread });
+  savePrefs({ unread });
+}
+
+/** A reply's first line with text, for the news. */
+function firstLine(m: StoredMessage): string {
+  const line = userText(m)
+    .split("\n")
+    .map((l) => l.replace(/^[#>*\s-]+/, "").trim())
+    .find(Boolean);
+  return line ? (line.length > 160 ? `${line.slice(0, 159)}…` : line) : "";
+}
+
+/** Threads whose turn put news there while you weren't looking: toast at its end. */
+const toastAtEnd = new Set<string>();
+
+function noteReply(m: StoredMessage): void {
+  const line = firstLine(m);
+  if (!line) return;
+  const news = { ...state.news, [m.threadId]: line };
+  if (onScreen(m.threadId)) {
+    set({ news });
+    savePrefs({ news });
+    return;
+  }
+  // One per turn: a turn's replies between tool calls are one piece of news.
+  const first = !toastAtEnd.has(m.threadId);
+  const unread = first ? { ...state.unread, [m.threadId]: (state.unread[m.threadId] ?? 0) + 1 } : state.unread;
+  set({ news, unread });
+  savePrefs({ news, unread });
+  toastAtEnd.add(m.threadId);
+}
+
+function toastIfAway(threadId: string): void {
+  if (!toastAtEnd.delete(threadId) || onScreen(threadId)) return;
+  // Watching the drawer on another thread: its line under the header says it.
+  if (state.open && document.hasFocus()) return;
+  if (!getNotificationConfig().desktop) return;
+  const title = state.threads.find((t) => t.id === threadId)?.title || "a thread";
+  void notifyAlert(`Duck · ${title}`, state.news[threadId] ?? "news").catch(() => {});
 }
 
 function onEvent(e: DuckEvent): void {
@@ -156,12 +226,15 @@ function onEvent(e: DuckEvent): void {
       set({
         threads,
         messages: drop(state.messages),
+        unread: drop(state.unread),
+        news: drop(state.news),
         streaming: drop(state.streaming),
         states: drop(state.states),
         queued: drop(state.queued),
         turns: drop(state.turns),
         asks: state.asks.filter((a) => a.threadId !== id),
       });
+      savePrefs({ unread: state.unread, news: state.news });
       // The open thread went: show the next most recent, or a new one.
       if (state.current === id) openThread(threads[0]?.id ?? null);
       break;
@@ -178,8 +251,10 @@ function onEvent(e: DuckEvent): void {
       const patch: Partial<DuckState> = {};
       if (have && !have.some((x) => x.seq === m.seq))
         patch.messages = { ...state.messages, [m.threadId]: [...have, m] };
-      if (m.role === "assistant")
+      if (m.role === "assistant") {
         patch.streaming = { ...state.streaming, [m.threadId]: "" };
+        noteReply(m);
+      }
       // A queued message of ours has started its turn.
       const waiting = state.queued[m.threadId];
       if (m.role === "user" && waiting?.length) {
@@ -219,6 +294,7 @@ function onEvent(e: DuckEvent): void {
         patch.queued = { ...state.queued, [e.threadId]: [] };
       }
       set(patch);
+      if (e.state === "idle") toastIfAway(e.threadId);
       break;
     }
     case "tool":
@@ -255,6 +331,9 @@ function onEvent(e: DuckEvent): void {
     case "tasks":
       set({ tasks: e.tasks });
       break;
+    case "autopilots":
+      set({ autopilots: e.autopilots });
+      break;
     case "replay":
       set({ replay: { running: !e.report, done: e.done, of: e.of, report: e.report } });
       break;
@@ -282,7 +361,9 @@ export function connectDuck(): Promise<void> {
     const prefs = await getPref("assistantDrawer", DEFAULT_DRAWER).catch(
       () => DEFAULT_DRAWER,
     );
-    set({ prefs: { ...DEFAULT_DRAWER, ...prefs } });
+    set({ prefs: { ...DEFAULT_DRAWER, ...prefs }, unread: prefs.unread ?? {}, news: prefs.news ?? {} });
+    // Back in view (the window shown again): the open thread is read.
+    document.addEventListener("visibilitychange", () => seen(state.current));
     await initAssistant();
     const duck = getDuck();
     if (!duck) {
@@ -299,10 +380,11 @@ export function connectDuck(): Promise<void> {
 
 export function setDrawerOpen(open: boolean): void {
   set({ open });
+  seen(state.current);
 }
 
 export function toggleDrawer(): void {
-  set({ open: !state.open });
+  setDrawerOpen(!state.open);
 }
 
 /** Show a thread (loading its history the first time), or `null` for a new one. */
@@ -312,6 +394,7 @@ export function openThread(threadId: string | null): void {
   if (threadId) {
     if (!state.messages[threadId]) post({ type: "thread.open", threadId });
     savePrefs({ threadId });
+    seen(threadId);
   }
 }
 

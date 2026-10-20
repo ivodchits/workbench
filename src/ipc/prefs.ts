@@ -72,6 +72,10 @@ export interface AssistantDrawerPrefs {
   interrupt: boolean;
   /** The ASCII duck at the top of the thread, and how it's drawn. */
   avatar: DuckAvatarPrefs;
+  /** Replies not seen yet, per thread, and each thread's latest news line: kept
+   *  across restarts so news that came in the background isn't lost. */
+  unread?: Record<string, number>;
+  news?: Record<string, string>;
 }
 
 export interface DuckAvatarPrefs {

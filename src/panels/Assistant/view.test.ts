@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { StoredMessage } from "../../ipc/assistant";
-import { lineDiff, oneLine, readableInput, sessionLink, toItems } from "./view";
+import { lineDiff, oneLine, overviewOrder, readableInput, sessionLink, toItems, unreadTotal } from "./view";
 
 let seq = 0;
 const msg = (
@@ -145,5 +145,22 @@ describe("lineDiff", () => {
     ]);
     expect(lineDiff("", "new\n")).toEqual([{ op: "+", text: "new" }]);
     expect(lineDiff("same\n", "same")).toEqual([]);
+  });
+});
+
+describe("threads at a glance", () => {
+  it("puts unread threads first, then the ones at work, then the recent", () => {
+    const threads = [
+      { id: "a", updated: 5 },
+      { id: "b", updated: 4 },
+      { id: "c", updated: 3 },
+      { id: "d", updated: 2 },
+    ];
+    const order = overviewOrder(
+      { threads, unread: { d: 2 }, autopilots: [{ threadId: "c", state: "running" }], tasks: [{ threadId: "b", state: "done" }] },
+      () => false,
+    );
+    expect(order.map((t) => t.id)).toEqual(["d", "c", "a", "b"]);
+    expect(unreadTotal({ unread: { a: 1, d: 2 } })).toBe(3);
   });
 });

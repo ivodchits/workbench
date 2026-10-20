@@ -45,6 +45,10 @@ export interface ToolContext {
   summaries: Summarizer | null;
   /** Plan autopilots (step P1); null where there are none (some tests). */
   autopilot: AutopilotManager | null;
+  /** Start a new Duck thread on `words`, which must be the user's own words from
+   *  their latest message here (it throws otherwise). The new thread's turn runs on
+   *  its own; resolves to its id. */
+  startThread(words: string): Promise<string>;
 }
 
 /** A tool may return text, API content blocks (e.g. an image), or any JSON value. */

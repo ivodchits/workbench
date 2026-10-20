@@ -19,6 +19,7 @@ import { fakePort } from "./fakePort.test-util";
 import type { DuckEvent } from "./protocol";
 import { createThreadStore, type ThreadBackend } from "./threads";
 import { getTime } from "./tools/getTime";
+import { startThread } from "./tools/threads";
 import { createRegistry, defineTool, type ToolDef } from "./tools/registry";
 
 type Msg = Anthropic.Beta.BetaMessage;
@@ -771,5 +772,42 @@ describe("engine hooks for action tools (W2)", () => {
       content: string;
     }[];
     expect(results[0]).toMatchObject({ is_error: true, content: "Not done: a rule refuses it." });
+  });
+
+  it("splits the user's own words into a thread of their own, and nothing else", async () => {
+    const asked =
+      "Continue working on the demiurge project, then in a separate thread continue working on workbench";
+    const { engine, store, events } = await setup(
+      [
+        message(
+          [
+            text("Splitting."),
+            toolUse("t1", "start_thread", { words: "continue working on workbench" }),
+            toolUse("t2", "start_thread", { words: "deploy everything to production" }),
+          ],
+          "tool_use",
+        ),
+        // The new thread's turn and this one's go on side by side; replies in order.
+        message([text("Done.")], "end_turn"),
+        message([text("On workbench.")], "end_turn"),
+      ],
+      [getTime, startThread],
+    );
+    const id = await engine.send({ threadId: null, text: asked, source: "voice" });
+    await engine.settled(id);
+    const made = events.filter((e) => e.type === "thread").map((e) => (e as { thread: ThreadRow }).thread.id);
+    const other = made.find((x) => x !== id)!;
+    expect(other).toBeTruthy();
+    await engine.settled(other);
+    const first = store.loaded(other)[0];
+    expect(first).toMatchObject({ role: "user", source: "voice" });
+    expect((first.content as { text: string }[])[0].text).toBe(
+      '[Split off by Duck from the thread; the words below are yours from there.]\n\ncontinue working on workbench',
+    );
+    // Words the user didn't say are refused.
+    const results = store.loaded(id)[2].content as { tool_use_id: string; is_error?: boolean; content: string }[];
+    expect(results[0].is_error).toBeUndefined();
+    expect(results[1]).toMatchObject({ is_error: true });
+    expect(results[1].content).toContain("the user's own words");
   });
 });

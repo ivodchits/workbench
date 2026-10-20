@@ -24,6 +24,7 @@ import type { StoredMessage, ThreadRow } from "../ipc/assistant";
 import { capMessage, errorMessage, purpose, THREAD_PURPOSE } from "./client";
 import type { WorkbenchPort } from "./port";
 import { MAIN_MODEL, SYSTEM_PROMPT } from "./prompt";
+import { quotedFromLatest } from "./trust/mandate";
 import type {
   ConfirmRequest,
   DuckEvent,
@@ -644,6 +645,7 @@ export function createEngine(deps: EngineDeps): Engine {
           summaries: deps.summaries ?? null,
           autopilot: deps.autopilot ?? null,
           request: lastUserText(store.loaded(threadId)),
+          startThread: (words) => split(threadId, words),
           prepared,
           notice: (n) => notice(threadId, n).then(() => {}),
           later: (text) => {
@@ -711,6 +713,22 @@ export function createEngine(deps: EngineDeps): Engine {
     const t = await store.create();
     emit({ type: "thread", thread: t });
     return t.id;
+  }
+
+  /** A new thread on part of the user's latest message here, which goes in as
+   *  their message (same source), so its mandate and grants are theirs. A fixed
+   *  line says where it came from. */
+  async function split(from: string, words: string): Promise<string> {
+    const source = quotedFromLatest(store.loaded(from), words);
+    if (!source)
+      throw new Error(
+        "start_thread takes the user's own words from their latest message, quoted exactly (at least a few words); these aren't in it.",
+      );
+    const t = await store.create();
+    emit({ type: "thread", thread: t });
+    const title = store.thread(from)?.title;
+    const origin = `[Split off by Duck from the thread${title ? ` "${title}"` : ""}; the words below are yours from there.]`;
+    return send({ threadId: t.id, text: `${origin}\n\n${words.trim()}`, source: source as Source });
   }
 
   async function send(input: SendInput): Promise<string> {

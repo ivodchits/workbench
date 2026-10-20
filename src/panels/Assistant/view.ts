@@ -208,3 +208,26 @@ export function sessionLink(href: string | null): string | null {
   const m = href?.match(/^#session\/([^/?#\s]+)$/);
   return m ? decodeURIComponent(m[1]) : null;
 }
+
+// ── threads at a glance (2026-10-20) ──
+
+interface Glance {
+  threads: { id: string; updated: number }[];
+  unread: Record<string, number>;
+  autopilots: { threadId: string; state: string }[];
+  tasks: { threadId: string; state: string }[];
+}
+
+/** Replies not seen yet, in every thread. */
+export const unreadTotal = (d: Pick<Glance, "unread">): number => Object.values(d.unread).reduce((n, x) => n + x, 0);
+
+/** The overview's order: unread first, then the ones at work (replying, an
+ *  autopilot running, a task working or waiting), then the most recent. */
+export function overviewOrder<T extends Glance["threads"][number]>(d: Glance & { threads: T[] }, running: (id: string) => boolean): T[] {
+  const live = (id: string) =>
+    running(id) ||
+    d.autopilots.some((a) => a.threadId === id && a.state === "running") ||
+    d.tasks.some((t) => t.threadId === id && (t.state === "running" || t.state === "queued"));
+  const rank = (id: string) => (d.unread[id] ? 0 : live(id) ? 1 : 2);
+  return [...d.threads].sort((a, b) => rank(a.id) - rank(b.id) || b.updated - a.updated);
+}

@@ -30,6 +30,7 @@ export default function DuckButton() {
     bindings.find((b) => b.command === "toggleAssistant")?.chord ?? "";
   const shortcut = chord ? chordText(chord) : "no shortcut set";
   const asks = duck.asks.length;
+  const unread = Object.values(duck.unread).reduce((n, x) => n + x, 0);
   const tone = duck.spend?.capReached
     ? "var(--wb-needs)"
     : duck.spend?.softReached
@@ -44,6 +45,7 @@ export default function DuckButton() {
   const label =
     `Duck: ${ACRONYM.map(([l, r]) => l + r).join(", ")}. ${shortcut}` +
     (asks ? `. ${asks} waiting for your confirmation` : "") +
+    (unread ? `. ${unread} unread in other threads` : "") +
     (paused ? ". Trust paused" : "");
 
   return (
@@ -88,6 +90,11 @@ export default function DuckButton() {
       >
         D.U.C.K.
         {paused && <span title="trust paused">⏸</span>}
+        {unread > 0 && asks === 0 && (
+          <span title={`${unread} unread`} style={{ color: "var(--wb-accent)", letterSpacing: 0 }}>
+            ● {unread}
+          </span>
+        )}
         {asks > 0 && (
           <span
             style={{

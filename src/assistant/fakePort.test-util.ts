@@ -508,6 +508,11 @@ export function toolCtx(
     tasks: null as TaskManager | null,
     summaries: null as Summarizer | null,
     autopilot: null as AutopilotManager | null,
+    started: [] as string[],
+    startThread(words: string) {
+      ctx.started.push(words);
+      return Promise.resolve(`t${ctx.started.length + 1}`);
+    },
     notices: [] as Notice[],
     posted: [] as string[],
     notice(n: Notice) {

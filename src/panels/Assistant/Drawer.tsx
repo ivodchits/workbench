@@ -47,6 +47,7 @@ import DrawerSettings from "./DrawerSettings";
 import { getVoiceState, initVoice, useVoiceState, type VoiceState } from "./voiceState";
 import { voicePtt } from "../../ipc/voice";
 import { TasksPanel } from "./TasksView";
+import { OverviewPanel } from "./OverviewView";
 import { DecisionsPanel, TrustPanel } from "./TrustViews";
 import type { ThreadRow } from "../../ipc/assistant";
 import {
@@ -77,6 +78,7 @@ import {
   sessionLink,
   toItems,
   type Item,
+  unreadTotal,
 } from "./view";
 
 const MIN_WIDTH = 320;
@@ -269,6 +271,7 @@ export default function AssistantDrawer() {
           </button>
         </div>
       )}
+      {view === "thread" && <Elsewhere duck={duck} onOpen={showThread} />}
       {view === "thread" && duck.prefs.avatar.show && (
         <div
           style={{
@@ -290,6 +293,9 @@ export default function AssistantDrawer() {
         <DecisionsPanel duck={duck} onBack={() => showThread(duck.current)} />
       )}
       {view === "tasks" && <TasksPanel duck={duck} onBack={() => showThread(duck.current)} />}
+      {view === "overview" && (
+        <OverviewPanel duck={duck} onBack={() => showThread(duck.current)} onOpen={(id) => showThread(id)} />
+      )}
       <Asks duck={duck} />
       <SpendLine duck={duck} />
       <Composer duck={duck} busy={busy} inputRef={composerRef} />
@@ -309,7 +315,43 @@ export default function AssistantDrawer() {
   );
 }
 
-type View = "thread" | "trust" | "decisions" | "tasks";
+type View = "thread" | "trust" | "decisions" | "tasks" | "overview";
+
+/** The breadcrumbs: other threads with news since you looked, each a click away. */
+function Elsewhere({ duck, onOpen }: { duck: DuckState; onOpen: (id: string) => void }) {
+  const others = duck.threads.filter((t) => t.id !== duck.current && duck.unread[t.id]);
+  if (others.length === 0) return null;
+  return (
+    <div
+      style={{
+        flex: "0 0 auto",
+        display: "flex",
+        flexWrap: "wrap",
+        gap: 6,
+        alignItems: "baseline",
+        padding: "4px 12px",
+        borderBottom: "1px solid var(--wb-border)",
+        font: "11px var(--wb-mono)",
+        color: "var(--wb-textFaint)",
+      }}
+    >
+      <span>news in</span>
+      {others.slice(0, 4).map((t) => (
+        <button
+          key={t.id}
+          type="button"
+          title={duck.news[t.id] ?? ""}
+          onClick={() => onOpen(t.id)}
+          style={{ ...plainBtn, color: "var(--wb-accent)", maxWidth: 160, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
+        >
+          ● {t.title || "untitled"}
+          {duck.unread[t.id] > 1 ? ` (${duck.unread[t.id]})` : ""}
+        </button>
+      ))}
+      {others.length > 4 && <span>+{others.length - 4} more</span>}
+    </div>
+  );
+}
 
 /** The kill switch: on, or paused (every consequential call asks). */
 function TrustPill({ duck }: { duck: DuckState }) {
@@ -417,6 +459,19 @@ function Header({
       >
         + new
       </button>
+      {duck.threads.length > 1 && (
+        <button
+          type="button"
+          style={{ ...btn, ...(unreadTotal(duck) ? { color: "var(--wb-accent)", borderColor: "var(--wb-accent)" } : {}) }}
+          title="every thread: its news, autopilots and tasks"
+          onClick={() => {
+            onView("overview");
+            setMenu(null);
+          }}
+        >
+          all{unreadTotal(duck) ? ` · ${unreadTotal(duck)}` : ""}
+        </button>
+      )}
       {duck.tasks.length > 0 && (
         <button
           type="button"
@@ -528,7 +583,8 @@ function ThreadListRow({
   const [confirming, setConfirming] = useState(false);
   const [hover, setHover] = useState(false);
   const running = isRunning(t.id);
-  const title = t.title || "untitled";
+  const unread = duck.unread[t.id] ?? 0;
+  const title = `${unread ? "● " : ""}${t.title || "untitled"}`;
   const row: React.CSSProperties = {
     display: "flex",
     alignItems: "center",

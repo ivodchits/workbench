@@ -137,6 +137,18 @@ export interface TaskView {
   answers: { question: string; answer: string; reason: string }[];
 }
 
+/** A session's plan autopilot as a surface shows it (step P1). */
+export interface AutopilotView {
+  instanceId: string;
+  /** The session's title. */
+  session: string;
+  /** The thread it reports to. */
+  threadId: string;
+  state: "running" | "paused" | "stopped";
+  /** The card's line ("step 2 of 5 (P1) · working"). */
+  text: string;
+}
+
 // ── surface → Duck ──────────────────────────────────────────────────────────
 
 export type ClientMessage =
@@ -245,6 +257,8 @@ export type DuckEvent =
   /** Duck's worker tasks (step D1), newest first, on `sync` and after every
    *  change. */
   | { type: "tasks"; tasks: TaskView[] }
+  /** Every autopilot not stopped (step P1), on `sync` and after every change. */
+  | { type: "autopilots"; autopilots: AutopilotView[] }
   /** The replay's progress (`report` null, judged so far), then its report. */
   | { type: "replay"; done: number; of: number; report: ReplayReport | null }
   /** A request from a surface failed (an unknown thread, storage down, …). */

@@ -13,7 +13,7 @@ import {
   type UsageRecord,
 } from "../ipc/assistant";
 import { readFile } from "../ipc/fs";
-import { createAutopilot, ipcAutopilotBackend, type AutopilotManager } from "./autopilot";
+import { badgeText, createAutopilot, ipcAutopilotBackend, type AutopilotManager } from "./autopilot";
 import { errorMessage, getClient, oneShot, structured } from "./client";
 import { createEngine, eventText, type Engine } from "./engine";
 import { createPolicy } from "./policy";
@@ -22,6 +22,7 @@ import {
   createLocalTransport,
   type ClientMessage,
   type DuckEndpoint,
+  type AutopilotView,
   type DuckEvent,
   type TaskView,
   type Transport,
@@ -40,6 +41,7 @@ import { SUMMARY_TOOLS } from "./tools/summaries";
 import { createRegistry } from "./tools/registry";
 import { TASK_TOOLS } from "./tools/tasks";
 import { AUTOPILOT_TOOLS } from "./tools/autopilot";
+import { THREAD_TOOLS } from "./tools/threads";
 import { createTaskManager, ipcTaskBackend, type Task, type TaskManager } from "./tasks";
 import { testConfirm } from "./tools/testConfirm";
 import { FLOOR } from "./trust/floor";
@@ -69,6 +71,7 @@ const TOOLS = [
   ...SUMMARY_TOOLS,
   ...SCREEN_TOOLS,
   ...AUTOPILOT_TOOLS,
+  ...THREAD_TOOLS,
   ...(import.meta.env.DEV ? [testConfirm] : []),
 ];
 
@@ -164,6 +167,16 @@ export function endpoint(
     if (tasks) say({ type: "tasks", tasks: tasks.list().map(taskView) });
   };
   tasks?.subscribe(sendTasks);
+  const sendAutopilots = () => {
+    if (!autopilot) return;
+    const title = (id: string) => localPort.listSessions().find((x) => x.id === id)?.title ?? id;
+    const autopilots: AutopilotView[] = autopilot
+      .list()
+      .filter((a) => a.state !== "stopped")
+      .map((a) => ({ instanceId: a.instanceId, session: title(a.instanceId), threadId: a.threadId, state: a.state, text: badgeText(a) }));
+    say({ type: "autopilots", autopilots });
+  };
+  autopilot?.subscribe(sendAutopilots);
   const needTrust = () => {
     if (!trust) throw new Error("Duck's trust settings didn't load.");
     return trust;
@@ -193,6 +206,7 @@ export function endpoint(
         if (settings) say({ type: "settings", settings: settings.get() });
         if (trust) say({ type: "trust", trust: trustView(trust) });
         sendTasks();
+        sendAutopilots();
         await sendSpend();
         return;
       case "settings.set":
