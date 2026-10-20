@@ -44,6 +44,8 @@ import DuckAvatar from "./DuckAvatar";
 import type { DuckMode } from "./duck3d";
 import DuckIcon from "./DuckIcon";
 import DrawerSettings from "./DrawerSettings";
+import { getVoiceState, initVoice, useVoiceState, type VoiceState } from "./voiceState";
+import { voicePtt } from "../../ipc/voice";
 import { TasksPanel } from "./TasksView";
 import { DecisionsPanel, TrustPanel } from "./TrustViews";
 import type { ThreadRow } from "../../ipc/assistant";
@@ -115,6 +117,7 @@ export default function AssistantDrawer() {
   const returnFocus = useRef<HTMLElement | null>(null);
 
   useEffect(() => void connectDuck(), []);
+  useEffect(() => void initVoice(), []);
   useEffect(() => registerCommand("toggleAssistant", toggleDrawer), []);
   useEffect(() => registerCommand("toggleTrust", toggleTrust), []);
 
@@ -1233,6 +1236,16 @@ function Composer({
 }) {
   const [draft, setDraft] = useState("");
   const [hard, setHard] = useState(false);
+  const voice = useVoiceState();
+
+  // A transcript for review (V1, "send at once" off) lands in the box.
+  const dictatedSeq = voice.dictated?.seq;
+  useEffect(() => {
+    const text = getVoiceState().dictated?.text;
+    if (!text) return;
+    setDraft((d) => (d.trim() ? `${d.trimEnd()} ${text}` : text));
+    inputRef.current?.focus();
+  }, [dictatedSeq, inputRef]);
 
   // Grow with the text, up to about eight lines.
   useLayoutEffect(() => {
@@ -1287,7 +1300,9 @@ function Composer({
           outline: "none",
         }}
       />
+      <VoiceLine voice={voice} />
       <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+        <MicButton voice={voice} />
         <button
           type="button"
           aria-pressed={hard}
@@ -1326,6 +1341,61 @@ function Composer({
         </button>
       </div>
     </div>
+  );
+}
+
+/** Push-to-talk's state over the composer: listening, transcribing, or what went
+ *  wrong. Nothing while idle. */
+function VoiceLine({ voice }: { voice: VoiceState }) {
+  const text =
+    voice.phase === "listening"
+      ? "● listening… (let go to send)"
+      : voice.phase === "transcribing"
+        ? "transcribing…"
+        : voice.message;
+  if (!text) return null;
+  return (
+    <div
+      role="status"
+      style={{
+        font: "11px var(--wb-mono)",
+        color: voice.phase === "error" ? "var(--wb-needs)" : voice.phase === "listening" ? "var(--wb-accent)" : "var(--wb-textDim2)",
+      }}
+    >
+      {text}
+    </div>
+  );
+}
+
+/** Hold to talk, as the push-to-talk key does. */
+function MicButton({ voice }: { voice: VoiceState }) {
+  const held = useRef(false);
+  const up = () => {
+    if (!held.current) return;
+    held.current = false;
+    void voicePtt(false);
+  };
+  const key = voice.prefs.hotkey;
+  return (
+    <button
+      type="button"
+      title={`Hold to talk${key ? ` (or hold ${key} anywhere)` : ""}`}
+      onPointerDown={(e) => {
+        e.currentTarget.setPointerCapture(e.pointerId);
+        held.current = true;
+        void voicePtt(true);
+      }}
+      onPointerUp={up}
+      onPointerCancel={up}
+      onLostPointerCapture={up}
+      style={{
+        ...btn,
+        borderColor: voice.phase === "listening" ? "var(--wb-accent)" : "var(--wb-border)",
+        color: voice.phase === "listening" ? "var(--wb-accent)" : "var(--wb-textDim2)",
+      }}
+    >
+      🎙 talk
+    </button>
   );
 }
 

@@ -2811,6 +2811,59 @@ and voiced text adventures as user-defined modes (S2).
   - **Not verified yet:** the download of the 670 MB / 2.5 GB model files from inside
     the app (the dev models folder was seeded with hard links to X0's copies), and
     RSS/VRAM returning to baseline after the idle unload.
+- **As built, part 2: push-to-talk (2026-10-20).**
+  - **Capture** (`voice/capture.rs`, cpal 0.16):
+    - It reads the chosen microphone, or the default input, mixed to mono and capped at
+      2 minutes.
+    - The audio is resampled to 16 kHz by a Blackman-windowed sinc, which keeps 1 kHz at
+      level and cuts 12 kHz.
+    - The stream lives on its own thread, and only while the key is held.
+  - **The key:**
+    - `tauri-plugin-global-shortcut` 2.3 is registered from Rust, so it works with the
+      window in the background or hidden. Its Windows backend registers with
+      `MOD_NOREPEAT` and reports the release.
+    - The default is Ctrl+Alt+Space, rebindable in Duck's settings. A desk button set to
+      F13 works as the key with no modifiers.
+    - A press shorter than 300 ms is dropped.
+    - Press starts the recording and loads the model in parallel. Release transcribes.
+      The webview hears `voice-state` and `voice-transcript`.
+    - The drawer has a hold-to-talk "🎙 talk" button on the same path (`voice_ptt`).
+  - **Versions:** `cargo add` of the newest plugin and cpal upgraded Tauri and
+    webview2-com and broke `accel.rs`. The older versions resolve with no upgrades.
+  - **In the drawer** (`voiceState.ts`):
+    - A press opens the drawer, unless the window is hidden.
+    - A line over the composer shows "● listening…", "transcribing…", "Nothing was
+      heard." or the error.
+    - The transcript goes to the open thread as a `voice` message. With "Send what you
+      say to Duck at once" off, it lands in the box for an edit instead.
+    - The settings add the key, the microphone list and that toggle.
+  - **The name fixer** (`assistant/voiceNames.ts`):
+    - Project and session names are transliterated to Cyrillic, and a term list gives
+      how terms are said (Claude Code, pull request, commit, main, npm, worktree, CI,
+      backend, frontend).
+    - Names of five or more letters match loosely: vowels as one class, an edit or two,
+      a case ending on the last word, runs of up to three words. The closest match
+      wins, the shorter run on a tie.
+    - Shorter names match exactly.
+    - On X0's transcripts it fixes «колодкод», «фронт энд», «мейн», «комит», «Сиай»,
+      «пул реквест», «воркбенча» and «бэкэнд-сессии», and leaves all eight Russian
+      sentences alone.
+    - When it changed something, the message carries `(voice; as heard: "…")`. The
+      system prompt tells Duck that spoken messages are transcripts to read generously,
+      and to trust the raw words over a correction that looks wrong.
+  - **Verified:**
+    - The resampler test, and 4 vitest cases for the fixer and the message (455 in
+      all).
+    - 239 Rust tests pass; clippy, tsc and eslint are clean.
+  - **Not verified live (yours to try):**
+    - holding the key and the button in the app;
+    - the mic indicator only while held;
+    - the transcript reaching Duck, timed from release.
+  - **Known gaps:**
+    - No tray-icon state while the window is hidden. The transcript still goes to Duck,
+      and the reply waits in the thread.
+    - The double tap for conversation mode is V4.
+    - No Spanish clips are in the test set yet.
 
 #### Step V2 — Natural spoken replies
 

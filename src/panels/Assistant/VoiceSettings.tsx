@@ -1,12 +1,13 @@
-// Voice in Duck's settings (step V1): where speech to text runs, its download, and
+// Voice in Duck's settings (step V1): the push-to-talk key, the microphone, where
+// speech to text runs, its download, whether a transcript goes to Duck at once, and
 // a check on a WAV file. The model downloads on first use; nothing ships with the
-// app. The GPU preference is kept in the `voice` pref.
+// app. The prefs live in `voiceState.ts`, which hands them to the backend.
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
-import { getPref, setPref } from "../../ipc/prefs";
 import {
   onVoiceDownload,
+  voiceDevices,
   voicePrepare,
   voiceStatus,
   voiceTranscribeWav,
@@ -15,6 +16,7 @@ import {
   type Transcript,
   type VoiceStatus,
 } from "../../ipc/voice";
+import { setVoicePrefs, useVoiceState } from "./voiceState";
 
 const GPU_CHOICES: { value: GpuPref; label: string }[] = [
   { value: "never", label: "CPU only (fastest here)" },
@@ -25,75 +27,98 @@ const GPU_CHOICES: { value: GpuPref; label: string }[] = [
 const mb = (n: number) => `${Math.round(n / 1_000_000).toLocaleString()} MB`;
 
 export default function VoiceSettings() {
-  const [gpu, setGpu] = useState<GpuPref | null>(null);
-  /** The preference as the download listener reads it. */
-  const gpuRef = useRef<GpuPref>("never");
-  gpuRef.current = gpu ?? "never";
+  const { prefs, keyProblem } = useVoiceState();
+  const gpu = prefs.gpu;
   const [status, setStatus] = useState<VoiceStatus | null>(null);
   const [progress, setProgress] = useState<DownloadProgress | null>(null);
-  const [test, setTest] = useState<{ file: string; result: Transcript | null; error: string | null } | null>(null);
+  const [devices, setDevices] = useState<string[]>([]);
+  const [hotkey, setHotkey] = useState(prefs.hotkey ?? "");
+  const [test, setTest] = useState<{ result: Transcript | null; error: string | null } | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  const refresh = useCallback((pref: GpuPref) => {
-    void voiceStatus(pref)
+  const refresh = useCallback(() => {
+    void voiceStatus(gpu)
       .then(setStatus)
       .catch((e: unknown) => setError(String(e)));
-  }, []);
+  }, [gpu]);
 
+  useEffect(refresh, [refresh]);
+  useEffect(() => setHotkey(prefs.hotkey ?? ""), [prefs.hotkey]);
   useEffect(() => {
-    void getPref("voice", { gpu: "never" as GpuPref })
-      .then((v) => {
-        setGpu(v.gpu);
-        refresh(v.gpu);
-      })
-      .catch(() => {
-        setGpu("never");
-        refresh("never");
-      });
-  }, [refresh]);
-
+    void voiceDevices()
+      .then(setDevices)
+      .catch(() => setDevices([]));
+  }, []);
   useEffect(() => {
     const off = onVoiceDownload((p) => {
       setProgress(p.finished && !p.error ? null : p);
-      if (p.finished) refresh(gpuRef.current);
+      if (p.finished) refresh();
     });
     return () => void off.then((f) => f());
   }, [refresh]);
 
-  if (!gpu) return null;
-
-  const choose = (value: GpuPref) => {
-    setGpu(value);
-    void setPref("voice", { gpu: value });
-    refresh(value);
-  };
-
   const download = () => {
     setError(null);
     void voicePrepare(gpu)
-      .then(() => refresh(gpu))
+      .then(refresh)
       .catch((e: unknown) => setError(String(e)));
   };
 
   const tryWav = async () => {
     const file = await open({ filters: [{ name: "16 kHz WAV", extensions: ["wav"] }] });
     if (typeof file !== "string") return;
-    setTest({ file, result: null, error: null });
+    setTest({ result: null, error: null });
     try {
-      const result = await voiceTranscribeWav(file, gpu);
-      setTest({ file, result, error: null });
+      setTest({ result: await voiceTranscribeWav(file, gpu), error: null });
     } catch (e) {
-      setTest({ file, result: null, error: String(e) });
+      setTest({ result: null, error: String(e) });
     }
-    refresh(gpu);
+    refresh();
   };
 
   const downloading = status?.downloading || (progress !== null && !progress.finished);
   return (
     <>
       <label style={{ ...row, alignItems: "center" }}>
+        <span style={{ flex: "0 0 auto" }}>Push-to-talk key</span>
+        <input
+          value={hotkey}
+          placeholder="none"
+          title='Hold it anywhere to talk to Duck, e.g. "Ctrl+Alt+Space" or "F13" (a desk button set to send F13)'
+          onChange={(e) => setHotkey(e.target.value)}
+          onBlur={() => {
+            const k = hotkey.trim() || null;
+            if (k !== prefs.hotkey) setVoicePrefs({ hotkey: k });
+          }}
+          style={{ ...select, flex: 1, minWidth: 0, padding: "1px 4px" }}
+        />
+      </label>
+      {keyProblem && <div style={{ color: "var(--wb-needs)" }}>{keyProblem}</div>}
+      <label style={{ ...row, alignItems: "center" }}>
+        <span style={{ flex: "0 0 auto" }}>Microphone</span>
+        <select
+          value={prefs.device ?? ""}
+          onChange={(e) => setVoicePrefs({ device: e.target.value || null })}
+          style={{ ...select, flex: 1, minWidth: 0 }}
+        >
+          <option value="">the default input</option>
+          {devices.map((d) => (
+            <option key={d} value={d}>
+              {d}
+            </option>
+          ))}
+        </select>
+      </label>
+      <label style={row}>
+        <input type="checkbox" checked={prefs.sendNow} onChange={(e) => setVoicePrefs({ sendNow: e.target.checked })} />
+        <span>
+          Send what you say to Duck at once
+          <span style={hint}> (off: it lands in the box for an edit)</span>
+        </span>
+      </label>
+      <label style={{ ...row, alignItems: "center" }}>
         <span style={{ flex: "0 0 auto" }}>Speech to text</span>
-        <select value={gpu} onChange={(e) => choose(e.target.value as GpuPref)} style={select}>
+        <select value={gpu} onChange={(e) => setVoicePrefs({ gpu: e.target.value as GpuPref })} style={select}>
           {GPU_CHOICES.map((c) => (
             <option key={c.value} value={c.value}>
               {c.label}
@@ -128,12 +153,14 @@ export default function VoiceSettings() {
             transcribe a WAV file…
           </button>
           {test && (
-            <div style={{ ...hint, userSelect: "text" }}>
-              {test.error
-                ? <span style={{ color: "var(--wb-needs)" }}>{test.error}</span>
-                : test.result
-                  ? `"${test.result.text || "(no speech)"}" · ${test.result.ms} ms for ${(test.result.audioMs / 1000).toFixed(1)} s on the ${test.result.provider.toUpperCase()}${test.result.loadMs ? ` (+${test.result.loadMs} ms loading)` : ""}`
-                  : "transcribing…"}
+            <div style={hint}>
+              {test.error ? (
+                <span style={{ color: "var(--wb-needs)" }}>{test.error}</span>
+              ) : test.result ? (
+                `"${test.result.text || "(no speech)"}" · ${test.result.ms} ms for ${(test.result.audioMs / 1000).toFixed(1)} s on the ${test.result.provider.toUpperCase()}${test.result.loadMs ? ` (+${test.result.loadMs} ms loading)` : ""}`
+              ) : (
+                "transcribing…"
+              )}
             </div>
           )}
         </div>

@@ -80,6 +80,8 @@ tauri-plugin-autostart = "~2.5.1"
 ort = { version = "=2.0.0-rc.12", default-features = false, features = ["std", "ndarray", "load-dynamic", "api-24"] }
 ndarray = "0.17"
 zip = { version = "2", default-features = false, features = ["deflate"] }
+tauri-plugin-global-shortcut = "~2.3"
+cpal = "0.16"
 
 # Windows-only: intercept WebView2 accelerator keys so we can suppress the engine's
 # built-in reload shortcuts (F5 / Ctrl+R / Ctrl+Shift+R), which would otherwise

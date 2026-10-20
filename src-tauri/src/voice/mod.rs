@@ -1,25 +1,39 @@
-//! Voice input (track V). Step V1, part 1: the speech-to-text engine, Parakeet TDT
-//! 0.6B v3 over ONNX Runtime ([`engine`], [`parakeet`]), Silero VAD to trim a clip
-//! to its speech ([`vad`]), and the downloads they need on first use ([`assets`]).
-//! Microphone capture and the push-to-talk key come in part 2. See
-//! `documentation/assistant-plan.md`, step V1.
+//! Voice input (track V), step V1:
+//! - the speech-to-text engine: Parakeet TDT 0.6B v3 over ONNX Runtime ([`engine`],
+//!   [`parakeet`]), with Silero VAD trimming a clip to its speech ([`vad`]);
+//! - the downloads they need on first use ([`assets`]);
+//! - **push-to-talk** ([`capture`] and the global key here).
 //!
-//! The webview owns the settings and passes the GPU preference with each call.
-//! Transcribing a WAV is its own command: it's how this part is checked, and the
-//! phone (R2) uploads 16 kHz WAV.
+//! See `documentation/assistant-plan.md`, step V1.
+//!
+//! Push-to-talk:
+//! - The webview hands its settings over with [`voice_configure`]: the key, the
+//!   microphone and the GPU preference.
+//! - The key is registered globally (`tauri-plugin-global-shortcut`), so it works
+//!   with Workbench in the background or hidden.
+//! - **Press:** recording starts, and the model loads in parallel.
+//! - **Release:** the recording stops and is transcribed.
+//! - The webview hears `voice-state` (listening / transcribing / idle / error) and
+//!   `voice-transcript`, and sends the text to Duck.
+//! - The drawer's mic button drives the same path ([`voice_ptt`]).
+//!
+//! Transcribing a WAV is a command of its own: the settings check, and the phone
+//! (R2) uploads 16 kHz WAV.
 
 pub mod assets;
+pub mod capture;
 pub mod engine;
 pub mod parakeet;
 pub mod vad;
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, State};
+use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
 
 use engine::{Engine, GpuPref, Provider, Transcript};
 
@@ -27,19 +41,152 @@ use engine::{Engine, GpuPref, Provider, Transcript};
 const IDLE_UNLOAD: Duration = Duration::from_secs(180);
 
 const DOWNLOAD_EVENT: &str = "voice-download";
+const STATE_EVENT: &str = "voice-state";
+const TRANSCRIPT_EVENT: &str = "voice-transcript";
+/// A press shorter than this was a slip, not a command.
+const MIN_HOLD: Duration = Duration::from_millis(300);
+
+/// What push-to-talk needs from the settings.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VoiceConfig {
+    pub gpu: GpuPref,
+    /// The microphone's name; None for the default input.
+    pub device: Option<String>,
+    /// The push-to-talk key ("Ctrl+Alt+Space", "F13"); None for none.
+    pub hotkey: Option<String>,
+}
 
 /// Tauri-managed.
 pub struct VoiceState {
     engine: Arc<Engine>,
     downloading: AtomicBool,
+    config: Mutex<VoiceConfig>,
+    /// The key registered now.
+    hotkey: Mutex<Option<String>>,
+    /// A recording in progress, and when it began.
+    recording: Mutex<Option<(capture::Recorder, Instant)>>,
 }
 
 impl VoiceState {
     pub fn new(root: PathBuf) -> Self {
         let engine = Arc::new(Engine::new(root));
         engine.reap_when_idle(IDLE_UNLOAD);
-        Self { engine, downloading: AtomicBool::new(false) }
+        Self {
+            engine,
+            downloading: AtomicBool::new(false),
+            config: Mutex::new(VoiceConfig::default()),
+            hotkey: Mutex::new(None),
+            recording: Mutex::new(None),
+        }
     }
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct VoiceEvent {
+    /// `listening`, `transcribing`, `idle` or `error`.
+    state: &'static str,
+    message: Option<String>,
+}
+
+fn say(app: &AppHandle, state: &'static str, message: Option<String>) {
+    let _ = app.emit(STATE_EVENT, VoiceEvent { state, message });
+}
+
+/// Start recording (the key went down). A second press while recording is ignored.
+fn press(app: &AppHandle) {
+    let Some(s) = app.try_state::<VoiceState>() else { return };
+    let Ok(mut rec) = s.recording.lock() else { return };
+    if rec.is_some() {
+        return;
+    }
+    let config = s.config.lock().map(|c| c.clone()).unwrap_or_default();
+    if s.engine.choose(config.gpu).is_none() {
+        say(app, "error", Some("The voice model isn't downloaded yet: download it in Duck's settings.".into()));
+        return;
+    }
+    match capture::start(config.device.clone()) {
+        Ok(r) => *rec = Some((r, Instant::now())),
+        Err(e) => {
+            say(app, "error", Some(format!("The microphone didn't open: {e}")));
+            return;
+        }
+    }
+    say(app, "listening", None);
+    // Loading takes ~2 s; the recording covers it.
+    let engine = Arc::clone(&s.engine);
+    std::thread::spawn(move || {
+        let _ = engine.preload(config.gpu);
+    });
+}
+
+/// Stop and transcribe (the key came up).
+fn release(app: &AppHandle) {
+    let Some(s) = app.try_state::<VoiceState>() else { return };
+    let Some((rec, began)) = s.recording.lock().ok().and_then(|mut r| r.take()) else { return };
+    let engine = Arc::clone(&s.engine);
+    let gpu = s.config.lock().map(|c| c.gpu).unwrap_or_default();
+    let app = app.clone();
+    std::thread::spawn(move || {
+        let samples = match rec.stop() {
+            Ok(x) => x,
+            Err(e) => return say(&app, "error", Some(format!("The recording failed: {e}"))),
+        };
+        if began.elapsed() < MIN_HOLD {
+            return say(&app, "idle", None);
+        }
+        say(&app, "transcribing", None);
+        match engine.transcribe(&samples, gpu) {
+            Ok(t) => {
+                say(&app, "idle", None);
+                let _ = app.emit(TRANSCRIPT_EVENT, &t);
+            }
+            Err(e) => say(&app, "error", Some(format!("Transcription failed: {e}"))),
+        }
+    });
+}
+
+/// Take the settings: the GPU preference, the microphone, and the push-to-talk
+/// key (registered globally; the previous one is released).
+#[tauri::command]
+pub fn voice_configure(app: AppHandle, state: State<'_, VoiceState>, config: VoiceConfig) -> Result<(), String> {
+    let key = config.hotkey.clone().filter(|k| !k.trim().is_empty());
+    *state.config.lock().map_err(|e| e.to_string())? = config;
+    let mut current = state.hotkey.lock().map_err(|e| e.to_string())?;
+    if *current == key {
+        return Ok(());
+    }
+    let shortcuts = app.global_shortcut();
+    if let Some(old) = current.take() {
+        let _ = shortcuts.unregister(old.as_str());
+    }
+    if let Some(k) = key {
+        shortcuts
+            .on_shortcut(k.as_str(), |app, _, event| match event.state {
+                ShortcutState::Pressed => press(app),
+                ShortcutState::Released => release(app),
+            })
+            .map_err(|e| format!("{k} can't be used as the push-to-talk key: {e}"))?;
+        *current = Some(k);
+    }
+    Ok(())
+}
+
+/// The drawer's mic button: `true` while it's held, `false` when let go.
+#[tauri::command]
+pub fn voice_ptt(app: AppHandle, down: bool) {
+    if down {
+        press(&app)
+    } else {
+        release(&app)
+    }
+}
+
+/// The microphones, for the settings.
+#[tauri::command]
+pub fn voice_devices() -> Vec<String> {
+    capture::input_devices()
 }
 
 /// `<app local data>/models` (`models.dev` in a debug build, so the two builds

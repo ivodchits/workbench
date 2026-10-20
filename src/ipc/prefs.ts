@@ -50,7 +50,13 @@ export interface Prefs {
     codingPermissionMode: string | null;
   }>;
   /** Voice input (step V1). */
-  voice: { gpu: "always" | "ac_only" | "never" };
+  voice: {
+    gpu: "always" | "ac_only" | "never";
+    hotkey: string | null;
+    device: string | null;
+    /** Send a transcript to Duck at once; off, it lands in the composer to edit. */
+    sendNow: boolean;
+  };
   /** The project toolbar's field values (step K1): project id → `pluginId.controlId`
    *  → the last value (text for a select or text field, a flag for a checkbox). */
   pluginValues: Record<string, Record<string, string | boolean>>;

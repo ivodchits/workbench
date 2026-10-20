@@ -35,6 +35,8 @@ pub fn run() {
         .plugin(tauri_plugin_store::Builder::default().build())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())
+        // Step V1: the push-to-talk key, registered from Rust (`voice`).
+        .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         // "Start Workbench at login, minimized to tray" (step A3): the login entry
         // passes the flag `window::build_main` hides the main window for.
         .plugin(
@@ -193,6 +195,9 @@ pub fn run() {
             voice::voice_transcribe_wav,
             voice::voice_keep_warm,
             voice::voice_unload,
+            voice::voice_configure,
+            voice::voice_ptt,
+            voice::voice_devices,
             assistant::headless::headless_spawn,
             assistant::headless::headless_send,
             assistant::headless::headless_interrupt,

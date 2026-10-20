@@ -14,6 +14,7 @@ import type {
   ConfirmRequest,
   DuckEvent,
   Effort,
+  Source,
   TaskView,
   TrustView,
   TurnState,
@@ -324,7 +325,7 @@ export const isRunning = (threadId: string): boolean => {
 export const isBusy = (threadId: string | null): boolean =>
   !!threadId && (state.states[threadId] ?? "idle") !== "idle";
 
-export function sendMessage(text: string, effort?: Effort): void {
+export function sendMessage(text: string, effort?: Effort, source: Source = "desktop"): void {
   const threadId = state.current;
   set({ error: null });
   if (threadId && isBusy(threadId)) {
@@ -342,7 +343,7 @@ export function sendMessage(text: string, effort?: Effort): void {
     });
   }
   if (!threadId) adopting = true;
-  post({ type: "send", threadId, text, source: "desktop", effort });
+  post({ type: "send", threadId, text, source, effort });
 }
 
 /** Delete a thread (step A4); the engine refuses while a reply runs. */

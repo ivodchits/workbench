@@ -54,3 +54,29 @@ export const voiceUnload = (): Promise<void> => invoke("voice_unload");
 export function onVoiceDownload(cb: (p: DownloadProgress) => void): Promise<UnlistenFn> {
   return listen<DownloadProgress>("voice-download", (e) => cb(e.payload));
 }
+
+// ── push-to-talk ──
+
+/** What push-to-talk needs from the settings. */
+export interface VoiceConfig {
+  gpu: GpuPref;
+  /** The microphone's name; null for the default input. */
+  device: string | null;
+  /** The push-to-talk key ("Ctrl+Alt+Space", "F13"); null for none. */
+  hotkey: string | null;
+}
+
+export type VoicePhase = "listening" | "transcribing" | "idle" | "error";
+
+export const voiceConfigure = (config: VoiceConfig): Promise<void> => invoke("voice_configure", { config });
+/** The drawer's mic button: down while held. */
+export const voicePtt = (down: boolean): Promise<void> => invoke("voice_ptt", { down });
+export const voiceDevices = (): Promise<string[]> => invoke("voice_devices");
+
+export function onVoiceState(cb: (s: { state: VoicePhase; message: string | null }) => void): Promise<UnlistenFn> {
+  return listen<{ state: VoicePhase; message: string | null }>("voice-state", (e) => cb(e.payload));
+}
+
+export function onVoiceTranscript(cb: (t: Transcript) => void): Promise<UnlistenFn> {
+  return listen<Transcript>("voice-transcript", (e) => cb(e.payload));
+}
