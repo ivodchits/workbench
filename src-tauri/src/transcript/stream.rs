@@ -695,16 +695,34 @@ pub fn transcript_unfollow(app: AppHandle, instance_id: String) {
 /// live lines always describe the same file; without a follow, the live session's.
 fn current(app: &AppHandle, instance_id: &str) -> (Option<String>, Option<PathBuf>) {
     let want = target(app, instance_id);
-    let streams = app.state::<Streams>();
-    let inner = streams.inner.lock().unwrap();
-    if let Some(follow) = inner.follows.get(instance_id) {
-        let cur = follow.cursor.lock().unwrap();
-        return (cur.session_id.clone(), cur.path.clone());
+    {
+        let streams = app.state::<Streams>();
+        let inner = streams.inner.lock().unwrap();
+        if let Some(follow) = inner.follows.get(instance_id) {
+            let cur = follow.cursor.lock().unwrap();
+            return (cur.session_id.clone(), cur.path.clone());
+        }
     }
     match want {
         Target::Session { session_id, path } => (Some(session_id), path),
-        Target::Keep | Target::Awaiting => (None, None),
+        // Not running and not opened this run: its last session's transcript, so
+        // Duck can read and summarize a finished session (W3).
+        Target::Keep => match last_session(app, instance_id) {
+            Some(sid) => {
+                let path = claude_projects_dir().and_then(|dir| resolve_transcript(&dir, &sid));
+                (Some(sid), path)
+            }
+            None => (None, None),
+        },
+        Target::Awaiting => (None, None),
     }
+}
+
+/// The instance's stored `last_session_id`, if any.
+fn last_session(app: &AppHandle, instance_id: &str) -> Option<String> {
+    let db = app.try_state::<crate::db::Db>()?;
+    let conn = db.conn.lock().ok()?;
+    crate::registry::get_instance(&conn, instance_id).ok()?.last_session_id
 }
 
 fn page(

@@ -165,6 +165,8 @@ pub fn run() {
             assistant::assistant_decisions,
             assistant::assistant_mandate_set,
             assistant::assistant_mandate_get,
+            assistant::assistant_summary_set,
+            assistant::assistant_summary_get,
             assistant::assistant_replay_calls,
             assistant::assistant_workspace_prepare,
             assistant::assistant_task_folder,

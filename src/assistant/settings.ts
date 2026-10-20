@@ -36,6 +36,9 @@ export interface DuckSettings {
   workspace: string | null;
   /** The model and effort of each tier. Data, so they can be retuned. */
   tiers: Record<Tier, TierSpec>;
+  /** Summarize a session when it finishes a turn (step W3), and put the headline in
+   *  the done alert instead of its last line. A Haiku call per alert. */
+  summaryOnDone: boolean;
 }
 
 export const DEFAULT_TIERS: Record<Tier, TierSpec> = {
@@ -52,6 +55,7 @@ export const DEFAULT_SETTINGS: DuckSettings = {
   maxWorkers: 3,
   workspace: null,
   tiers: DEFAULT_TIERS,
+  summaryOnDone: false,
 };
 
 export const MAX_WORKERS = 5;
@@ -62,6 +66,7 @@ export function cleanSettings(raw: unknown): Partial<DuckSettings> {
   const out: Partial<DuckSettings> = {};
   if (typeof r.confirmPrompts === "boolean") out.confirmPrompts = r.confirmPrompts;
   if (typeof r.answerSessionPrompts === "boolean") out.answerSessionPrompts = r.answerSessionPrompts;
+  if (typeof r.summaryOnDone === "boolean") out.summaryOnDone = r.summaryOnDone;
   if (SESSION_MODELS.includes(r.codingModel as DuckSettings["codingModel"]))
     out.codingModel = r.codingModel as DuckSettings["codingModel"];
   const mode = r.codingPermissionMode;

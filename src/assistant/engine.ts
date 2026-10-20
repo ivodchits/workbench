@@ -43,6 +43,7 @@ import type {
 } from "./tools/registry";
 import type { TrustFacts } from "./trust/decide";
 import { lastUserText } from "./trust/mandate";
+import type { Summarizer } from "./summarize";
 import type { TaskManager } from "./tasks";
 
 type Params = Anthropic.Beta.Messages.MessageCreateParamsStreaming;
@@ -117,6 +118,8 @@ export interface EngineDeps {
   stream: StreamFn;
   /** Duck's worker tasks (step D1), for the task tools. */
   tasks?: TaskManager;
+  /** Session summaries (step W3), for the summary tools. */
+  summaries?: Summarizer;
   registry: Registry;
   port: WorkbenchPort;
   store: ThreadStore;
@@ -607,6 +610,7 @@ export function createEngine(deps: EngineDeps): Engine {
           signal: turn.ctl.signal,
           settings: settings(),
           tasks: deps.tasks ?? null,
+          summaries: deps.summaries ?? null,
           request: lastUserText(store.loaded(threadId)),
           prepared,
           notice: (n) => notice(threadId, n).then(() => {}),

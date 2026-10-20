@@ -15,6 +15,7 @@ mod budget;
 mod db;
 mod key;
 mod proxy;
+mod summaries;
 pub mod replay;
 mod threads;
 mod trust;
@@ -278,6 +279,18 @@ pub fn assistant_mandate_set(ctx: Db<'_>, instance_id: String, mandate: Option<S
 #[tauri::command]
 pub fn assistant_mandate_get(ctx: Db<'_>, instance_id: String) -> Result<Option<String>, String> {
     trust::mandate(&lock(&ctx), &instance_id)
+}
+
+/// A session's last summary (step W3), as stored JSON `{summary, at, made}`;
+/// `None` removes it.
+#[tauri::command]
+pub fn assistant_summary_set(ctx: Db<'_>, instance_id: String, summary: Option<String>) -> Result<(), String> {
+    summaries::set(&lock(&ctx), &instance_id, summary.as_deref())
+}
+
+#[tauri::command]
+pub fn assistant_summary_get(ctx: Db<'_>, instance_id: String) -> Result<Option<String>, String> {
+    summaries::get(&lock(&ctx), &instance_id)
 }
 
 // ── worker sessions (step D1) ──

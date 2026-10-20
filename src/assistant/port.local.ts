@@ -57,6 +57,7 @@ import {
   type PendingChoice,
 } from "../state/pendingChoice";
 import { setPromptHold, shouldTell } from "../state/promptHold";
+import { setDoneSummary } from "../state/notifications";
 import { duckTask, setDuckOwned } from "../state/duckOwned";
 import { addProject, deleteInstance, getRegistry, loadRegistry, renumberInstances } from "../state/registry";
 import {
@@ -478,6 +479,7 @@ export const localPort: WorkbenchPort = {
   },
   lastResponse: (id) => readLastResponse((before) => readTranscriptBack(id, before)),
   setDuckTask: (id, task) => setDuckOwned(id, task),
+  setDoneSummary,
   readPluginsDraft: pluginsDraftRead,
   clearPluginsDraft: pluginsDraftClear,
   onTaskEnd(taskId, cb) {

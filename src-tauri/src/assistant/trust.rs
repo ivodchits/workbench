@@ -80,13 +80,13 @@ pub fn set_paused_flag(db: &DuckDb, paused: bool) -> Result<(), String> {
         .map_err(|e| e.to_string())
 }
 
-fn meta(conn: &Connection, key: &str) -> Result<Option<String>, String> {
+pub(crate) fn meta(conn: &Connection, key: &str) -> Result<Option<String>, String> {
     conn.query_row("SELECT value FROM meta WHERE key = ?1", [key], |r| r.get(0))
         .optional()
         .map_err(|e| e.to_string())
 }
 
-fn set_meta(conn: &Connection, key: &str, value: &str) -> Result<(), String> {
+pub(crate) fn set_meta(conn: &Connection, key: &str, value: &str) -> Result<(), String> {
     conn.execute(
         "INSERT INTO meta (key, value) VALUES (?1, ?2)
          ON CONFLICT(key) DO UPDATE SET value = excluded.value",

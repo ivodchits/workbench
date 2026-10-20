@@ -26,12 +26,14 @@ import {
   type TrustView,
 } from "./protocol";
 import { loadSettings, type SettingsStore } from "./settings";
+import { createSummarizer, ipcSummaryBackend, Summary } from "./summarize";
 import { createTurnMeter } from "./spend";
 import { createThreadStore, ipcBackend, type ThreadStore } from "./threads";
 import { ACT_TOOLS } from "./tools/act";
 import { PLUGIN_TOOLS } from "./tools/plugins";
 import { getTime } from "./tools/getTime";
 import { READ_TOOLS } from "./tools/read";
+import { SUMMARY_TOOLS } from "./tools/summaries";
 import { createRegistry } from "./tools/registry";
 import { TASK_TOOLS } from "./tools/tasks";
 import { createTaskManager, ipcTaskBackend, type Task, type TaskManager } from "./tasks";
@@ -60,6 +62,7 @@ const TOOLS = [
   ...ACT_TOOLS,
   ...PLUGIN_TOOLS,
   ...TASK_TOOLS,
+  ...SUMMARY_TOOLS,
   ...(import.meta.env.DEV ? [testConfirm] : []),
 ];
 
@@ -275,8 +278,20 @@ export function initAssistant(): Promise<void> {
           ?.send({ threadId, text: eventText(text), source: "event" })
           .catch((e: unknown) => console.warn("duck: a task report was dropped", e)),
     });
+    const summaries = createSummarizer({
+      port: localPort,
+      backend: ipcSummaryBackend,
+      call: (input, signal) => oneShot("summary", input, { schema: Summary, signal }),
+    });
+    // The done alert's body (W3, when the setting is on): the turn's headline.
+    localPort.setDoneSummary(async (id, reply) => {
+      if (!settings.get().summaryOnDone) return null;
+      const s = localPort.listSessions().find((x) => x.id === id);
+      return s ? ((await summaries.summarize(s, { reply })).summary?.headline ?? null) : null;
+    });
     const engine = createEngine({
       tasks,
+      summaries,
       store: s,
       registry: createRegistry(TOOLS),
       port: localPort,

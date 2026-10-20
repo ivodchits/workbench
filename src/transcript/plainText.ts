@@ -21,6 +21,8 @@ export interface PlainTextOptions {
   maxItems: number;
   /** The whole text's cap. */
   maxChars: number;
+  /** Only items dated after this (epoch ms), for a summary of what's new (W3). */
+  since?: number;
 }
 
 export interface PlainText {
@@ -30,6 +32,8 @@ export interface PlainText {
   items: number;
   /** Earlier items exist that weren't shown. */
   truncated: boolean;
+  /** The newest shown item's time (epoch ms); null when none is dated. */
+  lastAt: number | null;
 }
 
 function clip(text: string, max = ITEM_CHARS): string {
@@ -91,7 +95,7 @@ export function itemText(item: Item): string | null {
  *  offset (the end when omitted). */
 export async function readPlainText(
   readBack: (before?: number) => Promise<TranscriptPage>,
-  { maxItems, maxChars }: PlainTextOptions,
+  { maxItems, maxChars, since }: PlainTextOptions,
 ): Promise<PlainText> {
   const transcript = createTranscript();
   let before: number | undefined;
@@ -107,12 +111,19 @@ export async function readPlainText(
     transcript.prepend(page.lines);
     more = page.offset > 0;
     if (!more || shown() > maxItems) break;
+    if (since !== undefined && (at(transcript.items[0]) ?? Infinity) <= since) break;
     before = page.offset;
   }
 
-  const lines = transcript.items
-    .map(itemText)
-    .filter((t): t is string => t !== null);
+  let items = transcript.items;
+  if (since !== undefined) {
+    // From the first item dated after `since`; undated items ride with their turn.
+    const first = items.findIndex((i) => (at(i) ?? -Infinity) > since);
+    items = first < 0 ? [] : items.slice(first);
+    if (first !== 0) more = false;
+  }
+  const shownItems = items.filter((i) => itemText(i) !== null);
+  const lines = shownItems.map((i) => itemText(i) as string);
   let kept = lines.slice(-maxItems);
   let truncated = more || kept.length < lines.length;
   // Over the cap: drop the oldest lines; a single line that is still too long is cut.
@@ -123,9 +134,18 @@ export async function readPlainText(
     truncated = true;
   }
   const text = kept.join("\n");
+  const dated = shownItems.map(at).filter((t): t is number => t !== null);
   return {
     text: text.length > maxChars ? `${text.slice(0, maxChars)} …[cut]` : text,
     items: kept.length,
     truncated,
+    lastAt: dated.length ? Math.max(...dated) : null,
   };
+}
+
+/** An item's time, epoch ms; null when it has none. */
+function at(item: Item | undefined): number | null {
+  if (!item?.timestamp) return null;
+  const t = Date.parse(item.timestamp);
+  return Number.isNaN(t) ? null : t;
 }

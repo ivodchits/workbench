@@ -18,6 +18,7 @@ import type Anthropic from "@anthropic-ai/sdk";
 import type { WorkbenchPort } from "../port";
 import type { Notice, ReviewItem } from "../protocol";
 import type { DuckSettings } from "../settings";
+import type { Summarizer } from "../summarize";
 import type { TaskManager } from "../tasks";
 import type { TrustFacts } from "../trust/decide";
 
@@ -39,6 +40,8 @@ export interface ToolContext {
   later(text: string): void;
   /** Duck's worker tasks (step D1); null where there are none (some tests). */
   tasks: TaskManager | null;
+  /** Session summaries (step W3); null where there are none (some tests). */
+  summaries: Summarizer | null;
 }
 
 /** A tool may return text, API content blocks (e.g. an image), or any JSON value. */

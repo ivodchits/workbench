@@ -300,16 +300,34 @@ function flagStuck(id: string, mins: number): void {
 interface PendingDone {
   timer: ReturnType<typeof setTimeout>;
   body: string;
+  /** The turn's final reply, when it ended normally, for a summary to stand in for
+   *  the body; null: no summary. */
+  reply: string | null;
 }
 
 const pendingDone = new Map<string, PendingDone>();
+
+/** Makes a done alert's body from the turn (Duck's summary headline, step W3), or
+ *  null to keep the last line. Gets the turn's final reply, which the transcript
+ *  may not have yet. Set by Duck at start; checks its own setting. */
+export type DoneSummary = (instanceId: string, reply: string) => Promise<string | null>;
+let doneSummary: DoneSummary | null = null;
+/** How long a done alert waits for its summary before going out with the last line. */
+const SUMMARY_WAIT_MS = 12_000;
+
+export function setDoneSummary(fn: DoneSummary | null): void {
+  doneSummary = fn;
+}
 /** instance id → background load at its last turn end. */
 const lastBackground = new Map<string, number>();
 
-function lastMessage(env: HookEnvelope): string {
+function finalReply(env: HookEnvelope): string {
   const msg = env.event.last_assistant_message;
-  if (typeof msg !== "string") return "";
-  const line = msg.replace(/\s+/g, " ").trim();
+  return typeof msg === "string" ? msg : "";
+}
+
+function lastMessage(env: HookEnvelope): string {
+  const line = finalReply(env).replace(/\s+/g, " ").trim();
   return line.length > 140 ? `${line.slice(0, 139)}…` : line;
 }
 
@@ -329,15 +347,16 @@ function onDoneHook(env: HookEnvelope): void {
       if (!config.done) return;
       const failed = env.event.hook_event_name === "StopFailure";
       const body = failed ? "Stopped on an error." : lastMessage(env) || "Finished its turn.";
+      const reply = failed ? null : finalReply(env);
       if (!config.doneWaitForBackground) {
-        deliverDone(id, body);
+        deliverDone(id, body, reply);
         return;
       }
       const timer = setTimeout(() => {
         pendingDone.delete(id);
-        if ((lastBackground.get(id) ?? 0) === 0) deliverDone(id, body);
+        if ((lastBackground.get(id) ?? 0) === 0) deliverDone(id, body, reply);
       }, TURN_END_GRACE_MS);
-      pendingDone.set(id, { timer, body });
+      pendingDone.set(id, { timer, body, reply });
       return;
     }
     // You moved on (a new prompt) or the session is gone — the turn's alert is moot.
@@ -353,12 +372,32 @@ function onDoneTurnEnded({ instanceId: id, pendingBackground }: TurnEnded): void
   const p = pendingDone.get(id);
   if (!p) return;
   cancelDone(id);
-  if (config.done && pendingBackground === 0) deliverDone(id, p.body);
+  if (config.done && pendingBackground === 0) deliverDone(id, p.body, p.reply);
 }
 
-/** The agent finished: a desktop toast and a phone push, on the enabled routes. */
-function deliverDone(id: string, body: string): void {
+/** The agent finished: a desktop toast and a phone push, on the enabled routes.
+ *  With the turn's `reply`, the body is its summary headline when one comes in time. */
+function deliverDone(id: string, body: string, reply: string | null): void {
   if (quiet(id)) return;
+  if (!resolve(id)) return;
+  const make = reply === null ? null : doneSummary;
+  if (!make || reply === null) {
+    sendDone(id, body);
+    return;
+  }
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const late = new Promise<null>((ok) => {
+    timer = setTimeout(() => ok(null), SUMMARY_WAIT_MS);
+  });
+  void Promise.race([make(id, reply), late])
+    .catch(() => null)
+    .then((headline) => {
+      clearTimeout(timer);
+      sendDone(id, headline || body);
+    });
+}
+
+function sendDone(id: string, body: string): void {
   const r = resolve(id);
   if (!r) return;
   const title = `○ done · ${label(r)}`;

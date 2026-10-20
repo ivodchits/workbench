@@ -2037,6 +2037,60 @@ tapping around. Two stages.
 - **Done when:** a summary of a real long session costs < $0.01 and reads correctly, and the
   push body shows the headline when the pref is on.
 - **Out of scope:** summaries of shells.
+- **As built (2026-10-20):**
+  - **No second mechanism:** the improvement plan's Track M (a run summary as a Claude
+    Code mod) was never built, so W3 is the only summary path.
+  - **`src/assistant/summarize.ts`:** `createSummarizer({port, backend, call})`. One
+    Haiku call through `oneShot("summary", …)` (frozen prompt in `PRIMITIVES.summary`,
+    `x-wb-purpose: summary`, structured output `{headline, done[], open_questions[],
+    needs_you}`; `needs_you` is nullable rather than optional). The input is the
+    session's name, task note and state now, the last summary as `<earlier>`
+    background, and the activity as `<activity>` (both fenced, and data).
+    - **"Since the last summary" is a time, not a byte offset.** `readPlainText` gained
+      `since` (epoch ms): it pages back no further than that and keeps only later
+      items, and reports `lastAt`, the newest shown item. The transcript reader trims
+      and drops lines, so byte offsets can't be matched to items; item times can, and
+      they work across `/clear` too.
+    - **Stored in duck.db `meta`** (`assistant_summary:<instance>`, JSON `{summary,
+      from, at, made}`, new commands `assistant_summary_get/set`), not only in memory,
+      so the chain survives a restart. Asking again with nothing new returns the stored
+      summary without a call. A window that leaves a gap after `at` ("since I was
+      away") isn't stored; one reaching back over it replaces it.
+    - At most 40,000 characters of activity (the oldest part is cut and marked):
+      about 13k tokens, so a summary costs under $0.002 at Haiku 5.5's prices.
+    - Two requests at once (a done alert and a tool) share one call.
+  - **Tools** (`src/assistant/tools/summaries.ts`, read tier): `summarize_session(session,
+    project?, since?)` and `summarize_activity(since, project?)`, the "since I was
+    away" one. The latter takes up to 8 sessions, newest first, 4 at a time. A session
+    with no activity time (none run since the app started; `instances.last_activity_at`
+    is never written) is checked in its transcript, a file read and no call.
+  - **Finished sessions' transcripts:** `transcript_read_back` used to return nothing
+    for a session that wasn't running and hadn't been opened this run, so
+    `read_session` and the summaries saw no history. It now falls back to the
+    instance's `last_session_id` and finds its file by session id (`stream.rs`
+    `current`; the follow logic is unchanged).
+  - **Done alerts:** the setting `summaryOnDone` (Duck's settings, off by default,
+    "Summarize a session when it finishes, for the done alert" in the drawer).
+    `notifications.ts` takes a body maker through the port (`setDoneSummary`); with
+    the setting on, a done alert waits up to 12 s for the turn's headline and
+    otherwise goes out with the last line, as before. A turn that stopped on an error,
+    or a session you're watching or that is Duck's worker, isn't summarized. The
+    Stop hook fires before the final reply reaches the transcript file, so the hook's
+    `last_assistant_message` is passed in and added as the activity's last line
+    (`withReply`) when it isn't there yet.
+  - **Verified:**
+    - Tests: 7 for the summarizer and tools, 1 more for `readPlainText`, 4 for the
+      done alert (the first tests of `notifications.ts`), 1 Rust test. 381 vitest and
+      224 cargo in all; tsc, eslint and clippy are clean.
+    - **Live in the dev app:** "catch me up on the Tauri auto-update approaches
+      session" gave a correct summary, down to the page that returned 404 and the
+      claims the worker hadn't checked. The call cost $0.00046 (2,773 tokens in).
+      "What happened since midnight" found all five sessions from their transcripts
+      after a restart (it found none before the fix). With the setting on, a session's
+      turn end raised a summary call about 5 s later; that run showed the final-reply
+      gap, which was fixed and covered by a test.
+  - **Not verified live:** the toast's text after the final-reply fix, and the phone
+    push body (the same `sendDone` path).
 
 #### Step W4 — Core memory (the always-loaded profile)
 
@@ -3695,7 +3749,7 @@ X0 ─┬─▶ A1 ─▶ A2 ─┬─▶ A3 ─┬─▶ W2 ─┬─▶ T1 ─
    D1, because a card for every action defeats the point of Duck. W5 moved ahead of T2
    once K1 merged: its plugin runs are Duck's own consequential tools, so T1's rules
    already cover them per action, while T2 is the larger step.)
-2. W3, **D2**, **P1**. *Autopilot milestone: sessions, Duck's workers included, keep going
+2. W3 (done), **D2**, **P1**. *Autopilot milestone: sessions, Duck's workers included, keep going
    while you're away, and plans run step by step.*
 3. V1, V2, R1, R2, V3, **V5**, **P2**. *Voice + phone milestone, including read-aloud,
    screenshots, proactive spoken updates, and unattended autopilot runs.*
@@ -3830,7 +3884,7 @@ T2 goes live after the replay check in its done-when (the past week's prompts th
 | A4 | Deleting threads | ☑ |
 | W1 | Read tools | ☑ |
 | W2 | Action tools + the confirmation policy | ☑ |
-| W3 | Session summaries | ☐ |
+| W3 | Session summaries | ☑ |
 | W4 | Core memory (the always-loaded profile) | ☐ |
 | W5 | Project toolbar tools | ☑ |
 | M1 | Model per Claude Code session | ☑ |

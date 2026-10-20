@@ -255,6 +255,12 @@ export interface WorkbenchPort {
   /** Mark a session as Duck's worker on `task` (null: yours again): its card says
    *  so, and its alerts go to Duck instead of you. */
   setDuckTask(instanceId: string, task: string | null): void;
+
+  // ── summaries (W3) ──
+
+  /** Give the app's done alerts a body maker (the turn's summary headline; null keeps
+   *  the last line), or take it back with null. */
+  setDoneSummary(fn: ((instanceId: string, reply: string) => Promise<string | null>) | null): void;
 }
 
 /** What a session was started for (step T2). */

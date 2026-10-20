@@ -24,6 +24,7 @@ import type {
 import type { Notice } from "./protocol";
 import { DEFAULT_SETTINGS, type DuckSettings } from "./settings";
 import type { ToolContext } from "./tools/registry";
+import type { Summarizer } from "./summarize";
 import type { TaskManager } from "./tasks";
 
 export interface FakePortData {
@@ -422,6 +423,7 @@ export function fakePort(data: FakePortData = {}): FakePort {
     lastResponse(id) {
       return Promise.resolve(data.replies?.[id] ?? null);
     },
+    setDoneSummary() {},
     setDuckTask(id, task) {
       record("setDuckTask", id, task);
       const s = data.sessions?.find((x) => x.id === id);
@@ -444,6 +446,7 @@ export function toolCtx(
     settings: { ...DEFAULT_SETTINGS, ...settings },
     request: null as string | null,
     tasks: null as TaskManager | null,
+    summaries: null as Summarizer | null,
     notices: [] as Notice[],
     posted: [] as string[],
     notice(n: Notice) {

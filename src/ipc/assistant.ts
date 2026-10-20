@@ -179,6 +179,12 @@ export const mandateSet = (instanceId: string, mandate: string | null): Promise<
 export const mandateGet = (instanceId: string): Promise<string | null> =>
   invoke("assistant_mandate_get", { instanceId });
 
+/** A session's last summary (step W3), as stored JSON; null removes it. */
+export const summarySet = (instanceId: string, summary: string | null): Promise<void> =>
+  invoke("assistant_summary_set", { instanceId, summary });
+export const summaryGet = (instanceId: string): Promise<string | null> =>
+  invoke("assistant_summary_get", { instanceId });
+
 /** The past `days`' Claude Code tool calls, for the trust replay (step T2). */
 export const replayCalls = (days: number, max: number): Promise<ReplayCall[]> =>
   invoke("assistant_replay_calls", { days, max });

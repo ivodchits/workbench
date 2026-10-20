@@ -88,6 +88,27 @@ describe("readPlainText", () => {
       text: "",
       items: 0,
       truncated: false,
+      lastAt: null,
     });
+  });
+
+  it("with `since`, keeps only later items and pages back no further than it", async () => {
+    const stamps = sessionLines
+      .map((l) => (JSON.parse(l) as { timestamp?: string }).timestamp)
+      .filter((t): t is string => !!t)
+      .map((t) => Date.parse(t));
+    const last = Math.max(...stamps);
+    const cut = stamps[Math.floor(stamps.length * 0.8)];
+    const r = reader(sessionLines, 20);
+    const out = await readPlainText(r.read, { ...all, since: cut });
+    expect(out.items).toBeGreaterThan(0);
+    expect(out.truncated).toBe(false);
+    expect(out.lastAt).toBeGreaterThan(cut);
+    expect(out.lastAt).toBeLessThanOrEqual(last);
+    expect(out.text).toMatch(/AFTERCOMPACT$/);
+    expect(r.reads).toBeLessThan(Math.ceil(sessionLines.length / 20));
+    const full = await readPlainText(reader(sessionLines, 1000).read, all);
+    expect(out.items).toBeLessThan(full.items);
+    expect(await readPlainText(reader(sessionLines, 20).read, { ...all, since: last })).toMatchObject({ text: "", items: 0 });
   });
 });

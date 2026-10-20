@@ -86,6 +86,22 @@ export default function DrawerSettings({ duck }: { duck: DuckState }) {
               </span>
             </span>
           </label>
+          <label style={row}>
+            <input
+              type="checkbox"
+              checked={duck.settings.summaryOnDone}
+              onChange={(e) =>
+                setDuckSettings({ summaryOnDone: e.target.checked })
+              }
+            />
+            <span>
+              Summarize a session when it finishes, for the done alert
+              <span style={hint}>
+                {" "}
+                (a Haiku call per alert, about $0.002)
+              </span>
+            </span>
+          </label>
           <label style={{ ...row, alignItems: "center" }}>
             <span>Sessions Duck starts for coding run on</span>
             <select
