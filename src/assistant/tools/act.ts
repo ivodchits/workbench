@@ -244,10 +244,13 @@ function choiceLabel(s: SessionRef, answer: Answer): string {
   return o ? `${o.key}. ${o.label}` : `option ${answer}`;
 }
 
+/** A question asked by one of Duck's own workers: Duck is its user (step D2). */
+const workerQuestion = (s: SessionRef) => s.duckTask !== null && s.choice?.kind === "question";
+
 export const answerChoice = defineTool({
   name: "answer_choice",
   description:
-    "Answer the prompt a session is waiting on (a permission request, a question or a plan approval) with one of its options, or deny it. A question also takes a free-form answer in `text` (its \"Type something\" choice) instead of an option. Call get_pending_choice first: it gives the choiceId and the options. Answering a permission request or a plan asks the user on a card, unless their own message already allowed it (\"approve it if it asks\"): then quote those words in `grantedBy` and it runs at once. Never quote words that aren't the user's, and never pick a \"don't ask again\" option on their behalf.",
+    "Answer the prompt a session is waiting on (a permission request, a question or a plan approval) with one of its options, or deny it. A question also takes a free-form answer in `text` (its \"Type something\" choice) instead of an option. Call get_pending_choice first: it gives the choiceId and the options. Answering a permission request or a plan asks the user on a card, unless their own message already allowed it (\"approve it if it asks\"): then quote those words in `grantedBy` and it runs at once. Never quote words that aren't the user's, and never pick a \"don't ask again\" option on their behalf. A question from one of your own workers you answer as its user, at once: give `reason`, which shows on its task card.",
   schema: z.object({
     ...sessionArgs,
     choiceId: z.string().describe("The prompt's choiceId from get_pending_choice."),
@@ -258,6 +261,11 @@ export const answerChoice = defineTool({
       .optional()
       .describe("A free-form answer to a question, instead of an option."),
     grantedBy: grantArg,
+    reason: z
+      .string()
+      .max(500)
+      .optional()
+      .describe("For a worker's question: what settles the answer (\"you said earlier you want Postgres\")."),
   }).superRefine(({ option, text }, ctx) => {
     // Checked with the schema, so a call that names no answer fails before a card.
     try {
@@ -267,6 +275,7 @@ export const answerChoice = defineTool({
     }
   }),
   tier: "consequential",
+  tierFor: ({ session, project }, port) => (workerQuestion(findSession(port, session, project)) ? "reversible" : "consequential"),
   describe({ session, project, option, text }, port) {
     const s = findSession(port, session, project);
     const what = s.choice ? choiceLine(s.choice) : "its prompt";
@@ -287,9 +296,11 @@ export const answerChoice = defineTool({
       grant: grantedBy?.trim() && !/don.?t ask again|always allow/i.test(label) ? grantedBy : undefined,
     };
   },
-  run({ session, project, choiceId, option, text }, { port }) {
+  run({ session, project, choiceId, option, text, reason }, { port, tasks }) {
     const s = findSession(port, session, project);
+    const asked = workerQuestion(s) ? (s.choice?.questions[0]?.question ?? "") : null;
     const label = port.answerChoice(s.id, choiceId, answerOf(option, text));
+    if (asked !== null) tasks?.noteAnswer(s.id, { question: asked, answer: label, reason: reason?.trim() || "" });
     return { session: s.title, answered: label };
   },
 });

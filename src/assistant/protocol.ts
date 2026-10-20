@@ -131,6 +131,8 @@ export interface TaskView {
   runner: "session" | "api";
   why: string | null;
   costUsd: number | null;
+  /** The worker's questions Duck answered. */
+  answers: { question: string; answer: string; reason: string }[];
 }
 
 // ── surface → Duck ──────────────────────────────────────────────────────────

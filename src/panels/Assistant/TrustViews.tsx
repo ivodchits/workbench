@@ -32,7 +32,7 @@ const EFFECT_COLOR: Record<Effect, string> = {
   deny: "var(--wb-delText)",
 };
 
-function Shell({
+export function Shell({
   title,
   onBack,
   children,

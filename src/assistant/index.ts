@@ -115,6 +115,7 @@ export function taskView(t: Task): TaskView {
     runner: t.runner,
     why: t.why,
     costUsd: t.costUsd,
+    answers: t.answers.map(({ question, answer, reason }) => ({ question, answer, reason })),
   };
 }
 

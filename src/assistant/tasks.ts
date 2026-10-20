@@ -97,6 +97,10 @@ export const Task = z.object({
   costUsd: z.number().nullable().default(null),
   /** A queued task waiting for a limit to reset doesn't start before this. */
   notBefore: z.number().nullable().default(null),
+  /** The worker's questions Duck answered, and why (step D2). */
+  answers: z
+    .array(z.object({ question: z.string(), answer: z.string(), reason: z.string(), at: z.number() }))
+    .default([]),
 });
 export type Task = z.infer<typeof Task>;
 
@@ -172,6 +176,10 @@ export interface TaskManager {
   /** Run the task again from its brief as a new task at `tier` (one up when
    *  absent), and close this one. */
   rerun(id: string, tier?: Tier): Promise<Task>;
+  /** The task whose worker runs in this session, if any. */
+  byInstance(instanceId: string): Task | undefined;
+  /** Record Duck's answer to its worker's question, for the card. */
+  noteAnswer(instanceId: string, a: { question: string; answer: string; reason: string }): void;
   get(id: string): Task | undefined;
   /** Newest first. */
   list(): Task[];
@@ -511,9 +519,25 @@ export function createTaskManager(deps: TaskDeps): TaskManager {
     if (told.get(t.id) === key) return;
     told.set(t.id, key);
     const what = choice ? choiceLine(choice) : "a prompt";
+    const worker = `Task ${label(t)}'s worker (session id ${t.instanceId})`;
+    if (choice?.kind === "question" && !choice.terminalOnly) {
+      // Duck is the worker's user: it answers what the brief or the thread settles.
+      const options = choice.options.map((o) => `${o.key}. ${o.label}${o.detail ? ` (${o.detail})` : ""}`).join("; ");
+      deps.tell(
+        t.threadId,
+        `${worker} asks: ${choice.questions[0]?.question ?? "?"} Options: ${options}. You are its user. If the brief or this conversation settles it, answer it yourself with answer_choice (choiceId ${choice.id}), giving \`reason\` (what settles it, e.g. "you said earlier you want Postgres"), and tell the user in a sentence what you picked. If they don't settle it, put the question to the user and answer with what they say.`,
+      );
+      return;
+    }
+    const where =
+      choice?.kind === "question"
+        ? ` It can only be answered in its console (${choice.terminalOnly}); or give the answer to the worker with task_followup.`
+        : choice?.kind === "plan"
+          ? " Plan approvals in workers are the user's."
+          : "";
     deps.tell(
       t.threadId,
-      `Task ${label(t)}'s worker (session id ${t.instanceId}) is waiting on ${what}. Tell the user; they can answer it in its console, or tell you what to answer.`,
+      `${worker} is waiting on ${what}.${where} Tell the user; they can answer it in its console, or tell you what to answer.`,
     );
   }
 
@@ -593,6 +617,7 @@ export function createTaskManager(deps: TaskDeps): TaskManager {
         why: null,
         costUsd: null,
         notBefore: null,
+        answers: [],
       });
       void pump();
       await starting.get(t.id);
@@ -663,6 +688,12 @@ export function createTaskManager(deps: TaskDeps): TaskManager {
       });
       if (t.state !== "closed") await this.close(id);
       return next;
+    },
+
+    byInstance,
+    noteAnswer(instanceId, a) {
+      const t = byInstance(instanceId);
+      if (t) update(t.id, { answers: [...t.answers, { ...a, at: now() }] });
     },
 
     get: (id) => tasks.get(id),

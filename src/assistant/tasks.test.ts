@@ -5,6 +5,9 @@ import { fakePort, project, session, toolCtx, type FakePort } from "./fakePort.t
 import { DEFAULT_SETTINGS, type DuckSettings } from "./settings";
 import type { ApiWorkerOutcome } from "./apiWorker";
 import { createTaskManager, NUDGE, type RunRequest, type Task, type TaskBackend, type TaskDeps } from "./tasks";
+import type { ChoiceRef } from "./port";
+import { answerChoice } from "./tools/act";
+import { createRegistry } from "./tools/registry";
 import { listTasks, runTask, taskClose, taskFollowup, taskStatus } from "./tools/tasks";
 
 const WS = "C:\\Users\\me\\repos\\Duck";
@@ -298,6 +301,64 @@ describe("a worker's turn ends", () => {
     port.phase("new-1", "needs_you");
     expect(told).toHaveLength(1);
     expect(told[0].text).toContain("is waiting on");
+  });
+});
+
+describe("Duck as the worker's user (D2)", () => {
+  const question: ChoiceRef = {
+    id: "q1",
+    kind: "question",
+    toolName: "AskUserQuestion",
+    input: {},
+    at: 1,
+    questions: [{ header: "DB", question: "Which database?", multiSelect: false, options: [] }],
+    options: [
+      { key: 1, label: "Postgres", detail: "relational", typed: false },
+      { key: 2, label: "SQLite", detail: "", typed: false },
+    ],
+    terminalOnly: null,
+    sent: null,
+    optionsFrom: "hook",
+    held: false,
+  };
+
+  it("asks Duck to answer a worker's question itself, and records the answer with its reason", async () => {
+    const { port, tasks, told } = setup();
+    const t = await tasks.run(req());
+    port.setChoice("new-1", question);
+    port.phase("new-1", "needs_you");
+    expect(told[0].text).toMatch(/asks: Which database\? Options: 1\. Postgres \(relational\); 2\. SQLite\. You are its user/);
+    expect(told[0].text).toContain("choiceId q1");
+
+    // As its user, Duck answers without a card.
+    const r = createRegistry([answerChoice]);
+    const input = { session: "new-1", choiceId: "q1", option: 1, reason: "you said earlier you want Postgres" };
+    expect(r.callTier("answer_choice", input, port)).toBe("reversible");
+    await answerChoice.run(input as never, { ...toolCtx(port), tasks, prepared: undefined });
+    expect(port.calls.find((c) => c.name === "answerChoice")?.args).toEqual(["new-1", "q1", 1]);
+    expect(tasks.get(t.id)?.answers).toEqual([
+      { question: "Which database?", answer: "Postgres", reason: "you said earlier you want Postgres", at: expect.any(Number) },
+    ]);
+  });
+
+  it("keeps a question in a session of the user's on a card", () => {
+    const port = fakePort({
+      projects: [project({ id: "app" })],
+      sessions: [session({ id: "s1", projectId: "app", phase: "needs_you", choice: question })],
+    });
+    const r = createRegistry([answerChoice]);
+    expect(r.callTier("answer_choice", { session: "s1", choiceId: "q1", option: 1 }, port)).toBe("consequential");
+  });
+
+  it("points a question it can't answer from the app, and a plan, back to the console", async () => {
+    const { port, tasks, told } = setup();
+    await tasks.run(req());
+    port.setChoice("new-1", { ...question, terminalOnly: "several questions are answered one after another" });
+    port.phase("new-1", "needs_you");
+    expect(told[0].text).toMatch(/can only be answered in its console \(several questions/);
+    port.setChoice("new-1", { ...question, id: "p1", kind: "plan" });
+    port.phase("new-1", "needs_you");
+    expect(told[1].text).toContain("Plan approvals in workers are the user's.");
   });
 });
 

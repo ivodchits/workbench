@@ -3243,6 +3243,57 @@ tapping around. Two stages.
     decides our architecture, think it through" picks serious (Opus).
   - A worker's clarifying question is answered by Duck with a logged reason.
 - **Out of scope:** session-backed conversation (D3).
+- **As built (2026-10-20):**
+  - **Routing:** the system prompt's one offloading line became the rules (what
+    Duck does itself, what goes to `run_task`), the "do it here" / "use a worker"
+    overrides, and ten examples with their kind and tier (`prompt.ts`; the prefix
+    is re-billed once). `haiku_task` (M2) and Duck's own web tools (B1) don't exist
+    yet, so the rules choose between Duck and `run_task` only, and **a question
+    that needs the web goes to a standard worker** with a brief to keep it short.
+    "A one-URL question stays on the API" waits for B1.
+  - **Tiers:** the card shows `model · effort (tier)` and offers "re-run involved /
+    serious". That is `tasks.rerun` and the tool `task_rerun`: a **new task** from
+    the stored brief (`Task.brief`) at the next tier, closing the old one. Not a
+    follow-up in the same session as planned: a session's effort is a launch flag.
+  - **Limits** (`tasks.ts` `route`, at the moment a task takes its slot): the
+    5-hour window at 70% or the week at 80% (`LIMITS`) makes it an **API worker**
+    (`apiWorker.ts`):
+    - The tier's model (`sonnet` → `claude-sonnet-5-5`, `opus` → `claude-opus-5-5`)
+      at the tier's effort, adaptive thinking, `fallbacks: "default"`, the server's
+      `web_search_20260209` / `web_fetch_20260209` (the basic versions for Haiku),
+      and one client tool, `submit_result {status, headline, question, markdown}`
+      (strict). `pause_turn` is sent back as it is; a text answer gets one reminder,
+      then stands as the result; at most 12 rounds. Streamed, `x-wb-purpose:
+      api-worker`.
+    - The result goes into `result.md` / `result.json` (new command
+      `assistant_task_write_result`, task folders only), so the rest of the flow is
+      the same. Its cost is estimated from each reply's usage with a small price
+      table mirroring `usage.rs` (the ledger stays the record) and shown on the card:
+      "API · sonnet · high (involved) · 2m · $0.18", with the reason under it.
+    - A follow-up re-runs it with the brief, the previous `result.md` and the
+      follow-up. Closing aborts it.
+    - **Code tasks keep their session** (an API worker has no files to work on), and
+      the thread is told why.
+    - Past Duck's API soft limit (or the cap) as well, the task **waits** in the
+      queue (`notBefore`): the latest reset of the windows that are over, but read
+      again within 15 minutes. The thread is told once.
+  - **Duck as the worker's user:** a worker's question goes to its thread with the
+    options and the instruction to answer it as the worker's user when the brief or
+    the conversation settles it, otherwise to ask you and answer with what you say.
+    `answer_choice` is `reversible` for a question in a Duck worker (no card) and
+    takes a `reason`; each answer is kept on the task (`Task.answers`) and shown on
+    its card ("Duck answered: Postgres, because you said earlier…"). Questions the
+    app can't answer (several, multi-select) and plan approvals go to you, with a
+    word on why (T3 isn't built).
+  - **Tasks view** in the drawer (the header's "tasks · N"): every task with its
+    state, worker, time, cost and headline; "open result" (in the editor of the
+    worker's project, the workspace's, or yours, with the preview on), "save to
+    <project> notes" (the project you're in), console, its thread, re-run and close.
+  - **Verified:** 33 new vitest cases (426 in all) and one Rust test (226 in all);
+    tsc, eslint and clippy are clean.
+  - **Not verified live:** the done-when's behaviour in the app: that Duck routes
+    the examples as written, an API worker run end to end (forcing the limits needs
+    a session to report 85%), and a worker's question answered by Duck.
 
 #### Step D3 — Session-backed thinking modes (experiment)
 

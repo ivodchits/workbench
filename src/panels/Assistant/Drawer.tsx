@@ -43,6 +43,7 @@ import DuckAvatar from "./DuckAvatar";
 import type { DuckMode } from "./duck3d";
 import DuckIcon from "./DuckIcon";
 import DrawerSettings from "./DrawerSettings";
+import { TasksPanel } from "./TasksView";
 import { DecisionsPanel, TrustPanel } from "./TrustViews";
 import type { ThreadRow } from "../../ipc/assistant";
 import {
@@ -236,6 +237,7 @@ export default function AssistantDrawer() {
       {view === "decisions" && (
         <DecisionsPanel duck={duck} onBack={() => setView("thread")} />
       )}
+      {view === "tasks" && <TasksPanel duck={duck} onBack={() => setView("thread")} />}
       <Asks duck={duck} />
       <SpendLine duck={duck} />
       <Composer duck={duck} busy={busy} inputRef={composerRef} />
@@ -255,7 +257,7 @@ export default function AssistantDrawer() {
   );
 }
 
-type View = "thread" | "trust" | "decisions";
+type View = "thread" | "trust" | "decisions" | "tasks";
 
 /** The kill switch: on, or paused (every consequential call asks). */
 function TrustPill({ duck }: { duck: DuckState }) {
@@ -358,6 +360,21 @@ function Header({
       >
         + new
       </button>
+      {duck.tasks.length > 0 && (
+        <button
+          type="button"
+          style={btn}
+          title="Duck's worker tasks and their results"
+          onClick={() => {
+            onView("tasks");
+            setMenu(null);
+          }}
+        >
+          tasks
+          {duck.tasks.some((t) => t.state === "running" || t.state === "queued") &&
+            ` · ${duck.tasks.filter((t) => t.state === "running" || t.state === "queued").length}`}
+        </button>
+      )}
       <TrustPill duck={duck} />
       <button
         type="button"
@@ -735,6 +752,12 @@ function TaskCard({ taskId, text }: { taskId: string; text: string }) {
           {task.runner === "api" ? task.why : `${task.state === "queued" ? "waiting: " : ""}${task.why}`}
         </div>
       )}
+      {task.answers.map((a, i) => (
+        <div key={i} style={{ marginTop: 2, color: "var(--wb-textFaint)" }} title={a.question}>
+          Duck answered: {a.answer}
+          {a.reason && `, because ${a.reason.replace(/^because\s+/i, "")}`}
+        </div>
+      ))}
       {task.headline && (
         <div style={{ marginTop: 3, color: "var(--wb-textDim2)", whiteSpace: "pre-wrap" }}>{task.headline}</div>
       )}
