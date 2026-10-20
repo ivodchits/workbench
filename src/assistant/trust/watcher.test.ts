@@ -11,7 +11,10 @@ import { startTrustWatcher } from "./watcher";
 const OPTIONS = ["Yes", "Yes, and don't ask again for npm test commands", "No, and tell Claude what to do differently (esc)"];
 
 let n = 0;
-function permission(input: Record<string, unknown>, opts: { read?: boolean; tool?: string; labels?: string[] } = {}): ChoiceRef {
+function permission(
+  input: Record<string, unknown>,
+  opts: { read?: boolean; tool?: string; labels?: string[]; held?: boolean } = {},
+): ChoiceRef {
   const labels = opts.read === false ? ["Allow"] : (opts.labels ?? OPTIONS);
   return {
     id: `c${++n}`,
@@ -24,8 +27,12 @@ function permission(input: Record<string, unknown>, opts: { read?: boolean; tool
     terminalOnly: null,
     sent: null,
     optionsFrom: opts.read === false ? "generic" : "terminal",
+    held: opts.held ?? false,
   };
 }
+
+/** A prompt held for the watcher (T4): no menu drawn, so no options read. */
+const held = (input: Record<string, unknown>) => permission(input, { read: false, held: true });
 
 const settle = async (rounds = 5) => {
   for (let i = 0; i < rounds; i++) await new Promise((r) => setTimeout(r, 0));
@@ -48,6 +55,7 @@ async function setup(
     optionsWaitMs?: number;
     judge?: JudgeCall;
     answering?: boolean;
+    heldOk?: boolean;
   } = {},
 ): Promise<Setup> {
   const { backend, log } = memoryTrust();
@@ -58,6 +66,7 @@ async function setup(
     projects: [project({ id: "p1", name: "app" })],
     sessions: [session({ id: "s1", projectId: "p1", title: "api", phase: "needs_you", workingDir: "C:/src/p1" })],
     contexts: { s1: { mandate: "fix the failing auth test", from: "duck", threadId: "t1", ...opts.context } },
+    heldOk: opts.heldOk,
   });
   const verdicts = [...(opts.verdicts ?? [])];
   const judged: string[] = [];
@@ -80,6 +89,79 @@ async function setup(
 }
 
 const answers = (port: FakePort) => port.calls.filter((c) => c.name === "answerChoice").map((c) => c.args[2]);
+const heldAnswers = (port: FakePort) => port.calls.filter((c) => c.name === "answerHeld").map((c) => c.args[2]);
+
+describe("trust watcher, held prompts (T4)", () => {
+  it("holds prompts while it runs", async () => {
+    const t = await setup();
+    expect(t.port.holding).toBe(true);
+    t.stop();
+    expect(t.port.holding).toBe(false);
+  });
+
+  it("allows as the hook's decision, with no keys and no wait for the menu", async () => {
+    const t = await setup({ rules: [["allow", "Bash(npm test:*)"]] });
+    t.port.setChoice("s1", held({ command: "npm test -- auth" }));
+    expect(await t.port.hold!("s1")).toBe(false);
+    expect(heldAnswers(t.port)).toEqual([{ behavior: "allow" }]);
+    expect(answers(t.port)).toEqual([]);
+    expect(t.log[0]).toMatchObject({ decision: "allow", layer: "rule", answeredBy: "hook" });
+    expect(t.port.lines.slice(-1)[0]).toMatchObject({ text: "auto-approved `npm test -- auth`", acted: true });
+  });
+
+  it("denies with the reason, which the session reads", async () => {
+    const t = await setup({ rules: [["deny", "Bash(rm:*)"]] });
+    t.port.setChoice("s1", held({ command: "rm -r build" }));
+    expect(await t.port.hold!("s1")).toBe(false);
+    expect(heldAnswers(t.port)).toEqual([
+      { behavior: "deny", message: expect.stringMatching(/^Refused by the user's trust rules in Workbench: deny Bash\(rm:\*\)/) },
+    ]);
+    expect(answers(t.port)).toEqual([]);
+    expect(t.log[0]).toMatchObject({ decision: "deny", answeredBy: "hook" });
+  });
+
+  it("releases the hold with no decision when it leaves the prompt to you", async () => {
+    const t = await setup({ verdicts: [{ decision: "ask", risk: "high", reason: "deletes the database" }] });
+    t.port.setChoice("s1", held({ command: "psql -c 'drop table users'" }));
+    expect(await t.port.hold!("s1")).toBe(true);
+    expect(heldAnswers(t.port)).toEqual([null]);
+    expect(t.log[0]).toMatchObject({ decision: "ask", answeredBy: null });
+  });
+
+  it("releases at once in shadow mode, before the judge answers", async () => {
+    let verdict: (v: { decision: "allow"; risk: "low"; reason: string }) => void = () => {};
+    const t = await setup({
+      answering: false,
+      judge: () => new Promise((resolve) => (verdict = resolve)),
+    });
+    t.port.setChoice("s1", held({ command: "npx vitest run" }));
+    await settle();
+    expect(heldAnswers(t.port)).toEqual([null]);
+    verdict({ decision: "allow", risk: "low", reason: "runs the tests" });
+    expect(await t.port.hold!("s1")).toBe(true);
+    expect(t.log[0]).toMatchObject({ decision: "allow", shadow: true });
+  });
+
+  it("falls back to keys when the hold timed out before the decision", async () => {
+    const t = await setup({ rules: [["allow", "Bash(npm test:*)"]], heldOk: false });
+    const c = held({ command: "npm test" });
+    t.port.setChoice("s1", c);
+    await settle();
+    // The menu is drawn now and its options read.
+    t.port.setChoice("s1", { ...permission({ command: "npm test" }), id: c.id });
+    expect(await t.port.hold!("s1")).toBe(false);
+    expect(answers(t.port)).toEqual([1]);
+    expect(t.log[0]).toMatchObject({ decision: "allow", answeredBy: "keys" });
+  });
+
+  it("releases a prompt trust doesn't apply to", async () => {
+    const t = await setup();
+    await t.trust.setMode("p1", "off");
+    t.port.setChoice("s1", held({ command: "npm test" }));
+    expect(await t.port.hold!("s1")).toBe(true);
+    expect(heldAnswers(t.port)).toEqual([null]);
+  });
+});
 
 describe("trust watcher", () => {
   it("answers Yes by its label when a rule allows the call, and tells no one", async () => {

@@ -9,13 +9,14 @@
 // not a boolean, to survive StrictMode's double mount). Main window only — it's wired
 // from `App.tsx`, not the torn-off window.
 
+import { answerPermission } from "../ipc/hooks";
 import { ENTER_KEY, INTERRUPT_KEY, ptyWrite } from "../ipc/pty";
 import { onRemoteAction, type RemoteAction } from "../ipc/remote";
 import type { Instance, Project } from "../ipc/registry";
 import type { RemoteChooseAction, RemoteCreateAction } from "../remote/protocol";
 import { addInstance, deleteInstance, getRegistry, nextInstanceTitle } from "./registry";
 import { markInterrupted } from "./status";
-import { getPendingChoice, markChoiceSent } from "./pendingChoice";
+import { getPendingChoice, markChoiceSent, takeHold } from "./pendingChoice";
 import { closeConsole, openConsole } from "./consoles";
 import { setActiveProject } from "./activeProject";
 import { activatePanel } from "./dock";
@@ -106,13 +107,42 @@ export function answerChoiceText(instanceId: string, key: number, text: string):
     .catch(() => {}); // the PTY is gone: nothing to answer
 }
 
+/** What a denial from the card or the phone tells the model; the turn stops too,
+ *  as Esc in the menu does. */
+const USER_DENIED = "The user denied this.";
+
 /**
  * Answer the prompt an instance is waiting on (the desktop choice card, step T5;
  * the phone's, step R5). The keys, as verified against the TUI in T0: a digit
  * selects that option of a permission prompt, a single question or a plan
  * approval at once, with no Enter; Esc dismisses the prompt and ends the turn.
+ *
+ * A held permission prompt (T4) has no menu to press keys into while Duck decides:
+ * its Allow or a denial goes back as the hook's decision. If the hold is gone by
+ * then (it timed out, so the menu is being drawn), the keys go after all.
  */
 export function answerChoice(instanceId: string, answer: ChoiceAnswer): void {
+  const p = getPendingChoice(instanceId);
+  const asData = answer === "deny" || (p?.source === "generic" && answer.option === 1);
+  const hold = p && asData ? takeHold(instanceId, p.id) : null;
+  if (hold !== null) {
+    const decision =
+      answer === "deny"
+        ? ({ behavior: "deny", message: USER_DENIED, interrupt: true } as const)
+        : ({ behavior: "allow" } as const);
+    if (answer === "deny") markInterrupted(instanceId);
+    void answerPermission(hold, decision)
+      .catch(() => false)
+      .then((ok) => {
+        if (!ok) pressAnswer(instanceId, answer);
+      });
+    return;
+  }
+  pressAnswer(instanceId, answer);
+}
+
+/** `answerChoice`'s keys. */
+function pressAnswer(instanceId: string, answer: ChoiceAnswer): void {
   if (answer === "deny") {
     void ptyWrite(instanceId, INTERRUPT_KEY);
     markInterrupted(instanceId); // dismissing fires no hook — update the dot ourselves

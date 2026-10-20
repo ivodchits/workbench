@@ -31,6 +31,7 @@ import {
 } from "../ipc/plugins";
 import { INTERRUPT_KEY, ptyWrite } from "../ipc/pty";
 import type { Instance } from "../ipc/registry";
+import { answerPermission, holdPermissions } from "../ipc/hooks";
 import { readTranscript, readTranscriptBack } from "../ipc/transcript";
 import { readLastResponse } from "../transcript/feed";
 import { getUsageLimits } from "../ipc/usageLimits";
@@ -54,6 +55,7 @@ import {
   getPendingChoice,
   markChoiceSent,
   onChoicesChanged,
+  takeHold,
   type PendingChoice,
 } from "../state/pendingChoice";
 import { setPromptHold, shouldTell } from "../state/promptHold";
@@ -96,6 +98,7 @@ function choiceRef(p: PendingChoice): ChoiceRef {
     terminalOnly: p.terminalOnly,
     sent: p.sent?.label ?? null,
     optionsFrom: p.source,
+    held: p.held !== null,
   };
 }
 
@@ -501,6 +504,16 @@ export const localPort: WorkbenchPort = {
   choiceOf(id) {
     const p = getPendingChoice(id);
     return p ? choiceRef(p) : null;
+  },
+  holdPermissions(on) {
+    void holdPermissions(on).catch((e: unknown) => console.warn("duck: permission holds not switched", e));
+  },
+  async answerHeld(id, choiceId, decision) {
+    const hold = takeHold(id, choiceId);
+    if (hold === null) return false;
+    const ok = await answerPermission(hold, decision).catch(() => false);
+    if (ok && decision) markChoiceSent(id, choiceId, decision.behavior === "allow" ? "Yes" : "deny");
+    return ok;
   },
   onChoices: (cb) => onChoicesChanged(cb),
   holdNeedsYou: (hold) => setPromptHold(hold),

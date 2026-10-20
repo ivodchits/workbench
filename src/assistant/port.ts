@@ -10,6 +10,7 @@
 // sessions, notes writes; …).
 
 import type { Spend, WorkerSpec } from "../ipc/assistant";
+import type { PermissionDecision } from "../ipc/hooks";
 import type { Branches, Commit, StatusEntry } from "../ipc/git";
 import type { Note, NoteMeta } from "../ipc/notes";
 import type { PluginsDraft, PluginsText, PluginsView, Problem } from "../ipc/plugins";
@@ -53,6 +54,9 @@ export interface ChoiceRef {
   /** Where `options` come from: the hook (a question's), the terminal screen, or
    *  neither yet (a permission prompt's placeholder Allow). */
   optionsFrom: "hook" | "terminal" | "generic";
+  /** Its hook response is held for Duck (T4): no menu is drawn until it's answered
+   *  with `answerHeld`. */
+  held: boolean;
 }
 
 export interface SessionRef {
@@ -248,6 +252,12 @@ export interface WorkbenchPort {
 
   /** The session's open prompt, or null. */
   choiceOf(instanceId: string): ChoiceRef | null;
+  /** Hold permission prompts' hook responses for Duck (T4) while `on`. */
+  holdPermissions(on: boolean): void;
+  /** Answer the held prompt `choiceId` as data: a decision, or null to show its
+   *  menu. False when it isn't held any more (someone answered first, or it timed
+   *  out and the menu is drawn). */
+  answerHeld(instanceId: string, choiceId: string, decision: PermissionDecision | null): Promise<boolean>;
   /** Hear every change to any session's open prompt (it opened, its options were
    *  read off the screen, it closed); returns the unsubscribe. */
   onChoices(cb: () => void): () => void;

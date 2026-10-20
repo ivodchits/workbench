@@ -114,6 +114,7 @@ const prompt = (labels: string[], optionsFrom: ChoiceRef["optionsFrom"] = "termi
   terminalOnly: null,
   sent: null,
   optionsFrom,
+  held: false,
 });
 
 describe("pickYes", () => {

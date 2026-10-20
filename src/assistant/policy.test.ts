@@ -30,6 +30,7 @@ const permission: ChoiceRef = {
   terminalOnly: null,
   sent: null,
   optionsFrom: "terminal",
+  held: false,
 };
 const question: ChoiceRef = { ...permission, id: "c2", kind: "question", toolName: "AskUserQuestion", input: {} };
 const push: ChoiceRef = { ...permission, id: "c3", input: { command: "git push origin main" } };

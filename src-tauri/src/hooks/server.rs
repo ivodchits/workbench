@@ -1,10 +1,14 @@
 //! The local hook endpoint (step 2.1).
 //!
 //! A tiny `axum` server on `127.0.0.1:<port>` that receives the `http` hooks
-//! Claude Code POSTs. It is **pure observation**: every request returns `200` and
-//! the server never blocks or steers Claude (design §4.4 — non-2xx from an http
-//! hook is non-blocking anyway, but we don't even rely on that; we just always
-//! succeed). The two jobs here are:
+//! Claude Code POSTs. It is **observation** but for one event: every request
+//! returns `200`, and the server never blocks or steers Claude (design §4.4 —
+//! non-2xx from an http hook is non-blocking anyway, but we don't even rely on
+//! that; we just always succeed). The exception is step T4's: while Duck's trust
+//! watcher runs, a permission request's response is held until the watcher answers
+//! it (allow / deny, as the hook's decision), or for [`HOLD_MS`] at most, and an
+//! empty response then lets Claude Code show its menu. Questions and plan
+//! approvals are never held. The jobs here are:
 //!
 //! 1. **Filter by `session_id`** — drop any event from a session Workbench didn't
 //!    mint (decision 10). This is wired in from day one so the rail never fills
@@ -13,16 +17,21 @@
 //!    the resolved `instance_id`. The Phase-2 status state machine (step 2.2)
 //!    consumes that stream; here we only route.
 
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use axum::body::Bytes;
 use axum::extract::State;
-use axum::http::{HeaderMap, StatusCode};
+use axum::http::{header, HeaderMap, StatusCode};
+use axum::response::{IntoResponse, Response};
 use axum::routing::post;
 use axum::Router;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
+use tokio::sync::oneshot;
 use tauri::{AppHandle, Emitter, Manager};
 
 use super::events::{HookEnvelope, HookEvent};
@@ -31,6 +40,15 @@ use crate::pty::PtyManager;
 
 /// The Tauri event name carrying accepted, instance-tagged hook events.
 const HOOK_EVENT: &str = "hook-event";
+
+/// The longest a permission request's response is held for Duck's decision (step
+/// T4): the judge's own limit is 20 s. Well under the hook's timeout
+/// ([`super::install::PERMISSION_TIMEOUT_S`]).
+pub const HOLD_MS: u64 = 30_000;
+
+/// Tools whose permission request is a question to you, not a permission: never
+/// held (an `allow` alone doesn't answer them).
+const NEVER_HELD: &[&str] = &["AskUserQuestion", "ExitPlanMode"];
 
 /// Shared server state: the app handle (to resolve sessions and emit events) plus
 /// observability counters. Managed by Tauri so the `hook_server_status` command can
@@ -41,6 +59,44 @@ pub struct HookContext {
     received: AtomicU64,
     accepted: AtomicU64,
     dropped: AtomicU64,
+    /// Duck's trust watcher is running: hold permission requests for it.
+    holding: AtomicBool,
+    next_hold: AtomicU64,
+    /// Held permission requests by hold id, each waiting for its decision (None:
+    /// no decision, show the menu).
+    holds: Mutex<HashMap<u64, oneshot::Sender<Option<PermissionDecision>>>>,
+}
+
+/// Duck's answer to a held permission request (step T4).
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+pub struct PermissionDecision {
+    /// `allow` or `deny`.
+    pub behavior: String,
+    /// A denial's reason, which the model reads as the tool's error.
+    #[serde(default)]
+    pub message: Option<String>,
+    /// A denial that also stops the turn (Esc in the menu).
+    #[serde(default)]
+    pub interrupt: bool,
+}
+
+impl PermissionDecision {
+    /// The hook response Claude Code acts on.
+    fn body(&self) -> Value {
+        let mut decision = json!({ "behavior": self.behavior });
+        if self.behavior == "deny" {
+            decision["message"] = json!(self.message.clone().unwrap_or_default());
+            if self.interrupt {
+                decision["interrupt"] = json!(true);
+            }
+        }
+        json!({
+            "hookSpecificOutput": {
+                "hookEventName": "PermissionRequest",
+                "decision": decision,
+            }
+        })
+    }
 }
 
 impl HookContext {
@@ -51,7 +107,38 @@ impl HookContext {
             received: AtomicU64::new(0),
             accepted: AtomicU64::new(0),
             dropped: AtomicU64::new(0),
+            holding: AtomicBool::new(false),
+            next_hold: AtomicU64::new(1),
+            holds: Mutex::new(HashMap::new()),
         }
+    }
+
+    /// Hold permission requests for Duck (true) or answer them at once (false).
+    /// Turning holding off releases every held request with no decision.
+    pub fn set_holding(&self, on: bool) {
+        self.holding.store(on, Ordering::Relaxed);
+        if !on {
+            for (_, tx) in self.holds.lock().unwrap().drain() {
+                let _ = tx.send(None);
+            }
+        }
+    }
+
+    /// Answer a held request. False when it isn't held any more (answered, timed
+    /// out, or Claude Code gave up on it).
+    pub fn answer(&self, hold_id: u64, decision: Option<PermissionDecision>) -> bool {
+        match self.holds.lock().unwrap().remove(&hold_id) {
+            Some(tx) => tx.send(decision).is_ok(),
+            None => false,
+        }
+    }
+
+    /// Start holding one request: its id, and where its decision arrives.
+    fn hold(&self) -> (u64, oneshot::Receiver<Option<PermissionDecision>>) {
+        let id = self.next_hold.fetch_add(1, Ordering::Relaxed);
+        let (tx, rx) = oneshot::channel();
+        self.holds.lock().unwrap().insert(id, tx);
+        (id, rx)
     }
 
     pub fn status(&self) -> HookStatus {
@@ -130,17 +217,25 @@ fn classify(body: &[u8], resolve: impl Fn(&str) -> Option<String>) -> Decision {
             instance_id,
             received_at: now(),
             event,
+            hold_id: None,
         })),
         None => Decision::Drop(Box::new(event)),
     }
 }
 
-/// Handle one hook POST. Always returns `200` — pure observation, never blocking.
+/// Whether this event's response is held for Duck (step T4).
+fn holdable(event: &HookEvent) -> bool {
+    event.hook_event_name.as_deref() == Some("PermissionRequest")
+        && !NEVER_HELD.contains(&event.tool_name.as_deref().unwrap_or(""))
+}
+
+/// Handle one hook POST. Always returns `200`, at once — but for a permission
+/// request held for Duck (see the module docs), answered with its decision.
 async fn handle(
     State(ctx): State<Arc<HookContext>>,
     headers: HeaderMap,
     body: Bytes,
-) -> StatusCode {
+) -> Response {
     ctx.received.fetch_add(1, Ordering::Relaxed);
     let pty = ctx.app.state::<PtyManager>();
     let named = named_instance(&headers);
@@ -190,8 +285,13 @@ async fn handle(
         Decision::Ignore => None,
     };
     match envelope {
-        Some(envelope) => {
+        Some(mut envelope) => {
             ctx.accepted.fetch_add(1, Ordering::Relaxed);
+            let held = (ctx.holding.load(Ordering::Relaxed) && holdable(&envelope.event)).then(|| {
+                let (id, rx) = ctx.hold();
+                envelope.hold_id = Some(id);
+                (id, rx)
+            });
             // Hand the session's transcript path to the transcript stream (step T1)
             // and wake this instance's follow, so a `/clear` rotation is acted on
             // now rather than at its next poll.
@@ -203,12 +303,25 @@ async fn handle(
                 is_clear_rotation(&envelope.event),
             );
             let _ = ctx.app.emit(HOOK_EVENT, *envelope);
+            if let Some((id, rx)) = held {
+                let decision = tokio::time::timeout(Duration::from_millis(HOLD_MS), rx)
+                    .await
+                    .ok()
+                    .and_then(Result::ok)
+                    .flatten();
+                // Timed out: nobody may answer it any more.
+                ctx.holds.lock().unwrap().remove(&id);
+                if let Some(d) = decision {
+                    let body = d.body().to_string();
+                    return ([(header::CONTENT_TYPE, "application/json")], body).into_response();
+                }
+            }
         }
         None => {
             ctx.dropped.fetch_add(1, Ordering::Relaxed);
         }
     }
-    StatusCode::OK
+    StatusCode::OK.into_response()
 }
 
 /// Receive the managed statusline's POST (step 3.2): the statusline JSON Claude Code
@@ -255,6 +368,7 @@ fn adopt(pty: &PtyManager, event: HookEvent, named: Option<&str>) -> Option<Hook
         instance_id,
         received_at: now(),
         event,
+        hold_id: None,
     })
 }
 
@@ -304,6 +418,33 @@ fn now() -> i64 {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn decisions_are_the_hook_response() {
+        let allow = PermissionDecision { behavior: "allow".into(), message: Some("x".into()), interrupt: true };
+        assert_eq!(
+            allow.body(),
+            json!({"hookSpecificOutput": {"hookEventName": "PermissionRequest", "decision": {"behavior": "allow"}}})
+        );
+        let deny = PermissionDecision { behavior: "deny".into(), message: Some("no".into()), interrupt: true };
+        assert_eq!(
+            deny.body()["hookSpecificOutput"]["decision"],
+            json!({"behavior": "deny", "message": "no", "interrupt": true})
+        );
+    }
+
+    #[test]
+    fn only_permissions_are_held() {
+        let ev = |tool: &str| -> HookEvent {
+            serde_json::from_value(json!({
+                "session_id": "s", "hook_event_name": "PermissionRequest", "tool_name": tool
+            }))
+            .unwrap()
+        };
+        assert!(holdable(&ev("Bash")));
+        assert!(!holdable(&ev("AskUserQuestion")));
+        assert!(!holdable(&ev("ExitPlanMode")));
+    }
+
     use super::*;
 
     /// A minted session resolves to its instance and is accepted, carrying the

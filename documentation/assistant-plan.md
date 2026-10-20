@@ -3888,6 +3888,48 @@ checked in the scratch PTY first.
   reaches Claude Code with its reason, one left to you shows its menu as before, and a
   week's decisions show no keystroke answers for permission prompts.
 - **Out of scope:** questions (`AskUserQuestion`) and plan approvals.
+- **The check (2026-10-20, Claude Code 2.1.304):** a scratch ConPTY harness ran
+  `claude --model haiku --permission-mode default --settings <extra hook>` against a
+  small http hook server whose answer could be set per run, with Workbench's own
+  (empty-answer) hooks installed alongside, as they always are.
+  - `{"hookSpecificOutput": {"hookEventName": "PermissionRequest", "decision":
+    {"behavior": "allow"}}}`: no menu, the command ran. One hook's allow wins over the
+    others' silence.
+  - `deny` with a `message`: no menu, nothing ran, and the model got the message as
+    the tool's error result (`Error: <message>` in the transcript).
+  - An empty 200: the menu shows, as today.
+  - The answer held 8 s: the TUI waits (spinner, no menu) and then acts on it.
+  - Held past the hook's `timeout` (seconds): Claude Code drops the connection, the
+    menu shows, and the late answer is lost.
+  - The docs add: matching hooks run in parallel, and an http hook's default timeout
+    is 600 s. They name no combination rule for `PermissionRequest`, so the test
+    above is what we rely on.
+  - Also seen: the folder-trust dialog's default is "No, exit" (W6's keys need Down
+    first).
+- **As built (2026-10-20):**
+  - **Hook server** (`hooks/server.rs`): while `holding` is on (the command
+    `hook_permission_hold`, which the trust watcher turns on at start and off at
+    stop, releasing every hold), a permission request from one of our sessions gets
+    a `holdId` on its `hook-event`. Its response waits for `hook_permission_answer(holdId,
+    decision | null)`, or `HOLD_MS` (30 s), whichever comes first. `AskUserQuestion`
+    and `ExitPlanMode` are never held. Our `PermissionRequest` entry now has
+    `"timeout": 60` (`install.rs`), so a hold that never ends costs a minute, not ten.
+  - **Choice store:** `PendingChoice.held` carries the hold id. Whoever answers
+    first takes it (`takeHold`). The screen reads for a menu's options wait for a
+    hold to end (`choiceWatch.ts`, `ChoiceCard.tsx`): with no decision, the menu is
+    drawn only then.
+  - **Watcher:** a held prompt is answered as the hook's decision, allow or deny with
+    `Refused by the user's trust rules in Workbench: <reason>.`. It doesn't wait for
+    the options to be read. When it would leave the prompt to you (ask, no mandate,
+    trust off, shadow), it releases the hold at once; in shadow it does so before the
+    judge runs. A hold that timed out falls back to keys, as before.
+  - **The card and the phone** (`remoteActions.answerChoice`): on a held prompt, the
+    placeholder Allow and a denial go back as data (a denial with `interrupt`, as
+    Esc). If the hold has gone, the keys go after all.
+  - **Log:** `assistant_decisions.answered_by` (`hook` / `keys`, migration in
+    `assistant/db.rs`), `DecisionRow.answeredBy`.
+  - Not yet seen in the running app: needs a release build, then the week of
+    decisions in the done-when.
 
 ---
 
@@ -4088,6 +4130,6 @@ T2 goes live after the replay check in its done-when (the past week's prompts th
 | T1 | Trust engine for the Assistant's own actions | ☑ |
 | T2 | Auto-answering Claude Code permission prompts | ☑ |
 | T3 | Learning loop: promote rules, questions and plans | ☐ |
-| T4 | Permission answers through the `PermissionRequest` hook | ☐ |
+| T4 | Permission answers through the `PermissionRequest` hook | ☑ |
 | P1 | Autopilot loop for one session | ☐ |
 | P2 | Unattended runs: limits, windows, stalls, checklists, several sessions | ☐ |

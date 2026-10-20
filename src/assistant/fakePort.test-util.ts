@@ -55,6 +55,8 @@ export interface FakePortData {
    *  terminal in this window. `pressKeys` may change them through `onKeys`. */
   screens?: Record<string, string[]>;
   onKeys?: (instanceId: string, keys: string[]) => void;
+  /** What `answerHeld` reports for a held prompt (default true: delivered). */
+  heldOk?: boolean;
 }
 
 export interface FakePlugins {
@@ -93,6 +95,8 @@ export interface FakePort extends WorkbenchPort {
   hold: ((instanceId: string) => Promise<boolean>) | null;
   /** What `noteSession` showed. */
   lines: { id: string; text: string; acted: boolean }[];
+  /** Whether permission prompts are held (`holdPermissions`). */
+  holding: boolean;
 }
 
 export function project(p: Partial<ProjectRef> & { id: string }): ProjectRef {
@@ -148,6 +152,7 @@ export function fakePort(data: FakePortData = {}): FakePort {
     calls: [],
     hold: null,
     lines: [],
+    holding: false,
     listProjects: () => data.projects ?? [],
     listSessions: (projectId?: string) =>
       (data.sessions ?? []).filter(
@@ -402,6 +407,18 @@ export function fakePort(data: FakePortData = {}): FakePort {
     setChoice(id, choice) {
       sessionOf(id).choice = choice;
       for (const l of [...choiceListeners]) l();
+    },
+    holdPermissions(on) {
+      port.holding = on;
+    },
+    async answerHeld(id, choiceId, decision) {
+      const s = sessionOf(id);
+      if (!s.choice?.held || s.choice.id !== choiceId) return false;
+      record("answerHeld", id, choiceId, decision);
+      const ok = data.heldOk ?? true;
+      s.choice = { ...s.choice, held: false, sent: ok && decision ? decision.behavior : s.choice.sent };
+      for (const l of [...choiceListeners]) l();
+      return ok;
     },
     holdNeedsYou(hold) {
       port.hold = hold;

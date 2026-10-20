@@ -36,6 +36,30 @@ export interface HookEnvelope {
   /** Receipt time, epoch seconds. */
   receivedAt: number;
   event: HookEvent;
+  /** A permission request whose hook response the backend is holding for Duck
+   *  (step T4): answer it with `answerPermission`. */
+  holdId?: number;
+}
+
+/** A held permission request's answer (step T4): Claude Code acts on it without
+ *  showing its menu. A denial's `message` reaches the model as the tool's error. */
+export interface PermissionDecision {
+  behavior: "allow" | "deny";
+  message?: string;
+  /** A denial that also stops the turn, as Esc in the menu does. */
+  interrupt?: boolean;
+}
+
+/** Hold permission requests for Duck's trust watcher, or stop (releasing any
+ *  held with no decision). */
+export function holdPermissions(on: boolean): Promise<void> {
+  return invoke("hook_permission_hold", { on });
+}
+
+/** Answer a held request; null gives no decision, so Claude Code shows its menu.
+ *  False when it isn't held any more (answered, or timed out: the menu shows). */
+export function answerPermission(holdId: number, decision: PermissionDecision | null): Promise<boolean> {
+  return invoke("hook_permission_answer", { holdId, decision });
 }
 
 /** Snapshot of the hook server, for the chrome's status readout. */

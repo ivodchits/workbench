@@ -36,7 +36,7 @@ which = "7"
 # tokio `sync` for the broadcast/oneshot channels that fan snapshots to clients and
 # stop the server gracefully.
 axum = { version = "0.8", features = ["ws"] }
-tokio = { version = "1", features = ["net", "sync", "macros"] }
+tokio = { version = "1", features = ["net", "sync", "macros", "time"] }
 # Step 4.3: enumerate local network interfaces to find the Tailscale address
 # (100.64.0.0/10) the remote server binds to — we never bind broader than the tailnet.
 if-addrs = "0.13"

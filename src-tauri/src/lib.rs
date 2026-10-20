@@ -139,6 +139,8 @@ pub fn run() {
             pty::default_working_dir,
             pty::remote_cmd_spawn,
             hooks::hook_server_status,
+            hooks::hook_permission_hold,
+            hooks::hook_permission_answer,
             assistant::assistant_proxy_info,
             assistant::assistant_key_status,
             assistant::assistant_key_set,

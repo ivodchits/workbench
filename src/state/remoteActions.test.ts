@@ -17,6 +17,7 @@ vi.mock("../ipc/pty", () => ({
   ptyWrite: vi.fn(),
 }));
 vi.mock("../ipc/remote", () => ({ onRemoteAction: vi.fn() }));
+vi.mock("../ipc/hooks", () => ({ onHookEvent: vi.fn(async () => () => {}), answerPermission: vi.fn() }));
 vi.mock("./status", () => ({ markInterrupted: vi.fn() }));
 vi.mock("./activeProject", () => ({ setActiveProject: (id: string) => calls.push(`project ${id}`) }));
 vi.mock("./dock", () => ({ activatePanel: (id: string) => calls.push(`activate ${id}`) }));
@@ -58,7 +59,7 @@ vi.mock("./registry", () => ({
 }));
 
 import { ptyWrite } from "../ipc/pty";
-import type { HookEvent } from "../ipc/hooks";
+import { answerPermission, type HookEvent } from "../ipc/hooks";
 import { answerChoiceText, handleRemoteAction } from "./remoteActions";
 import { clearPendingChoice, getPendingChoice, ingestChoiceEvent, setTerminalOptions } from "./pendingChoice";
 import { cancelQueued, getQueued } from "./queue";
@@ -258,6 +259,44 @@ describe("answering a prompt from the phone", () => {
     expect(written()).toEqual([]);
     handleRemoteAction({ type: "choose", instanceId: "i1", choiceId: id, option: "deny" });
     expect(written()).toEqual(["i1 "]);
+  });
+
+  describe("a held prompt (T4)", () => {
+    const heldPrompt = () => {
+      ask({ hook_event_name: "PreToolUse", tool_name: "Bash", tool_use_id: "t1" });
+      ingestChoiceEvent({
+        instanceId: "i1",
+        holdId: 7,
+        receivedAt: 0,
+        event: { hook_event_name: "PermissionRequest", tool_name: "Bash", tool_input: { command: "ls" } },
+      } as unknown as Parameters<typeof ingestChoiceEvent>[0]);
+      return getPendingChoice("i1")!.id;
+    };
+    beforeEach(() => vi.mocked(answerPermission).mockReset());
+
+    it("answers Allow and deny as the hook's decision, with no keys", async () => {
+      vi.mocked(answerPermission).mockResolvedValue(true);
+      const id = heldPrompt();
+      expect(getPendingChoice("i1")?.held).toBe(7);
+      handleRemoteAction({ type: "choose", instanceId: "i1", choiceId: id, option: 1 });
+      await Promise.resolve();
+      expect(answerPermission).toHaveBeenCalledWith(7, { behavior: "allow" });
+      expect(getPendingChoice("i1")?.held).toBeNull();
+
+      vi.setSystemTime(Date.now() + 1000);
+      const next = heldPrompt();
+      handleRemoteAction({ type: "choose", instanceId: "i1", choiceId: next, option: "deny" });
+      expect(answerPermission).toHaveBeenLastCalledWith(7, { behavior: "deny", message: "The user denied this.", interrupt: true });
+      await Promise.resolve();
+      expect(written()).toEqual([]);
+    });
+
+    it("presses the keys after all when the hold is gone", async () => {
+      vi.mocked(answerPermission).mockResolvedValue(false);
+      const id = heldPrompt();
+      handleRemoteAction({ type: "choose", instanceId: "i1", choiceId: id, option: 1 });
+      await vi.waitFor(() => expect(written()).toEqual(["i1 1"]));
+    });
   });
 
   it("never answers a prompt that is answered in the terminal, nor approves a plan with Enter", () => {

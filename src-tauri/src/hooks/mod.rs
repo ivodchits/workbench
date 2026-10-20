@@ -106,6 +106,29 @@ pub fn port(app: &AppHandle) -> Option<u16> {
     app.try_state::<Arc<HookContext>>().map(|ctx| ctx.status().port)
 }
 
+/// Hold Claude Code's permission requests for Duck's trust watcher (step T4), or
+/// stop holding them (releasing any held, with no decision).
+#[tauri::command]
+pub fn hook_permission_hold(ctx: State<'_, Arc<HookContext>>, on: bool) {
+    ctx.set_holding(on);
+}
+
+/// Answer a held permission request: a decision, or none (Claude Code shows its
+/// menu). False when it isn't held any more.
+#[tauri::command]
+pub fn hook_permission_answer(
+    ctx: State<'_, Arc<HookContext>>,
+    hold_id: u64,
+    decision: Option<server::PermissionDecision>,
+) -> Result<bool, String> {
+    if let Some(d) = &decision {
+        if d.behavior != "allow" && d.behavior != "deny" {
+            return Err(format!("unknown behavior {:?}", d.behavior));
+        }
+    }
+    Ok(ctx.answer(hold_id, decision))
+}
+
 /// Current hook server status (port, listening, event counters) for the UI.
 #[tauri::command]
 pub fn hook_server_status(ctx: State<'_, Arc<HookContext>>) -> HookStatus {

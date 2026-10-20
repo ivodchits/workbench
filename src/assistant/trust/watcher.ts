@@ -8,6 +8,13 @@
 //   deny   (a rule) Esc, and a word in the thread that started the session.
 //   ask    the usual needs-you: toast, push, the card.
 //
+// Answered as data first (step T4): while the watcher runs, the backend holds each
+// permission prompt's `PermissionRequest` hook response, and Claude Code draws no
+// menu meanwhile. An allow or a deny goes back as the hook's decision (a deny with
+// its reason, which the model reads); anything else releases the hold at once with
+// no decision, so the menu shows as before. Keys stay the fallback: for a prompt
+// that wasn't held, or whose hold timed out before the decision landed.
+//
 // The needs-you alerts wait for the decision (`holdNeedsYou`), so a prompt answered
 // here bothers no one. A prompt you answer first, or that closes before the decision
 // lands, is left alone and logged as `superseded`. Every decision except "trust
@@ -90,7 +97,7 @@ export function startTrustWatcher(deps: WatcherDeps): () => void {
     });
   }
 
-  function log(s: SessionRef, choice: ChoiceRef, d: Decision): void {
+  function log(s: SessionRef, choice: ChoiceRef, d: Decision, answeredBy: DecisionRow["answeredBy"] = null): void {
     const row: Omit<DecisionRow, "id"> = {
       ts: now(),
       threadId: sessionKey(s.id),
@@ -104,6 +111,7 @@ export function startTrustWatcher(deps: WatcherDeps): () => void {
       reason: d.reason,
       ruleId: d.ruleId ?? null,
       shadow: d.shadow,
+      answeredBy,
     };
     void trust.log(row).catch((e: unknown) => console.warn("duck: a prompt decision wasn't logged", e));
   }
@@ -153,8 +161,22 @@ export function startTrustWatcher(deps: WatcherDeps): () => void {
     return { outcome: j.outcome, layer: "judge", reason: j.reason, shadow };
   }
 
-  /** Decide one prompt; resolves to whether to tell you. */
+  /** Let a held prompt's menu show: nothing here will answer it. */
+  function release(s: SessionRef, choice: ChoiceRef): void {
+    if (choice.held) void port.answerHeld(s.id, choice.id, null);
+  }
+
+  /** Decide one prompt; resolves to whether to tell you. A held prompt is always
+   *  answered or released by the time it resolves. */
   async function handle(s: SessionRef, choice: ChoiceRef): Promise<boolean> {
+    try {
+      return await decideOne(s, choice);
+    } finally {
+      release(s, choice); // a no-op once answered
+    }
+  }
+
+  async function decideOne(s: SessionRef, choice: ChoiceRef): Promise<boolean> {
     const ctx = await port.sessionContext(s.id).catch(() => EMPTY_CONTEXT);
     const req: PromptRequest = {
       instanceId: s.id,
@@ -167,6 +189,8 @@ export function startTrustWatcher(deps: WatcherDeps): () => void {
     const first = decidePrompt(req, trust.config());
     if (!first) return true;
     const shadow = first.shadow || !(deps.answering?.() ?? true);
+    // Only logged: don't keep the menu waiting for the judge.
+    if (shadow) release(s, choice);
     let d = first.outcome === "judge" ? await judged(req, s, ctx, shadow) : { ...first, shadow };
     const what = code(callLine(choice.toolName, choice.input).replace(/^Bash: /, ""));
     const gone = (c: ChoiceRef | null) => !c || c.id !== choice.id || c.sent !== null;
@@ -193,6 +217,24 @@ export function startTrustWatcher(deps: WatcherDeps): () => void {
       log(s, choice, d);
       port.noteSession(s.id, { text: `left to you: ${what} (${d.reason})`, acted: false });
       return true;
+    }
+
+    // allow / deny: as the hook's decision while the prompt is held.
+    if (choice.held && !gone(port.choiceOf(s.id))) {
+      const ok = await port.answerHeld(
+        s.id,
+        choice.id,
+        d.outcome === "allow"
+          ? { behavior: "allow" }
+          : { behavior: "deny", message: `Refused by the user's trust rules in Workbench: ${d.reason}.` },
+      );
+      if (ok) {
+        log(s, choice, d, "hook");
+        if (d.outcome === "allow") port.noteSession(s.id, { text: `auto-approved ${what}`, acted: true });
+        else say(s, ctx, `refused ${what} (${d.reason})`, true);
+        return false;
+      }
+      // The hold timed out (or you answered on the card): the menu, or nothing.
     }
 
     // allow / deny: press a key, if the prompt is still the one decided.
@@ -222,7 +264,7 @@ export function startTrustWatcher(deps: WatcherDeps): () => void {
       log(s, choice, { ...d, layer: "superseded", reason: `not answered: ${why}` });
       return true;
     }
-    log(s, choice, d);
+    log(s, choice, d, "keys");
     if (d.outcome === "allow") port.noteSession(s.id, { text: `auto-approved ${what}`, acted: true });
     else say(s, ctx, `refused ${what} (${d.reason})`, true);
     return false;
@@ -280,9 +322,11 @@ export function startTrustWatcher(deps: WatcherDeps): () => void {
 
   const offChoices = port.onChoices(scan);
   const offHold = port.holdNeedsYou(hold);
+  port.holdPermissions(true);
   scan();
   return () => {
     stopped = true;
+    port.holdPermissions(false);
     offChoices();
     offHold();
   };

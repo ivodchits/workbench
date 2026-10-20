@@ -20,6 +20,12 @@
 // screen (`parseOptionRows`), which is the one sanctioned read of terminal output.
 // Until that succeeds, or when it can't, a permission prompt offers a plain Allow.
 //
+// A permission prompt can be **held** (step T4): while Duck's trust watcher runs,
+// the backend keeps the hook's response open until it is answered as data, and
+// Claude Code draws no menu meanwhile. Whoever answers first takes the hold
+// (`takeHold`): the watcher, the card, the phone. Released with no decision, the
+// menu is drawn, and its options are read off the screen from then.
+//
 // Ephemeral, like live status: a prompt belongs to a running session.
 
 import { useSyncExternalStore } from "react";
@@ -69,6 +75,9 @@ export interface PendingChoice {
   terminalOnly: string | null;
   /** The answer sent from the card, until the prompt is seen to close. */
   sent: { label: string; at: number } | null;
+  /** The backend's hold on the hook response (step T4); null once answered or
+   *  released, and for a prompt that was never held. */
+  held: number | null;
 }
 
 export interface ChoiceState {
@@ -105,10 +114,10 @@ function questionsOf(input: Json): ChoiceQuestion[] {
 
 const GENERIC_ALLOW: ChoiceOption[] = [{ key: 1, label: "Allow", detail: "", typed: false }];
 
-function open(event: HookEvent, toolUseId: string | null, now: number): PendingChoice {
+function open(event: HookEvent, toolUseId: string | null, now: number, held: number | null): PendingChoice {
   const toolName = event.tool_name ?? "";
   const input = isObject(event.tool_input) ? event.tool_input : {};
-  const base = { id: `${now}:${toolUseId ?? toolName}`, toolName, input, toolUseId, at: now, sent: null };
+  const base = { id: `${now}:${toolUseId ?? toolName}`, toolName, input, toolUseId, at: now, sent: null, held };
 
   if (toolName === "AskUserQuestion") {
     const questions = questionsOf(input);
@@ -161,8 +170,9 @@ function open(event: HookEvent, toolUseId: string | null, now: number): PendingC
 }
 
 /** Pure transition: fold one hook event into an instance's prompt state. Returns
- *  `prev` itself when nothing changed. */
-export function reduceChoice(prev: ChoiceState, event: HookEvent, now: number): ChoiceState {
+ *  `prev` itself when nothing changed. `holdId`: the backend holds this
+ *  permission request's response (T4). */
+export function reduceChoice(prev: ChoiceState, event: HookEvent, now: number, holdId: number | null = null): ChoiceState {
   const pending = prev.pending;
   const closed = (): ChoiceState => (pending ? { ...prev, pending: null } : prev);
 
@@ -176,7 +186,7 @@ export function reduceChoice(prev: ChoiceState, event: HookEvent, now: number): 
     case "PermissionRequest": {
       const last = prev.lastTool;
       const toolUseId = last && last.name === (event.tool_name ?? "") ? last.id : null;
-      return { ...prev, pending: open(event, toolUseId, now) };
+      return { ...prev, pending: open(event, toolUseId, now, holdId) };
     }
     case "PostToolUse":
     case "PostToolUseFailure": {
@@ -331,7 +341,17 @@ function sameOptions(a: readonly ChoiceOption[], b: readonly ChoiceOption[]): bo
 /** Fold one accepted hook event into the store. */
 export function ingestChoiceEvent(envelope: HookEnvelope): void {
   const prev = states.get(envelope.instanceId) ?? EMPTY_STATE;
-  put(envelope.instanceId, reduceChoice(prev, envelope.event, Date.now()));
+  put(envelope.instanceId, reduceChoice(prev, envelope.event, Date.now(), envelope.holdId ?? null));
+}
+
+/** Take prompt `id`'s hold, to answer it as data: its hold id, or null when it
+ *  isn't held (never was, or someone answered first). */
+export function takeHold(instanceId: string, id: string): number | null {
+  const p = getPendingChoice(instanceId);
+  if (!p || p.id !== id || p.held === null) return null;
+  const held = p.held;
+  update(instanceId, (x) => (x.id !== id ? x : { ...x, held: null }));
+  return held;
 }
 
 export function getPendingChoice(instanceId: string): PendingChoice | null {

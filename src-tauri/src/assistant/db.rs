@@ -171,4 +171,10 @@ const MIGRATIONS: &[&str] = &[
         updated_at  INTEGER NOT NULL
     );
     "#,
+    // Step T4: how a Claude Code permission prompt was answered, `hook` (the
+    // PermissionRequest hook's response) or `keys` (keystrokes into its menu); null
+    // for one left to you, and for Duck's own calls.
+    r#"
+    ALTER TABLE assistant_decisions ADD COLUMN answered_by TEXT;
+    "#,
 ];

@@ -51,4 +51,9 @@ pub struct HookEnvelope {
     pub received_at: i64,
     /// The parsed event.
     pub event: HookEvent,
+    /// Set on a permission request whose response the server is holding (step T4):
+    /// answer it with `hook_permission_answer`, or it gets no decision in
+    /// [`super::server::HOLD_MS`].
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hold_id: Option<u64>,
 }

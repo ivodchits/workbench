@@ -69,6 +69,9 @@ pub struct Decision {
     pub reason: String,
     pub rule_id: Option<String>,
     pub shadow: bool,
+    /// `hook` / `keys`: how a Claude Code prompt was answered (step T4).
+    #[serde(default)]
+    pub answered_by: Option<String>,
 }
 
 pub fn paused(db: &DuckDb) -> bool {
@@ -254,8 +257,8 @@ pub fn add_decision(conn: &Connection, d: &Decision) -> Result<i64, String> {
     conn.execute(
         "INSERT INTO assistant_decisions
            (ts, thread_id, tool_use_id, project_id, tool, summary, input, decision,
-            layer, reason, rule_id, shadow)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+            layer, reason, rule_id, shadow, answered_by)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
         rusqlite::params![
             d.ts,
             d.thread_id,
@@ -269,6 +272,7 @@ pub fn add_decision(conn: &Connection, d: &Decision) -> Result<i64, String> {
             d.reason,
             d.rule_id,
             d.shadow,
+            d.answered_by,
         ],
     )
     .map_err(|e| e.to_string())?;
@@ -286,7 +290,7 @@ pub fn decisions(conn: &Connection, before: Option<i64>, limit: u32) -> Result<V
     let mut stmt = conn
         .prepare(
             "SELECT id, ts, thread_id, tool_use_id, project_id, tool, summary, input,
-                    decision, layer, reason, rule_id, shadow
+                    decision, layer, reason, rule_id, shadow, answered_by
              FROM assistant_decisions WHERE id < ?1 ORDER BY id DESC LIMIT ?2",
         )
         .map_err(|e| e.to_string())?;
@@ -306,6 +310,7 @@ pub fn decisions(conn: &Connection, before: Option<i64>, limit: u32) -> Result<V
                 reason: r.get(10)?,
                 rule_id: r.get(11)?,
                 shadow: r.get(12)?,
+                answered_by: r.get(13)?,
             })
         })
         .map_err(|e| e.to_string())?;
@@ -342,6 +347,7 @@ mod tests {
             reason: "allow assistant:write_note".into(),
             rule_id: Some("r1".into()),
             shadow: false,
+            answered_by: None,
         }
     }
 

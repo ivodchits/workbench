@@ -67,6 +67,13 @@ const HOOK_EVENTS: &[&str] = &[
     "PostCompact",
 ];
 
+/// How long Claude Code waits for our `PermissionRequest` hook, seconds. The server
+/// holds that response while Duck decides (step T4) and gives up well before this
+/// ([`super::server::HOLD_MS`]); the limit is there so a hold that never ends (the
+/// app hung) costs a minute, not Claude Code's default ten. On a timeout Claude
+/// Code shows its menu as usual.
+pub const PERMISSION_TIMEOUT_S: u64 = 60;
+
 /// Install (or refresh) the Workbench hooks pointing at `port`. Returns `Ok(true)`
 /// if the file was written, `Ok(false)` if it was already up to date (the common
 /// case on relaunch — proving the install is idempotent).
@@ -157,14 +164,16 @@ fn apply_hooks(settings: &mut Value, url: &str) -> Result<(), String> {
         // Append our fresh entry: matcher-less (fires for all matchers), one http
         // hook to our endpoint, naming the console it came from (see
         // [`INSTANCE_HEADER`]).
-        next.push(json!({
-            "hooks": [ {
-                "type": "http",
-                "url": url,
-                "headers": { INSTANCE_HEADER: format!("${INSTANCE_ENV}") },
-                "allowedEnvVars": [INSTANCE_ENV],
-            } ]
-        }));
+        let mut hook = json!({
+            "type": "http",
+            "url": url,
+            "headers": { INSTANCE_HEADER: format!("${INSTANCE_ENV}") },
+            "allowedEnvVars": [INSTANCE_ENV],
+        });
+        if event == "PermissionRequest" {
+            hook["timeout"] = json!(PERMISSION_TIMEOUT_S);
+        }
+        next.push(json!({ "hooks": [hook] }));
 
         hooks.insert(event.to_string(), Value::Array(next));
     }

@@ -39,6 +39,7 @@ const choice: ChoiceRef = {
   terminalOnly: null,
   sent: null,
   optionsFrom: "terminal",
+  held: false,
 };
 
 function data(): FakePortData {

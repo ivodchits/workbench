@@ -153,6 +153,9 @@ export interface DecisionRow {
   ruleId: string | null;
   /** Logged only: the card showed anyway. */
   shadow: boolean;
+  /** How a Claude Code prompt was answered (T4): the hook's decision or keys into
+   *  its menu; null (or absent) when it wasn't answered. */
+  answeredBy?: "hook" | "keys" | null;
 }
 
 export const trustLoad = (): Promise<TrustStateRow> => invoke("assistant_trust_load");

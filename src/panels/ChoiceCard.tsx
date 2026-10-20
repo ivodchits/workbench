@@ -46,6 +46,7 @@ function ChoiceCard({ instanceId, choice, onShowTerminal }: ChoiceCardProps) {
   const bodyRef = useRef<HTMLDivElement>(null);
   const [stalled, setStalled] = useState(false);
   const { id, kind, toolName, input, source } = choice;
+  const held = choice.held !== null;
 
   // What is being asked, drawn by the transcript renderer (which is what makes
   // tool input — untrusted text — safe to show).
@@ -58,7 +59,8 @@ function ChoiceCard({ instanceId, choice, onShowTerminal }: ChoiceCardProps) {
 
   // A permission or plan prompt's options are only on the terminal screen.
   useEffect(() => {
-    if (source !== "generic") return;
+    // A held prompt (T4) has no menu on screen until it is released.
+    if (source !== "generic" || held) return;
     const timers = READ_AT_MS.map((ms) =>
       setTimeout(() => {
         const screen = readScreen(instanceId);
@@ -67,7 +69,7 @@ function ChoiceCard({ instanceId, choice, onShowTerminal }: ChoiceCardProps) {
       }, ms),
     );
     return () => timers.forEach(clearTimeout);
-  }, [instanceId, id, source]);
+  }, [instanceId, id, source, held]);
 
   // Take the keyboard when the prompt arrives — but only from this console's own
   // view, and not while a prompt is being written there.

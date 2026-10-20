@@ -21,6 +21,7 @@ const choice: ChoiceRef = {
   terminalOnly: null,
   sent: null,
   optionsFrom: "terminal",
+  held: false,
 };
 
 const UNSENT = ["╭────╮", "│ ❯ fix the login test │", "╰────╯", "", ""];

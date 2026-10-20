@@ -27,6 +27,8 @@ import {
 interface Watch {
   /** The prompt being watched. */
   id: string;
+  /** Its hook response is held (T4): no menu on screen yet. */
+  held: boolean;
   feed: Feed;
   reads: ReturnType<typeof setTimeout>[];
 }
@@ -60,24 +62,28 @@ function sync(): void {
       unwatch(instanceId);
       continue;
     }
-    if (w?.id === pending.id) continue;
+    const held = pending.held !== null;
+    const reads = () => (pending.source === "generic" && !held ? readOptions(instanceId, pending.id) : []);
+    if (w?.id === pending.id) {
+      // Released without a decision: the menu is drawn now.
+      if (w.held && !held) w.reads = reads();
+      w.held = held;
+      continue;
+    }
     if (w) {
       // A new prompt on the same instance: keep following, read its options anew,
       // and check it against what the conversation already shows.
       w.reads.forEach(clearTimeout);
       w.id = pending.id;
-      w.reads = pending.source === "generic" ? readOptions(instanceId, pending.id) : [];
+      w.held = held;
+      w.reads = reads();
       if (w.feed.ready) reconcileWithTranscript(instanceId, w.feed.items);
       continue;
     }
     const feed = createFeed(instanceSource(instanceId), (why) => {
       if (why !== "loading" && feed.ready) reconcileWithTranscript(instanceId, feed.items);
     });
-    watches.set(instanceId, {
-      id: pending.id,
-      feed,
-      reads: pending.source === "generic" ? readOptions(instanceId, pending.id) : [],
-    });
+    watches.set(instanceId, { id: pending.id, held, feed, reads: reads() });
   }
   for (const instanceId of [...watches.keys()]) {
     if (!states.get(instanceId)?.pending) unwatch(instanceId);
