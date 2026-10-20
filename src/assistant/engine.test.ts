@@ -561,6 +561,37 @@ describe("toApiMessages", () => {
     expect(effectiveEffort(api)).toBe("medium");
   });
 
+  it("notes a message the user stopped before any reply, and only that one", () => {
+    const stopped = m("notice", { kind: "stopped", text: "Stopped." });
+    const api = toApiMessages([
+      m("user", "garbled"),
+      stopped,
+      m("user", [{ type: "text", text: "the real one" }]),
+      m("assistant", [{ type: "text", text: "Half an ans" }]),
+      stopped,
+      m("user", "next"),
+    ]);
+    expect(api[0]).toEqual({
+      role: "user",
+      content: [
+        { type: "text", text: "garbled" },
+        { type: "text", text: expect.stringMatching(/^\[The user stopped this message before you answered it/) },
+      ],
+    });
+    // Answered (in part) before the stop: no note.
+    expect(api[1]).toEqual({ role: "user", content: [{ type: "text", text: "the real one" }] });
+    expect(api.slice(2)).toEqual([
+      { role: "assistant", content: [{ type: "text", text: "Half an ans" }] },
+      { role: "user", content: "next" },
+    ]);
+    // Stopped while tools ran: the tool results already say so.
+    const tools = toApiMessages([
+      m("user", [{ type: "tool_result", tool_use_id: "x", content: "stopped" }]),
+      stopped,
+    ]);
+    expect(tools).toEqual([{ role: "user", content: [{ type: "tool_result", tool_use_id: "x", content: "stopped" }] }]);
+  });
+
   it("builds the same request bytes for the same history", () => {
     const reg = createRegistry([sendPrompt, getTime]);
     const a = JSON.stringify(

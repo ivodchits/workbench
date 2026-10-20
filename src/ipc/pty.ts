@@ -78,6 +78,8 @@ export async function ptySpawn(
   cols: number,
   rows: number,
   task: TaskSpawn | null = null,
+  /** Claude only: the first prompt, on the command line (`state/launchPrompt`). */
+  initialPrompt: string | null = null,
 ): Promise<SpawnResult> {
   const raw = await invoke<RawSpawnResult>("pty_spawn", {
     instanceId,
@@ -86,6 +88,7 @@ export async function ptySpawn(
     resumeSessionId,
     remote,
     task,
+    initialPrompt,
     cols,
     rows,
   });

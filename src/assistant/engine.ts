@@ -174,6 +174,20 @@ interface SystemContent {
   output_config?: { effort?: Effort };
 }
 
+const STOPPED_UNANSWERED =
+  "[The user stopped this message before you answered it. Don't act on it; if they still want it, they'll ask again.]";
+
+type Blocks = Exclude<ApiMessage["content"], string>;
+
+function asBlocks(content: unknown): Blocks {
+  return typeof content === "string" ? [{ type: "text", text: content }] : (content as Blocks);
+}
+
+/** A message with words in it (the user's, or an event), not only tool results. */
+function hasText(m: StoredMessage): boolean {
+  return typeof m.content === "string" || asBlocks(m.content).some((b) => b.type === "text");
+}
+
 /**
  * The API's view of a thread: notices dropped, and a mid-conversation system
  * message dropped when what follows it would make the request invalid (it must be
@@ -182,8 +196,22 @@ interface SystemContent {
  */
 export function toApiMessages(history: readonly StoredMessage[]): ApiMessage[] {
   const kept = history.filter((m) => m.role !== "notice");
+  // A message the user stopped before any reply would read as one still to
+  // answer; it gets a note saying so (derived the same way every time, so the
+  // history the model sees stays append-only).
+  const unanswered = new Set<StoredMessage>();
+  let lastKept: StoredMessage | null = null;
+  for (const m of history) {
+    if (m.role !== "notice") lastKept = m;
+    else if ((m.content as Notice | null)?.kind === "stopped" && lastKept?.role === "user" && hasText(lastKept))
+      unanswered.add(lastKept);
+  }
   const out: ApiMessage[] = [];
   kept.forEach((m, i) => {
+    if (unanswered.has(m)) {
+      out.push({ role: "user", content: [...asBlocks(m.content), { type: "text", text: STOPPED_UNANSWERED }] });
+      return;
+    }
     if (m.role === "system") {
       const next = kept[i + 1];
       if (next && next.role !== "assistant") return;

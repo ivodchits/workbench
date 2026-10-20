@@ -90,9 +90,9 @@ export interface GitSnapshot {
   operation: string | null;
 }
 
-/** Where a prompt went: into the session now, into its queue (sent when its turn
- *  ends), or to a console just started for it (sent once its prompt box shows). */
-export type PromptDelivery = "sent" | "queued" | "starting";
+/** Where a prompt went: taken by the session now, waiting for its turn (or for a
+ *  prompt ahead of it), to a console just started with it, or typed but not taken. */
+export type PromptDelivery = "sent" | "queued" | "starting" | "unsent";
 
 export type PanelKind = "console" | "git" | "diff" | "notes";
 
@@ -128,9 +128,16 @@ export interface WorkbenchPort {
 
   // ── actions (W2). Each throws an Error saying why when it can't be done. ──
 
-  /** Send a prompt as the prompt queue does: now if the session is between turns,
-   *  else queued; a session that isn't running is started first. */
-  sendPrompt(instanceId: string, text: string): Promise<PromptDelivery>;
+  /** Send a prompt: now if the session is between turns, else when its turn ends
+   *  (everything waiting then goes in as one prompt); with `now`, into the running
+   *  turn instead (never into a prompt waiting on the user). A session that isn't
+   *  running is started with it, continuing its last conversation. `onFailed` hears
+   *  a queued or starting prompt that Claude Code never took. */
+  sendPrompt(
+    instanceId: string,
+    text: string,
+    opts?: { now?: boolean; onFailed?: (why: string) => void },
+  ): Promise<PromptDelivery>;
   /** A new session, as the rail's "new instance" (focused, console open). With a
    *  `prompt`, it goes in once the prompt box shows. */
   createSession(opts: {

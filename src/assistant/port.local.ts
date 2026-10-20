@@ -35,7 +35,7 @@ import { readTranscript, readTranscriptBack } from "../ipc/transcript";
 import { readLastResponse } from "../transcript/feed";
 import { getUsageLimits } from "../ipc/usageLimits";
 import { startPluginRunFor } from "../panels/pluginRun";
-import { sendOrQueue } from "../panels/promptDelivery";
+import { deliverPrompt } from "../state/promptOutbox";
 import { readTail, release } from "../panels/terminalPool";
 import { setActiveProject } from "../state/activeProject";
 import {
@@ -163,6 +163,22 @@ function userPrompts(lines: string[]): string[] {
 }
 
 /** Show a session's console as the rail does: its project, its panel focused. */
+const isRemote = (i: Instance) =>
+  !!getRegistry().projects.find((p) => p.id === i.projectId)?.remoteSshDest;
+
+/** Start a session that isn't running, continuing its last conversation (a fresh
+ *  one when it has none). A worker (D1) starts out of your way, like the first
+ *  time; a session of yours is shown. Any dead console is replaced. */
+function relaunch(i: Instance): void {
+  if (duckTask(i.id)) {
+    resumeConsole(i, undefined, { background: true });
+    return;
+  }
+  setActiveProject(i.projectId);
+  resumeConsole(i);
+  activatePanel(i.id);
+}
+
 function show(i: Instance): void {
   setActiveProject(i.projectId);
   openConsole(i);
@@ -223,14 +239,24 @@ export const localPort: WorkbenchPort = {
   readNote: notesRead,
   spend: getSpend,
 
-  async sendPrompt(id, text) {
-    const i = instance(id);
-    if (running(id)) return sendOrQueue(id, text);
-    // A worker (D1) starts again out of your way, like the first time.
-    if (duckTask(id)) openConsole(i, { background: true });
-    else show(i);
-    deliverWhenReady(id, text);
-    return "starting";
+  async sendPrompt(id, text, opts = {}) {
+    instance(id);
+    const d = deliverPrompt(
+      {
+        instanceId: id,
+        running: () => running(id),
+        launch: () => relaunch(instance(id)),
+        typedOnly: isRemote(instance(id)),
+      },
+      text,
+      { now: opts.now },
+    );
+    // Typed in now: whether it was taken is known within seconds, so wait for it.
+    if (d.state === "sent") return (await d.done).ok ? "sent" : "unsent";
+    void d.done.then((o) => {
+      if (!o.ok) opts.onFailed?.(o.why);
+    });
+    return d.state;
   },
   async createSession({ projectId, title, prompt, worktree, model, permissionMode, mandate, worker, trustFolder }) {
     const project = getRegistry().projects.find((p) => p.id === projectId);
@@ -240,12 +266,21 @@ export const localPort: WorkbenchPort = {
       worktree,
       model,
       permissionMode,
-      beforeLaunch: worker ? (inst) => workerRegister(inst.id, worker) : undefined,
+      beforeLaunch: async (inst) => {
+        if (worker) await workerRegister(inst.id, worker);
+        // Its console opens next: the first prompt goes on claude's command line.
+        if (prompt?.trim())
+          void deliverPrompt(
+            { instanceId: inst.id, running: () => false, launch: () => {}, typedOnly: isRemote(inst), trustFolder },
+            prompt.trim(),
+          ).done.then((o) => {
+            if (!o.ok) console.warn(`duck: the first prompt of "${inst.title}" wasn't taken: ${o.why}`);
+          });
+      },
       // A worker starts out of your way; you open it from its card or Duck's.
       background: !!worker,
     });
     if (mandate?.text.trim()) rememberMandate(i.id, mandate);
-    if (prompt?.trim()) deliverWhenReady(i.id, prompt.trim(), { trustFolder });
     return { id: i.id, title: i.title, message };
   },
   startSession(id) {

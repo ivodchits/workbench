@@ -111,6 +111,17 @@ export function inputHolds(screen: readonly string[], text: string): boolean {
   return head.length > 0 && input.startsWith(head.slice(0, Math.min(head.length, input.length)));
 }
 
+/**
+ * True when the screen shows the prompt box with anything in it: a prompt that
+ * wasn't taken, two run together, or the box's placeholder. An Enter then submits
+ * what's there, or does nothing in an empty box; it can't answer a dialog, which
+ * has no prompt box.
+ */
+export function inputHasText(screen: readonly string[]): boolean {
+  const row = promptRow(screen);
+  return row !== null && squash(row.replace(PROMPT_ROW, "")) !== "";
+}
+
 const TRUST_YES = /Yes, I trust this folder/;
 const CARET = /^\s*❯/;
 

@@ -614,6 +614,12 @@ pub struct SpawnResult {
 /// `task` (`Task` only, step K1) names a plugin action and its field values; the
 /// argv, working dir and environment come from the project's plugin file, read
 /// here, never from the caller. `cwd` and `remote` don't apply to a task.
+///
+/// `initial_prompt` (local Claude only): the session's first prompt, passed on the
+/// command line after `--` so Claude Code submits it itself once it's ready (and
+/// after the folder-trust dialog). Nothing has to be typed into a TUI that may not
+/// take input yet; `--` keeps a prompt that starts with a subcommand's name
+/// ("update …", "mcp …") or a dash from being read as one.
 // Each parameter is part of the IPC contract the frontend invokes with (the
 // per-PTY output channel, the spawn kind, dimensions, …), so they can't be folded
 // into a struct without obscuring the boundary — over clippy's 7-arg advisory.
@@ -629,9 +635,15 @@ pub fn pty_spawn(
     resume_session_id: Option<String>,
     remote: Option<RemoteSpawn>,
     task: Option<crate::plugins::TaskRequest>,
+    initial_prompt: Option<String>,
     cols: u16,
     rows: u16,
 ) -> Result<SpawnResult, String> {
+    if let Some(p) = &initial_prompt {
+        if p.len() > INITIAL_PROMPT_MAX {
+            return Err("the first prompt is too long for the command line".into());
+        }
+    }
     // A task's whole command comes from the plugin file. v1 runs it on this
     // machine, so an SSH project's remote descriptor doesn't apply.
     let task = match kind {
@@ -743,6 +755,9 @@ pub fn pty_spawn(
                     }
                 }
                 args.extend(extra.iter().map(String::as_str));
+                if let Some(p) = initial_prompt.as_deref().filter(|p| !p.trim().is_empty()) {
+                    args.extend(["--", p]);
+                }
                 let mut cmd = claude_command(&args, &cwd)?;
                 // Lets this console's hooks name it even under a session id we
                 // didn't mint (an in-console `/resume`, or a `/clear` after one).
@@ -1135,6 +1150,10 @@ pub fn remote_cmd_spawn(
 /// fidelity; a `.cmd`/`.bat` shim can't be handed to `CreateProcess` directly, so
 /// it's run through `cmd.exe /c`, and a `.ps1` shim through PowerShell. We pass
 /// `TERM`/`COLORTERM` so the Ink TUI renders color under ConPTY.
+/// A first prompt longer than this (bytes) can't go on the command line: Windows
+/// caps a whole command line at 32,767 characters. The caller types it instead.
+pub const INITIAL_PROMPT_MAX: usize = 24_000;
+
 fn claude_command(session_args: &[&str], cwd: &Path) -> Result<CommandBuilder, String> {
     let launcher = claude_launcher()?;
     let mut cmd = CommandBuilder::from_argv(launcher);

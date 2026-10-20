@@ -106,7 +106,7 @@ describe("action tools", () => {
     const queued = await run(sendPrompt, { session: "api", text: "x" }, {
       d: { ...data(), delivery: "queued" },
     });
-    expect(queued.out.delivery).toMatch(/^queued: .*cancel/);
+    expect(queued.out.delivery).toMatch(/^queued: .*together with anything else waiting/);
   });
 
   it("create_session runs coding work on the coding model unless told otherwise", async () => {

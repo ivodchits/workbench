@@ -42,11 +42,13 @@ const projectName = (port: WorkbenchPort, s: SessionRef) =>
 const isLive = (s: SessionRef) => s.phase !== "offline" && s.phase !== "ended";
 
 const DELIVERY: Record<PromptDelivery, string> = {
-  sent: "sent: the session is working on it",
+  sent: "sent: Claude Code took it and the session is working on it",
   queued:
-    "queued: the session is mid-turn or waiting on a prompt, so it goes in when the turn ends (shown on its card, where the user can cancel it)",
+    "queued: the session is mid-turn or waiting on a prompt from the user; it goes in when the turn ends, together with anything else waiting",
   starting:
-    "starting: the session wasn't running, so its console was started; the prompt goes in once Claude Code is ready",
+    "starting: the session wasn't running, so it was started with this prompt, continuing its last conversation",
+  unsent:
+    "unsent: it was typed into the session's prompt box but Claude Code didn't take it; tell the user it's sitting there unsent",
 };
 
 const sessionArgs = { session: sessionArg, project: projectArg.optional() };
@@ -81,10 +83,14 @@ const onSessionGranted = (
 export const sendPrompt = defineTool({
   name: "send_prompt",
   description:
-    "Send a prompt to a Workbench session, as if the user typed it. It goes in now if the session is between turns, else it is queued until the turn ends; a session that isn't running is started first. Write the prompt as the user would: say what to do, not who is asking.",
+    "Send a prompt to a Workbench session, as if the user typed it. A session between turns gets it now; a session that isn't running is started with it, continuing its last conversation. For a session mid-turn, choose `when`: `now` puts it into the running turn, read at the session's next step (a correction, a constraint, an answer to what it is doing, a stop or change of direction); `after_turn` (the default) waits for the turn to end (new work that shouldn't disturb the current task). Prompts waiting for the same turn end go in together as one. Put several requests for one session into one prompt yourself. Write the prompt as the user would: say what to do, not who is asking.",
   schema: z.object({
     ...sessionArgs,
     text: z.string().trim().min(1).max(20_000).describe("The prompt."),
+    when: z
+      .enum(["now", "after_turn"])
+      .optional()
+      .describe("For a session mid-turn: into the running turn, or after it (default)."),
   }),
   tier: "reversible",
   describe({ session, project, text }, port) {
@@ -92,9 +98,13 @@ export const sendPrompt = defineTool({
     return `Send to "${s.title}": ${cut(text, 240)}`;
   },
   trust: (input, port) => ({ ...onSession(input, port), texts: [input.text] }),
-  async run({ session, project, text }, { port }) {
+  timeoutMs: 20_000,
+  async run({ session, project, text, when }, { port, later }) {
     const s = findSession(port, session, project);
-    const delivery = await port.sendPrompt(s.id, text);
+    const delivery = await port.sendPrompt(s.id, text, {
+      now: when === "now",
+      onFailed: (why) => later(`The prompt sent to "${s.title}" didn't go in: ${why}.`),
+    });
     return { session: s.title, id: s.id, delivery: DELIVERY[delivery] };
   },
 });

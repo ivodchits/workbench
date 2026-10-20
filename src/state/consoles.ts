@@ -190,8 +190,14 @@ export function openConsole(instance: Instance, opts: { background?: boolean } =
  *
  * Unconditionally relaunches — the resume picker handles the "instance is busy"
  * warning, and tearing down a live PTY to resume into it is the intended behavior.
+ * An instance with no past session starts a fresh one. `background` starts it
+ * without focusing it, as `openConsole` does.
  */
-export function resumeConsole(instance: Instance, sessionId?: string): void {
+export function resumeConsole(
+  instance: Instance,
+  sessionId?: string,
+  opts: { background?: boolean } = {},
+): void {
   if (state.open.some((c) => c.instanceId === instance.id)) {
     closeConsole(instance.id);
     release(instance.id); // the only path that kills the PTY (see terminalPool)
@@ -206,9 +212,10 @@ export function resumeConsole(instance: Instance, sessionId?: string): void {
     resumeSessionId: sessionId ?? instance.lastSessionId,
     remote: remoteSpawnFor(instance),
     error: null,
-    focusSeq: ++focusSeq,
+    focusSeq: opts.background ? 0 : ++focusSeq,
+    background: opts.background || undefined,
   };
-  emit({ open: [...state.open, session], activeId: instance.id });
+  emit({ open: [...state.open, session], activeId: opts.background ? state.activeId : instance.id });
 }
 
 /**

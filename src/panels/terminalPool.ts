@@ -42,6 +42,7 @@ import { deletePastedImages, pastedImageDir } from "../ipc/os";
 import { encodePaste, promptChunks } from "../state/composer";
 import { markInterrupted } from "../state/status";
 import { mirrorInstanceTaskNote } from "../state/registry";
+import { takeLaunchPrompt } from "../state/launchPrompt";
 import { isSpeaking, speak, stopSpeaking } from "../util/speech";
 
 interface TermEntry {
@@ -550,6 +551,8 @@ export function acquire(container: HTMLDivElement, opts: AcquireOptions): void {
       term.cols,
       term.rows,
       opts.task ?? null,
+      // A prompt waiting for this launch goes on claude's command line.
+      opts.kind === "claude" && !opts.remote ? takeLaunchPrompt(opts.instanceId) : null,
     )
       .then(async (result) => {
         opts.onSpawned(result);

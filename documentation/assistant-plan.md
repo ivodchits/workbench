@@ -2092,6 +2092,49 @@ tapping around. Two stages.
   - **Not verified live:** the toast's text after the final-reply fix, and the phone
     push body (the same `sendDone` path).
 
+#### Fix after W3 — reliable prompt delivery (2026-10-20)
+
+- **Seen live:** Duck sent three prompts to a stopped session. Each started its own
+  watch on the starting console's screen; two pasted into the prompt box at the same
+  moment and ran together, and the Enter retry looked for each one's own text, so
+  neither was sent. The session had also been started as a fresh conversation, not
+  resumed, and Duck acted on a message the user had stopped.
+- **Launch prompt.** A session that isn't running is started with the prompt on
+  claude's command line: `pty_spawn` takes `initial_prompt` and appends `-- <prompt>`
+  (local Claude only, at most 24,000 bytes). `state/launchPrompt.ts` holds it until
+  the terminal spawns (`terminalPool` takes it). Checked in a scratch PTY on 2.1.304:
+  a new session, one behind the folder-trust dialog, and `--resume <id> -- <prompt>`
+  all took the prompt and answered (the resumed one with its earlier context); a
+  prompt starting "update:" and holding quotes, `&`, `|`, `%`, `^` and a newline
+  arrived whole. Without `--`, `claude -p "mcp list …"` runs the `mcp` subcommand.
+- **One line per session** (`state/promptOutbox.ts`, `deliverPrompt`): one delivery
+  in flight. Prompts waiting for a turn to end go in **together as one prompt**
+  (blank lines between them), each told the outcome: one turn for all of it.
+  A prompt counts as taken on `UserPromptSubmit` (or the session turning to working).
+  A typed prompt gets up to two more Enters while the box holds any text
+  (`inputHasText`). A prompt too long for the command line, or for an SSH project,
+  waits for the prompt box and is typed. One never taken is reported: `send_prompt`
+  returns `unsent` (a session at rest is waited on, a few seconds at most), and a
+  queued or starting one that fails later comes back as a `<workbench_event>`.
+- **Duck chooses the timing** (asked for on 2026-10-20: "Duck should decide… I should
+  not have to concern myself with this"). `send_prompt` takes `when`: `now` goes into
+  a running turn (Claude Code takes typed input mid-turn and reads it at its next
+  step; taken when the text leaves the box), for corrections, constraints and
+  answers; `after_turn` (default) waits, for new work. The description says which is
+  which and asks Duck to put several requests for one session into one prompt. A
+  `now` prompt never goes into a session waiting on a permission prompt or question
+  (a keystroke could answer it); it waits until the session works again.
+- **Resumed, not fresh.** `sendPrompt` to a stopped session continues its last
+  conversation (`resumeConsole`, now with `background` for workers), and replaces a
+  dead console instead of focusing it. `createSession` sets the first prompt as the
+  launch prompt in `beforeLaunch`.
+- **Stopped messages.** `toApiMessages` adds a note to a user message that a stop
+  notice follows with no reply ("stopped before you answered; don't act on it").
+- **Not changed:** the phone's create flow and W5's drafting session still use
+  `deliverWhenReady`.
+- **Verified:** 6 outbox tests, 1 for the stopped note (388 vitest, 223 cargo); tsc,
+  eslint and clippy clean.
+
 #### Step W4 — Core memory (the always-loaded profile)
 
 - **Goal:** The Assistant remembers who you are, your preferences, standing instructions
