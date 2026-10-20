@@ -10,7 +10,7 @@
 import { useEffect } from "react";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { isKeymapCapturing, matchCommand } from "./keymap";
-import { runCommand } from "./bus";
+import { overrideKey, runCommand } from "./bus";
 import { dispatch } from "./commands";
 
 /** Install the global keymap listener for the lifetime of the app. */
@@ -24,6 +24,8 @@ export function useGlobalKeys(): void {
       if (!match) return;
       e.preventDefault();
       e.stopPropagation();
+      // An open overlay may mean something else by it (Duck's drawer).
+      if (overrideKey(match.command, match.arg)) return;
       dispatch(match);
     };
     document.addEventListener("keydown", onKeyDown, { capture: true });

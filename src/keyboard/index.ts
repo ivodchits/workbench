@@ -3,6 +3,6 @@
 // `matchCommand(e, "rail")` + the action helpers it owns.
 
 export * from "./keymap";
-export { registerCommand, runCommand } from "./bus";
+export { registerCommand, runCommand, setKeyOverride } from "./bus";
 export { runAction } from "./commands";
 export { useGlobalKeys } from "./useGlobalKeys";

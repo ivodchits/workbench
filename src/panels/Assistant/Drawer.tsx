@@ -7,8 +7,8 @@
 // speaks only the Duck Protocol, through `duckState`. The header's trust pill is
 // the kill switch (T1); the trust and decisions views take the thread's place.
 
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import { registerCommand, useBindings } from "../../keyboard";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { registerCommand, setKeyOverride, useBindings } from "../../keyboard";
 import { chordText } from "../keymapFormat";
 import { getKeyStatus } from "../../ipc/assistant";
 import {
@@ -53,6 +53,7 @@ import {
   rerunTask,
   connectDuck,
   deleteThread,
+  getDuckState,
   isBusy,
   isRunning,
   openThread,
@@ -116,13 +117,48 @@ export default function AssistantDrawer() {
   useEffect(() => registerCommand("toggleAssistant", toggleDrawer), []);
   useEffect(() => registerCommand("toggleTrust", toggleTrust), []);
 
+  /** The keyboard goes to the composer, so you can type at once. */
+  const focusComposer = useCallback(() => requestAnimationFrame(() => composerRef.current?.focus()), []);
+
+  const showThread = useCallback(
+    (id: string | null) => {
+      openThread(id);
+      setView("thread");
+      focusComposer();
+    },
+    [focusComposer],
+  );
+
+  // While open, the new-instance and cycle-panel chords (Ctrl+Shift+N, Ctrl+Tab /
+  // Ctrl+Shift+Tab by default) start a thread and step through the threads.
+  useEffect(() => {
+    if (!duck.open) return;
+    return setKeyOverride((command) => {
+      if (command === "newInstance") {
+        showThread(null);
+        return true;
+      }
+      if (command === "cyclePanelNext" || command === "cyclePanelPrev") {
+        const { threads, current } = getDuckState();
+        if (threads.length === 0) return true;
+        const at = threads.findIndex((t) => t.id === current);
+        const step = command === "cyclePanelNext" ? 1 : -1;
+        // From a new thread, forward is the newest, back the oldest.
+        const next = at < 0 ? (step > 0 ? 0 : threads.length - 1) : (at + step + threads.length) % threads.length;
+        showThread(threads[next].id);
+        return true;
+      }
+      return false;
+    });
+  }, [duck.open, showThread]);
+
   // Opening: remember where the keyboard was, check the key, focus the composer.
   // Closing: hand the keyboard back.
   useEffect(() => {
     if (duck.open) {
       const active = document.activeElement;
       returnFocus.current = active instanceof HTMLElement ? active : null;
-      requestAnimationFrame(() => composerRef.current?.focus());
+      focusComposer();
       void getKeyStatus()
         .then((k) => setNoKey(!k.present))
         .catch(() => {});
@@ -132,7 +168,7 @@ export default function AssistantDrawer() {
       if (el.isConnected && !el.closest("[data-wb-duck]")) el.focus();
       else focusActivePanel();
     }
-  }, [duck.open]);
+  }, [duck.open, focusComposer]);
 
   const max = Math.max(MIN_WIDTH, window.innerWidth - 120);
   const w = Math.min(max, Math.max(MIN_WIDTH, width ?? duck.prefs.width));
@@ -170,6 +206,14 @@ export default function AssistantDrawer() {
         if (busy) stopTurn();
         else setDrawerOpen(false);
       }}
+      // A click that wasn't on a control, and didn't select text, hands the
+      // keyboard back to the composer.
+      onMouseUp={(e) => {
+        const t = e.target as HTMLElement;
+        if (t.closest("button, a, input, textarea, select, label, [contenteditable]")) return;
+        if (window.getSelection()?.toString()) return;
+        focusComposer();
+      }}
       style={{
         position: "absolute",
         top: 36,
@@ -185,12 +229,16 @@ export default function AssistantDrawer() {
         boxShadow: "6px 0 24px rgba(0,0,0,0.45)",
         font: "12px var(--wb-mono)",
         color: "var(--wb-text)",
+        // The app is unselectable by default; Duck's replies hold paths and links
+        // you'll want to copy.
+        userSelect: "text",
       }}
     >
       <Header
         duck={duck}
         title={thread ? thread.title || "untitled" : "new thread"}
         onView={setView}
+        onThread={showThread}
       />
       {noKey && (
         <div style={{ ...banner, color: "var(--wb-needs)" }}>
@@ -233,11 +281,11 @@ export default function AssistantDrawer() {
         </div>
       )}
       {view === "thread" && <ThreadBody duck={duck} />}
-      {view === "trust" && <TrustPanel duck={duck} onBack={() => setView("thread")} />}
+      {view === "trust" && <TrustPanel duck={duck} onBack={() => showThread(duck.current)} />}
       {view === "decisions" && (
-        <DecisionsPanel duck={duck} onBack={() => setView("thread")} />
+        <DecisionsPanel duck={duck} onBack={() => showThread(duck.current)} />
       )}
-      {view === "tasks" && <TasksPanel duck={duck} onBack={() => setView("thread")} />}
+      {view === "tasks" && <TasksPanel duck={duck} onBack={() => showThread(duck.current)} />}
       <Asks duck={duck} />
       <SpendLine duck={duck} />
       <Composer duck={duck} busy={busy} inputRef={composerRef} />
@@ -290,13 +338,19 @@ function Header({
   duck,
   title,
   onView,
+  onThread,
 }: {
   duck: DuckState;
   title: string;
   onView: (v: View) => void;
+  /** Show a thread (null: a new one), the keyboard in its composer. */
+  onThread: (id: string | null) => void;
 }) {
   const [menu, setMenu] = useState<"threads" | "settings" | null>(null);
   const rootRef = useRef<HTMLDivElement>(null);
+  const bindings = useBindings();
+  const chord = bindings.find((b) => b.command === "newInstance")?.chord;
+  const newChord = chord ? chordText(chord) : null;
 
   useEffect(() => {
     if (!menu) return;
@@ -351,10 +405,9 @@ function Header({
       <button
         type="button"
         style={btn}
-        title="start a new thread"
+        title={`start a new thread${newChord ? ` (${newChord})` : ""}`}
         onClick={() => {
-          openThread(null);
-          onView("thread");
+          onThread(null);
           setMenu(null);
         }}
       >
@@ -416,8 +469,7 @@ function Header({
               thread={t}
               duck={duck}
               onOpen={() => {
-                openThread(t.id);
-                onView("thread");
+                onThread(t.id);
                 setMenu(null);
               }}
             />

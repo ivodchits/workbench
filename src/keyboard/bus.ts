@@ -24,6 +24,26 @@ export function registerCommand(id: CommandId, handler: Handler): () => void {
   };
 }
 
+/** Takes a matched chord before its global command: an overlay that has its own
+ *  meaning for some chords while it is open (Duck's drawer: new thread, next
+ *  thread). Returns true when it handled the command. */
+type KeyOverride = (id: CommandId, arg?: number) => boolean;
+
+let keyOverride: KeyOverride | null = null;
+
+/** Install the key override; returns a disposer that removes exactly it. */
+export function setKeyOverride(fn: KeyOverride): () => void {
+  keyOverride = fn;
+  return () => {
+    if (keyOverride === fn) keyOverride = null;
+  };
+}
+
+/** Offer a chord's command to the override first. */
+export function overrideKey(id: CommandId, arg?: number): boolean {
+  return keyOverride?.(id, arg) ?? false;
+}
+
 /** Run the handler bound to `id`, if any (no-op when unregistered). */
 export function runCommand(id: CommandId, arg?: number): void {
   handlers.get(id)?.(arg);
