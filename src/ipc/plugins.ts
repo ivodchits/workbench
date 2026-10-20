@@ -74,3 +74,55 @@ export function pluginsInit(projectId: string): Promise<string> {
 export function onPluginsChanged(cb: (projectId: string) => void): Promise<UnlistenFn> {
   return listen<{ projectId: string }>("plugins-changed", (e) => cb(e.payload.projectId));
 }
+
+// --- for Duck (assistant plan W5) ---------------------------------------------------
+
+/** The file as text: `text` and `revision` are null when there is none. */
+export interface PluginsText {
+  path: string;
+  revision: string | null;
+  text: string | null;
+}
+
+export function pluginsText(projectId: string): Promise<PluginsText> {
+  return invoke("plugins_text", { projectId });
+}
+
+/** Everything wrong with `text` as a plugin file; empty when it would save. */
+export function pluginsCheck(text: string): Promise<Problem[]> {
+  return invoke("plugins_check", { text });
+}
+
+/** Delete the file if it is still at `baseRevision` (an error starting `stale:`
+ *  when it isn't). */
+export function pluginsRemove(projectId: string, baseRevision: string): Promise<void> {
+  return invoke("plugins_remove", { projectId, baseRevision });
+}
+
+/** What running an action would spawn, without spawning it. `revision` pins the
+ *  file: refused (`stale:`) when it changed since. */
+export interface TaskPreview {
+  argv: string[];
+  cwd: string;
+}
+
+export function pluginsPreview(task: {
+  projectId: string;
+  pluginId: string;
+  actionId: string;
+  values: Record<string, string>;
+  revision?: string;
+}): Promise<TaskPreview> {
+  return invoke("plugins_preview", { task });
+}
+
+/** A script in the project's `scripts/` folder (`{data}/scripts/<name>`); null
+ *  when there is none. */
+export function pluginsScriptRead(projectId: string, name: string): Promise<string | null> {
+  return invoke("plugins_script_read", { projectId, name });
+}
+
+/** Write a script; `text: null` deletes it. */
+export function pluginsScriptWrite(projectId: string, name: string, text: string | null): Promise<void> {
+  return invoke("plugins_script_write", { projectId, name, text });
+}

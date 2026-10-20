@@ -41,6 +41,29 @@ export interface ConfirmRequest {
   /** What the call will do, in a sentence, when the tool can say (e.g. which
    *  option of which session's prompt). */
   summary?: string;
+  /** Files the call changes, shown as diffs (W5: the plugin file, its scripts). */
+  review?: ReviewItem[];
+}
+
+/** One file a call changes, for the card's diff. */
+export interface ReviewItem {
+  label: string;
+  /** null: the call makes the file. */
+  before: string | null;
+  after: string;
+}
+
+/** Duck's edit of a project's toolbar (W5), for the thread's chip: the diff of the
+ *  plugin file and its scripts, and an undo with the same revision check. */
+export interface PluginsEdit {
+  projectId: string;
+  project: string;
+  /** null: the edit made the file. */
+  before: string | null;
+  after: string;
+  /** The file's revision right after the edit. */
+  revision: string;
+  scripts: { name: string; before: string | null; after: string }[];
 }
 
 /** A note Duck changed (step W2), for the thread's "Duck edited" chip: enough to
@@ -69,11 +92,15 @@ export interface Notice {
     | "error"
     | "rounds"
     | "note"
+    /** Duck edited a project's toolbar (W5). */
+    | "plugins"
     /** The trust engine says something about this thread (the rate guard). */
     | "trust";
   text: string;
   /** `note` only. */
   note?: NoteEdit;
+  /** `plugins` only. */
+  plugins?: PluginsEdit;
 }
 
 // ── surface → Duck ──────────────────────────────────────────────────────────

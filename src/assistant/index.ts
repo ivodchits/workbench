@@ -25,6 +25,7 @@ import { loadSettings, type SettingsStore } from "./settings";
 import { createTurnMeter } from "./spend";
 import { createThreadStore, ipcBackend, type ThreadStore } from "./threads";
 import { ACT_TOOLS } from "./tools/act";
+import { PLUGIN_TOOLS } from "./tools/plugins";
 import { getTime } from "./tools/getTime";
 import { READ_TOOLS } from "./tools/read";
 import { createRegistry } from "./tools/registry";
@@ -49,6 +50,7 @@ const TOOLS = [
   getTime,
   ...READ_TOOLS,
   ...ACT_TOOLS,
+  ...PLUGIN_TOOLS,
   ...(import.meta.env.DEV ? [testConfirm] : []),
 ];
 

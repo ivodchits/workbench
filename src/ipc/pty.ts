@@ -32,6 +32,9 @@ export interface TaskSpawn {
   pluginId: string;
   actionId: string;
   values: Record<string, string>;
+  /** The file's revision when the run was shown (Duck's card): refused if the file
+   *  changed since. */
+  revision?: string;
 }
 
 /**

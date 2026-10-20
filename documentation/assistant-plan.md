@@ -2083,6 +2083,46 @@ tapping around. Two stages.
 - **Done when:** both requests in the goal work end to end, a refused card runs nothing,
   and an invalid edit is fixed by Duck without your help.
 - **Out of scope:** trusting plugin actions without a card (that is T1's job, per action).
+- **As built:**
+  - **`prepare` in the engine.** A card that shows "the exact argv after substitution"
+    needs the backend, so a tool may declare `prepare(input, port)`, run before the
+    gate. Its result is kept on the call (persisted with a parked batch) and handed to
+    `describe`, the new `review` (diffs on the card), `trust` and `run`. A throw fails
+    the call before any card: an unknown action, a value a field refuses, a file with
+    problems, a stale base.
+  - **Tools** (`src/assistant/tools/plugins.ts`): `list_plugins`, `read_plugins`,
+    `run_plugin_action(project, plugin, action, values?, timeoutMin?, grantedBy?)`,
+    `write_plugins(project, text, baseRevision, scripts?)`. Plugins and actions are
+    named by id or label. Duck's `values` are checked against their fields (a select's
+    options, a text field's pattern, a checkbox's true/false) and laid over the
+    toolbar's own; the toolbar keeps its values.
+  - **Runs.** New `plugins_preview` returns what `prepare_task` would spawn (the shown
+    argv and the cwd). The card shows it, and the confirm question filled in. A run is
+    pinned: `TaskRequest.revision` makes the spawn refuse (`stale:`) if the file changed
+    after the card, and the tool previews again just before starting and refuses if the
+    argv or cwd moved (a `{branch}` change). The run starts in the action's task panel
+    without the confirm question (the card asked), refused while it is running, and
+    shows the project, since task panels are drawn for the shown project only. The end
+    (exited with its code, stopped, couldn't start, panel closed, run again from the
+    app) comes back as a `<workbench_event>` with the last 15 lines of the terminal,
+    marked as program output. A `long` action is watched quietly: only its end is
+    reported.
+  - **Trust.** A run's facts: specifier `plugin:action` (so
+    `assistant:run_plugin_action(build:*)` allows a plugin's runs), the argv as a `Bash`
+    call for the floor (a `git push` action asks), and `grantedBy`. An action with a
+    `confirm` question always asks: a new fact `asks` is treated as the floor, so neither
+    a rule nor the user's quoted words get past it. `write_plugins` takes no
+    `grantedBy`: the diff is the point of its card. The floor reads the new file and its
+    scripts.
+  - **Edits.** New `plugins_text` (raw text and revision), `plugins_check` (the
+    problems, as the parser reports them), `plugins_remove` (delete at a revision, for
+    undo), `plugins_script_read` / `plugins_script_write` (one plain file name in
+    `{data}/scripts/`, at most 256 KB). `prepare` compares the base revision and checks
+    the text, so a broken edit comes back with its JSON paths and Duck fixes it without
+    a card. Scripts are written before the file. The chip reads "Duck edited the build
+    toolbar" when one plugin changed (else the project's toolbar); undo writes the old
+    file back at the new revision (or removes a file Duck made), then restores each
+    script still as Duck wrote it.
 
 ### Track M — Models
 
@@ -3403,7 +3443,7 @@ X0 ─┬─▶ A1 ─▶ A2 ─┬─▶ A3 ─┬─▶ W2 ─┬─▶ T1 ─
 ```
 
 **Suggested order:**
-1. X0, A1, A2, A3, A4, W1, M1, W2, T1 (done), then W5, **T2**, M4, **D1**. *First
+1. X0, A1, A2, A3, A4, W1, M1, W2, T1, W5 (done), then **T2**, M4, **D1**. *First
    milestone: text control of the app that acts without asking about the small things,
    with heavy work offloaded to sessions.* (Reordered 2026-10-19: trust moved ahead of
    D1, because a card for every action defeats the point of Duck. W5 moved ahead of T2
@@ -3546,7 +3586,7 @@ T2 goes live after the replay check in its done-when (the past week's prompts th
 | W2 | Action tools + the confirmation policy | ☑ |
 | W3 | Session summaries | ☐ |
 | W4 | Core memory (the always-loaded profile) | ☐ |
-| W5 | Project toolbar tools | ☐ |
+| W5 | Project toolbar tools | ☑ |
 | M1 | Model per Claude Code session | ☑ |
 | M2 | Effort routing, Haiku workers, budget-aware degrade | ☐ |
 | M3 | Subscription brain: headless Claude Code as the fallback main thread | ☐ |

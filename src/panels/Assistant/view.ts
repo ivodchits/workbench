@@ -2,16 +2,17 @@
 // display items. An assistant message becomes its text and a chip per tool call;
 // the tool results (which travel in the next user message) are attached to their
 // chips; thinking and the mid-conversation system messages are not shown. A
-// Workbench event (W2) is a line of its own, not a bubble of yours, and a note
-// Duck changed is a chip with its diff.
+// Workbench event (W2) is a line of its own, not a bubble of yours, and a note or
+// a toolbar (W5) Duck changed is a chip with its diff.
 
 import type { StoredMessage } from "../../ipc/assistant";
-import type { NoteEdit, Notice } from "../../assistant/protocol";
+import type { NoteEdit, Notice, PluginsEdit } from "../../assistant/protocol";
 
 export type Item =
   | { kind: "user"; key: string; text: string; source: string }
   | { kind: "event"; key: string; text: string }
   | { kind: "note"; key: string; text: string; edit: NoteEdit }
+  | { kind: "plugins"; key: string; text: string; edit: PluginsEdit }
   | { kind: "reply"; key: string; text: string }
   | {
       kind: "tool";
@@ -69,6 +70,8 @@ export function toItems(messages: readonly StoredMessage[]): Item[] {
       const n = m.content as Notice;
       if (n.kind === "note" && n.note)
         items.push({ kind: "note", key, text: n.text, edit: n.note });
+      else if (n.kind === "plugins" && n.plugins)
+        items.push({ kind: "plugins", key, text: n.text, edit: n.plugins });
       else items.push({ kind: "notice", key, notice: n });
       continue;
     }

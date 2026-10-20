@@ -12,6 +12,7 @@
 import type { Spend } from "../ipc/assistant";
 import type { Branches, Commit, StatusEntry } from "../ipc/git";
 import type { Note, NoteMeta } from "../ipc/notes";
+import type { PluginsText, PluginsView, Problem } from "../ipc/plugins";
 import type { TranscriptPage } from "../ipc/transcript";
 import type { RateLimits } from "../ipc/usageLimits";
 
@@ -167,4 +168,72 @@ export interface WorkbenchPort {
   deleteNote(projectId: string, name: string): Promise<void>;
   /** Hear every session phase change; returns the unsubscribe. */
   onPhase(cb: PhaseListener): () => void;
+
+  // ── project toolbar plugins (W5) ──
+
+  /** The project's plugin file as the toolbar reads it, each plugin's field values
+   *  and each action's last run. */
+  listPlugins(projectId: string): Promise<PluginsRef>;
+  /** The file's raw text and revision (null when there is none). */
+  pluginsText(projectId: string): Promise<PluginsText>;
+  /** What's wrong with `text` as a plugin file; empty when it would save. */
+  checkPlugins(text: string): Promise<Problem[]>;
+  /** Replace the file (`baseRevision` null: there was none). Refused (`stale:`)
+   *  when it moved on, or with the problems when it doesn't parse. */
+  writePlugins(projectId: string, text: string, baseRevision: string | null): Promise<string>;
+  /** A script in the project's `scripts/` folder; null when there is none. */
+  readScript(projectId: string, name: string): Promise<string | null>;
+  writeScript(projectId: string, name: string, text: string): Promise<void>;
+  /** What running an action with these values would spawn, and its confirm
+   *  question filled in. Refused (`stale:`) when the file isn't at `revision`. */
+  previewPluginAction(req: PluginRunRequest): Promise<PluginPreview>;
+  /** Run an action in its task panel, as its toolbar button does but without the
+   *  confirm question (Duck's card asked). Refused while it is running. */
+  runPluginAction(req: PluginRunRequest): Promise<{ taskId: string; label: string }>;
+  /** Hear the end of the run just started in `taskId`, once; returns the
+   *  unsubscribe. */
+  onTaskEnd(taskId: string, cb: (end: TaskEnd) => void): () => void;
+}
+
+export interface PluginRunRequest {
+  projectId: string;
+  pluginId: string;
+  actionId: string;
+  /** Every field's value, a checkbox's as "true"/"false". */
+  values: Record<string, string>;
+  revision: string;
+}
+
+export interface PluginPreview {
+  argv: string[];
+  cwd: string;
+  /** The action's confirm question with the values filled in; null when none. */
+  confirm: string | null;
+}
+
+/** An action's last run, as its task panel shows it. */
+export interface TaskRun {
+  status: "dormant" | "spawning" | "running" | "exited" | "stopped" | "error";
+  code: number | null;
+  endedAt: number | null;
+  error: string | null;
+}
+
+export interface PluginsRef extends PluginsView {
+  /** pluginId → controlId → the field's value as a run sends it. */
+  values: Record<string, Record<string, string>>;
+  /** `pluginId:actionId` → its last run, for actions that have a task panel. */
+  runs: Record<string, TaskRun>;
+}
+
+export interface TaskEnd {
+  /** `closed`: its panel was closed (which ends the run); `replaced`: it was run
+   *  again before this run's end was seen. */
+  status: "exited" | "stopped" | "error" | "closed" | "replaced";
+  code: number | null;
+  error: string | null;
+  /** The last lines it printed; empty when there is no terminal to read. */
+  tail: string[];
+  /** How long it ran, ms. */
+  ms: number;
 }

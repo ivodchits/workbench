@@ -5,6 +5,7 @@
 
 import type { Spend } from "../ipc/assistant";
 import type { Note, NoteMeta } from "../ipc/notes";
+import type { PluginFile, Problem } from "../ipc/plugins";
 import type { TranscriptPage } from "../ipc/transcript";
 import type { RateLimits } from "../ipc/usageLimits";
 import type {
@@ -14,6 +15,8 @@ import type {
   PhaseListener,
   PromptDelivery,
   SessionPhase,
+  TaskEnd,
+  TaskRun,
   WorkbenchPort,
 } from "./port";
 import type { Notice } from "./protocol";
@@ -33,6 +36,33 @@ export interface FakePortData {
   spend?: Spend;
   /** What `sendPrompt` reports. */
   delivery?: PromptDelivery;
+  /** Plugin files by project id (`file` is the text parsed, `null` when it has
+   *  problems); the revision counts writes. */
+  plugins?: Record<string, FakePlugins>;
+  /** Scripts by `projectId/name`. */
+  scripts?: Record<string, string>;
+}
+
+export interface FakePlugins {
+  text: string | null;
+  rev: number;
+  values?: Record<string, Record<string, string>>;
+  runs?: Record<string, TaskRun>;
+}
+
+/** The fake's parse: JSON with a `version` and a `plugins` array. */
+export function fakeCheck(text: string): Problem[] {
+  let v: unknown;
+  try {
+    v = JSON.parse(text);
+  } catch (e) {
+    return [{ path: "", message: `not valid JSON: ${(e as Error).message}` }];
+  }
+  const o = v as { version?: unknown; plugins?: unknown };
+  const out: Problem[] = [];
+  if (o.version !== 1) out.push({ path: "version", message: "missing; write \"version\": 1" });
+  if (!Array.isArray(o.plugins)) out.push({ path: "plugins", message: "missing" });
+  return out;
 }
 
 export interface FakePort extends WorkbenchPort {
@@ -40,6 +70,8 @@ export interface FakePort extends WorkbenchPort {
   calls: { name: string; args: unknown[] }[];
   /** Fire a phase change at the `onPhase` listeners. */
   phase(instanceId: string, phase: SessionPhase, prev?: SessionPhase): void;
+  /** End a task run, for its `onTaskEnd` listeners. */
+  endTask(taskId: string, end: Partial<TaskEnd>): void;
 }
 
 export function project(p: Partial<ProjectRef> & { id: string }): ProjectRef {
@@ -72,6 +104,11 @@ export function session(
 
 export function fakePort(data: FakePortData = {}): FakePort {
   const listeners = new Set<PhaseListener>();
+  const taskEnds = new Map<string, (end: TaskEnd) => void>();
+  const pluginsOf = (projectId: string) => (data.plugins ??= {})[projectId];
+  const revOf = (f: FakePlugins | undefined) => (f?.text != null ? `p-${f.rev}` : null);
+  const parsed = (f: FakePlugins | undefined): PluginFile | null =>
+    f?.text != null && fakeCheck(f.text).length === 0 ? (JSON.parse(f.text) as PluginFile) : null;
   const notes = (projectId: string) =>
     ((data.notes ??= {})[projectId] ??= []);
   const sessionOf = (id: string) => {
@@ -228,6 +265,79 @@ export function fakePort(data: FakePortData = {}): FakePort {
     phase(id, phase, prev) {
       for (const l of [...listeners]) l(id, phase, prev ?? null);
     },
+
+    listPlugins(projectId) {
+      const f = pluginsOf(projectId);
+      return Promise.resolve({
+        path: `notes/${projectId}/plugins.json`,
+        revision: revOf(f),
+        file: parsed(f),
+        problems: f?.text != null ? fakeCheck(f.text) : [],
+        values: f?.values ?? {},
+        runs: f?.runs ?? {},
+      });
+    },
+    pluginsText(projectId) {
+      const f = pluginsOf(projectId);
+      return Promise.resolve({
+        path: `notes/${projectId}/plugins.json`,
+        revision: revOf(f),
+        text: f?.text ?? null,
+      });
+    },
+    checkPlugins: (text) => Promise.resolve(fakeCheck(text)),
+    writePlugins(projectId, text, baseRevision) {
+      const f = ((data.plugins ??= {})[projectId] ??= { text: null, rev: 0 });
+      if (baseRevision !== null && revOf(f) !== baseRevision)
+        return Promise.reject("stale: plugins.json changed since it was read");
+      const problems = fakeCheck(text);
+      if (problems.length)
+        return Promise.reject(
+          `not saved, the file has problems:\n${problems.map((p) => `${p.path}: ${p.message}`).join("\n")}`,
+        );
+      record("writePlugins", projectId, text, baseRevision);
+      f.text = text;
+      f.rev += 1;
+      return Promise.resolve(`p-${f.rev}`);
+    },
+    readScript: (projectId, name) => Promise.resolve(data.scripts?.[`${projectId}/${name}`] ?? null),
+    writeScript(projectId, name, text) {
+      record("writeScript", projectId, name, text);
+      (data.scripts ??= {})[`${projectId}/${name}`] = text;
+      return Promise.resolve();
+    },
+    previewPluginAction(req) {
+      const f = pluginsOf(req.projectId);
+      if (revOf(f) !== req.revision) return Promise.reject("stale: plugins.json changed since this action was shown");
+      const action = parsed(f)
+        ?.plugins.find((p) => p.id === req.pluginId)
+        ?.actions.find((a) => a.id === req.actionId);
+      if (!action) return Promise.reject(`no action ${req.pluginId}:${req.actionId}`);
+      const fill = (t: string) => t.replace(/\{([A-Za-z][\w-]*)\}/g, (m, k: string) => req.values[k] ?? m);
+      return Promise.resolve({
+        argv: action.run.map(fill),
+        cwd: `C:/src/${req.projectId}`,
+        confirm: action.confirm ? fill(action.confirm) : null,
+      });
+    },
+    runPluginAction(req) {
+      record("runPluginAction", req);
+      return Promise.resolve({
+        taskId: `task:${req.projectId}:${req.pluginId}:${req.actionId}`,
+        label: `${req.pluginId}: ${req.actionId}`,
+      });
+    },
+    onTaskEnd(taskId, cb) {
+      taskEnds.set(taskId, cb);
+      return () => {
+        if (taskEnds.get(taskId) === cb) taskEnds.delete(taskId);
+      };
+    },
+    endTask(taskId, end) {
+      const cb = taskEnds.get(taskId);
+      taskEnds.delete(taskId);
+      cb?.({ status: "exited", code: 0, error: null, tail: [], ms: 1000, ...end });
+    },
   };
   return port;
 }
@@ -236,9 +346,10 @@ export function fakePort(data: FakePortData = {}): FakePort {
 export function toolCtx(
   port: WorkbenchPort,
   settings: Partial<DuckSettings> = {},
-): ToolContext & { notices: Notice[]; posted: string[] } {
+): ToolContext & { prepared: undefined; notices: Notice[]; posted: string[] } {
   const ctx = {
     port,
+    prepared: undefined,
     threadId: "t",
     signal: new AbortController().signal,
     settings: { ...DEFAULT_SETTINGS, ...settings },

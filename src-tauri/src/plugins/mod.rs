@@ -159,15 +159,98 @@ pub fn init(root: &Path, project_id: &str) -> Result<PathBuf, String> {
     Ok(path)
 }
 
+/// The file's raw text and revision (both `None` when there is no file), for
+/// Duck, which edits it as text (W5).
+#[derive(Serialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginsText {
+    path: String,
+    revision: Option<String>,
+    text: Option<String>,
+}
+
+pub fn read_text(root: &Path, project_id: &str) -> Result<PluginsText, String> {
+    let path = data_dir(root, project_id)?.join(FILE);
+    let path_s = path.to_string_lossy().into_owned();
+    match std::fs::read(&path) {
+        Ok(bytes) => Ok(PluginsText {
+            path: path_s,
+            revision: Some(revision_of(&bytes)),
+            text: Some(String::from_utf8_lossy(&bytes).into_owned()),
+        }),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            Ok(PluginsText { path: path_s, revision: None, text: None })
+        }
+        Err(e) => Err(format!("cannot read {FILE}: {e}")),
+    }
+}
+
+/// Delete the file, refused ([`STALE`]) when it moved on from `base`: undoing an
+/// edit that made it.
+pub fn remove(root: &Path, project_id: &str, base: &str) -> Result<(), String> {
+    let path = data_dir(root, project_id)?.join(FILE);
+    let _guard = crate::notes::write_lock();
+    match std::fs::read(&path) {
+        Ok(bytes) if revision_of(&bytes) != base => Err(format!("{STALE} {FILE} changed since it was read")),
+        Ok(_) => std::fs::remove_file(&path).map_err(|e| format!("cannot delete {FILE}: {e}")),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(format!("cannot read {FILE}: {e}")),
+    }
+}
+
+/// The folder next to the file for scripts its actions call (`{data}/scripts/…`),
+/// so they sync with it.
+const SCRIPTS: &str = "scripts";
+
+/// A script's path: one plain file name, no folders.
+fn script_path(root: &Path, project_id: &str, name: &str) -> Result<PathBuf, String> {
+    let ok = name.len() <= 80
+        && name.chars().all(|c| c.is_ascii_alphanumeric() || "._-".contains(c))
+        && name.chars().next().is_some_and(|c| c.is_ascii_alphanumeric())
+        && !name.contains("..");
+    if !ok {
+        return Err(format!("\"{name}\" isn't a script name: use letters, digits, '.', '_' and '-', no folders"));
+    }
+    Ok(data_dir(root, project_id)?.join(SCRIPTS).join(name))
+}
+
+/// A script's text; `None` when there is none.
+pub fn read_script(root: &Path, project_id: &str, name: &str) -> Result<Option<String>, String> {
+    match std::fs::read(script_path(root, project_id, name)?) {
+        Ok(bytes) => Ok(Some(String::from_utf8_lossy(&bytes).into_owned())),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(format!("cannot read {SCRIPTS}/{name}: {e}")),
+    }
+}
+
+/// Write a script, or delete it when `text` is `None`.
+pub fn write_script(root: &Path, project_id: &str, name: &str, text: Option<&str>) -> Result<(), String> {
+    let path = script_path(root, project_id, name)?;
+    let _guard = crate::notes::write_lock();
+    match text {
+        Some(t) if t.len() > MAX_FILE_BYTES => {
+            Err(format!("{SCRIPTS}/{name} is over {} KB", MAX_FILE_BYTES / 1024))
+        }
+        Some(t) => replace(&path, t.as_bytes()),
+        None => match std::fs::remove_file(&path) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
+                Err(format!("cannot delete {SCRIPTS}/{name}: {e}"))
+            }
+            _ => Ok(()),
+        },
+    }
+}
+
 /// Write through a temp file and a rename, so a reader never sees half a file.
 fn replace(path: &Path, bytes: &[u8]) -> Result<(), String> {
     let dir = path.parent().ok_or("no folder for the file")?;
     std::fs::create_dir_all(dir).map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
-    let tmp = path.with_extension("json.tmp");
-    std::fs::write(&tmp, bytes).map_err(|e| format!("cannot save {FILE}: {e}"))?;
+    let name = path.file_name().map_or(FILE.into(), |n| n.to_string_lossy().into_owned());
+    let tmp = path.with_file_name(format!("{name}.tmp"));
+    std::fs::write(&tmp, bytes).map_err(|e| format!("cannot save {name}: {e}"))?;
     std::fs::rename(&tmp, path).map_err(|e| {
         let _ = std::fs::remove_file(&tmp);
-        format!("cannot save {FILE}: {e}")
+        format!("cannot save {name}: {e}")
     })
 }
 
@@ -187,6 +270,10 @@ pub struct TaskRequest {
     pub action_id: String,
     #[serde(default)]
     pub values: HashMap<String, String>,
+    /// The file's revision when the run was shown (Duck's card, W5): refused
+    /// ([`STALE`]) when the file changed since, so what runs is what was shown.
+    #[serde(default)]
+    pub revision: Option<String>,
 }
 
 /// A task ready to spawn.
@@ -204,6 +291,9 @@ pub struct TaskCommand {
 pub fn prepare_task(app: &AppHandle, req: &TaskRequest) -> Result<TaskCommand, String> {
     let root = notes_root(app)?;
     let view = read(&root, &req.project_id)?;
+    if req.revision.is_some() && view.revision != req.revision {
+        return Err(format!("{STALE} {FILE} changed since this action was shown"));
+    }
     let file = view.file.ok_or_else(|| format!("{FILE} has problems; fix them before running an action"))?;
     let plugin = file
         .plugins
@@ -347,6 +437,61 @@ pub fn plugins_init(app: AppHandle, project_id: String) -> Result<String, String
     Ok(path.to_string_lossy().into_owned())
 }
 
+/// The file as text, for Duck (W5).
+#[tauri::command]
+pub fn plugins_text(app: AppHandle, project_id: String) -> Result<PluginsText, String> {
+    read_text(&notes_root(&app)?, &project_id)
+}
+
+/// Everything wrong with `text` as a plugin file; empty when it would save.
+#[tauri::command]
+pub fn plugins_check(text: String) -> Vec<Problem> {
+    if text.len() > MAX_FILE_BYTES {
+        let message = format!("the file is over {} KB", MAX_FILE_BYTES / 1024);
+        return vec![Problem { path: String::new(), message }];
+    }
+    format::parse(&text).err().unwrap_or_default()
+}
+
+/// Delete the file if it is still at `base_revision` (undoing the edit that made it).
+#[tauri::command]
+pub fn plugins_remove(app: AppHandle, project_id: String, base_revision: String) -> Result<(), String> {
+    remove(&notes_root(&app)?, &project_id, &base_revision)?;
+    notify_changed(&app, &project_id);
+    Ok(())
+}
+
+/// What a run would spawn, without spawning it: the argv with its placeholders
+/// filled in, and the working dir. Duck's card shows them.
+#[derive(Serialize, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskPreview {
+    argv: Vec<String>,
+    cwd: String,
+}
+
+#[tauri::command]
+pub fn plugins_preview(app: AppHandle, task: TaskRequest) -> Result<TaskPreview, String> {
+    let t = prepare_task(&app, &task)?;
+    Ok(TaskPreview { argv: t.shown, cwd: t.cwd.to_string_lossy().into_owned() })
+}
+
+#[tauri::command]
+pub fn plugins_script_read(app: AppHandle, project_id: String, name: String) -> Result<Option<String>, String> {
+    read_script(&notes_root(&app)?, &project_id, &name)
+}
+
+/// Write a script into the project's `scripts/` folder; `text: null` deletes it.
+#[tauri::command]
+pub fn plugins_script_write(
+    app: AppHandle,
+    project_id: String,
+    name: String,
+    text: Option<String>,
+) -> Result<(), String> {
+    write_script(&notes_root(&app)?, &project_id, &name, text.as_deref())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -395,6 +540,28 @@ mod tests {
         assert!(write(&r, P, good, Some(&rev)).unwrap_err().starts_with(STALE), "the old revision is stale");
         assert_eq!(write(&r, P, good, Some(&next)).unwrap(), next);
         assert!(write(&r, "../x", good, None).is_err());
+        let _ = std::fs::remove_dir_all(&r);
+    }
+
+    #[test]
+    fn text_remove_and_scripts() {
+        let r = root();
+        assert!(read_text(&r, P).unwrap().text.is_none());
+        init(&r, P).unwrap();
+        let t = read_text(&r, P).unwrap();
+        assert_eq!(t.text.as_deref(), Some(STARTER));
+        let rev = t.revision.unwrap();
+        assert!(remove(&r, P, "0").unwrap_err().starts_with(STALE));
+        remove(&r, P, &rev).unwrap();
+        assert!(read_text(&r, P).unwrap().revision.is_none());
+
+        for bad in ["../x.ps1", "a/b.ps1", "a\\b.ps1", ".hidden", ""] {
+            assert!(write_script(&r, P, bad, Some("x")).is_err(), "{bad}");
+        }
+        write_script(&r, P, "deploy.ps1", Some("echo hi")).unwrap();
+        assert_eq!(read_script(&r, P, "deploy.ps1").unwrap().as_deref(), Some("echo hi"));
+        write_script(&r, P, "deploy.ps1", None).unwrap();
+        assert_eq!(read_script(&r, P, "deploy.ps1").unwrap(), None);
         let _ = std::fs::remove_dir_all(&r);
     }
 

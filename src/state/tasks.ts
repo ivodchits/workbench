@@ -200,3 +200,8 @@ export function initTasks(): void {
 export function useTasks(): TasksState {
   return useSyncExternalStore(subscribe, () => state);
 }
+
+/** Hear every change to the tasks (Duck's run watch, W5); returns the unsubscribe. */
+export function onTasksChange(cb: () => void): () => void {
+  return subscribe(cb);
+}

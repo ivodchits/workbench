@@ -18,6 +18,12 @@ import {
   notesWrite,
 } from "../../ipc/notes";
 import { openUrl } from "../../ipc/os";
+import {
+  pluginsRemove,
+  pluginsScriptRead,
+  pluginsScriptWrite,
+  pluginsWrite,
+} from "../../ipc/plugins";
 import { focusActivePanel, activatePanel } from "../../state/dock";
 import { getRegistry } from "../../state/registry";
 import { setActiveProject } from "../../state/activeProject";
@@ -26,7 +32,12 @@ import { formatAgo } from "../../util/format";
 import { renderMarkdown } from "../Editor/markdown";
 import "../../theme/markdown.css";
 import "../../theme/assistant.css";
-import type { ConfirmRequest, NoteEdit } from "../../assistant/protocol";
+import type {
+  ConfirmRequest,
+  NoteEdit,
+  PluginsEdit,
+  ReviewItem,
+} from "../../assistant/protocol";
 import DuckIcon from "./DuckIcon";
 import DrawerSettings from "./DrawerSettings";
 import { DecisionsPanel, TrustPanel } from "./TrustViews";
@@ -599,7 +610,28 @@ function ItemView({ item, active }: { item: Item; active: boolean }) {
         </div>
       );
     case "note":
-      return <NoteChip text={item.text} edit={item.edit} />;
+      return (
+        <EditChip
+          text={item.text}
+          project={item.edit.project}
+          files={[{ label: item.edit.name, before: item.edit.before ?? "", after: item.edit.after ?? "" }]}
+          undo={() => undoNoteEdit(item.edit)}
+          staleText="can't undo: the note changed since"
+        />
+      );
+    case "plugins":
+      return (
+        <EditChip
+          text={item.text}
+          project={item.edit.project}
+          files={[
+            { label: "plugins.json", before: item.edit.before ?? "", after: item.edit.after },
+            ...item.edit.scripts.map((s) => ({ label: `scripts/${s.name}`, before: s.before ?? "", after: s.after })),
+          ]}
+          undo={() => undoPluginsEdit(item.edit)}
+          staleText="can't undo: the plugin file changed since"
+        />
+      );
     case "notice":
       return (
         <div
@@ -746,33 +778,57 @@ async function undoNoteEdit(e: NoteEdit): Promise<string> {
   return "undone";
 }
 
-/** "Duck edited <note>" (step W2): the change as a diff, and an undo that is
- *  refused when the note changed after Duck's edit. */
-function NoteChip({ text, edit }: { text: string; edit: NoteEdit }) {
+/** Put a project's toolbar back as it was before Duck's edit (W5): the plugin file
+ *  if nobody changed it since (else nothing), then each script still as Duck wrote
+ *  it. */
+async function undoPluginsEdit(e: PluginsEdit): Promise<string> {
+  if (e.before === null) await pluginsRemove(e.projectId, e.revision);
+  else await pluginsWrite(e.projectId, e.before, e.revision);
+  const kept: string[] = [];
+  for (const s of e.scripts) {
+    if ((await pluginsScriptRead(e.projectId, s.name)) !== s.after) kept.push(s.name);
+    else await pluginsScriptWrite(e.projectId, s.name, s.before);
+  }
+  return kept.length ? `undone, but not ${kept.join(", ")} (changed since)` : "undone";
+}
+
+/** "Duck edited <note>" (step W2), "Duck edited the build toolbar" (W5): the
+ *  change as a diff, and an undo that is refused when the file changed after
+ *  Duck's edit. */
+function EditChip({
+  text,
+  project,
+  files,
+  undo: runUndo,
+  staleText,
+}: {
+  text: string;
+  project: string;
+  files: DiffFile[];
+  undo: () => Promise<string>;
+  staleText: string;
+}) {
   const [open, setOpen] = useState(false);
   const [status, setStatus] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const undo = async () => {
     setBusy(true);
     try {
-      setStatus(await undoNoteEdit(edit));
+      setStatus(await runUndo());
     } catch (e) {
       setStatus(
         // A refused write (a string from the backend) or our own check.
-        String(e).includes("stale:")
-          ? "can't undo: the note changed since"
-          : `undo failed: ${String(e)}`,
+        String(e).includes("stale:") ? staleText : `undo failed: ${String(e)}`,
       );
     } finally {
       setBusy(false);
     }
   };
-  const diff = open ? lineDiff(edit.before ?? "", edit.after ?? "") : [];
   return (
     <div style={{ margin: "3px 16px" }}>
       <div style={{ display: "flex", gap: 8, alignItems: "baseline", flexWrap: "wrap" }}>
         <span style={{ color: "var(--wb-accent)" }}>✎ {text}</span>
-        <span style={{ color: "var(--wb-textFaint)" }}>{edit.project}</span>
+        <span style={{ color: "var(--wb-textFaint)" }}>{project}</span>
         <button type="button" style={linkBtn} onClick={() => setOpen(!open)}>
           {open ? "hide diff" : "show diff"}
         </button>
@@ -789,37 +845,62 @@ function NoteChip({ text, edit }: { text: string; edit: NoteEdit }) {
           </button>
         )}
       </div>
-      {open && (
-        <div style={{ ...pre, marginTop: 4, fontFamily: "var(--wb-mono)" }}>
-          {diff.length === 0 && (
-            <span style={{ color: "var(--wb-textFaint)" }}>no change</span>
-          )}
-          {diff.map((l, k) =>
-            l === null ? (
-              <div key={k} style={{ color: "var(--wb-textFaint)" }}>
-                ⋯
-              </div>
-            ) : (
-              <div
-                key={k}
-                style={{
-                  color:
-                    l.op === "+"
-                      ? "var(--wb-done)"
-                      : l.op === "-"
-                        ? "var(--wb-needs)"
-                        : undefined,
-                }}
-              >
-                {l.op} {l.text}
-              </div>
-            ),
-          )}
-        </div>
-      )}
+      {open && <DiffBlock files={files} style={{ marginTop: 4 }} />}
     </div>
   );
 }
+
+interface DiffFile {
+  label: string;
+  before: string;
+  after: string;
+}
+
+/** Line diffs of one or more files; a file's name heads its diff when there are
+ *  several. */
+function DiffBlock({ files, style }: { files: DiffFile[]; style?: React.CSSProperties }) {
+  return (
+    <div style={{ ...pre, fontFamily: "var(--wb-mono)", ...style }}>
+      {files.map((f, i) => {
+        const diff = lineDiff(f.before, f.after);
+        return (
+          <div key={f.label} style={{ marginTop: i ? 8 : 0 }}>
+            {files.length > 1 && (
+              <div style={{ color: "var(--wb-textFaint)" }}>{f.label}</div>
+            )}
+            {diff.length === 0 && (
+              <span style={{ color: "var(--wb-textFaint)" }}>no change</span>
+            )}
+            {diff.map((l, k) =>
+              l === null ? (
+                <div key={k} style={{ color: "var(--wb-textFaint)" }}>
+                  ⋯
+                </div>
+              ) : (
+                <div
+                  key={k}
+                  style={{
+                    color:
+                      l.op === "+"
+                        ? "var(--wb-done)"
+                        : l.op === "-"
+                          ? "var(--wb-needs)"
+                          : undefined,
+                  }}
+                >
+                  {l.op} {l.text}
+                </div>
+              ),
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+const reviewFiles = (items: ReviewItem[]): DiffFile[] =>
+  items.map((r) => ({ label: r.label, before: r.before ?? "", after: r.after }));
 
 // ── confirmations, spend, composer ──────────────────────────────────────────
 
@@ -885,6 +966,9 @@ function ConfirmCard({ ask }: { ask: ConfirmRequest }) {
         >
           {details ? "hide details" : "details"}
         </button>
+      )}
+      {ask.review && (
+        <DiffBlock files={reviewFiles(ask.review)} style={{ maxHeight: 260 }} />
       )}
       {details && (
         <div style={{ ...pre, maxHeight: 160 }}>{readableInput(ask.input)}</div>

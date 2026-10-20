@@ -16,12 +16,21 @@ import {
   notesRead,
   notesWrite,
 } from "../ipc/notes";
+import {
+  pluginsCheck,
+  pluginsPreview,
+  pluginsScriptRead,
+  pluginsScriptWrite,
+  pluginsText,
+  pluginsWrite,
+} from "../ipc/plugins";
 import { INTERRUPT_KEY, ptyWrite } from "../ipc/pty";
 import type { Instance } from "../ipc/registry";
 import { readTranscriptBack } from "../ipc/transcript";
 import { getUsageLimits } from "../ipc/usageLimits";
+import { startPluginRunFor } from "../panels/pluginRun";
 import { sendOrQueue } from "../panels/promptDelivery";
-import { release } from "../panels/terminalPool";
+import { readTail, release } from "../panels/terminalPool";
 import { setActiveProject } from "../state/activeProject";
 import {
   closeConsole,
@@ -33,6 +42,8 @@ import { closeDiff, diffIdFor, openDiff } from "../state/diffs";
 import { activatePanel } from "../state/dock";
 import { openGit } from "../state/git";
 import { openNotes } from "../state/notes";
+import { fillForDisplay, runValues, type FieldValue } from "../state/pluginModel";
+import { getPluginsView, loadPlugins, storedValues } from "../state/plugins";
 import {
   getPendingChoice,
   markChoiceSent,
@@ -50,8 +61,9 @@ import {
   markInterrupted,
   onStatusTransition,
 } from "../state/status";
+import { getOpenTasks, getTask, isLive, onTasksChange } from "../state/tasks";
 import { effectiveModel } from "../util/models";
-import type { ChoiceRef, WorkbenchPort } from "./port";
+import type { ChoiceRef, TaskEnd, TaskRun, WorkbenchPort } from "./port";
 
 function choiceRef(p: PendingChoice): ChoiceRef {
   return {
@@ -79,6 +91,11 @@ const running = (id: string) =>
 function requireRunning(i: Instance): void {
   if (!running(i.id)) throw new Error(`"${i.title}" isn't running.`);
 }
+
+/** How many of a task's last lines Duck's report carries. */
+const TAIL_LINES = 15;
+/** The PTY's exit can come just before its last output reaches the terminal. */
+const TAIL_SETTLE_MS = 300;
 
 /** Show a session's console as the rail does: its project, its panel focused. */
 function show(i: Instance): void {
@@ -270,4 +287,75 @@ export const localPort: WorkbenchPort = {
   createNote: notesCreateWith,
   deleteNote: notesDelete,
   onPhase: (cb) => onStatusTransition(cb),
+
+  async listPlugins(projectId) {
+    await loadPlugins(projectId);
+    const view = getPluginsView(projectId);
+    if (!view) throw new Error("the plugin file couldn't be read");
+    const values: Record<string, Record<string, string>> = {};
+    for (const plugin of view.file?.plugins ?? [])
+      values[plugin.id] = runValues(plugin, storedValues(projectId, plugin.id));
+    const runs: Record<string, TaskRun> = {};
+    for (const t of getOpenTasks())
+      if (t.projectId === projectId)
+        runs[`${t.pluginId}:${t.actionId}`] = {
+          status: t.status,
+          code: t.code,
+          endedAt: t.endedAt,
+          error: t.error,
+        };
+    return { ...view, values, runs };
+  },
+  pluginsText,
+  checkPlugins: pluginsCheck,
+  writePlugins: pluginsWrite,
+  readScript: pluginsScriptRead,
+  writeScript: pluginsScriptWrite,
+  async previewPluginAction(req) {
+    const t = await pluginsPreview(req);
+    await loadPlugins(req.projectId);
+    const plugin = getPluginsView(req.projectId)?.file?.plugins.find((p) => p.id === req.pluginId);
+    const action = plugin?.actions.find((a) => a.id === req.actionId);
+    let confirm: string | null = null;
+    if (plugin && action?.confirm) {
+      // The run's values as the toolbar stores them: a checkbox's as a flag.
+      const shown: Record<string, FieldValue> = {};
+      for (const c of plugin.controls)
+        if (c.type !== "button" && c.id in req.values)
+          shown[c.id] = c.type === "checkbox" ? req.values[c.id] === "true" : req.values[c.id];
+      confirm = fillForDisplay(action.confirm, plugin, shown);
+    }
+    return { argv: t.argv, cwd: t.cwd, confirm };
+  },
+  async runPluginAction(req) {
+    const r = await startPluginRunFor(req.projectId, req.pluginId, req.actionId, req.values, req.revision);
+    return { taskId: r.taskId, label: r.label };
+  },
+  onTaskEnd(taskId, cb) {
+    const run = getTask(taskId)?.run ?? 0;
+    const started = Date.now();
+    let done = false;
+    const finish = (end: Omit<TaskEnd, "tail" | "ms">, tail: boolean) => {
+      done = true;
+      off();
+      const report = () =>
+        cb({ ...end, tail: (tail && readTail(taskId, TAIL_LINES)) || [], ms: Date.now() - started });
+      if (tail) setTimeout(report, TAIL_SETTLE_MS);
+      else report();
+    };
+    const check = () => {
+      if (done) return;
+      const t = getTask(taskId);
+      if (!t) finish({ status: "closed", code: null, error: null }, false);
+      else if (t.run !== run) finish({ status: "replaced", code: null, error: null }, false);
+      else if (!isLive(t) && t.status !== "dormant")
+        finish({ status: t.status as "exited" | "stopped" | "error", code: t.code, error: t.error }, true);
+    };
+    const off = onTasksChange(check);
+    check();
+    return () => {
+      done = true;
+      off();
+    };
+  },
 };

@@ -18,6 +18,8 @@ export interface BatchCall {
   state: "done" | "ask" | "allowed" | "denied";
   /** The `tool_result` block, once there is one. */
   result?: unknown;
+  /** What the tool's `prepare` returned, for its card and its run. */
+  prepared?: unknown;
 }
 
 /** The tool calls of one assistant message, parked until every `ask` is answered. */

@@ -250,10 +250,21 @@ const STOPPED =
 class TimedOut extends Error {}
 class Stopped extends Error {}
 
+/** `p`, or a rejection once `ms` have passed. */
+function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  return Promise.race([
+    p,
+    new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new Error(`no answer within ${ms / 1000} s`)), ms);
+    }),
+  ]).finally(() => clearTimeout(timer));
+}
+
 async function runTool(
   tool: ToolDef,
   call: ToolUse,
-  ctx: ToolContext,
+  ctx: ToolContext & { prepared: unknown },
 ): Promise<ToolResult> {
   const parsed = tool.schema.safeParse(call.input);
   if (!parsed.success) {
@@ -513,12 +524,24 @@ export function createEngine(deps: EngineDeps): Engine {
   ): Promise<ToolResult[] | null> {
     setState(threadId, "tool");
     const notices: string[] = [];
-    const calls: BatchCall[] = uses.map((u) => {
+    const calls: BatchCall[] = [];
+    for (const u of uses) {
       const tool = registry.get(u.name);
       const call: BatchCall = { id: u.id, name: u.name, input: u.input, state: "done" };
+      calls.push(call);
       // A call whose input doesn't fit its schema can't run: it fails at once
       // with the reason rather than asking the user to allow it.
-      if (!tool || !tool.schema.safeParse(u.input).success) return call;
+      if (!tool || !tool.schema.safeParse(u.input).success) continue;
+      // What the card shows is worked out first; a call that can't be (no such
+      // action, a file with problems) fails before any card, with the reason.
+      if (tool.prepare) {
+        try {
+          call.prepared = await withTimeout(registry.prepare(u.name, u.input, port), tool.timeoutMs);
+        } catch (e) {
+          call.result = errorResult(u.id, `${u.name} failed: ${errorMessage(e)}`);
+          continue;
+        }
+      }
       const tier = registry.callTier(u.name, u.input, port);
       const a = verdictOf(
         gate({
@@ -527,20 +550,19 @@ export function createEngine(deps: EngineDeps): Engine {
           tier,
           threadId,
           toolUseId: u.id,
-          summary: tier === "read" ? undefined : registry.describe(u.name, u.input, port),
-          facts: tier === "read" ? undefined : registry.trustFacts(u.name, u.input, port),
+          summary: tier === "read" ? undefined : registry.describe(u.name, u.input, port, call.prepared),
+          facts: tier === "read" ? undefined : registry.trustFacts(u.name, u.input, port, call.prepared),
         }),
       );
       if (a.notice) notices.push(a.notice);
       if (a.verdict === "ask") call.state = "ask";
       if (a.verdict === "deny") call.result = errorResult(u.id, a.reason ?? DECLINED);
-      return call;
-    });
+    }
     for (const text of notices) await notice(threadId, { kind: "trust", text });
     await Promise.all(
       calls.map(async (c, i) => {
         if (c.state !== "done" || c.result) return;
-        c.result = await execute(threadId, turn, uses[i]);
+        c.result = await execute(threadId, turn, uses[i], c.prepared);
       }),
     );
     if (calls.every((c) => c.state === "done"))
@@ -560,6 +582,7 @@ export function createEngine(deps: EngineDeps): Engine {
     threadId: string,
     turn: Turn,
     use: ToolUse,
+    prepared: unknown,
   ): Promise<ToolResult> {
     const tool = registry.get(use.name);
     emit({
@@ -576,6 +599,7 @@ export function createEngine(deps: EngineDeps): Engine {
           threadId,
           signal: turn.ctl.signal,
           settings: settings(),
+          prepared,
           notice: (n) => notice(threadId, n).then(() => {}),
           later: (text) => {
             send({ threadId, text: eventText(text), source: "event" }).catch(
@@ -613,7 +637,7 @@ export function createEngine(deps: EngineDeps): Engine {
               id: c.id,
               name: c.name,
               input: c.input,
-            } as ToolUse);
+            } as ToolUse, c.prepared);
           }
           return errorResult(c.id, stopped ? STOPPED : DECLINED);
         }),
@@ -663,7 +687,8 @@ export function createEngine(deps: EngineDeps): Engine {
     batchId: string,
     c: BatchCall,
   ): ConfirmRequest {
-    const summary = registry.describe(c.name, c.input, port);
+    const summary = registry.describe(c.name, c.input, port, c.prepared);
+    const review = registry.review(c.name, c.input, c.prepared);
     return {
       threadId,
       batchId,
@@ -671,6 +696,7 @@ export function createEngine(deps: EngineDeps): Engine {
       name: c.name,
       input: c.input,
       ...(summary && { summary }),
+      ...(review?.length && { review }),
     };
   }
 

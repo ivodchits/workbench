@@ -12,7 +12,7 @@ import { pluginsInit, type Plugin, type PluginAction } from "../ipc/plugins";
 import { ptyKill } from "../ipc/pty";
 import { getRegistry } from "../state/registry";
 import { openProjectFile } from "../state/editors";
-import { useActiveProject } from "../state/activeProject";
+import { setActiveProject, useActiveProject } from "../state/activeProject";
 import { getPluginsView, loadPlugins, storedValues, usePluginsState } from "../state/plugins";
 import { actionTitle, blockingFields, fillForDisplay, runValues, taskIdFor } from "../state/pluginModel";
 import { getTask, isLive, markTaskStopped, startTask } from "../state/tasks";
@@ -91,13 +91,49 @@ export async function runPluginAction(projectId: string, pluginId: string, actio
   if (isLive(previous)) {
     if (!(await askConfirm(`${title} is still running. Stop it and run it again?`, "stop and run"))) return;
   }
+  startRun(projectId, plugin, action, runValues(plugin, stored));
+}
+
+/** Start a run in the action's task panel (made if needed, brought to front). */
+function startRun(
+  projectId: string,
+  plugin: Plugin,
+  action: PluginAction,
+  values: Record<string, string>,
+  revision?: string,
+): string {
+  const taskId = taskIdFor(projectId, plugin.id, action.id);
   // The previous run's terminal goes (and with it any PTY still running); the new
   // run gets a fresh one in the same panel.
   release(taskId);
   startTask(
-    { taskId, projectId, pluginId: plugin.id, actionId: action.id, label: title, long: action.long },
-    { projectId, pluginId: plugin.id, actionId: action.id, values: runValues(plugin, stored) },
+    { taskId, projectId, pluginId: plugin.id, actionId: action.id, label: actionTitle(plugin, action), long: action.long },
+    { projectId, pluginId: plugin.id, actionId: action.id, values, ...(revision && { revision }) },
   );
+  return taskId;
+}
+
+/** Duck's run (assistant plan W5), already confirmed on its card: no `confirm`
+ *  question, and refused while a run is going. The panel is drawn for the shown
+ *  project only, so the project is shown first. `revision` pins the file to the
+ *  one the card showed. Returns the task id and its run number. */
+export async function startPluginRunFor(
+  projectId: string,
+  pluginId: string,
+  actionId: string,
+  values: Record<string, string>,
+  revision: string,
+): Promise<{ taskId: string; run: number; label: string }> {
+  await loadPlugins(projectId);
+  const found = lookup(projectId, pluginId, actionId);
+  if (!found) throw new Error(`the plugin file has no action ${pluginId}: ${actionId} any more`);
+  const { plugin, action } = found;
+  const taskId = taskIdFor(projectId, plugin.id, action.id);
+  if (isLive(getTask(taskId)))
+    throw new Error(`${actionTitle(plugin, action)} is still running. Ask the user to stop it first, or wait for it to end.`);
+  setActiveProject(projectId);
+  startRun(projectId, plugin, action, values, revision);
+  return { taskId, run: getTask(taskId)?.run ?? 0, label: actionTitle(plugin, action) };
 }
 
 /** Stop a running task, keeping its output on screen. */

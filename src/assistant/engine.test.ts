@@ -659,6 +659,61 @@ describe("engine hooks for action tools (W2)", () => {
     expect(engine.state(id)).toBe("waiting");
   });
 
+  it("prepares a call before its card and runs it with what the card showed", async () => {
+    const ran: unknown[] = [];
+    let n = 0;
+    const deploy = defineTool({
+      name: "deploy",
+      description: "Deploy.",
+      schema: z.object({ to: z.string() }),
+      tier: "consequential",
+      async prepare({ to }) {
+        if (to === "nowhere") throw new Error("there is no nowhere");
+        return { argv: ["deploy", to], n: ++n };
+      },
+      describe: (_i, _p, r) => `Run ${r.argv.join(" ")}`,
+      review: ({ to }, r) => [{ label: "target", before: null, after: `${to} #${r.n}` }],
+      trust: (_i, _p, r) => ({ projectId: null, texts: r.argv }),
+      run: (_i, { prepared }) => {
+        ran.push(prepared);
+        return "deployed";
+      },
+    });
+    const seen: GateCall[] = [];
+    const { engine, store, events } = await setup(
+      [
+        message([toolUse("t1", "deploy", { to: "nowhere" }), toolUse("t2", "deploy", { to: "prod" })], "tool_use"),
+        message([text("Done.")], "end_turn"),
+      ],
+      [deploy],
+      undefined,
+      (call) => {
+        seen.push(call);
+        return "ask";
+      },
+    );
+    const id = await turn(engine, "deploy");
+    // The failed prepare never reached the gate or a card.
+    expect(seen.map((c) => c.toolUseId)).toEqual(["t2"]);
+    expect(seen[0]).toMatchObject({ summary: "Run deploy prod", facts: { texts: ["deploy", "prod"] } });
+    const asks = events.filter((e) => e.type === "confirm");
+    expect(asks).toHaveLength(1);
+    expect(engine.pendingRequests()[0]).toMatchObject({
+      toolUseId: "t2",
+      summary: "Run deploy prod",
+      review: [{ label: "target", before: null, after: "prod #1" }],
+    });
+    await engine.confirm(id, "t2", true);
+    await engine.settled(id);
+    expect(ran).toEqual([{ argv: ["deploy", "prod"], n: 1 }]);
+    const results = store.loaded(id).find((m) => m.role === "user" && m.source === "duck")?.content as {
+      is_error?: boolean;
+      content: unknown;
+    }[];
+    expect(results[0]).toMatchObject({ is_error: true, content: "deploy failed: there is no nowhere" });
+    expect(results[1].is_error).toBeFalsy();
+  });
+
   it("fails a call the gate refuses, with its reason, and shows the gate's notice", async () => {
     const seen: GateCall[] = [];
     const gate: Gate = (call) => {

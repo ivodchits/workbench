@@ -768,6 +768,20 @@ export function readScreen(instanceId: string): string[] | null {
   return out;
 }
 
+/** The last `n` lines with text in the instance's terminal (scrollback included),
+ *  or null when this window holds no terminal for it: what a task printed last,
+ *  for Duck's report when a run ends (W5). */
+export function readTail(instanceId: string, n: number): string[] | null {
+  const entry = pool.get(instanceId);
+  if (!entry) return null;
+  const buf = entry.term.buffer.active;
+  let end = buf.length;
+  while (end > 0 && !(buf.getLine(end - 1)?.translateToString(true) ?? "").trim()) end--;
+  const out: string[] = [];
+  for (let y = Math.max(0, end - n); y < end; y++) out.push(buf.getLine(y)?.translateToString(true) ?? "");
+  return out;
+}
+
 /** How long a console's box has to hold still before its terminal is resized to it. */
 const RESIZE_SETTLE_MS = 120;
 

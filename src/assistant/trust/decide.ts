@@ -5,7 +5,7 @@
 //   1. kill switch   trust paused: W2's cards (consequential calls ask)
 //      mode         the project is `off`: the same
 //      rate guard   too many automatic approvals in this thread: the same
-//   2. floor        always ask (`floor.ts`), whatever the rules say
+//   2. floor        always ask (`floor.ts`, or the tool says so), whatever the rules say
 //      setting      "ask before every prompt" is on and this sends one
 //   3. rules        deny / ask / allow (`rules.ts`)
 //   4. mandate      the user's own words in this thread allow it (`mandate.ts`)
@@ -41,6 +41,9 @@ export interface TrustFacts {
   call?: { tool: string; input: Record<string, unknown> };
   /** The user's words the call quotes as their permission. */
   grant?: string;
+  /** Why this call always asks, whatever the rules say (a plugin action whose
+   *  file asks to confirm it). Treated as the floor. */
+  asks?: string;
 }
 
 export interface TrustConfig {
@@ -118,6 +121,7 @@ export function decide(req: TrustRequest, cfg: TrustConfig, deps: DecideDeps): D
     cfg.floorOff,
   );
   if (floor) return out({ outcome: "ask", layer: "floor", reason: `floor: ${floor.label}` });
+  if (req.facts.asks) return out({ outcome: "ask", layer: "floor", reason: req.facts.asks });
   if (req.settingAsks)
     return out({ outcome: "ask", layer: "setting", reason: "you asked to confirm every prompt" });
 
