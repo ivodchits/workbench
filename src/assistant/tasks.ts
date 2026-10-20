@@ -15,6 +15,12 @@
 //   ping you (`setDuckTask`), Duck does.
 // - Records persist in duck.db (`assistant_tasks`); a task that was running when the
 //   app quit is checked again at start.
+// - Subscription limits (step D2): a task is about to start while the 5-hour window
+//   is at 70% or the week at 80%, so it runs as an **API worker** instead
+//   (`apiWorker.ts`): the same brief and result files, on Duck's credits, its cost on
+//   the card. Code tasks still take a session (an API worker has no files to work
+//   on), with a word to the thread. Past Duck's own API soft limit too, the task
+//   waits until the window that's over resets.
 
 import { z } from "zod";
 
@@ -23,9 +29,11 @@ import {
   taskList,
   taskPut,
   taskResult,
+  taskWriteResult,
   workspacePrepare,
   type TaskResultFiles,
 } from "../ipc/assistant";
+import { runApiWorker, type ApiWorkerOutcome } from "./apiWorker";
 import { choiceLine } from "./tools/read";
 import type { Mandate, PromptDelivery, SessionPhase, WorkbenchPort } from "./port";
 import type { DuckSettings, Tier } from "./settings";
@@ -76,8 +84,27 @@ export const Task = z.object({
   error: z.string().nullable(),
   /** The user's request in the thread (the session's mandate, for T2's judge). */
   mandate: z.string().nullable(),
+  // Step D2 (records from before it get the defaults).
+  /** The brief as Duck wrote it (also in `brief.md`): an API worker's input, and a
+   *  re-run's. */
+  brief: z.string().default(""),
+  /** What it runs on: a Claude Code session, or the API (over the subscription's
+   *  limits). */
+  runner: z.enum(["session", "api"]).default("session"),
+  /** Why it runs there or waits ("weekly limit at 85%"); null for the usual. */
+  why: z.string().nullable().default(null),
+  /** An API worker's cost so far, by the card's estimate. */
+  costUsd: z.number().nullable().default(null),
+  /** A queued task waiting for a limit to reset doesn't start before this. */
+  notBefore: z.number().nullable().default(null),
 });
 export type Task = z.infer<typeof Task>;
+
+/** The subscription's use (percent) past which a task runs as an API worker. */
+export const LIMITS = { fiveHour: 70, sevenDay: 80 };
+/** How long a task waiting on limits waits before they're read again, when the
+ *  reset time isn't known (or is further off). */
+export const LIMIT_RECHECK_MS = 15 * 60_000;
 
 /** The worker's `result.json`. */
 export const TaskResult = z.object({
@@ -91,6 +118,7 @@ export interface TaskBackend {
   prepare(dir: string | null): Promise<string>;
   newFolder(workspace: string, date: string, title: string, brief: string): Promise<string>;
   result(workspace: string, folder: string): Promise<TaskResultFiles>;
+  writeResult(workspace: string, folder: string, md: string, json: string): Promise<void>;
   put(task: Task): Promise<void>;
   list(): Promise<Task[]>;
 }
@@ -102,6 +130,7 @@ export const ipcTaskBackend: TaskBackend = {
   prepare: workspacePrepare,
   newFolder: taskFolder,
   result: taskResult,
+  writeResult: taskWriteResult,
   put: (t) => taskPut(t.id, JSON.stringify(t)),
   async list() {
     const rows = await taskList(LOAD_LIMIT);
@@ -140,6 +169,9 @@ export interface TaskManager {
   /** Close the task's console (everything stays on disk); a queued task never
    *  starts. */
   close(id: string): Promise<Task>;
+  /** Run the task again from its brief as a new task at `tier` (one up when
+   *  absent), and close this one. */
+  rerun(id: string, tier?: Tier): Promise<Task>;
   get(id: string): Task | undefined;
   /** Newest first. */
   list(): Task[];
@@ -158,7 +190,12 @@ export interface TaskDeps {
   newId?: () => string;
   /** Local date `YYYY-MM-DD`, for the folder name. */
   today?: () => string;
+  /** Run a task on the API (`runApiWorker`); fakes in tests. */
+  apiWorker?: (t: Task, brief: string, signal: AbortSignal, onCost: (usd: number) => void) => Promise<ApiWorkerOutcome>;
 }
+
+/** The tier above `t` (serious stays serious). */
+export const tierUp = (t: Tier): Tier => (t === "standard" ? "involved" : "serious");
 
 /** The prompt that asks for the result files again (once). */
 export const NUDGE =
@@ -266,7 +303,8 @@ export function createTaskManager(deps: TaskDeps): TaskManager {
     for (;;) {
       const all = [...tasks.values()];
       if (all.filter((t) => t.state === "running").length >= deps.settings().maxWorkers) break;
-      const next = all.filter((t) => t.state === "queued").sort((a, b) => a.created - b.created)[0];
+      const ready = (t: Task) => t.state === "queued" && (t.notBefore ?? 0) <= now();
+      const next = all.filter(ready).sort((a, b) => a.created - b.created)[0];
       if (!next) break;
       const p = start(next).finally(() => starting.delete(next.id));
       starting.set(next.id, p);
@@ -288,9 +326,95 @@ export function createTaskManager(deps: TaskDeps): TaskManager {
     return duckProject;
   };
 
+  /** The timer that starts tasks waiting on a limit, when it may have reset. */
+  let wake: ReturnType<typeof setTimeout> | null = null;
+  function wakeAt(at: number): void {
+    const next = [...tasks.values()].filter((t) => t.state === "queued" && t.notBefore);
+    const soonest = Math.min(at, ...next.map((t) => t.notBefore!));
+    if (wake) clearTimeout(wake);
+    wake = setTimeout(() => {
+      wake = null;
+      void pump();
+    }, Math.max(0, soonest - now()));
+  }
+
+  /** Where a task about to start runs: a session, the API, or nowhere yet (and
+   *  until when). */
+  async function route(t: Task): Promise<{ runner: "session" | "api"; why: string | null } | { until: number; why: string }> {
+    const l = await port.usageLimits().catch(() => null);
+    const over: string[] = [];
+    const resets: number[] = [];
+    if (l?.fiveHour && l.fiveHour.usedPercentage >= LIMITS.fiveHour) {
+      over.push(`the 5-hour limit is at ${Math.round(l.fiveHour.usedPercentage)}%`);
+      resets.push(l.fiveHour.resetsAt * 1000);
+    }
+    if (l?.sevenDay && l.sevenDay.usedPercentage >= LIMITS.sevenDay) {
+      over.push(`the weekly limit is at ${Math.round(l.sevenDay.usedPercentage)}%`);
+      resets.push(l.sevenDay.resetsAt * 1000);
+    }
+    if (over.length === 0) return { runner: "session", why: null };
+    const why = over.join(" and ");
+    if (t.kind === "code") return { runner: "session", why };
+    const spend = await port.spend().catch(() => null);
+    if (spend?.softReached || spend?.capReached) {
+      // The latest reset of the windows that are over, but read again within a while.
+      const until = Math.min(Math.max(...resets), now() + LIMIT_RECHECK_MS);
+      return { until: Math.max(until, now() + 60_000), why: `${why}, and Duck's API budget is past its soft limit` };
+    }
+    return { runner: "api", why };
+  }
+
+  /** Abort handles of API workers running. */
+  const apiRuns = new Map<string, AbortController>();
+  const apiWorker = deps.apiWorker ?? ((t, brief, signal, onCost) => runApiWorker(t, brief, undefined, signal, onCost));
+
+  /** Run a task as an API worker on `brief`. */
+  function startApi(id: string, brief: string, why: string | null): void {
+    const t = update(id, { runner: "api", why, runStarted: now(), costUsd: tasks.get(id)?.costUsd ?? 0 });
+    const ctl = new AbortController();
+    apiRuns.get(id)?.abort();
+    apiRuns.set(id, ctl);
+    const base = t.costUsd ?? 0;
+    void apiWorker(t, brief, ctl.signal, (usd) => {
+      if (!ctl.signal.aborted) update(id, { costUsd: base + usd });
+    })
+      .then(async (o) => {
+        if (ctl.signal.aborted || tasks.get(id)?.state !== "running") return;
+        const r = o.result;
+        await backend.writeResult(t.workspace, t.folder, r.markdown, JSON.stringify({ status: r.status, headline: r.headline, question: r.question }));
+        finish(id, { state: r.status, headline: r.headline, question: r.question, resultFrom: "file", costUsd: base + o.costUsd });
+      })
+      .catch((e: unknown) => {
+        if (ctl.signal.aborted || tasks.get(id)?.state !== "running") return;
+        finish(id, { state: "failed", error: `The API worker failed: ${errorText(e)}.` });
+      })
+      .finally(() => {
+        if (apiRuns.get(id) === ctl) apiRuns.delete(id);
+      });
+  }
+
   async function start(t: Task): Promise<void> {
     // Running before the await, so the slot is taken while the session starts.
-    update(t.id, { state: "running", started: now(), runStarted: now() });
+    update(t.id, { state: "running", started: now(), runStarted: now(), notBefore: null });
+    const where = await route(t);
+    if ("until" in where) {
+      const first = tasks.get(t.id)?.why !== where.why;
+      update(t.id, { state: "queued", started: null, runStarted: null, notBefore: where.until, why: where.why });
+      if (first)
+        deps.tell(
+          t.threadId,
+          `Task ${label(t)} is waiting: ${where.why}. It starts by itself once there's room (checked again ${new Date(where.until).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}). Tell the user.`,
+        );
+      wakeAt(where.until);
+      return;
+    }
+    if (where.runner === "api") {
+      startApi(t.id, t.brief, `over subscription limit: ${where.why}`);
+      return;
+    }
+    update(t.id, { runner: "session", why: where.why });
+    if (where.why)
+      deps.tell(t.threadId, `Task ${label(t)} is a code task, so it runs in a session although ${where.why}. Mention it to the user.`);
     try {
       const projectId = t.kind === "code" ? t.projectId! : await duckProjectId(t.workspace);
       const made = await port.createSession({
@@ -322,6 +446,11 @@ export function createTaskManager(deps: TaskDeps): TaskManager {
 
   function report(t: Task): string {
     const where = `${t.folder}\\result.md`;
+    const api = t.runner === "api" ? ` It ran on the API (${t.why ?? "over subscription limit"}), costing $${(t.costUsd ?? 0).toFixed(2)}.` : "";
+    return reportText(t, where) + api;
+  }
+
+  function reportText(t: Task, where: string): string {
     // The worker's sentences without their own full stop: the report adds one.
     const said = (x: string | null) => (x ?? "").replace(/\.\s*$/, "");
     switch (t.state) {
@@ -416,10 +545,14 @@ export function createTaskManager(deps: TaskDeps): TaskManager {
           finish(t.id, {
             state: "failed",
             error:
-              "Workbench closed while it ran. A follow-up starts its worker again (in a fresh conversation), or resume its session from the rail.",
+              t.runner === "api"
+                ? "Workbench closed while it ran on the API. A follow-up runs it again."
+                : "Workbench closed while it ran. A follow-up starts its worker again (in a fresh conversation), or resume its session from the rail.",
           });
       }
       await pump();
+      const waiting = [...tasks.values()].filter((t) => t.state === "queued" && t.notBefore);
+      if (waiting.length) wakeAt(Math.min(...waiting.map((t) => t.notBefore!)));
     },
 
     async run(req) {
@@ -455,6 +588,11 @@ export function createTaskManager(deps: TaskDeps): TaskManager {
         nudged: false,
         error: null,
         mandate: req.mandate?.text ?? null,
+        brief: req.brief.trim(),
+        runner: "session",
+        why: null,
+        costUsd: null,
+        notBefore: null,
       });
       void pump();
       await starting.get(t.id);
@@ -464,6 +602,17 @@ export function createTaskManager(deps: TaskDeps): TaskManager {
     async followup(id, prompt) {
       const t = tasks.get(id);
       if (!t) throw new Error(`There is no task ${id}.`);
+      if (t.runner === "api") {
+        if (t.state === "running") throw new Error("It's still running on the API; wait for its result.");
+        const prev = await backend.result(t.workspace, t.folder).catch(() => null);
+        update(id, { state: "running", finished: null, error: null });
+        startApi(
+          id,
+          `${t.brief}\n\n## Your previous result\n\n${prev?.md ?? "(none)"}\n\n## Follow-up\n\n${prompt.trim()}\n\nSubmit the whole updated result.`,
+          t.why,
+        );
+        return "sent";
+      }
       if (!t.instanceId)
         throw new Error(t.state === "queued" ? "It hasn't started yet: it's waiting for a free worker." : "It never started.");
       if (!port.listSessions().some((s) => s.id === t.instanceId))
@@ -485,6 +634,7 @@ export function createTaskManager(deps: TaskDeps): TaskManager {
     async close(id) {
       const t = tasks.get(id);
       if (!t) throw new Error(`There is no task ${id}.`);
+      apiRuns.get(id)?.abort();
       if (t.instanceId) {
         const s = port.listSessions().find((x) => x.id === t.instanceId);
         if (s && s.phase !== "offline" && s.phase !== "ended") port.stopSession(t.instanceId);
@@ -495,6 +645,24 @@ export function createTaskManager(deps: TaskDeps): TaskManager {
       if (!isFinished(t.state)) finish(id, { state: "closed" });
       else update(id, { state: "closed" });
       return tasks.get(id)!;
+    },
+
+    async rerun(id, tier) {
+      const t = tasks.get(id);
+      if (!t) throw new Error(`There is no task ${id}.`);
+      if (!t.brief.trim()) throw new Error("Its brief wasn't kept (an older task): start a new one with run_task.");
+      const up = tier ?? tierUp(t.tier);
+      const next = await this.run({
+        threadId: t.threadId,
+        title: t.title,
+        brief: t.brief,
+        kind: t.kind,
+        tier: up,
+        projectId: t.projectId ?? undefined,
+        mandate: t.mandate ? { text: t.mandate, threadId: t.threadId } : undefined,
+      });
+      if (t.state !== "closed") await this.close(id);
+      return next;
     },
 
     get: (id) => tasks.get(id),
@@ -508,6 +676,8 @@ export function createTaskManager(deps: TaskDeps): TaskManager {
     },
     dispose() {
       offPhase();
+      if (wake) clearTimeout(wake);
+      for (const c of apiRuns.values()) c.abort();
       listeners.clear();
     },
   };

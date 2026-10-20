@@ -316,6 +316,12 @@ pub fn assistant_task_result(workspace: String, folder: String) -> Result<worksp
     workspace::result(&workspace::resolve(Some(&workspace))?, &folder)
 }
 
+/// Write a task's result files (the API worker's, step D2).
+#[tauri::command]
+pub fn assistant_task_write_result(workspace: String, folder: String, md: String, json: String) -> Result<(), String> {
+    workspace::write_result(&workspace::resolve(Some(&workspace))?, &folder, &md, &json)
+}
+
 /// Register a new instance as a worker, before its first launch.
 #[tauri::command]
 pub fn assistant_worker_register(

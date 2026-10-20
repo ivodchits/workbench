@@ -3,7 +3,8 @@ import { describe, expect, it } from "vitest";
 import type { TaskResultFiles } from "../ipc/assistant";
 import { fakePort, project, session, toolCtx, type FakePort } from "./fakePort.test-util";
 import { DEFAULT_SETTINGS, type DuckSettings } from "./settings";
-import { createTaskManager, NUDGE, type RunRequest, type Task, type TaskBackend } from "./tasks";
+import type { ApiWorkerOutcome } from "./apiWorker";
+import { createTaskManager, NUDGE, type RunRequest, type Task, type TaskBackend, type TaskDeps } from "./tasks";
 import { listTasks, runTask, taskClose, taskFollowup, taskStatus } from "./tools/tasks";
 
 const WS = "C:\\Users\\me\\repos\\Duck";
@@ -20,6 +21,10 @@ function memBackend() {
       return Promise.resolve(`${ws}\\tasks\\${date}-t${++n}`);
     },
     result: (_ws, folder) => Promise.resolve(files.get(folder) ?? { json: null, jsonModified: null, md: null }),
+    writeResult: (_ws, folder, md, json) => {
+      files.set(folder, { json, jsonModified: Date.now(), md });
+      return Promise.resolve();
+    },
     put: (t) => {
       stored.set(t.id, structuredClone(t));
       return Promise.resolve();
@@ -33,7 +38,7 @@ const settle = async () => {
   for (let i = 0; i < 5; i++) await new Promise((r) => setTimeout(r, 0));
 };
 
-function setup(opts: { settings?: Partial<DuckSettings>; port?: FakePort } = {}) {
+function setup(opts: { settings?: Partial<DuckSettings>; port?: FakePort; apiWorker?: TaskDeps["apiWorker"] } = {}) {
   const port =
     opts.port ??
     fakePort({
@@ -51,6 +56,7 @@ function setup(opts: { settings?: Partial<DuckSettings>; port?: FakePort } = {})
     now: () => clock,
     newId: () => `task${++ids}xxxx`,
     today: () => "2026-10-20",
+    apiWorker: opts.apiWorker,
   });
   const advance = (ms: number) => (clock += ms);
   /** The worker wrote its result files now. */
@@ -71,6 +77,102 @@ const req = (r: Partial<RunRequest> = {}): RunRequest => ({
   tier: "standard",
   mandate: { text: "research how other Tauri apps do auto-update", threadId: "th1" },
   ...r,
+});
+
+describe("subscription limits (D2)", () => {
+  const limits = (fiveHour: number, sevenDay: number) => ({
+    fiveHour: { usedPercentage: fiveHour, resetsAt: 2_000 },
+    sevenDay: { usedPercentage: sevenDay, resetsAt: 9_000 },
+    receivedAt: 1,
+  });
+  const spend = (soft: boolean) =>
+    ({ todayUsd: 1, monthUsd: 50, byModel: [], byPurpose: [], limits: {}, softReached: soft, capReached: false }) as never;
+  const outcome: ApiWorkerOutcome = {
+    result: { status: "done", headline: "Use the Tauri updater plugin.", question: null, markdown: "# Use the plugin\n\nBecause." },
+    costUsd: 0.18,
+  };
+
+  it("runs an API worker over the weekly limit, with the same result files and its cost", async () => {
+    const briefs: string[] = [];
+    const port = fakePort({ projects: [project({ id: "app" })], limits: limits(20, 85), spend: spend(false) });
+    const { tasks, mem, told } = setup({
+      port,
+      apiWorker: async (_t, brief, _signal, onCost) => {
+        briefs.push(brief);
+        onCost(0.05);
+        return outcome;
+      },
+    });
+    const t = await tasks.run(req());
+    await settle();
+    expect(port.calls.some((c) => c.name === "createSession")).toBe(false);
+    expect(briefs).toEqual([req().brief]);
+    expect(tasks.get(t.id)).toMatchObject({
+      state: "done",
+      runner: "api",
+      why: "over subscription limit: the weekly limit is at 85%",
+      costUsd: 0.18,
+      headline: "Use the Tauri updater plugin.",
+      resultFrom: "file",
+    });
+    expect(JSON.parse(mem.files.get(t.folder)!.json!)).toEqual({ status: "done", headline: "Use the Tauri updater plugin.", question: null });
+    expect(mem.files.get(t.folder)!.md).toContain("# Use the plugin");
+    expect(told[told.length - 1].text).toMatch(/is done\. .* It ran on the API \(over subscription limit: the weekly limit is at 85%\), costing \$0\.18\.$/);
+  });
+
+  it("runs a session under the limits", async () => {
+    const port = fakePort({ projects: [project({ id: "app" })], limits: limits(69, 79) });
+    const { tasks } = setup({ port, apiWorker: () => Promise.reject(new Error("not this")) });
+    const t = await tasks.run(req());
+    expect(t).toMatchObject({ runner: "session", why: null, state: "running" });
+  });
+
+  it("keeps a code task in a session, and says why", async () => {
+    const port = fakePort({ projects: [project({ id: "app" })], limits: limits(75, 10) });
+    const { tasks, told } = setup({ port });
+    const t = await tasks.run(req({ kind: "code", projectId: "app" }));
+    expect(t).toMatchObject({ runner: "session", why: "the 5-hour limit is at 75%", state: "running" });
+    expect(told[0].text).toMatch(/code task, so it runs in a session although the 5-hour limit is at 75%/);
+  });
+
+  it("waits when Duck's API budget is past its soft limit too", async () => {
+    const port = fakePort({ projects: [project({ id: "app" })], limits: limits(90, 10), spend: spend(true) });
+    const { tasks, told } = setup({ port, apiWorker: () => Promise.reject(new Error("not this")) });
+    const t = await tasks.run(req());
+    expect(t).toMatchObject({ state: "queued", why: expect.stringContaining("past its soft limit") });
+    expect(t.notBefore).toBeGreaterThan(1_000_000);
+    expect(told).toHaveLength(1);
+    expect(told[0].text).toMatch(/is waiting: the 5-hour limit is at 90%/);
+    tasks.dispose();
+  });
+
+  it("re-runs an API task's follow-up with its previous result", async () => {
+    const briefs: string[] = [];
+    const port = fakePort({ projects: [project({ id: "app" })], limits: limits(20, 85), spend: spend(false) });
+    const { tasks } = setup({
+      port,
+      apiWorker: async (_t, brief) => {
+        briefs.push(brief);
+        return outcome;
+      },
+    });
+    const t = await tasks.run(req());
+    await settle();
+    expect(await tasks.followup(t.id, "Dig into the signing step.")).toBe("sent");
+    await settle();
+    expect(briefs[1]).toContain("## Your previous result\n\n# Use the plugin");
+    expect(briefs[1]).toContain("## Follow-up\n\nDig into the signing step.");
+    expect(tasks.get(t.id)).toMatchObject({ state: "done", costUsd: 0.36 });
+  });
+
+  it("re-runs a task one tier up as a new task, closing the old one", async () => {
+    const { tasks } = setup();
+    const t = await tasks.run(req());
+    const next = await tasks.rerun(t.id);
+    expect(next).toMatchObject({ tier: "involved", effort: "high", brief: req().brief, title: t.title });
+    expect(next.id).not.toBe(t.id);
+    expect(tasks.get(t.id)?.state).toBe("closed");
+  });
 });
 
 describe("run", () => {

@@ -210,6 +210,18 @@ pub fn result(dir: &Path, folder: &str) -> Result<TaskResult, String> {
     })
 }
 
+/// Write a task's result files (step D2's API worker, which has no file tools of
+/// its own): `result.md`, then `result.json`, so a reader that sees a fresh
+/// `result.json` finds the matching `result.md`.
+pub fn write_result(dir: &Path, folder: &str, md: &str, json: &str) -> Result<(), String> {
+    let f = task_folder(dir, folder)?;
+    if md.len() as u64 > MAX_MD_BYTES || json.len() as u64 > MAX_JSON_BYTES {
+        return Err("the result is too large".into());
+    }
+    std::fs::write(f.join(RESULT_MD), md).map_err(|e| format!("cannot write {RESULT_MD}: {e}"))?;
+    std::fs::write(f.join(RESULT_JSON), json).map_err(|e| format!("cannot write {RESULT_JSON}: {e}"))
+}
+
 // ── the worker's launch ──
 
 /// What a worker is, as Duck registers it.
@@ -413,6 +425,17 @@ mod tests {
         assert!(result(&ws, &ws.to_string_lossy()).is_err());
         assert!(result(&ws, &ws.join(TASKS).to_string_lossy()).is_err());
         assert!(result(&ws, &t.join("..").join("..").to_string_lossy()).is_err());
+        std::fs::remove_dir_all(ws).unwrap();
+    }
+
+    #[test]
+    fn results_are_written_only_into_task_folders() {
+        let ws = scratch("write");
+        let t = new_task(&ws, "2026-10-20", "w", "b").unwrap();
+        write_result(&ws, &t.to_string_lossy(), "# done", r#"{"status":"done"}"#).unwrap();
+        let r = result(&ws, &t.to_string_lossy()).unwrap();
+        assert_eq!((r.md.as_deref(), r.json.as_deref()), (Some("# done"), Some(r#"{"status":"done"}"#)));
+        assert!(write_result(&ws, &ws.join(TASKS).to_string_lossy(), "x", "{}").is_err());
         std::fs::remove_dir_all(ws).unwrap();
     }
 

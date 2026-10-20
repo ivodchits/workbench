@@ -49,6 +49,7 @@ import {
   answer,
   clearError,
   closeTask,
+  rerunTask,
   connectDuck,
   deleteThread,
   isBusy,
@@ -723,10 +724,17 @@ function TaskCard({ taskId, text }: { taskId: string; text: string }) {
         <span style={{ color: "var(--wb-text)", fontWeight: 600 }}>⚙ {task.title}</span>
         <span style={{ color }}>{TASK_STATE[task.state] ?? task.state}</span>
         <span style={{ color: "var(--wb-textFaint)" }}>
-          {task.model} · {task.effort}
+          {task.runner === "api" ? "API · " : ""}
+          {task.model} · {task.effort} ({task.tier})
           {task.started !== null && ` · ${elapsed(task.started, task.finished)}`}
+          {task.runner === "api" && task.costUsd !== null && ` · $${task.costUsd.toFixed(2)}`}
         </span>
       </div>
+      {task.why && (
+        <div style={{ marginTop: 2, color: "var(--wb-textFaint)" }}>
+          {task.runner === "api" ? task.why : `${task.state === "queued" ? "waiting: " : ""}${task.why}`}
+        </div>
+      )}
       {task.headline && (
         <div style={{ marginTop: 3, color: "var(--wb-textDim2)", whiteSpace: "pre-wrap" }}>{task.headline}</div>
       )}
@@ -745,6 +753,16 @@ function TaskCard({ taskId, text }: { taskId: string; text: string }) {
         {task.state !== "closed" && (
           <button type="button" style={linkBtn} onClick={() => closeTask(task.id)}>
             close
+          </button>
+        )}
+        {task.tier !== "serious" && task.state !== "queued" && (
+          <button
+            type="button"
+            style={linkBtn}
+            title="Run it again as a new task, one tier up"
+            onClick={() => rerunTask(task.id)}
+          >
+            re-run {task.tier === "standard" ? "involved" : "serious"}
           </button>
         )}
       </div>

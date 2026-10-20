@@ -126,6 +126,11 @@ export interface TaskView {
   started: number | null;
   finished: number | null;
   headline: string | null;
+  /** Step D2: a session or the API; why it runs there or waits; an API worker's
+   *  cost so far. */
+  runner: "session" | "api";
+  why: string | null;
+  costUsd: number | null;
 }
 
 // ── surface → Duck ──────────────────────────────────────────────────────────
@@ -176,7 +181,9 @@ export type ClientMessage =
    *  (step T2), with the judge on up to `judgeMax` of them. */
   | { type: "trust.replay"; days: number; judgeMax: number }
   /** Close a worker task (step D1): its console closes, its files stay. */
-  | { type: "task.close"; taskId: string };
+  | { type: "task.close"; taskId: string }
+  /** Run a worker task again one tier up (step D2), as a new task. */
+  | { type: "task.rerun"; taskId: string };
 
 // ── Duck → surface ──────────────────────────────────────────────────────────
 

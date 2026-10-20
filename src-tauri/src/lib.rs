@@ -173,6 +173,7 @@ pub fn run() {
             assistant::assistant_workspace_prepare,
             assistant::assistant_task_folder,
             assistant::assistant_task_result,
+            assistant::assistant_task_write_result,
             assistant::assistant_worker_register,
             assistant::assistant_task_put,
             assistant::assistant_task_list,

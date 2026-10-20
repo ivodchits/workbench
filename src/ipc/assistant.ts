@@ -209,6 +209,9 @@ export interface TaskResultFiles {
 }
 export const taskResult = (workspace: string, folder: string): Promise<TaskResultFiles> =>
   invoke("assistant_task_result", { workspace, folder });
+/** Write a task's `result.md` and `result.json` (the API worker's, step D2). */
+export const taskWriteResult = (workspace: string, folder: string, md: string, json: string): Promise<void> =>
+  invoke("assistant_task_write_result", { workspace, folder, md, json });
 
 /** How a worker launches: its task folder, effort, and kind (`browser` keeps your
  *  MCP servers, `code` works in a project in its own mode). */

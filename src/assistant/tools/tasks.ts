@@ -46,7 +46,9 @@ function view(t: Task) {
     title: t.title,
     state: t.state,
     kind: t.kind,
-    worker: `${t.model} · ${t.effort} (${t.tier})`,
+    worker: `${t.runner === "api" ? "API · " : ""}${t.model} · ${t.effort} (${t.tier})`,
+    why: t.why,
+    costUsd: t.runner === "api" ? t.costUsd : null,
     session: t.instanceId,
     folder: t.folder,
     minutes: minutes(t.started, t.finished),
@@ -174,4 +176,19 @@ export const listTasks = defineTool({
   },
 });
 
-export const TASK_TOOLS = [runTask, taskStatus, taskFollowup, taskClose, listTasks];
+export const taskRerun = defineTool({
+  name: "task_rerun",
+  description:
+    "Run a worker task again from its brief as a new task, one tier up (or at `tier`), and close the old one: when a result came back thin, or the user asks for more depth. To dig deeper in the same conversation instead, use task_followup.",
+  schema: z.object({ task: taskArg, tier: z.enum(TIERS).optional() }),
+  tier: "reversible",
+  timeoutMs: 30_000,
+  async run({ task, tier }, ctx) {
+    const tasks = manager(ctx);
+    const next = await tasks.rerun(findTask(tasks, task).id, tier);
+    await ctx.notice({ kind: "task", text: `Task: ${next.title}`, task: { id: next.id } });
+    return { ...view(next), replaces: task };
+  },
+});
+
+export const TASK_TOOLS = [runTask, taskStatus, taskFollowup, taskClose, listTasks, taskRerun];

@@ -428,3 +428,8 @@ export function loadDecisions(before: number | null): void {
 export function closeTask(taskId: string): void {
   post({ type: "task.close", taskId });
 }
+
+/** Run a worker task again one tier up, as a new task (D2). */
+export function rerunTask(taskId: string): void {
+  post({ type: "task.rerun", taskId });
+}

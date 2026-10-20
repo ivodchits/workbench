@@ -112,6 +112,9 @@ export function taskView(t: Task): TaskView {
     started: t.started,
     finished: t.finished,
     headline: t.headline,
+    runner: t.runner,
+    why: t.why,
+    costUsd: t.costUsd,
   };
 }
 
@@ -229,6 +232,10 @@ export function endpoint(
       case "task.close":
         if (!tasks) throw new Error("Worker tasks aren't available here.");
         await tasks.close(msg.taskId);
+        return;
+      case "task.rerun":
+        if (!tasks) throw new Error("Worker tasks aren't available here.");
+        await tasks.rerun(msg.taskId);
         return;
       case "thread.open": {
         if (!s.thread(msg.threadId))
