@@ -38,6 +38,7 @@ const choice: ChoiceRef = {
   ],
   terminalOnly: null,
   sent: null,
+  optionsFrom: "terminal",
 };
 
 function data(): FakePortData {
@@ -120,6 +121,14 @@ describe("action tools", () => {
       model: "opus",
     });
     expect(coding.out.prompt).toMatch(/once Claude Code is ready/);
+    // No user message here, so no mandate; with one, it's stored for the judge.
+    expect(coding.port.calls[0].args[0]).toMatchObject({ mandate: undefined });
+    const port = fakePort(data());
+    const ctx = { ...toolCtx(port), request: "fix the failing auth test in backend" };
+    await createSession.run(createSession.schema.parse({ project: "backend" }), ctx);
+    expect(port.calls[0].args[0]).toMatchObject({
+      mandate: { text: "fix the failing auth test in backend", threadId: "t" },
+    });
 
     const inherit = await run(createSession, { project: "Backend", model: "project" });
     expect(inherit.port.calls[0].args[0]).toMatchObject({ model: null });

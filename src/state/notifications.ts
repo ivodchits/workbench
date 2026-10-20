@@ -35,6 +35,7 @@ import { remotePushSend } from "../ipc/remote";
 import { getPref, setPref, type NotificationPrefs } from "../ipc/prefs";
 import { onTurnEnded, type TurnEnded } from "../ipc/transcript";
 import { getActivePanelId } from "./dock";
+import { shouldTell } from "./promptHold";
 
 export type { NotificationPrefs };
 
@@ -379,8 +380,13 @@ export function initNotifications(): void {
     .catch(() => {});
 
   // Route fresh needs-you transitions (replaces the rail's old direct OS-toast call).
+  // A prompt Duck's trust watcher answers on its own tells no one (`promptHold.ts`);
+  // one it leaves to you is told once it has decided, if it's still waiting.
   onStatusTransition((id, phase, prev) => {
-    if (phase === "needs_you" && prev !== "needs_you") deliverNeedsYou(id);
+    if (phase !== "needs_you" || prev === "needs_you") return;
+    void shouldTell(id).then((tell) => {
+      if (tell && getLiveStatuses().get(id)?.phase === "needs_you") deliverNeedsYou(id);
+    });
   });
 
   // Done alerts: turn ends from the hook stream, background load from the transcript.

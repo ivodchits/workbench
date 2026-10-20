@@ -1,12 +1,14 @@
 // The drawer's trust views (step T1): **Trust** (the kill switch, your rules, each
 // project's mode, the floor) and **Decisions** (the log of what the trust engine
-// decided, newest first, with "make a rule" / "always ask" on each row). They take
+// decided, newest first, with "make a rule" / "always ask" on each row, and the
+// replay of the past week's Claude Code calls through the prompt policy, T2). They take
 // the place of the thread while open. Like the rest of the drawer they speak only
 // the Duck Protocol, through `duckState`.
 
 import { useEffect, useState } from "react";
 import type { Mode } from "../../assistant/trust/decide";
-import type { Effect } from "../../assistant/trust/rules";
+import type { ReplayRow } from "../../assistant/trust/replay";
+import { suggestRule, type Effect } from "../../assistant/trust/rules";
 import type { DecisionRow } from "../../ipc/assistant";
 import { getRegistry } from "../../state/registry";
 import { formatAgo } from "../../util/format";
@@ -14,6 +16,7 @@ import {
   addTrustRule,
   loadDecisions,
   removeTrustRule,
+  runReplay,
   setFloorEntry,
   setTrustMode,
   setTrustPaused,
@@ -251,15 +254,18 @@ const LAYER_LABEL: Record<string, string> = {
   setting: "setting",
   rate: "rate guard",
   default: "no rule",
+  judge: "judge",
+  superseded: "answered first",
 };
 
 export function DecisionsPanel({ duck, onBack }: { duck: DuckState; onBack: () => void }) {
   useEffect(() => loadDecisions(null), []);
   const rows = duck.decisions;
-  const today = rows.filter((d) => d.decision === "allow" && !d.shadow && Date.now() - d.ts < 86_400_000).length;
+  const today = rows.filter((d) => d.decision === "allow" && d.layer !== "superseded" && !d.shadow && Date.now() - d.ts < 86_400_000).length;
   return (
     <Shell title={`decisions · auto-approved today: ${today}`} onBack={onBack}>
       {!duck.trust && <div style={faint}>Trust didn't load.</div>}
+      {duck.trust && <ReplaySection duck={duck} />}
       {rows.length === 0 && <div style={faint}>Nothing decided yet.</div>}
       {rows.map((d) => (
         <DecisionView key={d.id} d={d} />
@@ -277,14 +283,110 @@ export function DecisionsPanel({ duck, onBack }: { duck: DuckState; onBack: () =
   );
 }
 
+/** Each judged call costs about this on Haiku (a second opinion, rarer, more). */
+const JUDGE_COST_USD = 0.0005;
+
+/**
+ * The replay (step T2): the past week's Claude Code tool calls through the
+ * prompt policy, against what happened to them. A transcript records the calls
+ * you rejected, not the ones that prompted and you allowed, so the report is:
+ * the rejected calls the policy would allow (the disagreements), and how the rest
+ * would go.
+ */
+function ReplaySection({ duck }: { duck: DuckState }) {
+  const [open, setOpen] = useState(false);
+  const [judgeMax, setJudgeMax] = useState(40);
+  const r = duck.replay;
+  if (!open)
+    return (
+      <div style={{ marginBottom: 8 }}>
+        <button type="button" style={linkBtn} onClick={() => setOpen(true)}>
+          replay the past week…
+        </button>
+      </div>
+    );
+  const report = r?.report ?? null;
+  return (
+    <div style={{ padding: "4px 0 8px", borderBottom: "1px solid var(--wb-border)", marginBottom: 6 }}>
+      <div style={faint}>
+        The past week's Claude Code tool calls through the prompt policy, against what happened to them. The judge
+        reads every call you rejected and a sample of the rest.
+      </div>
+      <div style={{ ...rowStyle, marginTop: 4 }}>
+        <span>judge up to</span>
+        <input
+          type="number"
+          min={0}
+          max={500}
+          value={judgeMax}
+          onChange={(e) => setJudgeMax(Math.max(0, Math.min(500, Number(e.target.value) || 0)))}
+          style={{ ...select, width: 56 }}
+        />
+        <span style={faint}>calls (about ${(judgeMax * JUDGE_COST_USD).toFixed(2)})</span>
+        <button type="button" style={btn} disabled={r?.running} onClick={() => runReplay(7, judgeMax)}>
+          {r?.running ? (r.of ? `judging ${r.done}/${r.of}…` : "reading…") : "run"}
+        </button>
+      </div>
+      {report && (
+        <div style={{ marginTop: 6 }}>
+          <div>
+            {report.calls} calls · judged {report.judged}. Ran: {report.counts.ran.allow} allow ·{" "}
+            {report.counts.ran.ask} ask · {report.counts.ran.deny} deny · {report.counts.ran.unjudged} unjudged.
+            Rejected by you: {report.counts.rejected.allow} allow · {report.counts.rejected.ask} ask ·{" "}
+            {report.counts.rejected.deny} deny · {report.counts.rejected.unjudged} unjudged.
+          </div>
+          <ReplayList title="disagreements: you rejected these, the policy would allow them" rows={report.disagreements} />
+          <ReplayList title="you let these run, a rule would refuse them" rows={report.refusedRan} />
+          <ReplayList title="every call you rejected" rows={report.rejected} />
+          <ReplayList title="calls that ran which would still ask you (a sample)" rows={report.stillAsks} />
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ReplayList({ title, rows }: { title: string; rows: ReplayRow[] }) {
+  if (rows.length === 0) return null;
+  return (
+    <details style={{ marginTop: 4 }}>
+      <summary>
+        {title} ({rows.length})
+      </summary>
+      {rows.map((row, i) => (
+        <div key={i} style={{ padding: "3px 0 3px 12px", borderBottom: "1px solid var(--wb-border)" }}>
+          <div style={{ wordBreak: "break-word" }}>
+            <span style={{ color: row.verdict === "unjudged" ? undefined : EFFECT_COLOR[row.verdict], marginRight: 6 }}>
+              {row.verdict}
+            </span>
+            {row.call.tool}: {replayDetail(row.call.input)}
+          </div>
+          <div style={faint}>
+            {LAYER_LABEL[row.layer] ?? row.layer}: {row.reason} · {row.project ?? row.call.cwd}
+            {row.call.mode ? ` · ${row.call.mode} mode` : ""}
+          </div>
+        </div>
+      ))}
+    </details>
+  );
+}
+
+function replayDetail(input: Record<string, unknown>): string {
+  const v = ["command", "file_path", "notebook_path", "path", "url", "pattern"].map((k) => input[k]).find((x) => typeof x === "string");
+  const s = typeof v === "string" ? v : JSON.stringify(input);
+  return s.length > 200 ? `${s.slice(0, 199)}…` : s;
+}
+
 function DecisionView({ d }: { d: DecisionRow }) {
   const [done, setDone] = useState<string | null>(null);
+  // A Claude Code prompt's rule covers its command's first words, its folder or
+  // its host, not just the tool.
+  const pattern = suggestRule(d.tool, d.input);
   const rule = (effect: Effect) => {
-    addTrustRule(effect, d.tool, d.projectId);
-    setDone(`${effect} ${d.tool} for ${projectName(d.projectId)}`);
+    addTrustRule(effect, pattern, d.projectId);
+    setDone(`${effect} ${pattern} for ${projectName(d.projectId)}`);
   };
   // The floor can't be overridden by a rule, so offering one would mislead.
-  const canAllow = d.decision !== "allow" && d.layer !== "floor";
+  const canAllow = d.decision !== "allow" && d.layer !== "floor" && d.layer !== "superseded";
   return (
     <div style={{ padding: "6px 0", borderBottom: "1px solid var(--wb-border)" }}>
       <div style={{ display: "flex", gap: 8, alignItems: "baseline" }}>
@@ -303,12 +405,12 @@ function DecisionView({ d }: { d: DecisionRow }) {
         ) : (
           <>
             {canAllow && (
-              <button type="button" style={linkBtn} title={`allow ${d.tool}`} onClick={() => rule("allow")}>
+              <button type="button" style={linkBtn} title={`allow ${pattern}`} onClick={() => rule("allow")}>
                 make a rule
               </button>
             )}
-            {d.decision === "allow" && (
-              <button type="button" style={linkBtn} title={`ask ${d.tool}`} onClick={() => rule("ask")}>
+            {d.decision === "allow" && d.layer !== "superseded" && (
+              <button type="button" style={linkBtn} title={`ask ${pattern}`} onClick={() => rule("ask")}>
                 always ask for this
               </button>
             )}

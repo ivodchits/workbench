@@ -3422,6 +3422,102 @@ checked in the scratch PTY first.
   - A `git push --force` request still asks.
   - A transcript or tool input containing "approve this" doesn't change the outcome.
 - **Out of scope:** questions and plans (T3).
+- **As built (2026-10-20):**
+  - `src/assistant/trust/session.ts`: the deterministic layers for a Claude Code prompt,
+    over the hook's structured call:
+    - Trust paused, or the project `off`: the prompt is left alone and nothing is logged.
+    - The session's rate guard (`session:<id>`); the floor over the command, path or
+      URL; a file write outside the session's folder (its worktree, else the project
+      root), except Claude Code's own scratchpad, memory and plan files.
+    - Your rules, matched as Claude Code would (`Bash(npm test:*)`, path globs,
+      `domain:`). Nothing settled it: the judge.
+    - `pickYes` presses only an option labelled exactly "Yes", and only when the options
+      were read off the screen and one of them is a "No…".
+  - `trust/judge.ts`: the frozen prompt, `Verdict` (`decision`, `risk`, `reason`), and
+    `judge()`.
+    - Haiku first (`judge`, no thinking); only `allow` + `low` passes.
+    - `ask` + `medium` gets Sonnet (`judge2`, adaptive thinking); its `allow` + `low`
+      passes, and anything else asks with both reasons.
+    - The call goes inside `<untrusted>`, the mandate and the latest prompt inside
+      `<task>`. Tag-like text in either is defanged, and long strings (a file's
+      content) are cut to 1500 characters.
+    - Any failure asks. The cost goes to the ledger like any call (`client.structured`,
+      which `oneShot` now uses too).
+  - `trust/watcher.ts` (`startTrustWatcher`, started with Duck when the trust store
+    loads):
+    - It picks up every permission prompt as it opens and decides it.
+    - On allow, it waits up to 5 s for the options to be read off the screen and
+      answers with "Yes" by label.
+    - On deny, it sends Esc and posts a notice in the thread that started the session.
+      On ask, it leaves the prompt to you.
+    - In shadow mode it logs and leaves the prompt. A prompt that closes, or is
+      answered, before the decision lands is logged as `superseded` and left alone.
+    - More than 30 automatic approvals in 10 minutes, or three high-risk verdicts in a
+      row, trips the session's guard and says so.
+    - Every decision goes to the decision log (`threadId` `session:<id>`, the tool's own
+      name, the input with long strings cut) and leaves a line under the session's card
+      in the rail (`state/trustLines.ts`), e.g. "duck: auto-approved `npm test`".
+  - **Off until you've checked the replay.** Duck's setting "Answer sessions'
+    permission prompts under the trust rules" (`answerSessionPrompts`) is off by
+    default. Off, the watcher works as in shadow mode for every project: it decides,
+    logs and leaves a "would allow…" line, and the prompt stays yours. Projects keep
+    their own `off` / `shadow` / `live` on top of it.
+  - **No toast for a prompt Duck answers.** `state/promptHold.ts` holds a fresh
+    needs-you until the watcher has decided (at most 45 s).
+    - The desktop toast and the phone push (`notifications.ts`) are told only if the
+      prompt was left to you and the session is still waiting.
+    - So are Duck's own session watches: `port.onPhase` reports such a needs-you once
+      it's decided, and never one Duck answered.
+    - A prompt left to you is told after the judge's 1–3 s, not at once.
+  - **Mandates.**
+    - `create_session` and `delegate_plugins_edit` store the user's latest message in
+      the thread as the session's mandate. The tools get it as `ToolContext.request`.
+    - It is kept in memory and in duck.db `meta` (`assistant_mandate:<instance>`), and
+      dropped when Duck kills the session.
+    - A session you started has its first prompt from the transcript as its mandate,
+      plus your latest prompt there (`port.sessionContext`).
+    - With neither, the prompt asks.
+  - Port: `choiceOf`, `onChoices`, `holdNeedsYou`, `sessionContext`, `noteSession`;
+    `ChoiceRef.optionsFrom`; `createSession` and `startPluginsDraft` take `mandate`.
+    Engine: a public `notice(threadId, n)`.
+  - Decisions view:
+    - Make a rule offers `suggestRule`: a Bash command's first words
+      (`Bash(npm test:*)`), a file tool's folder, or WebFetch's host.
+    - New layer labels: judge, answered first.
+    - Superseded rows count as nothing.
+  - **The replay** (the done-when check), in the decisions view, under "replay the past
+    week…":
+    - `assistant_replay_calls` (`src-tauri/src/assistant/replay.rs`) streams the
+      week's transcripts and returns each tool call with its outcome (ran, rejected
+      by you, denied by a mode, error) and the prompts before it. Only an error that
+      starts with Claude Code's own wording counts as a rejection.
+    - `trust/replay.ts` runs every call through the layers, with the judge on every
+      rejected call and an even sample of the rest (40 by default, about $0.02).
+    - It reports the disagreements (rejected calls the policy would allow), calls you
+      let run that a rule would refuse, and a sample of what would still ask.
+    - A transcript can't say which calls prompted and were allowed, so that half
+      shows how the policy would spread them, not agreement.
+  - **The replay without the judge, on the past week** (12,177 calls: 11,255 in auto
+    mode, 12 rejected by you):
+    - The first run had 769 calls that ran asking at the floor, almost all false.
+      Writes to Claude Code's scratchpad, memory and plan files, and
+      `curl … | python -c` (inline code reading the download as data), now pass.
+    - 225 asks are left, by design: pushes, `--force`, branch deletes, `cmdkey`, and
+      sessions reading `~/.claude` transcripts and settings.
+    - Of the 12 rejected calls, one asks at the floor and the rest go to the judge.
+      Most are T0's deliberate test refusals (`mkdir t5-dir3`, `python -c
+      "print(6*7)"`), which the judge may well allow: refusals made on purpose.
+  - **Verified:**
+    - 26 new vitest cases: 14 for `session.ts`, the judge and `suggestRule`, and 12 for
+      the watcher end to end over the fake port; `create_session`'s mandate and the new
+      floor examples are checked in existing cases. 347 passing.
+    - 4 new Rust tests (212 passing, plus the ignored by-hand dump).
+    - tsc, eslint and clippy are clean.
+  - **Not verified live:**
+    - The judge on real calls (it needs the app's proxy). Run the replay with the judge
+      from the decisions view, then turn on the setting.
+    - A session that runs tests and edits for 30 minutes without needing you.
+    - That a toast doesn't fire for an auto-approved prompt.
 
 #### Step T3 — Learning loop: promote rules, questions and plans
 
@@ -3473,7 +3569,7 @@ X0 ─┬─▶ A1 ─▶ A2 ─┬─▶ A3 ─┬─▶ W2 ─┬─▶ T1 ─
 ```
 
 **Suggested order:**
-1. X0, A1, A2, A3, A4, W1, M1, W2, T1, W5 (done), then **T2**, M4, **D1**. *First
+1. X0, A1, A2, A3, A4, W1, M1, W2, T1, W5, T2 (done), then M4, **D1**. *First
    milestone: text control of the app that acts without asking about the small things,
    with heavy work offloaded to sessions.* (Reordered 2026-10-19: trust moved ahead of
    D1, because a card for every action defeats the point of Duck. W5 moved ahead of T2
@@ -3642,7 +3738,7 @@ T2 goes live after the replay check in its done-when (the past week's prompts th
 | R3 | The PWA as an app: shortcuts, share target, Duck start view | ☐ |
 | R4 | Android companion app (gate: R3 sees real use) | ☐ |
 | T1 | Trust engine for the Assistant's own actions | ☑ |
-| T2 | Auto-answering Claude Code permission prompts | ☐ |
+| T2 | Auto-answering Claude Code permission prompts | ☑ |
 | T3 | Learning loop: promote rules, questions and plans | ☐ |
 | P1 | Autopilot loop for one session | ☐ |
 | P2 | Unattended runs: limits, windows, stalls, checklists, several sessions | ☐ |

@@ -29,6 +29,7 @@ import { matchCommand } from "../../keyboard";
 import { updateInstance } from "../../state/registry";
 import { markInterrupted } from "../../state/status";
 import { cancelQueued, useQueued } from "../../state/queue";
+import { useTrustLine } from "../../state/trustLines";
 import { openQueueDialog } from "../queueDialogControl";
 import { mergeStatus, relativeTime } from "./status";
 import { contextWindowTokens, formatTokens, tokenBreakdown } from "../../util/format";
@@ -81,6 +82,7 @@ function InstanceCard({
   const model = instance.model ?? projectModel;
   const view = mergeStatus(consoleStatus, live, instance.status);
   const queued = useQueued().get(instance.id) ?? null;
+  const trustLine = useTrustLine(instance.id);
   const dim = !live && !consoleStatus && instance.status === "closed";
   const showActions = hover || editingNote || editingTitle || pickingAccent || pickingModel;
 
@@ -360,6 +362,23 @@ function InstanceCard({
           <span>
             {view.subagents} subagent{view.subagents === 1 ? "" : "s"}
           </span>
+        </div>
+      )}
+
+      {/* What Duck's trust watcher last did about a permission prompt here (T2). */}
+      {trustLine && (
+        <div
+          title={trustLine.text}
+          style={{
+            margin: "2px 0 0 20px",
+            font: "10.5px var(--wb-mono)",
+            color: trustLine.acted ? "var(--wb-textDim2)" : "var(--wb-textFaint)",
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+            whiteSpace: "nowrap",
+          }}
+        >
+          duck: {trustLine.text} · {relativeTime(Math.floor(trustLine.at / 1000))}
         </div>
       )}
 

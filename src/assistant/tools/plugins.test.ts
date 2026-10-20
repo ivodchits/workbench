@@ -292,6 +292,8 @@ describe("plugin tools", () => {
           title: "toolbar draft",
           model: "opus",
           prompt: "/workbench:plugins add a deploy button\n\nThe draft folder: drafts/p1\nThe project: Hollow, at C:/src/p1",
+          // No message from the user in this context: the request stands in.
+          mandate: { text: "add a deploy button", threadId: "t" },
         },
       ],
     });

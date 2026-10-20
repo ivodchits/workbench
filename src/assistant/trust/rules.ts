@@ -160,3 +160,38 @@ export function evaluate(rules: readonly Rule[], t: RuleTarget): RuleHit | null 
   }
   return best;
 }
+
+/** Words that end a Bash rule's prefix: flags, paths, quoted or variable text. */
+const NOT_A_WORD = /^[-./~"'$`\\]|[/\\=]/;
+
+/**
+ * The rule "make a rule" offers for a logged call: one of Duck's tools as it is;
+ * a Bash command by its first words (`Bash(npm test:*)`, at most two, stopping at
+ * a flag or a path); a file tool by its folder (`Edit(//C:/app/src/**)`); WebFetch
+ * by its host; anything else by its name.
+ */
+export function suggestRule(tool: string, input: unknown): string {
+  if (tool.startsWith("assistant:")) return tool;
+  const i = (input && typeof input === "object" ? input : {}) as Record<string, unknown>;
+  if (tool === "Bash" && typeof i.command === "string") {
+    const words = i.command.trim().split(/\s+/);
+    const head: string[] = [];
+    for (const w of words) {
+      if (head.length === 2 || NOT_A_WORD.test(w) || /[;&|<>()]/.test(w)) break;
+      head.push(w);
+    }
+    return head.length ? `Bash(${head.join(" ")}:*)` : "Bash";
+  }
+  const path = ["file_path", "notebook_path", "path"].map((k) => i[k]).find((v) => typeof v === "string") as
+    | string
+    | undefined;
+  if (PATH_TOOLS.has(tool) && path) {
+    const dir = slashes(path).replace(/\/[^/]*$/, "");
+    if (dir) return `${tool}(${/^[A-Za-z]:\//.test(dir) ? "//" : ""}${dir}/**)`;
+  }
+  if (tool === "WebFetch" && typeof i.url === "string") {
+    const host = hostOf(i.url);
+    if (host) return `WebFetch(domain:${host})`;
+  }
+  return tool;
+}

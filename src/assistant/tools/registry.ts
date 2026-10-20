@@ -29,6 +29,8 @@ export interface ToolContext {
   /** Aborted when the turn is stopped or the tool runs out of time. */
   signal: AbortSignal;
   settings: DuckSettings;
+  /** The user's latest message in this thread (what they asked for), or null. */
+  request: string | null;
   /** Show something in the thread that the model never sees (a note-edit chip). */
   notice(n: Notice): Promise<void>;
   /** Post a follow-up into the thread later, as a Workbench event that starts a

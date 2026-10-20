@@ -591,6 +591,7 @@ export const delegatePluginsEdit = defineTool({
       title: "toolbar draft",
       model: ctx.settings.codingModel,
       prompt: (dir) => `/workbench:plugins ${request}\n\nThe draft folder: ${dir}\nThe project: ${p.name}, at ${p.rootPath}`,
+      mandate: { text: ctx.request ?? request, threadId: ctx.threadId },
     });
     drafters.set(p.id, made.id);
     watchDraft(ctx, p.name, made.id, made.title, timeoutMin);

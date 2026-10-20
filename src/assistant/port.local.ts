@@ -2,7 +2,9 @@
 // stores. The only file under `src/assistant/` that may import `src/state/**` or
 // `src/panels/**` (ESLint enforces it).
 
-import { getSpend } from "../ipc/assistant";
+import { homeDir } from "@tauri-apps/api/path";
+
+import { getSpend, mandateGet, mandateSet } from "../ipc/assistant";
 import {
   gitBranches,
   gitLog,
@@ -29,7 +31,7 @@ import {
 } from "../ipc/plugins";
 import { INTERRUPT_KEY, ptyWrite } from "../ipc/pty";
 import type { Instance } from "../ipc/registry";
-import { readTranscriptBack } from "../ipc/transcript";
+import { readTranscript, readTranscriptBack } from "../ipc/transcript";
 import { getUsageLimits } from "../ipc/usageLimits";
 import { startPluginRunFor } from "../panels/pluginRun";
 import { sendOrQueue } from "../panels/promptDelivery";
@@ -50,8 +52,10 @@ import { getPluginsView, loadPlugins, storedValues } from "../state/plugins";
 import {
   getPendingChoice,
   markChoiceSent,
+  onChoicesChanged,
   type PendingChoice,
 } from "../state/pendingChoice";
+import { setPromptHold, shouldTell } from "../state/promptHold";
 import { deleteInstance, getRegistry, renumberInstances } from "../state/registry";
 import {
   answerChoice,
@@ -65,8 +69,17 @@ import {
   onStatusTransition,
 } from "../state/status";
 import { getOpenTasks, getTask, isLive, onTasksChange } from "../state/tasks";
+import { setTrustLine } from "../state/trustLines";
+import { createTranscript } from "../transcript/model";
 import { effectiveModel } from "../util/models";
-import type { ChoiceRef, TaskEnd, TaskRun, WorkbenchPort } from "./port";
+import type {
+  ChoiceRef,
+  Mandate,
+  SessionContext,
+  TaskEnd,
+  TaskRun,
+  WorkbenchPort,
+} from "./port";
 
 function choiceRef(p: PendingChoice): ChoiceRef {
   return {
@@ -79,6 +92,7 @@ function choiceRef(p: PendingChoice): ChoiceRef {
     options: p.options,
     terminalOnly: p.terminalOnly,
     sent: p.sent?.label ?? null,
+    optionsFrom: p.source,
   };
 }
 
@@ -99,6 +113,51 @@ function requireRunning(i: Instance): void {
 const TAIL_LINES = 15;
 /** The PTY's exit can come just before its last output reaches the terminal. */
 const TAIL_SETTLE_MS = 300;
+
+// ── mandates (T2) ──
+
+/** instance id → its mandate (null: none stored), as read or written this run. */
+const mandates = new Map<string, Mandate | null>();
+/** `instance:session` → that conversation's first prompt. */
+const firstPrompts = new Map<string, string | null>();
+/** How much of a transcript's start is read for its first prompt. */
+const FIRST_PAGE_BYTES = 256 * 1024;
+let home: Promise<string | null> | null = null;
+
+function rememberMandate(instanceId: string, m: Mandate): void {
+  mandates.set(instanceId, m);
+  void mandateSet(instanceId, JSON.stringify(m)).catch((e: unknown) =>
+    console.warn("duck: a session's mandate wasn't stored", e),
+  );
+}
+
+function forgetMandate(instanceId: string): void {
+  mandates.set(instanceId, null);
+  void mandateSet(instanceId, null).catch(() => {});
+}
+
+async function storedMandate(instanceId: string): Promise<Mandate | null> {
+  const known = mandates.get(instanceId);
+  if (known !== undefined) return known;
+  let m: Mandate | null = null;
+  try {
+    const raw = await mandateGet(instanceId);
+    const v = raw ? (JSON.parse(raw) as Partial<Mandate>) : null;
+    if (v && typeof v.text === "string" && typeof v.threadId === "string")
+      m = { text: v.text, threadId: v.threadId };
+  } catch {
+    // unreadable: treated as none
+  }
+  if (!mandates.has(instanceId)) mandates.set(instanceId, m);
+  return mandates.get(instanceId) ?? null;
+}
+
+/** The user prompts on a page of transcript lines, in order. */
+function userPrompts(lines: string[]): string[] {
+  const t = createTranscript();
+  t.append(lines);
+  return t.items.flatMap((item) => (item.kind === "user" && item.text.trim() ? [item.text] : []));
+}
 
 /** Show a session's console as the rail does: its project, its panel focused. */
 function show(i: Instance): void {
@@ -165,7 +224,7 @@ export const localPort: WorkbenchPort = {
     deliverWhenReady(id, text);
     return "starting";
   },
-  async createSession({ projectId, title, prompt, worktree, model }) {
+  async createSession({ projectId, title, prompt, worktree, model, mandate }) {
     const project = getRegistry().projects.find((p) => p.id === projectId);
     if (!project) throw new Error(`no project with id ${projectId}`);
     const { instance: i, message } = await startNewSession(project, {
@@ -173,6 +232,7 @@ export const localPort: WorkbenchPort = {
       worktree,
       model,
     });
+    if (mandate?.text.trim()) rememberMandate(i.id, mandate);
     if (prompt?.trim()) deliverWhenReady(i.id, prompt.trim());
     return { id: i.id, title: i.title, message };
   },
@@ -252,6 +312,7 @@ export const localPort: WorkbenchPort = {
     release(id);
     closeDiff(diffIdFor(id));
     await deleteInstance(id);
+    forgetMandate(id);
     await renumberInstances(i.projectId);
   },
   openPanel(projectId, kind, instanceId) {
@@ -289,7 +350,13 @@ export const localPort: WorkbenchPort = {
   writeNote: notesWrite,
   createNote: notesCreateWith,
   deleteNote: notesDelete,
-  onPhase: (cb) => onStatusTransition(cb),
+  onPhase: (cb) =>
+    onStatusTransition((id, phase, prev) => {
+      if (phase !== "needs_you" || prev === "needs_you") return cb(id, phase, prev);
+      void shouldTell(id).then((tell) => {
+        if (tell && getLiveStatuses().get(id)?.phase === "needs_you") cb(id, phase, prev);
+      });
+    }),
 
   async listPlugins(projectId) {
     await loadPlugins(projectId);
@@ -334,7 +401,7 @@ export const localPort: WorkbenchPort = {
     const r = await startPluginRunFor(req.projectId, req.pluginId, req.actionId, req.values, req.revision);
     return { taskId: r.taskId, label: r.label };
   },
-  async startPluginsDraft({ projectId, title, model, prompt }) {
+  async startPluginsDraft({ projectId, title, model, prompt, mandate }) {
     const project = getRegistry().projects.find((p) => p.id === projectId);
     if (!project) throw new Error(`no project with id ${projectId}`);
     if (project.remoteSshDest)
@@ -347,8 +414,44 @@ export const localPort: WorkbenchPort = {
         draftDir = await pluginsDraftStart(projectId, inst.id);
       },
     });
+    if (mandate?.text.trim()) rememberMandate(i.id, mandate);
     deliverWhenReady(i.id, prompt(draftDir));
     return { id: i.id, title: i.title, draftDir };
+  },
+  choiceOf(id) {
+    const p = getPendingChoice(id);
+    return p ? choiceRef(p) : null;
+  },
+  onChoices: (cb) => onChoicesChanged(cb),
+  holdNeedsYou: (hold) => setPromptHold(hold),
+  async sessionContext(id): Promise<SessionContext> {
+    instance(id);
+    const m = await storedMandate(id);
+    const back = await readTranscriptBack(id).catch(() => null);
+    const recent = back ? userPrompts(back.lines) : [];
+    let first: string | null = null;
+    if (!m && back?.sessionId) {
+      const key = `${id}:${back.sessionId}`;
+      if (!firstPrompts.has(key)) {
+        // The page from the end may already start at the beginning.
+        const page = back.offset === 0 ? back : await readTranscript(id, 0, FIRST_PAGE_BYTES).catch(() => null);
+        firstPrompts.set(key, (page && userPrompts(page.lines)[0]) ?? null);
+      }
+      first = firstPrompts.get(key) ?? null;
+    }
+    const mandate = m?.text ?? first;
+    const last = recent[recent.length - 1] ?? null;
+    home ??= homeDir().catch(() => null);
+    return {
+      mandate,
+      from: m ? "duck" : first ? "first prompt" : null,
+      threadId: m?.threadId ?? null,
+      lastPrompt: last && last.trim() !== mandate?.trim() ? last : null,
+      home: await home,
+    };
+  },
+  noteSession(id, line) {
+    setTrustLine(id, { ...line, at: Date.now() });
   },
   readPluginsDraft: pluginsDraftRead,
   clearPluginsDraft: pluginsDraftClear,

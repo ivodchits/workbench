@@ -6,6 +6,8 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
+import type { ReplayCall } from "../assistant/trust/replay";
+
 export interface ProxyInfo {
   /** `http://127.0.0.1:<port>/anthropic`, the SDK's `baseURL`. */
   baseUrl: string;
@@ -170,6 +172,16 @@ export const decisionAdd = (decision: DecisionRow): Promise<number> =>
   invoke("assistant_decision_add", { decision });
 export const decisions = (before: number | null, limit: number): Promise<DecisionRow[]> =>
   invoke("assistant_decisions", { before, limit });
+
+/** A session's mandate (step T2), as stored JSON; null removes it. */
+export const mandateSet = (instanceId: string, mandate: string | null): Promise<void> =>
+  invoke("assistant_mandate_set", { instanceId, mandate });
+export const mandateGet = (instanceId: string): Promise<string | null> =>
+  invoke("assistant_mandate_get", { instanceId });
+
+/** The past `days`' Claude Code tool calls, for the trust replay (step T2). */
+export const replayCalls = (days: number, max: number): Promise<ReplayCall[]> =>
+  invoke("assistant_replay_calls", { days, max });
 
 /** The kill switch flipped (from the tray, or any surface). */
 export function onTrustPaused(cb: (paused: boolean) => void): Promise<UnlistenFn> {

@@ -50,6 +50,7 @@ const permission: ChoiceRef = {
   ],
   terminalOnly: null,
   sent: null,
+  optionsFrom: "terminal",
 };
 
 const data: FakePortData = {

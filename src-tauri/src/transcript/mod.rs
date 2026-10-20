@@ -319,7 +319,7 @@ fn resolve_transcript(projects_dir: &Path, session_id: &str) -> Option<PathBuf> 
 }
 
 /// `~/.claude/projects`, where Claude Code stores per-session transcripts.
-fn claude_projects_dir() -> Option<PathBuf> {
+pub(crate) fn claude_projects_dir() -> Option<PathBuf> {
     home_dir().map(|h| h.join(".claude").join("projects"))
 }
 

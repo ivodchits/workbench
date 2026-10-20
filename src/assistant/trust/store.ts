@@ -70,8 +70,12 @@ export interface TrustStore {
   /** `live` is the default, so it clears the project's row. */
   setMode(projectId: string, mode: Mode): Promise<void>;
   setFloor(id: string, enabled: boolean): Promise<void>;
-  /** Count one automatic approval; true when it trips the guard for the thread. */
+  /** Count one automatic approval; true when it trips the guard for the thread
+   *  (or, keyed `session:<id>`, a session's prompts). */
   approved(threadId: string, now: number): boolean;
+  /** Trip the guard for a thread or session at once (the judge's high-risk
+   *  streak). */
+  trip(key: string): void;
   log(d: Omit<DecisionRow, "id">): Promise<DecisionRow>;
   decisions(before: number | null, limit: number): Promise<DecisionRow[]>;
   /** Hear config changes and new decisions. */
@@ -161,6 +165,11 @@ export async function createTrustStore(
       tripped = [...tripped, threadId];
       changed();
       return true;
+    },
+    trip(key) {
+      if (tripped.includes(key)) return;
+      tripped = [...tripped, key];
+      changed();
     },
     async log(d) {
       const id = await backend.decisionAdd({ ...d, id: 0 });

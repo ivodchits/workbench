@@ -13,11 +13,16 @@ export interface DuckSettings {
   /** The model a session Duck starts for coding or other professional work runs
    *  on, unless the request names one. */
   codingModel: (typeof SESSION_MODELS)[number];
+  /** Answer Claude Code permission prompts under the trust policy (T2). Off, every
+   *  project is in shadow mode for them: decided and logged, left to the user.
+   *  Off until the user has checked the replay. */
+  answerSessionPrompts: boolean;
 }
 
 export const DEFAULT_SETTINGS: DuckSettings = {
   confirmPrompts: false,
   codingModel: "opus",
+  answerSessionPrompts: false,
 };
 
 /** Keep only known keys with valid values, so a hand-edited pref can't break Duck. */
@@ -25,6 +30,7 @@ export function cleanSettings(raw: unknown): Partial<DuckSettings> {
   const r = (raw && typeof raw === "object" ? raw : {}) as Record<string, unknown>;
   const out: Partial<DuckSettings> = {};
   if (typeof r.confirmPrompts === "boolean") out.confirmPrompts = r.confirmPrompts;
+  if (typeof r.answerSessionPrompts === "boolean") out.answerSessionPrompts = r.answerSessionPrompts;
   if (SESSION_MODELS.includes(r.codingModel as DuckSettings["codingModel"]))
     out.codingModel = r.codingModel as DuckSettings["codingModel"];
   return out;

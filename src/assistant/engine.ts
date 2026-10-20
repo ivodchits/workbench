@@ -42,6 +42,7 @@ import type {
   ToolOutput,
 } from "./tools/registry";
 import type { TrustFacts } from "./trust/decide";
+import { lastUserText } from "./trust/mandate";
 
 type Params = Anthropic.Beta.Messages.MessageCreateParamsStreaming;
 type ApiMessage = Anthropic.Beta.BetaMessageParam;
@@ -155,6 +156,9 @@ export interface Engine {
   /** Resolves once the thread has no turn running and nothing queued: idle, or
    *  parked on a confirmation. */
   settled(threadId: string): Promise<void>;
+  /** Show a notice in the thread (the model never sees it): the trust watcher's
+   *  word about a session's prompt. */
+  notice(threadId: string, n: Notice): Promise<void>;
 }
 
 // ── history → request ───────────────────────────────────────────────────────
@@ -599,6 +603,7 @@ export function createEngine(deps: EngineDeps): Engine {
           threadId,
           signal: turn.ctl.signal,
           settings: settings(),
+          request: lastUserText(store.loaded(threadId)),
           prepared,
           notice: (n) => notice(threadId, n).then(() => {}),
           later: (text) => {
@@ -786,6 +791,11 @@ export function createEngine(deps: EngineDeps): Engine {
         ws.push(resolve);
         settledWaiters.set(threadId, ws);
       });
+    },
+
+    async notice(threadId, n) {
+      if (!store.thread(threadId)) return; // deleted since
+      await notice(threadId, n);
     },
   };
 }

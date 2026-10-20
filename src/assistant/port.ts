@@ -50,6 +50,9 @@ export interface ChoiceRef {
   terminalOnly: string | null;
   /** An answer sent from the app that the session hasn't taken yet. */
   sent: string | null;
+  /** Where `options` come from: the hook (a question's), the terminal screen, or
+   *  neither yet (a permission prompt's placeholder Allow). */
+  optionsFrom: "hook" | "terminal" | "generic";
 }
 
 export interface SessionRef {
@@ -131,6 +134,9 @@ export interface WorkbenchPort {
     prompt?: string;
     worktree?: boolean;
     model?: string | null;
+    /** What the session is for: the user's request in the thread that started it
+     *  (T2's judge reads its prompts against this). */
+    mandate?: Mandate;
   }): Promise<{ id: string; title: string; message: string | null }>;
   /** Open (or focus) a session's console, starting a fresh Claude Code session if
    *  none is running. */
@@ -166,7 +172,9 @@ export interface WorkbenchPort {
   /** Make a note; a taken name gets " 2", " 3", …. */
   createNote(projectId: string, name: string, content: string): Promise<Note>;
   deleteNote(projectId: string, name: string): Promise<void>;
-  /** Hear every session phase change; returns the unsubscribe. */
+  /** Hear every session phase change; returns the unsubscribe. A needs-you that
+   *  Duck's trust watcher answers on its own is never reported, and one it leaves
+   *  to the user is reported once it has decided (`holdNeedsYou`). */
   onPhase(cb: PhaseListener): () => void;
 
   // ── project toolbar plugins (W5) ──
@@ -203,11 +211,49 @@ export interface WorkbenchPort {
     title: string;
     model: string | null;
     prompt: (draftDir: string) => string;
+    mandate?: Mandate;
   }): Promise<{ id: string; title: string; draftDir: string }>;
   /** The project's draft as its session left it. */
   readPluginsDraft(projectId: string): Promise<PluginsDraft>;
   /** Drop the draft; its sessions launch as ordinary ones from then on. */
   clearPluginsDraft(projectId: string): Promise<void>;
+
+  // ── Claude Code permission prompts (T2) ──
+
+  /** The session's open prompt, or null. */
+  choiceOf(instanceId: string): ChoiceRef | null;
+  /** Hear every change to any session's open prompt (it opened, its options were
+   *  read off the screen, it closed); returns the unsubscribe. */
+  onChoices(cb: () => void): () => void;
+  /** Register the one hold on fresh needs-you alerts (the desktop toast, the
+   *  phone push, Duck's session watches): it resolves false for a prompt it
+   *  answered, true to tell the user. Returns the unregister. */
+  holdNeedsYou(hold: (instanceId: string) => Promise<boolean>): () => void;
+  /** What a session is for, for judging its prompts. */
+  sessionContext(instanceId: string): Promise<SessionContext>;
+  /** A line under the session's card in the rail ("auto-approved `npm test`"). */
+  noteSession(instanceId: string, line: { text: string; acted: boolean }): void;
+}
+
+/** What a session was started for (step T2). */
+export interface Mandate {
+  /** The user's words. */
+  text: string;
+  /** Duck's thread the request came from. */
+  threadId: string;
+}
+
+export interface SessionContext {
+  /** Duck's record when Duck started the session (`from: "duck"`), else the
+   *  session's first prompt (`"first prompt"`); null when neither is known. */
+  mandate: string | null;
+  from: "duck" | "first prompt" | null;
+  /** The thread to tell about it, when Duck started the session. */
+  threadId: string | null;
+  /** The user's latest prompt in the session, when it isn't the mandate. */
+  lastPrompt: string | null;
+  /** The user's home folder, for `~/` rules. */
+  home: string | null;
 }
 
 export interface PluginRunRequest {

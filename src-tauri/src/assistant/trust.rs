@@ -96,6 +96,28 @@ fn set_meta(conn: &Connection, key: &str, value: &str) -> Result<(), String> {
     .map_err(|e| e.to_string())
 }
 
+const MANDATE_PREFIX: &str = "assistant_mandate:";
+/// A mandate's JSON is the user's request plus a thread id; anything this big
+/// isn't one.
+const MANDATE_MAX: usize = 64 * 1024;
+
+/// Store (or with `None`, drop) a session's mandate (step T2).
+pub fn set_mandate(conn: &Connection, instance_id: &str, mandate: Option<&str>) -> Result<(), String> {
+    let key = format!("{MANDATE_PREFIX}{instance_id}");
+    match mandate {
+        Some(m) if m.len() > MANDATE_MAX => Err("the mandate is too long".into()),
+        Some(m) => set_meta(conn, &key, m),
+        None => conn
+            .execute("DELETE FROM meta WHERE key = ?1", [&key])
+            .map(|_| ())
+            .map_err(|e| e.to_string()),
+    }
+}
+
+pub fn mandate(conn: &Connection, instance_id: &str) -> Result<Option<String>, String> {
+    meta(conn, &format!("{MANDATE_PREFIX}{instance_id}"))
+}
+
 fn floor_off(conn: &Connection) -> Result<Vec<String>, String> {
     Ok(meta(conn, FLOOR_OFF_KEY)?
         .and_then(|v| serde_json::from_str(&v).ok())
@@ -375,6 +397,20 @@ mod tests {
         assert_eq!(page[0].input, json!({"name": "todo"}));
         let next = decisions(&conn, Some(page[1].id), 10).unwrap();
         assert_eq!(next.iter().map(|d| d.ts).collect::<Vec<_>>(), vec![3, 2, 1]);
+    }
+
+    #[test]
+    fn keeps_a_mandate_per_session() {
+        let db = DuckDb::open_in_memory().unwrap();
+        let conn = db.conn.lock().unwrap();
+        assert_eq!(mandate(&conn, "a").unwrap(), None);
+        set_mandate(&conn, "a", Some(r#"{"text":"fix the auth test"}"#)).unwrap();
+        set_mandate(&conn, "b", Some("x")).unwrap();
+        assert_eq!(mandate(&conn, "a").unwrap().as_deref(), Some(r#"{"text":"fix the auth test"}"#));
+        set_mandate(&conn, "a", None).unwrap();
+        assert_eq!(mandate(&conn, "a").unwrap(), None);
+        assert_eq!(mandate(&conn, "b").unwrap().as_deref(), Some("x"));
+        assert!(set_mandate(&conn, "c", Some(&"x".repeat(MANDATE_MAX + 1))).is_err());
     }
 
     #[test]

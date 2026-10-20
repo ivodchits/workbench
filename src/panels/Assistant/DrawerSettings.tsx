@@ -68,6 +68,23 @@ export default function DrawerSettings({ duck }: { duck: DuckState }) {
               </span>
             </span>
           </label>
+          <label style={row}>
+            <input
+              type="checkbox"
+              checked={duck.settings.answerSessionPrompts}
+              onChange={(e) =>
+                setDuckSettings({ answerSessionPrompts: e.target.checked })
+              }
+            />
+            <span>
+              Answer sessions' permission prompts under the trust rules
+              <span style={hint}>
+                {" "}
+                (off: Duck only logs what it would do; run the replay in
+                decisions first)
+              </span>
+            </span>
+          </label>
           <label style={{ ...row, alignItems: "center" }}>
             <span>Sessions Duck starts for coding run on</span>
             <select

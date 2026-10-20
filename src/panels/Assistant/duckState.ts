@@ -19,6 +19,7 @@ import type {
 } from "../../assistant/protocol";
 import type { DuckSettings } from "../../assistant/settings";
 import type { Mode } from "../../assistant/trust/decide";
+import type { ReplayReport } from "../../assistant/trust/replay";
 import type { Effect } from "../../assistant/trust/rules";
 import type { DecisionRow, Spend, StoredMessage, ThreadRow } from "../../ipc/assistant";
 import { getPref, setPref, type AssistantDrawerPrefs } from "../../ipc/prefs";
@@ -50,6 +51,8 @@ export interface DuckState {
   /** The decision log pages loaded so far, newest first, and whether more exist. */
   decisions: DecisionRow[];
   decisionsMore: boolean;
+  /** The trust replay (step T2): running (judged `done` of `of`), or its report. */
+  replay: { running: boolean; done: number; of: number; report: ReplayReport | null } | null;
 }
 
 export const DEFAULT_DRAWER: AssistantDrawerPrefs = {
@@ -76,6 +79,7 @@ let state: DuckState = {
   trust: null,
   decisions: [],
   decisionsMore: false,
+  replay: null,
 };
 const listeners = new Set<() => void>();
 /** A send with no thread is waiting for the engine to name the new one. */
@@ -242,8 +246,12 @@ function onEvent(e: DuckEvent): void {
     case "decision":
       set({ decisions: [e.row, ...state.decisions.filter((d) => d.id !== e.row.id)] });
       break;
+    case "replay":
+      set({ replay: { running: !e.report, done: e.done, of: e.of, report: e.report } });
+      break;
     case "error":
-      set({ error: e.message });
+      // A failed replay is over; its error shows like any other.
+      set({ error: e.message, replay: state.replay?.running ? { ...state.replay, running: false } : state.replay });
       break;
   }
 }
@@ -390,6 +398,13 @@ export function setTrustMode(projectId: string, mode: Mode): void {
 
 export function setFloorEntry(id: string, enabled: boolean): void {
   post({ type: "trust.floor", id, enabled });
+}
+
+/** Replay the past `days` of Claude Code tool calls through the prompt policy,
+ *  the judge reading up to `judgeMax` of them. */
+export function runReplay(days: number, judgeMax: number): void {
+  set({ replay: { running: true, done: 0, of: 0, report: null } });
+  post({ type: "trust.replay", days, judgeMax });
 }
 
 /** The newest page of the decision log (`null`), or the page before an id. */

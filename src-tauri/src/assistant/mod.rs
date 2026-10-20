@@ -14,6 +14,7 @@ mod budget;
 mod db;
 mod key;
 mod proxy;
+pub mod replay;
 mod threads;
 mod trust;
 mod usage;
@@ -263,6 +264,28 @@ pub fn assistant_floor_set(ctx: Db<'_>, id: String, enabled: bool) -> Result<Vec
 #[tauri::command]
 pub fn assistant_decision_add(ctx: Db<'_>, decision: trust::Decision) -> Result<i64, String> {
     trust::add_decision(&lock(&ctx), &decision)
+}
+
+/// A session's mandate (step T2): the request Duck started it for, as JSON
+/// `{text, threadId}`. In `meta` under the instance id; `None` removes it.
+#[tauri::command]
+pub fn assistant_mandate_set(ctx: Db<'_>, instance_id: String, mandate: Option<String>) -> Result<(), String> {
+    trust::set_mandate(&lock(&ctx), &instance_id, mandate.as_deref())
+}
+
+#[tauri::command]
+pub fn assistant_mandate_get(ctx: Db<'_>, instance_id: String) -> Result<Option<String>, String> {
+    trust::mandate(&lock(&ctx), &instance_id)
+}
+
+/// The past `days`' Claude Code tool calls for the trust replay (step T2), at most
+/// `max`, newest kept. Read off the transcripts on a worker thread.
+#[tauri::command]
+pub async fn assistant_replay_calls(days: u32, max: usize) -> Result<Vec<replay::ReplayCall>, String> {
+    let dir = crate::transcript::claude_projects_dir().ok_or("no home folder")?;
+    tauri::async_runtime::spawn_blocking(move || replay::scan(&dir, days.clamp(1, 31), max.clamp(1, 20_000)))
+        .await
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]

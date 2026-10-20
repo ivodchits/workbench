@@ -3,13 +3,16 @@
 // transport. Started with the app like the other engines (App.tsx), not when a
 // surface first opens, so Duck is there for every surface from the start.
 
+import { homeDir } from "@tauri-apps/api/path";
+
 import {
   getSpend,
   onUsage,
+  replayCalls,
   type Spend,
   type UsageRecord,
 } from "../ipc/assistant";
-import { errorMessage, getClient, oneShot } from "./client";
+import { errorMessage, getClient, oneShot, structured } from "./client";
 import { createEngine, type Engine } from "./engine";
 import { createPolicy } from "./policy";
 import { localPort } from "./port.local";
@@ -31,7 +34,9 @@ import { READ_TOOLS } from "./tools/read";
 import { createRegistry } from "./tools/registry";
 import { testConfirm } from "./tools/testConfirm";
 import { FLOOR } from "./trust/floor";
+import { replay, type ReplayReport } from "./trust/replay";
 import { createTrustStore, ipcTrustBackend, type TrustStore } from "./trust/store";
+import { startTrustWatcher } from "./trust/watcher";
 
 /** Decisions per page of the log. */
 const DECISION_PAGE = 50;
@@ -69,6 +74,17 @@ const ledger: SpendSource = {
   },
 };
 
+/** Runs the trust replay (step T2): the app's reads the transcripts and judges
+ *  through the proxy. */
+export type Replayer = (
+  days: number,
+  judgeMax: number,
+  progress: (done: number, of: number) => void,
+) => Promise<ReplayReport>;
+
+/** The most calls the replay reads. */
+const REPLAY_MAX_CALLS = 20_000;
+
 let started: Promise<void> | null = null;
 let duck: Transport | null = null;
 
@@ -79,6 +95,7 @@ export function endpoint(
   spend?: SpendSource,
   settings?: SettingsStore,
   trust?: TrustStore | null,
+  replayer?: Replayer,
 ): DuckEndpoint {
   const listeners = new Set<(ev: DuckEvent) => void>();
   const say = (ev: DuckEvent) => {
@@ -168,6 +185,14 @@ export function endpoint(
         });
         return;
       }
+      case "trust.replay": {
+        if (!replayer) throw new Error("The replay isn't available here.");
+        const report = await replayer(msg.days, msg.judgeMax, (done, of) =>
+          say({ type: "replay", done, of, report: null }),
+        );
+        say({ type: "replay", done: report.judged, of: report.judged, report });
+        return;
+      }
       case "thread.open": {
         if (!s.thread(msg.threadId))
           throw new Error(`no thread ${msg.threadId}`);
@@ -216,7 +241,30 @@ export function initAssistant(): Promise<void> {
         (await getClient()).beta.messages.stream(params, opts),
       nameThread: (text) => oneShot("title", text.slice(0, 2000)),
     });
-    duck = createLocalTransport(endpoint(engine, s, ledger, settings, trust));
+    // Claude Code permission prompts (T2): decided under the same trust store.
+    if (trust)
+      startTrustWatcher({
+        port: localPort,
+        trust,
+        judge: (r) => structured(r),
+        answering: () => settings.get().answerSessionPrompts,
+        notice: (threadId, text) =>
+          void engine
+            .notice(threadId, { kind: "trust", text })
+            .catch((e: unknown) => console.warn("duck: a trust notice was dropped", e)),
+      });
+    const replayer: Replayer | undefined = trust
+      ? async (days, judgeMax, progress) =>
+          replay(await replayCalls(days, REPLAY_MAX_CALLS), {
+            config: trust.config(),
+            projects: localPort.listProjects(),
+            judge: judgeMax > 0 ? (r) => structured(r) : null,
+            judgeMax,
+            home: (await homeDir().catch(() => null)) ?? undefined,
+            progress,
+          })
+      : undefined;
+    duck = createLocalTransport(endpoint(engine, s, ledger, settings, trust, replayer));
   })().catch((e: unknown) => {
     started = null;
     console.error("duck: init failed", e);

@@ -129,7 +129,7 @@ export const createSession = defineTool({
     return `Start a session in ${p.name}${prompt?.trim() ? ` and send: ${cut(prompt, 240)}` : ""}`;
   },
   trust: (input, port) => ({ ...onProject(input, port), texts: input.prompt ? [input.prompt] : [] }),
-  async run({ project, prompt, title, worktree, model }, { port, settings }) {
+  async run({ project, prompt, title, worktree, model }, { port, settings, request, threadId }) {
     const p = findProject(port, project);
     if (worktree && p.remote)
       throw new Error(`${p.name} is a remote project: worktrees are local only.`);
@@ -140,6 +140,8 @@ export const createSession = defineTool({
       prompt,
       worktree,
       model: m,
+      // What the session is for, in the user's words: its prompts are judged by it.
+      mandate: request ? { text: request, threadId } : undefined,
     });
     return compact({
       id: made.id,

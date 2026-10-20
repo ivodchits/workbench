@@ -9,11 +9,13 @@ import type { PluginFile, Problem } from "../ipc/plugins";
 import type { TranscriptPage } from "../ipc/transcript";
 import type { RateLimits } from "../ipc/usageLimits";
 import type {
+  ChoiceRef,
   GitSnapshot,
   ProjectRef,
   SessionRef,
   PhaseListener,
   PromptDelivery,
+  SessionContext,
   SessionPhase,
   TaskEnd,
   TaskRun,
@@ -43,6 +45,8 @@ export interface FakePortData {
   scripts?: Record<string, string>;
   /** Toolbar drafts by project id. */
   drafts?: Record<string, { text: string | null; scripts: { name: string; text: string }[] }>;
+  /** What `sessionContext` answers, per session id. */
+  contexts?: Record<string, Partial<SessionContext>>;
 }
 
 export interface FakePlugins {
@@ -74,6 +78,13 @@ export interface FakePort extends WorkbenchPort {
   phase(instanceId: string, phase: SessionPhase, prev?: SessionPhase): void;
   /** End a task run, for its `onTaskEnd` listeners. */
   endTask(taskId: string, end: Partial<TaskEnd>): void;
+  /** Set a session's open prompt (null closes it) and tell the `onChoices`
+   *  listeners. */
+  setChoice(instanceId: string, choice: ChoiceRef | null): void;
+  /** The registered needs-you hold. */
+  hold: ((instanceId: string) => Promise<boolean>) | null;
+  /** What `noteSession` showed. */
+  lines: { id: string; text: string; acted: boolean }[];
 }
 
 export function project(p: Partial<ProjectRef> & { id: string }): ProjectRef {
@@ -106,6 +117,7 @@ export function session(
 
 export function fakePort(data: FakePortData = {}): FakePort {
   const listeners = new Set<PhaseListener>();
+  const choiceListeners = new Set<() => void>();
   const taskEnds = new Map<string, (end: TaskEnd) => void>();
   const pluginsOf = (projectId: string) => (data.plugins ??= {})[projectId];
   const revOf = (f: FakePlugins | undefined) => (f?.text != null ? `p-${f.rev}` : null);
@@ -123,6 +135,8 @@ export function fakePort(data: FakePortData = {}): FakePort {
   const port: FakePort = {
     reads: 0,
     calls: [],
+    hold: null,
+    lines: [],
     listProjects: () => data.projects ?? [],
     listSessions: (projectId?: string) =>
       (data.sessions ?? []).filter(
@@ -358,6 +372,37 @@ export function fakePort(data: FakePortData = {}): FakePort {
       taskEnds.delete(taskId);
       cb?.({ status: "exited", code: 0, error: null, tail: [], ms: 1000, ...end });
     },
+    choiceOf: (id) => data.sessions?.find((x) => x.id === id)?.choice ?? null,
+    onChoices(cb) {
+      choiceListeners.add(cb);
+      return () => {
+        choiceListeners.delete(cb);
+      };
+    },
+    setChoice(id, choice) {
+      sessionOf(id).choice = choice;
+      for (const l of [...choiceListeners]) l();
+    },
+    holdNeedsYou(hold) {
+      port.hold = hold;
+      return () => {
+        if (port.hold === hold) port.hold = null;
+      };
+    },
+    sessionContext(id) {
+      sessionOf(id);
+      return Promise.resolve({
+        mandate: null,
+        from: null,
+        threadId: null,
+        lastPrompt: null,
+        home: null,
+        ...data.contexts?.[id],
+      });
+    },
+    noteSession(id, line) {
+      port.lines.push({ id, ...line });
+    },
   };
   return port;
 }
@@ -373,6 +418,7 @@ export function toolCtx(
     threadId: "t",
     signal: new AbortController().signal,
     settings: { ...DEFAULT_SETTINGS, ...settings },
+    request: null as string | null,
     notices: [] as Notice[],
     posted: [] as string[],
     notice(n: Notice) {

@@ -57,39 +57,67 @@ export function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
+/** One call with structured output (or plain text without `schema`). */
+export interface StructuredRequest<S extends z.ZodType> {
+  model: string;
+  system: string;
+  input: string;
+  maxTokens: number;
+  think: boolean;
+  /** The call's `x-wb-purpose`. */
+  purpose: string;
+  schema?: S;
+  signal?: AbortSignal;
+}
+
+export async function structured<S extends z.ZodType = z.ZodString>(
+  r: StructuredRequest<S>,
+): Promise<z.infer<S>> {
+  const c = await getClient();
+  const format = r.schema && {
+    type: "json_schema" as const,
+    schema: z.toJSONSchema(r.schema) as Record<string, unknown>,
+  };
+  const msg = await c.messages.create(
+    {
+      model: r.model,
+      max_tokens: r.maxTokens,
+      system: r.system,
+      thinking: { type: r.think ? "adaptive" : "disabled" },
+      output_config: { effort: "low", ...(format && { format }) },
+      messages: [{ role: "user", content: r.input }],
+    },
+    { ...purpose(r.purpose), signal: r.signal },
+  );
+  if (msg.stop_reason === "refusal") throw new Error(`${r.purpose}: refused`);
+  // Cut-off JSON won't parse; cut-off text (a title) is still usable.
+  if (msg.stop_reason === "max_tokens" && r.schema) throw new Error(`${r.purpose}: the reply was cut off`);
+  const text = msg.content
+    .flatMap((b) => (b.type === "text" ? [b.text] : []))
+    .join("")
+    .trim();
+  return (r.schema ? r.schema.parse(JSON.parse(text)) : text) as z.infer<S>;
+}
+
 /**
  * One Haiku call with a frozen prompt (`PRIMITIVES[name]`), for background jobs
  * that need no judgment: titles, summaries, rewrites. With `schema`, the reply is
  * constrained to it (structured output) and parsed; without, it's the reply text.
  */
-export async function oneShot<S extends z.ZodType = z.ZodString>(
+export function oneShot<S extends z.ZodType = z.ZodString>(
   name: PrimitiveName,
   input: string,
   opts: { schema?: S; signal?: AbortSignal } = {},
 ): Promise<z.infer<S>> {
   const p = PRIMITIVES[name];
-  const c = await getClient();
-  const format = opts.schema && {
-    type: "json_schema" as const,
-    schema: z.toJSONSchema(opts.schema) as Record<string, unknown>,
-  };
-  const msg = await c.messages.create(
-    {
-      model: PRIMITIVE_MODEL,
-      max_tokens: p.maxTokens,
-      system: p.system,
-      thinking: { type: p.think ? "adaptive" : "disabled" },
-      output_config: { effort: "low", ...(format && { format }) },
-      messages: [{ role: "user", content: input }],
-    },
-    { ...purpose(name), signal: opts.signal },
-  );
-  if (msg.stop_reason === "refusal") throw new Error(`${name}: refused`);
-  const text = msg.content
-    .flatMap((b) => (b.type === "text" ? [b.text] : []))
-    .join("")
-    .trim();
-  return (
-    opts.schema ? opts.schema.parse(JSON.parse(text)) : text
-  ) as z.infer<S>;
+  return structured({
+    model: PRIMITIVE_MODEL,
+    system: p.system,
+    input,
+    maxTokens: p.maxTokens,
+    think: p.think,
+    purpose: name,
+    schema: opts.schema,
+    signal: opts.signal,
+  });
 }

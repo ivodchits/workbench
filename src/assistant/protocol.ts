@@ -9,6 +9,7 @@
 import type { DecisionRow, Spend, StoredMessage, ThreadRow } from "../ipc/assistant";
 import type { DuckSettings } from "./settings";
 import type { Mode, TrustConfig } from "./trust/decide";
+import type { ReplayReport } from "./trust/replay";
 import type { Effect } from "./trust/rules";
 
 export type { DecisionRow };
@@ -146,7 +147,10 @@ export type ClientMessage =
   /** Turn a floor entry off or back on (the surface asks for a typed confirm). */
   | { type: "trust.floor"; id: string; enabled: boolean }
   /** A page of the decision log, newest first, older than `before` (an id). */
-  | { type: "trust.decisions"; before: number | null };
+  | { type: "trust.decisions"; before: number | null }
+  /** Replay the past `days`' Claude Code tool calls through the prompt policy
+   *  (step T2), with the judge on up to `judgeMax` of them. */
+  | { type: "trust.replay"; days: number; judgeMax: number };
 
 // ── Duck → surface ──────────────────────────────────────────────────────────
 
@@ -199,6 +203,8 @@ export type DuckEvent =
     }
   /** A decision was just logged. */
   | { type: "decision"; row: DecisionRow }
+  /** The replay's progress (`report` null, judged so far), then its report. */
+  | { type: "replay"; done: number; of: number; report: ReplayReport | null }
   /** A request from a surface failed (an unknown thread, storage down, …). */
   | { type: "error"; message: string };
 

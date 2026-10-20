@@ -55,3 +55,15 @@ export function findGrant(
   }
   return null;
 }
+
+/** The user's latest message in the thread (what a session Duck starts is for:
+ *  its mandate, step T2), or null. Events and Duck's own messages don't count. */
+export function lastUserText(messages: readonly StoredMessage[]): string | null {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i];
+    if (m.role !== "user" || !USER_SOURCES.has(m.source)) continue;
+    const t = textOf(m).trim();
+    if (t) return t;
+  }
+  return null;
+}

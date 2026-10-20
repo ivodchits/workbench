@@ -9,7 +9,7 @@
 //      setting      "ask before every prompt" is on and this sends one
 //   3. rules        deny / ask / allow (`rules.ts`)
 //   4. mandate      the user's own words in this thread allow it (`mandate.ts`)
-//   5. judge        T2; answers nothing yet
+//   5. judge        Claude Code prompts only (`session.ts`, `judge.ts`)
 //      default      the tier: reversible runs, consequential asks
 //
 // A project in `shadow` mode gets the decision logged and the W2 card anyway.
@@ -28,7 +28,11 @@ export type Layer =
   | "setting"
   | "rule"
   | "mandate"
-  | "default";
+  | "default"
+  /** A Claude Code prompt: the judge read it (T2). */
+  | "judge"
+  /** A Claude Code prompt answered (or gone) before the decision landed. */
+  | "superseded";
 
 /** What a tool says about one of its calls, for the rules and the floor. */
 export interface TrustFacts {
