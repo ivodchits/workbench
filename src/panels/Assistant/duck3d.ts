@@ -112,6 +112,8 @@ const HALF = unit(LIGHT[0], LIGHT[1], LIGHT[2] - 1);
 /** The eyes' catchlight follows the camera, not the light: up and left of an
  *  eye's middle, facing you. */
 const GLINT = unit(-0.45, 0.55, -1);
+/** Radius of a sphere at (0, 0.25, 0) that holds the duck in every pose. */
+const BOUND = 1.7;
 /** Eye cells this frame: how squarely each faces `GLINT`, and which eye it is. */
 let glintDot = new Float32Array(0);
 let glintSide = new Int8Array(0);
@@ -145,10 +147,15 @@ export function render(p: Pose, cols: number, rows: number, cellAspect: number, 
       const ox = sx * c - 3 * s;
       const oz = -sx * s - 3 * c;
       const idx = j * cols + i;
-      let t = 1.2;
+      // March only inside a sphere around the duck; most cells miss it outright.
+      const half = ox * s + oz * c;
+      const disc = half * half - (ox * ox + (sy - 0.25) ** 2 + oz * oz - BOUND * BOUND);
       let hit = false;
-      if (Math.abs(sy - 0.25) < 1.5) {
-        for (let k = 0; k < 48 && t < 4.8; k++) {
+      let t = 0;
+      if (disc > 0) {
+        t = -half - Math.sqrt(disc);
+        const end = -half + Math.sqrt(disc);
+        for (let k = 0; k < 48 && t < end; k++) {
           const d = scene(ox + s * t, sy, oz + c * t);
           if (d < 0.004) {
             hit = true;
