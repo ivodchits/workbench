@@ -449,6 +449,10 @@ function wrapped(state: State, line: Json, text: string): boolean {
 
 const IMAGE_TYPES = /^image\/(png|jpeg|gif|webp)$/;
 
+/** The TUI marks pasted text for the model with `<pasted_content id="…">` (the
+ *  closing tag carries the id too); the user only typed what is inside. */
+const PASTED = /<\/?pasted_content(?:\s+id="[^"]*")?\s*>\n?/g;
+
 function userLine(state: State, line: Json): void {
   // Notes for the model (the caveat before a command, the path of a pasted image).
   if (line.isMeta === true) return;
@@ -485,7 +489,7 @@ function userLine(state: State, line: Json): void {
     }
   }
 
-  const text = texts.join("\n").trim();
+  const text = texts.join("\n").replace(PASTED, "").trim();
   if (!text && images.length === 0) return;
   const interrupted = INTERRUPTED.exec(text);
   if (interrupted) {

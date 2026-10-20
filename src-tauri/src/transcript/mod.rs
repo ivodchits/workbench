@@ -390,9 +390,24 @@ fn user_text(v: &Value) -> Option<String> {
     }
 }
 
+/// Drop the `<pasted_content id="…">` / `</pasted_content id="…">` markers the TUI
+/// wraps pasted text in, keeping the text itself.
+fn strip_pasted_markers(raw: &str) -> String {
+    let mut out = String::with_capacity(raw.len());
+    let mut rest = raw;
+    let next = |s: &str| [s.find("<pasted_content"), s.find("</pasted_content")].into_iter().flatten().min();
+    while let Some(start) = next(rest) {
+        let Some(len) = rest[start..].find('>') else { break };
+        out.push_str(&rest[..start]);
+        rest = &rest[start + len + 1..];
+    }
+    out.push_str(rest);
+    out
+}
+
 /// Collapse whitespace / strip control chars and truncate to a label length.
 fn clean_prompt(raw: &str) -> String {
-    let collapsed = raw
+    let collapsed = strip_pasted_markers(raw)
         .chars()
         .map(|c| if c.is_control() { ' ' } else { c })
         .collect::<String>();
@@ -672,6 +687,10 @@ mod tests {
     fn clean_prompt_collapses_and_truncates() {
         assert_eq!(clean_prompt("  a\tb\n c  "), "a b c");
         assert_eq!(clean_prompt(&"x".repeat(200)).chars().count(), 160);
+        assert_eq!(
+            clean_prompt("see:\n<pasted_content id=\"da8e\">\nline one\n</pasted_content id=\"da8e\">"),
+            "see: line one"
+        );
     }
 
     /// A summary is read only when the file's recorded `cwd` matches the target; a

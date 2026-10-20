@@ -215,6 +215,12 @@ describe("delivery", () => {
     expect(t.items).toHaveLength(3);
   });
 
+  it("drops the pasted-content markers around pasted text", () => {
+    const text = 'see this:\n<pasted_content id="da8e">\nline one\nline two\n</pasted_content id="da8e">';
+    const items = fold([JSON.stringify({ type: "user", uuid: "a", message: { content: text } })]);
+    expect(items).toMatchObject([{ kind: "user", text: "see this:\nline one\nline two" }]);
+  });
+
   it("skips what it does not understand", () => {
     const t = createTranscript();
     const changed = t.append([
