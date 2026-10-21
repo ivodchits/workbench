@@ -8,20 +8,27 @@
 //! - [`Player::stop`] empties the queue at once (barge-in).
 //! - While audio plays, `level` (0..1, the loudness of what is coming out right now)
 //!   is reported every ~33 ms for the duck's beak.
+//! - What the callback plays, silence included, is handed to the echo canceller
+//!   when one runs ([`aec::tap`], step V4 part 2). The stream then stays open
+//!   ([`Player::hold_open`]), so the reference keeps its timing between replies, and
+//!   a held stream reopens when the default output changes.
 
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 
+use super::aec;
 use super::capture::resample;
 
 /// How long the stream stays open after the queue runs dry, so the next
 /// sentence of the same reply doesn't reopen the device.
 const TAIL: Duration = Duration::from_millis(1500);
 const LEVEL_EVERY: Duration = Duration::from_millis(33);
+/// How often a held stream checks the default output is still the one it plays to.
+const DEVICE_EVERY: Duration = Duration::from_secs(1);
 
 type LevelFn = Box<dyn Fn(f32) + Send + Sync>;
 
@@ -34,6 +41,8 @@ struct Shared {
     level: AtomicU32,
     /// A stream thread is running.
     open: AtomicBool,
+    /// Holders keeping the stream open while idle (echo cancellation is running).
+    hold: AtomicUsize,
     on_level: LevelFn,
 }
 
@@ -49,6 +58,7 @@ impl Player {
                 rate: AtomicU32::new(0),
                 level: AtomicU32::new(0),
                 open: AtomicBool::new(false),
+                hold: AtomicUsize::new(0),
                 on_level: Box::new(on_level),
             }),
         }
@@ -56,7 +66,7 @@ impl Player {
 
     /// Queue `samples` (mono, at `rate`) behind what's playing.
     pub fn push(&self, samples: &[f32], rate: u32) -> Result<(), String> {
-        let device_rate = self.ensure_open()?;
+        let device_rate = open(&self.shared)?;
         let resampled = if device_rate == rate { samples.to_vec() } else { resample(samples, rate, device_rate) };
         loop {
             {
@@ -67,7 +77,7 @@ impl Player {
                     return Ok(());
                 }
             }
-            self.ensure_open()?;
+            open(&self.shared)?;
         }
     }
 
@@ -76,6 +86,18 @@ impl Player {
         if let Ok(mut q) = self.shared.queue.lock() {
             q.clear();
         }
+    }
+
+    /// Keep the output open while idle, playing silence (on), until every holder
+    /// has let go (off); then it closes after its tail as usual.
+    pub fn hold_open(&self, on: bool) -> Result<(), String> {
+        if on {
+            self.shared.hold.fetch_add(1, Ordering::SeqCst);
+            open(&self.shared)?;
+        } else {
+            let _ = self.shared.hold.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1));
+        }
+        Ok(())
     }
 
     /// Seconds of audio still queued.
@@ -87,78 +109,99 @@ impl Player {
     pub fn is_playing(&self) -> bool {
         self.queued_secs() > 0.0
     }
+}
 
-    /// Open the default output on its own thread if it isn't open; its rate.
-    fn ensure_open(&self) -> Result<u32, String> {
-        if self.shared.open.load(Ordering::SeqCst) {
-            let r = self.shared.rate.load(Ordering::SeqCst);
-            if r > 0 {
-                return Ok(r);
-            }
+/// Open the default output on its own thread if it isn't open; its rate.
+fn open(shared: &Arc<Shared>) -> Result<u32, String> {
+    if shared.open.load(Ordering::SeqCst) {
+        let r = shared.rate.load(Ordering::SeqCst);
+        if r > 0 {
+            return Ok(r);
         }
-        let device = cpal::default_host().default_output_device().ok_or("no audio output device")?;
-        let config = device.default_output_config().map_err(|e| format!("the audio output: {e}"))?;
-        let rate = config.sample_rate().0;
-        self.shared.rate.store(rate, Ordering::SeqCst);
-        if self.shared.open.swap(true, Ordering::SeqCst) {
-            return Ok(rate);
-        }
-        let shared = Arc::clone(&self.shared);
-        let (tx, rx) = std::sync::mpsc::channel::<Result<(), String>>();
-        std::thread::Builder::new()
-            .name("tts-playback".into())
-            .spawn(move || {
-                let stream = match open_stream(&device, &config, Arc::clone(&shared)) {
-                    Ok(s) => s,
-                    Err(e) => {
-                        shared.open.store(false, Ordering::SeqCst);
-                        let _ = tx.send(Err(e));
-                        return;
-                    }
-                };
-                let _ = tx.send(Ok(()));
-                let mut idle_since: Option<Instant> = None;
-                loop {
-                    std::thread::sleep(LEVEL_EVERY);
-                    let queued = shared.queue.lock().map(|q| q.len()).unwrap_or(0);
-                    if queued > 0 {
-                        idle_since = None;
-                        (shared.on_level)(f32::from_bits(shared.level.load(Ordering::Relaxed)));
-                    } else {
-                        let since = *idle_since.get_or_insert_with(|| {
-                            (shared.on_level)(0.0);
-                            Instant::now()
-                        });
+    }
+    let device = cpal::default_host().default_output_device().ok_or("no audio output device")?;
+    let name = device.name().ok();
+    let config = device.default_output_config().map_err(|e| format!("the audio output: {e}"))?;
+    let rate = config.sample_rate().0;
+    shared.rate.store(rate, Ordering::SeqCst);
+    if shared.open.swap(true, Ordering::SeqCst) {
+        return Ok(rate);
+    }
+    let shared = Arc::clone(shared);
+    let (tx, rx) = std::sync::mpsc::channel::<Result<(), String>>();
+    std::thread::Builder::new()
+        .name("tts-playback".into())
+        .spawn(move || {
+            let stream = match open_stream(&device, &config, Arc::clone(&shared)) {
+                Ok(s) => s,
+                Err(e) => {
+                    shared.open.store(false, Ordering::SeqCst);
+                    let _ = tx.send(Err(e));
+                    return;
+                }
+            };
+            let _ = tx.send(Ok(()));
+            let mut idle_since: Option<Instant> = None;
+            let mut device_at = Instant::now();
+            loop {
+                std::thread::sleep(LEVEL_EVERY);
+                let queued = shared.queue.lock().map(|q| q.len()).unwrap_or(0);
+                if queued > 0 {
+                    idle_since = None;
+                    (shared.on_level)(f32::from_bits(shared.level.load(Ordering::Relaxed)));
+                } else {
+                    let since = *idle_since.get_or_insert_with(|| {
+                        (shared.on_level)(0.0);
+                        Instant::now()
+                    });
+                    if shared.hold.load(Ordering::SeqCst) == 0 {
                         if since.elapsed() >= TAIL {
+                            break;
+                        }
+                    } else if device_at.elapsed() >= DEVICE_EVERY {
+                        // Held: follow a switch of the default output.
+                        device_at = Instant::now();
+                        if cpal::default_host().default_output_device().and_then(|d| d.name().ok()) != name {
                             break;
                         }
                     }
                 }
-                // Closing under the queue lock, so a push racing the close either
-                // lands before (and is played by the next stream) or sees `open` false.
-                let q = shared.queue.lock();
-                shared.open.store(false, Ordering::SeqCst);
-                drop(q);
-                drop(stream);
-            })
-            .map_err(|e| e.to_string())?;
-        rx.recv().map_err(|e| e.to_string())??;
-        Ok(rate)
-    }
+            }
+            // Closing under the queue lock, so a push racing the close either
+            // lands before (and is played by the next stream) or sees `open` false.
+            let q = shared.queue.lock();
+            shared.open.store(false, Ordering::SeqCst);
+            drop(q);
+            drop(stream);
+            if shared.hold.load(Ordering::SeqCst) > 0 {
+                if let Err(e) = open(&shared) {
+                    eprintln!("tts playback: the new output didn't open: {e}");
+                }
+            }
+        })
+        .map_err(|e| e.to_string())?;
+    rx.recv().map_err(|e| e.to_string())??;
+    Ok(rate)
 }
 
 fn open_stream(device: &cpal::Device, config: &cpal::SupportedStreamConfig, shared: Arc<Shared>) -> Result<cpal::Stream, String> {
     let channels = config.channels() as usize;
     let format = config.sample_format();
     let cfg: cpal::StreamConfig = config.clone().into();
+    let rate = cfg.sample_rate.0;
     let err = |e| eprintln!("tts playback: {e}");
-    // Fill `out` (interleaved) from the queue, and note the loudness.
-    fn fill<T: Copy>(out: &mut [T], channels: usize, shared: &Shared, conv: impl Fn(f32) -> T, silence: T) {
+    // Fill `out` (interleaved) from the queue, note the loudness, and hand what
+    // was played to the echo canceller if one runs.
+    fn fill<T: Copy>(out: &mut [T], channels: usize, rate: u32, shared: &Shared, conv: impl Fn(f32) -> T, silence: T) {
         let mut sum = 0f32;
         let mut n = 0usize;
+        let mut played = aec::tapping().then(|| Vec::with_capacity(out.len() / channels));
         let mut q = shared.queue.lock().ok();
         for frame in out.chunks_mut(channels) {
             let s = q.as_mut().and_then(|q| q.pop_front());
+            if let Some(p) = &mut played {
+                p.push(s.unwrap_or(0.0).clamp(-1.0, 1.0));
+            }
             match s {
                 Some(v) => {
                     sum += v * v;
@@ -168,6 +211,10 @@ fn open_stream(device: &cpal::Device, config: &cpal::SupportedStreamConfig, shar
                 None => frame.fill(silence),
             }
         }
+        drop(q);
+        if let Some(p) = played {
+            aec::tap(rate, &p);
+        }
         // RMS of speech sits around 0.05–0.2; scaled so a normal syllable opens the beak.
         let rms = if n > 0 { (sum / n as f32).sqrt() } else { 0.0 };
         shared.level.store((rms * 6.0).min(1.0).to_bits(), Ordering::Relaxed);
@@ -175,13 +222,13 @@ fn open_stream(device: &cpal::Device, config: &cpal::SupportedStreamConfig, shar
     let stream = match format {
         cpal::SampleFormat::F32 => device.build_output_stream(
             &cfg,
-            move |out: &mut [f32], _| fill(out, channels, &shared, |v| v, 0.0),
+            move |out: &mut [f32], _| fill(out, channels, rate, &shared, |v| v, 0.0),
             err,
             None,
         ),
         cpal::SampleFormat::I16 => device.build_output_stream(
             &cfg,
-            move |out: &mut [i16], _| fill(out, channels, &shared, |v| (v.clamp(-1.0, 1.0) * 32767.0) as i16, 0),
+            move |out: &mut [i16], _| fill(out, channels, rate, &shared, |v| (v.clamp(-1.0, 1.0) * 32767.0) as i16, 0),
             err,
             None,
         ),
@@ -217,5 +264,13 @@ mod tests {
         // And opens again for the next reply.
         player.push(&tone[..2400], 24_000).unwrap();
         assert!(player.shared.open.load(Ordering::SeqCst));
+        // Held, it stays open past the tail; let go, it closes.
+        player.stop();
+        player.hold_open(true).unwrap();
+        std::thread::sleep(TAIL + Duration::from_millis(300));
+        assert!(player.shared.open.load(Ordering::SeqCst), "held open");
+        player.hold_open(false).unwrap();
+        std::thread::sleep(TAIL + Duration::from_millis(300));
+        assert!(!player.shared.open.load(Ordering::SeqCst), "closes once let go");
     }
 }

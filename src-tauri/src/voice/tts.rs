@@ -194,7 +194,14 @@ pub struct TtsState {
     current: Arc<AtomicU64>,
     /// Sentences made for the phone, newest last.
     rendered: Mutex<VecDeque<Rendered>>,
+    /// Sentences handed to the speakers lately, with when, newest last (the
+    /// self-voice check, step V4 part 2).
+    spoken: Arc<Mutex<VecDeque<(Instant, String)>>>,
 }
+
+/// How long a spoken sentence is remembered for the self-voice check: a reply's
+/// sentences are queued ahead of their playing.
+const SPOKEN_KEEP: Duration = Duration::from_secs(60);
 
 impl TtsState {
     pub fn new(app: &AppHandle, runtime_dir: std::path::PathBuf, models: std::path::PathBuf) -> Self {
@@ -214,6 +221,7 @@ impl TtsState {
             preparing: AtomicBool::new(false),
             current: Arc::new(AtomicU64::new(0)),
             rendered: Mutex::new(VecDeque::new()),
+            spoken: Arc::new(Mutex::new(VecDeque::new())),
         };
         me.run(app.clone(), rx);
         me
@@ -226,6 +234,7 @@ impl TtsState {
         let config = Arc::clone(&self.config);
         let epoch = Arc::clone(&self.epoch);
         let current = Arc::clone(&self.current);
+        let spoken = Arc::clone(&self.spoken);
         std::thread::Builder::new()
             .name("tts-queue".into())
             .spawn(move || {
@@ -249,6 +258,10 @@ impl TtsState {
                             }
                             match result.and_then(|((pcm, rate), engine)| player.push(&pcm, rate).map(|_| engine)) {
                                 Ok(engine) => {
+                                    if let Ok(mut said) = spoken.lock() {
+                                        said.retain(|(at, _)| at.elapsed() < SPOKEN_KEEP);
+                                        said.push_back((Instant::now(), text.clone()));
+                                    }
                                     if announced != utterance {
                                         announced = utterance;
                                         current.store(utterance, Ordering::SeqCst);
@@ -326,6 +339,23 @@ impl TtsState {
     /// doesn't listen to it). A cue isn't a voice.
     pub fn voice_active(&self) -> bool {
         self.current.load(Ordering::SeqCst) != 0 && self.player.is_playing()
+    }
+
+    /// What Duck said lately (the sentences handed to the speakers in the last
+    /// `within`), to tell its echo from you.
+    pub fn said_lately(&self, within: Duration) -> String {
+        self.spoken
+            .lock()
+            .map(|q| q.iter().filter(|(at, _)| at.elapsed() < within).map(|(_, t)| t.as_str()).collect::<Vec<_>>().join(" "))
+            .unwrap_or_default()
+    }
+
+    /// Keep the speakers' stream open while idle, for the echo canceller's
+    /// reference (step V4 part 2), or let it close as usual.
+    pub fn hold_output(&self, on: bool) {
+        if let Err(e) = self.player.hold_open(on) {
+            eprintln!("tts: the output didn't open: {e}");
+        }
     }
 
     /// The soft cue for "heard you, answering" (step V4): a short, quiet two-note

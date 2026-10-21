@@ -1494,7 +1494,7 @@ function ConversationLine({ voice, busy }: { voice: VoiceState; busy: boolean })
           : c.phase === "grace"
             ? "● sent; keep talking to add to it"
             : c.phase === "deaf"
-              ? "speaking (on speakers Duck doesn't listen meanwhile; Esc stops it)"
+              ? "speaking (not listening meanwhile, as set; Esc stops it)"
               : speech.speaking !== null
                 ? "speaking (talk to interrupt)"
                 : busy

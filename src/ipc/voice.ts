@@ -79,7 +79,9 @@ export interface VoiceConfig {
 export type Press = "conversation" | "dictation";
 /** How long a pause must be to end a turn: commands / chat / thinking aloud. */
 export type Patience = "quick" | "patient" | "thinking";
-/** Talking over Duck: by the output (headphones yes, speakers no), or forced. */
+/** Duck's own voice in the mic: by the output (headphones as they are, speakers
+ *  through echo cancellation), echo cancellation always, or never listening while
+ *  Duck speaks. */
 export type EchoPref = "auto" | "full" | "half";
 
 export type VoicePhase = "listening" | "transcribing" | "idle" | "error";
@@ -111,9 +113,14 @@ export interface ConversationState {
   window: boolean;
   /** "wait" holds the turn open. */
   held: boolean;
-  /** You can talk over Duck now (headphones, or forced). */
+  /** You can talk over Duck now. */
   duplex: boolean;
   message: string | null;
+  /** The echo canceller is running (speakers). */
+  cancelling: boolean;
+  /** The echo it has removed while Duck talked, dB, on `output`. */
+  suppression: number | null;
+  output: string | null;
 }
 
 export interface VoiceTurn {

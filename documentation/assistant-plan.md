@@ -3488,10 +3488,69 @@ up ("change this", with a circle around it).
     - CPU while listening in silence (X0's Python: 3.8% of one core);
     - the reply window after a real announcement, and "yes, read it".
   - **Not built yet:**
-    - echo cancellation (AEC3), the barge-in gate and the self-voice check: part 2;
+    - echo cancellation (AEC3), the barge-in gate and the self-voice check: part 2
+      (built, below);
     - the phone's conversation button: part 3;
     - starting it by saying so in push-to-talk ("let's talk"): a tool for Duck,
       with S1.
+- **As built, part 2: echo cancellation (2026-10-21).** You can talk over Duck on
+  speakers too.
+  - **AEC3 is `sonora`**, a pure-Rust port of WebRTC's audio processing, not
+    livekit's `libwebrtc` crate. That crate does expose the `AudioProcessingModule`,
+    but it pulls in a prebuilt WebRTC of several hundred MB. On X0's speaker
+    recording, scored with X0's own script, sonora matched livekit:
+
+    | | Echo removed | False barge-ins (3 min) | Interruptions caught |
+    |---|---|---|---|
+    | livekit (X0) | 29.6 dB | 0 | 8/10 |
+    | sonora at 48 kHz | 29.7 dB | 0 | 8/10 |
+    | **sonora at 16 kHz** (as built) | **29.3 dB** | **0** | **8/10** |
+
+    It costs 0.34% of one core at 16 kHz. With the echo arriving 150 or 300 ms
+    after the reference it still removed 29 dB; at 500 ms it broke (2 dB). So the
+    reference must come from where the samples are played.
+  - **The reference** (`voice/aec.rs`, `tap`): the output callback in
+    `playback.rs` hands over what it's about to play, silence included, while a
+    canceller runs. While it runs, the speakers' stream is held open
+    (`Player::hold_open`, counted per holder), so the timing stays put between
+    replies. A held stream reopens when the default output changes.
+  - **The canceller** (`Canceller`): 10 ms chunks at 16 kHz. Before each chunk of
+    the mic it's given the reference that came in meanwhile, resampled. AEC3
+    estimates the delay itself. VAD, the turn detector and STT all hear the cleaned
+    audio.
+  - **When it runs:** by the output, re-read every 3 s. Headphones as they are,
+    speakers or unknown through the canceller. The setting "talking over Duck" is
+    now: yes (by the output) / yes, cancel whatever the output / no (part 1's
+    half-duplex). A switch of output starts a fresh canceller and gate (another
+    room's echo).
+  - **The barge-in gate** (`Gate`): while Duck's voice reaches the mic, a frame
+    counts as speech only if the cleaned mic is ≥ 6 dB over the echo expected from
+    the playback level. The expected echo is the 90th percentile of leftover over
+    playback, learned from frames of Duck alone, the louder half of them, the last
+    ~20 s, with a floor from quiet. Until 30 frames are learned, the VAD alone
+    decides, as on X0's runs. Masked frames don't start turns either. The barge-in
+    is still ≥ 9 frames (~0.3 s) of speech.
+  - **The self-voice check** (`self_voice`): a stretch heard while Duck spoke
+    through the canceller, whose words are at least half among the sentences Duck
+    played in the last 30 s (`TtsState::said_lately`), is dropped as echo.
+  - **The measured suppression:** the gate also adds up the echo removed on frames
+    of Duck alone. The settings show "Echo cancellation removed N dB of Duck's
+    voice on <output>", as last measured, with a hint below 20 dB.
+  - **Verified:**
+    - 3 unit tests (a delayed, smeared echo through the tap at 48 kHz: > 30 dB after
+      3 s; the gate; the word check);
+    - `barge_in_on_x0_speakers` (ignored): X0's speaker recording through this
+      chain, the echo 170 ms behind the reference as live, the reference through the
+      tap. 0 false barge-ins in 3 minutes, 0 in phase 2, 8/10 interruptions caught
+      (X0's livekit: 8/10). AEC3's delay estimate is 164 ms (X0: ~165);
+    - `live_echo` (ignored), on this PC's speakers and mic: seven of X0's clips
+      played through the player. 37.7 dB removed, a 148 ms delay;
+    - 260 Rust tests pass (12 ignored); clippy, tsc and eslint clean; 533 vitest.
+  - **Not verified live (yours to try):**
+    - talking over Duck on the laptop speakers in the app;
+    - the done-when's 10 minutes with 0 false barge-ins, and 9 of 10 interruptions
+      within ~300 ms;
+    - switching from headphones to speakers mid-conversation.
 
 ### Track S — Modes & skills
 
@@ -5836,7 +5895,7 @@ T2 goes live after the replay check in its done-when (the past week's prompts th
 | V1 | Push-to-talk with local STT on the GPU (desktop) | ☐ |
 | V2 | Natural spoken replies | ☐ |
 | V3 | Read-aloud and screen reading | ☑ (the desktop's speakers not tried live) |
-| V4 | Hands-free conversation mode | ◐ (part 1, the desktop loop; echo cancellation and the phone to come) |
+| V4 | Hands-free conversation mode | ◐ (parts 1 and 2: the desktop loop and echo cancellation; the phone to come) |
 | V5 | Proactive announcements | ☑ (the reply window built with V4) |
 | V6 | Wake word on the PC (experimental) | ☐ |
 | L1 | Long-term memory: files, index, recall | ☐ |

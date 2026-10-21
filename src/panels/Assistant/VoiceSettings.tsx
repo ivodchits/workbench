@@ -4,8 +4,9 @@
 // app. The prefs live in `voiceState.ts`, which hands them to the backend.
 //
 // Step V4: what the key does (conversation mode, or one message), how patient
-// conversation mode is with pauses, talking over Duck, its auto-off, the chime,
-// and the reply window after an announcement.
+// conversation mode is with pauses, talking over Duck (with the echo removed, as
+// last measured), its auto-off, the chime, and the reply window after an
+// announcement.
 
 import { useCallback, useEffect, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
@@ -33,7 +34,7 @@ const GPU_CHOICES: { value: GpuPref; label: string }[] = [
 const mb = (n: number) => `${Math.round(n / 1_000_000).toLocaleString()} MB`;
 
 export default function VoiceSettings() {
-  const { prefs, keyProblem } = useVoiceState();
+  const { prefs, keyProblem, echo } = useVoiceState();
   const gpu = prefs.gpu;
   const [status, setStatus] = useState<VoiceStatus | null>(null);
   const [progress, setProgress] = useState<DownloadProgress | null>(null);
@@ -140,13 +141,20 @@ export default function VoiceSettings() {
           value={prefs.echo}
           onChange={(e) => setVoicePrefs({ echo: e.target.value as EchoPref })}
           style={{ ...select, flex: 1, minWidth: 0 }}
-          title="On speakers the microphone hears Duck's own voice, so until echo cancellation comes, Duck doesn't listen while it speaks there."
+          title="On speakers the microphone hears Duck's own voice, so Duck cancels it out of what it hears, using what it's playing."
         >
-          <option value="auto">with headphones (by the output in use)</option>
-          <option value="full">always (headphones only, really)</option>
-          <option value="half">never: Duck doesn&apos;t listen while it speaks</option>
+          <option value="auto">yes (echo cancelled on speakers, not headphones)</option>
+          <option value="full">yes, echo cancelled whatever the output</option>
+          <option value="half">no: Duck doesn&apos;t listen while it speaks</option>
         </select>
       </label>
+      {echo && prefs.echo !== "half" && (
+        <div style={{ ...hint, paddingLeft: 2 }}>
+          Echo cancellation removed {Math.round(echo.db)} dB of Duck&apos;s voice
+          {echo.output ? ` on ${echo.output}` : ""}
+          {echo.db < 20 ? " (low: turn the volume down, or set it to “no” if Duck cuts itself off)" : ""}.
+        </div>
+      )}
       <label style={{ ...row, alignItems: "center" }}>
         <span style={{ flex: "0 0 auto" }}>Turn off after</span>
         <select

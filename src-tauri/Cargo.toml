@@ -87,6 +87,10 @@ image = { version = "0.25", default-features = false, features = ["png"] }
 # Step V4: the turn detector's input is a Whisper log-mel spectrogram, whose
 # 400-point FFT runs 800 times per check.
 rustfft = "6"
+# Step V4, part 2: echo cancellation, WebRTC's AEC3 ported to Rust. On X0's speaker
+# recording it matched livekit's native build (29.3 dB at 16 kHz, no false
+# barge-ins), with nothing to build in C++.
+sonora = "0.2"
 
 # Windows-only: intercept WebView2 accelerator keys so we can suppress the engine's
 # built-in reload shortcuts (F5 / Ctrl+R / Ctrl+Shift+R), which would otherwise

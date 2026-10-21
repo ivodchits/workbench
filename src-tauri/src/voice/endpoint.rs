@@ -49,6 +49,12 @@ pub fn default_output() -> Output {
     Output::Unknown
 }
 
+/// The default output's name, as the echo measurement is shown for it.
+pub fn default_output_name() -> Option<String> {
+    use cpal::traits::{DeviceTrait, HostTrait};
+    cpal::default_host().default_output_device().and_then(|d| d.name().ok())
+}
+
 #[cfg(test)]
 mod tests {
     /// This PC's default output (`cargo test default_output -- --ignored --nocapture`).

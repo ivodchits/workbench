@@ -19,8 +19,9 @@
 //   nothing); `withdrawn` (you went on talking) drops it; `final` commits it. A
 //   thread that's busy, or no thread yet, gets the turn as a plain message once
 //   it's final. Conversation mode always sends: there's no composer to land in.
-// - Talking over Duck (headphones) stops its voice here too, so the rest of the
-//   reply isn't queued after the backend cut it.
+// - Talking over Duck stops its voice here too, so the rest of the reply isn't
+//   queued after the backend cut it. On speakers the backend cancels Duck's echo
+//   (part 2); the echo it measured removing is kept for the settings (`echo`).
 // - After a spoken announcement, a short reply window listens (V5's, `replyWindow`):
 //   a reply opens that thread and goes there.
 
@@ -38,6 +39,7 @@ import {
   voiceConversationOn,
   voiceReplyWindow,
   type ConversationPhase,
+  type ConversationState,
   type Transcript,
   type VoicePhase,
   type VoiceTurn,
@@ -72,10 +74,18 @@ export interface Conversation {
   window: boolean;
   phase: ConversationPhase;
   held: boolean;
-  /** You can talk over Duck (headphones, or forced). */
+  /** You can talk over Duck (unless set not to). */
   duplex: boolean;
   /** Why it stopped (by itself, or an error). */
   message: string | null;
+  /** The echo canceller is running. */
+  cancelling: boolean;
+}
+
+/** The echo removed on speakers, as last measured (it outlives the run). */
+export interface EchoMeasured {
+  db: number;
+  output: string | null;
 }
 
 export interface VoiceState {
@@ -87,9 +97,18 @@ export interface VoiceState {
   /** Why the key couldn't be registered. */
   keyProblem: string | null;
   conversation: Conversation;
+  echo: EchoMeasured | null;
 }
 
-const OFF: Conversation = { on: false, window: false, phase: "off", held: false, duplex: false, message: null };
+const OFF: Conversation = {
+  on: false,
+  window: false,
+  phase: "off",
+  held: false,
+  duplex: false,
+  message: null,
+  cancelling: false,
+};
 
 let state: VoiceState = {
   phase: "idle",
@@ -98,6 +117,7 @@ let state: VoiceState = {
   dictated: null,
   keyProblem: null,
   conversation: OFF,
+  echo: null,
 };
 const listeners = new Set<() => void>();
 let level = 0;
@@ -237,7 +257,7 @@ function onTurn(t: VoiceTurn): void {
   );
 }
 
-function onConversation(s: { run: number; state: ConversationPhase; window: boolean; held: boolean; duplex: boolean; message: string | null }): void {
+function onConversation(s: ConversationState): void {
   if (s.run < run) return;
   run = s.run;
   const on = s.state !== "off" && s.state !== "error";
@@ -257,7 +277,9 @@ function onConversation(s: { run: number; state: ConversationPhase; window: bool
       held: s.held,
       duplex: s.duplex,
       message: on ? null : s.message,
+      cancelling: s.cancelling,
     },
+    ...(s.suppression !== null ? { echo: { db: s.suppression, output: s.output } } : {}),
   });
 }
 

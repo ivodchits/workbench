@@ -34,10 +34,12 @@
 //!
 //! Step V4: [`conversation`], hands-free. By default the push-to-talk key turns it
 //! on and off (`press: conversation`); `press: dictation` keeps the key for one
-//! dictation as above. Its turn detector is [`turn`], and [`endpoint`] says whether
-//! the output is headphones. After a spoken announcement the webview opens a short
+//! dictation as above. Its turn detector is [`turn`]; [`endpoint`] says whether
+//! the output is headphones, and on speakers [`aec`] cancels Duck's echo, so you
+//! can talk over Duck either way. After a spoken announcement the webview opens a short
 //! reply window through the same pipeline ([`voice_reply_window`]).
 
+pub mod aec;
 pub mod assets;
 pub mod capture;
 pub mod conversation;
