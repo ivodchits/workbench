@@ -3536,6 +3536,19 @@ and voiced text adventures as user-defined modes (S2).
   - **Not verified live:** that a worker's done or needs-you raises no toast (the
     path is the same check as `watching()`); a code task; a browser task.
 
+- **Tidying up (added 2026-10-20).** Finished workers used to stay running, and their
+  cards stayed on the rail, until a `task_close`. Now `tasks.tidy()` runs every minute:
+  - **Idle stop.** A finished task's worker process is stopped once it has been idle for
+    `workerIdleStopMinutes` (default 30). Idle counts from the later of the result and
+    the session's last activity, and only between turns. A follow-up resumes its session.
+  - **Close.** After `closeFinishedHours` (default 24) the task is closed and its session
+    leaves the rail (`killSession`). A worktree's session stays on the rail rather than
+    strand the worktree. The folder, result and transcript stay, and the tasks view
+    still lists the task.
+  - Blocked and needs-a-decision tasks are never touched: they wait on you.
+  - Both waits are in the settings' workers tab, with "never" for each.
+  - Verified: 3 vitest cases (460 in all).
+
 #### Step D2 — Offload routing, subscription-limit awareness, Duck as the worker's user
 
 - **Goal:** Duck decides on its own when to offload, respects your subscription limits, and

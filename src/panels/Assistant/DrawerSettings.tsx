@@ -13,7 +13,7 @@
 
 import { useEffect, useState } from "react";
 import { disable, enable, isEnabled } from "@tauri-apps/plugin-autostart";
-import { MAX_WORKERS, TIERS, type DuckSettings } from "../../assistant/settings";
+import { CLOSE_CHOICES, IDLE_STOP_CHOICES, MAX_WORKERS, TIERS, type DuckSettings } from "../../assistant/settings";
 import { DUCK_PERMISSION_MODES, EFFORTS, SESSION_MODELS } from "../../util/models";
 import { setAvatar, setDuckSettings, setInterrupt, type DuckState } from "./duckState";
 import VoiceSettings from "./VoiceSettings";
@@ -329,6 +329,36 @@ function Workers({ settings }: { settings: DuckSettings }) {
           Run workers headless
           <span style={hint}> (no terminal: their console is the transcript, with "take over" for one)</span>
         </span>
+      </label>
+      <label style={{ ...row, alignItems: "center" }}>
+        <span>Stop a finished worker after</span>
+        <select
+          value={settings.workerIdleStopMinutes}
+          onChange={(e) => setDuckSettings({ workerIdleStopMinutes: Number(e.target.value) })}
+          style={select}
+        >
+          {IDLE_STOP_CHOICES.map((m) => (
+            <option key={m} value={m}>
+              {m === 0 ? "never" : m < 60 ? `${m} min` : `${m / 60} h`}
+            </option>
+          ))}
+        </select>
+        <span style={hint}>idle (a follow-up resumes it)</span>
+      </label>
+      <label style={{ ...row, alignItems: "center" }}>
+        <span>Close a finished task after</span>
+        <select
+          value={settings.closeFinishedHours}
+          onChange={(e) => setDuckSettings({ closeFinishedHours: Number(e.target.value) })}
+          style={select}
+        >
+          {CLOSE_CHOICES.map((h) => (
+            <option key={h} value={h}>
+              {h === 0 ? "never" : h < 24 ? `${h} h` : h === 168 ? "a week" : `${h / 24} d`}
+            </option>
+          ))}
+        </select>
+        <span style={hint}>(its session leaves the rail; files stay)</span>
       </label>
       <label style={{ ...row, alignItems: "center" }}>
         <span style={{ flex: "0 0 auto" }}>Workspace</span>

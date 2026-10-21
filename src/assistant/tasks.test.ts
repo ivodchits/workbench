@@ -518,3 +518,79 @@ describe("the tools", () => {
     expect(() => listTasks.run({ limit: 5 }, toolCtx(port))).toThrow("aren't available");
   });
 });
+
+describe("tidying up finished tasks", () => {
+  async function finished(status: "done" | "blocked" = "done", opts: Parameters<typeof setup>[0] = {}) {
+    const t = setup(opts);
+    const task = await t.tasks.run(req());
+    const s = t.port.listSessions().find((x) => x.id === task.instanceId)!;
+    s.phase = "done";
+    t.write(task, { status, headline: "Use the plugin.", question: null });
+    t.port.phase(s.id, "done", "working");
+    await settle();
+    expect(t.tasks.get(task.id)?.state).toBe(status);
+    const calls = (name: string) => t.port.calls.filter((c) => c.name === name).map((c) => c.args);
+    return { ...t, task, s, calls };
+  }
+
+  it("stops an idle worker, then closes the task and takes its session off the rail", async () => {
+    const t = await finished();
+    t.advance(29 * 60_000);
+    await t.tasks.tidy();
+    expect(t.calls("stopSession")).toEqual([]);
+    t.advance(2 * 60_000);
+    await t.tasks.tidy();
+    expect(t.calls("stopSession")).toEqual([[t.s.id]]);
+    t.s.phase = "offline";
+    await t.tasks.tidy();
+    expect(t.calls("stopSession")).toHaveLength(1);
+
+    t.advance(24 * 3_600_000);
+    await t.tasks.tidy();
+    expect(t.tasks.get(t.task.id)).toMatchObject({ state: "closed", headline: "Use the plugin." });
+    expect(t.calls("killSession")).toEqual([[t.s.id]]);
+    expect(t.port.listSessions().some((x) => x.id === t.s.id)).toBe(false);
+    // Closed is done with: nothing more to tidy.
+    t.advance(48 * 3_600_000);
+    await t.tasks.tidy();
+    expect(t.calls("killSession")).toHaveLength(1);
+  });
+
+  it("counts idle from the session's own activity, and waits for a turn to end", async () => {
+    const t = await finished();
+    t.advance(40 * 60_000);
+    // You talked to it yourself ten minutes ago.
+    t.s.lastActivity = Math.floor((t.now() - 10 * 60_000) / 1000);
+    await t.tasks.tidy();
+    expect(t.calls("stopSession")).toEqual([]);
+    t.advance(25 * 60_000);
+    t.s.phase = "working";
+    await t.tasks.tidy();
+    expect(t.calls("stopSession")).toEqual([]);
+    t.s.phase = "done";
+    await t.tasks.tidy();
+    expect(t.calls("stopSession")).toEqual([[t.s.id]]);
+  });
+
+  it("leaves a task that waits on you, a session with a worktree on the rail, and the 'never' settings", async () => {
+    const blocked = await finished("blocked");
+    blocked.advance(100 * 3_600_000);
+    await blocked.tasks.tidy();
+    expect(blocked.calls("stopSession")).toEqual([]);
+    expect(blocked.tasks.get(blocked.task.id)?.state).toBe("blocked");
+
+    const tree = await finished();
+    tree.s.worktreeBranch = "duck/task1";
+    tree.advance(25 * 3_600_000);
+    await tree.tasks.tidy();
+    expect(tree.tasks.get(tree.task.id)?.state).toBe("closed");
+    expect(tree.calls("killSession")).toEqual([]);
+
+    const never = await finished("done", { settings: { workerIdleStopMinutes: 0, closeFinishedHours: 0 } });
+    never.advance(100 * 3_600_000);
+    await never.tasks.tidy();
+    expect(never.calls("stopSession")).toEqual([]);
+    expect(never.tasks.get(never.task.id)?.state).toBe("done");
+  });
+});
+

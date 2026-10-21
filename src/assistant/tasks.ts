@@ -24,6 +24,15 @@
 // - Headless (step D4, on by default): a session's worker is `claude -p` over
 //   stream-json, with no terminal. Everything above works on it as on a terminal
 //   session: the port routes its prompts, answers and interrupts over the protocol.
+// - Tidying up (2026-10-20), checked every minute (`tidy`):
+//   - A finished task's worker process is stopped once it has been idle for
+//     `workerIdleStopMinutes` (default 30). Idle is counted from the later of the
+//     result and the session's last activity, so a worker you talk to yourself isn't
+//     stopped under you. A follow-up then resumes its session.
+//   - After `closeFinishedHours` (default 24) the task is closed. Its session leaves
+//     the rail, except one with a worktree, which would be left on disk. Its folder,
+//     result and transcript stay, and the tasks view still lists it.
+//   - A task that is blocked or needs a decision is left alone: it's waiting on you.
 
 import { z } from "zod";
 
@@ -169,9 +178,15 @@ export interface RunRequest {
   mandate?: Mandate;
 }
 
+/** How often finished tasks are checked for tidying up. */
+export const TIDY_EVERY_MS = 60_000;
+
 export interface TaskManager {
   /** Read the stored tasks and pick up the ones that were running. */
   load(): Promise<void>;
+  /** Stop idle finished workers and close old finished tasks (every minute; the
+   *  tests call it). */
+  tidy(): Promise<void>;
   run(req: RunRequest): Promise<Task>;
   /** A follow-up prompt into the task's session; it runs again until its next
    *  result. */
@@ -549,6 +564,47 @@ export function createTaskManager(deps: TaskDeps): TaskManager {
     );
   }
 
+  // ── tidying up ──
+
+  /** Finished on its own: a result came back (or it failed). Blocked and
+   *  needs-a-decision tasks wait on the user, closed ones are done with. */
+  const tidyable = (t: Task) => t.state === "done" || t.state === "failed";
+
+  let tidying = false;
+  async function tidy(): Promise<void> {
+    if (tidying) return;
+    tidying = true;
+    try {
+      const s = deps.settings();
+      for (const t of [...tasks.values()]) {
+        if (!tidyable(t) || t.finished === null || !t.instanceId) continue;
+        const session = port.listSessions().find((x) => x.id === t.instanceId);
+        const quietSince = Math.max(t.finished, (session?.lastActivity ?? 0) * 1000);
+        const idle = now() - quietSince;
+        if (s.closeFinishedHours > 0 && idle >= s.closeFinishedHours * 3_600_000) {
+          await closeAndRemove(t, session?.worktreeBranch ?? null);
+          continue;
+        }
+        const live = session && session.phase !== "offline" && session.phase !== "ended";
+        const resting = session && (session.phase === "idle" || session.phase === "done");
+        if (s.workerIdleStopMinutes > 0 && live && resting && idle >= s.workerIdleStopMinutes * 60_000)
+          port.stopSession(t.instanceId);
+      }
+    } finally {
+      tidying = false;
+    }
+  }
+
+  /** Close it, and take its session off the rail unless a worktree holds it. */
+  async function closeAndRemove(t: Task, worktree: string | null): Promise<void> {
+    const id = t.instanceId;
+    await manager.close(t.id);
+    if (!id || worktree || !port.listSessions().some((x) => x.id === id)) return;
+    await port.killSession(id).catch((e: unknown) => console.warn(`duck: task ${t.id}'s session stays on the rail`, e));
+  }
+
+  const tidyTimer = setInterval(() => void tidy(), TIDY_EVERY_MS);
+
   const offPhase = port.onPhase((id, phase: SessionPhase) => {
     const t = byInstance(id);
     if (!t || t.state !== "running") return;
@@ -557,7 +613,8 @@ export function createTaskManager(deps: TaskDeps): TaskManager {
     else if (phase === "needs_you") needsYou(t);
   });
 
-  return {
+  const manager: TaskManager = {
+    tidy,
     async load() {
       const stored = await backend.list();
       for (const t of stored) {
@@ -720,9 +777,11 @@ export function createTaskManager(deps: TaskDeps): TaskManager {
     },
     dispose() {
       offPhase();
+      clearInterval(tidyTimer);
       if (wake) clearTimeout(wake);
       for (const c of apiRuns.values()) c.abort();
       listeners.clear();
     },
   };
+  return manager;
 }

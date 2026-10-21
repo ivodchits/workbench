@@ -42,6 +42,12 @@ export interface DuckSettings {
   /** Summarize a session when it finishes a turn (step W3), and put the headline in
    *  the done alert instead of its last line. A Haiku call per alert. */
   summaryOnDone: boolean;
+  /** A finished task's worker process is stopped after this many minutes idle (a
+   *  follow-up resumes its session); 0 never. */
+  workerIdleStopMinutes: number;
+  /** A finished task is closed, and its session taken off the rail, after this many
+   *  hours (its files and transcript stay); 0 never. */
+  closeFinishedHours: number;
 }
 
 export const DEFAULT_TIERS: Record<Tier, TierSpec> = {
@@ -60,7 +66,13 @@ export const DEFAULT_SETTINGS: DuckSettings = {
   workspace: null,
   tiers: DEFAULT_TIERS,
   summaryOnDone: false,
+  workerIdleStopMinutes: 30,
+  closeFinishedHours: 24,
 };
+
+/** The choices the settings offer for the two tidy-up waits. */
+export const IDLE_STOP_CHOICES = [10, 30, 60, 180, 0] as const;
+export const CLOSE_CHOICES = [4, 24, 72, 168, 0] as const;
 
 export const MAX_WORKERS = 5;
 
@@ -79,6 +91,12 @@ export function cleanSettings(raw: unknown): Partial<DuckSettings> {
     out.codingPermissionMode = mode as DuckSettings["codingPermissionMode"];
   if (typeof r.maxWorkers === "number" && Number.isInteger(r.maxWorkers))
     out.maxWorkers = Math.min(MAX_WORKERS, Math.max(1, r.maxWorkers));
+  const whole = (v: unknown, max: number) =>
+    typeof v === "number" && Number.isInteger(v) && v >= 0 && v <= max ? v : undefined;
+  const idle = whole(r.workerIdleStopMinutes, 24 * 60);
+  if (idle !== undefined) out.workerIdleStopMinutes = idle;
+  const close = whole(r.closeFinishedHours, 24 * 90);
+  if (close !== undefined) out.closeFinishedHours = close;
   if (r.workspace === null) out.workspace = null;
   else if (typeof r.workspace === "string") out.workspace = r.workspace.trim() || null;
   if (r.tiers && typeof r.tiers === "object") {
