@@ -1,4 +1,4 @@
-//! Voice input (track V), step V1:
+//! Voice (track V). Step V1, voice input:
 //! - the speech-to-text engine: Parakeet TDT 0.6B v3 over ONNX Runtime ([`engine`],
 //!   [`parakeet`]), with Silero VAD trimming a clip to its speech ([`vad`]);
 //! - the downloads they need on first use ([`assets`]);
@@ -19,11 +19,18 @@
 //!
 //! Transcribing a WAV is a command of its own: the settings check, and the phone
 //! (R2) uploads 16 kHz WAV.
+//!
+//! Step V2, spoken replies: [`tts`] (the sentence queue and its engines),
+//! [`sidecar`] (Kokoro + Silero in Python) and [`playback`]. The push-to-talk key
+//! cuts a reply that's speaking (barge-in) and starts the sidecar while you talk.
 
 pub mod assets;
 pub mod capture;
 pub mod engine;
 pub mod parakeet;
+pub mod playback;
+pub mod sidecar;
+pub mod tts;
 pub mod vad;
 
 use std::path::{Path, PathBuf};
@@ -100,6 +107,10 @@ fn press(app: &AppHandle) {
     let Ok(mut rec) = s.recording.lock() else { return };
     if rec.is_some() {
         return;
+    }
+    if let Some(t) = app.try_state::<tts::TtsState>() {
+        t.stop(app);
+        t.warm_if_wanted();
     }
     let config = s.config.lock().map(|c| c.clone()).unwrap_or_default();
     if s.engine.choose(config.gpu).is_none() {
@@ -332,6 +343,15 @@ pub fn read_wav(path: &Path) -> Result<Vec<f32>, String> {
 }
 
 pub fn parse_wav(b: &[u8]) -> Result<Vec<f32>, String> {
+    let (samples, rate) = parse_wav_at(b)?;
+    if rate != 16_000 {
+        return Err(format!("the WAV is {rate} Hz; 16 kHz is needed"));
+    }
+    Ok(samples)
+}
+
+/// A WAV at whatever rate it is: mono f32 samples, and the rate.
+pub fn parse_wav_at(b: &[u8]) -> Result<(Vec<f32>, u32), String> {
     if b.len() < 12 || &b[0..4] != b"RIFF" || &b[8..12] != b"WAVE" {
         return Err("not a WAV file".into());
     }
@@ -354,9 +374,6 @@ pub fn parse_wav(b: &[u8]) -> Result<Vec<f32>, String> {
                 format = u16_at(body + 24);
             }
         } else if id == b"data" {
-            if rate != 16_000 {
-                return Err(format!("the WAV is {rate} Hz; 16 kHz is needed"));
-            }
             let ch = channels.max(1) as usize;
             let data = &b[body..end];
             let samples: Vec<f32> = match (format, bits) {
@@ -364,7 +381,7 @@ pub fn parse_wav(b: &[u8]) -> Result<Vec<f32>, String> {
                 (3, 32) => data.chunks_exact(4).map(|s| f32::from_le_bytes([s[0], s[1], s[2], s[3]])).collect(),
                 _ => return Err(format!("unsupported WAV format {format} at {bits} bits")),
             };
-            return Ok(samples.chunks_exact(ch).map(|f| f.iter().sum::<f32>() / ch as f32).collect());
+            return Ok((samples.chunks_exact(ch).map(|f| f.iter().sum::<f32>() / ch as f32).collect(), rate));
         }
         i = body + size + (size & 1);
     }

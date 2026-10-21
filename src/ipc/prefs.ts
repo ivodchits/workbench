@@ -57,6 +57,19 @@ export interface Prefs {
     /** Send a transcript to Duck at once; off, it lands in the composer to edit. */
     sendNow: boolean;
   };
+  /** Spoken replies (step V2). */
+  speech: {
+    /** Which of Duck's replies are spoken: none, those to a spoken message, all. */
+    speak: "off" | "voice" | "always";
+    /** Kokoro + Silero on this PC, or Google Chirp 3 HD. */
+    engine: "local" | "chirp";
+    /** Chirp speaks when the local engine fails. */
+    chirpFallback: boolean;
+    voiceEn: string;
+    voiceRu: string;
+    /** 1 is normal. */
+    rate: number;
+  };
   /** The project toolbar's field values (step K1): project id → `pluginId.controlId`
    *  → the last value (text for a select or text field, a flag for a checkbox). */
   pluginValues: Record<string, Record<string, string | boolean>>;

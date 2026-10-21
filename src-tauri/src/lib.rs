@@ -76,6 +76,11 @@ pub fn run() {
             }
             // Voice (step V1): nothing loads until it's used.
             app.manage(voice::VoiceState::new(voice::models_root(app.handle())));
+            app.manage(voice::tts::TtsState::new(
+                app.handle(),
+                voice::tts::runtime_dir(app.handle()),
+                voice::models_root(app.handle()),
+            ));
 
             // Seed the account-wide usage meter from the last persisted snapshot so it
             // shows the most recent figures at launch instead of staying blank until a
@@ -198,6 +203,13 @@ pub fn run() {
             voice::voice_configure,
             voice::voice_ptt,
             voice::voice_devices,
+            voice::tts::tts_configure,
+            voice::tts::tts_say,
+            voice::tts::tts_end,
+            voice::tts::tts_stop,
+            voice::tts::tts_warm,
+            voice::tts::tts_status,
+            voice::tts::tts_prepare,
             assistant::headless::headless_spawn,
             assistant::headless::headless_send,
             assistant::headless::headless_interrupt,

@@ -17,6 +17,7 @@ import {
 } from "./engine";
 import { fakePort } from "./fakePort.test-util";
 import type { DuckEvent } from "./protocol";
+import { VOICE_NOTE } from "./prompt";
 import { createThreadStore, type ThreadBackend } from "./threads";
 import { getTime } from "./tools/getTime";
 import { startThread } from "./tools/threads";
@@ -360,6 +361,24 @@ describe("engine", () => {
     expect(ms[4].content).toEqual([{ type: "text", text: "actually, wait" }]);
   });
 
+  it("tells the model a spoken message's reply may be read aloud (V2)", async () => {
+    const { engine, store, calls } = await setup([
+      message([text("Two need you.")], "end_turn"),
+      message([text("Fine.")], "end_turn"),
+    ]);
+    const id = await engine.send({ threadId: null, text: "what needs me?", source: "voice" });
+    await engine.settled(id);
+    const sys = store.loaded(id)[1];
+    expect(sys).toMatchObject({ role: "system", source: "duck" });
+    expect((sys.content as { content: { text: string }[]; output_config?: unknown }).content[0].text).toBe(VOICE_NOTE);
+    expect((sys.content as { output_config?: unknown }).output_config).toBeUndefined();
+    // It reaches the API right before the reply; a typed message gets none.
+    expect(calls[0].params.messages[calls[0].params.messages.length - 1]).toMatchObject({ role: "system" });
+    await engine.send({ threadId: id, text: "ok", source: "desktop" });
+    await engine.settled(id);
+    expect(roles(store.loaded(id)).slice(3)).toEqual(["user", "assistant"]);
+  });
+
   it("queues a message sent mid-turn and runs it next", async () => {
     const { engine, store, calls } = await setup([
       message([text("One.")], "end_turn"),
@@ -372,10 +391,12 @@ describe("engine", () => {
     });
     await engine.send({ threadId: id, text: "second", source: "voice" });
     await engine.settled(id);
+    // The spoken one carries the voice note (step V2).
     expect(roles(store.loaded(id))).toEqual([
       "user",
       "assistant",
       "user",
+      "system",
       "assistant",
     ]);
     expect(store.loaded(id)[2].source).toBe("voice");
@@ -805,7 +826,11 @@ describe("engine hooks for action tools (W2)", () => {
       '[Split off by Duck from the thread; the words below are yours from there.]\n\ncontinue working on workbench',
     );
     // Words the user didn't say are refused.
-    const results = store.loaded(id)[2].content as { tool_use_id: string; is_error?: boolean; content: string }[];
+    const results = store.loaded(id).find((m) => m.role === "user" && m.source === "duck")!.content as {
+      tool_use_id: string;
+      is_error?: boolean;
+      content: string;
+    }[];
     expect(results[0].is_error).toBeUndefined();
     expect(results[1]).toMatchObject({ is_error: true });
     expect(results[1].content).toContain("the user's own words");

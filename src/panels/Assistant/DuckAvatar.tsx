@@ -1,7 +1,9 @@
 // The ASCII duck at the top of Duck's drawer: a 3D rubber duck drawn in
 // characters, duck-yellow or in the theme's text color (`duck3d.ts`). It spins while Duck thinks or runs a tool, works its
-// beak while a reply streams in, and tilts its head while it waits for you. The
-// beak follows a stand-in rhythm until spoken replies (V2) give it real loudness.
+// beak while a reply streams in, and tilts its head while it waits for you. While
+// a reply is spoken (V2), `level` gives the loudness of what's playing, so the
+// beak opens on the syllables actually heard; otherwise it follows a stand-in
+// rhythm.
 //
 // The loop runs only while the duck is on screen; the look (ink, characters,
 // columns, frame rate) comes from the drawer's prefs.
@@ -25,16 +27,19 @@ const LINE_HEIGHT = 1.15;
 
 export default function DuckAvatar({
   mode,
+  level,
   prefs,
   running,
 }: {
   mode: DuckMode;
+  /** The speech loudness now (0..1), read each frame; absent: the stand-in rhythm. */
+  level?: () => number;
   prefs: DuckAvatarPrefs;
   running: boolean;
 }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const live = useRef({ mode, prefs });
-  live.current = { mode, prefs };
+  const live = useRef({ mode, prefs, level });
+  live.current = { mode, prefs, level };
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -87,7 +92,7 @@ export default function DuckAvatar({
     const tick = (now: number) => {
       raf = requestAnimationFrame(tick);
       const t = (now - start) / 1000;
-      const { mode, prefs } = live.current;
+      const { mode, prefs, level } = live.current;
       if (t < due) return;
       if (t - textReadAt > 1) {
         textReadAt = t;
@@ -98,7 +103,7 @@ export default function DuckAvatar({
         }
       }
       due = t + 1 / prefs.fps;
-      animator.step(t, Math.min(0.1, t - last), mode);
+      animator.step(t, Math.min(0.1, t - last), mode, level?.());
       last = t;
       if (!geo || geo.cols !== prefs.cols) layout();
       if (!geo || geo.w === 0) return;

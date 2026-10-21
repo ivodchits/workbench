@@ -97,5 +97,7 @@ windows = { version = "0.61", features = [
     # Step V1: DirectML.dll loaded by path; AC power for the GPU preference.
     "Win32_System_LibraryLoader",
     "Win32_System_Power",
+    # Step V2: the speech sidecar runs below normal priority.
+    "Win32_System_Threading",
 ] }
 

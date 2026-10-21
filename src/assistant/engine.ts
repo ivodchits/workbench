@@ -3,8 +3,9 @@
 // and pick up again later, possibly after a restart.
 //
 // One turn, per thread:
-//   1. Append the user's message (and, when the effort changes, a mid-conversation
-//      system message carrying it, which keeps the cache).
+//   1. Append the user's message (and, when the effort changes or the message was
+//      spoken, a mid-conversation system message carrying the effort or the voice
+//      note, which keeps the cache).
 //   2. Stream a reply, emitting text deltas. Append the reply as it ended.
 //   3. On `tool_use`: validate every call against its tool's schema, ask the gate
 //      (the trust policy) whether it may run, fail the ones it refuses, and run the
@@ -23,7 +24,7 @@ import Anthropic from "@anthropic-ai/sdk";
 import type { StoredMessage, ThreadRow } from "../ipc/assistant";
 import { capMessage, errorMessage, purpose, THREAD_PURPOSE } from "./client";
 import type { WorkbenchPort } from "./port";
-import { MAIN_MODEL, SYSTEM_PROMPT } from "./prompt";
+import { MAIN_MODEL, SYSTEM_PROMPT, VOICE_NOTE } from "./prompt";
 import { quotedFromLatest } from "./trust/mandate";
 import type {
   ConfirmRequest,
@@ -433,11 +434,18 @@ export function createEngine(deps: EngineDeps): Engine {
         input.source,
       );
       const want = input.effort ?? DEFAULT_EFFORT;
-      if (want !== effectiveEffort(toApiMessages(history))) {
+      const effortChanged = want !== effectiveEffort(toApiMessages(history));
+      // A spoken message gets a spoken-style answer (step V2). One system message
+      // carries both, since one must be followed by the reply.
+      const spoken = input.source === "voice";
+      if (effortChanged || spoken) {
         await append(
           threadId,
           "system",
-          { content: [], output_config: { effort: want } },
+          {
+            content: spoken ? [{ type: "text", text: VOICE_NOTE }] : [],
+            ...(effortChanged && { output_config: { effort: want } }),
+          },
           "duck",
         );
       }

@@ -34,6 +34,7 @@ import type { ReplayReport } from "../../assistant/trust/replay";
 import type { Effect } from "../../assistant/trust/rules";
 import type { DecisionRow, Spend, StoredMessage, ThreadRow } from "../../ipc/assistant";
 import { getPref, setPref, type AssistantDrawerPrefs } from "../../ipc/prefs";
+import { onReplyDelta, onTurnEnded, onUserMessage } from "./replySpeech";
 
 export interface DuckState {
   /** Connected to the engine. */
@@ -255,6 +256,9 @@ function onEvent(e: DuckEvent): void {
         patch.streaming = { ...state.streaming, [m.threadId]: "" };
         noteReply(m);
       }
+      // Spoken replies (V2): a message of yours decides whether its reply is spoken.
+      // Only the open thread: a thread Duck splits off carries your source too.
+      if (m.role === "user" && m.threadId === state.current) onUserMessage(m, userText(m));
       // A queued message of ours has started its turn.
       const waiting = state.queued[m.threadId];
       if (m.role === "user" && waiting?.length) {
@@ -277,6 +281,7 @@ function onEvent(e: DuckEvent): void {
       break;
     }
     case "delta":
+      onReplyDelta(e.threadId, e.text);
       set({
         streaming: {
           ...state.streaming,
@@ -294,6 +299,7 @@ function onEvent(e: DuckEvent): void {
         patch.queued = { ...state.queued, [e.threadId]: [] };
       }
       set(patch);
+      if (e.state === "idle" || e.state === "waiting") onTurnEnded(e.threadId);
       if (e.state === "idle") toastIfAway(e.threadId);
       break;
     }

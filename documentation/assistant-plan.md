@@ -3011,6 +3011,93 @@ and voiced text adventures as user-defined modes (S2).
   - Ctrl+Shift+L speaks a selection in the new voice.
   - Nothing stays resident 5 minutes later.
 - **Out of scope:** voice cloning; wake word.
+- **As built, part 1: the desktop (2026-10-20).** The phone (`GET
+  /api/assistant/tts/<messageId>`, the per-surface setting) needs R1's assistant
+  endpoints, which don't exist yet, so it moves to R1/R2.
+  - **The sidecar** (`voice/sidecar.rs`, `resources/voice-runtime/`):
+    - `pyproject.toml` + `uv.lock` (kokoro-onnx 0.4.9, torch 2.8.0+cpu from
+      PyTorch's CPU index, Python 3.12) are compiled into the app. "download" writes
+      them to `<app local data>/voice-runtime/` (`.dev` in debug) and runs `uv sync
+      --frozen`. A marker holds the pins' hash, so new pins reinstall. `uv` comes from
+      PATH or `~/.local/bin`; without it the download says to install it.
+    - It runs the venv's own `python.exe`, not `uv run`, whose child would outlive a
+      kill. It has no window, runs below normal priority, and is killed after 5
+      minutes idle. The script is rewritten on every start.
+    - Protocol: a JSON line in; a JSON header line out, then int16 PCM at 24 kHz.
+    - **Models** (`TTS_ASSETS`, pinned like V1's, under `<models>/tts/`): Kokoro
+      v1.0 **int8** (92 MB; faster than fp32 with this PC busy: 0.67 against 1.04 s
+      for 1.6 s of audio), its voices (28 MB), and Silero `v5_6_ru.pt` (148 MB).
+      models.silero.ai served it at ~150 KB/s and replaces files in place, so a
+      changed file fails its checksum.
+  - **Measured** (CPU at ~75% from other work): the sidecar starts in 0.3 s. A warm
+    Kokoro does 1.6 s of audio in 0.44 s and 4.9 s in 1.8 s. Silero does a short
+    sentence in 0.2 s but **takes 10–20 s to load cold** (X0's numbers were on an
+    idle PC). So:
+    - the push-to-talk press **warms** the sidecar (loads Kokoro and runs it once)
+      while you speak, when replies will be spoken;
+    - a spoken message with Cyrillic in it warms Silero too, while Duck thinks.
+  - **Playback** (`voice/playback.rs`): cpal's default output (rodio would bring a
+    second cpal), resampled to the device rate. The stream opens only while audio is
+    queued, plus a 1.5 s tail. Loudness goes to the webview every 33 ms as
+    `tts-level`.
+  - **The queue** (`voice/tts.rs`): a `Speaker` trait, `LocalSpeaker` and
+    `ChirpSpeaker`.
+    - Sentences of a reply (an *utterance*, numbered by the webview) are made and
+      played in order; sentence 2 is synthesized while sentence 1 plays.
+    - `tts_stop` bumps an epoch, so sentences still in flight are dropped. Esc in
+      the drawer, a new message, the push-to-talk press and Ctrl+Shift+L all stop
+      it.
+    - Chirp (REST, LINEAR16 at 24 kHz, `x-goog-api-key` from `duck/google-tts-key`)
+      speaks when chosen, or when the local engine fails and "use Chirp when the
+      voice on this PC fails" is on. Its characters go into `assistant_usage`
+      (`chirp-3-hd` / `tts`, cost 0). A sentence that would pass 1M characters this
+      month is refused.
+  - **The words** (`assistant/speakable.ts`, all in the webview):
+    - `Sentences` cuts the streaming markdown into sentences. Code blocks become
+      "See the code on screen.", tables "See the table on screen.", and URLs "a
+      link". It doesn't cut at "3.5", "engine.ts" or "e.g. the".
+    - `toSpoken`: paths by their file name ("engine dot ts"), identifiers as words,
+      "#128" → "number 128", "2.1.304" → "2 point 1 point 304", "%", "~", "→".
+    - Any Cyrillic goes to Silero, otherwise Kokoro. A Russian sentence that still
+      has a digit or a Latin letter gets the Haiku primitive `speakable_ru` (4 s
+      timeout). Its fallback is `russianFallback`: numbers in nominative words,
+      times, known terms by how they're said, letter-by-letter abbreviations, and
+      transliteration. The test sentences come out with nothing Silero would drop.
+  - **Which replies** (`replySpeech.ts`): "Speak Duck's replies: never / when you
+    spoke (default) / always". It applies only to your own messages in the open
+    thread, so a thread Duck splits off doesn't cut the one speaking. The reply is
+    complete at `idle` or `waiting`.
+  - **The voice note:** a `voice` message gets one mid-conversation system message
+    (`VOICE_NOTE`: lead with one or two short speakable English sentences, detail
+    after, any quoted Russian written speakably). It goes with the effort change
+    when both apply, since a system message must be followed by the reply.
+  - **The duck** talks while audio plays, its beak driven by `tts-level`, and not
+    while text streams under a spoken reply.
+  - **Ctrl+Shift+L** speaks through the same voice when it's set up, otherwise
+    through `speechSynthesis`.
+  - **Settings** (the voice tab, `SpeechSettings.tsx`): when to speak, local or
+    Chirp, the English voice (8 Kokoro voices) and the Russian one (5 Silero
+    speakers), the rate (0.8–1.3), the Chirp fallback, the download, and "try
+    English" / "try Russian".
+  - **Verified:**
+    - 9 vitest cases for the sentence cutter, `toSpoken` and the Russian pass, plus
+      1 engine case for the voice note (470 in all; tsc and eslint clean);
+    - 1 Rust test for the pins (240 pass, clippy clean);
+    - ignored tests: `tts_sidecar_speaks` (a real `uv sync` install, warm-up, both
+      engines, Silero refusing Latin) and `tts_playback_reports_level_and_closes`
+      (the real output device).
+    - **Live:** a spoken question gets its reply spoken in English (2026-10-20).
+  - **Found live:** with the runtime not installed, replies went silently unspoken.
+    Now a qualifying reply is always tried, and the line over the composer shows
+    "speaking… (Esc to stop)" or why it couldn't speak.
+  - **Not verified yet (yours to try):**
+    - the in-app download (the dev install ran the same `uv sync` from a test);
+    - the ~0.5 s from the reply starting to the first audio;
+    - the Russian one-liner end to end, including the Haiku rewrite through the
+      proxy (only the rule fallback is tested);
+    - Chirp, by forcing a sidecar failure;
+    - Ctrl+Shift+L in the new voice;
+    - nothing resident 5 minutes later.
 
 #### Step V3 — Read-aloud and screen reading
 

@@ -17,6 +17,7 @@ import { CLOSE_CHOICES, IDLE_STOP_CHOICES, MAX_WORKERS, TIERS, type DuckSettings
 import { DUCK_PERMISSION_MODES, EFFORTS, SESSION_MODELS } from "../../util/models";
 import { setAvatar, setDuckSettings, setInterrupt, type DuckState } from "./duckState";
 import VoiceSettings from "./VoiceSettings";
+import SpeechSettings from "./SpeechSettings";
 
 /** The settings' categories, in tab order. */
 const TABS = ["drawer", "sessions", "workers", "voice"] as const;
@@ -223,7 +224,12 @@ export default function DrawerSettings({ duck }: { duck: DuckState }) {
             <Waiting />
           ))}
         {tab === "workers" && (duck.settings ? <Workers settings={duck.settings} /> : <Waiting />)}
-        {tab === "voice" && <VoiceSettings />}
+        {tab === "voice" && (
+          <>
+            <VoiceSettings />
+            <SpeechSettings />
+          </>
+        )}
         {error && <div style={{ color: "var(--wb-needs)" }}>{error}</div>}
       </div>
     </div>

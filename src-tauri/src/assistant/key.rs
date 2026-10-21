@@ -25,6 +25,13 @@ pub fn get() -> Option<String> {
     imp::read(TARGET).filter(|k| !k.is_empty())
 }
 
+/// Step V2: the Google Cloud key for Chirp speech, `duck/google-tts-key` (one
+/// credential for both builds: it bills nothing within the free tier). Stored the
+/// same way, with `cmdkey /generic:duck/google-tts-key /user:duck /pass:<key>`.
+pub fn google_tts() -> Option<String> {
+    imp::read("duck/google-tts-key").filter(|k| !k.is_empty())
+}
+
 pub fn set(key: &str) -> Result<(), String> {
     let key = key.trim();
     if key.is_empty() {

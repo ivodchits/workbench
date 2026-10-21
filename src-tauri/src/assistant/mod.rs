@@ -36,6 +36,7 @@ use serde_json::Value;
 use tauri::{AppHandle, Emitter, Manager, State};
 
 pub use budget::{Limits, Spend};
+pub use key::google_tts as google_tts_key;
 use db::DuckDb;
 pub use threads::{Message, Pending, Thread};
 
@@ -81,6 +82,41 @@ fn now_ms() -> i64 {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_millis() as i64)
         .unwrap_or(0)
+}
+
+/// Step V2: the ledger's model name for Google Chirp 3 HD speech; `in` counts
+/// characters, at no cost (the free 1M a month is never passed).
+pub const CHIRP_MODEL: &str = "chirp-3-hd";
+
+/// Characters sent to Chirp this calendar month.
+pub fn chirp_chars_this_month(app: &AppHandle) -> u64 {
+    let Some(ctx) = app.try_state::<Arc<Assistant>>() else { return 0 };
+    let conn = lock(&ctx);
+    let n = conn.query_row(
+        &format!(
+            r#"SELECT COALESCE(SUM("in"), 0) FROM assistant_usage WHERE model = ?1 AND ts >= {}"#,
+            budget::MONTH_START
+        ),
+        [CHIRP_MODEL],
+        |r| r.get::<_, i64>(0),
+    );
+    n.map(|n| n.max(0) as u64).unwrap_or(0)
+}
+
+/// Record one Chirp call of `chars` characters.
+pub fn record_chirp(app: &AppHandle, chars: u64) {
+    let Some(ctx) = app.try_state::<Arc<Assistant>>() else { return };
+    let record = usage::Record {
+        ts: now_ms(),
+        model: CHIRP_MODEL.into(),
+        purpose: "tts".into(),
+        usage: usage::Usage { input: chars, ..Default::default() },
+        cost_usd: 0.0,
+    };
+    let saved = usage::insert(&lock(&ctx), &record);
+    if let Err(e) = saved {
+        eprintln!("duck: recording a chirp call failed: {e}");
+    }
 }
 
 #[derive(Serialize)]

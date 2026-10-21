@@ -1,7 +1,9 @@
 // Text-to-speech for terminal selections — reads the currently selected text
 // aloud (the "Speak selection" context-menu item / Ctrl+Shift+L in a console).
 //
-// Backed by the Web Speech API's *synthesis* half (`window.speechSynthesis`),
+// Step V2: it speaks in Duck's voice (Kokoro / Silero, or Chirp) when that's set
+// up (`replySpeech.speakText`), so the app has one voice. Otherwise, and as the
+// fallback, it's the Web Speech API's *synthesis* half (`window.speechSynthesis`),
 // which WebView2 supports out of the box using the Windows OneCore/SAPI voices
 // installed on the machine. No dependency, no Rust, works offline. Recognition
 // (speech-to-text) is a separate API WebView2 does *not* ship — we only speak.
@@ -11,6 +13,12 @@
 // We lightly auto-detect Spanish and pick an installed `es-*` voice for it, so
 // Spanish output isn't mangled by an English voice's phonetics; everything else
 // falls back to the system default voice.
+
+import {
+  isSpeaking as duckSpeaking,
+  speakText as duckSpeak,
+  stopSpeaking as duckStop,
+} from "../panels/Assistant/replySpeech";
 
 /** Installed voices, refreshed from the engine (see the `voiceschanged` wiring). */
 let voices: SpeechSynthesisVoice[] = [];
@@ -92,11 +100,12 @@ function splitLong(s: string, max: number): string[] {
 
 /** True while an utterance is speaking or queued. */
 export function isSpeaking(): boolean {
-  return supported && (window.speechSynthesis.speaking || window.speechSynthesis.pending);
+  return duckSpeaking() || (supported && (window.speechSynthesis.speaking || window.speechSynthesis.pending));
 }
 
 /** Stop and clear everything currently speaking / queued. */
 export function stopSpeaking(): void {
+  duckStop();
   if (supported) window.speechSynthesis.cancel();
 }
 
@@ -106,11 +115,11 @@ export function stopSpeaking(): void {
  * installed Spanish voice when present; otherwise the system default reads it.
  */
 export function speak(text: string): void {
-  if (!supported) return;
   const trimmed = text.trim();
   if (!trimmed) return;
-
-  window.speechSynthesis.cancel(); // interrupt any in-flight / queued speech
+  if (supported) window.speechSynthesis.cancel(); // interrupt any in-flight / queued speech
+  if (duckSpeak(trimmed)) return;
+  if (!supported) return;
 
   const lang = detectLang(trimmed);
   const voice = pickVoice(lang);

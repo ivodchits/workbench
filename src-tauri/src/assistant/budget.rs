@@ -66,7 +66,7 @@ pub fn set_limits(db: &DuckDb, l: Limits) -> Result<Limits, String> {
 }
 
 /// Epoch ms of the start of this local month / day, as SQLite modifiers.
-const MONTH_START: &str = "strftime('%s', 'now', 'localtime', 'start of month', 'utc') * 1000";
+pub(crate) const MONTH_START: &str = "strftime('%s', 'now', 'localtime', 'start of month', 'utc') * 1000";
 const DAY_START: &str = "strftime('%s', 'now', 'localtime', 'start of day', 'utc') * 1000";
 
 pub fn month_to_date(conn: &Connection) -> rusqlite::Result<f64> {

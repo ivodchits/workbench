@@ -44,6 +44,7 @@ import DuckAvatar from "./DuckAvatar";
 import type { DuckMode } from "./duck3d";
 import DuckIcon from "./DuckIcon";
 import DrawerSettings from "./DrawerSettings";
+import { getSpeechLevel, initSpeech, isSpeaking, stopSpeaking, useSpeechState } from "./replySpeech";
 import { getVoiceState, initVoice, useVoiceState, type VoiceState } from "./voiceState";
 import { voicePtt } from "../../ipc/voice";
 import { TasksPanel } from "./TasksView";
@@ -120,6 +121,8 @@ export default function AssistantDrawer() {
 
   useEffect(() => void connectDuck(), []);
   useEffect(() => void initVoice(), []);
+  useEffect(() => void initSpeech(), []);
+  const speech = useSpeechState();
   useEffect(() => registerCommand("toggleAssistant", toggleDrawer), []);
   useEffect(() => registerCommand("toggleTrust", toggleTrust), []);
 
@@ -209,8 +212,11 @@ export default function AssistantDrawer() {
       onKeyDown={(e) => {
         if (e.key !== "Escape" || e.defaultPrevented) return;
         e.preventDefault();
+        // Esc stops what's going on: the voice and the turn first, then the drawer.
+        const speaking = isSpeaking();
+        if (speaking) stopSpeaking();
         if (busy) stopTurn();
-        else setDrawerOpen(false);
+        else if (!speaking) setDrawerOpen(false);
       }}
       // A click that wasn't on a control, and didn't select text, hands the
       // keyboard back to the composer.
@@ -281,7 +287,8 @@ export default function AssistantDrawer() {
           }}
         >
           <DuckAvatar
-            mode={AVATAR_MODE[current ? (duck.states[current] ?? "idle") : "idle"]}
+            mode={speech.speaking !== null ? "talking" : AVATAR_MODE[current ? (duck.states[current] ?? "idle") : "idle"]}
+            level={speech.speaking !== null ? getSpeechLevel : undefined}
             prefs={duck.prefs.avatar}
             running={duck.open}
           />
@@ -1411,21 +1418,26 @@ function Composer({
 }
 
 /** Push-to-talk's state over the composer: listening, transcribing, or what went
- *  wrong. Nothing while idle. */
+ *  wrong; then a reply speaking (V2), or why it couldn't be. Nothing while idle. */
 function VoiceLine({ voice }: { voice: VoiceState }) {
+  const speech = useSpeechState();
   const text =
     voice.phase === "listening"
       ? "● listening… (let go to send)"
       : voice.phase === "transcribing"
         ? "transcribing…"
-        : voice.message;
+        : (voice.message ??
+          (speech.speaking !== null
+            ? "speaking… (Esc to stop)"
+            : speech.error && `Couldn't speak the reply: ${speech.error}`));
   if (!text) return null;
+  const error = voice.phase === "error" || (!voice.message && speech.speaking === null && !!speech.error);
   return (
     <div
       role="status"
       style={{
         font: "11px var(--wb-mono)",
-        color: voice.phase === "error" ? "var(--wb-needs)" : voice.phase === "listening" ? "var(--wb-accent)" : "var(--wb-textDim2)",
+        color: error ? "var(--wb-needs)" : voice.phase === "listening" ? "var(--wb-accent)" : "var(--wb-textDim2)",
       }}
     >
       {text}
