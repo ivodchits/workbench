@@ -17,8 +17,9 @@
 //!   `voice-transcript`, and sends the text to Duck.
 //! - The drawer's mic button drives the same path ([`voice_ptt`]).
 //!
-//! Transcribing a WAV is a command of its own: the settings check, and the phone
-//! (R2) uploads 16 kHz WAV.
+//! Transcribing a WAV is a command of its own (the settings check), and the phone
+//! uploads 16 kHz WAV to the remote server, which calls [`VoiceState::transcribe`]
+//! (step R1).
 //!
 //! Step V2, spoken replies: [`tts`] (the sentence queue and its engines),
 //! [`sidecar`] (Kokoro + Silero in Python) and [`playback`]. The push-to-talk key
@@ -86,6 +87,16 @@ impl VoiceState {
             hotkey: Mutex::new(None),
             recording: Mutex::new(None),
         }
+    }
+
+    /// Transcribe 16 kHz mono samples with the configured GPU preference (the
+    /// phone's clips, step R1). Blocking: the model may load first.
+    pub fn transcribe(&self, samples: &[f32]) -> Result<Transcript, String> {
+        let gpu = self.config.lock().map(|c| c.gpu).unwrap_or_default();
+        if self.engine.choose(gpu).is_none() {
+            return Err("the voice model isn't downloaded on the desktop".into());
+        }
+        self.engine.transcribe(samples, gpu)
     }
 }
 
@@ -388,6 +399,28 @@ pub fn parse_wav_at(b: &[u8]) -> Result<(Vec<f32>, u32), String> {
     Err("the WAV has no data".into())
 }
 
+/// Mono samples as a 16-bit PCM WAV (the phone's copy of a spoken reply, step R1).
+pub fn encode_wav(samples: &[f32], rate: u32) -> Vec<u8> {
+    let data_len = samples.len() as u32 * 2;
+    let mut b = Vec::with_capacity(44 + data_len as usize);
+    b.extend_from_slice(b"RIFF");
+    b.extend_from_slice(&(36 + data_len).to_le_bytes());
+    b.extend_from_slice(b"WAVEfmt ");
+    b.extend_from_slice(&16u32.to_le_bytes());
+    b.extend_from_slice(&1u16.to_le_bytes()); // PCM
+    b.extend_from_slice(&1u16.to_le_bytes()); // mono
+    b.extend_from_slice(&rate.to_le_bytes());
+    b.extend_from_slice(&(rate * 2).to_le_bytes());
+    b.extend_from_slice(&2u16.to_le_bytes());
+    b.extend_from_slice(&16u16.to_le_bytes());
+    b.extend_from_slice(b"data");
+    b.extend_from_slice(&data_len.to_le_bytes());
+    for s in samples {
+        b.extend_from_slice(&((s.clamp(-1.0, 1.0) * 32767.0) as i16).to_le_bytes());
+    }
+    b
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -416,6 +449,14 @@ mod tests {
         assert_eq!(parse_wav(&wav(1, &[16384, -16384])).unwrap(), vec![0.5, -0.5]);
         assert_eq!(parse_wav(&wav(2, &[16384, 0, -16384, -16384])).unwrap(), vec![0.25, -0.5]);
         assert!(parse_wav(b"nope").is_err());
+    }
+
+    #[test]
+    fn encodes_what_it_reads() {
+        let (back, rate) = parse_wav_at(&encode_wav(&[0.5, -0.5, 0.0], 24_000)).unwrap();
+        assert_eq!(rate, 24_000);
+        assert_eq!(back.len(), 3);
+        assert!((back[0] - 0.5).abs() < 1e-3 && (back[1] + 0.5).abs() < 1e-3 && back[2] == 0.0);
     }
 
     /// X0's recordings through the engine (`cargo test --release voice_bench --

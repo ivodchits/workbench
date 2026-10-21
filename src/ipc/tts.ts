@@ -52,6 +52,11 @@ export const ttsStatus = (): Promise<TtsStatus> => invoke("tts_status");
 /** Download the voices and install the runtime (progress: `onTtsDownload`). */
 export const ttsPrepare = (): Promise<void> => invoke("tts_prepare");
 
+/** Make one speakable sentence into audio for the phone (step R1), kept as `id`
+ *  for `GET /api/assistant/tts/{id}`; its length in seconds. */
+export const ttsRender = (id: string, text: string, lang: Lang): Promise<number> =>
+  invoke("tts_render", { id, text, lang });
+
 export function onTtsState(cb: (e: TtsStateEvent) => void): Promise<UnlistenFn> {
   return listen<TtsStateEvent>("tts-state", (e) => cb(e.payload));
 }

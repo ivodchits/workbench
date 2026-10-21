@@ -36,7 +36,12 @@
 //! the tailnet address once Tailscale connects (it may come up after Workbench at
 //! boot), adds the funnel while the switch and the server are on, removes it when
 //! either goes off, and re-checks now and then so the menu says what is missing.
+//!
+//! **Duck (step R1):** [`assistant`] carries the Duck Protocol to the phone, through
+//! the webview like the dashboard: its own socket and broadcast channel (per run,
+//! like the snapshot's), plus routes for the phone's voice clips and spoken replies.
 
+pub mod assistant;
 mod auth;
 mod funnel;
 mod notes;
@@ -45,6 +50,7 @@ mod server;
 mod transcript;
 
 use std::net::Ipv4Addr;
+use std::sync::atomic::AtomicU64;
 use std::sync::{mpsc, Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -91,6 +97,8 @@ pub struct RemoteState {
     kick: watch::Sender<u64>,
     /// Wakes the keeper thread to act on a change now rather than at its next check.
     wake: Mutex<mpsc::Sender<()>>,
+    /// Numbers Duck's sockets, so an answer goes to the one that asked.
+    next_conn: AtomicU64,
 }
 
 struct RemoteInner {
@@ -114,6 +122,8 @@ struct RemoteInner {
     /// leaving a phone attached to a server that's "off"). A lagging client just misses
     /// intermediate frames — each frame is the full state, so it recovers.
     tx: Option<broadcast::Sender<String>>,
+    /// Duck's frames to its sockets (step R1); per run, like `tx`.
+    duck: Option<broadcast::Sender<assistant::DuckFrame>>,
     /// The most recent snapshot the webview pushed; served to a new WS/HTTP client.
     snapshot: String,
     /// Every paired device, approved or waiting (mirrors `remote_devices`).
@@ -182,6 +192,7 @@ pub fn init(app: &AppHandle) {
             // Only someone who has used the switch can have a funnel of ours left over.
             funnel_cleanup: public.is_some() && !(public_on && enabled),
             tx: None,
+            duck: None,
             snapshot: "{}".to_string(),
             devices: live,
             gate: PairGate::default(),
@@ -189,6 +200,7 @@ pub fn init(app: &AppHandle) {
         }),
         kick: watch::channel(0).0,
         wake: Mutex::new(wake),
+        next_conn: AtomicU64::new(0),
     });
     app.manage(state.clone());
 
@@ -254,11 +266,14 @@ fn start_server(state: &Arc<RemoteState>) -> Result<(), String> {
     let local = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, REMOTE_PORT))
         .map_err(|e| format!("bind 127.0.0.1:{REMOTE_PORT} failed: {e}"))?;
     let (tx, _rx) = broadcast::channel::<String>(32);
+    // Room for a burst of streamed text.
+    let (duck, _rx) = broadcast::channel::<assistant::DuckFrame>(512);
     {
         let mut inner = state.inner.lock().unwrap();
         inner.running = true;
         inner.local_addr = Some(format!("127.0.0.1:{REMOTE_PORT}"));
         inner.tx = Some(tx);
+        inner.duck = Some(duck);
     }
     // Spawn after the state is published so a connection that arrives immediately finds
     // the channel; store the acceptor handle so stop can abort it (freeing the port).
@@ -668,6 +683,7 @@ pub fn remote_stop(state: State<'_, Arc<RemoteState>>) -> RemoteStatus {
             task.abort();
         }
         inner.tx = None;
+        inner.duck = None;
         inner.running = false;
         inner.bound_addr = None;
         inner.local_addr = None;

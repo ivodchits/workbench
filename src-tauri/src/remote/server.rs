@@ -30,6 +30,8 @@
 //!   `?instance=` picks the console).
 //! - `GET /api/transcript` — WebSocket: one instance's conversation, history paged on
 //!   request and appended lines live (step R4, [`super::transcript`]).
+//! - `/api/assistant…` — Duck (step R1, [`super::assistant`]): its WebSocket (auth as
+//!   `/api/ws`), the phone's voice clips and its spoken replies (auth: bearer).
 //! - `/api/notes…` — a project's notes, read and written through the N1 notes module
 //!   (step R8, [`super::notes`]). Auth: bearer.
 //!
@@ -49,7 +51,7 @@ use std::sync::Arc;
 
 use axum::body::Bytes;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
-use axum::extract::{ConnectInfo, Query, State};
+use axum::extract::{ConnectInfo, DefaultBodyLimit, Query, State};
 use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::{Html, IntoResponse, Response};
 use axum::routing::{get, post};
@@ -91,6 +93,13 @@ async fn run(listener: std::net::TcpListener, state: Arc<RemoteState>) -> std::i
         .route("/api/action", post(api_action))
         .route("/api/term", get(api_term))
         .route("/api/transcript", get(super::transcript::api_transcript))
+        // Duck (step R1).
+        .route("/api/assistant", get(super::assistant::api_assistant))
+        .route(
+            "/api/assistant/audio",
+            post(super::assistant::audio).layer(DefaultBodyLimit::max(super::assistant::AUDIO_BODY_MAX)),
+        )
+        .route("/api/assistant/tts/{id}", get(super::assistant::tts))
         // Project notes (step R8), through the N1 notes module.
         .route("/api/notes", get(super::notes::counts))
         .route("/api/notes/list", get(super::notes::list))

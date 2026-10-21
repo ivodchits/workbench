@@ -437,7 +437,7 @@ export function createEngine(deps: EngineDeps): Engine {
       const effortChanged = want !== effectiveEffort(toApiMessages(history));
       // A spoken message gets a spoken-style answer (step V2). One system message
       // carries both, since one must be followed by the reply.
-      const spoken = input.source === "voice";
+      const spoken = input.source === "voice" || input.source === "phone-voice";
       if (effortChanged || spoken) {
         await append(
           threadId,

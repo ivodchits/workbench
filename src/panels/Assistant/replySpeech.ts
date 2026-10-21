@@ -13,10 +13,14 @@
 //   read each frame (too fast for React state).
 // - Ctrl+Shift+L in a console speaks the selection through the same voice
 //   (`speakText`), when the runtime is set up.
+// - When replies are spoken with the local voice, the backend starts it with the
+//   app and keeps it loaded (English; Silero loads on the first Russian message
+//   and stays), so no reply is cold. Otherwise it stops after 5 idle minutes.
 
 import { useSyncExternalStore } from "react";
 import { oneShot } from "../../assistant/client";
-import { langOf, needsRewrite, russianFallback, Sentences, toSpoken, type Lang } from "../../assistant/speakable";
+import { USER_SOURCES } from "../../assistant/protocol";
+import { langOf, prepareSentence, Sentences } from "../../assistant/speakable";
 import type { StoredMessage } from "../../ipc/assistant";
 import { getPref, setPref, type Prefs } from "../../ipc/prefs";
 import { onTtsLevel, onTtsState, ttsConfigure, ttsEnd, ttsSay, ttsStatus, ttsStop, ttsWarm } from "../../ipc/tts";
@@ -31,9 +35,6 @@ export const DEFAULT_SPEECH: SpeechPrefs = {
   voiceRu: "kseniya",
   rate: 1,
 };
-
-/** How long a Russian sentence waits for Haiku before the rule pass says it. */
-const REWRITE_TIMEOUT_MS = 4000;
 
 export interface SpeechState {
   prefs: SpeechPrefs;
@@ -102,30 +103,12 @@ let nextUtterance = Date.now();
 /** The reply being spoken, per thread (one at a time in practice). */
 const replies = new Map<string, Reply>();
 
-/** A Russian sentence Silero can say whole. */
-async function speakableRussian(s: string): Promise<string> {
-  if (!needsRewrite(s)) return s;
-  const ctl = new AbortController();
-  const timer = setTimeout(() => ctl.abort(), REWRITE_TIMEOUT_MS);
-  try {
-    const out = (await oneShot("speakable_ru", s, { signal: ctl.signal })).trim();
-    return out && !needsRewrite(out) ? out : russianFallback(out || s);
-  } catch {
-    return russianFallback(s);
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
-async function prepare(sentence: string): Promise<{ text: string; lang: Lang } | null> {
-  const spoken = toSpoken(sentence);
-  if (!/[\p{L}\p{N}]/u.test(spoken)) return null;
-  const lang = langOf(spoken);
-  return { text: lang === "ru" ? await speakableRussian(spoken) : spoken, lang };
-}
+/** The Haiku rewrite of a Russian sentence Silero couldn't say whole. */
+export const rewriteRussian = (s: string, signal: AbortSignal): Promise<string> =>
+  oneShot("speakable_ru", s, { signal });
 
 function say(r: Reply, sentence: string): void {
-  const ready = prepare(sentence);
+  const ready = prepareSentence(sentence, rewriteRussian);
   r.chain = r.chain.then(async () => {
     const s = await ready;
     if (s && replies.get(r.key) === r) await ttsSay(r.utterance, s.text, s.lang).catch(() => {});
@@ -165,13 +148,15 @@ export function isSpeaking(): boolean {
 
 // ── hooks from the drawer's event stream (duckState) ──
 
-const USER_SOURCES = new Set(["desktop", "phone", "voice"]);
+/** A message from the phone is answered there (step R1), not out of these speakers. */
+const DESKTOP_SOURCES = new Set(["desktop", "voice"]);
 
 /** A message of yours started a turn: speak its reply if the setting says so. */
 export function onUserMessage(m: StoredMessage, text: string): void {
   if (!USER_SOURCES.has(m.source)) return;
   // Whatever was speaking, you've moved on.
   stopSpeaking();
+  if (!DESKTOP_SOURCES.has(m.source)) return;
   const { speak } = state.prefs;
   if (speak === "off" || (speak === "voice" && m.source !== "voice")) return;
   // Not gated on `ready`: when the voice isn't set up, the backend's error says so

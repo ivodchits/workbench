@@ -136,7 +136,7 @@ export default function SpeechSettings() {
           ? "…"
           : local
             ? localReady
-              ? `Ready${status.running ? ", running" : ""}. It stops 5 minutes after the last reply.`
+              ? `Ready${status.running ? ", running" : ""}. ${prefs.speak === "off" ? "It stops 5 minutes after the last use." : "It stays loaded while replies are spoken (a few hundred MB; more once Russian is used)."}`
               : `Needs a ${mb(status.missingBytes)} download of the voices${status.installed ? "" : ", and uv installs their runtime (about 1 GB, once)"}.`
             : status.chirpKey
               ? `Chirp: ${status.chirpCharsThisMonth.toLocaleString()} of 1,000,000 free characters used this month.`

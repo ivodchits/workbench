@@ -8,15 +8,17 @@
 //!   files, so a new pin reinstalls. The models are [`TTS_ASSETS`], under
 //!   `<models>/tts/`.
 //! - **Run:** the venv's own `python.exe` runs `tts_sidecar.py` (not `uv run`, whose
-//!   child would outlive a kill), with no window, spawned on first use and killed
-//!   after [`IDLE_KILL`] with nothing to say. Silero loads only when a Russian
-//!   sentence comes.
+//!   child would outlive a kill), with no window, spawned on first use. While
+//!   replies are spoken it stays loaded ([`Sidecar::set_keep`], so the first reply
+//!   is never cold); otherwise it's killed after [`IDLE_KILL`] with nothing to say.
+//!   Silero loads only when a Russian sentence comes.
 //! - **Protocol:** a JSON line per request on stdin; a JSON header line back, then
 //!   `samples` int16 samples (see the script's docstring).
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -25,7 +27,8 @@ use sha2::{Digest, Sha256};
 
 use super::assets::Asset;
 
-/// Nothing stays resident longer than this after the last sentence (design: 5 min).
+/// When it isn't kept loaded, nothing stays resident longer than this after the
+/// last sentence (design: 5 min).
 pub const IDLE_KILL: Duration = Duration::from_secs(300);
 /// The rate both engines are asked for.
 pub const RATE: u32 = 24_000;
@@ -99,11 +102,24 @@ pub struct Sidecar {
     models: PathBuf,
     proc: Mutex<Option<Proc>>,
     last_used: Mutex<Instant>,
+    /// Stay loaded however long it's idle.
+    keep: AtomicBool,
 }
 
 impl Sidecar {
     pub fn new(dir: PathBuf, models: PathBuf) -> Self {
-        Self { dir, models, proc: Mutex::new(None), last_used: Mutex::new(Instant::now()) }
+        Self {
+            dir,
+            models,
+            proc: Mutex::new(None),
+            last_used: Mutex::new(Instant::now()),
+            keep: AtomicBool::new(false),
+        }
+    }
+
+    /// Stay loaded (replies are spoken), or go after the idle timeout.
+    pub fn set_keep(&self, keep: bool) {
+        self.keep.store(keep, Ordering::Relaxed);
     }
 
     pub fn dir(&self) -> &Path {
@@ -263,6 +279,9 @@ impl Sidecar {
             .spawn(move || loop {
                 std::thread::sleep(Duration::from_secs(15));
                 let Some(s) = me.upgrade() else { return };
+                if s.keep.load(Ordering::Relaxed) {
+                    continue;
+                }
                 let quiet = s.last_used.lock().map(|t| t.elapsed() >= idle).unwrap_or(false);
                 // try_lock: a call in progress isn't idle.
                 if quiet {

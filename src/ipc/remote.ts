@@ -11,7 +11,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
-import type { RemoteAction } from "../remote/protocol";
+import type { RemoteAction, RemoteDuckFrame } from "../remote/protocol";
 
 export type { RemoteAction, RemoteActionType } from "../remote/protocol";
 
@@ -159,4 +159,27 @@ export function remotePushSend(instanceId: string, title: string, body: string):
 /** How many phones get pushes. */
 export function remotePushCount(): Promise<number> {
   return invoke("remote_push_count");
+}
+
+/** What the remote server says about Duck's sockets (step R1): one opened, sent a
+ *  frame, or closed. `conn` numbers the socket. */
+export interface AssistantRemoteInput {
+  conn: number;
+  device: string;
+  kind: "open" | "message" | "close";
+  msg: unknown;
+}
+
+export function onAssistantRemoteInput(cb: (i: AssistantRemoteInput) => void): Promise<UnlistenFn> {
+  return listen<AssistantRemoteInput>("assistant-remote-input", (event) => cb(event.payload));
+}
+
+/** Send one of Duck's frames to socket `conn`, or to every one (null). */
+export function assistantRemoteEmit(frame: RemoteDuckFrame, conn: number | null): Promise<void> {
+  return invoke("assistant_remote_emit", { json: JSON.stringify(frame), conn });
+}
+
+/** Push "Duck is waiting for you" about a thread to the phones. */
+export function assistantRemotePush(threadId: string, title: string, body: string): Promise<void> {
+  return invoke("assistant_remote_push", { threadId, title, body });
 }

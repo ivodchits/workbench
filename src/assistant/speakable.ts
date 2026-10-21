@@ -70,6 +70,31 @@ function splitProse(text: string): { done: string[]; rest: string } {
  * A reply streaming in, cut into speakable sentences. `push` each delta and say
  * what it returns; `end` returns the remainder when the reply is over.
  */
+/** A sentence made ready for the voice: `toSpoken`, then for a Russian one that
+ *  still has a digit or a Latin letter, `rewrite` (the Haiku primitive
+ *  `speakable_ru`), or the rule pass when it is slow, fails or leaves some.
+ *  Null when nothing in it can be said. */
+export async function prepareSentence(
+  sentence: string,
+  rewrite: (s: string, signal: AbortSignal) => Promise<string>,
+  timeoutMs = 4000,
+): Promise<{ text: string; lang: Lang } | null> {
+  const spoken = toSpoken(sentence);
+  if (!/[\p{L}\p{N}]/u.test(spoken)) return null;
+  const lang = langOf(spoken);
+  if (lang === "en" || !needsRewrite(spoken)) return { text: spoken, lang };
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), timeoutMs);
+  try {
+    const out = (await rewrite(spoken, ctl.signal)).trim();
+    return { text: out && !needsRewrite(out) ? out : russianFallback(out || spoken), lang };
+  } catch {
+    return { text: russianFallback(spoken), lang };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 export class Sentences {
   private buf = "";
   /** Prose waiting for its sentence to end. */

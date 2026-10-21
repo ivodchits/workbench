@@ -960,13 +960,15 @@ function UserBubble({
               color: "var(--wb-textFaint)",
             }}
           >
-            {queued ? "queued: sent when Duck finishes" : `from ${source}`}
+            {queued ? "queued: sent when Duck finishes" : `from ${SOURCE_LABEL[source ?? ""] ?? source}`}
           </div>
         )}
       </div>
     </div>
   );
 }
+
+const SOURCE_LABEL: Record<string, string> = { "phone-voice": "phone, spoken" };
 
 function Reply({ text }: { text: string }) {
   return (

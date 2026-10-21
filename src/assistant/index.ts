@@ -1,7 +1,8 @@
 // Duck's entry point (step A2): `initAssistant()` builds the engine over the thread
 // store, the tool registry and the local port, and `getDuck()` hands surfaces a
 // transport. Started with the app like the other engines (App.tsx), not when a
-// surface first opens, so Duck is there for every surface from the start.
+// surface first opens, so Duck is there for every surface from the start. The
+// phone reaches the same endpoint through the remote bridge (step R1).
 
 import { homeDir } from "@tauri-apps/api/path";
 
@@ -17,6 +18,9 @@ import { badgeText, createAutopilot, ipcAutopilotBackend, type AutopilotManager 
 import { errorMessage, getClient, oneShot, structured } from "./client";
 import { createEngine, eventText, type Engine } from "./engine";
 import { createPolicy } from "./policy";
+import { ttsRender, ttsWarm } from "../ipc/tts";
+import { ipcLink, startRemoteBridge } from "./remoteBridge";
+import { prepareSentence } from "./speakable";
 import { localPort } from "./port.local";
 import {
   createLocalTransport,
@@ -43,6 +47,7 @@ import { TASK_TOOLS } from "./tools/tasks";
 import { AUTOPILOT_TOOLS } from "./tools/autopilot";
 import { THREAD_TOOLS } from "./tools/threads";
 import { createTaskManager, ipcTaskBackend, type Task, type TaskManager } from "./tasks";
+import { voiceMessage } from "./voiceNames";
 import { testConfirm } from "./tools/testConfirm";
 import { FLOOR } from "./trust/floor";
 import { replay, type ReplayReport } from "./trust/replay";
@@ -150,9 +155,9 @@ export function endpoint(
   e.onEvent((ev) => {
     if (ev.type === "turnState") meter.state(ev.threadId, ev.state);
   });
-  const sendSpend = async () => {
+  const sendSpend = async (to = say) => {
     if (spend)
-      say({ type: "spend", spend: await spend.get(), turns: meter.turns() });
+      to({ type: "spend", spend: await spend.get(), turns: meter.turns() });
   };
   spend?.onUsage((r) => {
     meter.usage(r.purpose, r.costUsd);
@@ -163,26 +168,28 @@ export function endpoint(
     if (c.decision) say({ type: "decision", row: c.decision });
     else say({ type: "trust", trust: trustView(trust) });
   });
-  const sendTasks = () => {
-    if (tasks) say({ type: "tasks", tasks: tasks.list().map(taskView) });
+  const sendTasks = (to = say) => {
+    if (tasks) to({ type: "tasks", tasks: tasks.list().map(taskView) });
   };
-  tasks?.subscribe(sendTasks);
-  const sendAutopilots = () => {
+  tasks?.subscribe(() => sendTasks());
+  const sendAutopilots = (to = say) => {
     if (!autopilot) return;
     const title = (id: string) => localPort.listSessions().find((x) => x.id === id)?.title ?? id;
     const autopilots: AutopilotView[] = autopilot
       .list()
       .filter((a) => a.state !== "stopped")
       .map((a) => ({ instanceId: a.instanceId, session: title(a.instanceId), threadId: a.threadId, state: a.state, text: badgeText(a) }));
-    say({ type: "autopilots", autopilots });
+    to({ type: "autopilots", autopilots });
   };
-  autopilot?.subscribe(sendAutopilots);
+  autopilot?.subscribe(() => sendAutopilots());
   const needTrust = () => {
     if (!trust) throw new Error("Duck's trust settings didn't load.");
     return trust;
   };
 
-  async function handle(msg: ClientMessage): Promise<void> {
+  /** `answer`: where the answers to this request go (the surface that asked, or
+   *  every surface). */
+  async function handle(msg: ClientMessage, answer: (ev: DuckEvent) => void): Promise<void> {
     switch (msg.type) {
       case "send":
         await e.send(msg);
@@ -200,14 +207,14 @@ export function endpoint(
         await e.deleteThread(msg.threadId);
         return;
       case "sync":
-        say({ type: "threads", threads: [...s.threads()] });
+        answer({ type: "threads", threads: [...s.threads()] });
         for (const request of e.pendingRequests())
-          say({ type: "confirm", request });
-        if (settings) say({ type: "settings", settings: settings.get() });
-        if (trust) say({ type: "trust", trust: trustView(trust) });
-        sendTasks();
-        sendAutopilots();
-        await sendSpend();
+          answer({ type: "confirm", request });
+        if (settings) answer({ type: "settings", settings: settings.get() });
+        if (trust) answer({ type: "trust", trust: trustView(trust) });
+        sendTasks(answer);
+        sendAutopilots(answer);
+        await sendSpend(answer);
         return;
       case "settings.set":
         if (!settings) throw new Error("Duck's settings aren't available.");
@@ -233,7 +240,7 @@ export function endpoint(
         return;
       case "trust.decisions": {
         const rows = await needTrust().decisions(msg.before, DECISION_PAGE + 1);
-        say({
+        answer({
           type: "decisions",
           rows: rows.slice(0, DECISION_PAGE),
           before: msg.before,
@@ -244,9 +251,9 @@ export function endpoint(
       case "trust.replay": {
         if (!replayer) throw new Error("The replay isn't available here.");
         const report = await replayer(msg.days, msg.judgeMax, (done, of) =>
-          say({ type: "replay", done, of, report: null }),
+          answer({ type: "replay", done, of, report: null }),
         );
-        say({ type: "replay", done: report.judged, of: report.judged, report });
+        answer({ type: "replay", done: report.judged, of: report.judged, report });
         return;
       }
       case "task.close":
@@ -268,7 +275,7 @@ export function endpoint(
         if (!s.thread(msg.threadId))
           throw new Error(`no thread ${msg.threadId}`);
         const messages = await s.messages(msg.threadId);
-        say({
+        answer({
           type: "history",
           threadId: msg.threadId,
           messages: [...messages],
@@ -280,7 +287,10 @@ export function endpoint(
   }
 
   return {
-    handle: (msg) => void handle(msg).catch(fail),
+    handle: (msg, reply) =>
+      void handle(msg, reply ?? say).catch((err: unknown) =>
+        (reply ?? say)({ type: "error", message: errorMessage(err) }),
+      ),
     onEvent(cb) {
       listeners.add(cb);
       return () => {
@@ -379,7 +389,24 @@ export function initAssistant(): Promise<void> {
     engineRef = engine;
     await tasks.load().catch((e: unknown) => console.error("duck: worker tasks didn't load", e));
     await autopilot.load().catch((e: unknown) => console.error("duck: autopilots didn't load", e));
-    duck = createLocalTransport(endpoint(engine, s, ledger, settings, trust, replayer, tasks, autopilot));
+    const ep = endpoint(engine, s, ledger, settings, trust, replayer, tasks, autopilot);
+    duck = createLocalTransport(ep);
+    startRemoteBridge({
+      duck: ep,
+      link: ipcLink,
+      watching: () => document.hasFocus() && !document.hidden,
+      fixVoice: (text) =>
+        voiceMessage(text, [
+          ...localPort.listProjects().map((p) => p.name),
+          ...localPort.listSessions().map((x) => x.title),
+        ]),
+      prepare: (sentence) => prepareSentence(sentence, (t, signal) => oneShot("speakable_ru", t, { signal })),
+      render: async (text, lang) => {
+        const id = crypto.randomUUID();
+        return { id, seconds: await ttsRender(id, text, lang) };
+      },
+      warm: (ru) => void ttsWarm(ru).catch(() => {}),
+    });
   })().catch((e: unknown) => {
     started = null;
     console.error("duck: init failed", e);

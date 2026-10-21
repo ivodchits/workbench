@@ -11,7 +11,7 @@
 //   thread, and the reply waits there).
 
 import { useSyncExternalStore } from "react";
-import { fixNames } from "../../assistant/voiceNames";
+import { fixNames, voiceMessage } from "../../assistant/voiceNames";
 import { getPref, setPref, type Prefs } from "../../ipc/prefs";
 import { onVoiceState, onVoiceTranscript, voiceConfigure, type Transcript, type VoicePhase } from "../../ipc/voice";
 import { getRegistry } from "../../state/registry";
@@ -74,9 +74,7 @@ function knownNames(): string[] {
 
 /** What a transcript sends: its names fixed, the words as heard beside a fix. */
 export function messageFor(t: Pick<Transcript, "text">, names: string[]): string {
-  const raw = t.text.trim();
-  const fixed = fixNames(raw, names);
-  return fixed.changed ? `${fixed.text}\n\n(voice; as heard: "${raw}")` : fixed.text;
+  return voiceMessage(t.text, names);
 }
 
 function heard(t: Transcript): void {

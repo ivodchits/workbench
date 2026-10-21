@@ -17,7 +17,13 @@
 //! - **Barge-in:** `tts_stop` (Esc, the stop button) and the push-to-talk key empty
 //!   the queue and cut what's playing; sentences of the stopped reply still on
 //!   their way are dropped by epoch.
+//! - **The phone** (step R1): [`tts_render`] makes one sentence of a reply into a
+//!   WAV without playing it, kept a few minutes for the remote server's
+//!   `GET /api/assistant/tts/{id}` ([`TtsState::rendered`]). The webview renders a
+//!   reply's sentences in order as they stream, so the phone plays sentence 1
+//!   while sentence 2 is made.
 
+use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
@@ -35,6 +41,10 @@ const LEVEL_EVENT: &str = "tts-level";
 const DOWNLOAD_EVENT: &str = "tts-download";
 /// Chirp's free tier; never passed silently.
 const CHIRP_FREE_CHARS: u64 = 1_000_000;
+/// How long the phone's copy of a sentence is kept, and how many are (a few
+/// replies' worth).
+const RENDERED_TTL: Duration = Duration::from_secs(600);
+const RENDERED_MAX: usize = 64;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -131,6 +141,27 @@ impl Speaker for ChirpSpeaker {
     }
 }
 
+/// One sentence through the chosen engine, falling back to Chirp when that's on;
+/// the audio and which engine made it.
+fn speak_with(
+    local: &LocalSpeaker,
+    chirp: &ChirpSpeaker,
+    text: &str,
+    lang: Lang,
+    c: &TtsConfig,
+) -> Result<((Vec<f32>, u32), &'static str), String> {
+    let first: (&dyn Speaker, &'static str) =
+        if c.engine == EnginePref::Chirp { (chirp, "chirp") } else { (local, "local") };
+    let result = first.0.speak(text, lang, c).map(|a| (a, first.1));
+    match result {
+        Err(e) if c.engine == EnginePref::Local && c.chirp_fallback => {
+            eprintln!("tts: the local engine failed ({e}); trying Chirp");
+            chirp.speak(text, lang, c).map(|a| (a, "chirp"))
+        }
+        r => r,
+    }
+}
+
 enum Job {
     Say { epoch: u64, utterance: u64, text: String, lang: Lang },
     End { epoch: u64, utterance: u64 },
@@ -147,6 +178,9 @@ struct StateEvent {
     engine: Option<&'static str>,
 }
 
+/// A sentence made for the phone: its id, the WAV, when it was made.
+type Rendered = (String, Arc<Vec<u8>>, Instant);
+
 /// Tauri-managed.
 pub struct TtsState {
     sidecar: Arc<Sidecar>,
@@ -158,6 +192,8 @@ pub struct TtsState {
     preparing: AtomicBool,
     /// The utterance speaking now, if any (0 = none).
     current: Arc<AtomicU64>,
+    /// Sentences made for the phone, newest last.
+    rendered: Mutex<VecDeque<Rendered>>,
 }
 
 impl TtsState {
@@ -177,6 +213,7 @@ impl TtsState {
             jobs: Mutex::new(tx),
             preparing: AtomicBool::new(false),
             current: Arc::new(AtomicU64::new(0)),
+            rendered: Mutex::new(VecDeque::new()),
         };
         me.run(app.clone(), rx);
         me
@@ -205,15 +242,7 @@ impl TtsState {
                                 continue;
                             }
                             let c = config.lock().map(|c| c.clone()).unwrap_or_default();
-                            let first: (&dyn Speaker, &'static str) =
-                                if c.engine == EnginePref::Chirp { (&chirp, "chirp") } else { (&local, "local") };
-                            let mut result = first.0.speak(&text, lang, &c).map(|a| (a, first.1));
-                            if let Err(e) = &result {
-                                if c.engine == EnginePref::Local && c.chirp_fallback {
-                                    eprintln!("tts: the local engine failed ({e}); trying Chirp");
-                                    result = chirp.speak(&text, lang, &c).map(|a| (a, "chirp"));
-                                }
-                            }
+                            let result = speak_with(&local, &chirp, &text, lang, &c);
                             // A stop may have come while this was synthesized.
                             if g != epoch.load(Ordering::SeqCst) {
                                 continue;
@@ -263,6 +292,36 @@ impl TtsState {
         }
     }
 
+    /// Make one sentence into a WAV for the phone and keep it as `id`; its length
+    /// in seconds. Blocking. The same engines as the desktop's, but nothing plays.
+    pub fn render(&self, app: &AppHandle, id: String, text: &str, lang: Lang) -> Result<f32, String> {
+        let text = text.trim();
+        if text.is_empty() {
+            return Err("nothing to say".into());
+        }
+        let c = self.config.lock().map(|c| c.clone()).unwrap_or_default();
+        let (local, chirp) = (LocalSpeaker(Arc::clone(&self.sidecar)), ChirpSpeaker(app.clone()));
+        let ((pcm, rate), _) = speak_with(&local, &chirp, text, lang, &c)?;
+        let mut all = if rate == sidecar::RATE { pcm } else { super::capture::resample(&pcm, rate, sidecar::RATE) };
+        // A breath before the next sentence.
+        all.extend(std::iter::repeat_n(0.0, sidecar::RATE as usize / 6));
+        let secs = all.len() as f32 / sidecar::RATE as f32;
+        let wav = Arc::new(super::encode_wav(&all, sidecar::RATE));
+        let mut kept = self.rendered.lock().map_err(|e| e.to_string())?;
+        kept.retain(|(k, _, at)| *k != id && at.elapsed() < RENDERED_TTL);
+        kept.push_back((id, wav, Instant::now()));
+        while kept.len() > RENDERED_MAX {
+            kept.pop_front();
+        }
+        Ok(secs)
+    }
+
+    /// A sentence made for the phone, while it's kept.
+    pub fn rendered(&self, id: &str) -> Option<Arc<Vec<u8>>> {
+        let kept = self.rendered.lock().ok()?;
+        kept.iter().find(|(k, _, at)| k == id && at.elapsed() < RENDERED_TTL).map(|(_, w, _)| Arc::clone(w))
+    }
+
     /// Start the sidecar in the background if replies will be spoken.
     pub fn warm_if_wanted(&self) {
         let c = self.config.lock().map(|c| c.clone()).unwrap_or_default();
@@ -283,9 +342,16 @@ pub fn runtime_dir(app: &AppHandle) -> std::path::PathBuf {
     base.join(if cfg!(debug_assertions) { "voice-runtime.dev" } else { "voice-runtime" })
 }
 
+/// Take the settings. While replies are spoken with the local engine, the sidecar
+/// is started now and stays loaded, so a reply is never cold.
 #[tauri::command]
 pub fn tts_configure(state: State<'_, TtsState>, config: TtsConfig) -> Result<(), String> {
+    let keep = config.warm_on_talk && config.engine == EnginePref::Local;
     *state.config.lock().map_err(|e| e.to_string())? = config;
+    state.sidecar.set_keep(keep);
+    if keep {
+        state.warm_if_wanted();
+    }
     Ok(())
 }
 
@@ -321,6 +387,15 @@ pub fn tts_warm(state: State<'_, TtsState>, ru: bool) {
             }
         });
     }
+}
+
+/// Make one sentence of a reply (already speakable) into audio for the phone
+/// (step R1), kept as `id` for `GET /api/assistant/tts/{id}`; its length in seconds.
+#[tauri::command]
+pub async fn tts_render(app: AppHandle, id: String, text: String, lang: Lang) -> Result<f32, String> {
+    tauri::async_runtime::spawn_blocking(move || app.state::<TtsState>().render(&app, id, &text, lang))
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 #[derive(Serialize)]

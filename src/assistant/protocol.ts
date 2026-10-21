@@ -23,8 +23,13 @@ export interface TrustView extends TrustConfig {
 export const PROTOCOL_VERSION = 1;
 
 /** Where a message came from; stored on it. `event` is Workbench itself: a
- *  follow-up a tool scheduled (a watched session finished), not the user. */
-export type Source = "desktop" | "phone" | "voice" | "event";
+ *  follow-up a tool scheduled (a watched session finished), not the user.
+ *  `phone-voice` was spoken on the phone (step R1): its reply is written to be
+ *  heard, and heard there, not out of the desktop's speakers. */
+export type Source = "desktop" | "phone" | "voice" | "phone-voice" | "event";
+
+/** The user's own sources (not `event`, not Duck's `duck`). */
+export const USER_SOURCES: ReadonlySet<string> = new Set(["desktop", "phone", "voice", "phone-voice"]);
 
 /** Per-message effort (the API's `output_config.effort`). */
 export type Effort = "low" | "medium" | "high" | "xhigh" | "max";
@@ -273,7 +278,9 @@ export interface Transport {
 
 /** What a transport connects to: the running Duck. */
 export interface DuckEndpoint {
-  handle(msg: ClientMessage): void;
+  /** With `reply`, the answers to this request (`threads`, `history`, an error…)
+   *  go there only; changes still go to every surface. */
+  handle(msg: ClientMessage, reply?: (e: DuckEvent) => void): void;
   onEvent(cb: (e: DuckEvent) => void): () => void;
 }
 

@@ -6,6 +6,7 @@
 // Types only. The PWA is a separate bundle with no Tauri and no React in it, so
 // nothing here may import a value.
 
+import type { DuckEvent, Effort, Stamped } from "../assistant/protocol";
 import type { InstanceStatus } from "../ipc/registry";
 import type { RateLimits } from "../ipc/usageLimits";
 import type { ChoiceKind, ChoiceOption, ChoiceQuestion } from "../state/pendingChoice";
@@ -180,3 +181,47 @@ export interface TranscriptBack {
   id: number;
   before: number;
 }
+
+// ── Duck (step R1): the socket at `/api/assistant` ──────────────────────────────
+// The Duck Protocol (`src/assistant/protocol.ts`), less what a phone may not do.
+
+/** A frame the phone sends to Duck. Anything else is refused with an `error`. */
+export type RemoteDuckMessage =
+  /** The thread list, open confirmations, settings, trust, tasks and the spend. */
+  | { type: "sync" }
+  | { type: "thread.open"; threadId: string }
+  | { type: "thread.new" }
+  | {
+      type: "send";
+      /** `null` starts a new thread. */
+      threadId: string | null;
+      text: string;
+      /** Spoken (dictated through `/api/assistant/audio`): the names get fixed, and
+       *  the reply is written to be heard. */
+      voice?: boolean;
+      /** Make the reply into audio for this phone: `tts` frames follow it, a
+       *  sentence at a time as it streams, then `ttsEnd`. */
+      speak?: boolean;
+      effort?: Effort;
+    }
+  | { type: "stop"; threadId: string }
+  | { type: "confirm"; threadId: string; toolUseId: string; allow: boolean }
+  /** The kill switch: pauses trust. Resuming is done on the desktop. */
+  | { type: "trust.pause" }
+  | { type: "trust.decisions"; before: number | null }
+  | { type: "task.close"; taskId: string }
+  | { type: "task.rerun"; taskId: string }
+  | { type: "autopilot"; instanceId: string; action: "pause" | "resume" | "stop" };
+
+/** A frame Duck sends the phone: any Duck event, plus the phone's own. */
+export type RemoteDuckFrame =
+  | Stamped<DuckEvent>
+  /** A sentence of the reply to a `speak` message, as audio at
+   *  `GET /api/assistant/tts/{id}`. `reply` names the reply; `part` counts from 0
+   *  and the parts come in order: play each as it comes. */
+  | { type: "tts"; threadId: string; reply: string; part: number; id: string; seconds: number; v: number }
+  /** No more parts of `reply` are coming (`parts` were sent). Not sent for a
+   *  reply the phone stopped. */
+  | { type: "ttsEnd"; threadId: string; reply: string; parts: number; v: number }
+  /** Frames were dropped (a slow link): ask for the open thread again. */
+  | { type: "lagged" };

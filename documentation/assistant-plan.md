@@ -3013,7 +3013,8 @@ and voiced text adventures as user-defined modes (S2).
 - **Out of scope:** voice cloning; wake word.
 - **As built, part 1: the desktop (2026-10-20).** The phone (`GET
   /api/assistant/tts/<messageId>`, the per-surface setting) needs R1's assistant
-  endpoints, which don't exist yet, so it moves to R1/R2.
+  endpoints, which didn't exist yet, so it moved to R1/R2. R1 built the audio side
+  (see its As built); the per-surface setting and playback are the PWA's, in R2.
   - **The sidecar** (`voice/sidecar.rs`, `resources/voice-runtime/`):
     - `pyproject.toml` + `uv.lock` (kokoro-onnx 0.4.9, torch 2.8.0+cpu from
       PyTorch's CPU index, Python 3.12) are compiled into the app. "download" writes
@@ -3371,6 +3372,100 @@ and voiced text adventures as user-defined modes (S2).
 - **Done when:** a scripted WS client can chat, confirm and stop, and an unauthenticated
   client is rejected on both routes.
 - **Out of scope:** PWA UI.
+- **As built (2026-10-21).** It includes V2's phone half (the spoken reply as audio).
+  - **The socket** (`remote/assistant.rs`): `GET /api/assistant`, authed like `/api/ws`
+    (Origin check, the `wb-token.` subprotocol), frames up to 256 KB. It carries the
+    Duck Protocol itself (`ClientMessage` up, stamped `DuckEvent`s down) rather than a
+    separate frame set. The plan's `thread`, `delta`, `tool`, `confirm`, `spend` and
+    `trust` are all already Duck events. Phone-only frames (`src/remote/protocol.ts`):
+    - up: `RemoteDuckMessage`;
+    - down: `tts {threadId, reply, part, id, seconds}` for each sentence of a spoken
+      reply, `ttsEnd {reply, parts}`, and `lagged` when a slow link dropped frames
+      (the phone asks for the thread again).
+  - **The bridge:**
+    - The server numbers each socket and tells the webview `assistant-remote-input`
+      (`open`, `message`, `close`).
+    - `src/assistant/remoteBridge.ts` checks each frame with zod and calls the same
+      endpoint the drawer uses.
+    - The endpoint's `handle(msg, reply)` now sends a request's answers (`threads`,
+      `history`, `decisions`, `replay`, errors, and a `sync`'s state) to the surface that
+      asked only, so a phone's requests don't touch the drawer. Changes still go to
+      every surface.
+    - Duck's events go down through `assistant_remote_emit(json, conn)`, a per-run
+      broadcast channel (512 frames), and are forwarded only while a phone is
+      connected.
+  - **What a phone may do:** `sync`, `thread.open`, `thread.new`, `send`, `stop`,
+    `confirm`, `trust.pause` (pausing only: a phone's `paused: false` still pauses),
+    `trust.decisions`, `task.close` / `task.rerun`, and `autopilot`.
+    - It may not change settings, loosen trust (rules, modes, the floor, resuming), run
+      the replay or delete a thread, since the address may be public. Those are refused
+      with an `error` to that socket.
+    - Its messages are stored as `phone`, or as the new **`phone-voice`** source when
+      `voice: true`. A `phone-voice` message gets its names fixed like the desktop's
+      dictation (`voiceMessage`, moved into `voiceNames.ts`) and the `VOICE_NOTE`. The
+      desktop never speaks a phone's reply out of its speakers.
+  - **Confirmations:** cards go to every surface and the engine already ignores a second
+    answer, so the first answer wins and `confirmed` updates the rest. When a card comes,
+    no phone is connected and the desktop window isn't in focus, it is pushed once
+    (`assistant_remote_push`, tag `duck-<thread>`). Tapping the push opens
+    `/#duck=<thread>` or posts `open-duck`; the PWA handles that in R2.
+  - **`POST /api/assistant/audio`:** bearer auth, a 4 MB body limit on this route only,
+    16 kHz WAV of at most 60 s. It goes through V1's engine
+    (`VoiceState::transcribe`, the configured GPU preference) and answers
+    `{text, ms}`; the names are fixed when the text is sent with `voice: true`.
+  - **Spoken replies for the phone, a sentence at a time:**
+    - A `send` with `speak: true` marks that reply. As it streams, the bridge cuts it
+      with the desktop's `Sentences` and makes each sentence speakable
+      (`prepareSentence`, now in `speakable.ts`, including the Russian rewrite).
+    - `tts_render(id, text, lang)` synthesizes one sentence through the same engines
+      and the Chirp fallback, without playing it. Each sentence is a WAV (24 kHz
+      16-bit, about 48 KB/s, not compressed), kept 10 minutes (64 at most) for
+      `GET /api/assistant/tts/{id}` (bearer).
+    - Sentences are rendered in order, so the asking socket gets `tts {part}` frames
+      in order while the reply is still streaming, and `ttsEnd` when it's complete.
+      The phone plays part 0 while part 1 is made, as the desktop does.
+    - A reply the phone stopped, or one a new message in its thread replaced, renders
+      no more parts and sends no `ttsEnd`.
+  - **Kept loaded** (changed after the first live run, at your call):
+    - While replies are spoken with the local engine ("Speak Duck's replies" isn't
+      `never`), `tts_configure` starts the sidecar with the app and the reaper leaves
+      it alone (`Sidecar::set_keep`), so no reply is cold. That's a few hundred MB for
+      Kokoro, and about 1.4 GB once a Russian message has loaded Silero, which then
+      stays too.
+    - With replies off or Chirp chosen, the 5-minute idle kill applies as before.
+    - A phone's clip at `/audio` (like the desktop's push-to-talk press) and a `speak`
+      message also start it, in case it isn't running; the latter with Silero when
+      the message is Russian.
+  - **Verified:**
+    - 7 vitest cases (`remoteBridge.test.ts`): what's refused, answers routed to the
+      asker, a spoken reply in parts as it streams, parts kept in order when a later
+      sentence is ready first, stop and no-speak, the push. That makes 477 in all;
+      tsc and eslint are clean.
+    - 3 Rust tests: frame routing, the clip limits, and the WAV round trip. That makes
+      243 in all; clippy is clean.
+    - **Live**, against the dev app with a scripted client (Node's `WebSocket`) and a
+      throwaway approved device:
+      - no token / a wrong token got 401 on audio and tts, and the WebSocket was refused
+        both ways;
+      - `settings.set` was refused; `sync` came back to the asker;
+      - a chat came back streamed, stored as `phone`;
+      - the first version, one WAV per reply, came 7.3 s after the reply cold and
+        0.4 s warm. That's why replies are now spoken a sentence at a time, with the
+        voice started with the app;
+      - after the change (then a warm-up at start, before keeping it loaded), the
+        voice process was running about 30 s after the dev app started. A five-sentence reply streamed from 1.2 s to 2.7 s after the send.
+        Its parts were ready at 2.7, 3.9, 4.7, 5.1 and 5.4 s (6.4, 6.8, 4.5, 2.4 and
+        1.6 s of audio), so each was ready long before the one before it finished
+        playing. Part 0's WAV (no token: 401) went back through `/audio` and came
+        out as its sentence;
+      - one run of the client timed out waiting for a frame and wasn't explained;
+        the two runs after it passed;
+      - the voice process went with the app when it was closed;
+      - `test_confirm` was confirmed from the client, and the turn went on;
+      - a stop went idle 52 ms after it was sent;
+      - `thread.open`'s history came back.
+  - **Not verified:** the push (no phone subscribed to the dev build), and a real phone.
+    Both come with R2.
 
 #### Step R2 — PWA Assistant tab with mic
 
@@ -5026,7 +5121,7 @@ T2 goes live after the replay check in its done-when (the past week's prompts th
 | L4 | Routines, backup and housekeeping | ☐ |
 | S1 | Modes: chat and rubber duck | ☐ |
 | S2 | Skills and user-defined modes | ☐ |
-| R1 | Assistant endpoints on the remote server | ☐ |
+| R1 | Assistant endpoints on the remote server | ☑ |
 | R2 | PWA Assistant tab with mic | ☐ |
 | R3 | The PWA as an app: shortcuts, share target, Duck start view | ☐ |
 | R4 | Android companion app (gate: R3 sees real use) | ☐ |

@@ -5,9 +5,7 @@
 // result, a transcript or a Workbench event never counts: those aren't the user's.
 
 import type { StoredMessage } from "../../ipc/assistant";
-
-/** Where the user's own messages come from (not `event`, not `duck`). */
-const USER_SOURCES = new Set(["desktop", "phone", "voice"]);
+import { USER_SOURCES } from "../protocol";
 /** A grant this old no longer covers anything. */
 export const GRANT_TTL_MS = 12 * 60 * 60_000;
 /** Shorter than this, a quote could be found anywhere ("ok"). */

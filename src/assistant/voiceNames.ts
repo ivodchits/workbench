@@ -141,7 +141,15 @@ function match(words: string[], all: Form[]): { text: string; d: number } | null
 const TOKEN = /[\p{L}\p{N}]+|[^\p{L}\p{N}]+/gu;
 const CYRILLIC_WORD = /^[а-яё]+$/i;
 
+/** What a transcript sends: its names fixed, the words as heard beside a fix. */
+export function voiceMessage(text: string, names: string[]): string {
+  const raw = text.trim();
+  const fixed = fixNames(raw, names);
+  return fixed.changed ? `${fixed.text}\n\n(voice; as heard: "${raw}")` : fixed.text;
+}
+
 /** Put known names back into a transcript. `names`: project and session names. */
+
 export function fixNames(text: string, names: string[]): { text: string; changed: boolean } {
   if (!/[а-яё]/i.test(text)) return { text, changed: false };
   const all = forms(names);

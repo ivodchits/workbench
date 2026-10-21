@@ -55,6 +55,7 @@ self.addEventListener("fetch", (event) => {
 // --- push (step R6) ---------------------------------------------------------------
 // The desktop pushes on needs-you and escalation: { title, body, instanceId, tag }.
 // A tag per instance makes a newer push about the same card replace the older one.
+// Duck pushes when it waits for a yes or no (step R1): { title, body, threadId, tag }.
 self.addEventListener("push", (event) => {
   let data = {};
   try {
@@ -69,21 +70,28 @@ self.addEventListener("push", (event) => {
       renotify: true,
       icon: "/icon-192.png",
       badge: "/icon-192.png",
-      data: { instanceId: data.instanceId || null },
+      data: { instanceId: data.instanceId || null, threadId: data.threadId || null },
     }),
   );
 });
 
-// Tapping a notification opens (or focuses) the dashboard on that instance.
+// Tapping a notification opens (or focuses) the dashboard on that instance, or Duck
+// on that thread.
 self.addEventListener("notificationclick", (event) => {
   event.notification.close();
-  const id = event.notification.data && event.notification.data.instanceId;
-  const target = id ? `/#instance=${encodeURIComponent(id)}` : "/";
+  const data = event.notification.data || {};
+  const id = data.instanceId;
+  const thread = data.threadId;
+  const target = thread
+    ? `/#duck=${encodeURIComponent(thread)}`
+    : id
+      ? `/#instance=${encodeURIComponent(id)}`
+      : "/";
   event.waitUntil(
     self.clients.matchAll({ type: "window", includeUncontrolled: true }).then((wins) => {
       for (const w of wins) {
         if (new URL(w.url).origin !== self.location.origin) continue;
-        w.postMessage({ type: "open-instance", instanceId: id });
+        w.postMessage(thread ? { type: "open-duck", threadId: thread } : { type: "open-instance", instanceId: id });
         return w.focus();
       }
       return self.clients.openWindow(target);
