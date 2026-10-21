@@ -82,8 +82,9 @@ export interface AnnounceDeps {
   speakOn(): boolean;
   /** Duck is speaking or reading on this PC now. */
   busy(): boolean;
-  /** Say it on this PC; false when the voice can't. */
-  sayHere(text: string): Promise<boolean>;
+  /** Say it on this PC; false when the voice can't. `threadId` is where a
+   *  reply to it goes (V4's reply window). */
+  sayHere(text: string, threadId: string): Promise<boolean>;
   /** Phones with Duck open (in front: the page closes its socket when hidden). */
   phones(): number;
   sayOnPhones(text: string, threadId: string): void;
@@ -263,7 +264,7 @@ export class Announcer {
     const text = batchText(say);
     const last = say[say.length - 1];
     let ok = false;
-    if (here) ok = await this.d.sayHere(text);
+    if (here) ok = await this.d.sayHere(text, last.threadId);
     if (!ok && phones > 0) {
       this.d.sayOnPhones(text, last.threadId);
       ok = true;

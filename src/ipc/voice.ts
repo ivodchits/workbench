@@ -66,7 +66,21 @@ export interface VoiceConfig {
   hotkey: string | null;
   /** A press starts and the next press stops; off, it's held. */
   toggle: boolean;
+  /** What the key does (step V4): conversation mode on and off, or one dictation. */
+  press: Press;
+  patience: Patience;
+  echo: EchoPref;
+  /** Conversation mode turns itself off after this many quiet minutes. */
+  autoOffMin: number;
+  /** A soft cue when a turn goes to Duck. */
+  cue: boolean;
 }
+
+export type Press = "conversation" | "dictation";
+/** How long a pause must be to end a turn: commands / chat / thinking aloud. */
+export type Patience = "quick" | "patient" | "thinking";
+/** Talking over Duck: by the output (headphones yes, speakers no), or forced. */
+export type EchoPref = "auto" | "full" | "half";
 
 export type VoicePhase = "listening" | "transcribing" | "idle" | "error";
 
@@ -83,4 +97,48 @@ export function onVoiceState(cb: (s: { state: VoicePhase; message: string | null
 
 export function onVoiceTranscript(cb: (t: Transcript) => void): Promise<UnlistenFn> {
   return listen<Transcript>("voice-transcript", (e) => cb(e.payload));
+}
+
+// ── conversation mode (step V4) ──
+
+export type ConversationPhase = "preparing" | "listening" | "hearing" | "grace" | "deaf" | "off" | "error";
+
+export interface ConversationState {
+  /** Which run (a newer one replaces an older one's late events). */
+  run: number;
+  state: ConversationPhase;
+  /** A reply window after an announcement, not the mode. */
+  window: boolean;
+  /** "wait" holds the turn open. */
+  held: boolean;
+  /** You can talk over Duck now (headphones, or forced). */
+  duplex: boolean;
+  message: string | null;
+}
+
+export interface VoiceTurn {
+  run: number;
+  id: number;
+  text: string;
+  /** `provisional`: start on it; `withdrawn`: you went on, drop it; `final`: it stands. */
+  phase: "provisional" | "withdrawn" | "final";
+  window: boolean;
+}
+
+export const voiceConversation = (on: boolean): Promise<void> => invoke("voice_conversation", { on });
+export const voiceConversationOn = (): Promise<boolean> => invoke("voice_conversation_on");
+/** Listen `secs` for a reply after an announcement. */
+export const voiceReplyWindow = (secs: number): Promise<void> => invoke("voice_reply_window", { secs });
+
+export function onConversationState(cb: (s: ConversationState) => void): Promise<UnlistenFn> {
+  return listen<ConversationState>("conversation-state", (e) => cb(e.payload));
+}
+
+export function onVoiceTurn(cb: (t: VoiceTurn) => void): Promise<UnlistenFn> {
+  return listen<VoiceTurn>("voice-turn", (e) => cb(e.payload));
+}
+
+/** The microphone's loudness, 0..1, every 100 ms while conversation mode listens. */
+export function onConversationLevel(cb: (level: number) => void): Promise<UnlistenFn> {
+  return listen<number>("conversation-level", (e) => cb(e.payload));
 }

@@ -107,7 +107,7 @@ fn err(e: impl std::fmt::Display) -> String {
 }
 
 /// Load ONNX Runtime from the models folder, once per process.
-fn init_runtime(root: &Path) -> Result<(), String> {
+pub(crate) fn init_runtime(root: &Path) -> Result<(), String> {
     static INIT: OnceLock<Result<(), String>> = OnceLock::new();
     INIT.get_or_init(|| {
         let dir = root.join(RUNTIME_DIR);
@@ -192,8 +192,8 @@ fn session(provider: Provider, path: &Path) -> Result<Session, String> {
     b.commit_from_file(path).map_err(|e| named(e.to_string()))
 }
 
-/// The VAD always runs on the CPU, one thread: it's tiny.
-fn vad_session(path: &Path) -> Result<Session, String> {
+/// The VAD (and V4's turn detector) always run on the CPU, one thread: they're tiny.
+pub(crate) fn tiny_session(path: &Path) -> Result<Session, String> {
     Session::builder()
         .map_err(err)?
         .with_intra_threads(1)
@@ -269,7 +269,7 @@ impl Engine {
     fn load(&self, provider: Provider) -> Result<Loaded, String> {
         init_runtime(&self.root)?;
         let dir = self.root.join(PARAKEET_DIR);
-        let vad = Vad::load(&self.root.join(vad::MODEL), &vad_session)?;
+        let vad = Vad::load(&self.root.join(vad::MODEL), &tiny_session)?;
         // The decoder runs once per output step: on DirectML each call pays a
         // dispatch, and its first ones a long warm-up, so it stays on the CPU.
         let model = Parakeet::load(&dir, provider == Provider::Cpu, &|p| session(provider, p), &|p| session(Provider::Cpu, p))?;

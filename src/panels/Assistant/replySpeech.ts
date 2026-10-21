@@ -25,6 +25,8 @@
 //   reader holds its place.
 // - Speak (V5) is the master switch: off, nothing here uses the voice but
 //   Ctrl+Shift+L. Announcements (`announce`) speak through the same queue.
+// - Once an announcement has been said, `onAnnounced` hears its thread, and
+//   conversation mode (V4) opens the reply window for it.
 
 import { useSyncExternalStore } from "react";
 import { registerDesktopSpeech } from "../../assistant";
@@ -139,6 +141,15 @@ function say(r: Reply, sentence: string): void {
     const s = await ready;
     if (s && replies.get(r.key) === r) await ttsSay(r.utterance, s.text, s.lang).catch(() => {});
   });
+}
+
+/** The announcement speaking now, and the thread a reply to it goes to. */
+let announcing: { utterance: number; threadId: string } | null = null;
+let announced: ((threadId: string) => void) | null = null;
+
+/** Hear when an announcement has been said in full (not cut). */
+export function onAnnounced(cb: (threadId: string) => void): void {
+  announced = cb;
 }
 
 function begin(key: string): Reply {
@@ -278,9 +289,10 @@ export function speakText(text: string): boolean {
 // ── announcements (V5) ──
 
 /** Say an announcement; false when Speak is off or the voice isn't set up. */
-export function announce(text: string): Promise<boolean> {
+export function announce(text: string, threadId?: string): Promise<boolean> {
   if (!state.prefs.on || !state.ready || !text.trim()) return Promise.resolve(false);
   const r = begin("announce");
+  announcing = threadId ? { utterance: r.utterance, threadId } : null;
   for (const s of r.sentences.push(text)) say(r, s);
   finish("announce");
   return Promise.resolve(true);
@@ -306,6 +318,11 @@ export function initSpeech(): Promise<void> {
       level = l;
     });
     await onTtsState((e) => {
+      if (announcing?.utterance === e.utterance && e.state !== "speaking") {
+        const done = e.state === "done" ? announcing.threadId : null;
+        announcing = null;
+        if (done) announced?.(done);
+      } else if (e.state === "stopped") announcing = null;
       const read = reading.get(e.utterance);
       if (e.state === "done" && read) {
         reading.delete(e.utterance);

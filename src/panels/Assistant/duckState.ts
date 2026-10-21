@@ -36,7 +36,7 @@ import type { ReplayReport } from "../../assistant/trust/replay";
 import type { Effect } from "../../assistant/trust/rules";
 import type { DecisionRow, Spend, StoredMessage, ThreadRow } from "../../ipc/assistant";
 import { getPref, setPref, type AssistantDrawerPrefs } from "../../ipc/prefs";
-import { onReplyDelta, onToolStart, onTurnEnded, onUserMessage } from "./replySpeech";
+import { onReplyDelta, onToolStart, onTurnEnded, onUserMessage, stopSpeaking } from "./replySpeech";
 
 export interface DuckState {
   /** Connected to the engine. */
@@ -49,6 +49,8 @@ export interface DuckState {
   messages: Record<string, StoredMessage[]>;
   /** Reply text streaming in, per thread. */
   streaming: Record<string, string>;
+  /** A provisional turn's words (step V4), not kept until it stands. */
+  provisional: Record<string, string>;
   states: Record<string, TurnState>;
   /** Messages sent from here that wait behind a running turn, per thread. */
   queued: Record<string, string[]>;
@@ -93,6 +95,7 @@ let state: DuckState = {
   current: null,
   messages: {},
   streaming: {},
+  provisional: {},
   states: {},
   queued: {},
   asks: [],
@@ -114,6 +117,8 @@ let state: DuckState = {
 const listeners = new Set<() => void>();
 /** A send with no thread is waiting for the engine to name the new one. */
 let adopting = false;
+/** Threads whose provisional turn's reply is already being spoken. */
+const spokenEarly = new Set<string>();
 
 function set(patch: Partial<DuckState>): void {
   state = { ...state, ...patch };
@@ -258,10 +263,32 @@ function onEvent(e: DuckEvent): void {
         states: { ...state.states, [e.threadId]: e.state },
       });
       break;
+    case "provisional":
+      set({ provisional: { ...state.provisional, [e.threadId]: e.text } });
+      // Its reply is spoken from the start, not from when the turn stands.
+      if (e.threadId === state.current) {
+        spokenEarly.add(e.threadId);
+        onUserMessage(
+          { threadId: e.threadId, seq: -1, ts: Date.now(), role: "user", content: [{ type: "text", text: e.text }], source: e.source },
+          e.text,
+        );
+      }
+      break;
+    case "withdrawn":
+      set({
+        provisional: { ...state.provisional, [e.threadId]: "" },
+        streaming: { ...state.streaming, [e.threadId]: "" },
+      });
+      if (spokenEarly.delete(e.threadId)) stopSpeaking();
+      break;
     case "message": {
       const m = e.message;
       const have = state.messages[m.threadId];
       const patch: Partial<DuckState> = {};
+      // A provisional turn stood: its message is the one kept now.
+      const early = m.role === "user" && spokenEarly.delete(m.threadId);
+      if (m.role === "user" && state.provisional[m.threadId])
+        patch.provisional = { ...state.provisional, [m.threadId]: "" };
       if (have && !have.some((x) => x.seq === m.seq))
         patch.messages = { ...state.messages, [m.threadId]: [...have, m] };
       if (m.role === "assistant") {
@@ -270,7 +297,7 @@ function onEvent(e: DuckEvent): void {
       }
       // Spoken replies (V2): a message of yours decides whether its reply is spoken.
       // Only the open thread: a thread Duck splits off carries your source too.
-      if (m.role === "user" && m.threadId === state.current) onUserMessage(m, userText(m));
+      if (m.role === "user" && m.threadId === state.current && !early) onUserMessage(m, userText(m));
       // A queued message of ours has started its turn.
       const waiting = state.queued[m.threadId];
       if (m.role === "user" && waiting?.length) {
@@ -450,6 +477,30 @@ export function sendMessage(text: string, effort?: Effort, source: Source = "des
   }
   if (!threadId) adopting = true;
   post({ type: "send", threadId, text, source, effort });
+}
+
+/** Conversation mode (step V4): a turn that starts now and may be withdrawn.
+ *  False when it can't be (no thread yet, or one busy): then send it once it
+ *  stands. */
+export function sendProvisional(threadId: string | null, text: string): boolean {
+  if (!threadId || isBusy(threadId)) return false;
+  set({ error: null });
+  post({ type: "send", threadId, text, source: "voice", provisional: true });
+  return true;
+}
+
+export function commitTurn(threadId: string): void {
+  post({ type: "turn.commit", threadId });
+}
+
+export function withdrawTurn(threadId: string): void {
+  post({ type: "turn.withdraw", threadId });
+}
+
+/** Send to a thread other than the open one (a reply to an announcement). */
+export function sendTo(threadId: string, text: string, source: Source): void {
+  if (threadId === state.current) return sendMessage(text, undefined, source);
+  post({ type: "send", threadId, text, source });
 }
 
 /** Delete a thread (step A4); the engine refuses while a reply runs. */

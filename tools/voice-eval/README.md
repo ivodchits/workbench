@@ -12,7 +12,7 @@ folder in PowerShell:
 | `uv run record_stt.py` | Record the 20 STT utterances (8 EN, 8 RU, 4 mixed). `--list-mics`, `--mic N` (exclusive mode) |
 | `uv run score_stt.py` | Parakeet v3 vs Whisper turbo on them. `--cpu` for the int8 CPU path |
 | `uv run record_monologues.py` | Record the 10 thinking-aloud monologues |
-| `uv run score_turns.py` | Silero VAD + Smart Turn under each end-of-turn policy |
+| `uv run score_turns.py` | Silero VAD + Smart Turn under each end-of-turn policy (fp32 on ONNX Runtime 1.24.2, as the app runs it since V4; `--model int8` for X0's) |
 | `uv run record_echo.py` | Play Duck's voice while recording the mic; quiet phase, then 10 interruptions. `--speaker BlackShark --name headphones` |
 | `uv run score_echo.py` | Raw mic vs AEC3 vs AEC3 + barge-in gate + self-voice check |
 

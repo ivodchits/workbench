@@ -20,6 +20,9 @@ pub struct TrayState {
     needs_you: u32,
     /// e.g. `"5h 41% · wk 18%"`; `None` until the first statusline POST.
     usage: Option<String>,
+    /// Conversation mode's state (step V4), e.g. `"Duck is listening"`, so it shows
+    /// with the window hidden.
+    voice: Option<String>,
 }
 
 impl TrayState {
@@ -42,6 +45,10 @@ impl TrayState {
         if let Some(ref usage) = self.usage {
             tooltip.push_str(" · ");
             tooltip.push_str(usage);
+        }
+        if let Some(ref voice) = self.voice {
+            tooltip.push_str(" · ");
+            tooltip.push_str(voice);
         }
         let _ = icon.set_tooltip(Some(&tooltip));
     }
@@ -106,6 +113,16 @@ fn on_menu_event(app: &AppHandle, event: tauri::menu::MenuEvent) {
 
 /// Tick or clear the tray's kill-switch item (the menu toggles it on its own click;
 /// this keeps it right when the drawer or a hotkey flips it).
+/// Conversation mode's clause in the tray's tooltip (step V4); None removes it.
+pub fn set_voice(app: &AppHandle, voice: Option<&str>) {
+    let Some(state) = app.try_state::<Mutex<TrayState>>() else { return };
+    let Ok(mut t) = state.lock() else { return };
+    if t.voice.as_deref() != voice {
+        t.voice = voice.map(str::to_string);
+        t.refresh();
+    }
+}
+
 pub fn set_trust_check(app: &AppHandle, paused: bool) {
     if let Some(item) = app.try_state::<TrustItem>() {
         let _ = item.0.set_checked(paused);
@@ -150,6 +167,7 @@ pub fn setup_tray(app: &AppHandle) {
         icon: tray,
         needs_you: 0,
         usage: None,
+        voice: None,
     }));
 }
 

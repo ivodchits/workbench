@@ -147,8 +147,8 @@ export interface DesktopSpeech {
   voice: Voice;
   /** Resolves once the thread's reply is spoken. */
   quiet(threadId: string): Promise<void>;
-  /** Say an announcement; false when it can't. */
-  announce(text: string): Promise<boolean>;
+  /** Say an announcement; false when it can't. A reply to it goes to `threadId`. */
+  announce(text: string, threadId?: string): Promise<boolean>;
   /** Something is speaking or queued to. */
   busy(): boolean;
   /** Speak, the master switch. */
@@ -265,6 +265,12 @@ export function endpoint(
         return;
       case "stop":
         e.stop(msg.threadId);
+        return;
+      case "turn.commit":
+        e.commit(msg.threadId);
+        return;
+      case "turn.withdraw":
+        e.withdraw(msg.threadId);
         return;
       case "confirm":
         await e.confirm(msg.threadId, msg.toolUseId, msg.allow);
@@ -496,7 +502,7 @@ export function initAssistant(): Promise<void> {
       presence: () => getPresence().catch(() => ({ idleMs: 3_600_000, locked: false, fullScreen: false, focus: null })),
       speakOn: () => desktopSpeech?.speakOn() ?? false,
       busy: () => (desktopSpeech?.busy() ?? false) || (reader.view()?.state === "reading" && reader.view()?.where === "desktop"),
-      sayHere: (text) => desktopSpeech?.announce(text) ?? Promise.resolve(false),
+      sayHere: (text, threadId) => desktopSpeech?.announce(text, threadId) ?? Promise.resolve(false),
       phones: () => bridge?.phones() ?? 0,
       sayOnPhones: (text, threadId) => bridge?.announce(text, threadId),
       push: (threadId, title, body) => ipcLink.push(threadId, title, body),

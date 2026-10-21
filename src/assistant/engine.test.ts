@@ -836,3 +836,93 @@ describe("engine hooks for action tools (W2)", () => {
     expect(results[1].content).toContain("the user's own words");
   });
 });
+
+// ── provisional turns (step V4) ─────────────────────────────────────────────
+
+describe("provisional turns", () => {
+  const tick = () => new Promise((r) => setTimeout(r, 20));
+  const userTexts = (ms: readonly StoredMessage[]) =>
+    ms.filter((m) => m.role === "user").map((m) => (m.content as { text: string }[])[0].text);
+
+  it("start at once and keep nothing until committed, then all of it", async () => {
+    const { engine, store, backend, events, calls } = await setup([
+      message([text("Hi there.")], "end_turn"),
+    ]);
+    const { id } = await engine.newThread();
+    await engine.send({ threadId: id, text: "hello", source: "voice", provisional: true });
+    await tick();
+    // The request went out with the held opening; nothing is stored yet.
+    expect(calls).toHaveLength(1);
+    expect(calls[0].params.messages.map((m) => m.role)).toEqual(["user", "system"]);
+    expect(backend.rows).toHaveLength(0);
+    expect(events.some((e) => e.type === "provisional" && e.text === "hello")).toBe(true);
+    expect(events.some((e) => e.type === "delta")).toBe(true);
+
+    engine.commit(id);
+    await engine.settled(id);
+    expect(roles(store.loaded(id))).toEqual(["user", "system", "assistant"]);
+    expect((store.loaded(id)[1].content as { content: { text: string }[] }).content[0].text).toBe(VOICE_NOTE);
+  });
+
+  it("withdrawn, keep nothing, and the merged turn after is the one kept", async () => {
+    const { engine, store, events } = await setup([
+      { hang: "Sure" },
+      message([text("Both, then.")], "end_turn"),
+    ]);
+    const { id } = await engine.newThread();
+    await engine.send({ threadId: id, text: "restart the api", source: "voice", provisional: true });
+    await tick();
+    engine.withdraw(id);
+    await engine.settled(id);
+    expect(store.loaded(id)).toHaveLength(0);
+    expect(events.some((e) => e.type === "withdrawn")).toBe(true);
+    expect(events.some((e) => e.type === "message")).toBe(false);
+
+    await engine.send({ threadId: id, text: "restart the api and the web", source: "voice", provisional: true });
+    await tick();
+    engine.commit(id);
+    await engine.settled(id);
+    expect(userTexts(store.loaded(id))).toEqual(["restart the api and the web"]);
+    expect(roles(store.loaded(id))).toEqual(["user", "system", "assistant"]);
+  });
+
+  it("run no tool until committed", async () => {
+    const { engine, store, events, calls } = await setup([
+      message([text("Checking."), toolUse("t1", "get_time", {})], "tool_use"),
+      message([text("It's Monday.")], "end_turn"),
+    ]);
+    const { id } = await engine.newThread();
+    await engine.send({ threadId: id, text: "what day is it?", source: "voice", provisional: true });
+    await tick();
+    expect(events.some((e) => e.type === "tool")).toBe(false);
+    expect(calls).toHaveLength(1);
+    engine.commit(id);
+    await engine.settled(id);
+    expect(roles(store.loaded(id))).toEqual(["user", "system", "assistant", "user", "assistant"]);
+  });
+
+  it("stopped, are kept like any turn", async () => {
+    const { engine, store } = await setup([{ hang: "Let me" }]);
+    const { id } = await engine.newThread();
+    await engine.send({ threadId: id, text: "hello", source: "voice", provisional: true });
+    await tick();
+    engine.stop(id);
+    await engine.settled(id);
+    expect(roles(store.loaded(id))).toEqual(["user", "system", "assistant", "notice"]);
+  });
+
+  it("are sent as they are behind a busy thread", async () => {
+    const { engine, store } = await setup([
+      { hang: "Working" },
+      message([text("Done.")], "end_turn"),
+    ]);
+    const { id } = await engine.newThread();
+    await engine.send({ threadId: id, text: "first", source: "desktop" });
+    await tick();
+    await engine.send({ threadId: id, text: "second", source: "voice", provisional: true });
+    engine.stop(id);
+    await engine.settled(id);
+    // The stop clears the queue; what was running is kept with "Stopped.".
+    expect(userTexts(store.loaded(id))).toEqual(["first"]);
+  });
+});

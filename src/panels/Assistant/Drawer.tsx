@@ -45,7 +45,14 @@ import type { DuckMode } from "./duck3d";
 import DuckIcon from "./DuckIcon";
 import DrawerSettings from "./DrawerSettings";
 import { getSpeechLevel, getSpeechState, initSpeech, isSpeaking, setSpeakOn, stopSpeaking, useSpeechState } from "./replySpeech";
-import { getVoiceState, initVoice, useVoiceState, type VoiceState } from "./voiceState";
+import {
+  getConversationLevel,
+  getVoiceState,
+  initVoice,
+  toggleConversation,
+  useVoiceState,
+  type VoiceState,
+} from "./voiceState";
 import { voicePtt, voiceToggle } from "../../ipc/voice";
 import { TasksPanel } from "./TasksView";
 import { OverviewPanel } from "./OverviewView";
@@ -127,6 +134,7 @@ export default function AssistantDrawer() {
   useEffect(() => registerCommand("toggleAssistant", toggleDrawer), []);
   useEffect(() => registerCommand("toggleTrust", toggleTrust), []);
   useEffect(() => registerCommand("toggleSpeak", () => setSpeakOn(!getSpeechState().prefs.on)), []);
+  useEffect(() => registerCommand("toggleConversation", toggleConversation), []);
 
   /** The keyboard goes to the composer, so you can type at once. */
   const focusComposer = useCallback(() => requestAnimationFrame(() => composerRef.current?.focus()), []);
@@ -702,6 +710,7 @@ function ThreadBody({ duck }: { duck: DuckState }) {
   const items = messages ? toItems(messages) : [];
   const streaming = id ? duck.streaming[id] : "";
   const queued = id ? (duck.queued[id] ?? []) : [];
+  const provisional = id ? duck.provisional[id] : "";
   const state = id ? (duck.states[id] ?? "idle") : "idle";
 
   // Switching threads: save the old position, restore the new one (or the end).
@@ -720,7 +729,7 @@ function ThreadBody({ duck }: { duck: DuckState }) {
   useLayoutEffect(() => {
     const el = ref.current;
     if (el && stick.current) el.scrollTop = el.scrollHeight;
-  }, [items.length, streaming, queued.length, state]);
+  }, [items.length, streaming, queued.length, provisional, state]);
 
   return (
     <div
@@ -751,6 +760,7 @@ function ThreadBody({ duck }: { duck: DuckState }) {
       {items.map((it) => (
         <ItemView key={it.key} item={it} active={state !== "idle"} />
       ))}
+      {provisional && <UserBubble text={provisional} source="voice" pending />}
       {streaming && <Reply text={streaming} />}
       {state !== "idle" && !streaming && (
         <div style={{ padding: "2px 16px", color: "var(--wb-textFaint)" }}>
@@ -934,11 +944,15 @@ function UserBubble({
   text,
   source,
   queued,
+  pending,
 }: {
   text: string;
   source?: string;
   queued?: boolean;
+  /** Conversation mode's turn in its grace window: keep talking to add to it. */
+  pending?: boolean;
 }) {
+  const dashed = queued || pending;
   return (
     <div
       style={{
@@ -952,13 +966,13 @@ function UserBubble({
           whiteSpace: "pre-wrap",
           wordBreak: "break-word",
           background: "var(--wb-sel)",
-          border: `1px ${queued ? "dashed" : "solid"} var(--wb-border)`,
-          color: queued ? "var(--wb-textDim2)" : "var(--wb-text)",
+          border: `1px ${dashed ? "dashed" : "solid"} var(--wb-border)`,
+          color: dashed ? "var(--wb-textDim2)" : "var(--wb-text)",
           padding: "5px 9px",
         }}
       >
         {text}
-        {(queued || (source && source !== "desktop")) && (
+        {(dashed || (source && source !== "desktop")) && (
           <div
             style={{
               marginTop: 3,
@@ -966,7 +980,11 @@ function UserBubble({
               color: "var(--wb-textFaint)",
             }}
           >
-            {queued ? "queued: sent when Duck finishes" : `from ${SOURCE_LABEL[source ?? ""] ?? source}`}
+            {queued
+              ? "queued: sent when Duck finishes"
+              : pending
+                ? "heard: keep talking to add to it"
+                : `from ${SOURCE_LABEL[source ?? ""] ?? source}`}
           </div>
         )}
       </div>
@@ -1382,7 +1400,11 @@ function Composer({
         }}
       />
       <ReaderBar />
-      <VoiceLine voice={voice} />
+      {voice.conversation.on ? (
+        <ConversationLine voice={voice} busy={busy} />
+      ) : (
+        <VoiceLine voice={voice} />
+      )}
       <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
         <MicButton voice={voice} />
         <button
@@ -1456,6 +1478,63 @@ function VoiceLine({ voice }: { voice: VoiceState }) {
   );
 }
 
+/** Conversation mode's state over the composer (V4): listening (with the mic's
+ *  level), hearing you, thinking, speaking; "wait" holding the turn open. */
+function ConversationLine({ voice, busy }: { voice: VoiceState; busy: boolean }) {
+  const speech = useSpeechState();
+  const c = voice.conversation;
+  const label = c.window ? "reply" : "conversation";
+  const text =
+    c.phase === "preparing"
+      ? "getting the voice ready…"
+      : c.held
+        ? "● holding the turn open: say \"go on\" when you're done"
+        : c.phase === "hearing"
+          ? "● hearing you"
+          : c.phase === "grace"
+            ? "● sent; keep talking to add to it"
+            : c.phase === "deaf"
+              ? "speaking (on speakers Duck doesn't listen meanwhile; Esc stops it)"
+              : speech.speaking !== null
+                ? "speaking (talk to interrupt)"
+                : busy
+                  ? "● thinking (listening)"
+                  : "● listening";
+  const live = c.phase !== "preparing" && c.phase !== "deaf";
+  return (
+    <div
+      role="status"
+      style={{ display: "flex", alignItems: "center", gap: 8, font: "11px var(--wb-mono)", color: live ? "var(--wb-accent)" : "var(--wb-textDim2)" }}
+    >
+      <span style={{ color: "var(--wb-textFaint)" }}>{label}:</span>
+      <span style={{ flex: 1, minWidth: 0 }}>{text}</span>
+      {live && <LevelMeter />}
+    </div>
+  );
+}
+
+/** The microphone's level, redrawn each frame (too fast for React state). */
+function LevelMeter() {
+  const bar = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    let frame = 0;
+    const draw = () => {
+      if (bar.current) bar.current.style.width = `${Math.round(getConversationLevel() * 100)}%`;
+      frame = requestAnimationFrame(draw);
+    };
+    frame = requestAnimationFrame(draw);
+    return () => cancelAnimationFrame(frame);
+  }, []);
+  return (
+    <div
+      aria-hidden
+      style={{ width: 48, height: 5, border: "1px solid var(--wb-border)", position: "relative", overflow: "hidden" }}
+    >
+      <div ref={bar} style={{ position: "absolute", inset: 0, right: "auto", width: 0, background: "var(--wb-accent)", transition: "width 90ms linear" }} />
+    </div>
+  );
+}
+
 /** What's being read aloud (V3): its title, where it is, and its buttons. */
 function ReaderBar() {
   const r = useDuckState().reader;
@@ -1497,10 +1576,29 @@ function ReaderBar() {
   );
 }
 
-/** Talk, as the push-to-talk key does: click to start and again to send, or hold
- *  (the setting's other choice). */
+/** Talk, as the push-to-talk key does: conversation mode on and off (V4, the
+ *  default); or for dictation, click to start and again to send, or hold. */
 function MicButton({ voice }: { voice: VoiceState }) {
   const held = useRef(false);
+  if (voice.prefs.press === "conversation") {
+    const on = voice.conversation.on && !voice.conversation.window;
+    const key = voice.prefs.hotkey;
+    return (
+      <button
+        type="button"
+        aria-pressed={on}
+        title={`${on ? "Stop conversation mode" : "Conversation mode: just talk; Duck answers and listens again"}${key ? ` (or press ${key} anywhere)` : ""}`}
+        onClick={toggleConversation}
+        style={{
+          ...btn,
+          borderColor: on ? "var(--wb-accent)" : "var(--wb-border)",
+          color: on ? "var(--wb-accent)" : "var(--wb-textDim2)",
+        }}
+      >
+        {on ? "◉ talking" : "🎙 talk"}
+      </button>
+    );
+  }
   const up = () => {
     if (!held.current) return;
     held.current = false;

@@ -84,6 +84,9 @@ tauri-plugin-global-shortcut = "~2.3"
 cpal = "0.16"
 xcap = "0.9.8"
 image = { version = "0.25", default-features = false, features = ["png"] }
+# Step V4: the turn detector's input is a Whisper log-mel spectrogram, whose
+# 400-point FFT runs 800 times per check.
+rustfft = "6"
 
 # Windows-only: intercept WebView2 accelerator keys so we can suppress the engine's
 # built-in reload shortcuts (F5 / Ctrl+R / Ctrl+Shift+R), which would otherwise
@@ -101,5 +104,12 @@ windows = { version = "0.61", features = [
     "Win32_System_Power",
     # Step V2: the speech sidecar runs below normal priority.
     "Win32_System_Threading",
+    # Step V4: whether the output is headphones or speakers (the endpoint's form
+    # factor), which decides whether you can talk over Duck.
+    "Win32_Media_Audio",
+    "Win32_System_Com",
+    "Win32_System_Com_StructuredStorage",
+    "Win32_System_Variant",
+    "Win32_UI_Shell_PropertiesSystem",
 ] }
 

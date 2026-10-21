@@ -161,6 +161,9 @@ export interface SendInput {
   text: string;
   source: Source;
   effort?: Effort;
+  /** Conversation mode's turn that may yet be withdrawn (step V4): the request
+   *  starts now, but nothing is kept until `commit`; `withdraw` drops it. */
+  provisional?: boolean;
 }
 
 export interface Engine {
@@ -171,6 +174,11 @@ export interface Engine {
    *  confirmations and queue. */
   deleteThread(threadId: string): Promise<void>;
   stop(threadId: string): void;
+  /** A provisional turn stands: its message is kept and the reply carries on. */
+  commit(threadId: string): void;
+  /** A provisional turn is dropped (you went on talking): its request is
+   *  aborted, and nothing of it is kept. */
+  withdraw(threadId: string): void;
   confirm(threadId: string, toolUseId: string, allow: boolean): Promise<void>;
   /** Re-announce parked confirmations (after a reload). */
   pendingRequests(): ConfirmRequest[];
@@ -365,9 +373,31 @@ async function runTool(
 
 // ── the engine ──────────────────────────────────────────────────────────────
 
+/** What a turn appends before its first request: your message, and the system
+ *  message after it when there is one. */
+interface Opening {
+  role: StoredMessage["role"];
+  content: unknown;
+  source: string;
+}
+
+/** A provisional turn's opening, held back until it's decided (step V4). */
+interface Held {
+  opening: Opening[];
+  decided: Promise<boolean>;
+  decide(keep: boolean): void;
+  /** Runs once it's kept (the first message names the thread). */
+  kept(): void;
+}
+
+/** A provisional turn nobody decided on is kept after this long. */
+export const PROVISIONAL_MAX_MS = 15_000;
+
 interface Turn {
   ctl: AbortController;
   state: TurnState;
+  held?: Held;
+  withdrawn?: boolean;
 }
 
 export function createEngine(deps: EngineDeps): Engine {
@@ -439,44 +469,84 @@ export function createEngine(deps: EngineDeps): Engine {
     try {
       const history = await store.messages(threadId);
       const first = history.length === 0;
-      await append(
-        threadId,
-        "user",
-        [{ type: "text", text: input.text }],
-        input.source,
-      );
+      const opening: Opening[] = [
+        { role: "user", content: [{ type: "text", text: input.text }], source: input.source },
+      ];
       const want = input.effort ?? DEFAULT_EFFORT;
       const effortChanged = want !== effectiveEffort(toApiMessages(history));
       // A spoken message gets a spoken-style answer (step V2). One system message
       // carries both, since one must be followed by the reply.
       const spoken = input.source === "voice" || input.source === "phone-voice";
       if (effortChanged || spoken) {
-        await append(
-          threadId,
-          "system",
-          {
+        opening.push({
+          role: "system",
+          content: {
             content: spoken ? [{ type: "text", text: VOICE_NOTE }] : [],
             ...(effortChanged && { output_config: { effort: want } }),
           },
-          "duck",
-        );
+          source: "duck",
+        });
       }
-      if (first && deps.nameThread) {
+      const named = () => {
+        if (!first || !deps.nameThread) return;
         // Fire and forget: a thread without a title is still a thread.
         void deps
           .nameThread(input.text)
           .then((title) => store.setTitle(threadId, title))
           .then((t) => t && emit({ type: "thread", thread: t }))
           .catch((e) => console.warn("duck: naming the thread failed", e));
+      };
+      if (input.provisional) {
+        // Step V4: the request starts now, on the opening held in memory.
+        let decide!: (keep: boolean) => void;
+        const decided = new Promise<boolean>((resolve) => (decide = resolve));
+        const timer = setTimeout(() => decide(true), PROVISIONAL_MAX_MS);
+        turn.held = {
+          opening,
+          decided: decided.finally(() => clearTimeout(timer)),
+          decide,
+          kept: named,
+        };
+        emit({ type: "provisional", threadId, text: input.text, source: input.source });
+      } else {
+        for (const m of opening) await append(threadId, m.role, m.content, m.source);
+        named();
       }
       await loop(threadId, turn);
     } catch (e) {
-      await notice(threadId, { kind: "error", text: errorMessage(e) }).catch(
-        () => {},
-      );
+      if (await kept(threadId, turn))
+        await notice(threadId, { kind: "error", text: errorMessage(e) }).catch(
+          () => {},
+        );
     } finally {
       settle(threadId);
     }
+  }
+
+  /** Before a turn keeps anything: a provisional one waits until it's decided,
+   *  and its opening is appended if it stands. False when it was withdrawn. */
+  async function kept(threadId: string, turn: Turn): Promise<boolean> {
+    const h = turn.held;
+    if (!h) return !turn.withdrawn;
+    if (!(await h.decided)) return false;
+    if (turn.held === h) {
+      turn.held = undefined;
+      for (const m of h.opening) await append(threadId, m.role, m.content, m.source);
+      h.kept();
+    }
+    return !turn.withdrawn;
+  }
+
+  /** The thread as the next request sees it, a held opening included. */
+  async function requestHistory(threadId: string, turn: Turn): Promise<StoredMessage[]> {
+    const stored = await store.messages(threadId);
+    const held = (turn.held?.opening ?? []).map((m, i) => ({
+      threadId,
+      seq: Number.MAX_SAFE_INTEGER - 2 + i,
+      ts: Date.now(),
+      ...m,
+    }));
+    return [...stored, ...held];
   }
 
   /** Model rounds until the turn ends, parks, or is stopped. */
@@ -485,11 +555,11 @@ export function createEngine(deps: EngineDeps): Engine {
     for (let round = 0; round < MAX_ROUNDS; round++) {
       if (signal.aborted) {
         // Stopped while tools ran: their results are stored, so the history is whole.
-        await notice(threadId, { kind: "stopped", text: "Stopped." });
+        if (await kept(threadId, turn)) await notice(threadId, { kind: "stopped", text: "Stopped." });
         return;
       }
       setState(threadId, "thinking");
-      const messages = toApiMessages(await store.messages(threadId));
+      const messages = toApiMessages(await requestHistory(threadId, turn));
       let text = "";
       let msg: Anthropic.Beta.BetaMessage;
       try {
@@ -509,6 +579,7 @@ export function createEngine(deps: EngineDeps): Engine {
         }
         msg = await stream.finalMessage();
       } catch (e) {
+        if (!(await kept(threadId, turn))) return;
         if (signal.aborted || e instanceof Anthropic.APIUserAbortError) {
           // Keep what was said; drop thinking and any half-made tool call.
           if (text.trim())
@@ -531,6 +602,8 @@ export function createEngine(deps: EngineDeps): Engine {
         return;
       }
 
+      // Nothing of a provisional turn is kept, nor any tool run, until it stands.
+      if (!(await kept(threadId, turn))) return;
       const toolUses = msg.content.filter(
         (b): b is ToolUse => b.type === "tool_use",
       );
@@ -759,6 +832,9 @@ export function createEngine(deps: EngineDeps): Engine {
     const threadId = await ensureThread(input.threadId);
     const msg = { ...input, threadId };
     if (busy(threadId)) {
+      // Only a turn that starts at once can be provisional; a queued one is sent
+      // as it is (conversation mode waits for a busy thread's turn to stand).
+      delete msg.provisional;
       const q = queues.get(threadId) ?? [];
       q.push(msg);
       queues.set(threadId, q);
@@ -813,12 +889,27 @@ export function createEngine(deps: EngineDeps): Engine {
       queues.delete(threadId);
       const t = turns.get(threadId);
       if (t) {
+        // A provisional turn you stop is kept, like any other: "Stopped." after it.
+        t.held?.decide(true);
         t.ctl.abort();
         return;
       }
       // Parked on a confirmation: answer every open call with "stopped".
       const batch = store.pending().find((b) => b.threadId === threadId);
       if (batch) void resume(batch, true);
+    },
+
+    commit(threadId) {
+      turns.get(threadId)?.held?.decide(true);
+    },
+
+    withdraw(threadId) {
+      const t = turns.get(threadId);
+      if (!t?.held) return;
+      t.withdrawn = true;
+      t.held.decide(false);
+      t.ctl.abort();
+      emit({ type: "withdrawn", threadId });
     },
 
     async confirm(threadId, toolUseId, allow) {

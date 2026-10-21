@@ -1,12 +1,17 @@
 # /// script
 # requires-python = ">=3.12"
-# dependencies = ["onnxruntime==1.31.0", "numpy", "soundfile", "scipy", "transformers==4.57.3", "psutil"]
+# dependencies = ["onnxruntime==1.24.2", "numpy", "soundfile", "scipy", "transformers==4.57.3", "psutil"]
 # ///
 """X0 end-of-turn test: Silero VAD + Smart Turn v3.2 (ONNX, CPU, 1 thread) over monologue recordings.
 
     uv run score_turns.py                          # all recordings/monologues/*.wav
     uv run score_turns.py some.wav other.wav       # specific files
     uv run score_turns.py --realtime long.wav      # stream in real time, measure CPU while listening
+    uv run score_turns.py --model int8             # X0's int8 model (default: fp32, what the app runs)
+
+V4 (2026-10-21): the app runs the fp32 model (`smart-turn-v3.2-gpu.onnx`) on the CPU, on ONNX
+Runtime 1.24.2, the version it ships. The int8 model's probabilities move with the runtime's
+version and graph optimizations (0.27 / 0.57 / 0.68 for the same pause); fp32's agree to 1e-5.
 
 Each monologue has exactly ONE real end of turn (the end of the file). Every end-of-turn the
 detector fires earlier is a false one (it would have cut you off). We report, per policy:
@@ -28,8 +33,10 @@ MODELS = DATA / "models" / "turn"
 SR, CHUNK = 16000, 512  # Silero: 32 ms frames
 URLS = {
     "silero_vad.onnx": "https://github.com/snakers4/silero-vad/raw/master/src/silero_vad/data/silero_vad.onnx",
-    "smart-turn-v3.2-cpu.onnx": "https://huggingface.co/pipecat-ai/smart-turn-v3/resolve/main/smart-turn-v3.2-cpu.onnx",
+    "smart-turn-v3.2-cpu.onnx": "https://huggingface.co/pipecat-ai/smart-turn-v3/resolve/f766f81d3cfdf7737ac64aad813d91bbfd56bf93/smart-turn-v3.2-cpu.onnx",
+    "smart-turn-v3.2-gpu.onnx": "https://huggingface.co/pipecat-ai/smart-turn-v3/resolve/f766f81d3cfdf7737ac64aad813d91bbfd56bf93/smart-turn-v3.2-gpu.onnx",
 }
+TURN_MODELS = {"int8": "smart-turn-v3.2-cpu.onnx", "fp32": "smart-turn-v3.2-gpu.onnx"}
 
 # Policies. checks = silence lengths (s) at which Smart Turn is asked; ends the turn at the first check with
 # P(complete) >= thr, else at `ceiling` seconds of silence.
@@ -77,10 +84,10 @@ class Vad:
 
 
 class SmartTurn:
-    def __init__(self):
+    def __init__(self, model="fp32"):
         from transformers import WhisperFeatureExtractor
         self.fe = WhisperFeatureExtractor(chunk_length=8)
-        self.s = session(ensure("smart-turn-v3.2-cpu.onnx"))
+        self.s = session(ensure(TURN_MODELS[model]))
 
     def __call__(self, audio):
         n = 8 * SR
@@ -268,11 +275,12 @@ def main():
     ap.add_argument("--realtime", action="store_true")
     ap.add_argument("--speed", type=float, default=1.0)
     ap.add_argument("--out", default=None)
+    ap.add_argument("--model", choices=sorted(TURN_MODELS), default="fp32")
     a = ap.parse_args()
     files = a.files or sorted(str(p) for p in (DATA / "recordings" / "monologues").glob("*.wav"))
     if not files:
         sys.exit("no monologues found; run: uv run record_monologues.py")
-    vad, st = Vad(), SmartTurn()
+    vad, st = Vad(), SmartTurn(a.model)
     st(np.zeros(SR, np.float32))  # warm-up
     if a.realtime:
         for f in files:

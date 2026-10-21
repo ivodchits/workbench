@@ -13,12 +13,12 @@ use ort::session::Session;
 use ort::value::TensorRef;
 
 pub const MODEL: &str = "silero_vad.onnx";
-const FRAME: usize = 512;
+pub const FRAME: usize = 512;
 const CONTEXT: usize = 64;
 
 /// Speech starts above this, and continues above `OFF` (hysteresis).
-const ON: f32 = 0.5;
-const OFF: f32 = 0.35;
+pub const ON: f32 = 0.5;
+pub const OFF: f32 = 0.35;
 /// Speech shorter than this many frames is a blip, not speech.
 const MIN_SPEECH_FRAMES: usize = 3;
 /// Kept around the speech, each side.
@@ -26,6 +26,9 @@ pub const PAD_MS: usize = 200;
 
 pub struct Vad {
     session: Session,
+    /// Carried between frames: the model's state, and the last frame's tail.
+    state: Array3<f32>,
+    context: Vec<f32>,
 }
 
 fn err(e: impl std::fmt::Display) -> String {
@@ -34,34 +37,42 @@ fn err(e: impl std::fmt::Display) -> String {
 
 impl Vad {
     pub fn load(path: &Path, session: &dyn Fn(&Path) -> Result<Session, String>) -> Result<Self, String> {
-        Ok(Self { session: session(path)? })
+        Ok(Self { session: session(path)?, state: Array3::zeros((2, 1, 128)), context: vec![0f32; CONTEXT] })
     }
 
-    /// Speech probability per frame.
-    pub fn probabilities(&mut self, samples: &[f32]) -> Result<Vec<f32>, String> {
-        let mut state = Array3::<f32>::zeros((2, 1, 128));
-        let mut context = vec![0f32; CONTEXT];
+    /// Forget the stream so far.
+    pub fn reset(&mut self) {
+        self.state.fill(0.0);
+        self.context.fill(0.0);
+    }
+
+    /// The speech probability of the next frame of a stream ([`FRAME`] samples;
+    /// conversation mode, step V4).
+    pub fn step(&mut self, frame: &[f32]) -> Result<f32, String> {
+        let mut x = Vec::with_capacity(CONTEXT + FRAME);
+        x.extend_from_slice(&self.context);
+        x.extend_from_slice(frame);
+        self.context.copy_from_slice(&x[x.len() - CONTEXT..]);
+        let input = Array2::from_shape_vec((1, CONTEXT + FRAME), x).map_err(err)?;
         let sr = Array1::from_vec(vec![16_000i64]);
-        let mut out = Vec::with_capacity(samples.len() / FRAME);
-        for frame in samples.chunks_exact(FRAME) {
-            let mut x = Vec::with_capacity(CONTEXT + FRAME);
-            x.extend_from_slice(&context);
-            x.extend_from_slice(frame);
-            context.copy_from_slice(&x[x.len() - CONTEXT..]);
-            let input = Array2::from_shape_vec((1, CONTEXT + FRAME), x).map_err(err)?;
-            let r = self
-                .session
-                .run(inputs![
-                    "input" => TensorRef::from_array_view(input.view()).map_err(err)?,
-                    "state" => TensorRef::from_array_view(state.view()).map_err(err)?,
-                    "sr" => TensorRef::from_array_view(sr.view().into_shape_with_order(()).map_err(err)?).map_err(err)?,
-                ])
-                .map_err(err)?;
-            let (_, p) = r["output"].try_extract_tensor::<f32>().map_err(err)?;
-            out.push(p.first().copied().unwrap_or(0.0));
-            state = r["stateN"].try_extract_array::<f32>().map_err(err)?.to_owned().into_dimensionality().map_err(err)?;
-        }
-        Ok(out)
+        let r = self
+            .session
+            .run(inputs![
+                "input" => TensorRef::from_array_view(input.view()).map_err(err)?,
+                "state" => TensorRef::from_array_view(self.state.view()).map_err(err)?,
+                "sr" => TensorRef::from_array_view(sr.view().into_shape_with_order(()).map_err(err)?).map_err(err)?,
+            ])
+            .map_err(err)?;
+        let (_, p) = r["output"].try_extract_tensor::<f32>().map_err(err)?;
+        let p = p.first().copied().unwrap_or(0.0);
+        self.state = r["stateN"].try_extract_array::<f32>().map_err(err)?.to_owned().into_dimensionality().map_err(err)?;
+        Ok(p)
+    }
+
+    /// Speech probability per frame of a whole clip.
+    pub fn probabilities(&mut self, samples: &[f32]) -> Result<Vec<f32>, String> {
+        self.reset();
+        samples.chunks_exact(FRAME).map(|f| self.step(f)).collect()
     }
 }
 

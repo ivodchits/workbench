@@ -2,6 +2,10 @@
 // speech to text runs, its download, whether a transcript goes to Duck at once, and
 // a check on a WAV file. The model downloads on first use; nothing ships with the
 // app. The prefs live in `voiceState.ts`, which hands them to the backend.
+//
+// Step V4: what the key does (conversation mode, or one message), how patient
+// conversation mode is with pauses, talking over Duck, its auto-off, the chime,
+// and the reply window after an announcement.
 
 import { useCallback, useEffect, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
@@ -12,7 +16,9 @@ import {
   voiceStatus,
   voiceTranscribeWav,
   type DownloadProgress,
+  type EchoPref,
   type GpuPref,
+  type Patience,
   type Transcript,
   type VoiceStatus,
 } from "../../ipc/voice";
@@ -97,13 +103,78 @@ export default function VoiceSettings() {
       <label style={{ ...row, alignItems: "center" }}>
         <span style={{ flex: "0 0 auto" }}>The key and the mic button</span>
         <select
-          value={prefs.toggle ? "toggle" : "hold"}
-          onChange={(e) => setVoicePrefs({ toggle: e.target.value === "toggle" })}
+          value={prefs.press === "conversation" ? "conversation" : prefs.toggle ? "toggle" : "hold"}
+          onChange={(e) => {
+            const v = e.target.value;
+            setVoicePrefs(v === "conversation" ? { press: "conversation" } : { press: "dictation", toggle: v === "toggle" });
+          }}
           style={{ ...select, flex: 1, minWidth: 0 }}
         >
-          <option value="toggle">press to start, press again to send</option>
-          <option value="hold">hold to talk, let go to send</option>
+          <option value="conversation">conversation mode on and off</option>
+          <option value="toggle">one message: press to start, press again to send</option>
+          <option value="hold">one message: hold to talk, let go to send</option>
         </select>
+      </label>
+      {prefs.press === "conversation" && (
+        <div style={{ ...hint, paddingLeft: 2 }}>
+          In conversation mode you just talk: Duck answers when you finish, then listens again. Say
+          &quot;wait&quot; to hold your turn open, &quot;that&apos;s it&quot; to send it now, &quot;stop&quot; to cut Duck
+          off, and &quot;that&apos;s all for now&quot; to end.
+        </div>
+      )}
+      <label style={{ ...row, alignItems: "center" }}>
+        <span style={{ flex: "0 0 auto" }}>Pauses</span>
+        <select
+          value={prefs.patience}
+          onChange={(e) => setVoicePrefs({ patience: e.target.value as Patience })}
+          style={{ ...select, flex: 1, minWidth: 0 }}
+        >
+          <option value="quick">quick: answer as soon as you stop (commands)</option>
+          <option value="patient">patient: wait out short pauses (chat)</option>
+          <option value="thinking">thinking aloud: wait out long pauses (rubber duck)</option>
+        </select>
+      </label>
+      <label style={{ ...row, alignItems: "center" }}>
+        <span style={{ flex: "0 0 auto" }}>Talking over Duck</span>
+        <select
+          value={prefs.echo}
+          onChange={(e) => setVoicePrefs({ echo: e.target.value as EchoPref })}
+          style={{ ...select, flex: 1, minWidth: 0 }}
+          title="On speakers the microphone hears Duck's own voice, so until echo cancellation comes, Duck doesn't listen while it speaks there."
+        >
+          <option value="auto">with headphones (by the output in use)</option>
+          <option value="full">always (headphones only, really)</option>
+          <option value="half">never: Duck doesn&apos;t listen while it speaks</option>
+        </select>
+      </label>
+      <label style={{ ...row, alignItems: "center" }}>
+        <span style={{ flex: "0 0 auto" }}>Turn off after</span>
+        <select
+          value={prefs.autoOffMin}
+          onChange={(e) => setVoicePrefs({ autoOffMin: Number(e.target.value) })}
+          style={select}
+        >
+          {[2, 5, 10, 20, 60].map((m) => (
+            <option key={m} value={m}>
+              {m} minutes of quiet
+            </option>
+          ))}
+        </select>
+      </label>
+      <label style={row}>
+        <input type="checkbox" checked={prefs.cue} onChange={(e) => setVoicePrefs({ cue: e.target.checked })} />
+        <span>A soft chime when your turn goes to Duck</span>
+      </label>
+      <label style={row}>
+        <input
+          type="checkbox"
+          checked={prefs.replyWindow}
+          onChange={(e) => setVoicePrefs({ replyWindow: e.target.checked })}
+        />
+        <span>
+          Listen for a reply after Duck announces something
+          <span style={hint}> (8 seconds; &quot;yes, read it&quot;)</span>
+        </span>
       </label>
       <label style={{ ...row, alignItems: "center" }}>
         <span style={{ flex: "0 0 auto" }}>Microphone</span>

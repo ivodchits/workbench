@@ -322,6 +322,30 @@ impl TtsState {
         kept.iter().find(|(k, _, at)| k == id && at.elapsed() < RENDERED_TTL).map(|(_, w, _)| Arc::clone(w))
     }
 
+    /// Duck's voice is coming out of the speakers now (conversation mode, step V4,
+    /// doesn't listen to it). A cue isn't a voice.
+    pub fn voice_active(&self) -> bool {
+        self.current.load(Ordering::SeqCst) != 0 && self.player.is_playing()
+    }
+
+    /// The soft cue for "heard you, answering" (step V4): a short, quiet two-note
+    /// chime, played behind anything queued.
+    pub fn cue(&self) {
+        const RATE: u32 = 24_000;
+        let note = |freq: f32, ms: usize| {
+            let n = RATE as usize * ms / 1000;
+            (0..n).map(move |i| {
+                let t = i as f32 / RATE as f32;
+                let fade = (i.min(n - i) as f32 / (RATE as f32 * 0.008)).min(1.0);
+                0.06 * fade * (2.0 * std::f32::consts::PI * freq * t).sin()
+            })
+        };
+        let pcm: Vec<f32> = note(660.0, 70).chain(note(880.0, 90)).collect();
+        if let Err(e) = self.player.push(&pcm, RATE) {
+            eprintln!("tts: the cue didn't play: {e}");
+        }
+    }
+
     /// Start the sidecar in the background if replies will be spoken.
     pub fn warm_if_wanted(&self) {
         let c = self.config.lock().map(|c| c.clone()).unwrap_or_default();

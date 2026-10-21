@@ -169,8 +169,13 @@ export type ClientMessage =
       text: string;
       source: Source;
       effort?: Effort;
+      /** Conversation mode (step V4): start now, keep only on `turn.commit`. */
+      provisional?: boolean;
     }
   | { type: "stop"; threadId: string }
+  /** A provisional turn stands, or is dropped (you went on talking). */
+  | { type: "turn.commit"; threadId: string }
+  | { type: "turn.withdraw"; threadId: string }
   | {
       type: "confirm";
       threadId: string;
@@ -239,6 +244,10 @@ export type DuckEvent =
   | { type: "message"; message: StoredMessage }
   /** Reply text as it streams; the full message follows as `message`. */
   | { type: "delta"; threadId: string; text: string }
+  /** A provisional turn started (step V4): its message isn't kept yet. */
+  | { type: "provisional"; threadId: string; text: string; source: Source }
+  /** A provisional turn was dropped: forget its streamed text. */
+  | { type: "withdrawn"; threadId: string }
   | {
       type: "tool";
       threadId: string;

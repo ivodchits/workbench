@@ -9,6 +9,8 @@
 //! - **Parakeet** from `istupakov/parakeet-tdt-0.6b-v3-onnx` at a pinned commit: the
 //!   int8 encoder and decoder for the CPU (~670 MB), fp32 for the GPU (~2.5 GB).
 //! - **Silero VAD** v6.2.1, the model X0 measured.
+//! - **Smart Turn** v3.2 (fp32) for conversation mode (step V4), from
+//!   `pipecat-ai/smart-turn-v3` at a pinned commit.
 //!
 //! A download goes to `<file>.part` and resumes from there (HTTP `Range`), and only
 //! a file whose hash matches is renamed into place. A file already in place is
@@ -61,6 +63,15 @@ pub const FP32: &[Asset] = &[
     hf!("encoder-model.onnx.data", 2_435_420_160, "9a22d372c51455c34f13405da2520baefb7125bd16981397561423ed32d24f36"),
     hf!("decoder_joint-model.onnx", 72_520_893, "e978ddf6688527182c10fde2eb4b83068421648985ef23f7a86be732be8706c1"),
 ];
+
+/// Conversation mode's turn detector (step V4), fp32 (see `turn.rs` for why not
+/// int8). Not needed for push-to-talk, so a missing one doesn't stop it.
+pub const TURN: &[Asset] = &[Asset {
+    path: "smart-turn-v3.2-gpu.onnx",
+    url: "https://huggingface.co/pipecat-ai/smart-turn-v3/resolve/f766f81d3cfdf7737ac64aad813d91bbfd56bf93/smart-turn-v3.2-gpu.onnx",
+    size: 32_411_198,
+    sha256: "ab8dc64b88713f90b571c15b714bd1330e6c883cad8763dacf65c9376dc539be",
+}];
 
 /// The wheel the runtime comes from, and the files taken out of it.
 pub const RUNTIME_WHEEL: Asset = Asset {
@@ -187,7 +198,7 @@ mod tests {
 
     #[test]
     fn the_pins_are_consistent() {
-        for a in COMMON.iter().chain(INT8).chain(FP32) {
+        for a in COMMON.iter().chain(INT8).chain(FP32).chain(TURN) {
             assert_eq!(a.sha256.len(), 64, "{}", a.path);
             if a.url.contains("istupakov") {
                 assert!(a.path.starts_with(PARAKEET_DIR) && a.url.ends_with(a.path.trim_start_matches("parakeet-tdt-0.6b-v3/")));

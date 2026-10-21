@@ -64,6 +64,7 @@ export function runAction(command: CommandId, arg?: number): void {
     case "toggleAssistant":
     case "toggleTrust":
     case "toggleSpeak":
+    case "toggleConversation":
     case "pluginsReload":
     case "pluginsEdit":
     case "gitRefresh":

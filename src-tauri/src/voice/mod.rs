@@ -31,9 +31,17 @@
 //!
 //! Step V3: [`screen`], Duck's screenshots. Step V5: [`presence`], whether you're at
 //! the PC, for Duck's announcements.
+//!
+//! Step V4: [`conversation`], hands-free. By default the push-to-talk key turns it
+//! on and off (`press: conversation`); `press: dictation` keeps the key for one
+//! dictation as above. Its turn detector is [`turn`], and [`endpoint`] says whether
+//! the output is headphones. After a spoken announcement the webview opens a short
+//! reply window through the same pipeline ([`voice_reply_window`]).
 
 pub mod assets;
 pub mod capture;
+pub mod conversation;
+pub mod endpoint;
 pub mod engine;
 pub mod overlay;
 pub mod parakeet;
@@ -42,10 +50,11 @@ pub mod presence;
 pub mod screen;
 pub mod sidecar;
 pub mod tts;
+pub mod turn;
 pub mod vad;
 
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -76,6 +85,31 @@ pub struct VoiceConfig {
     /// A press starts and the next press stops; off, it's held.
     #[serde(default)]
     pub toggle: bool,
+    /// What the key does (step V4): conversation mode on and off, or one dictation.
+    #[serde(default)]
+    pub press: Press,
+    #[serde(default)]
+    pub patience: conversation::Patience,
+    #[serde(default)]
+    pub echo: conversation::EchoPref,
+    /// Conversation mode turns itself off after this many quiet minutes.
+    #[serde(default = "five")]
+    pub auto_off_min: u32,
+    /// A soft cue when a turn goes to Duck.
+    #[serde(default)]
+    pub cue: bool,
+}
+
+fn five() -> u32 {
+    5
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Press {
+    #[default]
+    Conversation,
+    Dictation,
 }
 
 /// Tauri-managed.
@@ -87,6 +121,9 @@ pub struct VoiceState {
     hotkey: Mutex<Option<String>>,
     /// A recording in progress, and when it began.
     recording: Mutex<Option<(capture::Recorder, Instant)>>,
+    /// Conversation mode or a reply window, while one runs (step V4).
+    conversation: Mutex<Option<conversation::Handle>>,
+    runs: AtomicU64,
 }
 
 impl VoiceState {
@@ -99,6 +136,8 @@ impl VoiceState {
             config: Mutex::new(VoiceConfig::default()),
             hotkey: Mutex::new(None),
             recording: Mutex::new(None),
+            conversation: Mutex::new(None),
+            runs: AtomicU64::new(0),
         }
     }
 
@@ -138,25 +177,91 @@ fn toggles(app: &AppHandle) -> bool {
         .unwrap_or(false)
 }
 
-/// The key went down: in toggle mode it starts or stops, else it starts.
+fn presses(app: &AppHandle) -> Press {
+    app.try_state::<VoiceState>()
+        .and_then(|s| s.config.lock().ok().map(|c| c.press))
+        .unwrap_or_default()
+}
+
+/// The key went down: conversation mode on or off; or, for dictation, in toggle
+/// mode it starts or stops, else it starts.
 fn key_down(app: &AppHandle) {
-    if toggles(app) && recording(app) {
+    if presses(app) == Press::Conversation {
+        let on = conversing(app) == Some(conversation::Kind::Mode);
+        set_conversation(app, !on);
+    } else if toggles(app) && recording(app) {
         release(app)
     } else {
         press(app)
     }
 }
 
-/// The key came up: it stops, unless in toggle mode.
+/// The key came up: a held dictation stops.
 fn key_up(app: &AppHandle) {
-    if !toggles(app) {
+    if presses(app) == Press::Dictation && !toggles(app) {
         release(app)
     }
+}
+
+/// What's running: the mode, a reply window, or nothing.
+fn conversing(app: &AppHandle) -> Option<conversation::Kind> {
+    let s = app.try_state::<VoiceState>()?;
+    let c = s.conversation.lock().ok()?;
+    c.as_ref().map(|h| h.kind)
+}
+
+/// Start conversation mode or a reply window, replacing whatever runs (the
+/// window gives way to the mode); stop it with `None`.
+fn run_conversation(app: &AppHandle, kind: Option<conversation::Kind>) {
+    let Some(s) = app.try_state::<VoiceState>() else { return };
+    let Ok(mut slot) = s.conversation.lock() else { return };
+    if let Some(old) = slot.take() {
+        let _ = old.cmds.send(conversation::Cmd::Stop);
+    }
+    let Some(kind) = kind else { return };
+    // One microphone user at a time: a dictation in progress is dropped.
+    if let Some(rec) = s.recording.lock().ok().and_then(|mut r| r.take()) {
+        let _ = rec.0.stop();
+        say(app, "idle", None);
+    }
+    let c = s.config.lock().map(|c| c.clone()).unwrap_or_default();
+    let settings = conversation::Settings {
+        gpu: c.gpu,
+        device: c.device.clone(),
+        patience: c.patience,
+        echo: c.echo,
+        auto_off: Duration::from_secs(60 * c.auto_off_min.max(1) as u64),
+        cue: c.cue,
+    };
+    let run = s.runs.fetch_add(1, Ordering::SeqCst) + 1;
+    let done_app = app.clone();
+    let cmds = conversation::start(app.clone(), Arc::clone(&s.engine), settings, kind, run, move || {
+        // Ended by itself, or stopped: forget it, unless another took its place.
+        let Some(s) = done_app.try_state::<VoiceState>() else { return false };
+        let Ok(mut slot) = s.conversation.lock() else { return false };
+        match slot.as_ref() {
+            Some(h) if h.run == run => {
+                *slot = None;
+                true
+            }
+            Some(_) => false,
+            None => !recording(&done_app),
+        }
+    });
+    *slot = Some(conversation::Handle { cmds, kind, run });
+}
+
+fn set_conversation(app: &AppHandle, on: bool) {
+    run_conversation(app, on.then_some(conversation::Kind::Mode));
 }
 
 /// Start recording (the key went down). A second press while recording is ignored.
 fn press(app: &AppHandle) {
     let Some(s) = app.try_state::<VoiceState>() else { return };
+    // A dictation takes the microphone from conversation mode.
+    if conversing(app).is_some() {
+        run_conversation(app, None);
+    }
     let Ok(mut rec) = s.recording.lock() else { return };
     if rec.is_some() {
         return;
@@ -273,6 +378,27 @@ pub fn voice_toggle(app: AppHandle) {
     }
 }
 
+/// Conversation mode on or off (the drawer's toggle, `toggleConversation`).
+#[tauri::command]
+pub fn voice_conversation(app: AppHandle, on: bool) {
+    set_conversation(&app, on);
+}
+
+/// Whether conversation mode is on (not a reply window).
+#[tauri::command]
+pub fn voice_conversation_on(app: AppHandle) -> bool {
+    conversing(&app) == Some(conversation::Kind::Mode)
+}
+
+/// Listen for a reply for `secs` after an announcement (V5's reply window).
+/// Nothing when conversation mode is on (it listens anyway) or a dictation runs.
+#[tauri::command]
+pub fn voice_reply_window(app: AppHandle, secs: u32) {
+    if conversing(&app).is_none() && !recording(&app) {
+        run_conversation(&app, Some(conversation::Kind::Window(Duration::from_secs(secs.clamp(3, 30) as u64))));
+    }
+}
+
 /// The microphones, for the settings.
 #[tauri::command]
 pub fn voice_devices() -> Vec<String> {
@@ -304,9 +430,10 @@ pub struct VoiceStatus {
 }
 
 /// What the preference needs: the GPU's files and the CPU's, unless the GPU is
-/// never used (the CPU is the fallback either way).
+/// never used (the CPU is the fallback either way), and conversation mode's turn
+/// detector.
 fn needed(pref: GpuPref) -> Vec<&'static [assets::Asset]> {
-    let mut sets = vec![assets::COMMON, assets::INT8];
+    let mut sets = vec![assets::COMMON, assets::INT8, assets::TURN];
     if pref != GpuPref::Never {
         sets.push(assets::FP32);
     }

@@ -4,6 +4,9 @@
 //! The stream lives on a thread of its own (cpal streams can't move between
 //! threads on Windows), and only between `start` and `stop`, so Windows shows the
 //! microphone as in use only while the key is held.
+//!
+//! Conversation mode (step V4) [`listen`]s instead: the same mix-down, resampled a
+//! block at a time ([`StreamResampler`]) and handed over as it comes.
 
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
@@ -125,36 +128,180 @@ impl Recorder {
 /// Half the windowed-sinc kernel, in input samples (at the output's cutoff).
 const TAPS: i64 = 16;
 
+/// The resampler's kernel for one rate change.
+#[derive(Clone, Copy)]
+struct Kernel {
+    ratio: f64,
+    cutoff: f64,
+    half: i64,
+}
+
+impl Kernel {
+    fn new(from: u32, to: u32) -> Self {
+        let cutoff = (to as f64 / from as f64).min(1.0);
+        Self { ratio: from as f64 / to as f64, cutoff, half: (TAPS as f64 / cutoff).ceil() as i64 }
+    }
+
+    /// Output sample `i`, from input `x` that starts at absolute index `offset`.
+    fn sample(&self, i: usize, x: &[f32], offset: usize) -> f32 {
+        let t = i as f64 * self.ratio;
+        let center = t.floor() as i64;
+        let (mut acc, mut norm) = (0f64, 0f64);
+        for k in (center - self.half + 1)..=(center + self.half) {
+            let j = k - offset as i64;
+            if j < 0 || j as usize >= x.len() {
+                continue;
+            }
+            let d = t - k as f64;
+            let arg = std::f64::consts::PI * d * self.cutoff;
+            let sinc = if d.abs() < 1e-9 { 1.0 } else { arg.sin() / arg };
+            let w = d / self.half as f64; // −1..1 across the kernel
+            let win = 0.42 + 0.5 * (std::f64::consts::PI * w).cos() + 0.08 * (2.0 * std::f64::consts::PI * w).cos();
+            let h = sinc * win;
+            acc += x[j as usize] as f64 * h;
+            norm += h;
+        }
+        if norm.abs() > 1e-9 {
+            (acc / norm) as f32
+        } else {
+            0.0
+        }
+    }
+}
+
 /// Windowed-sinc resampling (Blackman window), low-passed at the lower Nyquist.
 pub fn resample(x: &[f32], from: u32, to: u32) -> Vec<f32> {
     if from == to || x.is_empty() {
         return x.to_vec();
     }
-    let ratio = from as f64 / to as f64;
-    let cutoff = (to as f64 / from as f64).min(1.0);
-    let n_out = (x.len() as f64 / ratio).floor() as usize;
-    let half = (TAPS as f64 / cutoff).ceil() as i64;
-    let mut out = Vec::with_capacity(n_out);
-    for i in 0..n_out {
-        let t = i as f64 * ratio;
-        let center = t.floor() as i64;
-        let (mut acc, mut norm) = (0f64, 0f64);
-        for k in (center - half + 1)..=(center + half) {
-            if k < 0 || k as usize >= x.len() {
-                continue;
-            }
-            let d = t - k as f64;
-            let arg = std::f64::consts::PI * d * cutoff;
-            let sinc = if d.abs() < 1e-9 { 1.0 } else { arg.sin() / arg };
-            let w = d / half as f64; // −1..1 across the kernel
-            let win = 0.42 + 0.5 * (std::f64::consts::PI * w).cos() + 0.08 * (2.0 * std::f64::consts::PI * w).cos();
-            let h = sinc * win;
-            acc += x[k as usize] as f64 * h;
-            norm += h;
-        }
-        out.push(if norm.abs() > 1e-9 { (acc / norm) as f32 } else { 0.0 });
+    let k = Kernel::new(from, to);
+    let n_out = (x.len() as f64 / k.ratio).floor() as usize;
+    (0..n_out).map(|i| k.sample(i, x, 0)).collect()
+}
+
+/// [`resample`] a block at a time, for a stream (step V4). Each output sample is
+/// made once the input its kernel reaches has arrived, so the stream comes out as
+/// resampling it whole would give (bar the very end, still waiting for input).
+pub struct StreamResampler {
+    kernel: Kernel,
+    passthrough: bool,
+    /// Input from absolute index `offset` on.
+    buf: Vec<f32>,
+    offset: usize,
+    next: usize,
+}
+
+impl StreamResampler {
+    pub fn new(from: u32, to: u32) -> Self {
+        Self { kernel: Kernel::new(from, to), passthrough: from == to, buf: Vec::new(), offset: 0, next: 0 }
     }
-    out
+
+    /// Take a block of input; return the output it completes.
+    pub fn push(&mut self, x: &[f32]) -> Vec<f32> {
+        if self.passthrough {
+            return x.to_vec();
+        }
+        self.buf.extend_from_slice(x);
+        let k = self.kernel;
+        let have = (self.offset + self.buf.len()) as i64;
+        let mut out = Vec::new();
+        while (self.next as f64 * k.ratio).floor() as i64 + k.half < have {
+            out.push(k.sample(self.next, &self.buf, self.offset));
+            self.next += 1;
+        }
+        // Keep only what the next sample's kernel still reaches.
+        let keep_from = ((self.next as f64 * k.ratio).floor() as i64 - k.half + 1).max(0) as usize;
+        if keep_from > self.offset {
+            self.buf.drain(..keep_from - self.offset);
+            self.offset = keep_from;
+        }
+        out
+    }
+}
+
+/// Conversation mode's open microphone (step V4): 16 kHz mono blocks as they come,
+/// until it's dropped. Windows shows the microphone in use while it lives.
+pub struct Listener {
+    stop: Option<mpsc::Sender<()>>,
+    thread: Option<JoinHandle<()>>,
+    pub blocks: mpsc::Receiver<Vec<f32>>,
+}
+
+impl Drop for Listener {
+    fn drop(&mut self) {
+        drop(self.stop.take());
+        if let Some(t) = self.thread.take() {
+            let _ = t.join();
+        }
+    }
+}
+
+/// Open `device_name` (the default input when None or not found) and stream it.
+pub fn listen(device_name: Option<String>) -> Result<Listener, String> {
+    let (stop, stopped) = mpsc::channel::<()>();
+    let (blocks_tx, blocks) = mpsc::channel::<Vec<f32>>();
+    let (ready_tx, ready) = mpsc::channel::<Result<(), String>>();
+    let thread = std::thread::Builder::new()
+        .name("voice-listen".into())
+        .spawn(move || {
+            let opened = (|| {
+                let dev = device(device_name.as_deref())?;
+                let supported = dev.default_input_config().map_err(|e| e.to_string())?;
+                let config: StreamConfig = supported.config();
+                let channels = config.channels.max(1) as usize;
+                let mut rs = StreamResampler::new(config.sample_rate.0, RATE);
+                let mut mono = Vec::new();
+                let mut send = move |frames: &mut dyn Iterator<Item = f32>| {
+                    mono.clear();
+                    mono.extend(frames);
+                    let out = rs.push(&mono);
+                    if !out.is_empty() {
+                        let _ = blocks_tx.send(out);
+                    }
+                };
+                let on_err = |e: cpal::StreamError| eprintln!("[voice] listen: {e}");
+                let stream = match supported.sample_format() {
+                    SampleFormat::F32 => dev.build_input_stream(
+                        &config,
+                        move |d: &[f32], _: &_| send(&mut d.chunks(channels).map(|f| f.iter().sum::<f32>() / channels as f32)),
+                        on_err,
+                        None,
+                    ),
+                    SampleFormat::I16 => dev.build_input_stream(
+                        &config,
+                        move |d: &[i16], _: &_| {
+                            send(&mut d.chunks(channels).map(|f| f.iter().map(|&s| s as f32 / 32768.0).sum::<f32>() / channels as f32))
+                        },
+                        on_err,
+                        None,
+                    ),
+                    f => return Err(format!("the microphone's sample format {f:?} isn't supported")),
+                }
+                .map_err(|e| e.to_string())?;
+                stream.play().map_err(|e| e.to_string())?;
+                Ok(stream)
+            })();
+            match opened {
+                Ok(stream) => {
+                    let _ = ready_tx.send(Ok(()));
+                    // Until the listener is dropped (its sender with it).
+                    let _ = stopped.recv();
+                    drop(stream);
+                }
+                Err(e) => {
+                    let _ = ready_tx.send(Err(e));
+                }
+            }
+        })
+        .map_err(|e| e.to_string())?;
+    match ready.recv() {
+        Ok(Ok(())) => Ok(Listener { stop: Some(stop), thread: Some(thread), blocks }),
+        Ok(Err(e)) => {
+            let _ = thread.join();
+            Err(e)
+        }
+        Err(_) => Err("the microphone thread ended".into()),
+    }
 }
 
 #[cfg(test)]
@@ -181,5 +328,37 @@ mod tests {
         // 44.1 kHz too.
         assert_eq!(resample(&sine(500.0, 44_100, 1.0), 44_100, 16_000).len(), 16_000);
         assert_eq!(resample(&[0.5, 0.25], 16_000, 16_000), vec![0.5, 0.25]);
+    }
+
+    /// The default microphone, streamed for a second (`cargo test listens -- --ignored
+    /// --nocapture`): blocks come at 16 kHz, and it closes when dropped.
+    #[test]
+    #[ignore]
+    fn listens_to_the_microphone() {
+        let mic = listen(None).unwrap();
+        let t = std::time::Instant::now();
+        let mut got = 0usize;
+        while t.elapsed() < Duration::from_secs(1) {
+            if let Ok(b) = mic.blocks.recv_timeout(Duration::from_millis(200)) {
+                got += b.len();
+            }
+        }
+        drop(mic);
+        println!("{got} samples in a second");
+        assert!((14_000..18_000).contains(&got), "{got}");
+    }
+
+    #[test]
+    fn streaming_gives_what_resampling_at_once_gives() {
+        let x = sine(700.0, 48_000, 0.5);
+        let whole = resample(&x, 48_000, 16_000);
+        let mut rs = StreamResampler::new(48_000, 16_000);
+        // Blocks of odd sizes, as a sound card hands them over.
+        let out: Vec<f32> = x.chunks(441).flat_map(|b| rs.push(b)).collect();
+        // All but the last kernel's worth, which waits for input that never came.
+        assert!(whole.len() - out.len() <= 20, "{} of {}", out.len(), whole.len());
+        for (a, b) in out.iter().zip(&whole) {
+            assert!((a - b).abs() < 1e-5);
+        }
     }
 }

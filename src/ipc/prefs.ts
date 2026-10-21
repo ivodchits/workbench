@@ -60,6 +60,17 @@ export interface Prefs {
     /** Push-to-talk toggles (2026-10-21): a press starts, the next press stops. Off,
      *  it's held. */
     toggle: boolean;
+    /** Step V4: what the key (and the drawer's mic) does: conversation mode on and
+     *  off, or one dictation. */
+    press: "conversation" | "dictation";
+    /** How long a pause ends a turn in conversation mode. */
+    patience: "quick" | "patient" | "thinking";
+    /** Talking over Duck: by the output, or forced. */
+    echo: "auto" | "full" | "half";
+    autoOffMin: number;
+    cue: boolean;
+    /** Listen for a reply after a spoken announcement (V5's reply window). */
+    replyWindow: boolean;
   };
   /** Read-aloud positions (step V3): source key → where it stopped. */
   readAloud: Record<string, ReadPosition>;
