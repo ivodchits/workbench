@@ -40,6 +40,7 @@
       <header>
         <h1>Workbench</h1>
         <span id="conn" class="muted">connecting…</span>
+        <button id="duckBtn" type="button">duck</button>
         <button id="newBtn" class="hidden" type="button">+ new session</button>
       </header>
 
@@ -136,6 +137,89 @@
           <button id="tx-stop" class="hidden" type="button">stop</button>
           <button id="tx-send" type="button">send</button>
         </div>
+      </div>
+    </div>
+
+    <!-- Duck (step R2): the chat with the mic, spoken replies and the ASCII duck;
+         the thread list, the trust decisions and the phone's settings in its place. -->
+    <div id="duck-overlay" class="hidden">
+      <div id="duck-head">
+        <button id="duck-close" type="button" aria-label="close">✕</button>
+        <button id="duck-thread" class="title" type="button">new thread ▾</button>
+        <span id="duck-conn" class="muted"></span>
+        <button id="duck-trust" class="hidden" type="button">⏸ trust</button>
+        <button id="duck-menu" type="button" aria-label="settings">⋯</button>
+      </div>
+      <canvas id="duck-avatar" aria-hidden="true"></canvas>
+
+      <div id="duck-chat">
+        <div id="duck-scroll">
+          <div id="duck-list"></div>
+          <div id="duck-stream" class="wb-md duck-reply"></div>
+          <div id="duck-status" class="muted" aria-live="polite"></div>
+        </div>
+      </div>
+
+      <div id="duck-threads" class="hidden duck-panel">
+        <button id="duck-new" type="button">+ new thread</button>
+        <div id="duck-thread-list"></div>
+      </div>
+
+      <div id="duck-decisions" class="hidden duck-panel">
+        <div class="duck-panel-head">
+          <button class="duck-back" type="button">‹ chat</button>
+          <span class="title">trust</span>
+        </div>
+        <p id="duck-trust-line" class="muted"></p>
+        <button id="duck-pause" class="hidden" type="button">⏸ pause trust</button>
+        <div id="duck-decision-list"></div>
+        <button id="duck-older" class="hidden" type="button">older</button>
+      </div>
+
+      <div id="duck-settings" class="hidden duck-panel">
+        <div class="duck-panel-head">
+          <button class="duck-back" type="button">‹ chat</button>
+          <span class="title">Duck on this phone</span>
+        </div>
+        <button id="duck-decisions-btn" type="button">trust decisions…</button>
+        <div class="muted">speak replies</div>
+        <div class="duck-seg">
+          <button type="button" data-pref="speak=voice">to what I say</button>
+          <button type="button" data-pref="speak=always">always</button>
+          <button type="button" data-pref="speak=off">never</button>
+        </div>
+        <div class="muted">voice</div>
+        <div class="duck-seg">
+          <button type="button" data-pref="voice=desktop">the desktop’s</button>
+          <button type="button" data-pref="voice=phone">this phone’s</button>
+        </div>
+        <div class="muted">what I say</div>
+        <div class="duck-seg">
+          <button type="button" data-pref="sendNow=true">sends at once</button>
+          <button type="button" data-pref="sendNow=false">goes in the box</button>
+        </div>
+        <div class="muted">the duck</div>
+        <div class="duck-seg">
+          <button type="button" data-pref="duck=true">shown</button>
+          <button type="button" data-pref="duck=false">hidden</button>
+        </div>
+        <p class="muted">Settings, rules and resuming trust are on the desktop.</p>
+      </div>
+
+      <div id="duck-dock">
+        <div id="duck-asks" class="hidden"></div>
+        <div id="duck-error" class="hidden">
+          <span id="duck-error-text"></span>
+          <button id="duck-error-close" type="button" aria-label="dismiss">✕</button>
+        </div>
+        <div id="duck-voice" class="hidden" aria-live="polite"></div>
+        <div id="duck-composer">
+          <button id="duck-mic" type="button" aria-label="talk to Duck">mic</button>
+          <textarea id="duck-text" rows="1" placeholder="ask Duck…" enterkeyhint="enter"></textarea>
+          <button id="duck-stop" class="hidden" type="button">stop</button>
+          <button id="duck-send" type="button">send</button>
+        </div>
+        <div id="duck-spend"></div>
       </div>
     </div>
 

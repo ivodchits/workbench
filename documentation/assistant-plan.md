@@ -3014,7 +3014,7 @@ and voiced text adventures as user-defined modes (S2).
 - **As built, part 1: the desktop (2026-10-20).** The phone (`GET
   /api/assistant/tts/<messageId>`, the per-surface setting) needs R1's assistant
   endpoints, which didn't exist yet, so it moved to R1/R2. R1 built the audio side
-  (see its As built); the per-surface setting and playback are the PWA's, in R2.
+  and R2 the playback and the per-surface setting (see their As built).
   - **The sidecar** (`voice/sidecar.rs`, `resources/voice-runtime/`):
     - `pyproject.toml` + `uv.lock` (kokoro-onnx 0.4.9, torch 2.8.0+cpu from
       PyTorch's CPU index, Python 3.12) are compiled into the app. "download" writes
@@ -3487,6 +3487,75 @@ and voiced text adventures as user-defined modes (S2).
 - **Done when:** from the phone over Funnel you can say "start a session in X to …", watch the
   reply stream, and approve a card.
 - **Out of scope:** offline queueing.
+- **As built (2026-10-21).** It includes the ASCII duck on the phone, and V2's phone
+  playback.
+  - **Where it is:** a "duck" button in the dashboard's header opens a full-screen
+    overlay (`src/pwa/duck.ts`, markup in `index.html`). The PWA has overlays, not tabs.
+    A push about a card opens it on that thread (`#duck=<thread>`, or the service
+    worker's `open-duck`). A session link in a reply, or a task's "open console", opens
+    that session's console over it.
+  - **The socket** (`/api/assistant`) is open only while the overlay is on screen and the
+    page is visible. So with the phone in a pocket the desktop counts no phone, and a
+    card is pushed (R1). On (re)connect: `sync`, then the open thread's history; a
+    `lagged` frame drops the streamed text and asks for the thread again.
+  - **The chat** (`duckStore.ts` folds the frames, as the drawer's `duckState.ts`
+    does): the desktop's `toItems` and markdown, so tool chips (expandable), task cards
+    (close, re-run, open console), note and toolbar edits (the diff; undo stays on the
+    desktop), notices, cards with allow / deny (and a link to a card waiting in
+    another thread), the spend line, a thread list with "+ new thread". The last thread
+    is remembered.
+  - **The mic** (`mic.ts`, `wav.ts`): tap to start and tap again to send, or hold and
+    let go. getUserMedia → an AudioWorklet (from a blob URL, since the page is one
+    file) → samples at the device's rate → averaged down to 16 kHz → WAV → `POST
+    /api/assistant/audio`, at most 59 s. The text is sent with `voice: true`, or goes
+    into the composer when "what I say: goes in the box" is chosen (then a send is
+    still marked spoken). Off on a page that isn't secure, with the reason.
+  - **Spoken replies** (`duckSpeech.ts`, `speechQueue.ts`):
+    - "speak replies": to what I say (the default) / always / never. "voice": the
+      desktop's (the default) / this phone's.
+    - The desktop's voice: the send carries `speak: true`. Each `tts` part is fetched
+      as it's announced and played after the one before (Web Audio). A part that can't
+      be had is said with `speechSynthesis` instead (`tts` frames now carry `text`).
+    - This phone's voice: the phone cuts the streaming reply with the desktop's
+      `Sentences` and says each with `speechSynthesis`.
+    - A send, the mic, stop or a tap on the duck hushes what's playing, and nothing
+      more of that reply is spoken.
+  - **The ASCII duck:** the drawer's canvas loop moved out of `DuckAvatar.tsx` into a
+    framework-free `duckCanvas.ts`, which both use. On the phone, in color, 56 columns,
+    20 fps, above the chat:
+    - it spins while Duck works and looks up while a card waits;
+    - it listens while you record, its beak on your voice's loudness;
+    - it talks while a reply plays, its beak on the playback loudness (the stand-in
+      rhythm with the phone's voice);
+    - it runs only while the overlay is visible. It can be hidden in the settings.
+  - **Trust:** the header's "⏸ trust" pauses it in one tap, the kill switch, and shows
+    the decisions: a read-only list, newest first, with "older". Resuming, rules and
+    Duck's settings stay on the desktop (R1 refuses them anyway).
+  - **Fixed on the way** (`remoteBridge.ts`): a tool's results are stored as a user
+    message (source `duck`), and the bridge took that for a new turn of yours. That
+    cancelled the speech of any reply that used a tool. Only `USER_SOURCES` count now
+    (a test covers it), and the same goes for the phone's own voice.
+  - **Verified:**
+    - Tests: `wav.test.ts` (downsampling, the WAV, the level), `duckStore.test.ts`
+      (streaming, adopting a new thread, cards, a lag, a deleted thread, decision
+      pages), `speechQueue.test.ts` (order when a later part loads first, the fallback
+      voice, stop), and the bridge's new case. 489 vitest and 243 Rust tests pass;
+      tsc and eslint are clean.
+    - The page grew 44 KB (14 KB gzipped), to 492 KB.
+    - **Live**, against the dev app: headless Edge as a 412 px phone, driven over CDP,
+      with a throwaway approved device that was removed afterwards. Its fake mic
+      played a recorded question.
+      - The duck drew.
+      - A typed question, spoken: parts at 2.8, 3.6 and 4.6 s after the send, played
+        back to back with no gap (2.8 s, then each as the one before ended).
+      - Dictation: tapping the mic, then tapping again 7 s later, sent the question
+        transcribed word for word. That took 2.9 s cold and 0.4 s warm, stored as
+        `phone-voice`. Its reply, after a `list_sessions` call, was spoken (the fix
+        above; before it, no parts came).
+      - A `test_confirm` card was allowed from the phone and the turn went on; a stop
+        went idle 30 ms after the tap; the decisions listed.
+  - **Not verified:** a real phone over Funnel (the mic's permission prompt, iOS audio
+    unlocking, the push opening Duck), and "start a session in X to …" spoken from one.
 
 #### Step R3 — The PWA as an app: shortcuts, share target, Duck start view
 
@@ -5122,7 +5191,7 @@ T2 goes live after the replay check in its done-when (the past week's prompts th
 | S1 | Modes: chat and rubber duck | ☐ |
 | S2 | Skills and user-defined modes | ☐ |
 | R1 | Assistant endpoints on the remote server | ☑ |
-| R2 | PWA Assistant tab with mic | ☐ |
+| R2 | PWA Assistant tab with mic | ☑ (a real phone not tried yet) |
 | R3 | The PWA as an app: shortcuts, share target, Duck start view | ☐ |
 | R4 | Android companion app (gate: R3 sees real use) | ☐ |
 | T1 | Trust engine for the Assistant's own actions | ☑ |

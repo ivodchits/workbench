@@ -14,7 +14,7 @@
 //   are fixed as for the desktop's voice, the reply is written to be heard, and
 //   the desktop doesn't speak it.
 // - `speak`: the reply is cut into sentences as it streams, made speakable and
-//   rendered one at a time, in order, each told to that socket as `tts {part, id}`
+//   rendered one at a time, in order, each told to that socket as `tts {part, id, text}`
 //   as soon as it's made, so the phone plays sentence 1 while sentence 2 is made.
 //   When the reply is complete (idle, or parked on a confirmation), `ttsEnd`. A
 //   `speak` message also starts the voice engine, in case it went idle.
@@ -30,7 +30,7 @@ import {
   type AssistantRemoteInput,
 } from "../ipc/remote";
 import type { RemoteDuckFrame, RemoteDuckMessage } from "../remote/protocol";
-import { PROTOCOL_VERSION, type ClientMessage, type DuckEndpoint, type DuckEvent } from "./protocol";
+import { PROTOCOL_VERSION, USER_SOURCES, type ClientMessage, type DuckEndpoint, type DuckEvent } from "./protocol";
 import { langOf, Sentences, type Lang } from "./speakable";
 
 /** The longest message a phone may send. */
@@ -146,7 +146,10 @@ export function startRemoteBridge(d: BridgeDeps): () => void {
       try {
         const r = await d.render(p.text, p.lang);
         if (live(s))
-          d.link.emit({ type: "tts", threadId, reply: s.reply, part: s.parts++, id: r.id, seconds: r.seconds, v: PROTOCOL_VERSION }, s.conn);
+          d.link.emit(
+            { type: "tts", threadId, reply: s.reply, part: s.parts++, id: r.id, seconds: r.seconds, text: p.text, v: PROTOCOL_VERSION },
+            s.conn,
+          );
       } catch (err) {
         if (live(s))
           toPhone(s.conn, { type: "error", message: `Couldn't speak the reply: ${err instanceof Error ? err.message : String(err)}` });
@@ -169,8 +172,9 @@ export function startRemoteBridge(d: BridgeDeps): () => void {
     switch (e.type) {
       case "message": {
         const m = e.message;
-        if (m.role !== "user") break;
-        // A new turn: whatever was speaking here, you've moved on.
+        // A message of yours (not a tool's results, which are stored as the user's
+        // too): whatever was speaking here, you've moved on.
+        if (m.role !== "user" || !USER_SOURCES.has(m.source)) break;
         const old = speaking.get(m.threadId);
         if (old) old.stopped = true;
         speaking.delete(m.threadId);

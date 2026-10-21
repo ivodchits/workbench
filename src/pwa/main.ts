@@ -13,6 +13,7 @@ import "./style.css";
 import { initConsole, openConsole, updateConsole } from "./console";
 import { initDashboard } from "./dashboard";
 import { $ } from "./dom";
+import { initDuck, openDuck, takeLaunchThread } from "./duck";
 import { checkAccess, connect, forget, isPaired, pair } from "./net";
 import { initNewSession, openNewSession } from "./newSession";
 import { initNotes } from "./notes";
@@ -75,6 +76,10 @@ function showApp(): void {
   const newSession = initNewSession(openConsole);
   const notes = initNotes();
   initPush((id) => openConsole(id));
+  initDuck({ console: (id) => openConsole(id), refused: lostAccess });
+  // Opened by tapping a push about a card Duck waits on (step R2).
+  const duckThread = takeLaunchThread();
+  if (duckThread) openDuck(duckThread);
   // Opened by tapping a push (step R6): show that instance once it is known.
   let launch = takeLaunchInstance();
   connect({

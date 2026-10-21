@@ -131,21 +131,28 @@ export class ApiError extends Error {
   }
 }
 
+/** The device token as an `Authorization` header. */
+export function authHeader(): Record<string, string> {
+  return { Authorization: "Bearer " + (token ?? "") };
+}
+
 /** Call a data-plane endpoint with the device token: GET with `query`, or POST of
- *  `body` as JSON. Resolves with the parsed answer; throws `ApiError` on a refusal,
- *  and a plain error when the desktop can't be reached. */
+ *  `body` as JSON, or of `raw` bytes as `type`. Resolves with the parsed answer;
+ *  throws `ApiError` on a refusal, and a plain error when the desktop can't be
+ *  reached. */
 export async function api<T>(
   path: string,
-  opts: { query?: Record<string, string>; body?: unknown } = {},
+  opts: { query?: Record<string, string>; body?: unknown; raw?: Uint8Array<ArrayBuffer>; type?: string } = {},
 ): Promise<T> {
   const query = opts.query ? "?" + new URLSearchParams(opts.query).toString() : "";
+  const post = opts.body !== undefined || opts.raw !== undefined;
   const res = await fetch(path + query, {
-    method: opts.body === undefined ? "GET" : "POST",
+    method: post ? "POST" : "GET",
     headers: {
-      Authorization: "Bearer " + (token ?? ""),
-      ...(opts.body === undefined ? {} : { "Content-Type": "application/json" }),
+      ...authHeader(),
+      ...(opts.raw ? { "Content-Type": opts.type ?? "application/octet-stream" } : post ? { "Content-Type": "application/json" } : {}),
     },
-    body: opts.body === undefined ? undefined : JSON.stringify(opts.body),
+    body: opts.raw ?? (opts.body === undefined ? undefined : JSON.stringify(opts.body)),
     cache: "no-store",
   });
   const text = await res.text();

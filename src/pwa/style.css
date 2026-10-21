@@ -46,6 +46,7 @@ button:disabled { opacity: 0.5; }
 /* ── header / attention banner ─────────────────────────── */
 header { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 #conn { font-size: 12px; white-space: nowrap; margin-left: auto; }
+#duckBtn { min-height: 38px; padding: 6px 12px; font-size: 13px; color: #ffd84a; border-color: #6b5a1f; }
 #newBtn { min-height: 38px; padding: 6px 12px; font-size: 13px; color: var(--accent); border-color: var(--accent); }
 #conn.live { color: var(--done); }
 #conn.off { color: var(--needs); }
@@ -298,3 +299,102 @@ body .wb-tx-open-plan { display: none; }
 #pushBtn { background: transparent; border: 1px solid var(--line); color: var(--accent); font-size: 13px; min-height: 40px; }
 #pushBtn.hidden { display: none; }
 #pushBtn:disabled { color: var(--dim); }
+
+/* ── Duck (step R2) ────────────────────────────────────── */
+#duck-overlay {
+  position: fixed; inset: 0; z-index: 48; background: var(--bg);
+  display: flex; flex-direction: column;
+  padding: calc(8px + var(--safe-t)) 8px calc(8px + var(--safe-b));
+  max-width: 760px; margin-inline: auto;
+}
+#duck-overlay.hidden, #duck-chat.hidden, #duck-dock.hidden, .duck-panel.hidden, #duck-avatar.hidden { display: none; }
+#duck-head { display: flex; align-items: center; gap: 6px; margin-bottom: 4px; }
+#duck-head button { min-height: 38px; padding: 6px 10px; }
+#duck-thread { flex: 1; min-width: 0; text-align: left; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; background: transparent; border-color: transparent; }
+#duck-conn { font-size: 12px; white-space: nowrap; }
+#duck-conn.live { color: var(--done); }
+#duck-conn.off { color: var(--needs); }
+#duck-trust { font-size: 13px; color: var(--dim); }
+#duck-trust.paused { color: var(--needs); border-color: var(--needs); }
+#duck-trust.hidden { display: none; }
+#duck-avatar {
+  display: block; width: 100%; height: min(22vh, 150px); flex: 0 0 auto;
+  font-family: var(--wb-mono); color: var(--fg); cursor: pointer;
+}
+#duck-chat { flex: 1; min-height: 0; display: flex; }
+#duck-scroll {
+  flex: 1; overflow-y: auto; overflow-x: hidden; -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain; padding: 4px 2px 8px; font-size: 14px;
+}
+.duck-empty { padding: 18px 8px; }
+.duck-user { display: flex; justify-content: flex-end; padding: 4px 0 4px 36px; }
+.duck-user .bubble { white-space: pre-wrap; word-break: break-word; background: var(--wb-sel); border: 1px solid var(--line); border-radius: 8px; padding: 6px 10px; }
+.duck-user .src { margin-top: 3px; font-size: 11px; color: var(--wb-textFaint); }
+.duck-reply { margin: 4px 2px; overflow-wrap: anywhere; }
+.duck-reply:empty { display: none; }
+.duck-event { margin: 4px 2px; padding-left: 8px; border-left: 2px solid var(--accent); color: var(--dim); white-space: pre-wrap; }
+.duck-notice { margin: 4px 2px; }
+.duck-tool { margin: 3px 2px; }
+.duck-chip { display: flex; gap: 6px; align-items: baseline; cursor: pointer; list-style: none; color: var(--dim); border: 1px solid var(--line); border-radius: 6px; padding: 4px 8px; font-size: 13px; min-height: 32px; }
+.duck-chip::-webkit-details-marker { display: none; }
+.duck-chip .name, .duck-ask .name { color: var(--accent); }
+.duck-chip .arg { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.duck-pre { margin-top: 4px; white-space: pre-wrap; word-break: break-word; font-size: 12px; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px; max-height: 40vh; overflow: auto; }
+.duck-task { margin: 4px 2px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); font-size: 13px; }
+.duck-task .head { display: flex; gap: 8px; flex-wrap: wrap; align-items: baseline; }
+.duck-task .headline { margin-top: 3px; color: var(--dim); white-space: pre-wrap; }
+.duck-task .bar, .duck-ask .bar { display: flex; gap: 8px; margin-top: 6px; flex-wrap: wrap; }
+.duck-task .bar button { min-height: 36px; padding: 4px 10px; font-size: 13px; color: var(--accent); }
+#duck-status { min-height: 1.5em; font-size: 13px; margin: 4px 2px; }
+
+#duck-dock { border-top: 1px solid var(--line); padding-top: 8px; margin-top: 2px; }
+#duck-asks { max-height: 45vh; overflow-y: auto; margin-bottom: 8px; }
+#duck-asks.hidden { display: none; }
+.duck-ask { border: 1px solid var(--needs); border-radius: 8px; padding: 10px 12px; margin-bottom: 6px; display: flex; flex-direction: column; gap: 6px; font-size: 14px; }
+.duck-ask .summary { white-space: pre-wrap; }
+.duck-ask summary { cursor: pointer; font-size: 13px; }
+.duck-ask .bar button { flex: 1; font-weight: 600; }
+.duck-ask .ok { color: var(--done); border-color: var(--done); }
+.duck-ask .no { color: var(--needs); border-color: var(--needs); }
+.duck-elsewhere { width: 100%; min-height: 40px; color: var(--needs); background: transparent; text-align: left; font-size: 13px; }
+#duck-error { display: flex; gap: 8px; align-items: center; padding: 8px 10px; margin-bottom: 8px; border: 1px solid var(--needs); border-radius: 8px; color: var(--needs); font-size: 13px; }
+#duck-error.hidden { display: none; }
+#duck-error span { flex: 1; }
+#duck-error button { min-height: 32px; padding: 2px 10px; background: transparent; }
+#duck-voice { font-size: 13px; color: var(--working); margin: 0 2px 6px; }
+#duck-voice.hidden { display: none; }
+#duck-composer { display: flex; gap: 8px; align-items: flex-end; }
+#duck-text { flex: 1; resize: none; min-height: 44px; max-height: 33vh; font-size: 16px; line-height: 1.4; }
+#duck-composer button { min-width: 56px; font-weight: 600; }
+#duck-send { color: var(--accent); border-color: var(--accent); }
+#duck-stop { color: var(--working); border-color: var(--working); }
+#duck-stop.hidden { display: none; }
+#duck-mic {
+  min-width: 64px; color: #ffd84a; border-color: #6b5a1f;
+  touch-action: none; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none;
+}
+#duck-mic.on { background: #ffd84a; color: var(--bg); border-color: #ffd84a; }
+#duck-mic.off { color: var(--dim); border-color: var(--line); }
+#duck-spend { display: flex; gap: 12px; justify-content: flex-end; font-size: 11px; color: var(--wb-textFaint); margin-top: 6px; }
+#duck-spend:empty { display: none; }
+
+.duck-panel { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; padding: 4px 10px 4px 2px; }
+.duck-panel-head { display: flex; align-items: center; gap: 10px; }
+.duck-panel-head .title { font-weight: 600; }
+.duck-panel-head button { min-height: 38px; padding: 6px 12px; color: var(--accent); }
+.duck-panel p { margin: 4px 0; font-size: 13px; }
+#duck-new { color: var(--accent); border-color: var(--accent); font-weight: 600; }
+#duck-thread-list button { display: flex; width: 100%; gap: 8px; align-items: baseline; text-align: left; margin-bottom: 6px; padding: 10px 12px; }
+#duck-thread-list button.current { border-color: var(--accent); }
+#duck-thread-list .dot { width: 1em; }
+#duck-thread-list .name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#duck-thread-list .when, .duck-decision .when { color: var(--dim); font-size: 12px; white-space: nowrap; }
+#duck-pause { color: var(--needs); border-color: var(--needs); font-weight: 600; }
+#duck-pause.hidden, #duck-older.hidden { display: none; }
+.duck-decision { border-bottom: 1px solid var(--line); padding: 6px 0; font-size: 13px; overflow-wrap: anywhere; }
+.duck-decision .head { display: flex; gap: 8px; align-items: baseline; }
+.duck-decision .name { flex: 1; min-width: 0; color: var(--accent); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.duck-seg { display: flex; gap: 6px; flex-wrap: wrap; }
+.duck-seg button { flex: 1 1 0; min-width: 90px; font-size: 13px; padding: 6px 8px; color: var(--dim); }
+.duck-seg button.on { color: var(--accent); border-color: var(--accent); }
+#duck-decisions-btn { color: var(--accent); align-self: flex-start; }

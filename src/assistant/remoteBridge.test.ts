@@ -113,13 +113,15 @@ describe("startRemoteBridge", () => {
     h.phone(1, { type: "send", threadId: "t", text: "что меня ждёт?", voice: true, speak: true });
     expect(h.warm).toHaveBeenCalledWith(true);
     h.event({ type: "message", message: userMessage("t", "что меня ждёт?", "phone-voice") });
+    // A tool's results are stored as a user message too: not a new turn.
+    h.event({ type: "message", message: { ...userMessage("t", "", "duck"), content: [{ type: "tool_result", tool_use_id: "x", content: "ok" }] } });
     h.event({ type: "delta", threadId: "t", text: "Two sessions need you. Api " });
     // The first sentence goes out while the reply is still streaming.
     await vi.waitFor(() => expect(h.render).toHaveBeenCalledWith("Two sessions need you.", "en"));
     const tts = () => h.sent.filter((s) => s.frame.type === "tts" || s.frame.type === "ttsEnd");
     await vi.waitFor(() =>
       expect(tts()).toEqual([
-        { frame: { type: "tts", threadId: "t", reply: "r1", part: 0, id: "a1", seconds: 2, v: 1 }, conn: 1 },
+        { frame: { type: "tts", threadId: "t", reply: "r1", part: 0, id: "a1", seconds: 2, text: "Two sessions need you.", v: 1 }, conn: 1 },
       ]),
     );
     h.event({ type: "delta", threadId: "t", text: "waits for approval." });
@@ -127,7 +129,7 @@ describe("startRemoteBridge", () => {
     await vi.waitFor(() => expect(tts()).toHaveLength(3));
     expect(h.render).toHaveBeenLastCalledWith("Api waits for approval.", "en");
     expect(tts().slice(1)).toEqual([
-      { frame: { type: "tts", threadId: "t", reply: "r1", part: 1, id: "a2", seconds: 2, v: 1 }, conn: 1 },
+      { frame: { type: "tts", threadId: "t", reply: "r1", part: 1, id: "a2", seconds: 2, text: "Api waits for approval.", v: 1 }, conn: 1 },
       { frame: { type: "ttsEnd", threadId: "t", reply: "r1", parts: 2, v: 1 }, conn: 1 },
     ]);
   });

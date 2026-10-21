@@ -218,8 +218,9 @@ export type RemoteDuckFrame =
   | Stamped<DuckEvent>
   /** A sentence of the reply to a `speak` message, as audio at
    *  `GET /api/assistant/tts/{id}`. `reply` names the reply; `part` counts from 0
-   *  and the parts come in order: play each as it comes. */
-  | { type: "tts"; threadId: string; reply: string; part: number; id: string; seconds: number; v: number }
+   *  and the parts come in order: play each as it comes. `text` is what it says
+   *  (for the phone's own voice when the audio can't be had). */
+  | { type: "tts"; threadId: string; reply: string; part: number; id: string; seconds: number; text: string; v: number }
   /** No more parts of `reply` are coming (`parts` were sent). Not sent for a
    *  reply the phone stopped. */
   | { type: "ttsEnd"; threadId: string; reply: string; parts: number; v: number }
