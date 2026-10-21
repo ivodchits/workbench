@@ -1184,6 +1184,66 @@ and voiced text adventures as user-defined modes (S2).
     browser task comes up and the fixed prefix stays small.
     The generic host can attach other MCP servers you've registered later, opt-in per server.
 
+### Pictures and files (track G, added 2026-10-21)
+
+Duck shows you things, not only tells you, and you can show Duck things. Claude can't
+output pixels, but it writes code that draws: Mermaid, SVG, Vega-Lite, small HTML pages.
+That covers diagrams, schemas, wireframes and sketches. Concept art and photoreal images
+come from an image model (Gemini, through your Google subscription).
+
+**1. Duck asks, a worker draws.** Drawing is iterative and token-heavy (write, render, look,
+fix), so it never runs on Duck's API thread.
+- Duck writes a short brief and calls `draw(...)`, which is a D1 task of kind `drawing`.
+  It runs as a headless worker (D4) on your subscription. Duck's own cost is the brief
+  and the result's headline. Duck doesn't load the picture itself unless you ask it a
+  question about it.
+- **One drawing worker per thread, kept warm** while its canvas is open: "make the cache
+  box bigger" is a follow-up in the same session (D1's `task_followup`), which already
+  knows the drawing. Idle stop (D1's tidying) ends it as for any worker.
+- **Over the subscription thresholds, drawing waits** instead of falling back to an API
+  worker as D2 does for other tasks, unless you say "draw it now on the API" (open
+  question 31).
+
+**2. Drawings are sources, with versions.** Each drawing is `{kind, source, version}`,
+and the rendered PNG is a cache.
+- Kinds: `mermaid` (flowchart, sequence, state, ER, gantt, timeline), `svg` (schemas,
+  wireframes, illustrations; a hand-drawn look through rough.js-style strokes), `vega`
+  (charts), `html` (small interactive widgets), `image` (G6, and your sketches).
+- Files live in the worker's task folder (`drawings/<id>/v<n>.<ext>` + `v<n>.png`), and
+  `duck.db` gains `assistant_drawings` (id, thread, task, kind, version, paths, title).
+- Editing makes a new version; the canvas can step back through them.
+
+**3. Model-written markup is untrusted and is never rendered in the app's DOM.**
+- SVG is shown as `<img src="blob:…">`, which runs no script.
+- Mermaid and Vega render inside a sandboxed `iframe` (`sandbox="allow-scripts"`, no
+  same-origin, a CSP with no network), and the SVG they produce is shown as above.
+- `html` widgets get the same sandbox and stay inside it.
+- The renderers (Mermaid, Vega) are lazy-loaded the first time they're needed (idle
+  cost ≈ 0).
+
+**4. The worker sees what it drew** (G4). A render service in the app turns any kind into
+a PNG; the worker gets it as an image and fixes overlaps, clipped labels, arrows into
+nothing and unreadable text, at most twice, by a rubric in the workspace `CLAUDE.md`.
+
+**5. Attachments are stored once and referenced.** A file you paste or drop is copied
+into Duck's data folder (`attachments/`, content-addressed), and the message keeps a
+reference. At send time the engine expands it into API blocks: an image block (downscaled),
+a PDF `document` block, a text block for small text files (wrapped as untrusted data),
+or only its name, size and path for anything else. The expansion is recorded with the
+message, so the history stays byte-identical (caching, append-only).
+- **Who looks at a file** follows the same thrift as drawing: Duck looks at a small image
+  or a short file itself. Several files, big files, or "do things with them" go to a
+  worker, which gets copies in its task folder's `inputs/` and writes `outputs/`. The
+  outputs come back as attachments in the thread, which you can drag out to Explorer.
+
+**6. Voice and drops make one turn** (G2). Files dropped while you're talking, or just
+before or after, belong to what you're saying. "Have a look at these two files…" with two
+drops is one turn with two attachments, whichever comes first.
+
+**7. Sketching goes both ways** (G5). A sketch pad on the PC and the phone. What you draw
+is sent to Duck as an image; what Duck draws can be the pad's background for you to mark
+up ("change this", with a circle around it).
+
 ### Storage
 
 - **SQLite: Duck's own `duck.db`** (`duck.dev.db` for the debug build; its own append-only
@@ -1270,6 +1330,9 @@ and voiced text adventures as user-defined modes (S2).
   every automatic decision is logged. A new project starts in shadow mode.
 - **Tool results from transcripts, tool inputs and the web are untrusted data.** They are
   wrapped and labelled, and markdown is rendered through `marked` + `DOMPurify`.
+  Model-written drawings (SVG, Mermaid, HTML; track G) are never put in the app's DOM:
+  SVG is shown as an image, and everything that runs script stays in a sandboxed iframe
+  with no network access.
 - **Idle cost ≈ 0.** No model loaded, no mic open, no browser or MCP process, nothing polling
   while the Assistant isn't in use. Anything heavy is lazy and unloads itself.
 - **Append-only conversation history**, a stable tool list and a stable system prompt
@@ -5173,6 +5236,254 @@ T2 goes live after the replay check in its done-when (the past week's prompts th
   - The Messages API MCP connector reaches only public URL servers, not local stdio, hence
     the local `rmcp` host.
   - The Agent SDK spawns a Claude Code process per session and carries a coding-agent system
+### Track G — Pictures and files
+
+#### Step G1 — Attachments: paste, drop and pick files into Duck
+
+- **Goal:** You can give Duck images and files on the desktop and the phone, and Duck
+  either looks at them itself or hands them to a worker.
+- **Depends on:** A3, D1. The phone part needs R2; R3's share target uses the same path.
+- **Build:**
+  - **Attachment store** (`src-tauri/src/assistant/attachments.rs`): copies a file into
+    `attachments/<sha256>.<ext>` under Duck's data folder (dev build: its own folder),
+    returns `{id, name, mime, size}`, and makes a thumbnail for images. Commands
+    `assistant_attach_paths` (from a drop or the picker) and `assistant_attach_bytes`
+    (from a paste or the phone).
+  - **Desktop drawer:**
+    - Paste: images on the clipboard, and files copied in Explorer (check whether
+      WebView2 gives them as `clipboardData.files` with paths, or only the bytes).
+    - Drop: the whole Duck window is a drop target, reusing `ipc/osDrop` (as
+      `FileDropZone` does) for OS drops and `state/fileDrag` for drags from the editor
+      tree, the Diff list and the Git list.
+    - A 📎 button with the dialog plugin's file picker.
+    - Staged attachments show as chips above the composer (thumbnail or icon, name, size,
+      ×). Nothing is sent until you send the message.
+  - **Phone (PWA):** a 📎 button (`<input type="file" multiple>`, with the camera
+    offered for images), paste, and the bytes uploaded over the Duck Protocol in chunks
+    (`attach.chunk` / `attach.done` frames on the authed socket), staged the same way.
+  - **Engine:** a user message carries `attachment` parts. `toApiMessages` expands them
+    as §Pictures and files says (images to at most 1568 px on the long side, PDFs as
+    `document` blocks, text files up to 50 KB as text in an `<attachment>` wrapper,
+    anything else as name, size and path), and the expansion is stored with the message.
+  - **Thrift rule** in the system prompt, with examples: what Duck reads itself and what
+    goes to a worker. A setting "Duck reads attachments itself up to ~N tokens" (default
+    20k) caps the first.
+  - **Workers get files:** `run_task` gains `files: attachmentId[]`. They are copied into
+    the task folder's `inputs/`, and the brief lists them. Files the worker writes to
+    `outputs/` are registered as attachments and posted in the thread with the result.
+  - **Drag out:** an attachment or output chip can be dragged to Explorer (check whether
+    a Tauri drag plugin works with the drawer window).
+  - Text from files is untrusted data, like tool results: wrapped and labelled.
+- **Key files:** `src-tauri/src/assistant/attachments.rs`, `src/assistant/engine.ts`,
+  `src/assistant/protocol.ts`, `src/panels/Assistant/Drawer.tsx`, `src/pwa/duck.ts`,
+  `src/assistant/tasks.ts`.
+- **Done when:**
+  - A pasted screenshot gets an answer about what's in it.
+  - Two files dropped from Explorer, plus a file dragged from the editor tree, show as
+    three chips and go with one message.
+  - "Convert these three CSVs into one spreadsheet" sends them to a worker, and the
+    spreadsheet comes back as a chip that drags out to the desktop.
+  - A photo taken on the phone reaches Duck.
+  - Reloading the thread shows the same attachments, and the next turn's request
+    prefix is unchanged (the cache read is in `assistant_usage`).
+- **Out of scope:** voice and drops together (G2); video and audio files (sent as name and
+  path only).
+
+#### Step G2 — Talking about what you drop
+
+- **Goal:** "I want you to look at these two files and do a couple of things with them",
+  said while dropping the files, works the first time, by push-to-talk or hands-free, on
+  the PC or the phone.
+- **Depends on:** G1, V1. Hands-free needs V4.
+- **Build:**
+  - **Staging follows the voice turn.** While a voice turn is open (the push-to-talk key
+    is held, or conversation mode is in `speaking-user` or `pause`), and for 10 s after
+    it ends, a drop or paste is staged for that turn and shown in the voice pill
+    ("🎤 + 2 files"), not in the composer.
+  - **End of turn takes everything staged.** The turn goes out as the transcript plus
+    the attachments, with a one-line manifest ("2 files: plan.md, error.png") that the
+    model sees ahead of them.
+  - **Late drops merge like late speech.** A drop during V4's grace window, or before
+    Duck's first spoken sentence, aborts the provisional request and resends the turn
+    with the files (as `voice-turn-continue` does). After that, a drop while Duck is
+    speaking stops the speech and goes as a follow-up.
+  - **Counting:** a small local matcher on the turn text reads a number of files ("these
+    two", "both", "три файла", "estos dos"). If fewer are staged at end of turn, the
+    turn waits up to 6 s with "waiting for 1 more file…" in the pill; a drop or the
+    timeout releases it. "These files" without a number doesn't wait.
+  - **A quick spoken receipt** when the work goes to a worker ("Got both, sending them
+    to a worker"), so you're not left in silence while it starts.
+  - **Phone:** the 📎 button and the share target stage into an open voice turn in the
+    same way; a share made within 10 s of a turn ending joins that turn.
+- **Key files:** `src/assistant/engine.ts`, `src/panels/Assistant/voiceState.ts`,
+  `src-tauri/src/voice/conversation.rs` (V4), `src/pwa/duck.ts`, `src/pwa/mic.ts`.
+- **Done when:**
+  - Push-to-talk: hold, say "have a look at these two files and…", drop both while
+    talking, release. One turn with two attachments.
+  - The same with the files dropped 3 s before speaking, and with one dropped 2 s
+    after release.
+  - Saying "these two" with one file dropped waits, and takes the second when it lands.
+  - Hands-free (after V4): a drop during the grace window gives no duplicate reply.
+  - On the phone: speak, then share a file from the Files app within 10 s; it joins
+    the turn.
+- **Out of scope:** pointing at things on screen ("this window") without a screenshot.
+
+#### Step G3 — Drawing workers and the canvas
+
+- **Goal:** Ask for a diagram, schema, wireframe or chart, by voice or text, and it
+  appears on a canvas next to the thread on the PC and the phone. You can edit it by
+  asking, and step back through versions. Your API credits pay only for Duck's brief.
+- **Depends on:** D1, D4. The phone part needs R2.
+- **Build:**
+  - **Tool `draw(title, brief, kind?, drawing?, files?)`:** a new drawing, or with
+    `drawing` an edit to an existing one. It starts (or follows up) the thread's drawing
+    worker and returns a drawing card at once. `kind` is the worker's choice when left
+    out. Tier: standard by default; involved for "carefully" or a schema with many parts.
+  - **The worker's contract** (the workspace `CLAUDE.md` gains a drawing section): write
+    `drawings/<id>/v<n>.<ext>`, keep each kind's rules (Mermaid syntax that the bundled
+    version renders, SVG with a `viewBox` and no external references, readable at
+    400 px wide, colours that work on light and dark), then `result.json` with the
+    headline and the version.
+  - **The drawing worker stays warm** while the thread's canvas is open, and edits go to
+    it as follow-ups. When it's been stopped, a new one gets the latest source to start
+    from.
+  - **Over the thresholds** (D2's `route`), a drawing task waits for the window with
+    "drawing waits for your subscription window (resets 14:00)", unless the brief says
+    `allowApi` ("draw it now on the API").
+  - **Rendering for display** (`src/drawing/`): kind → SVG or PNG, in the sandbox of
+    §Pictures and files 3. Mermaid and Vega-Lite pinned and lazy-loaded.
+  - **The canvas:** a drawer view (and a dockview panel to pop it out) with pan and zoom,
+    the version strip, "copy as PNG", "save as…", "open source", and "mark up" (G5).
+    A drawing card in the thread opens it.
+  - **Phone:** the rendered PNG (and the SVG when there is one) goes over the Duck
+    Protocol as a `drawing` event; the PWA shows it full-screen with pinch zoom.
+  - **Voice:** Duck says where it went ("It's on the canvas"), and opens the canvas on
+    the surface the request came from.
+  - **When to draw:** in the system prompt, draw when asked; offer a drawing when it
+    would clearly help, at most once per topic.
+- **Key files:** `src/assistant/tools/draw.ts`, `src/assistant/tasks.ts`,
+  `src-tauri/src/assistant/workspace.rs` (the `CLAUDE.md` text), `src/drawing/`,
+  `src/panels/Assistant/Canvas.tsx`, `src/pwa/duck.ts`, `src/remote/protocol.ts`.
+- **Check first:** the time from `draw` to the picture for a small flowchart (headless
+  worker start plus Sonnet writing it), cold and warm. If cold is over ~20 s, start the
+  drawing worker when a thread's voice conversation turns to design talk, not at the
+  first `draw`.
+- **Done when:**
+  - "Draw how a prompt goes from my phone to a session" gives a sequence diagram on the
+    canvas, and the thread's API cost for it is only Duck's turn.
+  - "Add the trust check between them" makes version 2 from the warm worker.
+  - A wireframe (SVG), a chart from numbers in the thread (Vega), and a hand-drawn-style
+    sketch each render, and none can run script in the app (an SVG with `<script>` and
+    `onload` is shown inert).
+  - The same drawing opens on the phone.
+- **Out of scope:** the worker looking at its own render (G4); images from an image
+  model (G6).
+
+#### Step G4 — The worker sees its drawing
+
+- **Goal:** Drawings come out clean: the worker renders what it wrote, looks at it, and
+  fixes it before you see it.
+- **Depends on:** G3. Shares Duck's MCP server with M3 (built here if M3 isn't yet).
+- **Build:**
+  - **Render service in the app:** `render(kind, source, width?, theme?) → PNG`.
+    - SVG to PNG with `resvg` in Rust (no webview, fast).
+    - Mermaid, Vega and `html` through a hidden render webview, then the SVG through
+      `resvg`, or for `html` a WebView2 capture of the page.
+    - It refuses external references and caps the size and time (5 s).
+  - **A `render` tool for workers** on Duck's MCP server, given to drawing workers
+    through their `--mcp-config`, returning the PNG as image content (and the parse
+    error for broken Mermaid).
+  - **The rubric**, in the drawing section of the workspace `CLAUDE.md`: overlaps,
+    clipped or tiny text, arrows that end in nothing, crossings that a layout change
+    removes, contrast in both themes, and readability at phone width. At most two fix
+    rounds; then it delivers with a note.
+  - The card shows "checked ×2" when it took a fix.
+- **Check first:** that WebView2 renders and captures in a hidden window (the throttling
+  question from X0), else a small offscreen window in the corner of the work area.
+- **Key files:** `src-tauri/src/assistant/render.rs`, Duck's MCP server (M3),
+  `src-tauri/src/assistant/workspace.rs`.
+- **Done when:** on ten varied requests (diagrams, wireframes, a schema with 20+ boxes),
+  none has overlapping labels or broken Mermaid, and the rounds and time per drawing are
+  written in As built.
+- **Out of scope:** pixel comparisons against a reference.
+
+#### Step G5 — Sketch pad on the PC and the phone
+
+- **Goal:** You draw, Duck sees it; Duck draws, you mark it up. Like a whiteboard in a
+  call.
+- **Depends on:** G1 (sending the sketch), G3 (Duck's drawings as a background).
+- **Build:**
+  - **One sketch core** in plain TypeScript (`src/sketch/`), used by the drawer's React
+    view and the PWA alike: pointer events with pressure (pen, touch, mouse),
+    `perfect-freehand` strokes, pen, highlighter, eraser, arrow, text, colours,
+    undo/redo, clear.
+  - **Backgrounds:** blank, grid, a screenshot (V3's capture), a photo, or one of Duck's
+    drawings ("mark up" on the canvas).
+  - **Sending:** "send to Duck", or by voice. With "live" on, the pad goes with the
+    voice turn when it has changed since the last one (through G2's staging), so you can
+    talk and draw.
+  - Each sketch is sent as a flattened PNG (an attachment), and kept with its strokes as
+    JSON so it can be reopened and edited.
+  - **Duck's answer can be a drawing:** "clean this up" goes to the drawing worker with
+    the sketch, and comes back as a G3 drawing that opens as the pad's background.
+  - **PC:** a drawer view and a dockview panel; it works with the mouse, and with a pen
+    or touch screen if you have one.
+  - **Phone:** a full-screen view in the PWA, landscape, with 📎 and the mic on the
+    same screen.
+  - **Shared pad (stretch):** strokes stream over the Duck Protocol (`sketch.stroke`),
+    so a sketch drawn on the phone builds up live on the PC canvas.
+- **Key files:** `src/sketch/`, `src/panels/Assistant/SketchView.tsx`, `src/pwa/sketch.ts`,
+  `src/remote/protocol.ts`.
+- **Done when:**
+  - A boxes-and-arrows sketch drawn with the mouse, sent with "make this a proper
+    diagram", comes back as a Mermaid drawing.
+  - Circling a box on one of Duck's diagrams and saying "split this into two services"
+    gives the next version with that change.
+  - A sketch drawn with a finger on the phone reaches Duck the same way.
+- **Out of scope:** handwriting recognition beyond what the model reads from the image.
+
+#### Step G6 — Concept images through your Gemini subscription
+
+- **Goal:** For moods, concepts and anything photoreal, Duck gets a real image model,
+  paid for by your Google subscription rather than API credits.
+- **Depends on:** G3 (the canvas, images as drawings); G1 (references from attachments).
+- **Check first (decides the route):**
+  1. **The Gemini API on the subscription's developer credits.** Google AI Pro is said to
+     include about $10 a month of Google Cloud credits for the Developer Program, and
+     Ultra $40–100. They are applied to a Cloud billing account and expire after a year,
+     and a prepaid balance may be needed for API calls to keep running. Unverified (from
+     third-party write-ups, 2026-10-21): whether the credits pay for the image models,
+     today's model ids and price per image, and the API's free image quota. Confirm in
+     your Google account and the Gemini API docs.
+  2. **Gemini CLI signed in with your Google account**, which uses the subscription's
+     quota for text. Check whether it can produce images on that quota at all; its image
+     extensions seem to want an API key, which is route 1.
+  3. **The Gemini web app in the agent Firefox profile** (B2). It has the app's own image
+     quota (reported around 100 a day on Pro), but it means automating your account's UI,
+     the ToS concern that dropped Discord. Last resort, and only if you decide so.
+
+  Expected: route 1, with route 2 if it turns out to work on the subscription.
+- **Build (route 1):**
+  - A provider interface `imageGen` (Gemini first) in Rust. The key goes in the
+    keychain under Duck's namespace and never reaches JavaScript.
+  - Tool `generate_image(prompt, refs?, aspect?, count?)`: a background job (over the
+    10 s budget) that returns an image card. `refs` are attachments, sketches or
+    drawings, so "turn my sketch into a render" and "same, but at night" work, as the
+    Gemini image models take reference images.
+  - **The prompt:** Duck writes a short one itself; an elaborate one ("a concept sheet
+    for…") is written by the drawing worker, which also gets the image back to judge.
+  - Images land as `image` drawings: versions, the canvas, the phone, mark-up.
+  - **Spend:** an `image` line in the ledger with the cost per image, a monthly cap
+    (default: the monthly credit), and the trust tier `reversible` under the cap and
+    `ask` above it.
+- **Key files:** `src-tauri/src/assistant/imagegen.rs`, `src/assistant/tools/image.ts`,
+  `src/assistant/spend.ts`.
+- **Done when:** "show me three moods for Duck's app icon" gives three images on the
+  canvas, "the second one, but flatter" gives a variation from it, a sketch is turned
+  into a render, and the month's image spend shows next to the API spend.
+- **Out of scope:** video and animation; an on-device diffusion model (too slow and
+  rough on the 4060 for the quality wanted; revisit if that changes).
+
     prompt; wrong shape for a light assistant, and the guardrails rule it out.
 - **No official Rust SDK.** The official TS SDK in the webview through the proxy gets typed,
   maintained API coverage without hand-written Rust types.
@@ -5195,6 +5506,8 @@ T2 goes live after the replay check in its done-when (the past week's prompts th
 
 ---
 
+    A3 + D1 ─▶ G1 (phone: R2) ─▶ G2 (needs V1; V4 for hands-free)
+    D4 ─▶ G3 ─▶ G4 (shares M3's MCP server) ;  G1 + G3 ─▶ G5 ;  G1 + G3 ─▶ G6
 ## Open questions
 
 | # | Question | Resolved in |
@@ -5223,6 +5536,10 @@ T2 goes live after the replay check in its done-when (the past week's prompts th
 | 22 | Glyph lights for Duck's state on the Phone (2a): worth the Nothing GDK API-key registration? | R4 |
 | 23 | ~~Private GitHub repo for Duck's data?~~ **Yes** (2026-10-18). All Duck git work runs in the background: a mechanical lane for commits and pushes, Sonnet `medium` worker sessions for anything needing judgment. | ✔ |
 | 24 | ~~Housekeeping cadence?~~ **Weekly on Sunday; if missed, on the next Duck start** (2026-10-18). Retention default: keep results, prune bulky intermediates after 30 days. | ✔ |
+Track G (added 2026-10-21) also runs alongside. G1 is useful on its own and comes first,
+then G3 and G4 (drawing, and drawing well) and G2 with the voice work. G5 follows G3. G6's
+check-first can run any time; it decides whether G6 is built.
+
 | 25 | ~~Autopilot defaults?~~ **Compact only after a finished step, judged per step (usually yes); never mid-job. Continue with "continue the implementation" / "proceed to the next step", or a situational prompt** (2026-10-18). Max steps per run: default 5, adjustable. | ✔ |
 | 26 | ~~Quiet hours?~~ **All etiquette is configurable; quiet hours optional and off by default; manual DND (with durations and a voice command) is the main control; a master Speak toggle gates all voice output** (2026-10-18). | ✔ |
 | 27 | ~~Music service?~~ **YouTube Music** (comes with the YouTube subscription), behind a provider interface; **Spotify** only if you switch for its API (2026-10-20). | ✔ |
@@ -5287,3 +5604,13 @@ T2 goes live after the replay check in its done-when (the past week's prompts th
 | H5 | The phone as a host (with R4) | ☐ |
 | H6 | Duck on the home server (gate: the server) | ☐ |
 | H7 | The phone's fallback brain | ☐ |
+| 30 | Which Google plan do you have (AI Pro or Ultra), and do its developer credits pay for Gemini image generation? Decides G6's route. | G6 |
+| 31 | Drawing over the subscription thresholds: **wait for the window** (proposed default, to keep API credits) or fall back to an API worker as other tasks do? | G3 |
+| 32 | A pen or touch screen on the PC? Changes how much the desktop sketch pad needs beyond the mouse. | G5 |
+| 33 | How long to keep attachments (default: as long as their thread)? | G1 |
+| G1 | Attachments: paste, drop and pick files into Duck | ☐ |
+| G2 | Talking about what you drop | ☐ |
+| G3 | Drawing workers and the canvas | ☐ |
+| G4 | The worker sees its drawing | ☐ |
+| G5 | Sketch pad on the PC and the phone | ☐ |
+| G6 | Concept images through your Gemini subscription | ☐ |
