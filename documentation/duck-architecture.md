@@ -99,7 +99,7 @@ prompt's safety rules cover them.
 | `TrustViews.tsx` | `TrustPanel` (kill switch, rules, project modes, the floor with a typed confirmation) and `DecisionsPanel` (the log with make-a-rule / always-ask, the rule from `suggestRule`; and the replay of the past week with its report). Opened from the settings popover; they take the thread's place. |
 | `Drawer.tsx` | The drawer: header (thread list, new, the trust pill that is the kill switch, settings, close), thread view (markdown replies, tool chips, queued bubbles), confirmation cards, spend line, composer (Enter / Shift+Enter / Esc, "think hard" = effort `high` for one message). Always mounted and only hidden, so the thread and scroll survive closing. |
 | `DrawerSettings.tsx` | Queue-or-interrupt, and "start at login, minimized to the tray" (`@tauri-apps/plugin-autostart`; disabled in dev builds). |
-| `DuckIcon.tsx` | The icon as a CSS mask in the accent colour; the eyeless version below 20 px. Images in `src/assets/duck/`. |
+| `DuckIcon.tsx` | The icon as a CSS mask in the accent colour, always the eyeless version. Images in `src/assets/duck/`. |
 
 `src/panels/` is outside the boundary rule, so the drawer may use the stores directly
 (it opens a `#session/<id>` link's console with `setActiveProject` + `openConsole` +
