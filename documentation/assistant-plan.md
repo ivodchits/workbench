@@ -3325,6 +3325,18 @@ up ("change this", with a circle around it).
       A pref "echo handling: auto / force full / force half-duplex" shows the measured
       suppression for the current device.
     - **Auto-off** after N minutes of silence; turning it off releases the mic immediately.
+  - **The push-to-talk key starts it** (asked for 2026-10-21): one press turns
+    conversation mode on, and from then on you just talk, hear the reply and talk
+    again, without pressing anything; another press turns it off. A voice setting
+    picks what a press does: start/stop conversation mode, or one dictation (V1's
+    toggle or hold, as now). The drawer's mic button follows the same choice.
+  - **The listening sign** (V5's overlay) shows whenever the mic is being listened
+    to in conversation mode, as it does for push-to-talk, and only then. It isn't
+    shown while Duck thinks or speaks with the mic released.
+  - **V5's short reply window** moved here: after a spoken announcement, the mic
+    opens for ~8 s through this pipeline (VAD, turn detection, echo cancellation).
+    A reply goes to the thread as a normal message ("yes, read it" starts
+    read-aloud), silence closes it, and the listening sign shows while it's open.
   - UI:
     - Drawer: a conversation-mode toggle (+ `CommandId` `toggleConversation`).
     - A live state pill (listening / thinking / speaking), and a level meter.
