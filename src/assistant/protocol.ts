@@ -29,6 +29,10 @@ export const PROTOCOL_VERSION = 1;
  *  heard, and heard there, not out of the desktop's speakers. */
 export type Source = "desktop" | "phone" | "voice" | "phone-voice" | "event";
 
+/** Where you talk to Duck from: the desktop's drawer, or a phone (step A7: each
+ *  keeps its own open thread). */
+export type Surface = "desktop" | "phone";
+
 /** The user's own sources (not `event`, not Duck's `duck`). */
 export const USER_SOURCES: ReadonlySet<string> = new Set(["desktop", "phone", "voice", "phone-voice"]);
 
@@ -248,6 +252,9 @@ export type DuckEvent =
   | { type: "provisional"; threadId: string; text: string; source: Source }
   /** A provisional turn was dropped: forget its streamed text. */
   | { type: "withdrawn"; threadId: string }
+  /** Duck moved the conversation (step A7): `surface` opens `threadId`, where
+   *  your next turn goes. The open thread is the surface's, so it acts on this. */
+  | { type: "goThread"; threadId: string; from: string; surface: Surface }
   | {
       type: "tool";
       threadId: string;

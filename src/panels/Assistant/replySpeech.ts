@@ -27,6 +27,8 @@
 //   Ctrl+Shift+L. Announcements (`announce`) speak through the same queue.
 // - Once an announcement has been said, `onAnnounced` hears its thread, and
 //   conversation mode (V4) opens the reply window for it.
+// - A conversation Duck moved into another thread (A7): the reply there is said
+//   after the rest of "Moving to the Demiurge thread.", not over it.
 
 import { useSyncExternalStore } from "react";
 import { registerDesktopSpeech } from "../../assistant";
@@ -152,8 +154,8 @@ export function onAnnounced(cb: (threadId: string) => void): void {
   announced = cb;
 }
 
-function begin(key: string): Reply {
-  stopSpeaking();
+function begin(key: string, keep = false): Reply {
+  if (!keep) stopSpeaking();
   const r: Reply = { key, said: false, utterance: nextUtterance++, sentences: new Sentences(), chain: Promise.resolve() };
   replies.set(key, r);
   set({ error: null });
@@ -238,11 +240,13 @@ export function isSpeaking(): boolean {
 /** A message from the phone is answered there (step R1), not out of these speakers. */
 const DESKTOP_SOURCES = new Set(["desktop", "voice"]);
 
-/** A message of yours started a turn: speak its reply if the setting says so. */
-export function onUserMessage(m: StoredMessage, text: string): void {
+/** A message of yours started a turn: speak its reply if the setting says so.
+ *  `moved`: Duck brought it over from the thread you were in (A7), whose reply
+ *  still finishes first. */
+export function onUserMessage(m: StoredMessage, text: string, moved = false): void {
   if (!USER_SOURCES.has(m.source)) return;
   // Whatever was speaking, you've moved on.
-  stopSpeaking();
+  if (!moved) stopSpeaking();
   if (!DESKTOP_SOURCES.has(m.source) || !state.prefs.on) return;
   const { speak } = state.prefs;
   if (speak === "off" || (speak === "voice" && m.source !== "voice")) return;
@@ -250,7 +254,7 @@ export function onUserMessage(m: StoredMessage, text: string): void {
   // in the drawer, rather than the reply going silently unspoken.
   // Silero takes 10-20 s to load cold: start it while Duck thinks.
   if (langOf(text) === "ru") void ttsWarm(true).catch(() => {});
-  const r = begin(m.threadId);
+  const r = begin(m.threadId, moved);
   setTimeout(() => {
     if (replies.get(m.threadId) === r && !r.said) say(r, ACKS[Math.floor(Math.random() * ACKS.length)]);
   }, ACK_MS);

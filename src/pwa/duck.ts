@@ -159,6 +159,10 @@ const talkSent = new Map<number, string>();
 let playingSaid = false;
 /** The thread whose provisional turn the phone's own voice will answer. */
 let nativeProvisional: string | null = null;
+/** The thread whose reply the phone's own voice spoke last, and the thread Duck
+ *  moved the conversation into from it (A7), whose next reply it speaks too. */
+let nativeLast: string | null = null;
+let nativeFollow: string | null = null;
 
 // ── the socket ──────────────────────────────────────────────────────────────
 
@@ -238,6 +242,11 @@ function onFrame(f: RemoteDuckFrame): void {
   }
   if (r.fx.open) openThread(r.fx.open);
   if (r.fx.refetch && view.current) post({ type: "thread.open", threadId: view.current });
+  if (f.type === "goThread" && f.surface === "phone" && view.threads.some((t) => t.id === f.threadId)) {
+    // Duck moved the conversation (A7): the next turn goes there.
+    if (nativeLast === f.from) nativeFollow = f.threadId;
+    openThread(f.threadId);
+  }
   if (f.type === "threads" && !before.synced) {
     const saved = (() => {
       try {
@@ -262,6 +271,7 @@ function speakNative(f: RemoteDuckFrame): void {
   if (f.type === "provisional" && f.threadId === nativeProvisional) {
     // A turn of conversation mode: its reply is said as it streams.
     nativeProvisional = null;
+    nativeLast = f.threadId;
     native = { threadId: f.threadId, cut: new Sentences(), provisional: true };
   } else if (f.type === "withdrawn" && native?.threadId === f.threadId && native.provisional) {
     native = null;
@@ -271,11 +281,15 @@ function speakNative(f: RemoteDuckFrame): void {
     native.provisional = false;
   } else if (f.type === "message" && f.message.role === "user" && USER_SOURCES.has(f.message.source)) {
     if (native?.threadId === f.message.threadId) native = null;
-    const i = f.message.source.startsWith("phone") ? nativeWanted.indexOf(userText(f.message).trim()) : -1;
-    if (i >= 0) {
-      nativeWanted.splice(i, 1);
+    const phone = f.message.source.startsWith("phone");
+    const i = phone ? nativeWanted.indexOf(userText(f.message).trim()) : -1;
+    const moved = phone && nativeFollow === f.message.threadId;
+    if (nativeFollow === f.message.threadId) nativeFollow = null;
+    if (i >= 0) nativeWanted.splice(i, 1);
+    if (i >= 0 || moved) {
+      nativeLast = f.message.threadId;
       native = { threadId: f.message.threadId, cut: new Sentences() };
-    }
+    } else if (nativeLast === f.message.threadId) nativeLast = null;
   } else if (f.type === "tool" && f.phase === "start" && native?.threadId === f.threadId) {
     for (const s of native.cut.end()) if (!hushed) queue.add({ audio: Promise.resolve(null), text: s, lang: langOf(s) });
   } else if (f.type === "delta" && native?.threadId === f.threadId) {

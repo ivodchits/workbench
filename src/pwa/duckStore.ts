@@ -156,7 +156,8 @@ export function apply(v: DuckView, f: RemoteDuckFrame, adopting: boolean): { vie
       fx.refetch = true;
       break;
     default:
-      // settings, autopilots, replay, tool, tts: not the store's (tts is the player's).
+      // settings, autopilots, replay, tool, tts, goThread: not the store's (tts is
+      // the player's; a move opens a thread through the view, `duck.ts`).
       break;
   }
   return { view: v, fx, adopted };

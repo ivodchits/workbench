@@ -25,6 +25,7 @@ import type { TrustFacts } from "../trust/decide";
 import type { ReaderHost } from "./readAloud";
 import type { ScreenHost } from "./screenshot";
 import type { QuietHost } from "./quiet";
+import type { ThreadMoves } from "./threads";
 import type { Level } from "../announce";
 
 export type Tier = "read" | "reversible" | "consequential";
@@ -57,8 +58,11 @@ export interface ToolContext {
   quiet: QuietHost | null;
   /** Start a new Duck thread on `words`, which must be the user's own words from
    *  their latest message here (it throws otherwise). The new thread's turn runs on
-   *  its own; resolves to its id. */
-  startThread(words: string): Promise<string>;
+   *  its own; resolves to its id. With `go` (step A7), the conversation moves into
+   *  it once this reply is over, and its turn starts then, with `brief` as a note. */
+  startThread(words: string, opts?: { go?: boolean; brief?: string }): Promise<string>;
+  /** Duck's threads, and moving the conversation between them (step A7). */
+  threads: ThreadMoves;
 }
 
 /** A tool may return text, API content blocks (e.g. an image), or any JSON value. */

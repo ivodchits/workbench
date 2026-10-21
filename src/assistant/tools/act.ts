@@ -64,7 +64,7 @@ const onProject = ({ project }: { project: string }, port: WorkbenchPort) => ({
 
 /** The user's own words that ask for the call: with them a consequential call runs
  *  without a card (the trust engine checks they're really in the user's messages). */
-const grantArg = z
+export const grantArg = z
   .string()
   .max(500)
   .optional()

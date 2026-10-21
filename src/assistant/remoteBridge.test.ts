@@ -134,6 +134,35 @@ describe("startRemoteBridge", () => {
     ]);
   });
 
+  it("speaks the reply in a thread Duck moved the phone into, when the one that moved it was spoken", async () => {
+    const h = harness();
+    h.open(1);
+    h.phone(1, { type: "send", threadId: "a", text: "go to the demiurge thread and give me the details", voice: true, speak: true });
+    h.event({ type: "message", message: userMessage("a", "go to the demiurge thread and give me the details", "phone-voice") });
+    h.event({ type: "delta", threadId: "a", text: "Moving to Demiurge." });
+    h.event({ type: "turnState", threadId: "a", state: "idle", queued: 0 });
+    h.event({ type: "goThread", threadId: "d", from: "a", surface: "phone" });
+    h.event({ type: "message", message: userMessage("d", "[Brought over by Duck…]\n\ngive me the details", "phone-voice") });
+    h.event({ type: "delta", threadId: "d", text: "Three steps are done. " });
+    h.event({ type: "turnState", threadId: "d", state: "idle", queued: 0 });
+    await vi.waitFor(() => expect(h.render).toHaveBeenCalledWith("Three steps are done.", "en"));
+    const parts = h.sent.filter((s) => s.frame.type === "tts").map((s) => [s.conn, (s.frame as { threadId: string }).threadId]);
+    expect(parts).toEqual([
+      [1, "a"],
+      [1, "d"],
+    ]);
+    // A read asked for there plays on that phone.
+    expect(h.bridge.voiceFor("d")?.where).toBe("phone");
+
+    // A move from a desktop request, or a reply not spoken, brings no voice.
+    h.event({ type: "goThread", threadId: "e", from: "d", surface: "desktop" });
+    h.event({ type: "message", message: userMessage("e", "[Brought over…]\n\nwhat's next", "phone") });
+    h.event({ type: "delta", threadId: "e", text: "Nothing. " });
+    h.event({ type: "turnState", threadId: "e", state: "idle", queued: 0 });
+    await new Promise((r) => setTimeout(r, 20));
+    expect(h.render).toHaveBeenCalledTimes(2);
+  });
+
   it("speaks a provisional turn's reply as it streams, and cuts it when the turn is withdrawn", async () => {
     const h = harness();
     h.open(1);

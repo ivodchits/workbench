@@ -4,6 +4,7 @@ import { z } from "zod";
 
 import type { StoredMessage, ThreadRow } from "../ipc/assistant";
 import {
+  briefNote,
   buildParams,
   createEngine,
   effectiveEffort,
@@ -20,7 +21,7 @@ import type { DuckEvent } from "./protocol";
 import { VOICE_NOTE } from "./prompt";
 import { createThreadStore, type ThreadBackend } from "./threads";
 import { getTime } from "./tools/getTime";
-import { startThread } from "./tools/threads";
+import { goToThread, listThreads, startThread } from "./tools/threads";
 import { createRegistry, defineTool, type ToolDef } from "./tools/registry";
 
 type Msg = Anthropic.Beta.BetaMessage;
@@ -924,5 +925,137 @@ describe("provisional turns", () => {
     await engine.settled(id);
     // The stop clears the queue; what was running is kept with "Stopped.".
     expect(userTexts(store.loaded(id))).toEqual(["first"]);
+  });
+});
+
+// ── moving the conversation (step A7) ───────────────────────────────────────
+
+describe("moving the conversation", () => {
+  const tick = () => new Promise((r) => setTimeout(r, 20));
+  const firstText = (m: StoredMessage) => (m.content as { text: string }[])[0].text;
+
+  it("moves once the reply is over, and the user's words answer there", async () => {
+    const { engine, store, events } = await setup(
+      [
+        message([text("Moving."), toolUse("t1", "go_to_thread", { thread: "B", words: "give me the details" })], "tool_use"),
+        message([text("Moving to the other thread.")], "end_turn"),
+        message([text("Here are the details.")], "end_turn"),
+      ],
+      [goToThread, listThreads],
+    );
+    const b = await engine.newThread();
+    await store.setTitle(b.id, "B");
+    const a = await engine.send({ threadId: null, text: "let's go to B and give me the details", source: "voice" });
+    await engine.settled(a);
+    await tick();
+    await engine.settled(b.id);
+
+    const go = events.findIndex((e) => e.type === "goThread");
+    expect(events[go]).toEqual({ type: "goThread", threadId: b.id, from: a, surface: "desktop" });
+    // After the reply here was whole and the turn idle.
+    const idle = events.findIndex((e) => e.type === "turnState" && e.threadId === a && e.state === "idle");
+    expect(idle).toBeGreaterThan(-1);
+    expect(go).toBeGreaterThan(idle);
+    const there = store.loaded(b.id);
+    expect(there[0]).toMatchObject({ role: "user", source: "voice" });
+    expect(firstText(there[0])).toBe(
+      "[Brought over by Duck from the thread; the words below are yours from there.]\n\ngive me the details",
+    );
+    expect(roles(there)).toEqual(["user", "system", "assistant"]);
+  });
+
+  it("moves the phone's view for a phone's request, and goes back", async () => {
+    const { engine, store, events } = await setup(
+      [
+        message([toolUse("t1", "go_to_thread", { thread: "B" })], "tool_use"),
+        message([text("Moving.")], "end_turn"),
+        message([toolUse("t2", "go_to_thread", { thread: "back" })], "tool_use"),
+        message([text("Back we go.")], "end_turn"),
+      ],
+      [goToThread],
+    );
+    const b = await engine.newThread();
+    await store.setTitle(b.id, "B");
+    const a = await engine.send({ threadId: null, text: "go to B", source: "phone" });
+    await engine.settled(a);
+    // Asked on the desktop, "back" has nowhere to go: only the phone moved.
+    await turn(engine, "go back", b.id);
+    const moves = events.filter((e) => e.type === "goThread");
+    expect(moves[0]).toEqual({ type: "goThread", threadId: b.id, from: a, surface: "phone" });
+    expect(moves).toHaveLength(1);
+    const result = store.loaded(b.id).find((m) => m.source === "duck" && m.role === "user")!;
+    expect(JSON.stringify(result.content)).toContain("no thread to go back to");
+
+    // From the phone, "back" returns to where it was.
+    const { engine: e2, store: s2, events: ev2 } = await setup(
+      [
+        message([toolUse("t1", "go_to_thread", { thread: "B" })], "tool_use"),
+        message([text("Moving.")], "end_turn"),
+        message([toolUse("t2", "go_to_thread", { thread: "back" })], "tool_use"),
+        message([text("Back we go.")], "end_turn"),
+      ],
+      [goToThread],
+    );
+    const b2 = await e2.newThread();
+    await s2.setTitle(b2.id, "B");
+    const a2 = await e2.send({ threadId: null, text: "go to B", source: "phone" });
+    await e2.settled(a2);
+    await e2.send({ threadId: b2.id, text: "go back", source: "phone-voice" });
+    await e2.settled(b2.id);
+    expect(ev2.filter((e) => e.type === "goThread")).toEqual([
+      { type: "goThread", threadId: b2.id, from: a2, surface: "phone" },
+      { type: "goThread", threadId: a2, from: b2.id, surface: "phone" },
+    ]);
+  });
+
+  it("starts a new thread with go once the reply is over, its brief a note, not the user's", async () => {
+    const { engine, store, events, calls } = await setup(
+      [
+        message(
+          [
+            toolUse("t1", "start_thread", {
+              words: "new thread for the release plan",
+              go: true,
+              brief: "We picked Friday for the release.",
+            }),
+          ],
+          "tool_use",
+        ),
+        message([text("Moving to the new thread.")], "end_turn"),
+        message([text("Let's plan it.")], "end_turn"),
+      ],
+      [startThread],
+    );
+    const a = await engine.send({ threadId: null, text: "new thread for the release plan, let's talk there", source: "desktop" });
+    await engine.settled(a);
+    const made = events.filter((e) => e.type === "thread").map((e) => (e as { thread: ThreadRow }).thread.id);
+    const other = made.find((x) => x !== a)!;
+    expect(events.find((e) => e.type === "goThread")).toEqual({ type: "goThread", threadId: other, from: a, surface: "desktop" });
+    await tick();
+    await engine.settled(other);
+    const there = store.loaded(other);
+    expect(roles(there)).toEqual(["user", "system", "assistant"]);
+    expect(firstText(there[0])).toBe(
+      "[Moved here by Duck from the thread; the words below are yours from there.]\n\nnew thread for the release plan",
+    );
+    const note = (there[1].content as { content: { text: string }[] }).content[0].text;
+    expect(note).toBe(briefNote(undefined, "We picked Friday for the release."));
+    // The new thread's request started only after the move.
+    expect(calls).toHaveLength(3);
+    expect(calls[2].params.messages.map((m) => m.role)).toEqual(["user", "system"]);
+  });
+
+  it("drops the move when the turn is stopped", async () => {
+    const { engine, store, events } = await setup(
+      [message([toolUse("t1", "go_to_thread", { thread: "B" })], "tool_use"), { hang: "Moving" }],
+      [goToThread],
+    );
+    const b = await engine.newThread();
+    await store.setTitle(b.id, "B");
+    const a = await engine.send({ threadId: null, text: "go to B", source: "desktop" });
+    await tick();
+    engine.stop(a);
+    await engine.settled(a);
+    expect(events.some((e) => e.type === "goThread")).toBe(false);
   });
 });

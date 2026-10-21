@@ -12,6 +12,10 @@
 // Like every surface it only speaks the protocol: `sync` on connect, `thread.open`
 // for a thread's history, then live events. The open thread, the drawer's width
 // and the queue-or-interrupt choice persist in prefs.
+//
+// Moving the conversation (step A7): a `goThread` for the desktop opens that
+// thread, so conversation mode's next turn goes there. The words Duck brings over
+// come next, as your message there, and their reply is spoken as yours would be.
 
 import { useSyncExternalStore } from "react";
 import { getDuck, initAssistant } from "../../assistant";
@@ -119,6 +123,8 @@ const listeners = new Set<() => void>();
 let adopting = false;
 /** Threads whose provisional turn's reply is already being spoken. */
 const spokenEarly = new Set<string>();
+/** The thread Duck just moved the conversation into (A7). */
+let movedInto: string | null = null;
 
 function set(patch: Partial<DuckState>): void {
   state = { ...state, ...patch };
@@ -281,6 +287,12 @@ function onEvent(e: DuckEvent): void {
       });
       if (spokenEarly.delete(e.threadId)) stopSpeaking();
       break;
+    case "goThread":
+      if (e.surface !== "desktop" || !state.threads.some((t) => t.id === e.threadId)) break;
+      movedInto = e.threadId;
+      if (document.visibilityState === "visible") set({ open: true });
+      openThread(e.threadId);
+      break;
     case "message": {
       const m = e.message;
       const have = state.messages[m.threadId];
@@ -297,7 +309,10 @@ function onEvent(e: DuckEvent): void {
       }
       // Spoken replies (V2): a message of yours decides whether its reply is spoken.
       // Only the open thread: a thread Duck splits off carries your source too.
-      if (m.role === "user" && m.threadId === state.current && !early) onUserMessage(m, userText(m));
+      if (m.role === "user" && m.threadId === state.current && !early) {
+        onUserMessage(m, userText(m), movedInto === m.threadId);
+        movedInto = null;
+      }
       // A queued message of ours has started its turn.
       const waiting = state.queued[m.threadId];
       if (m.role === "user" && waiting?.length) {

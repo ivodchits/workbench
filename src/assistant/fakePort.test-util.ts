@@ -3,7 +3,7 @@
 // Actions are recorded in `calls` (notes writes also change the notes, with the
 // revision check); `phase()` fires the `onPhase` listeners.
 
-import type { Spend } from "../ipc/assistant";
+import type { Spend, ThreadRow } from "../ipc/assistant";
 import type { Note, NoteMeta } from "../ipc/notes";
 import type { PluginFile, Problem } from "../ipc/plugins";
 import type { TranscriptPage } from "../ipc/transcript";
@@ -500,7 +500,15 @@ export function fakePort(data: FakePortData = {}): FakePort {
 export function toolCtx(
   port: WorkbenchPort,
   settings: Partial<DuckSettings> = {},
-): ToolContext & { prepared: undefined; notices: Notice[]; posted: string[] } {
+): ToolContext & {
+  prepared: undefined;
+  notices: Notice[];
+  posted: string[];
+  rows: ThreadRow[];
+  replies: Record<string, string>;
+  trailIds: string[];
+  moved: { to: string; words?: string }[];
+} {
   const ctx = {
     port,
     prepared: undefined,
@@ -518,6 +526,23 @@ export function toolCtx(
     startThread(words: string) {
       ctx.started.push(words);
       return Promise.resolve(`t${ctx.started.length + 1}`);
+    },
+    /** The threads `ctx.threads` lists, the trail, and the moves asked for. */
+    rows: [] as ThreadRow[],
+    replies: {} as Record<string, string>,
+    trailIds: [] as string[],
+    moved: [] as { to: string; words?: string }[],
+    threads: {
+      list: () => ctx.rows,
+      lastReply: (id: string) => ctx.replies[id] ?? null,
+      trail: () => ctx.trailIds,
+      go(to: string, words?: string) {
+        ctx.moved.push({ to, ...(words && { words }) });
+      },
+      remove(id: string) {
+        ctx.rows = ctx.rows.filter((t) => t.id !== id);
+        return Promise.resolve();
+      },
     },
     notices: [] as Notice[],
     posted: [] as string[],

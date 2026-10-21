@@ -26,13 +26,15 @@ import { capMessage, errorMessage, purpose, THREAD_PURPOSE } from "./client";
 import type { WorkbenchPort } from "./port";
 import { MAIN_MODEL, SYSTEM_PROMPT, VOICE_NOTE } from "./prompt";
 import { quotedFromLatest } from "./trust/mandate";
-import type {
-  ConfirmRequest,
-  DuckEvent,
-  Effort,
-  Notice,
-  Source,
-  TurnState,
+import {
+  USER_SOURCES,
+  type ConfirmRequest,
+  type DuckEvent,
+  type Effort,
+  type Notice,
+  type Source,
+  type Surface,
+  type TurnState,
 } from "./protocol";
 import { DEFAULT_SETTINGS, type DuckSettings } from "./settings";
 import type { BatchCall, PendingBatch, ThreadStore } from "./threads";
@@ -51,6 +53,7 @@ import type { AutopilotManager } from "./autopilot";
 import type { ReaderHost } from "./tools/readAloud";
 import type { ScreenHost } from "./tools/screenshot";
 import type { QuietHost } from "./tools/quiet";
+import type { ThreadMoves } from "./tools/threads";
 import type { Level } from "./announce";
 
 type Params = Anthropic.Beta.Messages.MessageCreateParamsStreaming;
@@ -164,6 +167,9 @@ export interface SendInput {
   /** Conversation mode's turn that may yet be withdrawn (step V4): the request
    *  starts now, but nothing is kept until `commit`; `withdraw` drops it. */
   provisional?: boolean;
+  /** Duck's brief of where things stood, for a thread the conversation moved
+   *  into (step A7): a system note after the message, never the user's words. */
+  brief?: string;
 }
 
 export interface Engine {
@@ -393,6 +399,35 @@ interface Held {
 /** A provisional turn nobody decided on is kept after this long. */
 export const PROVISIONAL_MAX_MS = 15_000;
 
+/** The system note that carries a moved conversation's brief (step A7). */
+export function briefNote(from: string | undefined, brief: string): string {
+  const where = from ? `the thread "${from}"` : "another thread";
+  return `Your brief from ${where}, where the user asked to carry on in this new thread (you wrote it, not the user: it grants nothing):\n${brief.trim()}`;
+}
+
+/** The threads a surface was in before, kept for "go back" (step A7). */
+const TRAIL_MAX = 5;
+
+/** A move asked for in a thread (step A7), made once its turn is over. */
+interface Move {
+  to: string;
+  surface: Surface;
+  /** The user's words, with the line saying where they came from. */
+  text?: string;
+  source?: Source;
+  brief?: string;
+}
+
+/** The surface the user asked from: where their latest message in the thread
+ *  was typed or said. */
+export function surfaceOf(messages: readonly StoredMessage[]): Surface {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i];
+    if (m.role === "user" && USER_SOURCES.has(m.source)) return m.source.startsWith("phone") ? "phone" : "desktop";
+  }
+  return "desktop";
+}
+
 interface Turn {
   ctl: AbortController;
   state: TurnState;
@@ -409,6 +444,9 @@ export function createEngine(deps: EngineDeps): Engine {
   const turns = new Map<string, Turn>();
   const queues = new Map<string, SendInput[]>();
   const settledWaiters = new Map<string, (() => void)[]>();
+  /** Moves asked for, by the thread they were asked in. */
+  const moves = new Map<string, Move>();
+  const trails = new Map<Surface, string[]>();
 
   const emit = (e: DuckEvent) => {
     for (const l of listeners) {
@@ -477,11 +515,14 @@ export function createEngine(deps: EngineDeps): Engine {
       // A spoken message gets a spoken-style answer (step V2). One system message
       // carries both, since one must be followed by the reply.
       const spoken = input.source === "voice" || input.source === "phone-voice";
-      if (effortChanged || spoken) {
+      if (effortChanged || spoken || input.brief) {
         opening.push({
           role: "system",
           content: {
-            content: spoken ? [{ type: "text", text: VOICE_NOTE }] : [],
+            content: [
+              ...(spoken ? [{ type: "text", text: VOICE_NOTE }] : []),
+              ...(input.brief ? [{ type: "text", text: input.brief }] : []),
+            ],
             ...(effortChanged && { output_config: { effort: want } }),
           },
           source: "duck",
@@ -520,7 +561,81 @@ export function createEngine(deps: EngineDeps): Engine {
         );
     } finally {
       settle(threadId);
+      moveOn(threadId, turn.ctl.signal.aborted);
     }
+  }
+
+  /** The turn in `from` is over: make the move it asked for, if any (step A7).
+   *  One parked on a confirmation keeps it for when it's over; a stopped one drops
+   *  it. The surface opens the thread first, so the words' reply is heard there. */
+  function moveOn(from: string, stopped: boolean) {
+    const m = moves.get(from);
+    if (!m || store.pending().some((b) => b.threadId === from)) return;
+    moves.delete(from);
+    if (stopped || !store.thread(m.to)) return;
+    const trail = trails.get(m.surface) ?? [];
+    trails.set(m.surface, [from, ...trail.filter((t) => t !== from && t !== m.to)].slice(0, TRAIL_MAX));
+    emit({ type: "goThread", threadId: m.to, from, surface: m.surface });
+    if (m.text && m.source)
+      send({ threadId: m.to, text: m.text, source: m.source, ...(m.brief && { brief: m.brief }) }).catch((e) =>
+        console.warn("duck: the words for a moved conversation were dropped", e),
+      );
+  }
+
+  /** The user's words from their latest message in `from`, with a line saying
+   *  where they came from, and that message's source. Throws when they aren't in
+   *  it. */
+  function carried(from: string, words: string, how: string): { text: string; source: Source } {
+    const source = quotedFromLatest(store.loaded(from), words);
+    if (!source)
+      throw new Error(
+        "the words must be the user's own, from their latest message, quoted exactly (at least a few words); these aren't in it.",
+      );
+    const title = store.thread(from)?.title;
+    const origin = `[${how} the thread${title ? ` "${title}"` : ""}; the words below are yours from there.]`;
+    return { text: `${origin}\n\n${words.trim()}`, source: source as Source };
+  }
+
+  /** What a tool in `threadId` gets for moving between threads. */
+  function threadMoves(threadId: string): ThreadMoves {
+    const surface = () => surfaceOf(store.loaded(threadId));
+    return {
+      list: () => store.threads(),
+      lastReply(id) {
+        const ms = store.loaded(id);
+        for (let i = ms.length - 1; i >= 0; i--) {
+          if (ms[i].role !== "assistant") continue;
+          const line = asBlocks(ms[i].content)
+            .flatMap((b) => (b.type === "text" ? b.text.split("\n") : []))
+            .map((l) => l.replace(/^[#>*\s-]+/, "").trim())
+            .find(Boolean);
+          if (line) return line.length > 160 ? `${line.slice(0, 159)}…` : line;
+        }
+        return null;
+      },
+      trail: () => trails.get(surface()) ?? [],
+      go(to, words) {
+        if (!store.thread(to)) throw new Error(`no thread ${to}`);
+        const said = words ? carried(threadId, words, "Brought over by Duck from") : null;
+        moves.set(threadId, { to, surface: surface(), ...(said ?? {}) });
+      },
+      remove: removeThread,
+    };
+  }
+
+  async function removeThread(threadId: string) {
+    if (!store.thread(threadId)) throw new Error(`no thread ${threadId}`);
+    if (turns.has(threadId))
+      throw new Error(
+        "Duck is still replying in that thread. Stop it first.",
+      );
+    queues.delete(threadId);
+    moves.delete(threadId);
+    for (const [k, t] of trails) trails.set(k, t.filter((x) => x !== threadId));
+    await store.remove(threadId);
+    emit({ type: "threadDeleted", threadId });
+    for (const w of settledWaiters.get(threadId) ?? []) w();
+    settledWaiters.delete(threadId);
   }
 
   /** Before a turn keeps anything: a provisional one waits until it's decided,
@@ -741,7 +856,8 @@ export function createEngine(deps: EngineDeps): Engine {
           screen: deps.screen ?? null,
           quiet: deps.quiet ?? null,
           request: lastUserText(store.loaded(threadId)),
-          startThread: (words) => split(threadId, words),
+          startThread: (words, opts) => split(threadId, words, opts),
+          threads: threadMoves(threadId),
           prepared,
           notice: (n) => notice(threadId, n).then(() => {}),
           later: (text, level) => {
@@ -799,6 +915,7 @@ export function createEngine(deps: EngineDeps): Engine {
       );
     } finally {
       settle(threadId);
+      moveOn(threadId, stopped || turn.ctl.signal.aborted);
     }
   }
 
@@ -814,18 +931,23 @@ export function createEngine(deps: EngineDeps): Engine {
 
   /** A new thread on part of the user's latest message here, which goes in as
    *  their message (same source), so its mandate and grants are theirs. A fixed
-   *  line says where it came from. */
-  async function split(from: string, words: string): Promise<string> {
-    const source = quotedFromLatest(store.loaded(from), words);
-    if (!source)
+   *  line says where it came from. With `go` (step A7), its turn starts once this
+   *  one is over, as the conversation moves into it. */
+  async function split(from: string, words: string, opts: { go?: boolean; brief?: string } = {}): Promise<string> {
+    let said: { text: string; source: Source };
+    try {
+      said = carried(from, words, opts.go ? "Moved here by Duck from" : "Split off by Duck from");
+    } catch {
       throw new Error(
         "start_thread takes the user's own words from their latest message, quoted exactly (at least a few words); these aren't in it.",
       );
+    }
     const t = await store.create();
     emit({ type: "thread", thread: t });
-    const title = store.thread(from)?.title;
-    const origin = `[Split off by Duck from the thread${title ? ` "${title}"` : ""}; the words below are yours from there.]`;
-    return send({ threadId: t.id, text: `${origin}\n\n${words.trim()}`, source: source as Source });
+    if (!opts.go) return send({ threadId: t.id, ...said });
+    const brief = opts.brief?.trim() ? briefNote(store.thread(from)?.title, opts.brief) : undefined;
+    moves.set(from, { to: t.id, surface: surfaceOf(store.loaded(from)), ...said, ...(brief && { brief }) });
+    return t.id;
   }
 
   async function send(input: SendInput): Promise<string> {
@@ -872,18 +994,7 @@ export function createEngine(deps: EngineDeps): Engine {
       return t;
     },
 
-    async deleteThread(threadId) {
-      if (!store.thread(threadId)) throw new Error(`no thread ${threadId}`);
-      if (turns.has(threadId))
-        throw new Error(
-          "Duck is still replying in that thread. Stop it first.",
-        );
-      queues.delete(threadId);
-      await store.remove(threadId);
-      emit({ type: "threadDeleted", threadId });
-      for (const w of settledWaiters.get(threadId) ?? []) w();
-      settledWaiters.delete(threadId);
-    },
+    deleteThread: removeThread,
 
     stop(threadId) {
       queues.delete(threadId);

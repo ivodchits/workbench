@@ -32,6 +32,9 @@
 //   `provisional` sends, then `turn.commit` or `turn.withdraw`. A provisional
 //   turn's reply is spoken as it streams, as a committed one's is; withdrawn, what
 //   the phone still has queued is cut (`ttsCut`).
+// - Duck moving a phone's conversation (step A7, `goThread`): when the reply that
+//   moved it was spoken for a phone, the reply to the words it brought over is
+//   spoken for that phone too.
 
 import { z } from "zod";
 import type { StoredMessage } from "../ipc/assistant";
@@ -187,6 +190,11 @@ export function startRemoteBridge(d: BridgeDeps): RemoteBridge {
   const wanted: { conn: number; text: string }[] = [];
   /** Replies being spoken for a phone, by thread. */
   const speaking = new Map<string, Spoken>();
+  /** The phone each thread's latest reply was spoken for. */
+  const spokeFor = new Map<string, number>();
+  /** Threads Duck moved a phone's conversation into: the next message of yours
+   *  there is spoken for that phone. */
+  const follow = new Map<string, number>();
   const pushed = new Set<string>();
   /** Each thread's last reply spoken for a phone, until all of it is sent. */
   const tails = new Map<string, Promise<void>>();
@@ -241,9 +249,15 @@ export function startRemoteBridge(d: BridgeDeps): RemoteBridge {
     if (old) old.stopped = true;
     speaking.delete(threadId);
     const i = source.startsWith("phone") ? wanted.findIndex((w) => w.text === text) : -1;
-    if (i >= 0) {
+    const moved = source.startsWith("phone") ? follow.get(threadId) : undefined;
+    follow.delete(threadId);
+    const conn = i >= 0 ? wanted[i].conn : moved;
+    if (conn === undefined) spokeFor.delete(threadId);
+    else {
+      spokeFor.set(threadId, conn);
+      if (i < 0) lastConn.set(threadId, conn);
       const s: Spoken = {
-        conn: wanted[i].conn,
+        conn,
         reply: `r${++nextReply}`,
         cut: new Sentences(),
         chain: Promise.resolve(),
@@ -256,7 +270,7 @@ export function startRemoteBridge(d: BridgeDeps): RemoteBridge {
       setTimeout(() => {
         if (speaking.get(threadId) === s && !s.said && live(s)) say(threadId, s, "One moment.");
       }, ACK_MS);
-      wanted.splice(i, 1);
+      if (i >= 0) wanted.splice(i, 1);
     }
   }
 
@@ -302,6 +316,11 @@ export function startRemoteBridge(d: BridgeDeps): RemoteBridge {
       case "turnState":
         if (e.state === "idle" || e.state === "waiting") finish(e.threadId);
         break;
+      case "goThread": {
+        const conn = spokeFor.get(e.from);
+        if (e.surface === "phone" && conn !== undefined && conns.has(conn)) follow.set(e.threadId, conn);
+        break;
+      }
       case "confirm": {
         const r = e.request;
         if (conns.size === 0 && !pushed.has(r.toolUseId) && !d.watching()) {

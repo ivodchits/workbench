@@ -2118,6 +2118,77 @@ up ("change this", with a circle around it).
   - "New thread for the release plan, let's talk there" makes the thread, moves you
     in, and your next turn goes there; "go back" returns.
   - An ambiguous request gets a question, not a guess.
+- **As built (2026-10-21):**
+  - Three tools in `src/assistant/tools/threads.ts`:
+    - `list_threads` (read): up to 30 threads, newest first, each with its title,
+      when it was last active, the first line of its latest reply (when the engine
+      has its messages loaded), its worker tasks and running autopilots (with their
+      sessions), `here` for this thread, and `before: n` for the threads the user
+      was in before. Unread is left out: it's each surface's, not the engine's.
+    - `go_to_thread(thread, words?)` (reversible): `thread` is an id, a title (exact,
+      or a part only one thread has), or "back". A title several threads fit fails
+      with those threads listed and "Ask the user which one", so the model asks
+      rather than guessing. The thread you're in is refused.
+    - `start_thread` gains `go` and `brief`.
+  - The move, in the engine:
+    - It's held until the turn is over: after the reply and the turn going idle,
+      the engine emits `goThread {threadId, from, surface}`, then sends the words.
+    - A turn parked on a confirmation keeps its move until it's answered and
+      finished. A stopped turn drops it.
+    - `surface` is where the user's latest message in the thread came from: `phone`
+      or `phone-voice` moves the phones, anything else the desktop.
+    - The words are quoted from your latest message, as `start_thread` does, and go
+      in with your source, so a spoken request's answer is spoken. A line before
+      them says where they came from ("Brought over by Duck from the thread …").
+    - `start_thread` with `go` makes the thread at once but starts its turn only
+      with the move. The `brief` goes in as the opening's system note, marked as
+      Duck's (`briefNote`). It's never in a user message, so a grant can't be
+      quoted from it.
+    - "Back": each surface keeps the last 5 threads it was moved out of, in the
+      engine (in memory), and "back" goes to the newest of them. A deleted thread
+      leaves the trail. A move you make by clicking isn't in it.
+  - The surfaces:
+    - The desktop (`duckState.ts`) opens the thread, and the drawer too if the
+      window is visible. Conversation mode's next turn goes there, since turns go
+      to the open thread.
+    - The reply to the words brought over is spoken after the rest of "Moving to
+      …" rather than cutting it (`onUserMessage(…, moved)`).
+    - The phone (`duck.ts`) opens it. If its own voice spoke the reply that moved
+      it, it speaks the next reply there too.
+    - With the desktop's voice, the bridge does the same for the phone the reply
+      was spoken for. A read asked for there plays on that phone.
+  - The system prompt gained one line with the three examples ("go to the thread
+    with…", "new thread for…, let's talk there", "go back"), and a reminder to ask
+    when several threads fit.
+  - **Verified:**
+    - 11 new vitest cases:
+      - engine: the move comes after the reply and the idle state, the words are
+        answered there and stored with their source, a phone's request moves the
+        phone and "back" returns, `go` with a brief, and a stopped turn not moving;
+      - tools: finding a thread by id, title or part of one, ambiguous and missing
+        names, "back", `list_threads`' rows, and refusing the thread you're in;
+      - the bridge: the reply in the destination is spoken for that phone.
+    - tsc and eslint clean; 549 vitest pass.
+    - Live, not tried yet: the three "Done when" requests by voice, on the desktop
+      and the phone.
+  - **Cleaning up (added 2026-10-21, asked for with A7):** `delete_thread(threads,
+    grantedBy?)`.
+    - It's consequential, since a thread's messages are gone for good. The card names
+      each thread ("Delete 2 Duck threads and their messages, for good: …"), unless
+      the user's own words asked for it (`grantedBy`).
+    - Each thread is passed as an id and its title as `list_threads` shows it. One
+      whose title doesn't match is refused, so what's deleted is what the card named.
+    - Refused, with the reason, for:
+      - the thread Duck is replying in;
+      - one with a turn running;
+      - one a queued or running worker task, or an autopilot not stopped, reports to.
+    - At most 30 per call. It goes through the engine's `deleteThread`, the drawer's
+      delete, so every surface drops the thread.
+    - A phone still can't delete a thread directly (`thread.delete` is refused over
+      the remote socket), but it can ask Duck, which shows the card.
+    - The weekly sweep of old threads is in L4's housekeeping.
+    - **Verified:** 2 vitest cases (the card's sentence; what's deleted and what's
+      kept, and why).
 
 ### Track W — Workbench tools
 
@@ -4719,6 +4790,21 @@ up ("change this", with a circle around it).
     - It works on branch `housekeeping/<date>`. Duck fast-forwards `main` when the diff
       only tidies (no entries removed without a source-backed reason); otherwise it posts a
       *report* with the diff for your OK.
+    - **Old threads** (asked for 2026-10-21):
+      - An internal job in the same run, not the worker's: threads live in `duck.db`,
+        not the data repo.
+      - It deletes Duck threads with no activity for at least 7 days (the setting
+        "Delete threads idle for", in days; off turns it off), through the same path
+        as `delete_thread`.
+      - It never deletes:
+        - a thread open on a surface;
+        - one with a turn running or parked on a confirmation;
+        - one a worker task or an autopilot not stopped reports to;
+        - one with a `wait_for_session` watch;
+        - one marked "keep" (a pin in the thread list, added with this job);
+        - one whose messages the daily consolidation (L1/L2) hasn't read since its
+          last activity, so nothing is forgotten before it's remembered.
+      - The run's report names how many threads were deleted and lists their titles.
   - **Monthly docs cleanup** of `documentation/duck-architecture.md` and the plans'
     As-built notes, through `improve_duck(scope: code)`, as a reviewed branch in the
     Workbench repo.
@@ -4732,6 +4818,8 @@ up ("change this", with a circle around it).
   - A forced-push attempt is refused.
   - A housekeeping run produces a tidy branch and is fast-forwarded.
   - A routine missed while the app was closed runs once on the next start.
+  - Housekeeping deletes the threads idle for 7 days and keeps a pinned one, an open
+    one, and one a task reports to.
 - **Out of scope:** routines while Workbench isn't running (that's the "separate Duck" path
   in §Separable, not separate).
 
@@ -5936,7 +6024,7 @@ T2 goes live after the replay check in its done-when (the past week's prompts th
 | A4 | Deleting threads | ☑ |
 | A5 | Several threads at once: unread, the overview, threads Duck starts | ☐ |
 | A6 | Thread compaction | ☐ |
-| A7 | Moving the conversation between threads | ☐ |
+| A7 | Moving the conversation between threads | ☑ (live: by voice on the desktop and the phone, not tried yet) |
 | W1 | Read tools | ☑ |
 | W2 | Action tools + the confirmation policy | ☑ |
 | W3 | Session summaries | ☑ |
