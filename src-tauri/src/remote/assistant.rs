@@ -9,6 +9,12 @@
 //! - `GET /api/assistant/tts/{id}` — one sentence of a spoken reply the desktop
 //!   made for the phone (`audio/wav`, kept a few minutes). Auth: bearer.
 //!
+//! Conversation mode on the phone (step V4 part 3) is this server's, not the
+//! webview's: `conv.start` / `conv.stop` / `conv.playing` frames and the binary
+//! audio frames (`AUDIO_PCM`, `AUDIO_GAP` in `src/remote/protocol.ts`) feed V4's
+//! pipeline (`voice/conversation.rs`) here, and its `conv.*` frames go back to
+//! that socket. The phone then sends the turns to Duck as any message.
+//!
 //! Like the dashboard, Duck runs in the webview, so this is a bridge (the
 //! `remote-action` and snapshot patterns):
 //! - Up: each socket is numbered; its opening, its frames and its closing go to the
@@ -18,8 +24,9 @@
 //!   either to every socket or to the one that asked.
 
 use std::net::SocketAddr;
-use std::sync::atomic::Ordering;
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{mpsc, Arc};
+use std::time::Duration;
 
 use axum::body::Bytes;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
@@ -30,10 +37,12 @@ use axum::Json;
 use serde::Serialize;
 use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter, Manager, State as TauriState};
-use tokio::sync::broadcast;
+use tokio::sync::{broadcast, mpsc as tmpsc};
 
 use super::server::{authed, bearer, client_addr, ws_authed, SUBPROTOCOL};
 use super::{device_valid, RemoteState};
+use crate::voice::conversation::{self, Patience, StateEvent, Surface, TurnEvent};
+use crate::voice::endpoint::Output;
 use crate::voice::tts::TtsState;
 use crate::voice::VoiceState;
 
@@ -87,9 +96,127 @@ pub(super) async fn api_assistant(
         .on_upgrade(move |socket| handle(socket, state, device))
 }
 
+// ── conversation mode on the phone (step V4 part 3) ──
+
+const AUDIO_PCM: u8 = 0;
+const AUDIO_GAP: u8 = 1;
+/// The longest gap a frame may stand for (more is a broken page).
+const GAP_MAX: usize = 10 * 16_000;
+
+/// A binary frame as 16 kHz samples: speech as it came, or a gap of silence.
+fn audio_block(b: &[u8]) -> Option<Vec<f32>> {
+    match b.split_first()? {
+        (&AUDIO_PCM, pcm) => Some(pcm.chunks_exact(2).map(|s| i16::from_le_bytes([s[0], s[1]]) as f32 / 32768.0).collect()),
+        (&AUDIO_GAP, n) if n.len() == 4 => {
+            let n = u32::from_le_bytes([n[0], n[1], n[2], n[3]]) as usize;
+            (n <= GAP_MAX).then(|| vec![0.0; n])
+        }
+        _ => None,
+    }
+}
+
+/// A phone as conversation mode's surface: its socket, and what it says it's
+/// playing. Its browser cancels its own echo.
+struct Phone {
+    app: AppHandle,
+    out: tmpsc::UnboundedSender<String>,
+    playing: Arc<AtomicBool>,
+}
+
+impl Phone {
+    fn send(&self, v: Value) {
+        let _ = self.out.send(v.to_string());
+    }
+}
+
+impl Surface for Phone {
+    fn state(&self, ev: &StateEvent) {
+        self.send(json!({ "type": "conv.state", "run": ev.run, "state": ev.state, "held": ev.held, "message": ev.message }));
+    }
+
+    fn turn(&self, ev: &TurnEvent) {
+        self.send(json!({ "type": "conv.turn", "run": ev.run, "id": ev.id, "text": ev.text, "phase": ev.phase }));
+    }
+
+    fn level(&self, _: f32) {}
+
+    fn sign(&self, _: bool) {}
+
+    fn warm(&self) {
+        self.app.state::<TtsState>().warm_if_wanted();
+    }
+
+    fn speaking(&self) -> bool {
+        self.playing.load(Ordering::Relaxed)
+    }
+
+    fn cut(&self) {
+        self.playing.store(false, Ordering::Relaxed);
+        self.send(json!({ "type": "conv.cut" }));
+    }
+
+    fn cue(&self) {
+        self.send(json!({ "type": "conv.cue" }));
+    }
+
+    fn said_lately(&self, _: Duration) -> String {
+        String::new()
+    }
+
+    fn output(&self) -> Option<(Output, Option<String>)> {
+        None
+    }
+
+    fn hold_output(&self, _: bool) {}
+
+    fn finish(&self) {}
+}
+
+/// A socket's conversation run.
+struct PhoneRun {
+    cmds: mpsc::Sender<conversation::Cmd>,
+    audio: mpsc::Sender<Vec<f32>>,
+    playing: Arc<AtomicBool>,
+}
+
+impl Drop for PhoneRun {
+    fn drop(&mut self) {
+        let _ = self.cmds.send(conversation::Cmd::Stop);
+    }
+}
+
+/// A `conv.*` frame from the phone: start, stop, or what it's playing.
+fn conv_message(app: &AppHandle, run: &mut Option<PhoneRun>, out: &tmpsc::UnboundedSender<String>, msg: &Value) {
+    match msg["type"].as_str() {
+        Some("conv.start") => {
+            *run = None;
+            let patience = serde_json::from_value::<Patience>(msg["patience"].clone()).ok();
+            let (audio, heard) = mpsc::channel();
+            let playing = Arc::new(AtomicBool::new(false));
+            let io = Phone { app: app.clone(), out: out.clone(), playing: Arc::clone(&playing) };
+            match crate::voice::start_phone_conversation(app, Box::new(io), heard, patience) {
+                Some(cmds) => *run = Some(PhoneRun { cmds, audio, playing }),
+                None => {
+                    let _ = out.send(
+                        json!({ "type": "conv.state", "run": 0, "state": "error", "held": false, "message": "Voice isn't available on the desktop." })
+                            .to_string(),
+                    );
+                }
+            }
+        }
+        Some("conv.stop") => *run = None,
+        Some("conv.playing") => {
+            if let Some(r) = run {
+                r.playing.store(msg["on"].as_bool().unwrap_or(false), Ordering::Relaxed);
+            }
+        }
+        _ => {}
+    }
+}
+
 /// Per-connection loop: relay Duck's frames meant for this socket down, and the
-/// phone's frames up to the webview. Ends when either side closes, the server
-/// stops, or the device loses access.
+/// phone's frames up to the webview (conversation mode's to its run here). Ends
+/// when either side closes, the server stops, or the device loses access.
 async fn handle(mut socket: WebSocket, state: Arc<RemoteState>, device: String) {
     let mut kick = state.kick.subscribe();
     let Some(mut rx) = state.inner.lock().unwrap().duck.as_ref().map(|tx| tx.subscribe()) else {
@@ -97,8 +224,15 @@ async fn handle(mut socket: WebSocket, state: Arc<RemoteState>, device: String) 
     };
     let conn = state.next_conn.fetch_add(1, Ordering::Relaxed) + 1;
     input(&state.app, conn, &device, "open", None);
+    let (conv_out, mut conv_frames) = tmpsc::unbounded_channel::<String>();
+    let mut conv: Option<PhoneRun> = None;
     loop {
         tokio::select! {
+            Some(json) = conv_frames.recv() => {
+                if socket.send(Message::Text(json.into())).await.is_err() {
+                    break;
+                }
+            },
             frame = rx.recv() => match frame {
                 Ok(f) => {
                     if f.for_conn(conn) && socket.send(Message::Text(f.json.as_ref().into())).await.is_err() {
@@ -119,7 +253,15 @@ async fn handle(mut socket: WebSocket, state: Arc<RemoteState>, device: String) 
                 }
             },
             incoming = socket.recv() => match incoming {
+                Some(Ok(Message::Binary(b))) => {
+                    if let (Some(r), Some(block)) = (&conv, audio_block(&b)) {
+                        let _ = r.audio.send(block);
+                    }
+                }
                 Some(Ok(Message::Text(t))) => match serde_json::from_str::<Value>(t.as_str()) {
+                    Ok(msg) if msg["type"].as_str().is_some_and(|t| t.starts_with("conv.")) => {
+                        conv_message(&state.app, &mut conv, &conv_out, &msg);
+                    }
                     Ok(msg) => input(&state.app, conn, &device, "message", Some(msg)),
                     Err(_) => {
                         let _ = socket
@@ -132,6 +274,7 @@ async fn handle(mut socket: WebSocket, state: Arc<RemoteState>, device: String) 
             },
         }
     }
+    drop(conv);
     input(&state.app, conn, &device, "close", None);
 }
 
@@ -213,6 +356,23 @@ pub fn assistant_remote_push(app: AppHandle, thread_id: String, title: String, b
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn audio_frames_are_speech_or_gaps() {
+        let mut pcm = vec![AUDIO_PCM];
+        for s in [0i16, 16384, -32768] {
+            pcm.extend(s.to_le_bytes());
+        }
+        assert_eq!(audio_block(&pcm).unwrap(), [0.0, 0.5, -1.0]);
+        let mut gap = vec![AUDIO_GAP];
+        gap.extend(512u32.to_le_bytes());
+        assert_eq!(audio_block(&gap).unwrap(), vec![0.0; 512]);
+        gap.truncate(1);
+        gap.extend((GAP_MAX as u32 + 1).to_le_bytes());
+        assert!(audio_block(&gap).is_none(), "too long a gap");
+        assert!(audio_block(&[7, 1, 2]).is_none());
+        assert!(audio_block(&[]).is_none());
+    }
 
     #[test]
     fn a_frame_goes_to_its_socket_or_to_all() {

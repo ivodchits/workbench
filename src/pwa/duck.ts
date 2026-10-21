@@ -18,6 +18,13 @@
 //   loudness of what's playing. Tapping it hushes the reply.
 // - Trust: the header's button pauses it, the kill switch. Resuming, rules and
 //   settings stay on the desktop. The decisions are a read-only list.
+// - "talk" (step V4 part 3): conversation mode. The mic streams to the desktop
+//   (`converse.ts`), which hears the turns and says them back (`conv.turn`); each
+//   goes to Duck as a provisional message, kept on `final` and dropped if you went
+//   on talking. Replies are spoken; talking over Duck's voice stops it (the
+//   desktop's `conv.cut`), so the page says when that voice is playing. Off by
+//   "talk" again, by "that's all for now", after the desktop's quiet minutes, or
+//   when the page goes away (the screen off): the socket closes then.
 
 import { langOf, Sentences } from "../assistant/speakable";
 import { USER_SOURCES, type ConfirmRequest, type DecisionRow, type Notice, type TaskView, type TurnState } from "../assistant/protocol";
@@ -25,11 +32,12 @@ import type { DuckMode } from "../panels/Assistant/duck3d";
 import { startDuckCanvas, type DuckLook } from "../panels/Assistant/duckCanvas";
 import { lineDiff, oneLine, readableInput, sessionLink, toItems, type Item } from "../panels/Assistant/view";
 import { renderMarkdown } from "../panels/Editor/markdown";
-import type { RemoteDuckFrame, RemoteDuckMessage } from "../remote/protocol";
+import type { RemoteConvFrame, RemoteConvMessage, RemoteDuckFrame, RemoteDuckMessage } from "../remote/protocol";
 import { formatAgo } from "../util/format";
 import { $, el } from "./dom";
 import { apply, emptyView, userText, type DuckView } from "./duckStore";
 import { browserOut, fetchPart, playbackLevel, unlock } from "./duckSpeech";
+import { chime, stream, type Streaming } from "./converse";
 import { SpeechQueue } from "./speechQueue";
 import { micAvailable, record, type Recording } from "./mic";
 import { api, ApiError, checkAccess, openSocket } from "./net";
@@ -124,7 +132,7 @@ const queue = new SpeechQueue(browserOut, () => paintVoice());
 let hushed = false;
 /** Messages sent for the phone's own voice, waiting to be seen stored. */
 const nativeWanted: string[] = [];
-let native: { threadId: string; cut: Sentences } | null = null;
+let native: { threadId: string; cut: Sentences; provisional?: boolean } | null = null;
 
 // The mic.
 let recording: Recording | null = null;
@@ -135,9 +143,26 @@ let voiceNote = "";
 /** The composer's text came from the mic. */
 let dictated = false;
 
+// Conversation mode (V4 part 3).
+let talk: Streaming | null = null;
+let talkStarting = false;
+/** The desktop's state for it (`preparing`, `listening`, `hearing`, `grace`). */
+let talkState = "";
+let talkHeld = false;
+/** The desktop's newest run heard, and the last over: frames of runs up to that
+ *  one come late and are ignored. */
+let talkRun = 0;
+let talkEnded = 0;
+/** Turns sent provisionally, by id, with their thread. */
+const talkSent = new Map<number, string>();
+/** What the desktop was last told about Duck's voice here. */
+let playingSaid = false;
+/** The thread whose provisional turn the phone's own voice will answer. */
+let nativeProvisional: string | null = null;
+
 // ── the socket ──────────────────────────────────────────────────────────────
 
-function post(msg: RemoteDuckMessage): void {
+function post(msg: RemoteDuckMessage | RemoteConvMessage): void {
   if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify(msg));
 }
 
@@ -157,6 +182,7 @@ function connect(): void {
     if (ws !== socket) return;
     ws = null;
     paintConn("○ offline", "off");
+    if (talk || talkStarting) endTalk("The connection dropped, so conversation mode is off.");
     if (!shown || document.hidden) return;
     if (opened) {
       retry = setTimeout(connect, RECONNECT_MS);
@@ -188,6 +214,10 @@ function disconnect(): void {
 }
 
 function onFrame(f: RemoteDuckFrame): void {
+  if (f.type.startsWith("conv.")) {
+    onConv(f as RemoteConvFrame);
+    return;
+  }
   if (f.type === "tts") {
     // Duck's news (V5) plays only where this phone's speaking isn't off.
     const news = f.reply.startsWith("news");
@@ -229,7 +259,17 @@ function onFrame(f: RemoteDuckFrame): void {
 
 /** The phone's own voice: cut the reply to a message sent for it into sentences. */
 function speakNative(f: RemoteDuckFrame): void {
-  if (f.type === "message" && f.message.role === "user" && USER_SOURCES.has(f.message.source)) {
+  if (f.type === "provisional" && f.threadId === nativeProvisional) {
+    // A turn of conversation mode: its reply is said as it streams.
+    nativeProvisional = null;
+    native = { threadId: f.threadId, cut: new Sentences(), provisional: true };
+  } else if (f.type === "withdrawn" && native?.threadId === f.threadId && native.provisional) {
+    native = null;
+    queue.stop();
+  } else if (f.type === "message" && f.message.role === "user" && native?.provisional && native.threadId === f.message.threadId) {
+    // The provisional turn stood: its reply carries on.
+    native.provisional = false;
+  } else if (f.type === "message" && f.message.role === "user" && USER_SOURCES.has(f.message.source)) {
     if (native?.threadId === f.message.threadId) native = null;
     const i = f.message.source.startsWith("phone") ? nativeWanted.indexOf(userText(f.message).trim()) : -1;
     if (i >= 0) {
@@ -266,16 +306,28 @@ function hush(): void {
   queue.stop();
 }
 
-function send(text: string, voice: boolean): void {
+/** Send a message. Conversation mode's are spoken whatever the setting, and may
+ *  be `provisional`. */
+function send(text: string, voice: boolean, talked: { provisional: boolean } | null = null): void {
   const body = text.trim();
   if (!body) return;
   unlock();
   hush();
   hushed = false;
-  const speak = prefs.speak === "always" || (prefs.speak === "voice" && voice);
-  if (speak && prefs.voice === "phone") nativeWanted.push(body);
+  const speak = !!talked || prefs.speak === "always" || (prefs.speak === "voice" && voice);
+  if (speak && prefs.voice === "phone") {
+    if (talked?.provisional) nativeProvisional = view.current;
+    else nativeWanted.push(body);
+  }
   if (view.current === null) adopting = true;
-  post({ type: "send", threadId: view.current, text: body, ...(voice && { voice: true }), ...(speak && prefs.voice === "desktop" && { speak: true }) });
+  post({
+    type: "send",
+    threadId: view.current,
+    text: body,
+    ...(voice && { voice: true }),
+    ...(speak && prefs.voice === "desktop" && { speak: true }),
+    ...(talked?.provisional && { provisional: true }),
+  });
   stuck = true;
 }
 
@@ -295,6 +347,141 @@ function stopAll(): void {
   paintVoice();
 }
 
+// ── conversation mode (V4 part 3) ───────────────────────────────────────────
+
+async function startTalk(): Promise<void> {
+  if (talk || talkStarting) return;
+  if (ws?.readyState !== WebSocket.OPEN) {
+    setVoiceNote("Not connected to Workbench.");
+    return;
+  }
+  unlock();
+  hush();
+  hushed = false;
+  cancelRecording();
+  talkStarting = true;
+  talkState = "preparing";
+  voiceNote = "";
+  paintVoice();
+  // The desktop loads its models while the browser asks for the mic.
+  post({ type: "conv.start" });
+  try {
+    const s = await stream((frame) => {
+      if (ws?.readyState === WebSocket.OPEN) ws.send(frame);
+    });
+    if (talkStarting) talk = s;
+    else s.stop();
+  } catch (e) {
+    post({ type: "conv.stop" });
+    endTalk(
+      e instanceof DOMException && e.name === "NotAllowedError"
+        ? "The mic was refused. Allow it for this site in the browser's settings."
+        : `The mic didn't start: ${e instanceof Error ? e.message : String(e)}`,
+    );
+  } finally {
+    talkStarting = false;
+    paintVoice();
+  }
+}
+
+/** Conversation mode is over here (`message` says why, if it should). */
+function endTalk(message = ""): void {
+  talkEnded = Math.max(talkEnded, talkRun);
+  talk?.stop();
+  talk = null;
+  talkStarting = false;
+  talkState = "";
+  talkHeld = false;
+  talkSent.clear();
+  playingSaid = false;
+  setVoiceNote(message);
+}
+
+function stopTalk(): void {
+  post({ type: "conv.stop" });
+  endTalk();
+}
+
+function onConv(f: RemoteConvFrame): void {
+  if (!talk && !talkStarting) return;
+  if (f.type === "conv.state" || f.type === "conv.turn") {
+    if (f.run !== 0 && f.run <= talkEnded) return;
+    if (f.run > talkRun) talkRun = f.run;
+  }
+  switch (f.type) {
+    case "conv.state":
+      if (f.state === "off" || f.state === "error") {
+        endTalk(f.message ?? "");
+        return;
+      }
+      talkState = f.state;
+      talkHeld = f.held;
+      paintVoice();
+      return;
+    case "conv.turn":
+      routeTalk(f);
+      return;
+    case "conv.cut":
+      hush();
+      paintVoice();
+      return;
+    case "conv.cue":
+      chime();
+      return;
+  }
+}
+
+/** A turn the desktop heard: provisional into the open thread when it's free,
+ *  else a plain message once it's final. */
+function routeTalk(t: Extract<RemoteConvFrame, { type: "conv.turn" }>): void {
+  switch (t.phase) {
+    case "provisional": {
+      const id = view.current;
+      if (!id || (view.states[id] ?? "idle") !== "idle") return;
+      send(t.text, true, { provisional: true });
+      talkSent.set(t.id, id);
+      return;
+    }
+    case "withdrawn": {
+      const id = talkSent.get(t.id);
+      talkSent.delete(t.id);
+      if (id) post({ type: "turn.withdraw", threadId: id });
+      return;
+    }
+    case "final": {
+      const id = talkSent.get(t.id);
+      talkSent.delete(t.id);
+      if (id) post({ type: "turn.commit", threadId: id });
+      else send(t.text, true, { provisional: false });
+    }
+  }
+}
+
+function wireTalk(): void {
+  const b = $<HTMLButtonElement>("duck-talk");
+  if (!micAvailable()) {
+    b.classList.add("off");
+    b.onclick = () => setVoiceNote("Conversation mode needs the mic, which this page can't have here.");
+    return;
+  }
+  b.onclick = () => {
+    if (talk || talkStarting) stopTalk();
+    else void startTalk();
+  };
+}
+
+/** What conversation mode's line says. */
+function talkNote(): string {
+  const id = view.current;
+  const busy = !!id && (view.states[id] ?? "idle") !== "idle";
+  if (talkStarting || talkState === "preparing") return "getting the voice ready…";
+  if (talkHeld) return "● holding the turn open: say “go on” when you're done";
+  if (talkState === "hearing") return "● hearing you";
+  if (talkState === "grace") return "● sent; keep talking to add to it";
+  if (queue.speaking) return "speaking · talk to interrupt";
+  return busy ? "● thinking (listening)" : "● listening · say “that's all for now” to stop";
+}
+
 // ── the mic ─────────────────────────────────────────────────────────────────
 
 function setVoiceNote(text: string): void {
@@ -303,6 +490,7 @@ function setVoiceNote(text: string): void {
 }
 
 async function startRecording(): Promise<void> {
+  if (talk || talkStarting) stopTalk();
   unlock();
   hush();
   try {
@@ -406,7 +594,7 @@ function toEnd(): void {
 }
 
 function mode(): DuckMode {
-  if (recording || starting) return "listening";
+  if (recording || starting || talkState === "hearing") return "listening";
   if (queue.speaking) return "talking";
   const id = view.current;
   return AVATAR_MODE[id ? (view.states[id] ?? "idle") : "idle"];
@@ -419,7 +607,13 @@ function startAvatar(): void {
   stopDuck = startDuckCanvas(canvas, () => ({
     mode: mode(),
     look: LOOK,
-    level: recording ? () => recording?.level() ?? 0 : queue.speaking && prefs.voice === "desktop" ? playbackLevel : undefined,
+    level: recording
+      ? () => recording?.level() ?? 0
+      : talk && talkState === "hearing"
+        ? () => talk?.level() ?? 0
+        : queue.speaking && prefs.voice === "desktop"
+          ? playbackLevel
+          : undefined,
   }));
 }
 
@@ -431,10 +625,23 @@ function stopAvatar(): void {
 /** The mic's line and the stop button. */
 function paintVoice(): void {
   const line = $("duck-voice");
-  const note = recording || starting ? voiceNote || "listening…" : voiceNote || (queue.speaking ? "speaking · tap the duck to hush" : "");
+  const talking = !!(talk || talkStarting);
+  const note =
+    recording || starting
+      ? voiceNote || "listening…"
+      : talking
+        ? talkNote()
+        : voiceNote || (queue.speaking ? "speaking · tap the duck to hush" : "");
   line.textContent = note;
   line.classList.toggle("hidden", !note);
   $("duck-mic").classList.toggle("on", !!(recording || starting));
+  $("duck-talk").classList.toggle("on", talking);
+  // The desktop stops Duck's voice when you talk over it, so it's told when that
+  // voice plays here.
+  if (talk && queue.speaking !== playingSaid) {
+    playingSaid = queue.speaking;
+    post({ type: "conv.playing", on: playingSaid });
+  }
   const id = view.current;
   const running = !!id && (view.states[id] ?? "idle") !== "idle";
   $("duck-stop").classList.toggle("hidden", !running && !queue.speaking);
@@ -876,6 +1083,7 @@ function closeDuck(): void {
   shown = false;
   $("duck-overlay").classList.add("hidden");
   cancelRecording();
+  if (talk || talkStarting) stopTalk();
   hush();
   stopAvatar();
   disconnect();
@@ -971,11 +1179,13 @@ export function initDuck(d: typeof deps): void {
   sendBtn.onclick = sendComposer;
   $("duck-stop").onclick = stopAll;
   wireMic();
+  wireTalk();
 
   document.addEventListener("visibilitychange", () => {
     if (!shown) return;
     if (document.hidden) {
       cancelRecording();
+      if (talk || talkStarting) stopTalk();
       hush();
       stopAvatar();
       disconnect();

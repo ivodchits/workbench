@@ -134,6 +134,40 @@ describe("startRemoteBridge", () => {
     ]);
   });
 
+  it("speaks a provisional turn's reply as it streams, and cuts it when the turn is withdrawn", async () => {
+    const h = harness();
+    h.open(1);
+    expect(parseRemote({ type: "send", threadId: "t", text: "hi", voice: true, provisional: true }, fix)).toMatchObject({ provisional: true });
+    expect(parseRemote({ type: "turn.commit", threadId: "t" }, fix)).toEqual({ type: "turn.commit", threadId: "t" });
+    h.phone(1, { type: "send", threadId: "t", text: "what needs me", voice: true, speak: true, provisional: true });
+    h.event({ type: "provisional", threadId: "t", text: "what needs me", source: "phone-voice" });
+    h.event({ type: "delta", threadId: "t", text: "Two sessions need you. Api " });
+    const tts = () => h.sent.filter((s) => s.frame.type === "tts" || s.frame.type === "ttsEnd" || s.frame.type === "ttsCut");
+    await vi.waitFor(() => expect(tts()).toHaveLength(1));
+    // It stood: the message is stored, and the reply goes on as one.
+    h.phone(1, { type: "turn.commit", threadId: "t" });
+    h.event({ type: "message", message: userMessage("t", "what needs me", "phone-voice") });
+    h.event({ type: "delta", threadId: "t", text: "waits." });
+    h.event({ type: "turnState", threadId: "t", state: "idle", queued: 0 });
+    await vi.waitFor(() => expect(tts()).toHaveLength(3));
+    expect(tts().map((s) => [s.frame.type, "reply" in s.frame ? s.frame.reply : null])).toEqual([
+      ["tts", "r1"],
+      ["tts", "r1"],
+      ["ttsEnd", "r1"],
+    ]);
+
+    // The next one is withdrawn (you went on talking): what the phone has is cut.
+    h.phone(1, { type: "send", threadId: "t", text: "and the", voice: true, speak: true, provisional: true });
+    h.event({ type: "provisional", threadId: "t", text: "and the", source: "phone-voice" });
+    h.event({ type: "delta", threadId: "t", text: "Sure. The " });
+    await vi.waitFor(() => expect(tts()).toHaveLength(4));
+    h.event({ type: "withdrawn", threadId: "t" });
+    expect(tts()[4]).toEqual({ frame: { type: "ttsCut", threadId: "t", v: 1 }, conn: 1 });
+    h.event({ type: "delta", threadId: "t", text: "rest. And more. " });
+    await new Promise((r) => setTimeout(r, 20));
+    expect(tts()).toHaveLength(5);
+  });
+
   it("keeps the parts in order when a later sentence is ready first", async () => {
     const slow: ((v: { id: string; seconds: number }) => void)[] = [];
     const h = harness({

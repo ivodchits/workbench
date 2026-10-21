@@ -113,6 +113,10 @@ export function apply(v: DuckView, f: RemoteDuckFrame, adopting: boolean): { vie
         streaming: f.state === "idle" ? { ...v.streaming, [f.threadId]: "" } : v.streaming,
       };
       break;
+    case "withdrawn":
+      // A provisional turn was dropped (you went on talking): its reply so far goes.
+      v = { ...v, streaming: { ...v.streaming, [f.threadId]: "" } };
+      break;
     case "confirm":
       v = { ...v, asks: [...v.asks.filter((a) => a.toolUseId !== f.request.toolUseId), f.request] };
       break;

@@ -3490,7 +3490,7 @@ up ("change this", with a circle around it).
   - **Not built yet:**
     - echo cancellation (AEC3), the barge-in gate and the self-voice check: part 2
       (built, below);
-    - the phone's conversation button: part 3;
+    - the phone's conversation button: part 3 (built, below);
     - starting it by saying so in push-to-talk ("let's talk"): a tool for Duck,
       with S1.
 - **As built, part 2: echo cancellation (2026-10-21).** You can talk over Duck on
@@ -3551,6 +3551,67 @@ up ("change this", with a circle around it).
     - the done-when's 10 minutes with 0 false barge-ins, and 9 of 10 interruptions
       within ~300 ms;
     - switching from headphones to speakers mid-conversation.
+- **As built, part 3: the phone (2026-10-21).** A "talk" button beside the phone's
+  mic.
+  - **Changed from the plan: the desktop runs the VAD too.** The page doesn't run
+    `@ricky0123/vad-web`. The phone page is one HTML file compiled into the app
+    (`include_str!`), and vad-web would add onnxruntime-web's WASM (~10 MB) and a
+    model to it. Instead the page streams its mic, and the desktop runs part 1's
+    pipeline on it unchanged (Silero, the turn, Smart Turn, Parakeet per stretch,
+    the grace window, the verbal controls). One pipeline to keep right, and the
+    phone's turns are judged exactly as the desktop's.
+  - **The stream** (`src/pwa/converse.ts`): getUserMedia with the browser's echo
+    cancellation, noise suppression and gain on, a worklet, and a streaming
+    downsampler to 16 kHz (`StreamDownsampler`, the same output as R2's
+    whole-clip one). Binary frames on Duck's socket: `AUDIO_PCM` (int16) while
+    there's sound, `AUDIO_GAP` (a sample count) for silence, which the desktop
+    fills with zeros, so its clock for pauses keeps running. The gate (`Framer`) is
+    loose: over 2.5× the room's noise floor, 4 frames kept before a sound, 320 ms
+    after it sent live (the quick policy's 0.25 s check runs on real audio), longer
+    silence in gaps of 4 frames. A quiet room costs a few bytes a second, not 32 KB.
+  - **The desktop** (`remote/assistant.rs`): the socket's `conv.start` (the
+    desktop's pauses setting unless the phone names one), `conv.stop` and
+    `conv.playing` frames, and the audio, are handled there and never reach the
+    webview. A run per socket (`voice::start_phone_conversation`), through
+    `conversation::Surface`: part 1's loop now speaks to a surface, the desktop
+    (`Desktop`: mic, speakers, events, sign, tray, echo cancellation) or a phone
+    (`Phone`: its socket, no echo handling, since the browser does it). It answers
+    with `conv.state`, `conv.turn`, `conv.cut` and `conv.cue`. Closing the socket
+    ends the run. The speech model's "keep warm" is now counted, for two runs at
+    once.
+  - **The turns** go to Duck from the page, as any message: a `provisional`
+    `send` (spoken, `phone-voice`) into the open thread when it's free, then
+    `turn.commit` or `turn.withdraw`. A busy thread, or none, gets it as a plain
+    message when it's final. The bridge speaks a provisional turn's reply as it
+    streams, keeps speaking when it's committed, and cuts it (`ttsCut`) when it's
+    withdrawn. The phone's own voice does the same. Conversation mode's replies
+    are always spoken.
+  - **Talking over Duck:** the page says when its queue is playing
+    (`conv.playing`). ~0.3 s of your speech then gets a `conv.cut`, which hushes
+    the reply, as tapping the duck does.
+  - **UI:** "talk" lights while on. The voice line says getting ready / listening
+    / hearing you / sent, keep talking / thinking / speaking, talk to interrupt /
+    holding. The duck listens while you talk. Off by "talk" again, the mic button,
+    "that's all for now", the desktop's quiet minutes, closing Duck, or the page
+    going to the background (the socket closes then, as before), so the screen
+    must stay on.
+  - **Verified:**
+    - `a_streamed_turn_comes_out_whole` (ignored): one of X0's recordings streamed
+      in 32 ms blocks, then quiet as one gap, through a stream run. It came out as
+      a provisional turn ("What is the backend session doing right now?"), then
+      final, and the run ended with the stream;
+    - unit tests: the audio frames (Rust); the streaming downsampler against the
+      whole-clip one, the gate (every sample accounted for, a noisy room's floor),
+      the frame encoding, and the bridge speaking a provisional turn's reply and
+      cutting a withdrawn one (vitest);
+    - 261 Rust tests pass (14 ignored), clippy clean; 538 vitest, tsc and eslint
+      clean; the phone page builds.
+  - **Not verified live (yours to try):** conversation mode on a real phone over
+    the Funnel address: a turn, the grace window, talking over Duck's voice on
+    the phone's speaker (the browser's echo cancellation), "that's all for now",
+    and the mobile data it uses.
+  - **Not built:** listening with the screen off (the page's socket closes when
+    it's hidden, as R2's does; that's R4's Android app).
 
 ### Track S — Modes & skills
 
@@ -5895,7 +5956,7 @@ T2 goes live after the replay check in its done-when (the past week's prompts th
 | V1 | Push-to-talk with local STT on the GPU (desktop) | ☐ |
 | V2 | Natural spoken replies | ☐ |
 | V3 | Read-aloud and screen reading | ☑ (the desktop's speakers not tried live) |
-| V4 | Hands-free conversation mode | ◐ (parts 1 and 2: the desktop loop and echo cancellation; the phone to come) |
+| V4 | Hands-free conversation mode | ☑ (live: talking over Duck on speakers, and the phone, not tried yet) |
 | V5 | Proactive announcements | ☑ (the reply window built with V4) |
 | V6 | Wake word on the PC (experimental) | ☐ |
 | L1 | Long-term memory: files, index, recall | ☐ |

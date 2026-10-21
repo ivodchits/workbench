@@ -28,6 +28,10 @@
 // - Announcements (step V5) for a phone with Duck open come as `tts` parts of a
 //   `news…` reply, to every open phone; the phone's own "speak" setting decides
 //   whether it plays them.
+// - Conversation mode on the phone (step V4 part 3): its turns come as
+//   `provisional` sends, then `turn.commit` or `turn.withdraw`. A provisional
+//   turn's reply is spoken as it streams, as a committed one's is; withdrawn, what
+//   the phone still has queued is cut (`ttsCut`).
 
 import { z } from "zod";
 import type { StoredMessage } from "../ipc/assistant";
@@ -58,8 +62,11 @@ const Message = z.discriminatedUnion("type", [
     voice: z.boolean().optional(),
     speak: z.boolean().optional(),
     effort: z.enum(["low", "medium", "high", "xhigh", "max"]).optional(),
+    provisional: z.boolean().optional(),
   }),
   z.object({ type: z.literal("stop"), threadId: id }),
+  z.object({ type: z.literal("turn.commit"), threadId: id }),
+  z.object({ type: z.literal("turn.withdraw"), threadId: id }),
   z.object({ type: z.literal("confirm"), threadId: id, toolUseId: id, allow: z.boolean() }),
   z.object({ type: z.literal("trust.pause") }),
   z.object({ type: z.literal("trust.decisions"), before: z.number().int().nullable() }),
@@ -84,6 +91,7 @@ export function parseRemote(raw: unknown, fixVoice: (text: string) => string): C
         text: m.voice ? fixVoice(m.text) : m.text,
         source: m.voice ? "phone-voice" : "phone",
         ...(m.effort && { effort: m.effort }),
+        ...(m.provisional && { provisional: true }),
       };
     case "trust.pause":
       return { type: "trust.pause", paused: true };
@@ -135,6 +143,8 @@ interface Spoken {
   stopped: boolean;
   /** A sentence of it was queued. */
   said: boolean;
+  /** The reply to a provisional turn, not kept yet: the message it answers. */
+  provisional: string | null;
 }
 
 /** A spoken reply with nothing to say this long after the message gets a stock
@@ -218,38 +228,63 @@ export function startRemoteBridge(d: BridgeDeps): RemoteBridge {
     });
   }
 
+  /** A message of yours came in `threadId` (stored, or a provisional turn's):
+   *  whatever was speaking there, you've moved on. A phone's message it asked to
+   *  be spoken starts the speaking of its reply. */
+  function yours(threadId: string, text: string, source: string, provisional: boolean): void {
+    const k = source.startsWith("phone") ? sent.findIndex((w) => w.text === text) : -1;
+    if (k >= 0) {
+      lastConn.set(threadId, sent[k].conn);
+      sent.splice(k, 1);
+    } else lastConn.delete(threadId);
+    const old = speaking.get(threadId);
+    if (old) old.stopped = true;
+    speaking.delete(threadId);
+    const i = source.startsWith("phone") ? wanted.findIndex((w) => w.text === text) : -1;
+    if (i >= 0) {
+      const s: Spoken = {
+        conn: wanted[i].conn,
+        reply: `r${++nextReply}`,
+        cut: new Sentences(),
+        chain: Promise.resolve(),
+        parts: 0,
+        stopped: false,
+        said: false,
+        provisional: provisional ? text : null,
+      };
+      speaking.set(threadId, s);
+      setTimeout(() => {
+        if (speaking.get(threadId) === s && !s.said && live(s)) say(threadId, s, "One moment.");
+      }, ACK_MS);
+      wanted.splice(i, 1);
+    }
+  }
+
   const offEvents = d.duck.onEvent((e) => {
     switch (e.type) {
       case "message": {
         const m = e.message;
         // A message of yours (not a tool's results, which are stored as the user's
-        // too): whatever was speaking here, you've moved on.
+        // too).
         if (m.role !== "user" || !USER_SOURCES.has(m.source)) break;
-        const k = m.source.startsWith("phone") ? sent.findIndex((w) => w.text === textOf(m)) : -1;
-        if (k >= 0) {
-          lastConn.set(m.threadId, sent[k].conn);
-          sent.splice(k, 1);
-        } else lastConn.delete(m.threadId);
-        const old = speaking.get(m.threadId);
-        if (old) old.stopped = true;
-        speaking.delete(m.threadId);
-        const i = m.source.startsWith("phone") ? wanted.findIndex((w) => w.text === textOf(m)) : -1;
-        if (i >= 0) {
-          const s: Spoken = {
-            conn: wanted[i].conn,
-            reply: `r${++nextReply}`,
-            cut: new Sentences(),
-            chain: Promise.resolve(),
-            parts: 0,
-            stopped: false,
-            said: false,
-          };
-          speaking.set(m.threadId, s);
-          const threadId = m.threadId;
-          setTimeout(() => {
-            if (speaking.get(threadId) === s && !s.said && live(s)) say(threadId, s, "One moment.");
-          }, ACK_MS);
-          wanted.splice(i, 1);
+        // A provisional turn that stood: its reply is already being spoken.
+        const s = speaking.get(m.threadId);
+        if (s?.provisional === textOf(m)) {
+          s.provisional = null;
+          break;
+        }
+        yours(m.threadId, textOf(m), m.source, false);
+        break;
+      }
+      case "provisional":
+        yours(e.threadId, e.text, e.source, true);
+        break;
+      case "withdrawn": {
+        const s = speaking.get(e.threadId);
+        if (s?.provisional != null) {
+          s.stopped = true;
+          speaking.delete(e.threadId);
+          if (conns.has(s.conn)) d.link.emit({ type: "ttsCut", threadId: e.threadId, v: PROTOCOL_VERSION }, s.conn);
         }
         break;
       }

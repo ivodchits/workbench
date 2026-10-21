@@ -379,6 +379,9 @@ body .wb-tx-open-plan { display: none; }
 }
 #duck-mic.on { background: #ffd84a; color: var(--bg); border-color: #ffd84a; }
 #duck-mic.off { color: var(--dim); border-color: var(--line); }
+#duck-talk { min-width: 56px; color: #ffd84a; border-color: #6b5a1f; }
+#duck-talk.on { background: #ffd84a; color: var(--bg); border-color: #ffd84a; }
+#duck-talk.off { color: var(--dim); border-color: var(--line); }
 #duck-spend { display: flex; gap: 12px; justify-content: flex-end; font-size: 11px; color: var(--wb-textFaint); margin-top: 6px; }
 #duck-spend:empty { display: none; }
 

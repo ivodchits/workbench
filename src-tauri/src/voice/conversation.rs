@@ -32,6 +32,11 @@
 //! The **reply window** (V5's, built here) is the same pipeline for a few seconds
 //! after Duck announces something: a reply goes to that thread, and the window
 //! closes when it's sent or when nothing was said.
+//!
+//! **The phone** (V4 part 3) runs the same pipeline here, on the desktop: its page
+//! streams its microphone over Duck's socket, and a [`Surface`] stands for where a
+//! run hears and speaks ([`Desktop`], or the phone's socket in
+//! `remote/assistant.rs`).
 
 use std::collections::VecDeque;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
@@ -456,13 +461,13 @@ pub struct StateEvent {
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct TurnEvent {
-    run: u64,
-    id: u64,
-    text: String,
+pub struct TurnEvent {
+    pub run: u64,
+    pub id: u64,
+    pub text: String,
     /// `provisional` (start on it), `withdrawn` (you went on: drop it) or `final`.
-    phase: &'static str,
-    window: bool,
+    pub phase: &'static str,
+    pub window: bool,
 }
 
 pub enum Cmd {
@@ -487,10 +492,122 @@ const OUTPUT_EVERY: Duration = Duration::from_secs(3);
 /// What Duck said this recently is compared with what's heard over it.
 const SAID_WITHIN: Duration = Duration::from_secs(30);
 
+/// Where a run hears and speaks: the desktop, or a phone (V4 part 3).
+pub trait Surface: Send {
+    /// The run's state, its turns and the microphone's level, for the UI.
+    fn state(&self, ev: &StateEvent);
+    fn turn(&self, ev: &TurnEvent);
+    fn level(&self, level: f32);
+    /// The listening sign.
+    fn sign(&self, on: bool);
+    /// Start the voice replies will be spoken in.
+    fn warm(&self);
+    /// Duck's voice is playing there now.
+    fn speaking(&self) -> bool;
+    /// Cut Duck's voice (you talked over it, or said "stop").
+    fn cut(&self);
+    /// The soft "heard you" chime.
+    fn cue(&self);
+    /// What Duck said there lately (the self-voice check).
+    fn said_lately(&self, within: Duration) -> String;
+    /// The output Duck's voice comes out of, and its name; None where it isn't
+    /// the run's to handle (a phone's browser cancels its own echo).
+    fn output(&self) -> Option<(Output, Option<String>)>;
+    /// Keep the output open for the echo canceller's reference.
+    fn hold_output(&self, on: bool);
+    /// The run is over and was still the current one.
+    fn finish(&self);
+}
+
+/// The desktop: its microphone and speakers, the webview's events, the
+/// listening sign and the tray.
+pub struct Desktop(pub AppHandle);
+
+impl Desktop {
+    fn tts(&self) -> Option<tauri::State<'_, tts::TtsState>> {
+        self.0.try_state::<tts::TtsState>()
+    }
+}
+
+impl Surface for Desktop {
+    fn state(&self, ev: &StateEvent) {
+        if !matches!(ev.state, "off" | "error") {
+            let tray = match ev.state {
+                "preparing" => "Duck is getting ready to listen",
+                "hearing" | "grace" => "Duck is hearing you",
+                "deaf" => "Duck is speaking",
+                _ => "Duck is listening",
+            };
+            crate::attention::set_voice(&self.0, Some(tray));
+        }
+        let _ = self.0.emit(STATE_EVENT, ev);
+    }
+
+    fn turn(&self, ev: &TurnEvent) {
+        let _ = self.0.emit(TURN_EVENT, ev);
+    }
+
+    fn level(&self, level: f32) {
+        let _ = self.0.emit(LEVEL_EVENT, level);
+    }
+
+    fn sign(&self, on: bool) {
+        overlay::set(&self.0, on);
+    }
+
+    fn warm(&self) {
+        if let Some(t) = self.tts() {
+            t.warm_if_wanted();
+        }
+    }
+
+    fn speaking(&self) -> bool {
+        self.tts().is_some_and(|t| t.voice_active())
+    }
+
+    fn cut(&self) {
+        if let Some(t) = self.tts() {
+            t.stop(&self.0);
+        }
+    }
+
+    fn cue(&self) {
+        if let Some(t) = self.tts() {
+            t.cue();
+        }
+    }
+
+    fn said_lately(&self, within: Duration) -> String {
+        self.tts().map(|t| t.said_lately(within)).unwrap_or_default()
+    }
+
+    fn output(&self) -> Option<(Output, Option<String>)> {
+        Some((endpoint::default_output(), endpoint::default_output_name()))
+    }
+
+    fn hold_output(&self, on: bool) {
+        if let Some(t) = self.tts() {
+            t.hold_output(on);
+        }
+    }
+
+    fn finish(&self) {
+        overlay::set(&self.0, false);
+        crate::attention::set_voice(&self.0, None);
+    }
+}
+
+/// What a run hears: the desktop's microphone, or 16 kHz blocks from elsewhere
+/// (a phone).
+pub enum Source {
+    Mic,
+    Stream(Receiver<Vec<f32>>),
+}
+
 /// The speakers' stream held open for the echo canceller, let go however the run
 /// ends.
 struct HeldOutput<'a> {
-    tts: Option<&'a tts::TtsState>,
+    io: &'a dyn Surface,
     on: bool,
 }
 
@@ -498,10 +615,17 @@ impl HeldOutput<'_> {
     fn set(&mut self, on: bool) {
         if on != self.on {
             self.on = on;
-            if let Some(t) = self.tts {
-                t.hold_output(on);
-            }
+            self.io.hold_output(on);
         }
+    }
+}
+
+/// The speech model kept loaded while a run lasts.
+struct Warm<'a>(&'a Engine);
+
+impl Drop for Warm<'_> {
+    fn drop(&mut self) {
+        self.0.set_warm(false);
     }
 }
 
@@ -536,9 +660,10 @@ impl Audio {
     }
 }
 
-/// Start a mode or a window on a thread of its own, as run `id`. `done` runs
-/// when it ends, however it ends, and says whether it was still the one running
-/// (not replaced, nor stopped by a dictation, which has the listening sign now).
+/// Start a mode or a window on the desktop on a thread of its own, as run `id`.
+/// `done` runs when it ends, however it ends, and says whether it was still the
+/// one running (not replaced, nor stopped by a dictation, which has the listening
+/// sign now).
 pub fn start(
     app: AppHandle,
     engine: Arc<Engine>,
@@ -547,23 +672,41 @@ pub fn start(
     id: u64,
     done: impl FnOnce() -> bool + Send + 'static,
 ) -> Sender<Cmd> {
+    start_on(Box::new(Desktop(app)), engine, settings, kind, id, Source::Mic, done)
+}
+
+/// Start a run on any surface, hearing `source` (see [`start`]).
+pub fn start_on(
+    io: Box<dyn Surface>,
+    engine: Arc<Engine>,
+    settings: Settings,
+    kind: Kind,
+    id: u64,
+    source: Source,
+    done: impl FnOnce() -> bool + Send + 'static,
+) -> Sender<Cmd> {
     let (tx, rx) = mpsc::channel();
     let spawned = std::thread::Builder::new().name("voice-conversation".into()).spawn(move || {
         let window = matches!(kind, Kind::Window(_));
-        let result = run(&app, &engine, &settings, kind, id, &rx);
+        let result = run(io.as_ref(), &engine, &settings, kind, id, &rx, source);
         let (state, message) = match result {
             Ok(m) => ("off", m),
             Err(e) => ("error", Some(e)),
         };
         if done() {
-            engine.set_warm(false);
-            overlay::set(&app, false);
-            crate::attention::set_voice(&app, None);
+            io.finish();
         }
-        let _ = app.emit(
-            STATE_EVENT,
-            StateEvent { run: id, state, window, held: false, duplex: false, message, cancelling: false, suppression: None, output: None },
-        );
+        io.state(&StateEvent {
+            run: id,
+            state,
+            window,
+            held: false,
+            duplex: false,
+            message,
+            cancelling: false,
+            suppression: None,
+            output: None,
+        });
     });
     if let Err(e) = spawned {
         eprintln!("[voice] conversation didn't start: {e}");
@@ -573,21 +716,19 @@ pub fn start(
 
 /// The loaded models, the microphone and the turn, until stopped. Ok carries why
 /// it ended by itself, if it did.
-fn run(app: &AppHandle, engine: &Arc<Engine>, s: &Settings, kind: Kind, id: u64, cmds: &Receiver<Cmd>) -> Result<Option<String>, String> {
+fn run(
+    io: &dyn Surface,
+    engine: &Arc<Engine>,
+    s: &Settings,
+    kind: Kind,
+    id: u64,
+    cmds: &Receiver<Cmd>,
+    source: Source,
+) -> Result<Option<String>, String> {
     let window = matches!(kind, Kind::Window(_));
     let run = id;
     let emit = |state: &'static str, held: bool, duplex: bool, cancelling: bool, suppression: Option<f32>, output: &Option<String>| {
-        let tray = match state {
-            "preparing" => "Duck is getting ready to listen",
-            "hearing" | "grace" => "Duck is hearing you",
-            "deaf" => "Duck is speaking",
-            _ => "Duck is listening",
-        };
-        crate::attention::set_voice(app, Some(tray));
-        let _ = app.emit(
-            STATE_EVENT,
-            StateEvent { run, state, window, held, duplex, message: None, cancelling, suppression, output: output.clone() },
-        );
+        io.state(&StateEvent { run, state, window, held, duplex, message: None, cancelling, suppression, output: output.clone() });
     };
     emit("preparing", false, false, false, None, &None);
     let root = engine.root().to_path_buf();
@@ -601,17 +742,25 @@ fn run(app: &AppHandle, engine: &Arc<Engine>, s: &Settings, kind: Kind, id: u64,
     let mut vad = Vad::load(&root.join(vad::MODEL), &engine::tiny_session)?;
     let mut detector = SmartTurn::load(&root.join(turn::MODEL), &engine::tiny_session)?;
     engine.set_warm(true);
+    let _warm = Warm(engine);
     {
         let (engine, gpu) = (Arc::clone(engine), s.gpu);
         std::thread::spawn(move || {
             let _ = engine.preload(gpu);
         });
     }
-    let tts = app.try_state::<tts::TtsState>();
-    if let Some(t) = &tts {
-        t.warm_if_wanted();
-    }
-    let mic = capture::listen(s.device.clone()).map_err(|e| format!("The microphone didn't open: {e}"))?;
+    io.warm();
+    let (listener, stream);
+    let (blocks, lost) = match source {
+        Source::Mic => {
+            listener = capture::listen(s.device.clone()).map_err(|e| format!("The microphone didn't open: {e}"))?;
+            (&listener.blocks, "The microphone stopped (unplugged?).")
+        }
+        Source::Stream(rx) => {
+            stream = rx;
+            (&stream, "The phone stopped sending its microphone.")
+        }
+    };
 
     let mut machine = Machine::new(match kind {
         Kind::Mode => s.patience.policy(),
@@ -631,8 +780,7 @@ fn run(app: &AppHandle, engine: &Arc<Engine>, s: &Settings, kind: Kind, id: u64,
     let began = Instant::now();
     let mut active = Instant::now();
     let mut heard_any = false;
-    let mut output = endpoint::default_output();
-    let mut output_name = endpoint::default_output_name();
+    let mut output = io.output();
     let mut output_at = Instant::now();
     let mut voice_until: Option<Instant> = None;
     // The stream index Duck's voice was last playing at.
@@ -645,14 +793,14 @@ fn run(app: &AppHandle, engine: &Arc<Engine>, s: &Settings, kind: Kind, id: u64,
     // while it runs, for its reference.
     let mut canceller: Option<(Canceller, Option<String>)> = None;
     let mut gate = Gate::default();
-    let mut held_output = HeldOutput { tts: tts.as_deref(), on: false };
+    let mut held_output = HeldOutput { io, on: false };
 
     loop {
         match cmds.try_recv() {
             Ok(Cmd::Stop) | Err(mpsc::TryRecvError::Disconnected) => return Ok(None),
             Err(mpsc::TryRecvError::Empty) => {}
         }
-        match mic.blocks.recv_timeout(Duration::from_millis(100)) {
+        match blocks.recv_timeout(Duration::from_millis(100)) {
             Ok(b) => {
                 match &mut canceller {
                     Some((c, _)) => pending.extend(c.process(&b)),
@@ -661,14 +809,15 @@ fn run(app: &AppHandle, engine: &Arc<Engine>, s: &Settings, kind: Kind, id: u64,
                 pending_raw.extend(b);
             }
             Err(RecvTimeoutError::Timeout) => {}
-            Err(RecvTimeoutError::Disconnected) => return Err("The microphone stopped (unplugged?).".into()),
+            Err(RecvTimeoutError::Disconnected) => return Err(lost.into()),
         }
         if output_at.elapsed() >= OUTPUT_EVERY {
-            output = endpoint::default_output();
-            output_name = endpoint::default_output_name();
+            output = io.output();
             output_at = Instant::now();
         }
-        let (duplex, cancel) = s.echo.chain(output);
+        let output_name = output.as_ref().and_then(|o| o.1.clone());
+        // Where the output isn't ours (a phone), you can always talk over Duck.
+        let (duplex, cancel) = output.as_ref().map_or((true, false), |o| s.echo.chain(o.0));
         // Started, stopped, or another output (another room's echo): a fresh one.
         if cancel != canceller.is_some() || canceller.as_ref().is_some_and(|(_, on)| *on != output_name) {
             canceller = cancel.then(|| (Canceller::new(), output_name.clone()));
@@ -686,7 +835,7 @@ fn run(app: &AppHandle, engine: &Arc<Engine>, s: &Settings, kind: Kind, id: u64,
             let (e_raw, e_clean) = (energy(raw), energy(frame));
             level = level.max(((10.0 * e_clean.max(1e-12).log10() + 60.0) / 60.0).clamp(0.0, 1.0));
 
-            let speaking = tts.as_ref().is_some_and(|t| t.voice_active());
+            let speaking = io.speaking();
             if speaking {
                 voice_until = Some(Instant::now() + ECHO_TAIL);
                 voice_at = Some(audio.start + audio.buf.len());
@@ -703,9 +852,7 @@ fn run(app: &AppHandle, engine: &Arc<Engine>, s: &Settings, kind: Kind, id: u64,
             let events = machine.frame(p, deaf, &mut |from, to| detector.complete(&audio.slice(from, to)).unwrap_or(0.0));
             // Talking over Duck: your speech stops its voice.
             if duplex && speaking && machine.speech_frames() >= BARGE_FRAMES {
-                if let Some(t) = &tts {
-                    t.stop(app);
-                }
+                io.cut();
             }
             let mut queue: VecDeque<Event> = events.into();
             while let Some(ev) = queue.pop_front() {
@@ -724,7 +871,7 @@ fn run(app: &AppHandle, engine: &Arc<Engine>, s: &Settings, kind: Kind, id: u64,
                         // its echo got through.
                         if canceller.is_some()
                             && voice_at.is_some_and(|at| at >= from)
-                            && tts.as_ref().is_some_and(|tt| aec::self_voice(&text, &tt.said_lately(SAID_WITHIN)))
+                            && aec::self_voice(&text, &io.said_lately(SAID_WITHIN))
                         {
                             continue;
                         }
@@ -752,9 +899,7 @@ fn run(app: &AppHandle, engine: &Arc<Engine>, s: &Settings, kind: Kind, id: u64,
                                 queue.extend(machine.end_now());
                             }
                             Control::Stop(rest) => {
-                                if let Some(t) = &tts {
-                                    t.stop(app);
-                                }
+                                io.cut();
                                 keep(rest);
                                 if parts.is_empty() {
                                     machine.cancel();
@@ -784,26 +929,24 @@ fn run(app: &AppHandle, engine: &Arc<Engine>, s: &Settings, kind: Kind, id: u64,
                         }
                         turn_id += 1;
                         if bye {
-                            let _ = app.emit(TURN_EVENT, TurnEvent { run, id: turn_id, text, phase: "final", window });
+                            io.turn(&TurnEvent { run, id: turn_id, text, phase: "final", window });
                             return Ok(Some("Conversation mode is off (you said so).".into()));
                         }
                         if s.cue {
-                            if let Some(t) = &tts {
-                                t.cue();
-                            }
+                            io.cue();
                         }
-                        let _ = app.emit(TURN_EVENT, TurnEvent { run, id: turn_id, text: text.clone(), phase: "provisional", window });
+                        io.turn(&TurnEvent { run, id: turn_id, text: text.clone(), phase: "provisional", window });
                         sent = Some(text);
                     }
                     Event::Resumed => {
                         if sent.take().is_some() {
-                            let _ = app.emit(TURN_EVENT, TurnEvent { run, id: turn_id, text: String::new(), phase: "withdrawn", window });
+                            io.turn(&TurnEvent { run, id: turn_id, text: String::new(), phase: "withdrawn", window });
                         }
                         active = Instant::now();
                     }
                     Event::Committed => {
                         if let Some(text) = sent.take() {
-                            let _ = app.emit(TURN_EVENT, TurnEvent { run, id: turn_id, text, phase: "final", window });
+                            io.turn(&TurnEvent { run, id: turn_id, text, phase: "final", window });
                         }
                         parts.clear();
                         active = Instant::now();
@@ -826,7 +969,7 @@ fn run(app: &AppHandle, engine: &Arc<Engine>, s: &Settings, kind: Kind, id: u64,
             let now = (state, machine.held(), duplex, canceller.is_some(), suppression.map(|d| d.round() as i32));
             if shown != Some(now) {
                 if shown.map(|s| s.0 == "deaf") != Some(state == "deaf") {
-                    overlay::set(app, state != "deaf");
+                    io.sign(state != "deaf");
                 }
                 shown = Some(now);
                 emit(state, now.1, duplex, now.3, suppression, &output_name);
@@ -836,7 +979,7 @@ fn run(app: &AppHandle, engine: &Arc<Engine>, s: &Settings, kind: Kind, id: u64,
         pending.drain(..consumed);
 
         if level_at.elapsed() >= LEVEL_EVERY {
-            let _ = app.emit(LEVEL_EVENT, level);
+            io.level(level);
             level = 0.0;
             level_at = Instant::now();
         }
@@ -1054,6 +1197,79 @@ mod tests {
         assert_eq!(classify("На этом всё."), Control::Bye(String::new()));
         assert_eq!(classify("Don't stop the build"), Control::None);
         assert_eq!(classify("Wait for the tests to pass"), Control::None);
+    }
+
+    /// A surface that keeps what it's told (the phone's path, without a socket).
+    #[derive(Default)]
+    struct Kept {
+        turns: std::sync::Mutex<Vec<(String, &'static str)>>,
+        states: std::sync::Mutex<Vec<&'static str>>,
+    }
+
+    impl Surface for Arc<Kept> {
+        fn state(&self, ev: &StateEvent) {
+            self.states.lock().unwrap().push(ev.state);
+        }
+        fn turn(&self, ev: &TurnEvent) {
+            self.turns.lock().unwrap().push((ev.text.clone(), ev.phase));
+        }
+        fn level(&self, _: f32) {}
+        fn sign(&self, _: bool) {}
+        fn warm(&self) {}
+        fn speaking(&self) -> bool {
+            false
+        }
+        fn cut(&self) {}
+        fn cue(&self) {}
+        fn said_lately(&self, _: Duration) -> String {
+            String::new()
+        }
+        fn output(&self) -> Option<(Output, Option<String>)> {
+            None
+        }
+        fn hold_output(&self, _: bool) {}
+        fn finish(&self) {}
+    }
+
+    /// The phone's path: a recording streamed in 32 ms blocks as its page sends
+    /// them, then quiet as one gap, through a run on a [`Source::Stream`]. It
+    /// comes out as a provisional turn, then final, and the run ends when the
+    /// stream does (`cargo test --release a_streamed_turn -- --ignored
+    /// --nocapture`; `WB_MODELS`, `WB_TURN_WAV` a short spoken question).
+    #[test]
+    #[ignore]
+    fn a_streamed_turn_comes_out_whole() {
+        let models = std::path::PathBuf::from(std::env::var("WB_MODELS").expect("WB_MODELS"));
+        let audio = super::super::read_wav(std::path::Path::new(&std::env::var("WB_TURN_WAV").unwrap())).unwrap();
+        let engine = Arc::new(Engine::new(models));
+        let kept = Arc::new(Kept::default());
+        let (tx, rx) = mpsc::channel();
+        let settings = Settings {
+            gpu: GpuPref::Never,
+            device: None,
+            patience: Patience::Quick,
+            echo: EchoPref::Auto,
+            auto_off: Duration::from_secs(300),
+            cue: false,
+        };
+        let (done_tx, done_rx) = mpsc::channel();
+        let _cmds = start_on(Box::new(Arc::clone(&kept)), engine, settings, Kind::Mode, 1, Source::Stream(rx), move || {
+            let _ = done_tx.send(());
+            true
+        });
+        for block in audio.chunks(FRAME) {
+            tx.send(block.to_vec()).unwrap();
+        }
+        // The quiet after it, as the page sends it: one gap.
+        tx.send(vec![0.0; 4 * RATE]).unwrap();
+        std::thread::sleep(Duration::from_secs(3));
+        drop(tx);
+        done_rx.recv_timeout(Duration::from_secs(30)).unwrap();
+        let turns = kept.turns.lock().unwrap().clone();
+        println!("{turns:?}\n{:?}", kept.states.lock().unwrap());
+        assert_eq!(turns.iter().map(|t| t.1).collect::<Vec<_>>(), ["provisional", "final"]);
+        assert!(!turns[1].0.trim().is_empty());
+        assert_eq!(kept.states.lock().unwrap().last(), Some(&"error"), "the stream ended");
     }
 
     /// X0's speaker recording through this chain: the canceller (the reference

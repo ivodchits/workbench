@@ -253,6 +253,32 @@ fn run_conversation(app: &AppHandle, kind: Option<conversation::Kind>) {
     *slot = Some(conversation::Handle { cmds, kind, run });
 }
 
+/// Conversation mode for a phone (step V4 part 3): the same pipeline, on the
+/// audio its page streams, speaking through `io` (its socket), with the phone's
+/// pauses setting or the desktop's. Its runs are its socket's, apart from the
+/// desktop's.
+pub fn start_phone_conversation(
+    app: &AppHandle,
+    io: Box<dyn conversation::Surface>,
+    audio: std::sync::mpsc::Receiver<Vec<f32>>,
+    patience: Option<conversation::Patience>,
+) -> Option<std::sync::mpsc::Sender<conversation::Cmd>> {
+    let s = app.try_state::<VoiceState>()?;
+    let c = s.config.lock().map(|c| c.clone()).unwrap_or_default();
+    let settings = conversation::Settings {
+        gpu: c.gpu,
+        device: None,
+        // The phone's own, or the desktop's setting.
+        patience: patience.unwrap_or(c.patience),
+        echo: conversation::EchoPref::Auto,
+        auto_off: Duration::from_secs(60 * c.auto_off_min.max(1) as u64),
+        cue: c.cue,
+    };
+    let run = s.runs.fetch_add(1, Ordering::SeqCst) + 1;
+    let source = conversation::Source::Stream(audio);
+    Some(conversation::start_on(io, Arc::clone(&s.engine), settings, conversation::Kind::Mode, run, source, || true))
+}
+
 fn set_conversation(app: &AppHandle, on: bool) {
     run_conversation(app, on.then_some(conversation::Kind::Mode));
 }

@@ -21,6 +21,44 @@ export function downsample(input: Float32Array, from: number, to = TARGET_RATE):
   return out;
 }
 
+/** `downsample` a block at a time, as the mic streams (conversation mode, step V4):
+ *  the same output as downsampling the whole recording at once. */
+export class StreamDownsampler {
+  private readonly ratio: number;
+  /** Input from absolute index `offset` on, not yet used up. */
+  private buf = new Float32Array(0);
+  private offset = 0;
+  private next = 0;
+
+  constructor(
+    private readonly from: number,
+    private readonly to = TARGET_RATE,
+  ) {
+    this.ratio = from / to;
+  }
+
+  push(input: Float32Array): Float32Array {
+    if (this.from <= this.to) return input;
+    const joined = new Float32Array(this.buf.length + input.length);
+    joined.set(this.buf);
+    joined.set(input, this.buf.length);
+    const have = this.offset + joined.length;
+    const out: number[] = [];
+    while (Math.floor((this.next + 1) * this.ratio) <= have) {
+      const a = Math.floor(this.next * this.ratio);
+      const b = Math.floor((this.next + 1) * this.ratio);
+      let sum = 0;
+      for (let j = a; j < b; j++) sum += joined[j - this.offset];
+      out.push(b > a ? sum / (b - a) : 0);
+      this.next++;
+    }
+    const keep = Math.floor(this.next * this.ratio);
+    this.buf = joined.slice(keep - this.offset);
+    this.offset = keep;
+    return Float32Array.from(out);
+  }
+}
+
 /** Mono 16-bit PCM WAV of `samples` (-1..1) at `rate`. */
 export function encodeWav(samples: Float32Array, rate = TARGET_RATE): Uint8Array<ArrayBuffer> {
   const bytes = new Uint8Array(new ArrayBuffer(44 + samples.length * 2));

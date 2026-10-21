@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { concat, downsample, encodeWav, levelOf } from "./wav";
+import { concat, downsample, encodeWav, levelOf, StreamDownsampler } from "./wav";
 
 describe("wav", () => {
   it("brings 48 kHz down to 16 kHz, averaging", () => {
@@ -11,6 +11,19 @@ describe("wav", () => {
     expect(downsample(new Float32Array(44_100).fill(0.5), 44_100).every((x) => Math.abs(x - 0.5) < 1e-6)).toBe(true);
     const low = new Float32Array([1, 2]);
     expect(downsample(low, 16_000)).toBe(low);
+  });
+
+  it("downsamples a stream block by block as it would whole", () => {
+    const input = Float32Array.from({ length: 10_000 }, (_, i) => Math.sin(i / 7));
+    for (const rate of [48_000, 44_100]) {
+      const whole = downsample(input, rate);
+      const d = new StreamDownsampler(rate);
+      const parts: Float32Array[] = [];
+      for (let at = 0; at < input.length; at += 128) parts.push(d.push(input.subarray(at, at + 128)));
+      const streamed = concat(parts);
+      expect(streamed.length).toBe(whole.length);
+      expect(streamed.every((x, i) => Math.abs(x - whole[i]) < 1e-6)).toBe(true);
+    }
   });
 
   it("writes the 16 kHz mono 16-bit WAV the desktop reads", () => {

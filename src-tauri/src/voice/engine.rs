@@ -20,7 +20,7 @@
 //!   the VRAM, so the dGPU can sleep.
 
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -99,7 +99,8 @@ pub struct Engine {
     /// Why the GPU wasn't used last time it was asked for; None when it was.
     gpu_problem: Mutex<Option<String>>,
     /// Kept loaded regardless of idleness (the drawer open, conversation mode).
-    warm: AtomicBool,
+    /// Runs keeping the model loaded (conversation mode on the desktop or a phone).
+    warm: AtomicUsize,
 }
 
 fn err(e: impl std::fmt::Display) -> String {
@@ -211,7 +212,7 @@ impl Engine {
             loaded: Mutex::new(None),
             last_used: Mutex::new(Instant::now()),
             gpu_problem: Mutex::new(None),
-            warm: AtomicBool::new(false),
+            warm: AtomicUsize::new(0),
         }
     }
 
@@ -255,8 +256,13 @@ impl Engine {
         self.gpu_problem.lock().ok()?.clone()
     }
 
+    /// Keep the model loaded (on), until every run that asked has let go (off).
     pub fn set_warm(&self, on: bool) {
-        self.warm.store(on, Ordering::Relaxed);
+        if on {
+            self.warm.fetch_add(1, Ordering::Relaxed);
+        } else {
+            let _ = self.warm.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| n.checked_sub(1));
+        }
         self.touch();
     }
 
@@ -359,7 +365,7 @@ impl Engine {
             .name("voice-reaper".into())
             .spawn(move || loop {
                 std::thread::sleep(Duration::from_secs(10));
-                if engine.warm.load(Ordering::Relaxed) {
+                if engine.warm.load(Ordering::Relaxed) > 0 {
                     continue;
                 }
                 let idle_for = engine.last_used.lock().map(|t| t.elapsed()).unwrap_or_default();

@@ -203,8 +203,13 @@ export type RemoteDuckMessage =
        *  sentence at a time as it streams, then `ttsEnd`. */
       speak?: boolean;
       effort?: Effort;
+      /** Conversation mode (step V4): start now, keep only on `turn.commit`. */
+      provisional?: boolean;
     }
   | { type: "stop"; threadId: string }
+  /** A provisional turn stands, or is dropped (you went on talking). */
+  | { type: "turn.commit"; threadId: string }
+  | { type: "turn.withdraw"; threadId: string }
   | { type: "confirm"; threadId: string; toolUseId: string; allow: boolean }
   /** The kill switch: pauses trust. Resuming is done on the desktop. */
   | { type: "trust.pause" }
@@ -231,4 +236,32 @@ export type RemoteDuckFrame =
   /** Drop every part still queued (a read was paused or skipped, step V3). */
   | { type: "ttsCut"; threadId: string; v: number }
   /** Frames were dropped (a slow link): ask for the open thread again. */
-  | { type: "lagged" };
+  | { type: "lagged" }
+  | RemoteConvFrame;
+
+// Conversation mode on the phone (step V4 part 3). The page streams its mic to the
+// desktop, which runs the turn pipeline (`voice/conversation.rs`) on it. These
+// frames are the desktop server's, not Duck's: they never reach the webview.
+
+/** The phone's audio, as binary frames: a first byte, then its body. */
+export const AUDIO_PCM = 0; // 16 kHz mono int16 little-endian samples
+export const AUDIO_GAP = 1; // a u32 (LE): that many samples of silence
+
+/** What the phone tells the desktop about conversation mode. */
+export type RemoteConvMessage =
+  /** Start it, with these pauses (or the desktop's setting). */
+  | { type: "conv.start"; patience?: "quick" | "patient" | "thinking" }
+  | { type: "conv.stop" }
+  /** Duck's voice is playing on the phone (you may talk over it). */
+  | { type: "conv.playing"; on: boolean };
+
+/** What the desktop's pipeline tells the phone. */
+export type RemoteConvFrame =
+  /** The state (`listening`, `hearing`, `grace`, `preparing`, `off`, `error`). */
+  | { type: "conv.state"; run: number; state: string; held: boolean; message: string | null }
+  /** A turn: `provisional` (send it so), `withdrawn` or `final`. */
+  | { type: "conv.turn"; run: number; id: number; text: string; phase: "provisional" | "withdrawn" | "final" }
+  /** You talked over Duck, or said "stop": stop its voice. */
+  | { type: "conv.cut" }
+  /** A turn went out: the soft chime, if the phone plays it. */
+  | { type: "conv.cue" };
