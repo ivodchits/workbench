@@ -90,6 +90,12 @@ describe("duckStore", () => {
     expect(r.fx.open).toBe("b");
   });
 
+  it("keeps the autopilots for their cards", () => {
+    const a = { instanceId: "w", session: "workbench", threadId: "t1", state: "running" as const, text: "step 2 of 5 (P2) · working" };
+    const { v } = run([{ v: 1, type: "autopilots", autopilots: [a] }]);
+    expect(v.autopilots).toEqual([a]);
+  });
+
   it("pages the decisions, newest first", () => {
     const row = (id: number) => ({
       id,

@@ -2,7 +2,7 @@
 // folded into one state, as the drawer's `duckState.ts` does on the desktop.
 // Pure: no DOM, no socket, so it's tested on its own (`duckStore.test.ts`).
 
-import type { ConfirmRequest, DecisionRow, TaskView, TrustView, TurnState } from "../assistant/protocol";
+import type { AutopilotView, ConfirmRequest, DecisionRow, TaskView, TrustView, TurnState } from "../assistant/protocol";
 import type { ReaderView } from "../assistant/reader";
 import type { Spend, StoredMessage, ThreadRow } from "../ipc/assistant";
 import type { RemoteDuckFrame } from "../remote/protocol";
@@ -24,6 +24,8 @@ export interface DuckView {
   decisions: DecisionRow[];
   decisionsMore: boolean;
   tasks: TaskView[];
+  /** The session autopilots not stopped (steps P1, P2). */
+  autopilots: AutopilotView[];
   /** What's being read aloud (step V3), here or on the desktop. */
   reader: ReaderView | null;
   /** Duck's Do Not Disturb (V5), from its settings: until when, or null. */
@@ -45,6 +47,7 @@ export const emptyView = (): DuckView => ({
   decisions: [],
   decisionsMore: false,
   tasks: [],
+  autopilots: [],
   reader: null,
   dndUntil: null,
   error: null,
@@ -141,6 +144,9 @@ export function apply(v: DuckView, f: RemoteDuckFrame, adopting: boolean): { vie
     case "tasks":
       v = { ...v, tasks: f.tasks };
       break;
+    case "autopilots":
+      v = { ...v, autopilots: f.autopilots };
+      break;
     case "reader":
       v = { ...v, reader: f.reader };
       break;
@@ -156,7 +162,7 @@ export function apply(v: DuckView, f: RemoteDuckFrame, adopting: boolean): { vie
       fx.refetch = true;
       break;
     default:
-      // settings, autopilots, replay, tool, tts, goThread: not the store's (tts is
+      // settings, replay, tool, tts, goThread: not the store's (tts is
       // the player's; a move opens a thread through the view, `duck.ts`).
       break;
   }

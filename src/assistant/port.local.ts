@@ -621,7 +621,7 @@ export const localPort: WorkbenchPort = {
       awaySince ??= Date.now();
     };
     const back = () => {
-      if (awaySince !== null && Date.now() - awaySince >= AWAY_MS) cb();
+      if (awaySince !== null && Date.now() - awaySince >= AWAY_MS) cb(awaySince);
       awaySince = null;
     };
     window.addEventListener("blur", away);

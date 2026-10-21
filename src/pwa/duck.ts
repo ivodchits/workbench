@@ -27,7 +27,15 @@
 //   when the page goes away (the screen off): the socket closes then.
 
 import { langOf, Sentences } from "../assistant/speakable";
-import { USER_SOURCES, type ConfirmRequest, type DecisionRow, type Notice, type TaskView, type TurnState } from "../assistant/protocol";
+import {
+  USER_SOURCES,
+  type AutopilotView,
+  type ConfirmRequest,
+  type DecisionRow,
+  type Notice,
+  type TaskView,
+  type TurnState,
+} from "../assistant/protocol";
 import type { DuckMode } from "../panels/Assistant/duck3d";
 import { startDuckCanvas, type DuckLook } from "../panels/Assistant/duckCanvas";
 import { lineDiff, oneLine, readableInput, sessionLink, toItems, type Item } from "../panels/Assistant/view";
@@ -727,6 +735,7 @@ function paint(why: string, before?: DuckView): void {
       why === "open" ||
       (id && before.messages[id] !== view.messages[id]) ||
       before.tasks !== view.tasks ||
+      before.autopilots !== view.autopilots ||
       (id && (before.states[id] ?? "idle") !== (view.states[id] ?? "idle"));
     if (changed) paintItems();
     paintStream();
@@ -765,7 +774,25 @@ function paintItems(): void {
   }
   const active = (view.states[id] ?? "idle") !== "idle";
   for (const it of toItems(messages)) list.append(itemView(it, active));
+  // The thread's autopilots, last: where each run is, with its buttons.
+  for (const a of view.autopilots.filter((x) => x.threadId === id)) list.append(autopilotCard(a));
   if (stuck) toEnd();
+}
+
+function autopilotCard(a: AutopilotView): HTMLElement {
+  const card = el("div", "duck-task");
+  const head = el("div", "head");
+  head.append(el("strong", "", `⟳ ${a.session}`), el("span", a.state === "running" ? "working" : "needs", a.state));
+  card.append(head, el("div", "muted", a.text));
+  const bar = el("div", "bar");
+  for (const action of [a.state === "running" ? "pause" : "resume", "stop"] as const) {
+    const b = el("button", "", action);
+    b.type = "button";
+    b.onclick = () => post({ type: "autopilot", instanceId: a.instanceId, action });
+    bar.append(b);
+  }
+  card.append(bar);
+  return card;
 }
 
 function itemView(it: Item, active: boolean): HTMLElement {

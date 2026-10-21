@@ -5038,6 +5038,103 @@ up ("change this", with a circle around it).
   - A missed tracker tick gets one fix-up prompt.
 - **Out of scope:** autopilot editing the plan itself (it can *propose* plan edits as a
   `needs_you`).
+- **As built (2026-10-21):** all in the autopilot manager (`src/assistant/autopilot.ts`),
+  so each session's run keeps its own state, as P1's already did.
+  - **Bounds** (new `Autopilot` fields, defaulted, so stored P1 runs still load):
+    - `untilDone`: `maxSteps` doesn't stop it. The card reads "step 3 (P2)", without
+      "of 5".
+    - `window` (a daily window in local minutes; one past midnight wraps). Started
+      outside it, the run waits, paused, "waiting for its window, from 22:00", and starts
+      by itself then.
+    - `endsAt`. Starting with an end that has passed is refused.
+    - Both are checked before each continue (`gate`), never mid-turn. Past the end, the
+      run stops after the turn in progress: "its window ended at 07:00" / "it ran until
+      18:00". The card adds "· until Thu 07:00".
+  - **Subscription limits:** `gate` reads `usage_limits` before every compaction and
+    prompt. At `AUTOPILOT_LIMITS` (5-hour 90%, weekly 85%) it pauses, "the 5-hour limit
+    is at 93%; resuming at 14:21", holding the reviewed verdict and its prompt (`held`),
+    with `resumeAt` one minute after the latest reset among the windows that are over.
+    - A minute's timer (`tick`) resumes it then. `carryOut` passes the gate again, then
+      compacts and sends without a second review.
+    - Decided: the line sits higher than D2's 70/80%. D2 keeps room for your own
+      sessions while you work. Here the 5-hour window resets within hours, and the weekly
+      line keeps room for the rest of your week.
+    - A window whose reset time has passed counts as reset (`overLimits`): the snapshot
+      only changes when a session posts again, and nothing posts while everything
+      waits.
+    - It tells the thread at `info`, without an alert: nothing is needed from you.
+    - If you used the session meanwhile, the held verdict is dropped and that turn's end
+      is reviewed instead.
+    - `pause_autopilot` calls the wait off. `resume_autopilot` without a prompt carries
+      out the held verdict now, if the limits allow it.
+  - **The same step failing twice:** the review returns `failed`. The run counts
+    consecutive failed turns on the same step and pauses at two ("A2 failed twice in a
+    row"). The first failure goes on with the review's fix-up prompt.
+  - **Stalls:** each reviewed turn's time (prompt sent → `done`) is kept, the last 20.
+    - A turn running past `stallAfter` gets a check-in: 3× the run's median turn, at
+      least 10 minutes, or 45 minutes until two turns are known. Time waiting on a
+      permission prompt isn't checked.
+    - The check-in is a Sonnet call (`autopilot-stall`, frozen `STALL_SYSTEM`,
+      `{stuck, summary, why}`) on the turn's transcript so far.
+    - Stuck: the run pauses with what the turn did so far, and you get an alert. The
+      session isn't interrupted.
+    - Not stuck: a step-log line ("Still going after 31 min: running the full test
+      suite"), and another check when the turn has run twice as long.
+  - **Per-plan checklist** (`detectChecklist`, at start, unless `checklist` is given):
+    - always: the step's work as the plan describes it (and its "Done when" when the
+      plan uses them), and the tests;
+    - "ticked in the progress tracker" for a progress section with checkboxes, else
+      "its checkbox";
+    - "an As built note" when the plan has them;
+    - "committed" when it mentions commits.
+
+    For this plan it gives all five.
+    - The review returns `missed`: the items a finished step lacks, written as
+      instructions.
+    - The first time for a step, they go back as a fix-up ("Before going on from P2:
+      tick P2 in the progress tracker. Then proceed to the next step."). That turn isn't
+      a step and isn't compacted, even with `fixed_prompts`.
+    - The second time the step counts anyway, with "Still missing: …" in the step log.
+  - **Several sessions:** nothing to add beyond independent state. Their news goes
+    through V5's announcer, which already batches across threads. A test runs two at
+    once.
+  - **Morning summary:** `onUserBack` now passes when you left. Coming back after 10
+    minutes or more gives one event covering every run with step-log entries or
+    unreported decisions since then.
+    - Per run: the steps finished while you were away (by id), where it is now or why it
+      stopped, its question, and its decisions digest.
+    - Runs paused on something of yours come first, and make it `needs_you`; otherwise
+      it's a `report`.
+    - It replaces P1's per-run "the user is back" digest.
+  - **Restarts:** a run waiting for a limit or its window, when the app quits, is paused
+    at start ("Workbench restarted") like a running one. Its console went with the app.
+    A held verdict stays, for the resume.
+  - **Tools:** `start_autopilot` takes `until_done`, `window` ("22:00-07:00", "9:00 to
+    18:00"), `until` ("18:00", the next time the clock reads it) and `checklist`.
+    `autopilot_status` shows the window, the end, when a paused run resumes, and the
+    checklist. The system prompt's examples add "let it run overnight" → `until_done`
+    + `window 22:00-07:00`.
+  - **The phone** (P1's gap): the PWA store keeps the `autopilots` frame. The thread's
+    runs show at the end of its chat, with the card's line and pause/resume/stop.
+  - **Verified:** 12 more vitest cases (563 in all) cover:
+    - the checklist detection;
+    - windows, times, the stall threshold and the limit reading;
+    - a run until done;
+    - a window it waits for, runs in and stops at;
+    - an end time;
+    - a limit pause and its own resume after the reset, with the step logged once;
+    - the same step failing twice;
+    - a missed checklist item sent back once, then let through;
+    - a stall check-in that goes on, then one that pauses;
+    - two sessions at once;
+    - the morning summary, ordered and given once;
+    - a waiting run across a restart;
+    - the tool's time parsing, and the PWA store.
+
+    tsc and eslint are clean. No Rust changed.
+  - **Not verified live:** the done-when's overnight run on two sessions (window stop,
+    limit pause and resume, the morning summary), a real stall, and a real missed
+    tracker tick. It needs a night in the release build.
 
 ### Track T — Trust
 
@@ -6022,7 +6119,7 @@ T2 goes live after the replay check in its done-when (the past week's prompts th
 | A2 | Assistant engine: loop, tool registry, threads | ☑ |
 | A3 | The Assistant drawer (desktop UI) | ☑ |
 | A4 | Deleting threads | ☑ |
-| A5 | Several threads at once: unread, the overview, threads Duck starts | ☐ |
+| A5 | Several threads at once: unread, the overview, threads Duck starts | ☑ |
 | A6 | Thread compaction | ☐ |
 | A7 | Moving the conversation between threads | ☑ (live: by voice on the desktop and the phone, not tried yet) |
 | W1 | Read tools | ☑ |
@@ -6036,13 +6133,13 @@ T2 goes live after the replay check in its done-when (the past week's prompts th
 | M3 | Subscription brain: headless Claude Code as the fallback main thread | ☐ |
 | M4 | Permission mode at launch | ☑ |
 | D1 | Worker sessions: workspace, brief, result contract | ☑ |
-| D2 | Offload routing, subscription-limit awareness, Duck as the worker's user | ☐ |
+| D2 | Offload routing, subscription-limit awareness, Duck as the worker's user | ☑ |
 | D3 | Session-backed thinking modes (experiment) | ☐ |
 | D4 | Headless workers over stream-json | ☑ |
 | B1 | Web search and fetch | ☐ |
 | B2 | MCP host + your Firefox | ☐ |
-| V1 | Push-to-talk with local STT on the GPU (desktop) | ☐ |
-| V2 | Natural spoken replies | ☐ |
+| V1 | Push-to-talk with local STT on the GPU (desktop) | ☑ (holding the key in the app not tried yet) |
+| V2 | Natural spoken replies | ☑ (the phone half built in R1/R2) |
 | V3 | Read-aloud and screen reading | ☑ (the desktop's speakers not tried live) |
 | V4 | Hands-free conversation mode | ☑ (live: talking over Duck on speakers, and the phone, not tried yet) |
 | V5 | Proactive announcements | ☑ (the reply window built with V4) |
@@ -6062,7 +6159,7 @@ T2 goes live after the replay check in its done-when (the past week's prompts th
 | T3 | Learning loop: promote rules, questions and plans | ☐ |
 | T4 | Permission answers through the `PermissionRequest` hook | ☑ |
 | P1 | Autopilot loop for one session | ☑ |
-| P2 | Unattended runs: limits, windows, stalls, checklists, several sessions | ☐ |
+| P2 | Unattended runs: limits, windows, stalls, checklists, several sessions | ☑ (the overnight run not tried yet) |
 | H1 | Host-bound tools | ☐ |
 | H2 | PC tools: Steam, media keys, weather | ☐ |
 | H3 | Music and video | ☐ |

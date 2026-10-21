@@ -108,8 +108,8 @@ export interface FakePort extends WorkbenchPort {
   holding: boolean;
   /** The autopilot lines shown (`setAutopilotBadge`). */
   badges: Map<string, AutopilotBadgeRef | null>;
-  /** `onUserBack` listeners: call them for "the user is back". */
-  back: Set<() => void>;
+  /** `onUserBack` listeners: call them for "the user is back", with when they left. */
+  back: Set<(since: number) => void>;
 }
 
 export function project(p: Partial<ProjectRef> & { id: string }): ProjectRef {

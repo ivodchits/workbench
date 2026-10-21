@@ -300,8 +300,8 @@ export interface WorkbenchPort {
   /** A desktop toast and phone push about a session, on the user's routes. */
   alertUser(instanceId: string, title: string, body: string): void;
   /** Hear the user come back to the app after a while away (the window regains
-   *  focus); returns the unsubscribe. */
-  onUserBack(cb: () => void): () => void;
+   *  focus), with when they left (epoch ms); returns the unsubscribe. */
+  onUserBack(cb: (since: number) => void): () => void;
 
   // ── summaries (W3) ──
 
