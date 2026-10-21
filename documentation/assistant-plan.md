@@ -2085,6 +2085,40 @@ up ("change this", with a circle around it).
   input is under the threshold and the conversation goes on correctly; the summary keeps
   what a test conversation's later turn needs.
 
+#### Step A7 — Moving the conversation between threads (asked for 2026-10-21)
+
+- **Goal:** Hands-free, you can move the conversation to another thread by saying so:
+  "create a new thread and let's go there to discuss this topic", or "let's go into
+  the thread with that task and give me the details". Today your words go to the
+  thread open in the drawer when each turn ends, and only a click changes it;
+  `start_thread` splits work off to run on its own while you stay put.
+- **Depends on:** A5, V4 (finish V4's parts 2 and 3 first).
+- **Build:**
+  - `list_threads` (read): each thread's title, last activity, unread, and the
+    tasks, autopilots and sessions tied to it, so Duck can find "the thread with
+    that task". When more than one fits, Duck asks which ("the auth research or the
+    backend one?").
+  - `go_to_thread(thread, words?)` (reversible): the drawer opens that thread once
+    the current reply is over ("Moving to the Demiurge thread."), so your next turn
+    lands there and nothing is lost mid-turn. `words`, your request quoted from your
+    message as `start_thread` quotes it, becomes the destination's first message, so
+    Duck answers there at once ("give me the details"), spoken when you spoke.
+  - A new topic: `start_thread` gains `go: true`. The new thread's first message is
+    your words for the topic, plus a short brief of where things stand, marked as
+    Duck's so it never passes as yours. You move into it as above.
+  - "Go back": the threads you were in, newest first (the last few), so "go back"
+    returns to the previous one.
+  - The phone keeps its own open thread (R2): a move asked from the phone moves the
+    phone's view, and one asked on the desktop moves the desktop's.
+  - The engine emits the move as an event (`{type: "goThread", threadId, surface}`);
+    the surfaces act on it, since the open thread is theirs, not the engine's.
+- **Done when:**
+  - In conversation mode, "let's go to the thread with the auth research and tell me
+    where it stands" opens that thread, and the answer comes from there, spoken.
+  - "New thread for the release plan, let's talk there" makes the thread, moves you
+    in, and your next turn goes there; "go back" returns.
+  - An ambiguous request gets a question, not a guess.
+
 ### Track W — Workbench tools
 
 #### Step W1 — Read tools
@@ -3365,6 +3399,99 @@ up ("change this", with a circle around it).
   - The mic indicator is off whenever the mode is off.
 - **Out of scope:** wake word; speaker identification (other people's speech in the room
   will be heard — headphones or the pause key).
+- **As built, part 1: the desktop loop (2026-10-21).** Echo cancellation (talking over
+  Duck on speakers) is part 2, the phone part 3.
+  - **The turn detector** (`voice/turn.rs`): Smart Turn v3.2 in Rust, with the
+    Whisper log-mel front end written out (normalize, 400-point STFT through
+    `rustfft`, 80 Slaney mel filters, log10, floor, scale). It matches X0's Python
+    to four decimals on a monologue, at ~80 ms a check on one thread.
+    - **fp32, not int8.** The int8 model X0 measured gives different numbers on
+      different ONNX Runtime versions and graph optimizations: one pause read 0.27 on
+      our 1.24.2, 0.68 on X0's 1.31, 0.57 with optimizations off. The fp32 model
+      (Pipecat's "gpu" file, 32 MB) agrees with itself to 1e-5 everywhere. It runs on
+      the CPU, pinned like V1's files (`assets::TURN`). It's fetched when conversation
+      mode first starts, and it's part of the settings' download.
+    - Re-scored with fp32 (`score_turns.py`, now fp32 on 1.24.2 by default,
+      `--model int8` for X0's): patient 17 false ends, all taken back in the grace
+      window (X0: 18); strict 1 (X0: 1). X0's policies stand.
+  - **Streaming:** `capture::listen` streams the mic, resampled a block at a time
+    (`StreamResampler`, the same output as resampling it whole). `Vad::step` carries
+    Silero's state between frames.
+  - **The turn** (`voice/conversation.rs`, `Machine`): a frame-by-frame state
+    machine with no audio in it, unit-tested on scripted speech.
+    - Speech of ≥ 3 frames (~100 ms) starts a turn.
+    - In a pause, the policy asks the turn detector at its silence lengths, about
+      the turn's audio so far (its last 8 s), and ends the turn at its threshold or
+      the ceiling.
+    - A 0.6 s pause closes a stretch, which is transcribed then. Past 20 s a stretch
+      closes at a 0.25 s pause, and at 30 s wherever it is.
+    - The end opens a 2 s grace window. ≥ 8 frames (~250 ms) of speech in it take
+      the turn back (a cough doesn't); quiet commits it.
+    - The policies are the "pauses" setting: **quick** (commands, the default),
+      **patient** (chat), **thinking aloud** (rubber duck). S1's modes will pick
+      them per thread.
+  - **The whole pipeline over X0's 10 monologues** (`conversation_on_monologues`,
+    an ignored test: VAD, the machine, the turn detector, Parakeet per stretch):
+    thinking aloud sent every monologue as one turn (1 early end, taken back);
+    patient 19 early ends, all taken back; quick 92, 83 taken back. The stretches'
+    text reads as well as V1's whole-clip transcripts, with the occasional stray
+    "Yeah." on a breath.
+  - **Verbal controls** (`control::classify`), only as a stretch's last phrase,
+    after its last `.`, `!`, `?` or `,`, so "the game is over" isn't "over":
+    "wait / hold on / подожди" holds the turn open (no checks, no ceiling) until "go
+    on / давай"; "that's it / over / всё" ends it now; "stop / хватит" cuts Duck's
+    voice; "that's all for now / на этом всё" sends what's left and turns the mode
+    off.
+  - **Provisional turns** (`engine.ts`): a `provisional` send starts the request at
+    once on its opening (your message and the voice note) held in memory. Nothing
+    is stored, and no tool runs, until `turn.commit`. `turn.withdraw` aborts it and
+    keeps nothing (a `withdrawn` event); the merged turn after it is the one kept. A
+    stopped provisional turn is kept, with "Stopped."; an undecided one is kept
+    after 15 s. Behind a busy thread a turn waits to be final and goes as a plain
+    message.
+  - **Duck's voice:** the default output's form factor (`voice/endpoint.rs`, Core
+    Audio's `PKEY_AudioEndpoint_FormFactor`, re-read every 3 s, so a switch is
+    followed). Headphones: you can talk over Duck, and ~0.3 s of your speech stops
+    it. Speakers or unknown (this PC reads "Speakers"): Duck doesn't listen while
+    its voice plays, nor for 0.4 s after (half-duplex) until part 2. A setting
+    forces either way.
+  - **The key** does what the new setting says: conversation mode on and off (the
+    default, as asked), or one message (V1's toggle or hold). The drawer's mic
+    button follows it ("🎙 talk" / "◉ talking"). A dictation takes the mic from the
+    mode, and the mode drops a dictation in progress.
+  - **The listening sign** shows while the mic is listened to: from the first frame
+    after loading, hidden while Duck's voice plays on speakers, gone when the mode
+    stops. Events carry a run number, so a replaced run's late "off" doesn't hide
+    the new run's sign.
+  - **The reply window** (V5's): when an announcement has been said in full,
+    `onAnnounced` opens an 8 s window (`voice_reply_window`) through the same
+    pipeline, on the quick policy. A reply opens the announcement's thread and goes
+    there; quiet closes it. Not when the mode is on (it listens anyway).
+  - **UI:** a line over the composer (getting ready / listening / hearing you /
+    sent, keep talking / thinking / speaking / holding) with a level meter; the
+    heard words as a dashed bubble during the grace window; the tray tooltip ("Duck
+    is listening"); a soft two-note chime as a turn goes out (setting, on); the
+    command `toggleConversation` (unbound); settings for the key, the pauses,
+    talking over Duck, the auto-off (5 minutes by default) and the reply window.
+  - **Verified:**
+    - 9 Rust unit tests for the machine and the controls, 1 for the streaming
+      resampler, 2 for the mel front end; ignored tests: Smart Turn against Python,
+      the monologues, the form factor, a second of the real mic (15,984 samples).
+      257 Rust tests pass (10 ignored); clippy clean.
+    - 5 vitest cases for provisional turns in the engine, 2 for routing turns (533
+      in all); tsc and eslint clean; the app builds.
+  - **Not verified live (yours to try):**
+    - the mode in the app: key on, talk, hear the reply, talk again, key off;
+    - the < 1.5 s from the end of a quick question to the spoken reply;
+    - resuming in the grace window, live (no duplicate reply in the thread);
+    - talking over Duck on headphones, and the switch from headphones to speakers;
+    - CPU while listening in silence (X0's Python: 3.8% of one core);
+    - the reply window after a real announcement, and "yes, read it".
+  - **Not built yet:**
+    - echo cancellation (AEC3), the barge-in gate and the self-voice check: part 2;
+    - the phone's conversation button: part 3;
+    - starting it by saying so in push-to-talk ("let's talk"): a tool for Duck,
+      with S1.
 
 ### Track S — Modes & skills
 
@@ -5523,6 +5650,7 @@ X0 ─┬─▶ A1 ─▶ A2 ─┬─▶ A3 ─┬─▶ W2 ─┬─▶ T1 ─
     W2 + K1 (improvement plan; merged 2026-10-19) ─▶ W5
     W2 ─▶ H2 ─▶ H3 ;  W2 ─▶ H4 ;  W2 + R1 ─▶ H1 ─▶ H5 (with R4) ─▶ H7 ;  H1 + H4 ─▶ H6 (gate: the server)
     A3 + D1 ─▶ G1 (phone: R2) ─▶ G2 (needs V1; V4 for hands-free)
+    A5 + V4 ─▶ A7 (moving the conversation between threads)
     D4 ─▶ G3 ─▶ G4 (shares M3's MCP server) ;  G1 + G3 ─▶ G5 ;  G1 + G3 ─▶ G6
 ```
 
@@ -5688,6 +5816,7 @@ T2 goes live after the replay check in its done-when (the past week's prompts th
 | A4 | Deleting threads | ☑ |
 | A5 | Several threads at once: unread, the overview, threads Duck starts | ☐ |
 | A6 | Thread compaction | ☐ |
+| A7 | Moving the conversation between threads | ☐ |
 | W1 | Read tools | ☑ |
 | W2 | Action tools + the confirmation policy | ☑ |
 | W3 | Session summaries | ☑ |
@@ -5707,8 +5836,8 @@ T2 goes live after the replay check in its done-when (the past week's prompts th
 | V1 | Push-to-talk with local STT on the GPU (desktop) | ☐ |
 | V2 | Natural spoken replies | ☐ |
 | V3 | Read-aloud and screen reading | ☑ (the desktop's speakers not tried live) |
-| V4 | Hands-free conversation mode | ☐ |
-| V5 | Proactive announcements | ◐ (the reply window waits for V4) |
+| V4 | Hands-free conversation mode | ◐ (part 1, the desktop loop; echo cancellation and the phone to come) |
+| V5 | Proactive announcements | ☑ (the reply window built with V4) |
 | V6 | Wake word on the PC (experimental) | ☐ |
 | L1 | Long-term memory: files, index, recall | ☐ |
 | L2 | Consolidation, journal, and recall quality | ☐ |
