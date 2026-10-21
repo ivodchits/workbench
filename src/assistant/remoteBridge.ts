@@ -17,13 +17,17 @@
 //   rendered one at a time, in order, each told to that socket as `tts {part, id, text}`
 //   as soon as it's made, so the phone plays sentence 1 while sentence 2 is made.
 //   When the reply is complete (idle, or parked on a confirmation), `ttsEnd`. A
-//   `speak` message also starts the voice engine, in case it went idle.
+//   `speak` message also starts the voice engine, in case it went idle. With
+//   nothing to say `ACK_MS` after the message, a stock "One moment." is.
 // - A confirmation that comes with no phone connected and the desktop not in front
 //   of you is pushed to the phones.
 // - Read-aloud (step V3): a read asked for from a phone plays there
 //   (`voiceFor`), as `tts` parts like a reply's, a section at a time; `ttsCut`
 //   drops what the phone still has queued when the read is paused or skipped.
 // - Images (screenshots) never go to the phone: a line stands in for each.
+// - Announcements (step V5) for a phone with Duck open come as `tts` parts of a
+//   `news…` reply, to every open phone; the phone's own "speak" setting decides
+//   whether it plays them.
 
 import { z } from "zod";
 import type { StoredMessage } from "../ipc/assistant";
@@ -35,7 +39,7 @@ import {
 } from "../ipc/remote";
 import type { RemoteDuckFrame, RemoteDuckMessage } from "../remote/protocol";
 import { PROTOCOL_VERSION, USER_SOURCES, type ClientMessage, type DuckEndpoint, type DuckEvent } from "./protocol";
-import type { Spoken as Ready, Voice } from "./reader";
+import { sentencesOf, type Spoken as Ready, type Voice } from "./reader";
 import { langOf, Sentences, type Lang } from "./speakable";
 import { withoutImages } from "./threads";
 
@@ -63,6 +67,7 @@ const Message = z.discriminatedUnion("type", [
   z.object({ type: z.literal("task.rerun"), taskId: id }),
   z.object({ type: z.literal("autopilot"), instanceId: id, action: z.enum(["pause", "resume", "stop"]) }),
   z.object({ type: z.literal("reader"), action: z.enum(["pause", "resume", "next", "prev", "stop"]) }),
+  z.object({ type: z.literal("dnd"), until: z.number().int().positive().nullable() }),
 ]);
 
 /** A phone's frame as a Duck Protocol message, or why it's refused. */
@@ -128,7 +133,13 @@ interface Spoken {
   chain: Promise<void>;
   parts: number;
   stopped: boolean;
+  /** A sentence of it was queued. */
+  said: boolean;
 }
+
+/** A spoken reply with nothing to say this long after the message gets a stock
+ *  acknowledgement, so the phone knows it was heard. */
+export const ACK_MS = 3500;
 
 /** A read's next section is started this long before the phone runs out. */
 const READ_LEAD_MS = 1500;
@@ -149,6 +160,10 @@ export interface RemoteBridge {
   voiceFor(threadId: string): Voice | null;
   /** Resolves once `threadId`'s reply has been sent to the phone whole. */
   quiet(threadId: string): Promise<void>;
+  /** Phones with Duck open now. */
+  phones(): number;
+  /** Say an announcement on every phone with Duck open. */
+  announce(text: string, threadId: string): void;
 }
 
 /** Start relaying. */
@@ -171,6 +186,7 @@ export function startRemoteBridge(d: BridgeDeps): RemoteBridge {
   const live = (s: Spoken) => !s.stopped && conns.has(s.conn);
 
   function say(threadId: string, s: Spoken, sentence: string): void {
+    s.said = true;
     const ready = d.prepare(sentence);
     s.chain = s.chain.then(async () => {
       const p = await ready;
@@ -219,14 +235,20 @@ export function startRemoteBridge(d: BridgeDeps): RemoteBridge {
         speaking.delete(m.threadId);
         const i = m.source.startsWith("phone") ? wanted.findIndex((w) => w.text === textOf(m)) : -1;
         if (i >= 0) {
-          speaking.set(m.threadId, {
+          const s: Spoken = {
             conn: wanted[i].conn,
             reply: `r${++nextReply}`,
             cut: new Sentences(),
             chain: Promise.resolve(),
             parts: 0,
             stopped: false,
-          });
+            said: false,
+          };
+          speaking.set(m.threadId, s);
+          const threadId = m.threadId;
+          setTimeout(() => {
+            if (speaking.get(threadId) === s && !s.said && live(s)) say(threadId, s, "One moment.");
+          }, ACK_MS);
           wanted.splice(i, 1);
         }
         break;
@@ -234,6 +256,12 @@ export function startRemoteBridge(d: BridgeDeps): RemoteBridge {
       case "delta": {
         const s = speaking.get(e.threadId);
         if (s) for (const sentence of s.cut.push(e.text)) say(e.threadId, s, sentence);
+        break;
+      }
+      case "tool": {
+        // What the reply has before a call ("Checking api.") is said now.
+        const s = speaking.get(e.threadId);
+        if (s && e.phase === "start") for (const sentence of s.cut.end()) say(e.threadId, s, sentence);
         break;
       }
       case "turnState":
@@ -315,6 +343,22 @@ export function startRemoteBridge(d: BridgeDeps): RemoteBridge {
     async quiet(threadId) {
       while (speaking.has(threadId)) await new Promise((r) => setTimeout(r, 100));
       await tails.get(threadId);
+    },
+    phones: () => conns.size,
+    announce(text, threadId) {
+      const reply = `news${++nextReply}`;
+      const to = [...conns];
+      void (async () => {
+        let part = 0;
+        for (const p of await Promise.all(sentencesOf(text).map((x) => d.prepare(x)))) {
+          if (!p) continue;
+          const r = await d.render(p.text, p.lang);
+          for (const c of to)
+            if (conns.has(c)) d.link.emit({ type: "tts", threadId, reply, part, id: r.id, seconds: r.seconds, text: p.text, v: PROTOCOL_VERSION }, c);
+          part++;
+        }
+        for (const c of to) if (conns.has(c)) d.link.emit({ type: "ttsEnd", threadId, reply, parts: part, v: PROTOCOL_VERSION }, c);
+      })().catch((e: unknown) => console.warn("duck: an announcement didn't reach the phone", e));
     },
     voiceFor(threadId) {
       const conn = lastConn.get(threadId);

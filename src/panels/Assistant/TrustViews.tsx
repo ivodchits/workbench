@@ -35,10 +35,13 @@ const EFFECT_COLOR: Record<Effect, string> = {
 export function Shell({
   title,
   onBack,
+  action,
   children,
 }: {
   title: string;
   onBack: () => void;
+  /** A control at the header's right end. */
+  action?: React.ReactNode;
   children: React.ReactNode;
 }) {
   return (
@@ -56,7 +59,8 @@ export function Shell({
         <button type="button" style={btn} onClick={onBack}>
           ← thread
         </button>
-        <span style={{ color: "var(--wb-textDim2)" }}>{title}</span>
+        <span style={{ flex: 1, color: "var(--wb-textDim2)" }}>{title}</span>
+        {action}
       </div>
       <div style={{ flex: 1, minHeight: 0, overflowY: "auto", padding: "8px 12px" }}>
         {children}

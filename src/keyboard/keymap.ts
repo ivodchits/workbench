@@ -60,6 +60,7 @@ export type CommandId =
   | "copyLastResponse"
   | "toggleAssistant"
   | "toggleTrust"
+  | "toggleSpeak"
   | "pluginsReload"
   | "pluginsEdit"
   // git panel (G5) — handled by the most recently activated Git panel
@@ -192,6 +193,8 @@ const RAW_BINDINGS: RawBinding[] = [
   // Duck's kill switch (step T1): one more modifier on the drawer's chord, so it is
   // easy to find and hard to hit by accident.
   { chord: "Ctrl+Alt+Shift+Space", command: "toggleTrust", scope: "global", title: "Duck: pause or resume trust" },
+  // Duck's Speak switch (step V5): unbound; the speaker by the Duck button does it.
+  { chord: "", command: "toggleSpeak", scope: "global", title: "Duck: Speak on or off" },
   // The project toolbar (step K1). Unbound: the file reloads itself when saved, so
   // these are for the rare missed change and for opening the file.
   { chord: "", command: "pluginsReload", scope: "global", title: "Plugins: reload" },

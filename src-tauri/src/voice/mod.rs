@@ -13,6 +13,10 @@
 //!   with Workbench in the background or hidden.
 //! - **Press:** recording starts, and the model loads in parallel.
 //! - **Release:** the recording stops and is transcribed.
+//! - **Toggle** (the default since 2026-10-21): a press starts it and the next
+//!   press stops it; the key's release does nothing. Either way it stops by itself
+//!   at the capture's cap (2 minutes).
+//! - While it listens, the listening sign ([`overlay`]) shows over everything.
 //! - The webview hears `voice-state` (listening / transcribing / idle / error) and
 //!   `voice-transcript`, and sends the text to Duck.
 //! - The drawer's mic button drives the same path ([`voice_ptt`]).
@@ -25,13 +29,16 @@
 //! [`sidecar`] (Kokoro + Silero in Python) and [`playback`]. The push-to-talk key
 //! cuts a reply that's speaking (barge-in) and starts the sidecar while you talk.
 //!
-//! Step V3: [`screen`], Duck's screenshots.
+//! Step V3: [`screen`], Duck's screenshots. Step V5: [`presence`], whether you're at
+//! the PC, for Duck's announcements.
 
 pub mod assets;
 pub mod capture;
 pub mod engine;
+pub mod overlay;
 pub mod parakeet;
 pub mod playback;
+pub mod presence;
 pub mod screen;
 pub mod sidecar;
 pub mod tts;
@@ -66,6 +73,9 @@ pub struct VoiceConfig {
     pub device: Option<String>,
     /// The push-to-talk key ("Ctrl+Alt+Space", "F13"); None for none.
     pub hotkey: Option<String>,
+    /// A press starts and the next press stops; off, it's held.
+    #[serde(default)]
+    pub toggle: bool,
 }
 
 /// Tauri-managed.
@@ -112,7 +122,36 @@ struct VoiceEvent {
 }
 
 fn say(app: &AppHandle, state: &'static str, message: Option<String>) {
+    overlay::set(app, state == "listening");
     let _ = app.emit(STATE_EVENT, VoiceEvent { state, message });
+}
+
+fn recording(app: &AppHandle) -> bool {
+    app.try_state::<VoiceState>()
+        .and_then(|s| s.recording.lock().ok().map(|r| r.is_some()))
+        .unwrap_or(false)
+}
+
+fn toggles(app: &AppHandle) -> bool {
+    app.try_state::<VoiceState>()
+        .and_then(|s| s.config.lock().ok().map(|c| c.toggle))
+        .unwrap_or(false)
+}
+
+/// The key went down: in toggle mode it starts or stops, else it starts.
+fn key_down(app: &AppHandle) {
+    if toggles(app) && recording(app) {
+        release(app)
+    } else {
+        press(app)
+    }
+}
+
+/// The key came up: it stops, unless in toggle mode.
+fn key_up(app: &AppHandle) {
+    if !toggles(app) {
+        release(app)
+    }
 }
 
 /// Start recording (the key went down). A second press while recording is ignored.
@@ -132,7 +171,23 @@ fn press(app: &AppHandle) {
         return;
     }
     match capture::start(config.device.clone()) {
-        Ok(r) => *rec = Some((r, Instant::now())),
+        Ok(r) => {
+            let began = Instant::now();
+            *rec = Some((r, began));
+            // The capture stops at its cap: stop listening then too (a toggle
+            // nobody pressed again).
+            let app = app.clone();
+            std::thread::spawn(move || {
+                std::thread::sleep(capture::MAX);
+                let same = app
+                    .try_state::<VoiceState>()
+                    .and_then(|s| s.recording.lock().ok().map(|r| r.as_ref().is_some_and(|(_, b)| *b == began)))
+                    .unwrap_or(false);
+                if same {
+                    release(&app);
+                }
+            });
+        }
         Err(e) => {
             say(app, "error", Some(format!("The microphone didn't open: {e}")));
             return;
@@ -189,8 +244,8 @@ pub fn voice_configure(app: AppHandle, state: State<'_, VoiceState>, config: Voi
     if let Some(k) = key {
         shortcuts
             .on_shortcut(k.as_str(), |app, _, event| match event.state {
-                ShortcutState::Pressed => press(app),
-                ShortcutState::Released => release(app),
+                ShortcutState::Pressed => key_down(app),
+                ShortcutState::Released => key_up(app),
             })
             .map_err(|e| format!("{k} can't be used as the push-to-talk key: {e}"))?;
         *current = Some(k);
@@ -205,6 +260,16 @@ pub fn voice_ptt(app: AppHandle, down: bool) {
         press(&app)
     } else {
         release(&app)
+    }
+}
+
+/// The drawer's mic button in toggle mode: start, or stop and send.
+#[tauri::command]
+pub fn voice_toggle(app: AppHandle) {
+    if recording(&app) {
+        release(&app)
+    } else {
+        press(&app)
     }
 }
 

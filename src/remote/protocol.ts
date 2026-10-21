@@ -213,7 +213,9 @@ export type RemoteDuckMessage =
   | { type: "task.rerun"; taskId: string }
   | { type: "autopilot"; instanceId: string; action: "pause" | "resume" | "stop" }
   /** The reader bar (step V3): a read playing on the phone comes as `tts` parts. */
-  | { type: "reader"; action: "pause" | "resume" | "next" | "prev" | "stop" };
+  | { type: "reader"; action: "pause" | "resume" | "next" | "prev" | "stop" }
+  /** Duck's Do Not Disturb (step V5): until a moment (epoch ms), or off (null). */
+  | { type: "dnd"; until: number | null };
 
 /** A frame Duck sends the phone: any Duck event, plus the phone's own. */
 export type RemoteDuckFrame =

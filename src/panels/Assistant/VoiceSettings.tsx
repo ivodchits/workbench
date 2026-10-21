@@ -84,7 +84,7 @@ export default function VoiceSettings() {
         <input
           value={hotkey}
           placeholder="none"
-          title='Hold it anywhere to talk to Duck, e.g. "Ctrl+Alt+Space" or "F13" (a desk button set to send F13)'
+          title='Press it anywhere to talk to Duck (or hold it, below), e.g. "Ctrl+Alt+Space" or "F13" (a desk button set to send F13)'
           onChange={(e) => setHotkey(e.target.value)}
           onBlur={() => {
             const k = hotkey.trim() || null;
@@ -94,6 +94,17 @@ export default function VoiceSettings() {
         />
       </label>
       {keyProblem && <div style={{ color: "var(--wb-needs)" }}>{keyProblem}</div>}
+      <label style={{ ...row, alignItems: "center" }}>
+        <span style={{ flex: "0 0 auto" }}>The key and the mic button</span>
+        <select
+          value={prefs.toggle ? "toggle" : "hold"}
+          onChange={(e) => setVoicePrefs({ toggle: e.target.value === "toggle" })}
+          style={{ ...select, flex: 1, minWidth: 0 }}
+        >
+          <option value="toggle">press to start, press again to send</option>
+          <option value="hold">hold to talk, let go to send</option>
+        </select>
+      </label>
       <label style={{ ...row, alignItems: "center" }}>
         <span style={{ flex: "0 0 auto" }}>Microphone</span>
         <select

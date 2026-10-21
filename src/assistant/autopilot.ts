@@ -20,6 +20,7 @@
 // log. One that was running when the app quit is paused at start: its console went
 // with the app.
 
+import type { Level } from "./announce";
 import { z } from "zod";
 
 import { autopilotDelete, autopilotList, autopilotPut } from "../ipc/assistant";
@@ -241,8 +242,9 @@ export interface AutopilotDeps {
   call: <S extends z.ZodType>(r: AutopilotCall<S>) => Promise<z.infer<S>>;
   /** A text file's contents (the plan). */
   readFile: (path: string) => Promise<string>;
-  /** Post a Workbench event into a thread (it starts a turn there). */
-  tell: (threadId: string, text: string) => void;
+  /** Post a Workbench event into a thread (it starts a turn there); `level` is how
+   *  its news is announced (V5), report when absent. */
+  tell: (threadId: string, text: string, level?: Level) => void;
   /** A line in the thread the model never sees: the step log. */
   notice: (threadId: string, text: string) => void;
   now?: () => number;
@@ -450,6 +452,7 @@ export function createAutopilot(deps: AutopilotDeps): AutopilotManager {
     deps.tell(
       a.threadId,
       `The autopilot on "${title(id)}" (session ${id}) paused after ${a.stepsDone} step(s): ${why}.${question ? ` Its question: ${question}` : ""} ${summary} Tell the user${question ? " and ask them" : ""}; when they answer, resume it with resume_autopilot, passing their answer as \`prompt\` if it is one for the session.${digest(id)}`,
+      "needs_you",
     );
     port.alertUser(id, "Autopilot paused", question ?? why);
   }
@@ -623,6 +626,7 @@ export function createAutopilot(deps: AutopilotDeps): AutopilotManager {
       deps.tell(
         a.threadId,
         `"${title(id)}" (session ${id}, on autopilot) asks: ${q?.question ?? choiceLine(c)} Options: ${options}. Unless it's serious, answer it yourself with answer_choice (choiceId ${c.id}) with a \`reason\`, by the plan (${a.planPath}) first, and say in a sentence what you picked. A serious one goes to the user.`,
+        "info",
       );
       return;
     }
@@ -675,6 +679,7 @@ export function createAutopilot(deps: AutopilotDeps): AutopilotManager {
       deps.tell(
         a.threadId,
         `The user is back. While they were away, the autopilot on "${title(a.instanceId)}" (session ${a.instanceId}, ${a.state}, ${a.stepsDone} step(s) done) went on without them.${text} Lead with how far it got.`,
+        "info",
       );
     }
   });

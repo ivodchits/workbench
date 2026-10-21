@@ -21,7 +21,7 @@ const BROWSER_ARGS: &str = "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreen
      --disable-background-timer-throttling --disable-renderer-backgrounding \
      --disable-backgrounding-occluded-windows";
 
-fn profile<'a, M: Manager<tauri::Wry>>(
+pub(crate) fn profile<'a, M: Manager<tauri::Wry>>(
     app: &AppHandle,
     builder: WebviewWindowBuilder<'a, tauri::Wry, M>,
 ) -> WebviewWindowBuilder<'a, tauri::Wry, M> {

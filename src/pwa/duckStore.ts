@@ -26,6 +26,8 @@ export interface DuckView {
   tasks: TaskView[];
   /** What's being read aloud (step V3), here or on the desktop. */
   reader: ReaderView | null;
+  /** Duck's Do Not Disturb (V5), from its settings: until when, or null. */
+  dndUntil: number | null;
   error: string | null;
 }
 
@@ -44,6 +46,7 @@ export const emptyView = (): DuckView => ({
   decisionsMore: false,
   tasks: [],
   reader: null,
+  dndUntil: null,
   error: null,
 });
 
@@ -136,6 +139,9 @@ export function apply(v: DuckView, f: RemoteDuckFrame, adopting: boolean): { vie
       break;
     case "reader":
       v = { ...v, reader: f.reader };
+      break;
+    case "settings":
+      v = { ...v, dndUntil: f.settings.dndUntil ?? null };
       break;
     case "error":
       v = { ...v, error: f.message };

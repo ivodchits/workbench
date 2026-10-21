@@ -9,6 +9,8 @@
 //   tell when a fix was wrong.
 // - Press: the drawer opens, unless the window is hidden (then Duck answers in the
 //   thread, and the reply waits there).
+// - The key toggles by default (a press starts, the next press stops); "hold to
+//   talk" is the setting's other choice.
 
 import { useSyncExternalStore } from "react";
 import { fixNames, voiceMessage } from "../../assistant/voiceNames";
@@ -19,7 +21,7 @@ import { sendMessage, setDrawerOpen } from "./duckState";
 
 export type VoicePrefs = Prefs["voice"];
 
-export const DEFAULT_VOICE: VoicePrefs = { gpu: "never", hotkey: "Ctrl+Alt+Space", device: null, sendNow: true };
+export const DEFAULT_VOICE: VoicePrefs = { gpu: "never", hotkey: "Ctrl+Alt+Space", device: null, sendNow: true, toggle: true };
 
 export interface VoiceState {
   phase: VoicePhase;
@@ -53,7 +55,7 @@ export function useVoiceState(): VoiceState {
 }
 
 function configure(prefs: VoicePrefs): void {
-  void voiceConfigure({ gpu: prefs.gpu, device: prefs.device, hotkey: prefs.hotkey })
+  void voiceConfigure({ gpu: prefs.gpu, device: prefs.device, hotkey: prefs.hotkey, toggle: prefs.toggle })
     .then(() => set({ keyProblem: null }))
     .catch((e: unknown) => set({ keyProblem: String(e) }));
 }

@@ -36,7 +36,7 @@ import type { ReplayReport } from "../../assistant/trust/replay";
 import type { Effect } from "../../assistant/trust/rules";
 import type { DecisionRow, Spend, StoredMessage, ThreadRow } from "../../ipc/assistant";
 import { getPref, setPref, type AssistantDrawerPrefs } from "../../ipc/prefs";
-import { onReplyDelta, onTurnEnded, onUserMessage } from "./replySpeech";
+import { onReplyDelta, onToolStart, onTurnEnded, onUserMessage } from "./replySpeech";
 
 export interface DuckState {
   /** Connected to the engine. */
@@ -146,6 +146,13 @@ function savePrefs(patch: Partial<AssistantDrawerPrefs>): void {
 /** You can see this thread: the drawer is open on it, in a visible window. */
 function onScreen(threadId: string): boolean {
   return state.open && state.current === threadId && document.visibilityState === "visible";
+}
+
+/** Every thread read: the unread counts (the overview's button, and the Duck
+ *  button's dot) go. The news lines stay, no longer bold. */
+export function clearUnread(): void {
+  set({ unread: {} });
+  savePrefs({ unread: {} });
 }
 
 /** The thread is on screen now: nothing in it is unread. */
@@ -309,6 +316,8 @@ function onEvent(e: DuckEvent): void {
       break;
     }
     case "tool":
+      // What Duck wrote before the call ("Checking api.") is said now, not after it.
+      if (e.phase === "start") onToolStart(e.threadId);
       break;
     case "confirm":
       set({
@@ -480,6 +489,11 @@ export function setAvatar(patch: Partial<AssistantDrawerPrefs["avatar"]>): void 
 /** Change Duck's settings; the engine answers with the settings now in force. */
 export function setDuckSettings(settings: Partial<DuckSettings>): void {
   post({ type: "settings.set", settings });
+}
+
+/** Duck's Do Not Disturb (V5): until a moment, or off. */
+export function setDnd(until: number | null): void {
+  post({ type: "dnd", until });
 }
 
 // ── trust (step T1) ─────────────────────────────────────────────────────────

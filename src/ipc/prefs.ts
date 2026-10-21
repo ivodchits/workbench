@@ -57,11 +57,17 @@ export interface Prefs {
     device: string | null;
     /** Send a transcript to Duck at once; off, it lands in the composer to edit. */
     sendNow: boolean;
+    /** Push-to-talk toggles (2026-10-21): a press starts, the next press stops. Off,
+     *  it's held. */
+    toggle: boolean;
   };
   /** Read-aloud positions (step V3): source key → where it stopped. */
   readAloud: Record<string, ReadPosition>;
   /** Spoken replies (step V2). */
   speech: {
+    /** Speak (V5), the master switch: off, Duck uses no voice on this PC (replies,
+     *  reads, announcements). Ctrl+Shift+L still speaks what you ask it to. */
+    on: boolean;
     /** Which of Duck's replies are spoken: none, those to a spoken message, all. */
     speak: "off" | "voice" | "always";
     /** Kokoro + Silero on this PC, or Google Chirp 3 HD. */

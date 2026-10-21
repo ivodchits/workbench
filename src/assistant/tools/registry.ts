@@ -24,6 +24,8 @@ import type { AutopilotManager } from "../autopilot";
 import type { TrustFacts } from "../trust/decide";
 import type { ReaderHost } from "./readAloud";
 import type { ScreenHost } from "./screenshot";
+import type { QuietHost } from "./quiet";
+import type { Level } from "../announce";
 
 export type Tier = "read" | "reversible" | "consequential";
 
@@ -40,7 +42,7 @@ export interface ToolContext {
   notice(n: Notice): Promise<void>;
   /** Post a follow-up into the thread later, as a Workbench event that starts a
    *  turn of its own: how start + notify tools report back. */
-  later(text: string): void;
+  later(text: string, level?: Level): void;
   /** Duck's worker tasks (step D1); null where there are none (some tests). */
   tasks: TaskManager | null;
   /** Session summaries (step W3); null where there are none (some tests). */
@@ -51,6 +53,8 @@ export interface ToolContext {
   reader: ReaderHost | null;
   /** Screenshots (step V3); null where there are none (some tests). */
   screen: ScreenHost | null;
+  /** Do Not Disturb and Speak (step V5); null where there are none (some tests). */
+  quiet: QuietHost | null;
   /** Start a new Duck thread on `words`, which must be the user's own words from
    *  their latest message here (it throws otherwise). The new thread's turn runs on
    *  its own; resolves to its id. */

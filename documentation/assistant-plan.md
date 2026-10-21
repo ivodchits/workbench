@@ -3448,6 +3448,119 @@ up ("change this", with a circle around it).
   - Saying "read it" in the reply window starts read-aloud.
   - Away from the PC, the phone gets the push.
 - **Out of scope:** calendar-aware quiet times (possible later through an MCP server).
+- **As built, part 1 (2026-10-21).** V4 isn't built, so the **short reply window**
+  (the mic open for ~8 s after an announcement, "read it") moved to V4, which brings
+  the VAD, turn detection and echo cancellation it needs. Everything else is built.
+  - **Producers and levels:**
+    - Background work already reports as a `<workbench_event>` turn in its thread.
+      Duck's reply to it is the news, and its headline (`headline`: the first
+      sentence, two when the first is very short) is what's announced.
+    - The producer gives the level: `tell(threadId, text, level)` for tasks and
+      autopilots, and `ctx.later(text, level)` for tools, report when absent.
+    - **needs_you:** a task blocked or needing a decision, a worker waiting on a
+      prompt, an autopilot paused.
+    - **info:** a task waiting for room or started with a warning, a worker's
+      question Duck may settle itself, the autopilot digest when you're back.
+    - **report:** everything else (a task done or failed, an autopilot stopped, a
+      watched session).
+    - A reply that ends in a question becomes needs_you whatever its level.
+    - A confirmation card arriving while the app isn't in front is needs_you. Its
+      answer (`confirmed`) cancels the repeat.
+    - The system prompt now says the first sentence of a reply to an event may be
+      announced on its own, so it's a speakable headline.
+  - **The announcer** (`src/assistant/announce.ts`, made in `index.ts`):
+    - Each item waits 2 s to settle; what's pending is said as one announcement
+      ("Two things. …"), the next no sooner than the batch window after it.
+    - When you're at the PC it waits for a gap: 1.2 s without input, and Duck not
+      speaking or reading.
+    - Where: this PC when you're around (input within `aroundMinutes`, not
+      locked); else every phone with Duck open (the page closes its socket when
+      hidden, so an open socket means it's in front); else a push.
+    - Quiet means Duck's own Do Not Disturb, Windows Focus (followed by default),
+      quiet hours (off by default), or a full-screen app (except needs_you). What
+      quiet holds back is said in one catch-up when it ends ("While it was quiet:
+      …", three at most, "and N more in the drawer").
+    - During quiet, needs_you is still pushed when you're away.
+    - Unanswered needs_you repeats once after `repeatMinutes` ("Still waiting:
+      …"). Writing in its thread answers it.
+    - Info stays on the drawer's unread badge unless its setting says to speak it.
+  - **Presence** (`src-tauri/src/voice/presence.rs`, `assistant_presence`):
+    - `GetLastInputInfo` for idle time.
+    - `SHQueryUserNotificationState` for locked (QUNS_NOT_PRESENT) and full-screen
+      or presentation (QUNS_BUSY, D3D full screen, presentation mode).
+    - **Windows Focus:** the WNF state `WNF_SHEL_QUIETHOURS_ACTIVE_PROFILE_CHANGED`
+      (0 is off). The older `QUIET_MOMENT_SHELL_MODE_CHANGED` isn't there on this
+      Windows 11 build (STATUS_OBJECT_NAME_NOT_FOUND). Undocumented, so null when
+      unreadable.
+    - A debug build honours `WB_FAKE_PRESENCE=away`, for trying the away path.
+  - **Speak** (`speech.on` in the prefs, on by default so V2's spoken replies keep
+    working) is this PC's master switch: replies, reads and announcements here.
+    - **Deviation:** it doesn't replace V2's "speak replies" choice. That stays as
+      which replies are spoken, under the switch.
+    - Off while you're at the PC means text only. Away, a phone with Duck open
+      still hears news under its own "speak replies" setting, where "never" now
+      covers news too.
+    - Controls: the speaker beside the Duck button, the announcements tab, the
+      command `toggleSpeak` (unbound), and by voice through the tool `set_quiet`.
+      **Not built:** the tray menu and a drawer-header copy.
+  - **Do Not Disturb** (`dndUntil` in Duck's settings; the `dnd` message, which the
+    phone may send):
+    - Right-click the Duck button for 1 hour, until morning (8:00) or until you turn
+      it off; a ☾ beside it turns it off.
+    - The phone's settings have off / 1 hour / till morning / on.
+    - By voice or text through `set_quiet` ("Duck, тихо", "stop talking").
+  - **Settings → announcements** (`AnnounceSettings.tsx`): Speak, speaking per
+    level, push when away, what "around" means, waiting for a gap, the batch
+    window, the repeat, Focus, full screen and quiet hours.
+  - **On the phone:** announcements come as `tts` parts of a `news…` reply to
+    every open phone (`remoteBridge.announce`).
+  - **Verified:**
+    - 14 vitest cases for the announcer, `set_quiet` and the settings, and 1 for
+      the bridge (525 in all); tsc and eslint clean;
+    - an ignored Rust test reading this PC (Focus off read as `Some(false)`);
+      clippy clean;
+    - **live, the phone page in headless Edge against the dev app** (Speak off on
+      the PC, `WB_FAKE_PRESENCE=away`, events from the dev-only `test_announce`):
+      - a report spoken on the phone 4.3 s after its event (Duck's turn
+        included);
+      - two events 6 s apart said together ("Two things. The api tests pass.
+        The backend session needs your decision on the schema.");
+      - Do Not Disturb set from the phone held a report back, and turning it off
+        gave the catch-up ("While it was quiet: one thing. The nightly build
+        finished.").
+  - **Not verified yet (yours to try):**
+    - an announcement on this PC's speakers, including the wait for a pause in
+      your typing;
+    - Windows Focus turned on (only "off" was read);
+    - a full-screen app;
+    - the push when nothing is open;
+    - the repeat after 10 minutes, live (only in the tests).
+- **Asked for after V5 (2026-10-21):**
+  - **"On it."**
+    - The system prompt asks Duck to start a reply that needs tools with a short
+      acknowledgement that fits ("Checking the backend session."), and the voice
+      note allows it ahead of the answer.
+    - What a reply has so far is said when a tool call starts, on the desktop, the
+      phone and the phone's own voice, so the acknowledgement isn't held until after
+      the call.
+    - A spoken reply with nothing to say 3.5 s after your message gets a stock one
+      ("One moment.", "On it.", "Let me check."; "One moment." on the phone).
+  - **The listening sign** (`voice/overlay.rs`, `VoiceOverlay.tsx`):
+    - Duck's icon with three parenthesis-shaped waves on each side, bigger further
+      out, fading in and out in turn, in the theme's accent.
+    - A transparent, click-through, always-on-top window in the main screen's
+      top-right corner, made hidden at start and shown without taking focus while
+      voice input listens.
+    - It's hidden by its handle too (`SW_HIDE`). Tauri never learns a window shown
+      that way was shown, so its own `hide` did nothing and the sign stayed up
+      (found in use, fixed the same day).
+    - A debug build shows it for 4 s at start with `WB_SHOW_VOICE_OVERLAY`. Seen
+      appearing and going on this PC.
+  - **Push-to-talk toggles** (the default; "hold to talk" in the voice settings):
+    - a press starts and the next press sends, for the key and the drawer's mic
+      button alike;
+    - it stops by itself at the capture's 2-minute cap.
+  - **The overview's "clear all"** marks every thread read.
 
 #### Step V6 — Wake word on the PC (experimental)
 
@@ -5127,115 +5240,6 @@ checked in the scratch PTY first.
   app.
 - **Out of scope:** Workbench tools offline.
 
----
-
-## Sequencing
-
-```
-X0 ─┬─▶ A1 ─▶ A2 ─┬─▶ A3 ─┬─▶ W2 ─┬─▶ T1 ─▶ T2 (needs M1) ─▶ T3
-    │             │       │       ├─▶ D1 (needs M1) ─▶ D2 (needs W3, T2) ─▶ D3 (needs S1, V4)
-    │             │       │       ├─▶ M2 ─┬─▶ B1
-    │             │       │       │       └─▶ B2 (after D1, only if needed)
-    │             └─▶ W1 ─┴───────┤
-    │                     └─▶ W3 ─┤
-    │                             ├─▶ W4
-    │                             └─▶ R1 ─▶ R2 (needs V1) ─▶ R3 (needs V4) ─▶ R4 (gate: real phone use)
-    ├─▶ M1 ─▶ M4 (permission mode at launch)
-    └─▶ V1 (after A3) ─▶ V2 (after X0's listening test) ─┬─▶ V3 (needs W3)
-                                                          └─▶ V4
-    V1 ─▶ V6 (experimental; better after V2, V4)
-    M2 + W4 ─▶ S1 ─▶ S2 ;  M2 + D2 ─▶ M3
-    W4 + D1 ─▶ L1 ─▶ L2 ;  D2 + S2 + L1 + T1 ─▶ L3 ;  L1 + D2 + S2 ─▶ L4
-    V2 + V4 + D1 ─▶ V5 ;  W2 + W3 + T2 + D2 ─▶ P1 (V5 for spoken stops) ─▶ P2
-    W2 + K1 (improvement plan; merged 2026-10-19) ─▶ W5
-    W2 ─▶ H2 ─▶ H3 ;  W2 ─▶ H4 ;  W2 + R1 ─▶ H1 ─▶ H5 (with R4) ─▶ H7 ;  H1 + H4 ─▶ H6 (gate: the server)
-```
-
-**Suggested order:**
-1. X0, A1, A2, A3, A4, W1, M1, W2, T1, W5, T2, M4, D1 (done). *First
-   milestone: text control of the app that acts without asking about the small things,
-   with heavy work offloaded to sessions.* (Reordered 2026-10-19: trust moved ahead of
-   D1, because a card for every action defeats the point of Duck. W5 moved ahead of T2
-   once K1 merged: its plugin runs are Duck's own consequential tools, so T1's rules
-   already cover them per action, while T2 is the larger step.)
-2. W3 (done), W6, T4, **D2**, D4, **P1**. *Autopilot milestone: sessions, Duck's workers
-   included, keep going while you're away, and plans run step by step.* (W6, T4 and D4
-   added 2026-10-20: Duck's control of sessions without guessing from the screen. W6 is
-   small and comes first; T4 starts with a CLI check and is dropped if the hook can't
-   decide; D4 follows D2, when the workers' reliability matters most.)
-3. V1, V2, R1, R2, V3, **V5**, **P2**. *Voice + phone milestone, including read-aloud,
-   screenshots, proactive spoken updates, and unattended autopilot runs.*
-4. M2, **M3**, W4, L1, S1, V4. *Conversation milestone: chat and rubber duck, hands-free, with
-   long-term memory.*
-5. L2, S2, **L3** (self-development: from here Duck can help build the rest), **L4**, R3, then B1,
-   T3, D3; B2 only if quick browser actions turn out to need it; **R4** once
-   R3 shows you really use Duck from the phone.
-
-Track H (added 2026-10-20) runs alongside: H2 and H4 are small and need only W2, so they
-can slot in anywhere for an early taste; H1 with R1; H3 after H2; H5 with R4, whose gate
-it widens (the phone as the default assistant counts as real use); H6 when the home
-server exists; H7 after H5. V6 is an experiment for any time after V1, best after V2 and
-V4.
-
-T2 goes live after the replay check in its done-when (the past week's prompts through
-`decide`), not after days in shadow mode. Shadow stays available per project.
-
----
-
-## Research notes (2026-10-18)
-
-- **STT options compared:**
-  - Parakeet TDT 0.6B v3 int8 (best accuracy per CPU unit, ~650 MB) vs Moonshine v2 (tiny,
-    single-language models).
-  - whisper.cpp (small is several seconds on CPU; turbo only on a GPU; some Windows Vulkan
-    overlay layers crash it).
-  - faster-whisper (needs Python: rejected) and Voxtral / Kyutai (too heavy for CPU).
-  - Crates: `transcribe-rs` 0.3.x (Handy), `sherpa-onnx` 1.13.x (ASR + VAD + KWS + TTS in one),
-    `whisper-rs` 0.16.
-  - Wake words: Porcupine needs an online AccessKey; the sherpa-onnx KWS is the in-process
-    choice if ever wanted.
-- **STT on the GPU:** `transcribe-rs` has `ort-cuda` / `ort-directml` features; `whisper-rs`
-  has `cuda` / `vulkan`. DirectML is reportedly in maintenance in favour of Windows ML (not
-  verified), so CUDA is the primary path on the RTX 4060.
-- **TTS (EN+RU) compared:**
-  - Kokoro-82M: Apache, top open English model, **no Russian** (a Habr test got
-    gibberish). Runs in Rust through `sherpa-onnx` / `ort`.
-  - Silero `v5_6_ru`: neural auto-stress and intonation, about 91% homograph stress accuracy;
-    **CC BY-NC**; PyTorch only, so a sidecar.
-  - `kokoro-ru`: a community retrain with the Kokoro ONNX layout, OpenRAIL. Young, with
-    ж/ш/х artifacts; good stress needs RUAccent (Python).
-  - Qwen3-TTS 0.6B: Apache, 10 languages including RU, streams. Russian stress quality
-    unverified; Rust ports experimental; ~2–3 GB VRAM (est.).
-  - Piper `ru_RU`: tiny, espeak stress, noticeably robotic.
-  - Skipped for Russian:
-    - Chatterbox Multilingual: no Russian stress model per NVIDIA's own card.
-    - XTTS-v2: non-commercial, and the company is defunct.
-    - Fish/OpenAudio: CC-BY-NC-SA.
-    - ESpeech / F5: needs reference audio; base checkpoint NC.
-    - Orpheus, Kyutai, CSM, Zonos and similar: no usable Russian.
-- **Windows Natural voices:** there is **no Russian natural voice** for Narrator, and the SAPI
-  adapter is a self-described hack. edge-tts is natural and free, but uses an undocumented
-  endpoint (ToS risk): fine for X0's listening test, not as a foundation.
-- **Cloud TTS** at ≈ 0.9M chars a month:
-  - Google Chirp 3 HD: $0 (1M free, then $30 per 1M).
-  - Azure Neural: ~$6 (0.5M free; multilingual voices).
-  - Yandex SpeechKit: ~$8 (best Russian prosody, weak English).
-  - OpenAI gpt-4o-mini-tts: ~$15.
-  - ElevenLabs: ~$45 or more.
-- **End-of-turn detection:**
-  - Pipecat **Smart Turn v3.x**: audio-based; BSD-2; ~8 MB ONNX; 23 languages including
-    Russian; ~12 ms on a modern CPU (Daily's figure; third-party runs 36–83 ms). No published
-    Russian accuracy, hence X0's own recordings.
-  - LiveKit's turn detector: text-based, a Qwen2.5-0.5B fine-tune, ~400 MB RAM, Russian
-    supported, under the custom "LiveKit Model License". Kept as an alternative if
-    audio-only detection misfires.
-  - Silero VAD for speech start and stop.
-- **Cloud STT fallback** if ever needed: Groq whisper-large-v3-turbo at $0.04 per audio hour.
-  The Claude API has no audio input.
-- **MCP:**
-  - The Messages API MCP connector reaches only public URL servers, not local stdio, hence
-    the local `rmcp` host.
-  - The Agent SDK spawns a Claude Code process per session and carries a coding-agent system
 ### Track G — Pictures and files
 
 #### Step G1 — Attachments: paste, drop and pick files into Duck
@@ -5484,6 +5488,121 @@ T2 goes live after the replay check in its done-when (the past week's prompts th
 - **Out of scope:** video and animation; an on-device diffusion model (too slow and
   rough on the 4060 for the quality wanted; revisit if that changes).
 
+---
+
+## Sequencing
+
+```
+X0 ─┬─▶ A1 ─▶ A2 ─┬─▶ A3 ─┬─▶ W2 ─┬─▶ T1 ─▶ T2 (needs M1) ─▶ T3
+    │             │       │       ├─▶ D1 (needs M1) ─▶ D2 (needs W3, T2) ─▶ D3 (needs S1, V4)
+    │             │       │       ├─▶ M2 ─┬─▶ B1
+    │             │       │       │       └─▶ B2 (after D1, only if needed)
+    │             └─▶ W1 ─┴───────┤
+    │                     └─▶ W3 ─┤
+    │                             ├─▶ W4
+    │                             └─▶ R1 ─▶ R2 (needs V1) ─▶ R3 (needs V4) ─▶ R4 (gate: real phone use)
+    ├─▶ M1 ─▶ M4 (permission mode at launch)
+    └─▶ V1 (after A3) ─▶ V2 (after X0's listening test) ─┬─▶ V3 (needs W3)
+                                                          └─▶ V4
+    V1 ─▶ V6 (experimental; better after V2, V4)
+    M2 + W4 ─▶ S1 ─▶ S2 ;  M2 + D2 ─▶ M3
+    W4 + D1 ─▶ L1 ─▶ L2 ;  D2 + S2 + L1 + T1 ─▶ L3 ;  L1 + D2 + S2 ─▶ L4
+    V2 + V4 + D1 ─▶ V5 ;  W2 + W3 + T2 + D2 ─▶ P1 (V5 for spoken stops) ─▶ P2
+    W2 + K1 (improvement plan; merged 2026-10-19) ─▶ W5
+    W2 ─▶ H2 ─▶ H3 ;  W2 ─▶ H4 ;  W2 + R1 ─▶ H1 ─▶ H5 (with R4) ─▶ H7 ;  H1 + H4 ─▶ H6 (gate: the server)
+    A3 + D1 ─▶ G1 (phone: R2) ─▶ G2 (needs V1; V4 for hands-free)
+    D4 ─▶ G3 ─▶ G4 (shares M3's MCP server) ;  G1 + G3 ─▶ G5 ;  G1 + G3 ─▶ G6
+```
+
+**Suggested order:**
+1. X0, A1, A2, A3, A4, W1, M1, W2, T1, W5, T2, M4, D1 (done). *First
+   milestone: text control of the app that acts without asking about the small things,
+   with heavy work offloaded to sessions.* (Reordered 2026-10-19: trust moved ahead of
+   D1, because a card for every action defeats the point of Duck. W5 moved ahead of T2
+   once K1 merged: its plugin runs are Duck's own consequential tools, so T1's rules
+   already cover them per action, while T2 is the larger step.)
+2. W3 (done), W6, T4, **D2**, D4, **P1**. *Autopilot milestone: sessions, Duck's workers
+   included, keep going while you're away, and plans run step by step.* (W6, T4 and D4
+   added 2026-10-20: Duck's control of sessions without guessing from the screen. W6 is
+   small and comes first; T4 starts with a CLI check and is dropped if the hook can't
+   decide; D4 follows D2, when the workers' reliability matters most.)
+3. V1, V2, R1, R2, V3, **V5**, **P2**. *Voice + phone milestone, including read-aloud,
+   screenshots, proactive spoken updates, and unattended autopilot runs.*
+4. M2, **M3**, W4, L1, S1, V4. *Conversation milestone: chat and rubber duck, hands-free, with
+   long-term memory.*
+5. L2, S2, **L3** (self-development: from here Duck can help build the rest), **L4**, R3, then B1,
+   T3, D3; B2 only if quick browser actions turn out to need it; **R4** once
+   R3 shows you really use Duck from the phone.
+
+Track H (added 2026-10-20) runs alongside: H2 and H4 are small and need only W2, so they
+can slot in anywhere for an early taste; H1 with R1; H3 after H2; H5 with R4, whose gate
+it widens (the phone as the default assistant counts as real use); H6 when the home
+server exists; H7 after H5. V6 is an experiment for any time after V1, best after V2 and
+V4.
+
+Track G (added 2026-10-21) also runs alongside. G1 is useful on its own and comes first,
+then G3 and G4 (drawing, and drawing well) and G2 with the voice work. G5 follows G3. G6's
+check-first can run any time; it decides whether G6 is built.
+
+T2 goes live after the replay check in its done-when (the past week's prompts through
+`decide`), not after days in shadow mode. Shadow stays available per project.
+
+---
+
+## Research notes (2026-10-18)
+
+- **STT options compared:**
+  - Parakeet TDT 0.6B v3 int8 (best accuracy per CPU unit, ~650 MB) vs Moonshine v2 (tiny,
+    single-language models).
+  - whisper.cpp (small is several seconds on CPU; turbo only on a GPU; some Windows Vulkan
+    overlay layers crash it).
+  - faster-whisper (needs Python: rejected) and Voxtral / Kyutai (too heavy for CPU).
+  - Crates: `transcribe-rs` 0.3.x (Handy), `sherpa-onnx` 1.13.x (ASR + VAD + KWS + TTS in one),
+    `whisper-rs` 0.16.
+  - Wake words: Porcupine needs an online AccessKey; the sherpa-onnx KWS is the in-process
+    choice if ever wanted.
+- **STT on the GPU:** `transcribe-rs` has `ort-cuda` / `ort-directml` features; `whisper-rs`
+  has `cuda` / `vulkan`. DirectML is reportedly in maintenance in favour of Windows ML (not
+  verified), so CUDA is the primary path on the RTX 4060.
+- **TTS (EN+RU) compared:**
+  - Kokoro-82M: Apache, top open English model, **no Russian** (a Habr test got
+    gibberish). Runs in Rust through `sherpa-onnx` / `ort`.
+  - Silero `v5_6_ru`: neural auto-stress and intonation, about 91% homograph stress accuracy;
+    **CC BY-NC**; PyTorch only, so a sidecar.
+  - `kokoro-ru`: a community retrain with the Kokoro ONNX layout, OpenRAIL. Young, with
+    ж/ш/х artifacts; good stress needs RUAccent (Python).
+  - Qwen3-TTS 0.6B: Apache, 10 languages including RU, streams. Russian stress quality
+    unverified; Rust ports experimental; ~2–3 GB VRAM (est.).
+  - Piper `ru_RU`: tiny, espeak stress, noticeably robotic.
+  - Skipped for Russian:
+    - Chatterbox Multilingual: no Russian stress model per NVIDIA's own card.
+    - XTTS-v2: non-commercial, and the company is defunct.
+    - Fish/OpenAudio: CC-BY-NC-SA.
+    - ESpeech / F5: needs reference audio; base checkpoint NC.
+    - Orpheus, Kyutai, CSM, Zonos and similar: no usable Russian.
+- **Windows Natural voices:** there is **no Russian natural voice** for Narrator, and the SAPI
+  adapter is a self-described hack. edge-tts is natural and free, but uses an undocumented
+  endpoint (ToS risk): fine for X0's listening test, not as a foundation.
+- **Cloud TTS** at ≈ 0.9M chars a month:
+  - Google Chirp 3 HD: $0 (1M free, then $30 per 1M).
+  - Azure Neural: ~$6 (0.5M free; multilingual voices).
+  - Yandex SpeechKit: ~$8 (best Russian prosody, weak English).
+  - OpenAI gpt-4o-mini-tts: ~$15.
+  - ElevenLabs: ~$45 or more.
+- **End-of-turn detection:**
+  - Pipecat **Smart Turn v3.x**: audio-based; BSD-2; ~8 MB ONNX; 23 languages including
+    Russian; ~12 ms on a modern CPU (Daily's figure; third-party runs 36–83 ms). No published
+    Russian accuracy, hence X0's own recordings.
+  - LiveKit's turn detector: text-based, a Qwen2.5-0.5B fine-tune, ~400 MB RAM, Russian
+    supported, under the custom "LiveKit Model License". Kept as an alternative if
+    audio-only detection misfires.
+  - Silero VAD for speech start and stop.
+- **Cloud STT fallback** if ever needed: Groq whisper-large-v3-turbo at $0.04 per audio hour.
+  The Claude API has no audio input.
+- **MCP:**
+  - The Messages API MCP connector reaches only public URL servers, not local stdio, hence
+    the local `rmcp` host.
+  - The Agent SDK spawns a Claude Code process per session and carries a coding-agent system
     prompt; wrong shape for a light assistant, and the guardrails rule it out.
 - **No official Rust SDK.** The official TS SDK in the webview through the proxy gets typed,
   maintained API coverage without hand-written Rust types.
@@ -5506,8 +5625,6 @@ T2 goes live after the replay check in its done-when (the past week's prompts th
 
 ---
 
-    A3 + D1 ─▶ G1 (phone: R2) ─▶ G2 (needs V1; V4 for hands-free)
-    D4 ─▶ G3 ─▶ G4 (shares M3's MCP server) ;  G1 + G3 ─▶ G5 ;  G1 + G3 ─▶ G6
 ## Open questions
 
 | # | Question | Resolved in |
@@ -5536,15 +5653,15 @@ T2 goes live after the replay check in its done-when (the past week's prompts th
 | 22 | Glyph lights for Duck's state on the Phone (2a): worth the Nothing GDK API-key registration? | R4 |
 | 23 | ~~Private GitHub repo for Duck's data?~~ **Yes** (2026-10-18). All Duck git work runs in the background: a mechanical lane for commits and pushes, Sonnet `medium` worker sessions for anything needing judgment. | ✔ |
 | 24 | ~~Housekeeping cadence?~~ **Weekly on Sunday; if missed, on the next Duck start** (2026-10-18). Retention default: keep results, prune bulky intermediates after 30 days. | ✔ |
-Track G (added 2026-10-21) also runs alongside. G1 is useful on its own and comes first,
-then G3 and G4 (drawing, and drawing well) and G2 with the voice work. G5 follows G3. G6's
-check-first can run any time; it decides whether G6 is built.
-
 | 25 | ~~Autopilot defaults?~~ **Compact only after a finished step, judged per step (usually yes); never mid-job. Continue with "continue the implementation" / "proceed to the next step", or a situational prompt** (2026-10-18). Max steps per run: default 5, adjustable. | ✔ |
 | 26 | ~~Quiet hours?~~ **All etiquette is configurable; quiet hours optional and off by default; manual DND (with durations and a voice command) is the main control; a master Speak toggle gates all voice output** (2026-10-18). | ✔ |
 | 27 | ~~Music service?~~ **YouTube Music** (comes with the YouTube subscription), behind a provider interface; **Spotify** only if you switch for its API (2026-10-20). | ✔ |
 | 28 | ~~Duck with the PC off?~~ **An always-on home server runs Duck's core** (H6), **plus a fallback brain on the phone with its own capped key** (H7) (2026-10-20). Still open: the server's hardware and OS. | H6 |
 | 29 | Steam Web API key for playtime and friends, or the local files only? | H2 |
+| 30 | Which Google plan do you have (AI Pro or Ultra), and do its developer credits pay for Gemini image generation? Decides G6's route. | G6 |
+| 31 | Drawing over the subscription thresholds: **wait for the window** (proposed default, to keep API credits) or fall back to an API worker as other tasks do? | G3 |
+| 32 | A pen or touch screen on the PC? Changes how much the desktop sketch pad needs beyond the mouse. | G5 |
+| 33 | How long to keep attachments (default: as long as their thread)? | G1 |
 
 ---
 
@@ -5579,7 +5696,7 @@ check-first can run any time; it decides whether G6 is built.
 | V2 | Natural spoken replies | ☐ |
 | V3 | Read-aloud and screen reading | ☑ (the desktop's speakers not tried live) |
 | V4 | Hands-free conversation mode | ☐ |
-| V5 | Proactive announcements | ☐ |
+| V5 | Proactive announcements | ◐ (the reply window waits for V4) |
 | V6 | Wake word on the PC (experimental) | ☐ |
 | L1 | Long-term memory: files, index, recall | ☐ |
 | L2 | Consolidation, journal, and recall quality | ☐ |
@@ -5604,10 +5721,6 @@ check-first can run any time; it decides whether G6 is built.
 | H5 | The phone as a host (with R4) | ☐ |
 | H6 | Duck on the home server (gate: the server) | ☐ |
 | H7 | The phone's fallback brain | ☐ |
-| 30 | Which Google plan do you have (AI Pro or Ultra), and do its developer credits pay for Gemini image generation? Decides G6's route. | G6 |
-| 31 | Drawing over the subscription thresholds: **wait for the window** (proposed default, to keep API credits) or fall back to an API worker as other tasks do? | G3 |
-| 32 | A pen or touch screen on the PC? Changes how much the desktop sketch pad needs beyond the mouse. | G5 |
-| 33 | How long to keep attachments (default: as long as their thread)? | G1 |
 | G1 | Attachments: paste, drop and pick files into Duck | ☐ |
 | G2 | Talking about what you drop | ☐ |
 | G3 | Drawing workers and the canvas | ☐ |

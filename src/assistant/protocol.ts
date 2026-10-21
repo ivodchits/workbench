@@ -213,7 +213,9 @@ export type ClientMessage =
   /** A session autopilot's buttons on its card (step P1). */
   | { type: "autopilot"; instanceId: string; action: "pause" | "resume" | "stop" }
   /** The reader bar's buttons (step V3). */
-  | { type: "reader"; action: ReaderAction };
+  | { type: "reader"; action: ReaderAction }
+  /** Duck's Do Not Disturb (step V5): until a moment (epoch ms), or off (null). */
+  | { type: "dnd"; until: number | null };
 
 export type ReaderAction = "pause" | "resume" | "next" | "prev" | "stop";
 

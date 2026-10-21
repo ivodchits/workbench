@@ -9,6 +9,9 @@
 //   Haiku is slow or unreachable) and queued in order with `ttsSay`. The voice
 //   (`src-tauri/src/voice/tts.rs`) plays sentence 1 while sentence 2 is made.
 // - A new message, Esc, the stop button and the push-to-talk key stop it.
+// - Nothing to say yet `ACK_MS` after a spoken message (Duck usually starts with
+//   an acknowledgement of its own, "Checking the backend session."): a stock one
+//   is said, so you know it heard you.
 // - The duck's beak follows `getSpeechLevel()`, the loudness of what's playing,
 //   read each frame (too fast for React state).
 // - Ctrl+Shift+L in a console speaks the selection through the same voice
@@ -20,6 +23,8 @@
 //   utterance, once the reply that asked for it is over (`quietFor`). Whatever
 //   stops a reply (a new message, Esc, the push-to-talk key) cuts it too, and the
 //   reader holds its place.
+// - Speak (V5) is the master switch: off, nothing here uses the voice but
+//   Ctrl+Shift+L. Announcements (`announce`) speak through the same queue.
 
 import { useSyncExternalStore } from "react";
 import { registerDesktopSpeech } from "../../assistant";
@@ -34,6 +39,7 @@ import { onTtsLevel, onTtsState, ttsConfigure, ttsEnd, ttsSay, ttsStatus, ttsSto
 export type SpeechPrefs = Prefs["speech"];
 
 export const DEFAULT_SPEECH: SpeechPrefs = {
+  on: true,
   speak: "voice",
   engine: "local",
   chirpFallback: false,
@@ -86,6 +92,12 @@ export function setSpeechPrefs(patch: Partial<SpeechPrefs>): void {
   void refreshReady();
 }
 
+/** Speak, the master switch (V5); off cuts what's speaking. */
+export function setSpeakOn(on: boolean): void {
+  if (!on) stopSpeaking();
+  setSpeechPrefs({ on });
+}
+
 /** Re-read whether the voice can speak (after a download, or a change of engine). */
 export async function refreshReady(): Promise<boolean> {
   const s = await ttsStatus().catch(() => null);
@@ -99,6 +111,8 @@ export async function refreshReady(): Promise<boolean> {
 interface Reply {
   /** The thread it answers in (or "selection"). */
   key: string;
+  /** A sentence of it was queued. */
+  said: boolean;
   utterance: number;
   sentences: Sentences;
   /** Sentences are prepared in order: each waits for the one before. */
@@ -113,7 +127,13 @@ const replies = new Map<string, Reply>();
 export const rewriteRussian = (s: string, signal: AbortSignal): Promise<string> =>
   oneShot("speakable_ru", s, { signal });
 
+/** A reply with nothing to say this long after your message gets a stock
+ *  acknowledgement. */
+export const ACK_MS = 3500;
+const ACKS = ["One moment.", "On it.", "Let me check."];
+
 function say(r: Reply, sentence: string): void {
+  r.said = true;
   const ready = prepareSentence(sentence, rewriteRussian);
   r.chain = r.chain.then(async () => {
     const s = await ready;
@@ -123,7 +143,7 @@ function say(r: Reply, sentence: string): void {
 
 function begin(key: string): Reply {
   stopSpeaking();
-  const r: Reply = { key, utterance: nextUtterance++, sentences: new Sentences(), chain: Promise.resolve() };
+  const r: Reply = { key, said: false, utterance: nextUtterance++, sentences: new Sentences(), chain: Promise.resolve() };
   replies.set(key, r);
   set({ error: null });
   return r;
@@ -156,6 +176,7 @@ function endReads(heard: boolean): void {
 export const desktopVoice: Voice = {
   where: "desktop",
   async play(sentences) {
+    if (!state.prefs.on) throw new Error("Speak is off on this PC (the speaker by Duck's button)");
     const mine = cuts;
     const u = nextUtterance++;
     const heard = new Promise<boolean>((ok, fail) => reading.set(u, { ok, fail }));
@@ -211,20 +232,30 @@ export function onUserMessage(m: StoredMessage, text: string): void {
   if (!USER_SOURCES.has(m.source)) return;
   // Whatever was speaking, you've moved on.
   stopSpeaking();
-  if (!DESKTOP_SOURCES.has(m.source)) return;
+  if (!DESKTOP_SOURCES.has(m.source) || !state.prefs.on) return;
   const { speak } = state.prefs;
   if (speak === "off" || (speak === "voice" && m.source !== "voice")) return;
   // Not gated on `ready`: when the voice isn't set up, the backend's error says so
   // in the drawer, rather than the reply going silently unspoken.
   // Silero takes 10-20 s to load cold: start it while Duck thinks.
   if (langOf(text) === "ru") void ttsWarm(true).catch(() => {});
-  begin(m.threadId);
+  const r = begin(m.threadId);
+  setTimeout(() => {
+    if (replies.get(m.threadId) === r && !r.said) say(r, ACKS[Math.floor(Math.random() * ACKS.length)]);
+  }, ACK_MS);
   if (!state.ready) void refreshReady();
 }
 
 export function onReplyDelta(threadId: string, text: string): void {
   const r = replies.get(threadId);
   if (r) for (const s of r.sentences.push(text)) say(r, s);
+}
+
+/** A tool call starts: what the reply has so far is said now (an acknowledgement
+ *  before the call would otherwise wait for the text after it). */
+export function onToolStart(threadId: string): void {
+  const r = replies.get(threadId);
+  if (r) for (const s of r.sentences.end()) say(r, s);
 }
 
 /** The turn is over (idle) or parked on a confirmation: the reply is complete. */
@@ -244,6 +275,17 @@ export function speakText(text: string): boolean {
   return true;
 }
 
+// ── announcements (V5) ──
+
+/** Say an announcement; false when Speak is off or the voice isn't set up. */
+export function announce(text: string): Promise<boolean> {
+  if (!state.prefs.on || !state.ready || !text.trim()) return Promise.resolve(false);
+  const r = begin("announce");
+  for (const s of r.sentences.push(text)) say(r, s);
+  finish("announce");
+  return Promise.resolve(true);
+}
+
 let started: Promise<void> | null = null;
 
 export function initSpeech(): Promise<void> {
@@ -252,7 +294,14 @@ export function initSpeech(): Promise<void> {
     set({ prefs });
     configure(prefs);
     await refreshReady();
-    registerDesktopSpeech({ voice: desktopVoice, quiet: quietFor });
+    registerDesktopSpeech({
+      voice: desktopVoice,
+      quiet: quietFor,
+      announce,
+      busy: isSpeaking,
+      speakOn: () => state.prefs.on,
+      setSpeakOn,
+    });
     await onTtsLevel((l) => {
       level = l;
     });

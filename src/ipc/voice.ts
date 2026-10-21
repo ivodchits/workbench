@@ -64,6 +64,8 @@ export interface VoiceConfig {
   device: string | null;
   /** The push-to-talk key ("Ctrl+Alt+Space", "F13"); null for none. */
   hotkey: string | null;
+  /** A press starts and the next press stops; off, it's held. */
+  toggle: boolean;
 }
 
 export type VoicePhase = "listening" | "transcribing" | "idle" | "error";
@@ -71,6 +73,8 @@ export type VoicePhase = "listening" | "transcribing" | "idle" | "error";
 export const voiceConfigure = (config: VoiceConfig): Promise<void> => invoke("voice_configure", { config });
 /** The drawer's mic button: down while held. */
 export const voicePtt = (down: boolean): Promise<void> => invoke("voice_ptt", { down });
+/** Toggle mode's mic button: start, or stop and send. */
+export const voiceToggle = (): Promise<void> => invoke("voice_toggle");
 export const voiceDevices = (): Promise<string[]> => invoke("voice_devices");
 
 export function onVoiceState(cb: (s: { state: VoicePhase; message: string | null }) => void): Promise<UnlistenFn> {

@@ -1,0 +1,10 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "voice-overlay",
+  "description": "The listening sign (2026-10-21): a small always-on-top window showing Duck's icon with sound waves while voice input is on. It reads the theme from the prefs and hears the voice state.",
+  "windows": ["voice-overlay"],
+  "permissions": [
+    "core:default",
+    "store:default"
+  ]
+}

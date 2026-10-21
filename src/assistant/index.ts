@@ -6,6 +6,11 @@
 //
 // The reader (step V3) is made here too: one for the app, heard on this PC
 // (`registerDesktopSpeech`, from the drawer's speech) or on the phone that asked.
+//
+// So is the announcer (step V5): a turn started by a Workbench event (a task's
+// report, a watched session, an autopilot) ends with Duck's reply, whose headline
+// is announced at the level the event's producer gave; a confirmation card nobody
+// is looking at is one too.
 
 import { homeDir } from "@tauri-apps/api/path";
 
@@ -27,6 +32,8 @@ import { ttsRender, ttsWarm } from "../ipc/tts";
 import { ipcLink, startRemoteBridge, type RemoteBridge } from "./remoteBridge";
 import { prepareSentence } from "./speakable";
 import { Reader, type ReaderView, type ReadPosition, type Voice } from "./reader";
+import { Announcer, headline, type Level } from "./announce";
+import { getPresence } from "../ipc/presence";
 import { localPort } from "./port.local";
 import {
   USER_SOURCES,
@@ -50,6 +57,7 @@ import { READ_TOOLS } from "./tools/read";
 import { SCREEN_TOOLS } from "./tools/screen";
 import { READ_ALOUD_TOOLS, type ReaderHost } from "./tools/readAloud";
 import { SCREENSHOT_TOOLS, type ScreenHost } from "./tools/screenshot";
+import { QUIET_TOOLS, type QuietHost } from "./tools/quiet";
 import { SUMMARY_TOOLS } from "./tools/summaries";
 import { createRegistry } from "./tools/registry";
 import { TASK_TOOLS } from "./tools/tasks";
@@ -57,7 +65,7 @@ import { AUTOPILOT_TOOLS } from "./tools/autopilot";
 import { THREAD_TOOLS } from "./tools/threads";
 import { createTaskManager, ipcTaskBackend, type Task, type TaskManager } from "./tasks";
 import { voiceMessage } from "./voiceNames";
-import { testConfirm } from "./tools/testConfirm";
+import { testAnnounce, testConfirm } from "./tools/testConfirm";
 import { FLOOR } from "./trust/floor";
 import { replay, type ReplayReport } from "./trust/replay";
 import { createTrustStore, ipcTrustBackend, type TrustStore } from "./trust/store";
@@ -86,9 +94,10 @@ const TOOLS = [
   ...SCREEN_TOOLS,
   ...READ_ALOUD_TOOLS,
   ...SCREENSHOT_TOOLS,
+  ...QUIET_TOOLS,
   ...AUTOPILOT_TOOLS,
   ...THREAD_TOOLS,
-  ...(import.meta.env.DEV ? [testConfirm] : []),
+  ...(import.meta.env.DEV ? [testConfirm, testAnnounce] : []),
 ];
 
 /** Where the spend comes from: the ledger commands in the app, fakes in tests. */
@@ -120,11 +129,31 @@ const REPLAY_MAX_CALLS = 20_000;
 let started: Promise<void> | null = null;
 let duck: Transport | null = null;
 
-/** This PC's voice for reads, from the drawer's speech (`replySpeech.ts`). */
+/** The text blocks of a stored message. */
+function replyText(content: unknown): string {
+  return Array.isArray(content)
+    ? (content as { type?: string; text?: string }[])
+        .filter((b) => b.type === "text")
+        .map((b) => b.text ?? "")
+        .join("\n")
+    : typeof content === "string"
+      ? content
+      : "";
+}
+
+/** This PC's voice for reads and announcements, from the drawer's speech
+ *  (`replySpeech.ts`). */
 export interface DesktopSpeech {
   voice: Voice;
   /** Resolves once the thread's reply is spoken. */
   quiet(threadId: string): Promise<void>;
+  /** Say an announcement; false when it can't. */
+  announce(text: string): Promise<boolean>;
+  /** Something is speaking or queued to. */
+  busy(): boolean;
+  /** Speak, the master switch. */
+  speakOn(): boolean;
+  setSpeakOn(on: boolean): void;
 }
 
 let desktopSpeech: DesktopSpeech | null = null;
@@ -179,6 +208,7 @@ export function endpoint(
   tasks?: TaskManager,
   autopilot?: AutopilotManager,
   reader?: ReaderLink,
+  onSettings?: () => void,
 ): DuckEndpoint {
   const listeners = new Set<(ev: DuckEvent) => void>();
   const say = (ev: DuckEvent) => {
@@ -262,6 +292,12 @@ export function endpoint(
           type: "settings",
           settings: await settings.set(msg.settings),
         });
+        onSettings?.();
+        return;
+      case "dnd":
+        if (!settings) throw new Error("Duck's settings aren't available.");
+        say({ type: "settings", settings: await settings.set({ dndUntil: msg.until }) });
+        onSettings?.();
         return;
       case "trust.pause":
         await needTrust().setPaused(msg.paused);
@@ -365,14 +401,18 @@ export function initAssistant(): Promise<void> {
     // Worker tasks (D1) report into their thread as Workbench events; the engine
     // that takes them is made just below.
     let engineRef: Engine | null = null;
+    /** The level of the next Workbench event in each thread (V5). */
+    const levels = new Map<string, Level>();
     const tasks = createTaskManager({
       port: localPort,
       backend: ipcTaskBackend,
       settings: settings.get,
-      tell: (threadId, text) =>
+      tell: (threadId, text, level) => {
+        levels.set(threadId, level ?? "report");
         void engineRef
           ?.send({ threadId, text: eventText(text), source: "event" })
-          .catch((e: unknown) => console.warn("duck: a task report was dropped", e)),
+          .catch((e: unknown) => console.warn("duck: a task report was dropped", e));
+      },
     });
     // Plan autopilots (P1) report the same way; their step log is notices.
     const autopilot = createAutopilot({
@@ -380,10 +420,12 @@ export function initAssistant(): Promise<void> {
       backend: ipcAutopilotBackend,
       call: (r) => structured(r),
       readFile,
-      tell: (threadId, text) =>
+      tell: (threadId, text, level) => {
+        levels.set(threadId, level ?? "report");
         void engineRef
           ?.send({ threadId, text: eventText(text), source: "event" })
-          .catch((e: unknown) => console.warn("duck: an autopilot report was dropped", e)),
+          .catch((e: unknown) => console.warn("duck: an autopilot report was dropped", e));
+      },
       notice: (threadId, text) =>
         void engineRef
           ?.notice(threadId, { kind: "autopilot", text })
@@ -446,12 +488,40 @@ export function initAssistant(): Promise<void> {
       lastKept: () => [...kept.values()].sort((a, b) => b.at - a.at)[0] ?? null,
       summarize: (text, signal) => oneShot("spoken_summary", text, { signal }),
     };
+    // Announcements (V5).
+    const announcer = new Announcer({
+      settings: () => settings.get().announce,
+      dndUntil: () => settings.get().dndUntil,
+      // Unknown presence counts as away: a push rather than talking to an empty room.
+      presence: () => getPresence().catch(() => ({ idleMs: 3_600_000, locked: false, fullScreen: false, focus: null })),
+      speakOn: () => desktopSpeech?.speakOn() ?? false,
+      busy: () => (desktopSpeech?.busy() ?? false) || (reader.view()?.state === "reading" && reader.view()?.where === "desktop"),
+      sayHere: (text) => desktopSpeech?.announce(text) ?? Promise.resolve(false),
+      phones: () => bridge?.phones() ?? 0,
+      sayOnPhones: (text, threadId) => bridge?.announce(text, threadId),
+      push: (threadId, title, body) => ipcLink.push(threadId, title, body),
+    });
+    // Through the endpoint, so every surface hears the new settings.
+    let epRef: DuckEndpoint | null = null;
+    const quietHost: QuietHost = {
+      setDnd(until) {
+        if (!epRef) throw new Error("Duck isn't started yet.");
+        epRef.handle({ type: "dnd", until });
+      },
+      speakOn: () => desktopSpeech?.speakOn() ?? null,
+      setSpeakOn(on) {
+        if (!desktopSpeech) throw new Error("This PC's voice isn't running yet (open Duck's drawer once).");
+        desktopSpeech.setSpeakOn(on);
+      },
+    };
     const engine = createEngine({
       tasks,
       autopilot,
       summaries,
       reader: readerHost,
       screen: screenHost,
+      quiet: quietHost,
+      eventLevel: (threadId, level) => levels.set(threadId, level),
       store: s,
       registry: createRegistry(TOOLS),
       port: localPort,
@@ -487,17 +557,70 @@ export function initAssistant(): Promise<void> {
     engineRef = engine;
     // Anything you say pauses a read (you've moved on; "continue reading" resumes).
     engine.onEvent((ev) => {
-      if (ev.type === "message" && ev.message.role === "user" && USER_SOURCES.has(ev.message.source)) reader.pause();
+      if (ev.type === "message" && ev.message.role === "user" && USER_SOURCES.has(ev.message.source)) {
+        reader.pause();
+        announcer.answeredThread(ev.message.threadId);
+      }
+    });
+    // A Workbench event's turn: its reply is the news.
+    const eventTurns = new Map<string, { level: Level; reply: string; seq: number }>();
+    engine.onEvent((ev) => {
+      if (ev.type === "message") {
+        const m = ev.message;
+        if (m.role === "user" && m.source === "event") {
+          eventTurns.set(m.threadId, { level: levels.get(m.threadId) ?? "report", reply: "", seq: m.seq });
+          levels.delete(m.threadId);
+        } else if (m.role === "assistant") {
+          const t = eventTurns.get(m.threadId);
+          const text = replyText(m.content);
+          if (t && text.trim()) t.reply = text;
+        }
+      } else if (ev.type === "turnState" && (ev.state === "idle" || ev.state === "waiting")) {
+        const t = eventTurns.get(ev.threadId);
+        if (!t) return;
+        eventTurns.delete(ev.threadId);
+        if (!t.reply) return;
+        // A reply that ends asking the user something needs them.
+        const asks = /\?\s*$/.test(t.reply.trim());
+        announcer.add({
+          level: asks ? "needs_you" : t.level,
+          text: headline(t.reply),
+          threadId: ev.threadId,
+          key: `event:${ev.threadId}:${t.seq}`,
+        });
+      } else if (ev.type === "confirm") {
+        // A card nobody is looking at.
+        if (document.hasFocus() && !document.hidden) return;
+        const r = ev.request;
+        announcer.add({
+          level: "needs_you",
+          text: `Duck is waiting for a yes or no: ${r.summary ?? `it wants to use ${r.name}`}`,
+          threadId: r.threadId,
+          key: `card:${r.toolUseId}`,
+        });
+      } else if (ev.type === "confirmed") announcer.answered(`card:${ev.toolUseId}`);
     });
     await tasks.load().catch((e: unknown) => console.error("duck: worker tasks didn't load", e));
     await autopilot.load().catch((e: unknown) => console.error("duck: autopilots didn't load", e));
-    const ep = endpoint(engine, s, ledger, settings, trust, replayer, tasks, autopilot, {
-      reader,
-      subscribe(cb) {
-        readerListeners.add(cb);
-        return () => readerListeners.delete(cb);
+    const ep = endpoint(
+      engine,
+      s,
+      ledger,
+      settings,
+      trust,
+      replayer,
+      tasks,
+      autopilot,
+      {
+        reader,
+        subscribe(cb) {
+          readerListeners.add(cb);
+          return () => readerListeners.delete(cb);
+        },
       },
-    });
+      () => announcer.poke(),
+    );
+    epRef = ep;
     duck = createLocalTransport(ep);
     bridge = startRemoteBridge({
       duck: ep,

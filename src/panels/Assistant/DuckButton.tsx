@@ -3,12 +3,24 @@
 // hover, and doubles as Duck's status light. A badge counts the tool calls waiting for your confirmation (in any thread), and
 // the label turns amber past the budget's soft limit and red at the cap. A pause
 // mark shows while trust is paused (T1). The voice state (V1/V4) joins it later.
+//
+// Beside it (V5): the speaker, Speak on or off (Duck's voice on this PC), and a
+// moon while Do Not Disturb is on. Right-click the button for Do Not Disturb.
 
 import { useEffect, useRef, useState } from "react";
 import { runCommand, useBindings } from "../../keyboard";
 import { chordText } from "../keymapFormat";
 import DuckIcon from "./DuckIcon";
-import { useDuckState } from "./duckState";
+import { nextMorning } from "../../assistant/announce";
+import { DND_FOREVER } from "../../assistant/settings";
+import { setDnd, useDuckState } from "./duckState";
+import { setSpeakOn, useSpeechState } from "./replySpeech";
+
+function untilText(until: number): string {
+  if (until >= DND_FOREVER) return "until you turn it off";
+  const d = new Date(until);
+  return `until ${d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}${d.toDateString() !== new Date().toDateString() ? " tomorrow" : ""}`;
+}
 
 const ACRONYM = [
   ["D", "ispatch"],
@@ -22,9 +34,26 @@ export default function DuckButton() {
   const bindings = useBindings();
   const [hover, setHover] = useState(false);
   const [tip, setTip] = useState(false);
+  const [menu, setMenu] = useState(false);
+  const speech = useSpeechState();
+  const [, tick] = useState(0);
   const timer = useRef<number | undefined>(undefined);
 
   useEffect(() => () => window.clearTimeout(timer.current), []);
+  const dndUntil = duck.settings?.dndUntil ?? null;
+  const dnd = dndUntil !== null && dndUntil > Date.now();
+  // Repaint when a timed Do Not Disturb runs out.
+  useEffect(() => {
+    if (!dnd || dndUntil >= DND_FOREVER) return;
+    const t = window.setTimeout(() => tick((n) => n + 1), Math.min(dndUntil - Date.now() + 500, 2 ** 31 - 1));
+    return () => window.clearTimeout(t);
+  }, [dnd, dndUntil]);
+  useEffect(() => {
+    if (!menu) return;
+    const close = () => setMenu(false);
+    window.addEventListener("pointerdown", close);
+    return () => window.removeEventListener("pointerdown", close);
+  }, [menu]);
 
   const chord =
     bindings.find((b) => b.command === "toggleAssistant")?.chord ?? "";
@@ -61,6 +90,11 @@ export default function DuckButton() {
       <button
         type="button"
         onClick={() => runCommand("toggleAssistant")}
+        onContextMenu={(e) => {
+          e.preventDefault();
+          setTip(false);
+          setMenu(true);
+        }}
         onMouseEnter={() => {
           setHover(true);
           timer.current = window.setTimeout(() => setTip(true), 350);
@@ -116,6 +150,74 @@ export default function DuckButton() {
         )}
       </button>
       <DuckIcon size={13.5} color={tone ?? "var(--wb-accent)"} />
+      <button
+        type="button"
+        aria-pressed={speech.prefs.on}
+        aria-label={speech.prefs.on ? "Speak is on: Duck uses its voice. Click to turn it off" : "Speak is off: Duck stays silent. Click to turn it on"}
+        title={speech.prefs.on ? "Speak on (click: off)" : "Speak off (click: on)"}
+        onClick={() => setSpeakOn(!speech.prefs.on)}
+        style={{
+          background: "transparent",
+          border: "none",
+          padding: "0 2px",
+          cursor: "pointer",
+          font: "12px var(--wb-mono)",
+          color: speech.prefs.on ? "var(--wb-textDim2)" : "var(--wb-textFaint)",
+        }}
+      >
+        {speech.prefs.on ? "🔊" : "🔇"}
+      </button>
+      {dnd && (
+        <button
+          type="button"
+          title={`Do Not Disturb ${untilText(dndUntil)} (click: off)`}
+          aria-label={`Do Not Disturb ${untilText(dndUntil)}. Click to turn it off`}
+          onClick={() => setDnd(null)}
+          style={{ background: "transparent", border: "none", padding: 0, cursor: "pointer", color: "var(--wb-working)", font: "12px var(--wb-mono)" }}
+        >
+          ☾
+        </button>
+      )}
+      {menu && (
+        <div
+          role="menu"
+          onPointerDown={(e) => e.stopPropagation()}
+          style={{
+            position: "absolute",
+            top: 28,
+            left: 0,
+            zIndex: 201,
+            background: "var(--wb-panel)",
+            border: "1px solid var(--wb-border)",
+            boxShadow: "0 4px 18px rgba(0,0,0,0.55)",
+            padding: 4,
+            font: "11px var(--wb-mono)",
+            display: "flex",
+            flexDirection: "column",
+            minWidth: 200,
+          }}
+        >
+          <span style={{ padding: "3px 8px", color: "var(--wb-textFaint)" }}>
+            Do Not Disturb{dnd ? `: on ${untilText(dndUntil)}` : ""}
+          </span>
+          {(
+            [
+              ["for 1 hour", () => Date.now() + 3_600_000],
+              ["until morning", () => nextMorning(Date.now())],
+              ["until I turn it off", () => DND_FOREVER],
+            ] as const
+          ).map(([label, until]) => (
+            <button key={label} type="button" role="menuitem" style={menuItem} onClick={() => (setDnd(until()), setMenu(false))}>
+              {label}
+            </button>
+          ))}
+          {dnd && (
+            <button type="button" role="menuitem" style={menuItem} onClick={() => (setDnd(null), setMenu(false))}>
+              off
+            </button>
+          )}
+        </div>
+      )}
 
       {tip && (
         <div
@@ -163,8 +265,19 @@ export default function DuckButton() {
               Trust paused: every consequential action asks.
             </span>
           )}
+          <span style={{ color: "var(--wb-textFaint)" }}>Right-click: Do Not Disturb</span>
         </div>
       )}
     </div>
   );
 }
+
+const menuItem: React.CSSProperties = {
+  background: "transparent",
+  border: "none",
+  textAlign: "left",
+  padding: "4px 8px",
+  cursor: "pointer",
+  color: "var(--wb-text)",
+  font: "11px var(--wb-mono)",
+};

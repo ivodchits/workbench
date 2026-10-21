@@ -49,6 +49,7 @@ import { runApiWorker, type ApiWorkerOutcome } from "./apiWorker";
 import { choiceLine } from "./tools/read";
 import type { Mandate, PromptDelivery, SessionPhase, WorkbenchPort } from "./port";
 import type { DuckSettings, Tier } from "./settings";
+import type { Level } from "./announce";
 
 export const TASK_KINDS = ["research", "writing", "browser", "analysis", "code"] as const;
 export type TaskKind = (typeof TASK_KINDS)[number];
@@ -213,8 +214,9 @@ export interface TaskDeps {
   port: WorkbenchPort;
   backend: TaskBackend;
   settings: () => DuckSettings;
-  /** Post a Workbench event into a thread (it starts a turn there). */
-  tell: (threadId: string, text: string) => void;
+  /** Post a Workbench event into a thread (it starts a turn there); `level` is how
+   *  its news is announced (V5), report when absent. */
+  tell: (threadId: string, text: string, level?: Level) => void;
   now?: () => number;
   newId?: () => string;
   /** Local date `YYYY-MM-DD`, for the folder name. */
@@ -433,6 +435,7 @@ export function createTaskManager(deps: TaskDeps): TaskManager {
         deps.tell(
           t.threadId,
           `Task ${label(t)} is waiting: ${where.why}. It starts by itself once there's room (checked again ${new Date(where.until).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}). Tell the user.`,
+          "info",
         );
       wakeAt(where.until);
       return;
@@ -444,7 +447,7 @@ export function createTaskManager(deps: TaskDeps): TaskManager {
     const headless = deps.settings().headlessWorkers;
     update(t.id, { runner: "session", why: where.why, headless });
     if (where.why)
-      deps.tell(t.threadId, `Task ${label(t)} is a code task, so it runs in a session although ${where.why}. Mention it to the user.`);
+      deps.tell(t.threadId, `Task ${label(t)} is a code task, so it runs in a session although ${where.why}. Mention it to the user.`, "info");
     try {
       const projectId = t.kind === "code" ? t.projectId! : await duckProjectId(t.workspace);
       const made = await port.createSession({
@@ -462,7 +465,7 @@ export function createTaskManager(deps: TaskDeps): TaskManager {
       port.setDuckTask(made.id, t.title);
       // The clock starts once the prompt is on its way.
       update(t.id, { instanceId: made.id, projectId, runStarted: now() });
-      if (made.message) deps.tell(t.threadId, `Task ${label(t)} started with a warning: ${made.message}`);
+      if (made.message) deps.tell(t.threadId, `Task ${label(t)} started with a warning: ${made.message}`, "info");
     } catch (e) {
       finish(t.id, { state: "failed", error: `It couldn't start: ${errorText(e)}` });
     }
@@ -471,7 +474,8 @@ export function createTaskManager(deps: TaskDeps): TaskManager {
   /** Record an outcome, tell the thread, and start the next task. */
   function finish(id: string, patch: Partial<Task> & { state: TaskState }): void {
     const t = update(id, { finished: now(), ...patch });
-    if (t.state !== "closed") deps.tell(t.threadId, report(t));
+    if (t.state !== "closed")
+      deps.tell(t.threadId, report(t), t.state === "needs_decision" || t.state === "blocked" ? "needs_you" : "report");
     void pump();
   }
 
@@ -549,6 +553,7 @@ export function createTaskManager(deps: TaskDeps): TaskManager {
       deps.tell(
         t.threadId,
         `${worker} asks: ${choice.questions[0]?.question ?? "?"} Options: ${options}. You are its user. If the brief or this conversation settles it, answer it yourself with answer_choice (choiceId ${choice.id}), giving \`reason\` (what settles it, e.g. "you said earlier you want Postgres"), and tell the user in a sentence what you picked. If they don't settle it, put the question to the user and answer with what they say.`,
+        "info",
       );
       return;
     }
@@ -561,6 +566,7 @@ export function createTaskManager(deps: TaskDeps): TaskManager {
     deps.tell(
       t.threadId,
       `${worker} is waiting on ${what}.${where} Tell the user; they can answer it in its console, or tell you what to answer.`,
+      "needs_you",
     );
   }
 

@@ -189,7 +189,9 @@ function disconnect(): void {
 
 function onFrame(f: RemoteDuckFrame): void {
   if (f.type === "tts") {
-    if (!hushed) queue.add({ audio: fetchPart(f.id), text: f.text, lang: langOf(f.text) });
+    // Duck's news (V5) plays only where this phone's speaking isn't off.
+    const news = f.reply.startsWith("news");
+    if (!hushed && !(news && prefs.speak === "off")) queue.add({ audio: fetchPart(f.id), text: f.text, lang: langOf(f.text) });
     return;
   }
   if (f.type === "ttsEnd") return;
@@ -234,6 +236,8 @@ function speakNative(f: RemoteDuckFrame): void {
       nativeWanted.splice(i, 1);
       native = { threadId: f.message.threadId, cut: new Sentences() };
     }
+  } else if (f.type === "tool" && f.phase === "start" && native?.threadId === f.threadId) {
+    for (const s of native.cut.end()) if (!hushed) queue.add({ audio: Promise.resolve(null), text: s, lang: langOf(s) });
   } else if (f.type === "delta" && native?.threadId === f.threadId) {
     for (const s of native.cut.push(f.text)) if (!hushed) queue.add({ audio: Promise.resolve(null), text: s, lang: langOf(s) });
   } else if (f.type === "turnState" && native?.threadId === f.threadId && (f.state === "idle" || f.state === "waiting")) {
@@ -807,7 +811,27 @@ function paintDecisions(): void {
   $("duck-older").classList.toggle("hidden", !view.decisionsMore);
 }
 
+/** Do Not Disturb (V5): "on" is until it's turned off. */
+const DND_FOREVER = 8.64e15;
+
+function dndUntil(choice: string): number | null {
+  const now = Date.now();
+  if (choice === "1h") return now + 3_600_000;
+  if (choice === "morning") {
+    const d = new Date(now);
+    d.setHours(8, 0, 0, 0);
+    if (d.getTime() <= now) d.setDate(d.getDate() + 1);
+    return d.getTime();
+  }
+  return choice === "on" ? DND_FOREVER : null;
+}
+
 function paintSettings(): void {
+  const until = view.dndUntil;
+  const on = until !== null && until > Date.now();
+  for (const b of document.querySelectorAll<HTMLButtonElement>("#duck-dnd [data-dnd]"))
+    b.classList.toggle("on", b.dataset.dnd === (on ? (until >= DND_FOREVER ? "on" : "") : "off"));
+  $("duck-dnd-note").textContent = on && until < DND_FOREVER ? `on until ${new Date(until).toLocaleString([], { weekday: "short", hour: "2-digit", minute: "2-digit" })}` : "";
   for (const b of document.querySelectorAll<HTMLButtonElement>("#duck-settings [data-pref]")) {
     const [key, value] = (b.dataset.pref ?? "").split("=");
     const now = String(prefs[key as keyof Prefs]);
@@ -903,6 +927,8 @@ export function initDuck(d: typeof deps): void {
     view = { ...view, error: null };
     paintError();
   };
+  for (const b of document.querySelectorAll<HTMLButtonElement>("#duck-dnd [data-dnd]"))
+    b.onclick = () => post({ type: "dnd", until: dndUntil(b.dataset.dnd ?? "off") });
   for (const b of document.querySelectorAll<HTMLButtonElement>("#duck-reader [data-reader]"))
     b.onclick = () => readerButton(b.dataset.reader ?? "");
   $("duck-avatar").onclick = () => {

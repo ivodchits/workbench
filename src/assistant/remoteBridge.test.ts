@@ -239,4 +239,39 @@ describe("startRemoteBridge", () => {
     expect(JSON.stringify(m.message.content)).not.toContain("AAAA");
     expect(JSON.stringify(m.message.content)).toContain("not kept");
   });
+  it("says an announcement on every open phone, and lets a phone set Do Not Disturb", async () => {
+    const h = harness();
+    h.open(1);
+    h.open(2);
+    expect(h.bridge.phones()).toBe(2);
+    h.bridge.announce("The research is done. Tests pass.", "t");
+    await vi.waitFor(() => expect(h.sent.filter((s) => s.frame.type === "ttsEnd")).toHaveLength(2));
+    const parts = h.sent.filter((s) => s.frame.type === "tts").map((s) => [s.conn, (s.frame as { reply: string; part: number }).part]);
+    expect(parts).toEqual([[1, 0], [2, 0], [1, 1], [2, 1]]);
+    expect((h.sent[0].frame as { reply: string }).reply).toMatch(/^news/);
+    h.phone(1, { type: "dnd", until: 123 });
+    expect(h.handled[0].msg).toEqual({ type: "dnd", until: 123 });
+  });
+  it("says a stock acknowledgement when a spoken reply has nothing to say yet", async () => {
+    vi.useFakeTimers();
+    try {
+      const h = harness();
+      h.open(1);
+      h.phone(1, { type: "send", threadId: "t", text: "check api", speak: true });
+      h.event({ type: "message", message: userMessage("t", "check api", "phone") });
+      await vi.advanceTimersByTimeAsync(3000);
+      expect(h.render).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(600);
+      expect(h.render).toHaveBeenCalledWith("One moment.", "en");
+      // One that started with its own acknowledgement gets none.
+      h.phone(1, { type: "send", threadId: "u", text: "check tests", speak: true });
+      h.event({ type: "message", message: userMessage("u", "check tests", "phone") });
+      h.event({ type: "delta", threadId: "u", text: "Checking the tests. " });
+      h.event({ type: "tool", threadId: "u", phase: "start", toolUseId: "x", name: "read_session", input: {} });
+      await vi.advanceTimersByTimeAsync(4000);
+      expect(h.render.mock.calls.map((c) => c[0])).toEqual(["One moment.", "Checking the tests."]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });

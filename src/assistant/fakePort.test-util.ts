@@ -30,6 +30,7 @@ import type { TaskManager } from "./tasks";
 import type { AutopilotManager } from "./autopilot";
 import type { ReaderHost } from "./tools/readAloud";
 import type { ScreenHost } from "./tools/screenshot";
+import type { QuietHost } from "./tools/quiet";
 
 export interface FakePortData {
   projects?: ProjectRef[];
@@ -512,6 +513,7 @@ export function toolCtx(
     autopilot: null as AutopilotManager | null,
     reader: null as ReaderHost | null,
     screen: null as ScreenHost | null,
+    quiet: null as QuietHost | null,
     started: [] as string[],
     startThread(words: string) {
       ctx.started.push(words);

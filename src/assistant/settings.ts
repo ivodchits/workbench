@@ -4,6 +4,7 @@
 // copy is always the one in force.
 
 import { getPref, setPref } from "../ipc/prefs";
+import { DEFAULT_ANNOUNCE, type AnnounceSettings, type SpeakWhen } from "./announce";
 import { DUCK_PERMISSION_MODES, EFFORTS, SESSION_MODELS } from "../util/models";
 
 /** A worker task's tier (step D1): how much model and effort it gets. */
@@ -48,6 +49,11 @@ export interface DuckSettings {
   /** A finished task is closed, and its session taken off the rail, after this many
    *  hours (its files and transcript stay); 0 never. */
   closeFinishedHours: number;
+  /** How Duck announces news (step V5). */
+  announce: AnnounceSettings;
+  /** Duck's Do Not Disturb (V5): nothing is spoken until this moment (epoch ms);
+   *  null is off. Set from the phone too (`dnd`). */
+  dndUntil: number | null;
 }
 
 export const DEFAULT_TIERS: Record<Tier, TierSpec> = {
@@ -68,7 +74,12 @@ export const DEFAULT_SETTINGS: DuckSettings = {
   summaryOnDone: false,
   workerIdleStopMinutes: 30,
   closeFinishedHours: 24,
+  announce: DEFAULT_ANNOUNCE,
+  dndUntil: null,
 };
+
+/** Do Not Disturb "until I turn it off". */
+export const DND_FOREVER = 8.64e15;
 
 /** The choices the settings offer for the two tidy-up waits. */
 export const IDLE_STOP_CHOICES = [10, 30, 60, 180, 0] as const;
@@ -97,6 +108,9 @@ export function cleanSettings(raw: unknown): Partial<DuckSettings> {
   if (idle !== undefined) out.workerIdleStopMinutes = idle;
   const close = whole(r.closeFinishedHours, 24 * 90);
   if (close !== undefined) out.closeFinishedHours = close;
+  if (r.dndUntil === null) out.dndUntil = null;
+  else if (typeof r.dndUntil === "number" && r.dndUntil > 0) out.dndUntil = Math.min(r.dndUntil, DND_FOREVER);
+  if (r.announce && typeof r.announce === "object") out.announce = cleanAnnounce(r.announce as Record<string, unknown>);
   if (r.workspace === null) out.workspace = null;
   else if (typeof r.workspace === "string") out.workspace = r.workspace.trim() || null;
   if (r.tiers && typeof r.tiers === "object") {
@@ -116,6 +130,31 @@ export function cleanSettings(raw: unknown): Partial<DuckSettings> {
     ) as Record<Tier, TierSpec>;
   }
   return out;
+}
+
+function cleanAnnounce(r: Record<string, unknown>): AnnounceSettings {
+  const d = DEFAULT_ANNOUNCE;
+  const bool = (v: unknown, def: boolean) => (typeof v === "boolean" ? v : def);
+  const num = (v: unknown, def: number, min: number, max: number) =>
+    typeof v === "number" && Number.isFinite(v) ? Math.min(max, Math.max(min, Math.round(v))) : def;
+  const when = (v: unknown, def: SpeakWhen): SpeakWhen => (v === "never" || v === "around" ? v : def);
+  const sp = (r.speak && typeof r.speak === "object" ? r.speak : {}) as Record<string, unknown>;
+  const q = (r.quietHours && typeof r.quietHours === "object" ? r.quietHours : {}) as Record<string, unknown>;
+  return {
+    speak: { info: when(sp.info, d.speak.info), report: when(sp.report, d.speak.report), needs_you: when(sp.needs_you, d.speak.needs_you) },
+    waitForGap: bool(r.waitForGap, d.waitForGap),
+    followFocus: bool(r.followFocus, d.followFocus),
+    quietHours: {
+      on: bool(q.on, d.quietHours.on),
+      from: num(q.from, d.quietHours.from, 0, 24 * 60 - 1),
+      to: num(q.to, d.quietHours.to, 0, 24 * 60 - 1),
+    },
+    fullScreenQuiet: bool(r.fullScreenQuiet, d.fullScreenQuiet),
+    batchSeconds: num(r.batchSeconds, d.batchSeconds, 0, 600),
+    repeatMinutes: num(r.repeatMinutes, d.repeatMinutes, 0, 240),
+    aroundMinutes: num(r.aroundMinutes, d.aroundMinutes, 1, 60),
+    pushWhenAway: bool(r.pushWhenAway, d.pushWhenAway),
+  };
 }
 
 export interface SettingsStore {

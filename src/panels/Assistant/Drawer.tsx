@@ -44,9 +44,9 @@ import DuckAvatar from "./DuckAvatar";
 import type { DuckMode } from "./duck3d";
 import DuckIcon from "./DuckIcon";
 import DrawerSettings from "./DrawerSettings";
-import { getSpeechLevel, initSpeech, isSpeaking, stopSpeaking, useSpeechState } from "./replySpeech";
+import { getSpeechLevel, getSpeechState, initSpeech, isSpeaking, setSpeakOn, stopSpeaking, useSpeechState } from "./replySpeech";
 import { getVoiceState, initVoice, useVoiceState, type VoiceState } from "./voiceState";
-import { voicePtt } from "../../ipc/voice";
+import { voicePtt, voiceToggle } from "../../ipc/voice";
 import { TasksPanel } from "./TasksView";
 import { OverviewPanel } from "./OverviewView";
 import { DecisionsPanel, TrustPanel } from "./TrustViews";
@@ -126,6 +126,7 @@ export default function AssistantDrawer() {
   const speech = useSpeechState();
   useEffect(() => registerCommand("toggleAssistant", toggleDrawer), []);
   useEffect(() => registerCommand("toggleTrust", toggleTrust), []);
+  useEffect(() => registerCommand("toggleSpeak", () => setSpeakOn(!getSpeechState().prefs.on)), []);
 
   /** The keyboard goes to the composer, so you can type at once. */
   const focusComposer = useCallback(() => requestAnimationFrame(() => composerRef.current?.focus()), []);
@@ -1431,7 +1432,9 @@ function VoiceLine({ voice }: { voice: VoiceState }) {
   const speech = useSpeechState();
   const text =
     voice.phase === "listening"
-      ? "● listening… (let go to send)"
+      ? voice.prefs.toggle
+        ? "● listening… (press again to send)"
+        : "● listening… (let go to send)"
       : voice.phase === "transcribing"
         ? "transcribing…"
         : (voice.message ??
@@ -1494,7 +1497,8 @@ function ReaderBar() {
   );
 }
 
-/** Hold to talk, as the push-to-talk key does. */
+/** Talk, as the push-to-talk key does: click to start and again to send, or hold
+ *  (the setting's other choice). */
 function MicButton({ voice }: { voice: VoiceState }) {
   const held = useRef(false);
   const up = () => {
@@ -1503,18 +1507,31 @@ function MicButton({ voice }: { voice: VoiceState }) {
     void voicePtt(false);
   };
   const key = voice.prefs.hotkey;
+  const toggle = voice.prefs.toggle;
+  const listening = voice.phase === "listening";
+  const hold = toggle
+    ? {}
+    : {
+        onPointerDown: (e: React.PointerEvent<HTMLButtonElement>) => {
+          e.currentTarget.setPointerCapture(e.pointerId);
+          held.current = true;
+          void voicePtt(true);
+        },
+        onPointerUp: up,
+        onPointerCancel: up,
+        onLostPointerCapture: up,
+      };
   return (
     <button
       type="button"
-      title={`Hold to talk${key ? ` (or hold ${key} anywhere)` : ""}`}
-      onPointerDown={(e) => {
-        e.currentTarget.setPointerCapture(e.pointerId);
-        held.current = true;
-        void voicePtt(true);
-      }}
-      onPointerUp={up}
-      onPointerCancel={up}
-      onLostPointerCapture={up}
+      aria-pressed={toggle ? listening : undefined}
+      title={
+        toggle
+          ? `${listening ? "Click to send" : "Click to talk, again to send"}${key ? ` (or press ${key} anywhere)` : ""}`
+          : `Hold to talk${key ? ` (or hold ${key} anywhere)` : ""}`
+      }
+      onClick={toggle ? () => void voiceToggle() : undefined}
+      {...hold}
       style={{
         ...btn,
         borderColor: voice.phase === "listening" ? "var(--wb-accent)" : "var(--wb-border)",

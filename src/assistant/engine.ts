@@ -50,6 +50,8 @@ import type { TaskManager } from "./tasks";
 import type { AutopilotManager } from "./autopilot";
 import type { ReaderHost } from "./tools/readAloud";
 import type { ScreenHost } from "./tools/screenshot";
+import type { QuietHost } from "./tools/quiet";
+import type { Level } from "./announce";
 
 type Params = Anthropic.Beta.Messages.MessageCreateParamsStreaming;
 type ApiMessage = Anthropic.Beta.BetaMessageParam;
@@ -130,6 +132,11 @@ export interface EngineDeps {
   /** Read-aloud and screenshots (step V3), for their tools. */
   reader?: ReaderHost;
   screen?: ScreenHost;
+  /** Do Not Disturb and Speak (step V5), for `set_quiet`. */
+  quiet?: QuietHost;
+  /** A tool's follow-up event (`later`) is about to be posted, at this level of
+   *  news (V5). */
+  eventLevel?: (threadId: string, level: Level) => void;
   registry: Registry;
   port: WorkbenchPort;
   store: ThreadStore;
@@ -659,11 +666,13 @@ export function createEngine(deps: EngineDeps): Engine {
           autopilot: deps.autopilot ?? null,
           reader: deps.reader ?? null,
           screen: deps.screen ?? null,
+          quiet: deps.quiet ?? null,
           request: lastUserText(store.loaded(threadId)),
           startThread: (words) => split(threadId, words),
           prepared,
           notice: (n) => notice(threadId, n).then(() => {}),
-          later: (text) => {
+          later: (text, level) => {
+            deps.eventLevel?.(threadId, level ?? "report");
             send({ threadId, text: eventText(text), source: "event" }).catch(
               (e) => console.warn("duck: a follow-up was dropped", e),
             );

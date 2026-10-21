@@ -126,6 +126,23 @@ pub fn run() {
             // so it gets the shared WebView2 profile (step A2, `window.rs`). Last, so
             // everything its page calls into is already managed.
             window::build_main(app.handle())?;
+            // The listening sign (made hidden now: later, from the push-to-talk
+            // key's handler, building a window could deadlock).
+            if let Err(e) = voice::overlay::build(app.handle()) {
+                eprintln!("[voice] the listening sign wasn't made: {e}");
+            }
+            // A dev build can show it for a few seconds at start, to see how it
+            // looks and that it goes.
+            #[cfg(debug_assertions)]
+            if std::env::var_os("WB_SHOW_VOICE_OVERLAY").is_some() {
+                let app = app.handle().clone();
+                std::thread::spawn(move || {
+                    std::thread::sleep(std::time::Duration::from_secs(3));
+                    voice::overlay::set(&app, true);
+                    std::thread::sleep(std::time::Duration::from_secs(4));
+                    voice::overlay::set(&app, false);
+                });
+            }
             if let Some(win) = app.get_webview_window("main") {
                 accel::install_accelerator_handler(&win);
             }
@@ -203,6 +220,7 @@ pub fn run() {
             voice::voice_unload,
             voice::voice_configure,
             voice::voice_ptt,
+            voice::voice_toggle,
             voice::voice_devices,
             voice::tts::tts_configure,
             voice::tts::tts_say,
@@ -215,6 +233,7 @@ pub fn run() {
             voice::screen::assistant_screenshot,
             voice::screen::assistant_monitors,
             voice::screen::assistant_screenshot_save,
+            voice::presence::assistant_presence,
             assistant::headless::headless_spawn,
             assistant::headless::headless_send,
             assistant::headless::headless_interrupt,

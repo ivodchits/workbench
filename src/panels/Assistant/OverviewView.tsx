@@ -1,10 +1,11 @@
 // Every thread at a glance (2026-10-20): what each one is doing, its news since you
 // last looked, and the autopilots and worker tasks it runs. A view of what the
 // drawer already holds, with no model call: the "master thread" without a
-// conversation to pay for. A row opens its thread.
+// conversation to pay for. A row opens its thread; "clear all" marks every thread
+// read.
 
 import type { DuckState } from "./duckState";
-import { isRunning } from "./duckState";
+import { clearUnread, isRunning } from "./duckState";
 import { Shell } from "./TrustViews";
 import { overviewOrder } from "./view";
 
@@ -18,8 +19,30 @@ export function OverviewPanel({
   onOpen: (threadId: string) => void;
 }) {
   const threads = overviewOrder(duck, isRunning);
+  const unread = Object.values(duck.unread).reduce((n, x) => n + x, 0);
   return (
-    <Shell title="all threads" onBack={onBack}>
+    <Shell
+      title="all threads"
+      onBack={onBack}
+      action={
+        <button
+          type="button"
+          disabled={unread === 0}
+          title="Mark every thread read"
+          onClick={clearUnread}
+          style={{
+            background: "transparent",
+            border: "1px solid var(--wb-border)",
+            color: unread ? "var(--wb-text)" : "var(--wb-textFaint)",
+            font: "inherit",
+            padding: "1px 8px",
+            cursor: unread ? "pointer" : "default",
+          }}
+        >
+          clear all{unread ? ` (${unread})` : ""}
+        </button>
+      }
+    >
       {threads.length === 0 && <div style={{ color: "var(--wb-textFaint)" }}>No threads yet.</div>}
       {threads.map((t) => {
         const unread = duck.unread[t.id] ?? 0;
