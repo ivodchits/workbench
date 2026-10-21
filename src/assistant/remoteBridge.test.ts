@@ -52,7 +52,7 @@ function harness(over: Partial<BridgeDeps> = {}) {
   let n = 0;
   const render = vi.fn<(text: string, lang: Lang) => Promise<{ id: string; seconds: number }>>(async () => ({ id: `a${++n}`, seconds: 2 }));
   const warm = vi.fn<(ru: boolean) => void>();
-  const stop = startRemoteBridge({
+  const bridge = startRemoteBridge({
     duck,
     link: {
       onInput: (cb) => {
@@ -73,7 +73,7 @@ function harness(over: Partial<BridgeDeps> = {}) {
   const phone = (conn: number, msg: unknown) => input({ conn, device: "d", kind: "message", msg });
   const open = (conn: number) => input({ conn, device: "d", kind: "open", msg: null });
   const close = (conn: number) => input({ conn, device: "d", kind: "close", msg: null });
-  return { handled, sent, pushes, render, warm, stop, event, phone, open, close };
+  return { handled, sent, pushes, render, warm, stop: bridge.stop, bridge, event, phone, open, close };
 }
 
 const userMessage = (threadId: string, text: string, source: string): StoredMessage => ({
@@ -192,5 +192,51 @@ describe("startRemoteBridge", () => {
     phoneOpen.open(1);
     phoneOpen.event(confirm);
     expect(phoneOpen.pushes).toEqual([]);
+  });
+  it("plays a read on the phone that asked, and cuts it there", async () => {
+    vi.useFakeTimers();
+    try {
+      const h = harness();
+      h.open(1);
+      expect(h.bridge.voiceFor("t")).toBeNull();
+      h.phone(1, { type: "send", threadId: "t", text: "read me the note" });
+      h.event({ type: "message", message: userMessage("t", "read me the note", "phone") });
+      const v = h.bridge.voiceFor("t")!;
+      expect(v.where).toBe("phone");
+      let heard: boolean | null = null;
+      void v.play([Promise.resolve({ text: "One.", lang: "en" }), Promise.resolve(null)]).then((x) => (heard = x));
+      await vi.advanceTimersByTimeAsync(0);
+      const frames = h.sent.map((s) => s.frame.type).filter((t) => t !== "message");
+      expect(frames).toEqual(["tts", "ttsEnd"]);
+      // It's heard once the phone has had time to play it (2 s), less the lead.
+      await vi.advanceTimersByTimeAsync(400);
+      expect(heard).toBe(null);
+      await vi.advanceTimersByTimeAsync(200);
+      expect(heard).toBe(true);
+      v.cut();
+      expect(h.sent[h.sent.length - 1]).toEqual({ frame: { type: "ttsCut", threadId: "t", v: 1 }, conn: 1 });
+      // A message from the desktop takes the thread's reads back.
+      h.event({ type: "message", message: userMessage("t", "here now", "desktop") });
+      expect(h.bridge.voiceFor("t")).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("lets the phone drive the reader, and never sends it images", () => {
+    const h = harness();
+    h.open(1);
+    h.phone(1, { type: "reader", action: "next" });
+    expect(h.handled[0].msg).toEqual({ type: "reader", action: "next" });
+    h.event({
+      type: "message",
+      message: {
+        ...userMessage("t", "", "duck"),
+        content: [{ type: "tool_result", tool_use_id: "x", content: [{ type: "text", text: "Captured" }, { type: "image", source: { type: "base64", media_type: "image/png", data: "AAAA" } }] }],
+      },
+    });
+    const m = h.sent[h.sent.length - 1].frame as { message: { content: unknown } };
+    expect(JSON.stringify(m.message.content)).not.toContain("AAAA");
+    expect(JSON.stringify(m.message.content)).toContain("not kept");
   });
 });

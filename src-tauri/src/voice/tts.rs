@@ -286,10 +286,10 @@ impl TtsState {
     pub fn stop(&self, app: &AppHandle) {
         self.epoch.fetch_add(1, Ordering::SeqCst);
         self.player.stop();
+        // Said even when nothing was playing yet: whoever queued sentences is
+        // waiting for their end (a read, step V3), which now won't come.
         let was = self.current.swap(0, Ordering::SeqCst);
-        if was != 0 {
-            let _ = app.emit(STATE_EVENT, StateEvent { utterance: was, state: "stopped", message: None, engine: None });
-        }
+        let _ = app.emit(STATE_EVENT, StateEvent { utterance: was, state: "stopped", message: None, engine: None });
     }
 
     /// Make one sentence into a WAV for the phone and keep it as `id`; its length

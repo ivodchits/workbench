@@ -24,12 +24,15 @@
 //! Step V2, spoken replies: [`tts`] (the sentence queue and its engines),
 //! [`sidecar`] (Kokoro + Silero in Python) and [`playback`]. The push-to-talk key
 //! cuts a reply that's speaking (barge-in) and starts the sidecar while you talk.
+//!
+//! Step V3: [`screen`], Duck's screenshots.
 
 pub mod assets;
 pub mod capture;
 pub mod engine;
 pub mod parakeet;
 pub mod playback;
+pub mod screen;
 pub mod sidecar;
 pub mod tts;
 pub mod vad;

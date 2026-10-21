@@ -81,6 +81,7 @@ pub fn run() {
                 voice::tts::runtime_dir(app.handle()),
                 voice::models_root(app.handle()),
             ));
+            app.manage(voice::screen::ScreenState::default());
 
             // Seed the account-wide usage meter from the last persisted snapshot so it
             // shows the most recent figures at launch instead of staying blank until a
@@ -211,6 +212,9 @@ pub fn run() {
             voice::tts::tts_status,
             voice::tts::tts_prepare,
             voice::tts::tts_render,
+            voice::screen::assistant_screenshot,
+            voice::screen::assistant_monitors,
+            voice::screen::assistant_screenshot_save,
             assistant::headless::headless_spawn,
             assistant::headless::headless_send,
             assistant::headless::headless_interrupt,

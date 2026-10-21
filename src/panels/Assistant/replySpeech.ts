@@ -16,9 +16,15 @@
 // - When replies are spoken with the local voice, the backend starts it with the
 //   app and keeps it loaded (English; Silero loads on the first Russian message
 //   and stays), so no reply is cold. Otherwise it stops after 5 idle minutes.
+// - Read-aloud (step V3) plays here through `desktopVoice`, a section per
+//   utterance, once the reply that asked for it is over (`quietFor`). Whatever
+//   stops a reply (a new message, Esc, the push-to-talk key) cuts it too, and the
+//   reader holds its place.
 
 import { useSyncExternalStore } from "react";
+import { registerDesktopSpeech } from "../../assistant";
 import { oneShot } from "../../assistant/client";
+import type { Voice } from "../../assistant/reader";
 import { USER_SOURCES } from "../../assistant/protocol";
 import { langOf, prepareSentence, Sentences } from "../../assistant/speakable";
 import type { StoredMessage } from "../../ipc/assistant";
@@ -135,15 +141,64 @@ function finish(key: string): void {
   });
 }
 
+// ── read-aloud ──
+
+/** Sections of a read waiting for their end, by utterance. */
+const reading = new Map<number, { ok: (heard: boolean) => void; fail: (e: Error) => void }>();
+let cuts = 0;
+
+function endReads(heard: boolean): void {
+  for (const w of reading.values()) w.ok(heard);
+  reading.clear();
+}
+
+/** A read's voice on this PC. */
+export const desktopVoice: Voice = {
+  where: "desktop",
+  async play(sentences) {
+    const mine = cuts;
+    const u = nextUtterance++;
+    const heard = new Promise<boolean>((ok, fail) => reading.set(u, { ok, fail }));
+    for (const next of sentences) {
+      const s = await next;
+      if (mine !== cuts) {
+        reading.delete(u);
+        return false;
+      }
+      if (s) await ttsSay(u, s.text, s.lang);
+    }
+    await ttsEnd(u);
+    return heard;
+  },
+  cut() {
+    cuts++;
+    endReads(false);
+    void ttsStop().catch(() => {});
+  },
+};
+
+/** Resolves once nothing is speaking or still to be spoken for `threadId`'s reply
+ *  (or after a minute, whatever is). */
+export function quietFor(threadId: string): Promise<void> {
+  const until = Date.now() + 60_000;
+  return new Promise((resolve) => {
+    const check = () => {
+      if ((!replies.has(threadId) && state.speaking === null) || Date.now() > until) resolve();
+      else setTimeout(check, 100);
+    };
+    check();
+  });
+}
+
 /** Cut what's speaking and drop the rest of the reply. */
 export function stopSpeaking(): void {
-  const was = replies.size > 0 || state.speaking !== null;
+  const was = replies.size > 0 || state.speaking !== null || reading.size > 0;
   replies.clear();
   if (was) void ttsStop().catch(() => {});
 }
 
 export function isSpeaking(): boolean {
-  return replies.size > 0 || state.speaking !== null;
+  return replies.size > 0 || state.speaking !== null || reading.size > 0;
 }
 
 // ── hooks from the drawer's event stream (duckState) ──
@@ -197,10 +252,19 @@ export function initSpeech(): Promise<void> {
     set({ prefs });
     configure(prefs);
     await refreshReady();
+    registerDesktopSpeech({ voice: desktopVoice, quiet: quietFor });
     await onTtsLevel((l) => {
       level = l;
     });
     await onTtsState((e) => {
+      const read = reading.get(e.utterance);
+      if (e.state === "done" && read) {
+        reading.delete(e.utterance);
+        read.ok(true);
+      } else if (e.state === "error" && read) {
+        reading.delete(e.utterance);
+        read.fail(new Error(e.message ?? "the voice failed"));
+      } else if (e.state === "stopped") endReads(false);
       if (e.state === "speaking") set({ speaking: e.utterance, error: null });
       else {
         if (state.speaking === e.utterance || e.state === "stopped") set({ speaking: null });

@@ -211,7 +211,9 @@ export type RemoteDuckMessage =
   | { type: "trust.decisions"; before: number | null }
   | { type: "task.close"; taskId: string }
   | { type: "task.rerun"; taskId: string }
-  | { type: "autopilot"; instanceId: string; action: "pause" | "resume" | "stop" };
+  | { type: "autopilot"; instanceId: string; action: "pause" | "resume" | "stop" }
+  /** The reader bar (step V3): a read playing on the phone comes as `tts` parts. */
+  | { type: "reader"; action: "pause" | "resume" | "next" | "prev" | "stop" };
 
 /** A frame Duck sends the phone: any Duck event, plus the phone's own. */
 export type RemoteDuckFrame =
@@ -224,5 +226,7 @@ export type RemoteDuckFrame =
   /** No more parts of `reply` are coming (`parts` were sent). Not sent for a
    *  reply the phone stopped. */
   | { type: "ttsEnd"; threadId: string; reply: string; parts: number; v: number }
+  /** Drop every part still queued (a read was paused or skipped, step V3). */
+  | { type: "ttsCut"; threadId: string; v: number }
   /** Frames were dropped (a slow link): ask for the open thread again. */
   | { type: "lagged" };

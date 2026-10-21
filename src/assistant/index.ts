@@ -3,6 +3,9 @@
 // transport. Started with the app like the other engines (App.tsx), not when a
 // surface first opens, so Duck is there for every surface from the start. The
 // phone reaches the same endpoint through the remote bridge (step R1).
+//
+// The reader (step V3) is made here too: one for the app, heard on this PC
+// (`registerDesktopSpeech`, from the drawer's speech) or on the phone that asked.
 
 import { homeDir } from "@tauri-apps/api/path";
 
@@ -14,15 +17,19 @@ import {
   type UsageRecord,
 } from "../ipc/assistant";
 import { readFile } from "../ipc/fs";
+import { getPref, setPref } from "../ipc/prefs";
+import { listMonitors, saveScreenshot, screenshot } from "../ipc/screen";
 import { badgeText, createAutopilot, ipcAutopilotBackend, type AutopilotManager } from "./autopilot";
 import { errorMessage, getClient, oneShot, structured } from "./client";
 import { createEngine, eventText, type Engine } from "./engine";
 import { createPolicy } from "./policy";
 import { ttsRender, ttsWarm } from "../ipc/tts";
-import { ipcLink, startRemoteBridge } from "./remoteBridge";
+import { ipcLink, startRemoteBridge, type RemoteBridge } from "./remoteBridge";
 import { prepareSentence } from "./speakable";
+import { Reader, type ReaderView, type ReadPosition, type Voice } from "./reader";
 import { localPort } from "./port.local";
 import {
+  USER_SOURCES,
   createLocalTransport,
   type ClientMessage,
   type DuckEndpoint,
@@ -41,6 +48,8 @@ import { PLUGIN_TOOLS } from "./tools/plugins";
 import { getTime } from "./tools/getTime";
 import { READ_TOOLS } from "./tools/read";
 import { SCREEN_TOOLS } from "./tools/screen";
+import { READ_ALOUD_TOOLS, type ReaderHost } from "./tools/readAloud";
+import { SCREENSHOT_TOOLS, type ScreenHost } from "./tools/screenshot";
 import { SUMMARY_TOOLS } from "./tools/summaries";
 import { createRegistry } from "./tools/registry";
 import { TASK_TOOLS } from "./tools/tasks";
@@ -75,6 +84,8 @@ const TOOLS = [
   ...TASK_TOOLS,
   ...SUMMARY_TOOLS,
   ...SCREEN_TOOLS,
+  ...READ_ALOUD_TOOLS,
+  ...SCREENSHOT_TOOLS,
   ...AUTOPILOT_TOOLS,
   ...THREAD_TOOLS,
   ...(import.meta.env.DEV ? [testConfirm] : []),
@@ -109,6 +120,32 @@ const REPLAY_MAX_CALLS = 20_000;
 let started: Promise<void> | null = null;
 let duck: Transport | null = null;
 
+/** This PC's voice for reads, from the drawer's speech (`replySpeech.ts`). */
+export interface DesktopSpeech {
+  voice: Voice;
+  /** Resolves once the thread's reply is spoken. */
+  quiet(threadId: string): Promise<void>;
+}
+
+let desktopSpeech: DesktopSpeech | null = null;
+
+export function registerDesktopSpeech(s: DesktopSpeech): void {
+  desktopSpeech = s;
+}
+
+/** Kept read positions (the newest this many). */
+const KEPT_READS = 30;
+/** The longest a read waits for the reply that asked for it. */
+const QUIET_MAX_MS = 60_000;
+
+/** The reader's view, for the endpoint. */
+export interface ReaderLink {
+  reader: Reader;
+  subscribe(cb: (v: ReaderView | null) => void): () => void;
+}
+
+const screenHost: ScreenHost = { capture: screenshot, monitors: listMonitors, save: saveScreenshot };
+
 export function taskView(t: Task): TaskView {
   return {
     id: t.id,
@@ -141,6 +178,7 @@ export function endpoint(
   replayer?: Replayer,
   tasks?: TaskManager,
   autopilot?: AutopilotManager,
+  reader?: ReaderLink,
 ): DuckEndpoint {
   const listeners = new Set<(ev: DuckEvent) => void>();
   const say = (ev: DuckEvent) => {
@@ -182,6 +220,7 @@ export function endpoint(
     to({ type: "autopilots", autopilots });
   };
   autopilot?.subscribe(() => sendAutopilots());
+  reader?.subscribe((v) => say({ type: "reader", reader: v }));
   const needTrust = () => {
     if (!trust) throw new Error("Duck's trust settings didn't load.");
     return trust;
@@ -214,6 +253,7 @@ export function endpoint(
         if (trust) answer({ type: "trust", trust: trustView(trust) });
         sendTasks(answer);
         sendAutopilots(answer);
+        if (reader) answer({ type: "reader", reader: reader.reader.view() });
         await sendSpend(answer);
         return;
       case "settings.set":
@@ -269,6 +309,16 @@ export function endpoint(
         if (msg.action === "pause") autopilot.pause(msg.instanceId);
         else if (msg.action === "stop") autopilot.stop(msg.instanceId);
         else await autopilot.resume(msg.instanceId);
+        return;
+      }
+      case "reader": {
+        if (!reader) throw new Error("Reading aloud isn't available here.");
+        const r = reader.reader;
+        if (msg.action === "pause") r.pause();
+        else if (msg.action === "resume") r.resume();
+        else if (msg.action === "next") r.skip(1);
+        else if (msg.action === "prev") r.skip(-1);
+        else r.stop();
         return;
       }
       case "thread.open": {
@@ -350,10 +400,58 @@ export function initAssistant(): Promise<void> {
       const s = localPort.listSessions().find((x) => x.id === id);
       return s ? ((await summaries.summarize(s, { reply })).summary?.headline ?? null) : null;
     });
+    // Read-aloud (V3): positions in the prefs, heard on the phone that asked or here.
+    const kept = new Map<string, ReadPosition>(
+      Object.entries(await getPref("readAloud", {}).catch(() => ({}) as Record<string, ReadPosition>)),
+    );
+    const readerListeners = new Set<(v: ReaderView | null) => void>();
+    let bridge: RemoteBridge | null = null;
+    const ru = (t: string, signal: AbortSignal) => oneShot("speakable_ru", t, { signal });
+    const reader = new Reader({
+      narrate: (t, signal) => oneShot("narrate", t, { signal }),
+      prepare: (sentence) => prepareSentence(sentence, ru),
+      load: (k) => kept.get(k),
+      save(k, p) {
+        if (p) kept.set(k, p);
+        else kept.delete(k);
+        const newest = [...kept.values()].sort((a, b) => b.at - a.at).slice(0, KEPT_READS);
+        void setPref("readAloud", Object.fromEntries(newest.map((x) => [x.key, x]))).catch(() => {});
+      },
+      quiet: (threadId) =>
+        Promise.race([
+          (async () => {
+            while (engineRef && engineRef.state(threadId) !== "idle" && engineRef.state(threadId) !== "waiting")
+              await new Promise((r) => setTimeout(r, 100));
+            await Promise.all([desktopSpeech?.quiet(threadId), bridge?.quiet(threadId)]);
+          })(),
+          new Promise<void>((r) => setTimeout(r, QUIET_MAX_MS)),
+        ]),
+      changed: (v) => {
+        for (const l of readerListeners) l(v);
+      },
+      ended: (threadId, why) => {
+        if (why === "the end") return;
+        void engineRef
+          ?.notice(threadId, { kind: "reader", text: `Reading stopped: ${why}.` })
+          .catch((e: unknown) => console.warn("duck: a reader notice was dropped", e));
+      },
+    });
+    const readerHost: ReaderHost = {
+      reader,
+      voiceFor(threadId) {
+        const v = bridge?.voiceFor(threadId) ?? desktopSpeech?.voice;
+        if (!v) throw new Error("There's no voice to read with yet: open Duck's drawer once on this PC.");
+        return v;
+      },
+      lastKept: () => [...kept.values()].sort((a, b) => b.at - a.at)[0] ?? null,
+      summarize: (text, signal) => oneShot("spoken_summary", text, { signal }),
+    };
     const engine = createEngine({
       tasks,
       autopilot,
       summaries,
+      reader: readerHost,
+      screen: screenHost,
       store: s,
       registry: createRegistry(TOOLS),
       port: localPort,
@@ -387,11 +485,21 @@ export function initAssistant(): Promise<void> {
           })
       : undefined;
     engineRef = engine;
+    // Anything you say pauses a read (you've moved on; "continue reading" resumes).
+    engine.onEvent((ev) => {
+      if (ev.type === "message" && ev.message.role === "user" && USER_SOURCES.has(ev.message.source)) reader.pause();
+    });
     await tasks.load().catch((e: unknown) => console.error("duck: worker tasks didn't load", e));
     await autopilot.load().catch((e: unknown) => console.error("duck: autopilots didn't load", e));
-    const ep = endpoint(engine, s, ledger, settings, trust, replayer, tasks, autopilot);
+    const ep = endpoint(engine, s, ledger, settings, trust, replayer, tasks, autopilot, {
+      reader,
+      subscribe(cb) {
+        readerListeners.add(cb);
+        return () => readerListeners.delete(cb);
+      },
+    });
     duck = createLocalTransport(ep);
-    startRemoteBridge({
+    bridge = startRemoteBridge({
       duck: ep,
       link: ipcLink,
       watching: () => document.hasFocus() && !document.hidden,

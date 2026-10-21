@@ -6,9 +6,33 @@
 //
 // Messages are append-only, here and in the database: the engine only ever adds to
 // a thread, and the backend refuses any `seq` but the next.
+//
+// Images (a screenshot's, step V3) stay in memory only: what's written has a line
+// in their place (`withoutImages`), so nothing of the screen reaches the disk and a
+// thread reopened after a restart says one was there.
 
 import * as ipc from "../ipc/assistant";
 import type { StoredMessage, StoredRole, ThreadRow } from "../ipc/assistant";
+
+export const IMAGE_GONE = "[an image (a screenshot), not kept]";
+
+/** `content` with every image block, at any depth, replaced by a line saying so. */
+export function withoutImages<T>(content: T): T {
+  if (Array.isArray(content))
+    return content.map((b: unknown) =>
+      b && typeof b === "object" && (b as { type?: unknown }).type === "image"
+        ? { type: "text", text: IMAGE_GONE }
+        : withoutImages(b),
+    ) as T;
+  if (content && typeof content === "object") {
+    const o = content as Record<string, unknown>;
+    if (!Array.isArray(o.content) && !Array.isArray(o.calls) && !(o.result && typeof o.result === "object")) return content;
+    const out: Record<string, unknown> = { ...o };
+    for (const k of ["content", "calls", "result"]) if (k in o) out[k] = withoutImages(o[k]);
+    return out as T;
+  }
+  return content;
+}
 
 /** One call of a tool batch: run already, or waiting for an answer. */
 export interface BatchCall {
@@ -157,7 +181,7 @@ export function createThreadStore(
             content,
             source,
           };
-          await backend.messageAppend(m);
+          await backend.messageAppend({ ...m, content: withoutImages(m.content) });
           messages.set(threadId, [...have, m]);
           patchThread(threadId, {
             updated: Math.max(
@@ -184,7 +208,7 @@ export function createThreadStore(
     },
     pending: () => pending,
     async putPending(b) {
-      await backend.pendingPut(b.id, b.threadId, { calls: b.calls });
+      await backend.pendingPut(b.id, b.threadId, { calls: withoutImages(b.calls) });
       pending = [...pending.filter((p) => p.id !== b.id), b];
       emit();
     },

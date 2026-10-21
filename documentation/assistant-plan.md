@@ -3141,6 +3141,86 @@ and voiced text adventures as user-defined modes (S2).
   - "continue reading" resumes a note where it stopped.
   - Characters for a 10-minute read land in the counters.
 - **Out of scope:** continuous screen watching; reading video subtitles.
+- **As built (2026-10-21).**
+  - **The reader** (`src/assistant/reader.ts`, one for the app, made in `index.ts`):
+    - A source is cut into sections (`sections`): paragraphs merged up to 700
+      characters (2,500 before narration), a code block kept whole, a long paragraph
+      cut at its sentences.
+    - Each section is made only when its turn comes; in `narrate` mode Haiku rewrites
+      the next one while this one plays. Stopping early spends nothing on the rest.
+    - It starts once the reply that asked for it is over (`quiet`: the turn idle,
+      then the desktop's or the phone's speech of that reply done; a minute at most).
+    - **Controls are in the webview, not Rust:** pause, resume, next, previous and
+      stop, on a reader bar in the drawer and on the phone (`reader` events and
+      messages in the Duck Protocol). Pause holds the place by section, and resume
+      restarts that section. Rate is the voice settings' rate.
+    - A cut from outside pauses it: Esc, the push-to-talk key, a new message of
+      yours, the phone hushing or going to the background. `tts_stop` now always
+      says `stopped`, so a read with sentences queued but not playing yet hears it.
+    - **Positions** (prefs `readAloud`, the newest 30) are kept per source key with a
+      hash of the text. Reading the same unchanged source picks up where it stopped;
+      one read to the end, or one that changed, starts over. "Continue reading"
+      resumes the paused read, or re-reads the newest kept source from its place.
+    - A read that stops before its end (the length cap, a failure) leaves a ♪
+      notice in the thread.
+  - **Where it's heard:** on the phone that sent the thread's latest message while
+    it's connected (`remoteBridge.voiceFor`), as `tts` parts like a reply's, paced by
+    the parts' lengths. A new `ttsCut` frame drops what the phone still has queued.
+    Otherwise it's heard on this PC (`desktopVoice` in `replySpeech.ts`), a section
+    per utterance. On the phone it's always the desktop's voice.
+  - **Tool `read_aloud`** (`tools/readAloud.ts`, tier read):
+    - Sources: `session` (its last reply, or `items` recent items of its
+      conversation), `summary` (W3's summary, read as it is), `note`, `text`, and
+      `continue`.
+    - Modes: `verbatim` (the default for notes and text; code becomes "see the code
+      on screen"), `narrate` (the default for sessions; the Haiku primitive `narrate`,
+      in the passage's language and voice), `summary` (the primitive
+      `spoken_summary`, about 150 words, kept apart from the full read).
+    - `maxMinutes` (default 20, at ~900 characters a minute) and `fromStart`.
+    - The result tells Duck to reply in a few words and not repeat the text.
+    - **Not built:** `page(url | firefox tab)` waits for B1/B2, which aren't built.
+      `selection` is left to Ctrl+Shift+L.
+  - **Tool `screenshot`** (`tools/screenshot.ts`, `src-tauri/src/voice/screen.rs`,
+    `xcap` 0.9 over GDI, `image` for PNG):
+    - Targets: the active window (the foreground one, or the frontmost other app
+      when Workbench is in front), a monitor, a window by title or app name, or all
+      monitors (one image each).
+    - Downscaled with area averaging to at most 1568 px a side and 1.15 MP
+      (2880×1800 → 1356×848, ~400 KB PNG).
+    - Monitors are numbered left to right, with left / middle / right and main, in
+      the result; the tool takes a number or a position word (`pickMonitor`).
+    - Tier read. Each capture leaves a ▣ line in the thread ("screenshot: monitor 2
+      (right, main)") instead of a toast. `question` was dropped: the main model
+      reads the image itself.
+    - **Nothing reaches the disk:** images stay in the thread store's memory. What's
+      written to duck.db, messages and parked batches, has a line in their place
+      (`withoutImages`), and so does what goes to the phone. `save_screenshot` (tier
+      reversible) writes the last capture at full size to `Pictures\Workbench`.
+    - Windows OCR wasn't built: the model reads the text from the image.
+  - **Verified:**
+    - 11 vitest cases for the reader, 7 for the tools, 2 for the bridge's phone
+      reads and image stripping, 1 for `withoutImages` (510 in all); tsc and eslint
+      clean;
+    - 2 Rust tests, plus an ignored `screenshot_captures` run on this PC's two
+      monitors (2880×1800 left, 1920×1080 right and main); clippy clean;
+    - **live, from the phone page in headless Edge against the dev app:**
+      - a screenshot of the right monitor described correctly, the biggest frame to
+        the phone 734 characters (no image);
+      - a three-section text read on the phone, its first part 6.9 s after the send
+        (the turn included);
+      - pause (with `ttsCut`), resume, next, stop, "continue reading" (it went on at
+        section 2), and a new message pausing it all worked;
+      - a session's last reply narrated.
+  - **Found live:** Haiku narrated a session's reply as "You're describing a
+    paragraph…". The `narrate` prompt now says to keep the passage's own voice. That
+    change wasn't run again.
+  - **Not verified yet (yours to try):**
+    - a read on this PC's speakers from the drawer (its bar, Esc, the push-to-talk
+      key);
+    - "прочитай, что ответила backend-сессия" in Russian;
+    - a DisplayLink screen;
+    - the characters of a 10-minute read in the counters (Chirp only; the local
+      voice isn't counted).
 
 #### Step V4 — Hands-free conversation mode
 
@@ -5180,7 +5260,7 @@ T2 goes live after the replay check in its done-when (the past week's prompts th
 | B2 | MCP host + your Firefox | ☐ |
 | V1 | Push-to-talk with local STT on the GPU (desktop) | ☐ |
 | V2 | Natural spoken replies | ☐ |
-| V3 | Read-aloud and screen reading | ☐ |
+| V3 | Read-aloud and screen reading | ☑ (the desktop's speakers not tried live) |
 | V4 | Hands-free conversation mode | ☐ |
 | V5 | Proactive announcements | ☐ |
 | V6 | Wake word on the PC (experimental) | ☐ |

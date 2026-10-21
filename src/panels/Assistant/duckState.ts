@@ -23,11 +23,13 @@ import type {
   ConfirmRequest,
   DuckEvent,
   Effort,
+  ReaderAction,
   Source,
   TaskView,
   TrustView,
   TurnState,
 } from "../../assistant/protocol";
+import type { ReaderView } from "../../assistant/reader";
 import type { DuckSettings } from "../../assistant/settings";
 import type { Mode } from "../../assistant/trust/decide";
 import type { ReplayReport } from "../../assistant/trust/replay";
@@ -69,6 +71,8 @@ export interface DuckState {
   tasks: TaskView[];
   /** The autopilots not stopped (step P1). */
   autopilots: AutopilotView[];
+  /** What's being read aloud (step V3), or null. */
+  reader: ReaderView | null;
   /** Replies not seen yet, per thread. */
   unread: Record<string, number>;
   /** Each thread's latest reply, its first line. */
@@ -103,6 +107,7 @@ let state: DuckState = {
   replay: null,
   tasks: [],
   autopilots: [],
+  reader: null,
   unread: {},
   news: {},
 };
@@ -337,6 +342,9 @@ function onEvent(e: DuckEvent): void {
     case "tasks":
       set({ tasks: e.tasks });
       break;
+    case "reader":
+      set({ reader: e.reader });
+      break;
     case "autopilots":
       set({ autopilots: e.autopilots });
       break;
@@ -522,6 +530,11 @@ export function closeTask(taskId: string): void {
 /** Run a worker task again one tier up, as a new task (D2). */
 export function rerunTask(taskId: string): void {
   post({ type: "task.rerun", taskId });
+}
+
+/** The reader bar's buttons (V3). */
+export function controlReader(action: ReaderAction): void {
+  post({ type: "reader", action });
 }
 
 /** A session autopilot's buttons on its card (P1). */

@@ -55,6 +55,7 @@ import {
   answer,
   clearError,
   closeTask,
+  controlReader,
   rerunTask,
   connectDuck,
   deleteThread,
@@ -816,7 +817,11 @@ function ItemView({ item, active }: { item: Item; active: boolean }) {
           style={{
             margin: "4px 16px",
             color:
-              item.notice.kind === "stopped" || item.notice.kind === "keys" || item.notice.kind === "autopilot"
+              item.notice.kind === "stopped" ||
+              item.notice.kind === "keys" ||
+              item.notice.kind === "autopilot" ||
+              item.notice.kind === "screen" ||
+              item.notice.kind === "reader"
                 ? "var(--wb-textFaint)"
                 : "var(--wb-needs)",
           }}
@@ -827,7 +832,7 @@ function ItemView({ item, active }: { item: Item; active: boolean }) {
   }
 }
 
-const NOTICE_GLYPH: Partial<Record<Notice["kind"], string>> = { keys: "⌨", autopilot: "⟳" };
+const NOTICE_GLYPH: Partial<Record<Notice["kind"], string>> = { keys: "⌨", autopilot: "⟳", screen: "▣", reader: "♪" };
 
 const TASK_STATE: Record<string, string> = {
   queued: "waiting for a free worker",
@@ -1375,6 +1380,7 @@ function Composer({
           outline: "none",
         }}
       />
+      <ReaderBar />
       <VoiceLine voice={voice} />
       <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
         <MicButton voice={voice} />
@@ -1443,6 +1449,47 @@ function VoiceLine({ voice }: { voice: VoiceState }) {
       }}
     >
       {text}
+    </div>
+  );
+}
+
+/** What's being read aloud (V3): its title, where it is, and its buttons. */
+function ReaderBar() {
+  const r = useDuckState().reader;
+  if (!r) return null;
+  const small: React.CSSProperties = { ...btn, padding: "1px 7px" };
+  return (
+    <div
+      role="status"
+      style={{ display: "flex", alignItems: "center", gap: 6, font: "11px var(--wb-mono)", color: "var(--wb-textDim2)" }}
+    >
+      <span style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+        {r.state === "reading" ? "♪ reading" : "❚❚ paused"} {r.title} · {r.section + 1}/{r.sections}
+        {r.where === "phone" ? " · on the phone" : ""}
+      </span>
+      <button type="button" title="Previous section" style={small} disabled={r.section === 0} onClick={() => controlReader("prev")}>
+        ⏮
+      </button>
+      <button
+        type="button"
+        title={r.state === "reading" ? "Pause (Esc)" : "Go on"}
+        style={small}
+        onClick={() => controlReader(r.state === "reading" ? "pause" : "resume")}
+      >
+        {r.state === "reading" ? "❚❚" : "▶"}
+      </button>
+      <button
+        type="button"
+        title="Next section"
+        style={small}
+        disabled={r.section + 1 >= r.sections}
+        onClick={() => controlReader("next")}
+      >
+        ⏭
+      </button>
+      <button type="button" title="Stop reading (the place is kept)" style={small} onClick={() => controlReader("stop")}>
+        ■
+      </button>
     </div>
   );
 }

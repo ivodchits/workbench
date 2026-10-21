@@ -3,6 +3,7 @@
 // Pure: no DOM, no socket, so it's tested on its own (`duckStore.test.ts`).
 
 import type { ConfirmRequest, DecisionRow, TaskView, TrustView, TurnState } from "../assistant/protocol";
+import type { ReaderView } from "../assistant/reader";
 import type { Spend, StoredMessage, ThreadRow } from "../ipc/assistant";
 import type { RemoteDuckFrame } from "../remote/protocol";
 
@@ -23,6 +24,8 @@ export interface DuckView {
   decisions: DecisionRow[];
   decisionsMore: boolean;
   tasks: TaskView[];
+  /** What's being read aloud (step V3), here or on the desktop. */
+  reader: ReaderView | null;
   error: string | null;
 }
 
@@ -40,6 +43,7 @@ export const emptyView = (): DuckView => ({
   decisions: [],
   decisionsMore: false,
   tasks: [],
+  reader: null,
   error: null,
 });
 
@@ -129,6 +133,9 @@ export function apply(v: DuckView, f: RemoteDuckFrame, adopting: boolean): { vie
       break;
     case "tasks":
       v = { ...v, tasks: f.tasks };
+      break;
+    case "reader":
+      v = { ...v, reader: f.reader };
       break;
     case "error":
       v = { ...v, error: f.message };

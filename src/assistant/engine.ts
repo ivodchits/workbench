@@ -48,6 +48,8 @@ import { lastUserText } from "./trust/mandate";
 import type { Summarizer } from "./summarize";
 import type { TaskManager } from "./tasks";
 import type { AutopilotManager } from "./autopilot";
+import type { ReaderHost } from "./tools/readAloud";
+import type { ScreenHost } from "./tools/screenshot";
 
 type Params = Anthropic.Beta.Messages.MessageCreateParamsStreaming;
 type ApiMessage = Anthropic.Beta.BetaMessageParam;
@@ -125,6 +127,9 @@ export interface EngineDeps {
   summaries?: Summarizer;
   /** Plan autopilots (step P1), for the autopilot tools. */
   autopilot?: AutopilotManager;
+  /** Read-aloud and screenshots (step V3), for their tools. */
+  reader?: ReaderHost;
+  screen?: ScreenHost;
   registry: Registry;
   port: WorkbenchPort;
   store: ThreadStore;
@@ -652,6 +657,8 @@ export function createEngine(deps: EngineDeps): Engine {
           tasks: deps.tasks ?? null,
           summaries: deps.summaries ?? null,
           autopilot: deps.autopilot ?? null,
+          reader: deps.reader ?? null,
+          screen: deps.screen ?? null,
           request: lastUserText(store.loaded(threadId)),
           startThread: (words) => split(threadId, words),
           prepared,

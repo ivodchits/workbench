@@ -20,6 +20,10 @@
 //   `speak` message also starts the voice engine, in case it went idle.
 // - A confirmation that comes with no phone connected and the desktop not in front
 //   of you is pushed to the phones.
+// - Read-aloud (step V3): a read asked for from a phone plays there
+//   (`voiceFor`), as `tts` parts like a reply's, a section at a time; `ttsCut`
+//   drops what the phone still has queued when the read is paused or skipped.
+// - Images (screenshots) never go to the phone: a line stands in for each.
 
 import { z } from "zod";
 import type { StoredMessage } from "../ipc/assistant";
@@ -31,7 +35,9 @@ import {
 } from "../ipc/remote";
 import type { RemoteDuckFrame, RemoteDuckMessage } from "../remote/protocol";
 import { PROTOCOL_VERSION, USER_SOURCES, type ClientMessage, type DuckEndpoint, type DuckEvent } from "./protocol";
+import type { Spoken as Ready, Voice } from "./reader";
 import { langOf, Sentences, type Lang } from "./speakable";
+import { withoutImages } from "./threads";
 
 /** The longest message a phone may send. */
 const TEXT_MAX = 20_000;
@@ -56,6 +62,7 @@ const Message = z.discriminatedUnion("type", [
   z.object({ type: z.literal("task.close"), taskId: id }),
   z.object({ type: z.literal("task.rerun"), taskId: id }),
   z.object({ type: z.literal("autopilot"), instanceId: id, action: z.enum(["pause", "resume", "stop"]) }),
+  z.object({ type: z.literal("reader"), action: z.enum(["pause", "resume", "next", "prev", "stop"]) }),
 ]);
 
 /** A phone's frame as a Duck Protocol message, or why it's refused. */
@@ -123,16 +130,41 @@ interface Spoken {
   stopped: boolean;
 }
 
-const stamp = (e: DuckEvent): RemoteDuckFrame => ({ ...e, v: PROTOCOL_VERSION });
+/** A read's next section is started this long before the phone runs out. */
+const READ_LEAD_MS = 1500;
 
-/** Start relaying. Returns the stop. */
-export function startRemoteBridge(d: BridgeDeps): () => void {
+/** An event as the phone gets it: no images. */
+function forPhone(e: DuckEvent): DuckEvent {
+  if (e.type === "message") return { ...e, message: { ...e.message, content: withoutImages(e.message.content) } };
+  if (e.type === "history") return { ...e, messages: e.messages.map((m) => ({ ...m, content: withoutImages(m.content) })) };
+  return e;
+}
+
+const stamp = (e: DuckEvent): RemoteDuckFrame => ({ ...forPhone(e), v: PROTOCOL_VERSION });
+
+export interface RemoteBridge {
+  stop(): void;
+  /** A voice on the phone that sent `threadId`'s latest message, while it's
+   *  connected; null when that message came from the desktop. */
+  voiceFor(threadId: string): Voice | null;
+  /** Resolves once `threadId`'s reply has been sent to the phone whole. */
+  quiet(threadId: string): Promise<void>;
+}
+
+/** Start relaying. */
+export function startRemoteBridge(d: BridgeDeps): RemoteBridge {
   const conns = new Set<number>();
+  /** Messages phones sent, not yet seen stored. */
+  const sent: { conn: number; text: string }[] = [];
+  /** The phone that sent each thread's latest message of yours. */
+  const lastConn = new Map<string, number>();
   /** `speak` messages not yet seen stored: which socket, and the text stored. */
   const wanted: { conn: number; text: string }[] = [];
   /** Replies being spoken for a phone, by thread. */
   const speaking = new Map<string, Spoken>();
   const pushed = new Set<string>();
+  /** Each thread's last reply spoken for a phone, until all of it is sent. */
+  const tails = new Map<string, Promise<void>>();
   let nextReply = 0;
 
   const toPhone = (conn: number, e: DuckEvent) => d.link.emit(stamp(e), conn);
@@ -163,7 +195,9 @@ export function startRemoteBridge(d: BridgeDeps): () => void {
     if (!s) return;
     speaking.delete(threadId);
     for (const sentence of s.cut.end()) say(threadId, s, sentence);
+    tails.set(threadId, s.chain);
     void s.chain.then(() => {
+      if (tails.get(threadId) === s.chain) tails.delete(threadId);
       if (live(s)) d.link.emit({ type: "ttsEnd", threadId, reply: s.reply, parts: s.parts, v: PROTOCOL_VERSION }, s.conn);
     });
   }
@@ -175,6 +209,11 @@ export function startRemoteBridge(d: BridgeDeps): () => void {
         // A message of yours (not a tool's results, which are stored as the user's
         // too): whatever was speaking here, you've moved on.
         if (m.role !== "user" || !USER_SOURCES.has(m.source)) break;
+        const k = m.source.startsWith("phone") ? sent.findIndex((w) => w.text === textOf(m)) : -1;
+        if (k >= 0) {
+          lastConn.set(m.threadId, sent[k].conn);
+          sent.splice(k, 1);
+        } else lastConn.delete(m.threadId);
         const old = speaking.get(m.threadId);
         if (old) old.stopped = true;
         speaking.delete(m.threadId);
@@ -217,10 +256,12 @@ export function startRemoteBridge(d: BridgeDeps): () => void {
     else if (i.kind === "close") {
       conns.delete(i.conn);
       for (let k = wanted.length - 1; k >= 0; k--) if (wanted[k].conn === i.conn) wanted.splice(k, 1);
+      for (let k = sent.length - 1; k >= 0; k--) if (sent[k].conn === i.conn) sent.splice(k, 1);
     } else {
       const msg = parseRemote(i.msg, d.fixVoice);
       if (typeof msg === "string") return toPhone(i.conn, { type: "error", message: msg });
       const raw = i.msg as RemoteDuckMessage;
+      if (msg.type === "send") sent.push({ conn: i.conn, text: msg.text });
       if (msg.type === "send" && raw.type === "send" && raw.speak) {
         wanted.push({ conn: i.conn, text: msg.text });
         d.warm(langOf(msg.text) === "ru");
@@ -233,9 +274,52 @@ export function startRemoteBridge(d: BridgeDeps): () => void {
     }
   });
 
-  return () => {
-    offEvents();
-    offInput();
+  /** A read's sections as `tts` parts to `conn`. */
+  function phoneVoice(conn: number, threadId: string): Voice {
+    let cut = 0;
+    return {
+      where: "phone",
+      async play(sentences: Promise<Ready | null>[]) {
+        const mine = cut;
+        const reply = `read${++nextReply}`;
+        const ok = () => mine === cut && conns.has(conn);
+        let part = 0;
+        /** When the phone will have played everything sent (an estimate). */
+        let until = Date.now();
+        for (const next of sentences) {
+          const p = await next;
+          if (!ok()) return false;
+          if (!p) continue;
+          const r = await d.render(p.text, p.lang);
+          if (!ok()) return false;
+          d.link.emit({ type: "tts", threadId, reply, part: part++, id: r.id, seconds: r.seconds, text: p.text, v: PROTOCOL_VERSION }, conn);
+          until = Math.max(until, Date.now()) + r.seconds * 1000;
+        }
+        d.link.emit({ type: "ttsEnd", threadId, reply, parts: part, v: PROTOCOL_VERSION }, conn);
+        const wait = until - Date.now() - READ_LEAD_MS;
+        if (wait > 0) await new Promise((res) => setTimeout(res, wait));
+        return ok();
+      },
+      cut() {
+        cut++;
+        if (conns.has(conn)) d.link.emit({ type: "ttsCut", threadId, v: PROTOCOL_VERSION }, conn);
+      },
+    };
+  }
+
+  return {
+    stop() {
+      offEvents();
+      offInput();
+    },
+    async quiet(threadId) {
+      while (speaking.has(threadId)) await new Promise((r) => setTimeout(r, 100));
+      await tails.get(threadId);
+    },
+    voiceFor(threadId) {
+      const conn = lastConn.get(threadId);
+      return conn !== undefined && conns.has(conn) ? phoneVoice(conn, threadId) : null;
+    },
   };
 }
 

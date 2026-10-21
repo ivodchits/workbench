@@ -7,6 +7,7 @@
 // engine or the thread store directly.
 
 import type { DecisionRow, Spend, StoredMessage, ThreadRow } from "../ipc/assistant";
+import type { ReaderView } from "./reader";
 import type { DuckSettings } from "./settings";
 import type { Mode, TrustConfig } from "./trust/decide";
 import type { ReplayReport } from "./trust/replay";
@@ -107,7 +108,11 @@ export interface Notice {
     /** Duck pressed keys in a session's terminal (W6). */
     | "keys"
     /** A line of a session autopilot's step log (P1). */
-    | "autopilot";
+    | "autopilot"
+    /** Duck took a screenshot (V3). */
+    | "screen"
+    /** A read aloud stopped before its end (V3). */
+    | "reader";
   text: string;
   /** `note` only. */
   note?: NoteEdit;
@@ -206,7 +211,11 @@ export type ClientMessage =
   /** Run a worker task again one tier up (step D2), as a new task. */
   | { type: "task.rerun"; taskId: string }
   /** A session autopilot's buttons on its card (step P1). */
-  | { type: "autopilot"; instanceId: string; action: "pause" | "resume" | "stop" };
+  | { type: "autopilot"; instanceId: string; action: "pause" | "resume" | "stop" }
+  /** The reader bar's buttons (step V3). */
+  | { type: "reader"; action: ReaderAction };
+
+export type ReaderAction = "pause" | "resume" | "next" | "prev" | "stop";
 
 // ── Duck → surface ──────────────────────────────────────────────────────────
 
@@ -266,6 +275,9 @@ export type DuckEvent =
   | { type: "autopilots"; autopilots: AutopilotView[] }
   /** The replay's progress (`report` null, judged so far), then its report. */
   | { type: "replay"; done: number; of: number; report: ReplayReport | null }
+  /** What's being read aloud (step V3), on `sync` and after every change; null
+   *  when nothing is. */
+  | { type: "reader"; reader: ReaderView | null }
   /** A request from a surface failed (an unknown thread, storage down, …). */
   | { type: "error"; message: string };
 

@@ -28,6 +28,8 @@ import type { ToolContext } from "./tools/registry";
 import type { Summarizer } from "./summarize";
 import type { TaskManager } from "./tasks";
 import type { AutopilotManager } from "./autopilot";
+import type { ReaderHost } from "./tools/readAloud";
+import type { ScreenHost } from "./tools/screenshot";
 
 export interface FakePortData {
   projects?: ProjectRef[];
@@ -508,6 +510,8 @@ export function toolCtx(
     tasks: null as TaskManager | null,
     summaries: null as Summarizer | null,
     autopilot: null as AutopilotManager | null,
+    reader: null as ReaderHost | null,
+    screen: null as ScreenHost | null,
     started: [] as string[],
     startThread(words: string) {
       ctx.started.push(words);

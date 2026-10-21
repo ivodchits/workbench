@@ -193,6 +193,10 @@ function onFrame(f: RemoteDuckFrame): void {
     return;
   }
   if (f.type === "ttsEnd") return;
+  if (f.type === "ttsCut") {
+    queue.stop();
+    return;
+  }
   const before = view;
   const r = apply(view, f, adopting);
   view = r.view;
@@ -249,8 +253,10 @@ function openThread(id: string | null): void {
   paint("open");
 }
 
-/** Stop the reply being spoken, and what's still coming of it. */
+/** Stop the reply being spoken, and what's still coming of it; a read playing
+ *  here pauses. */
 function hush(): void {
+  if (view.reader?.where === "phone" && view.reader.state === "reading") post({ type: "reader", action: "pause" });
   hushed = true;
   native = null;
   queue.stop();
@@ -453,6 +459,33 @@ function paintStatus(): void {
   s.textContent = state !== "idle" && !streaming ? STATE_LABEL[state] : "";
 }
 
+/** The reader bar (V3): what's being read, and its buttons. */
+function paintReader(): void {
+  const r = view.reader;
+  $("duck-reader").classList.toggle("hidden", !r);
+  if (!r) return;
+  $("duck-reader-text").textContent = `${r.state === "reading" ? "♪" : "❚❚"} ${r.title} · ${r.section + 1}/${r.sections}${r.where === "desktop" ? " · on the PC" : ""}`;
+  const toggle = document.querySelector<HTMLButtonElement>('#duck-reader [data-reader="toggle"]')!;
+  toggle.textContent = r.state === "reading" ? "❚❚" : "▶";
+  toggle.setAttribute("aria-label", r.state === "reading" ? "pause" : "go on");
+  document.querySelector<HTMLButtonElement>('#duck-reader [data-reader="prev"]')!.disabled = r.section === 0;
+  document.querySelector<HTMLButtonElement>('#duck-reader [data-reader="next"]')!.disabled = r.section + 1 >= r.sections;
+}
+
+function readerButton(what: string): void {
+  const r = view.reader;
+  if (!r) return;
+  if (what === "stop" || (what === "toggle" && r.state === "reading")) {
+    if (r.where === "phone") queue.stop();
+    post({ type: "reader", action: what === "stop" ? "stop" : "pause" });
+    return;
+  }
+  // Going on: this phone may play it again.
+  unlock();
+  hushed = false;
+  post({ type: "reader", action: what === "toggle" ? "resume" : what === "next" ? "next" : "prev" });
+}
+
 function paint(why: string, before?: DuckView): void {
   if (!shown) return;
   $("duck-thread").textContent = `${view.threads.find((t) => t.id === view.current)?.title || (view.current ? "a thread" : "new thread")} ▾`;
@@ -475,6 +508,7 @@ function paint(why: string, before?: DuckView): void {
     if (!before || before.asks !== view.asks || why === "open") paintAsks();
     paintSpend();
     paintError();
+    paintReader();
   }
   paintVoice();
 }
@@ -654,10 +688,10 @@ function taskCard(taskId: string, text: string): HTMLElement {
   return card;
 }
 
-const NOTICE_GLYPH: Partial<Record<Notice["kind"], string>> = { keys: "⌨", autopilot: "⟳" };
+const NOTICE_GLYPH: Partial<Record<Notice["kind"], string>> = { keys: "⌨", autopilot: "⟳", screen: "▣", reader: "♪" };
 
 function noticeLine(n: Notice): HTMLElement {
-  const quiet = n.kind === "stopped" || n.kind === "keys" || n.kind === "autopilot";
+  const quiet = n.kind === "stopped" || n.kind === "keys" || n.kind === "autopilot" || n.kind === "screen" || n.kind === "reader";
   return el("div", `duck-notice ${quiet ? "muted" : "needs"}`, `${NOTICE_GLYPH[n.kind] ?? "!"} ${n.text}`);
 }
 
@@ -869,6 +903,8 @@ export function initDuck(d: typeof deps): void {
     view = { ...view, error: null };
     paintError();
   };
+  for (const b of document.querySelectorAll<HTMLButtonElement>("#duck-reader [data-reader]"))
+    b.onclick = () => readerButton(b.dataset.reader ?? "");
   $("duck-avatar").onclick = () => {
     hush();
     paintVoice();

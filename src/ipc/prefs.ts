@@ -8,6 +8,7 @@
 // completion rather than reaching for arbitrary strings.
 
 import { load, type Store } from "@tauri-apps/plugin-store";
+import type { ReadPosition } from "../assistant/reader";
 
 export interface Prefs {
   /** Active theme token preset id (see `theme/`). */
@@ -57,6 +58,8 @@ export interface Prefs {
     /** Send a transcript to Duck at once; off, it lands in the composer to edit. */
     sendNow: boolean;
   };
+  /** Read-aloud positions (step V3): source key → where it stopped. */
+  readAloud: Record<string, ReadPosition>;
   /** Spoken replies (step V2). */
   speech: {
     /** Which of Duck's replies are spoken: none, those to a spoken message, all. */
