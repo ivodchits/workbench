@@ -4,6 +4,7 @@ import { Autopilot, type AutopilotManager } from "../autopilot";
 import { fakePort, project, session, toolCtx } from "../fakePort.test-util";
 import type { McpCallResult, McpHost } from "../mcp";
 import type { GoogleHost } from "../google";
+import type { SheetDraft } from "../../ipc/assistant";
 import { DEFAULT_SETTINGS, QUEST_LOG, type InvoiceSettings } from "../settings";
 import type { Task, TaskManager } from "../tasks";
 import { addDays, BRIEFING_READS, invoiceSheet, isoDate, morningBriefing, questLogDay } from "./morning";
@@ -288,7 +289,12 @@ describe("the invoice sheet in the briefing", () => {
     ],
   };
   const settings = { ...DEFAULT_SETTINGS, morning: { googleClientId: "123.apps.googleusercontent.com", invoice } };
-  const google = (fn: GoogleHost["exportInvoice"]): GoogleHost => ({ exportInvoice: fn });
+  const google = (fn: GoogleHost["exportInvoice"], found: SheetDraft | null = null): GoogleHost => ({
+    exportInvoice: fn,
+    cells: () => Promise.reject(new Error("unused")),
+    draft: () => Promise.reject(new Error("unused")),
+    findDraft: () => Promise.resolve(found),
+  });
 
   it("reads the configured cells when the invoice entry (by its tag) is due", async () => {
     const asked: unknown[] = [];
@@ -321,6 +327,35 @@ describe("the invoice sheet in the briefing", () => {
         ],
       },
     });
+  });
+
+  it("says what a draft would set, and links this month's draft once Duck made it", async () => {
+    const sheet = google(() =>
+      Promise.resolve({ name: "Invoices", cells: [{ address: "B2", value: "2020-01-01" }, { address: "F10", value: "1200" }], csv: "", xlsx: "", sidecar: "" }),
+    );
+    const before = await invoiceSheet({ settings, google: sheet }, TODAY);
+    expect(before.note).toMatch(/Offer to draft it: create_sheet_draft/);
+    expect(before).toMatchObject({ draftWouldSet: [`Date (B2) 2020-01-01 → ${TODAY}`] });
+
+    const made: SheetDraft = {
+      id: "c1",
+      name: `Invoices draft ${TODAY.slice(0, 7)} (Duck)`,
+      url: "https://docs.google.com/spreadsheets/d/c1/edit",
+      month: TODAY.slice(0, 7),
+      how: "copy",
+      created: 1,
+      cells: [{ address: "B2", value: TODAY }],
+    };
+    const after = google(() => Promise.reject(new Error("not read: the draft is there")), made);
+    expect(await invoiceSheet({ settings, google: after }, TODAY)).toMatchObject({
+      note: expect.stringMatching(/drafted it already/),
+      draft: { link: made.url, cells: [{ label: "Date", cell: "B2", value: TODAY }] },
+    });
+    const ql = questLog();
+    (ql.get_agenda as { all: { entry: { tags: string[] } }[] }).all[2].entry.tags = ["bill"];
+    const ctx = { ...toolCtx(fakePort({}), settings), mcp: fakeMcp(ql).host, google: after };
+    const out = (await morningBriefing.run({}, ctx)) as { prepared: string };
+    expect(out.prepared).toBe(`This month's invoice draft: ${made.name} (${made.url}).`);
   });
 
   it("says to reconnect when Google access expired, and what else went wrong otherwise", async () => {

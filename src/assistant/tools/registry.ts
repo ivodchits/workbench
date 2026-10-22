@@ -16,6 +16,8 @@
 // spawns, the diff of a file) does that work in `prepare`, before the gate. What it
 // returns is kept with the call, through a parked confirmation and a restart, and
 // handed to `describe`, `review`, `trust` and `run`, so the card shows what runs.
+// `prepare` also gets the settings and the Google host (`PrepareEnv`), for a card
+// that shows what a file outside the app holds now (the invoice's cells).
 
 import { z } from "zod";
 import type Anthropic from "@anthropic-ai/sdk";
@@ -78,6 +80,9 @@ export interface ToolContext {
   threads: ThreadMoves;
 }
 
+/** What `prepare` gets besides the port. */
+export type PrepareEnv = Pick<ToolContext, "settings" | "google">;
+
 /** A tool may return text, API content blocks (e.g. an image), or any JSON value. */
 export type ToolOutput =
   | string
@@ -95,7 +100,7 @@ export interface ToolDef<S extends z.ZodType = z.ZodType, P = unknown> {
   tierFor?(input: z.infer<S>, port: WorkbenchPort): Tier;
   /** Work the card needs done before the gate (JSON-safe result). A throw fails
    *  the call with its message, before any card. */
-  prepare?(input: z.infer<S>, port: WorkbenchPort): Promise<P>;
+  prepare?(input: z.infer<S>, port: WorkbenchPort, env?: PrepareEnv): Promise<P>;
   /** One sentence for the confirmation card: what this call will do. */
   describe?(input: z.infer<S>, port: WorkbenchPort, prepared: P): string;
   /** Files the card shows as diffs. */
@@ -132,7 +137,7 @@ export interface Registry {
   callTier(name: string, input: unknown, port: WorkbenchPort): Tier;
   /** The tool's `prepare` over valid input; undefined when it has none. Throws
    *  what `prepare` throws. */
-  prepare(name: string, input: unknown, port: WorkbenchPort): Promise<unknown>;
+  prepare(name: string, input: unknown, port: WorkbenchPort, env?: PrepareEnv): Promise<unknown>;
   /** The confirmation card's sentence for this call, when the tool has one. */
   describe(name: string, input: unknown, port: WorkbenchPort, prepared?: unknown): string | undefined;
   /** The card's diffs, when the tool has any. */
@@ -197,11 +202,11 @@ export function createRegistry(
         return t.tier;
       }
     },
-    async prepare(name, input, port) {
+    async prepare(name, input, port, env) {
       const t = byName.get(name);
       const parsed = t?.schema.safeParse(input);
       if (!t?.prepare || !parsed?.success) return undefined;
-      return t.prepare(parsed.data, port);
+      return t.prepare(parsed.data, port, env);
     },
     describe(name, input, port, prepared) {
       const t = byName.get(name);

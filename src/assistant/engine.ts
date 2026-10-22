@@ -832,7 +832,8 @@ export function createEngine(deps: EngineDeps): Engine {
       // action, a file with problems) fails before any card, with the reason.
       if (tool.prepare) {
         try {
-          call.prepared = await withTimeout(registry.prepare(u.name, u.input, port), tool.timeoutMs);
+          const env = { settings: settings(), google: deps.google ?? null };
+          call.prepared = await withTimeout(registry.prepare(u.name, u.input, port, env), tool.timeoutMs);
         } catch (e) {
           call.result = errorResult(u.id, `${u.name} failed: ${errorMessage(e)}`);
           continue;

@@ -14,8 +14,9 @@
 // as untrusted, as `mcp_read`'s results do.
 //
 // When the invoice is due and Google is set up (Duck's settings, morning), the
-// briefing reads the invoice sheet's configured cells, keeping a local copy of the
-// sheet in the workspace's `data/invoices/`. Drafting the copy comes later.
+// briefing links this month's draft when Duck made one (`create_sheet_draft`), and
+// otherwise reads the invoice sheet's cells, keeping a local copy of the sheet in
+// the workspace's `data/invoices/`, and says what a draft would set.
 
 import { z } from "zod";
 import type { ProjectRef, SessionRef, WorkbenchPort } from "../port";
@@ -26,6 +27,7 @@ import { INVOICE_DEFAULTS, type McpServerSpec } from "../settings";
 import { wrapMcp } from "./mcp";
 import { choiceLine, compact } from "./read";
 import { isGoogleExpired, googleErrorText } from "../google";
+import { askedFields, changeLine, monthOf, planDraft } from "../invoice";
 import { defineTool, type ToolContext } from "./registry";
 
 /** The quest_log tools the briefing reads, and nothing else. */
@@ -314,32 +316,62 @@ async function savePart(port: WorkbenchPort, today: string) {
   };
 }
 
-/** The invoice's sheet, once its entry is due: the configured cells as they are
- *  now, or why they couldn't be read. */
+/** The invoice's sheet, once its entry is due: this month's draft read back when
+ *  Duck made one, else the configured cells as they are now and what a draft would
+ *  set; or why the sheet couldn't be read. */
 export async function invoiceSheet(ctx: Pick<ToolContext, "settings" | "google">, date: string) {
   const due = "The monthly invoice is due.";
   const inv = ctx.settings.morning.invoice;
   const clientId = ctx.settings.morning.googleClientId;
   if (!inv || !clientId || !ctx.google)
     return { note: `${due} Remind the user; its sheet isn't set up (Duck's settings, morning).` };
+  const google = ctx.google;
+  const label = (address: string) => inv.fields.find((f) => f.address === address)?.label ?? address;
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
-    const x = await Promise.race([
-      ctx.google.exportInvoice(clientId, inv, date, ctx.settings.workspace),
+    return await Promise.race([
+      (async () => {
+        const made = await google.findDraft(clientId, inv, monthOf(date));
+        if (made)
+          return {
+            note: `${due} Duck drafted it already: give the user the link to check it. Sending it is theirs.`,
+            draft: {
+              name: made.name,
+              link: made.url,
+              cells: made.cells.map((c) => compact({ label: label(c.address), cell: c.address, value: c.value })),
+            },
+          };
+        const x = await google.exportInvoice(clientId, inv, date, ctx.settings.workspace);
+        const sheet = {
+          name: x.name,
+          cells: inv.fields.map((f) => {
+            const c = x.cells.find((y) => y.address === f.address);
+            return compact({ label: f.label, cell: f.address, now: c?.value ?? "", formula: c?.formula });
+          }),
+        };
+        const ask = askedFields(inv).map((f) => f.label);
+        if (ask.length)
+          return {
+            note: `${due} Offer to draft it: Duck needs ${ask.join(", ")} from the user first, then create_sheet_draft copies the sheet with this month's cells (the user confirms on a card).`,
+            sheet,
+          };
+        try {
+          const plan = planDraft(inv, x.name, x.cells, date);
+          return {
+            note: plan.changes.length
+              ? `${due} Offer to draft it: create_sheet_draft copies the sheet with these cells set (the user confirms on a card).`
+              : `${due} Its cells already have this month's values; remind the user.`,
+            sheet,
+            ...(plan.changes.length && { draftWouldSet: plan.changes.map(changeLine) }),
+          };
+        } catch (e) {
+          return { note: `${due} Remind the user; a draft can't be planned (${e instanceof Error ? e.message : String(e)}).`, sheet };
+        }
+      })(),
       new Promise<never>((_, reject) => {
         timer = setTimeout(() => reject(new Error("Google didn't answer in time")), SHEET_MS);
       }),
     ]);
-    return {
-      note: `${due} Remind the user, with its sheet's cells as they are now. Duck can't draft the copy yet.`,
-      sheet: {
-        name: x.name,
-        cells: inv.fields.map((f) => {
-          const c = x.cells.find((y) => y.address === f.address);
-          return compact({ label: f.label, cell: f.address, now: c?.value ?? "", formula: c?.formula });
-        }),
-      },
-    };
   } catch (e) {
     if (isGoogleExpired(e))
       return { note: `${due} Google access expired: tell the user to reconnect in Duck's settings (morning).` };
@@ -373,17 +405,20 @@ export const morningBriefing = defineTool({
     ]);
 
     let questLog: string;
+    let prepared = "Nothing is prepared ahead yet.";
     if (!ql) questLog = "Quest Log isn't set up as an MCP server (Duck's settings), so there's no calendar or agenda.";
     else if (Object.keys(ql.failed).length === BRIEFING_READS.length)
       questLog = `Quest Log couldn't be reached (${ql.failed.whoami}). Say it has to be open and signed in for the calendar and agenda, and brief on the rest.`;
     else {
       const today = ql.whoami?.today ?? localToday;
       const found = questLogDay(ql, today, ctx.settings.morning.invoice?.entryTag);
+      const invoice = found.invoice && { ...found.invoice, ...(await invoiceSheet(ctx, today)) };
+      if (invoice && "draft" in invoice && invoice.draft) prepared = `This month's invoice draft: ${invoice.draft.name} (${invoice.draft.link}).`;
       const day = {
         date: today,
         ...(ql.whoami?.timezone && { timezone: ql.whoami.timezone }),
         ...found,
-        ...(found.invoice && { invoice: { ...found.invoice, ...(await invoiceSheet(ctx, today)) } }),
+        ...(invoice && { invoice }),
         ...(Object.keys(ql.failed).length && { failed: ql.failed }),
       };
       questLog = wrapMcp("quest_log", "morning_briefing", JSON.stringify(day));
@@ -400,7 +435,7 @@ export const morningBriefing = defineTool({
         limits,
         projects: exceptions,
       }),
-      prepared: "Nothing is prepared ahead yet.",
+      prepared,
       ...(save && { save }),
     };
   },

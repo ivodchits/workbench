@@ -17,6 +17,9 @@ import { homeDir } from "@tauri-apps/api/path";
 import {
   getSpend,
   mcpRequest,
+  sheetCells,
+  sheetDraft,
+  sheetDraftFind,
   sheetExport,
   workspacePrepare,
   onUsage,
@@ -63,6 +66,7 @@ import { SCREENSHOT_TOOLS, type ScreenHost } from "./tools/screenshot";
 import { QUIET_TOOLS, type QuietHost } from "./tools/quiet";
 import { MCP_TOOLS } from "./tools/mcp";
 import { MORNING_TOOLS } from "./tools/morning";
+import { INVOICE_TOOLS } from "./tools/invoice";
 import { createMcpHost } from "./mcp";
 import { createGoogleHost } from "./google";
 import { SUMMARY_TOOLS } from "./tools/summaries";
@@ -108,6 +112,7 @@ const TOOLS = [
   ...HAIKU_TOOLS,
   ...MCP_TOOLS,
   ...MORNING_TOOLS,
+  ...INVOICE_TOOLS,
   ...(import.meta.env.DEV ? [testConfirm, testAnnounce] : []),
 ];
 
@@ -124,6 +129,7 @@ const DEFERRED = new Set([
   "save_screenshot",
   "set_quiet",
   "duck_spend",
+  "create_sheet_draft",
 ]);
 
 /** Where the spend comes from: the ledger commands in the app, fakes in tests. */
@@ -555,7 +561,7 @@ export function initAssistant(): Promise<void> {
       quiet: quietHost,
       haiku: (input, signal) => oneShot("haiku_task", input, { signal }),
       mcp: createMcpHost(mcpRequest),
-      google: createGoogleHost({ workspacePrepare, sheetExport }),
+      google: createGoogleHost({ workspacePrepare, sheetExport, sheetCells, sheetDraft, sheetDraftFind }),
       eventLevel: (threadId, level) => levels.set(threadId, level),
       store: s,
       registry: createRegistry(TOOLS, { deferred: DEFERRED }),
