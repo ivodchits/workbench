@@ -372,11 +372,43 @@ export const sheetDraft = (
 ): Promise<SheetDraft> =>
   invoke("assistant_sheet_draft", { clientId, sheetId, tab, folder, title, month, expect, updates });
 
-/** This month's draft, read back; null when there is none in Drive. */
-export const sheetDraftFind = (
-  clientId: string,
-  sheetId: string,
-  tab: string,
-  month: string,
-  addresses: string[],
-): Promise<SheetDraft | null> => invoke("assistant_sheet_draft_find", { clientId, sheetId, tab, month, addresses });
+/** A draft Duck made, as recorded (phase 3). */
+export interface DraftRef {
+  id: string;
+  name: string;
+  url: string;
+  /** The sheet it's a copy of. */
+  source: string;
+  month: string;
+  how: string;
+  created: number;
+}
+
+/** The drafts Duck made for `month` ("YYYY-MM") that are still in Drive. */
+export const sheetDrafts = (clientId: string, month: string): Promise<DraftRef[]> =>
+  invoke("assistant_sheet_drafts", { clientId, month });
+
+export interface SheetFound {
+  id: string;
+  name: string;
+  modified?: string;
+}
+
+/** Google Sheets whose name contains `query`, latest changed first (at most 10). */
+export const sheetSearch = (clientId: string, query: string): Promise<SheetFound[]> =>
+  invoke("assistant_sheet_search", { clientId, query });
+
+/** One tab of a sheet: its non-empty cells with their formulas. */
+export interface SheetRead {
+  name: string;
+  modified?: string;
+  tabs: string[];
+  tab: string;
+  cells: SheetCell[];
+  /** The tab goes on past what was read. */
+  cut: boolean;
+}
+
+/** A tab of the sheet (the first one when `tab` is empty). */
+export const sheetRead = (clientId: string, sheetId: string, tab: string): Promise<SheetRead> =>
+  invoke("assistant_sheet_read", { clientId, sheetId, tab });

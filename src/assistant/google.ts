@@ -1,27 +1,50 @@
-// The morning routine's Google half, as the engine sees it: reading the invoice
-// sheet's cells, with a local copy kept in the workspace (phase 2), and making this
-// month's draft copy and reading it back (phase 3). The backend holds the tokens
+// Duck's Google Sheets, as the engine sees it: finding and reading a sheet, so Duck
+// can work out what a draft should change (the morning routine's invoice), making
+// the draft copy, and listing the month's drafts. The backend holds the tokens
 // (`google.rs`) and makes every request (`sheets.rs`).
 
-import type { InvoiceSettings } from "./settings";
-import { cellsToRead } from "./invoice";
-import type { CellValue, SheetCells, SheetDraft, SheetExport } from "../ipc/assistant";
+import type {
+  CellValue,
+  DraftRef,
+  SheetCells,
+  SheetDraft,
+  SheetExport,
+  SheetFound,
+  SheetRead,
+} from "../ipc/assistant";
+
+/** The Drive folder Duck's drafts go in (Duck creates it). */
+export const DRAFT_FOLDER = "Duck drafts";
+
+export interface DraftRequest {
+  sheetId: string;
+  tab: string;
+  title: string;
+  month: string;
+  /** The original's cells as the card showed them. */
+  expect: CellValue[];
+  updates: CellValue[];
+}
 
 export interface GoogleHost {
-  /** The invoice's cells and those its formulas read, after exporting the sheet to
-   *  `data/invoices/`. */
-  exportInvoice(clientId: string, invoice: InvoiceSettings, date: string, workspace: string | null): Promise<SheetExport>;
-  /** The sheet's cells at `addresses`, as they are now. */
-  cells(clientId: string, invoice: InvoiceSettings, addresses: string[]): Promise<SheetCells>;
-  /** Copy the sheet as `title` into the drafts folder and set `updates` in the copy;
-   *  `expect` is what the card showed of the original. */
-  draft(
+  search(clientId: string, query: string): Promise<SheetFound[]>;
+  /** A tab's cells with their formulas (the first tab when `tab` is empty). */
+  read(clientId: string, sheetId: string, tab: string): Promise<SheetRead>;
+  /** The cells at `addresses`, as they are now. */
+  cells(clientId: string, sheetId: string, tab: string, addresses: string[]): Promise<SheetCells>;
+  /** Keep a copy of the original in the workspace's `data/invoices/`. */
+  exportSheet(
     clientId: string,
-    invoice: InvoiceSettings,
-    plan: { title: string; month: string; expect: CellValue[]; updates: CellValue[] },
-  ): Promise<SheetDraft>;
-  /** This month's draft with its configured cells; null when there's none in Drive. */
-  findDraft(clientId: string, invoice: InvoiceSettings, month: string): Promise<SheetDraft | null>;
+    sheetId: string,
+    tab: string,
+    addresses: string[],
+    date: string,
+    workspace: string | null,
+  ): Promise<SheetExport>;
+  /** Copy the sheet into the drafts folder and set `updates` in the copy. */
+  draft(clientId: string, req: DraftRequest): Promise<SheetDraft>;
+  /** The drafts made for `month` that are still in Drive. */
+  drafts(clientId: string, month: string): Promise<DraftRef[]>;
 }
 
 /** What the backend's errors start with once Google's refresh token is dead. */
@@ -59,20 +82,22 @@ export interface GoogleIpc {
     expect: CellValue[],
     updates: CellValue[],
   ): Promise<SheetDraft>;
-  sheetDraftFind(clientId: string, sheetId: string, tab: string, month: string, addresses: string[]): Promise<SheetDraft | null>;
+  sheetDrafts(clientId: string, month: string): Promise<DraftRef[]>;
+  sheetSearch(clientId: string, query: string): Promise<SheetFound[]>;
+  sheetRead(clientId: string, sheetId: string, tab: string): Promise<SheetRead>;
 }
 
 export function createGoogleHost(ipc: GoogleIpc): GoogleHost {
-  const addressesOf = (invoice: InvoiceSettings) => invoice.fields.map((f) => f.address);
   return {
-    async exportInvoice(clientId, invoice, date, workspace) {
+    search: (clientId, query) => ipc.sheetSearch(clientId, query),
+    read: (clientId, sheetId, tab) => ipc.sheetRead(clientId, sheetId, tab),
+    cells: (clientId, sheetId, tab, addresses) => ipc.sheetCells(clientId, sheetId, tab, addresses),
+    async exportSheet(clientId, sheetId, tab, addresses, date, workspace) {
       const dir = await ipc.workspacePrepare(workspace);
-      return ipc.sheetExport(clientId, dir, date, invoice.sheetId, invoice.tab, cellsToRead(invoice));
+      return ipc.sheetExport(clientId, dir, date, sheetId, tab, addresses);
     },
-    cells: (clientId, invoice, addresses) => ipc.sheetCells(clientId, invoice.sheetId, invoice.tab, addresses),
-    draft: (clientId, invoice, p) =>
-      ipc.sheetDraft(clientId, invoice.sheetId, invoice.tab, invoice.draftFolder, p.title, p.month, p.expect, p.updates),
-    findDraft: (clientId, invoice, month) =>
-      ipc.sheetDraftFind(clientId, invoice.sheetId, invoice.tab, month, addressesOf(invoice)),
+    draft: (clientId, r) =>
+      ipc.sheetDraft(clientId, r.sheetId, r.tab, DRAFT_FOLDER, r.title, r.month, r.expect, r.updates),
+    drafts: (clientId, month) => ipc.sheetDrafts(clientId, month),
   };
 }

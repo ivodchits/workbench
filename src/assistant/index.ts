@@ -19,7 +19,9 @@ import {
   mcpRequest,
   sheetCells,
   sheetDraft,
-  sheetDraftFind,
+  sheetDrafts,
+  sheetRead,
+  sheetSearch,
   sheetExport,
   workspacePrepare,
   onUsage,
@@ -66,7 +68,7 @@ import { SCREENSHOT_TOOLS, type ScreenHost } from "./tools/screenshot";
 import { QUIET_TOOLS, type QuietHost } from "./tools/quiet";
 import { MCP_TOOLS } from "./tools/mcp";
 import { MORNING_TOOLS } from "./tools/morning";
-import { INVOICE_TOOLS } from "./tools/invoice";
+import { SHEET_TOOLS } from "./tools/sheets";
 import { PREP_TOOLS } from "./tools/prep";
 import { createMcpHost } from "./mcp";
 import { createGoogleHost } from "./google";
@@ -113,7 +115,7 @@ const TOOLS = [
   ...HAIKU_TOOLS,
   ...MCP_TOOLS,
   ...MORNING_TOOLS,
-  ...INVOICE_TOOLS,
+  ...SHEET_TOOLS,
   ...PREP_TOOLS,
   ...(import.meta.env.DEV ? [testConfirm, testAnnounce] : []),
 ];
@@ -131,6 +133,8 @@ const DEFERRED = new Set([
   "save_screenshot",
   "set_quiet",
   "duck_spend",
+  "find_sheet",
+  "read_sheet",
   "create_sheet_draft",
   "prep_ahead",
 ]);
@@ -564,7 +568,7 @@ export function initAssistant(): Promise<void> {
       quiet: quietHost,
       haiku: (input, signal) => oneShot("haiku_task", input, { signal }),
       mcp: createMcpHost(mcpRequest),
-      google: createGoogleHost({ workspacePrepare, sheetExport, sheetCells, sheetDraft, sheetDraftFind }),
+      google: createGoogleHost({ workspacePrepare, sheetExport, sheetCells, sheetDraft, sheetDrafts, sheetSearch, sheetRead }),
       eventLevel: (threadId, level) => levels.set(threadId, level),
       store: s,
       registry: createRegistry(TOOLS, { deferred: DEFERRED }),

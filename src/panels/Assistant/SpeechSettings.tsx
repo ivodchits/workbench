@@ -140,7 +140,7 @@ export default function SpeechSettings() {
               : `Needs a ${mb(status.missingBytes)} download of the voices${status.installed ? "" : ", and uv installs their runtime (about 1 GB, once)"}.`
             : status.chirpKey
               ? `Chirp: ${status.chirpCharsThisMonth.toLocaleString()} of 1,000,000 free characters used this month.`
-              : "No Google key is stored (duck/google-tts-key)."}
+              : "No Google key is stored: see the google auth tab."}
       </div>
       {local && status && !localReady && (
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>

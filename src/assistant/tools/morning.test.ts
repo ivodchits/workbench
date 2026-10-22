@@ -4,8 +4,8 @@ import { Autopilot, type AutopilotManager } from "../autopilot";
 import { fakePort, project, session, toolCtx } from "../fakePort.test-util";
 import type { McpCallResult, McpHost } from "../mcp";
 import type { GoogleHost } from "../google";
-import type { SheetDraft } from "../../ipc/assistant";
-import { DEFAULT_SETTINGS, QUEST_LOG, type InvoiceSettings } from "../settings";
+import type { DraftRef } from "../../ipc/assistant";
+import { DEFAULT_SETTINGS, QUEST_LOG } from "../settings";
 import type { Task, TaskManager } from "../tasks";
 import { addDays, BRIEFING_READS, invoiceSheet, isoDate, morningBriefing, questLogDay } from "./morning";
 
@@ -298,92 +298,60 @@ describe("morning_briefing", () => {
   });
 });
 
-describe("the invoice sheet in the briefing", () => {
-  const invoice: InvoiceSettings = {
-    sheetId: "1AbC_defGhIjKlMnOpQrStUvWxYz0123456789",
-    tab: "Invoices",
-    draftFolder: "Duck drafts",
-    entryTag: "bill",
-    fields: [
-      { label: "Date", address: "B2", kind: "date", rule: "today" },
-      { label: "Amount", address: "F10", kind: "amount", rule: "same_as_last" },
-    ],
-  };
-  const settings = { ...DEFAULT_SETTINGS, morning: { googleClientId: "123.apps.googleusercontent.com", invoice } };
-  const google = (fn: GoogleHost["exportInvoice"], found: SheetDraft | null = null): GoogleHost => ({
-    exportInvoice: fn,
+describe("the invoice in the briefing", () => {
+  const settings = { ...DEFAULT_SETTINGS, google: { clientId: "123.apps.googleusercontent.com" } };
+  const google = (drafts: GoogleHost["drafts"]): GoogleHost => ({
+    search: () => Promise.reject(new Error("unused")),
+    read: () => Promise.reject(new Error("unused")),
     cells: () => Promise.reject(new Error("unused")),
+    exportSheet: () => Promise.reject(new Error("unused")),
     draft: () => Promise.reject(new Error("unused")),
-    findDraft: () => Promise.resolve(found),
+    drafts,
   });
+  const made: DraftRef = {
+    id: "c1",
+    name: `Acme invoice draft ${TODAY.slice(0, 7)} (Duck)`,
+    url: "https://docs.google.com/spreadsheets/d/c1/edit",
+    source: "1AbC_defGhIjKlMnOpQrStUvWxYz0123456789",
+    month: TODAY.slice(0, 7),
+    how: "copy",
+    created: 1,
+  };
 
-  it("reads the configured cells when the invoice entry (by its tag) is due", async () => {
-    const asked: unknown[] = [];
-    const host = google((clientId, inv, date) => {
-      asked.push([clientId, inv.sheetId, date]);
-      return Promise.resolve({
-        name: "Invoices",
-        cells: [
-          { address: "B2", value: "2026-09-01" },
-          { address: "F10", value: "$1,200.00", formula: "=C5*C6" },
-        ],
-        csv: "c",
-        xlsx: "x",
-        sidecar: "s",
-      });
+  it("hands Duck the entry's description and how to draft it, with nothing drafted yet", async () => {
+    const months: string[] = [];
+    const host = google((_c, month) => {
+      months.push(month);
+      return Promise.resolve([]);
     });
     const ql = questLog();
-    (ql.get_agenda as { all: { entry: { tags: string[] } }[] }).all[2].entry.tags = ["bill"];
+    const e = (ql.get_agenda as { all: { entry: Record<string, unknown> }[] }).all[2].entry;
+    e.description = "Sheet: https://docs.google.com/spreadsheets/d/1AbC_defGhIjKlMnOpQrStUvWxYz0123456789/edit";
     const ctx = { ...toolCtx(fakePort({}), settings), mcp: fakeMcp(ql).host, google: host };
-    const out = (await morningBriefing.run({}, ctx)) as { questLog: string };
-    expect(asked).toEqual([["123.apps.googleusercontent.com", invoice.sheetId, TODAY]]);
+    const out = (await morningBriefing.run({}, ctx)) as { questLog: string; prepared: unknown };
+    expect(months).toEqual([TODAY.slice(0, 7)]);
     const day = JSON.parse(out.questLog.split("\n")[1]) as { invoice: Record<string, unknown> };
-    expect(day.invoice).toMatchObject({
-      title: "Send invoice",
-      sheet: {
-        name: "Invoices",
-        cells: [
-          { label: "Date", cell: "B2", now: "2026-09-01" },
-          { label: "Amount", cell: "F10", now: "$1,200.00", formula: "=C5*C6" },
-        ],
-      },
-    });
+    expect(day.invoice).toMatchObject({ title: "Send invoice", description: e.description });
+    expect(day.invoice.note).toMatch(/read it with read_sheet, work out what changes this month and why/);
+    expect(out.prepared).toBe("Nothing is prepared ahead yet.");
   });
 
-  it("says what a draft would set, and links this month's draft once Duck made it", async () => {
-    const sheet = google(() =>
-      Promise.resolve({ name: "Invoices", cells: [{ address: "B2", value: "2020-01-01" }, { address: "F10", value: "1200" }], csv: "", xlsx: "", sidecar: "" }),
-    );
-    const before = await invoiceSheet({ settings, google: sheet }, TODAY);
-    expect(before.note).toMatch(/Offer to draft it: create_sheet_draft/);
-    expect(before).toMatchObject({ draftWouldSet: [`Date (B2) 2020-01-01 → ${TODAY}`] });
-
-    const made: SheetDraft = {
-      id: "c1",
-      name: `Invoices draft ${TODAY.slice(0, 7)} (Duck)`,
-      url: "https://docs.google.com/spreadsheets/d/c1/edit",
-      month: TODAY.slice(0, 7),
-      how: "copy",
-      created: 1,
-      cells: [{ address: "B2", value: TODAY }],
-    };
-    const after = google(() => Promise.reject(new Error("not read: the draft is there")), made);
-    expect(await invoiceSheet({ settings, google: after }, TODAY)).toMatchObject({
+  it("links this month's draft once Duck made one", async () => {
+    const host = google(() => Promise.resolve([made]));
+    expect(await invoiceSheet({ settings, google: host }, TODAY)).toMatchObject({
       note: expect.stringMatching(/drafted it already/),
-      draft: { link: made.url, cells: [{ label: "Date", cell: "B2", value: TODAY }] },
+      drafts: [{ name: made.name, link: made.url }],
     });
-    const ql = questLog();
-    (ql.get_agenda as { all: { entry: { tags: string[] } }[] }).all[2].entry.tags = ["bill"];
-    const ctx = { ...toolCtx(fakePort({}), settings), mcp: fakeMcp(ql).host, google: after };
+    const ctx = { ...toolCtx(fakePort({}), settings), mcp: fakeMcp(questLog()).host, google: host };
     const out = (await morningBriefing.run({}, ctx)) as { prepared: unknown };
     expect(out.prepared).toEqual({ invoiceDraft: `${made.name} (${made.url})` });
   });
 
-  it("says to reconnect when Google access expired, and what else went wrong otherwise", async () => {
+  it("says to connect or reconnect Google, and what else went wrong", async () => {
     const expired = google(() => Promise.reject(new Error("google_expired: Google access expired, reconnect in Duck's settings")));
-    expect((await invoiceSheet({ settings, google: expired }, TODAY)).note).toMatch(/reconnect in Duck's settings/);
+    expect((await invoiceSheet({ settings, google: expired }, TODAY)).note).toMatch(/reconnect in Duck's settings \(Google Auth\)/);
     const down = google(() => Promise.reject(new Error("Google answered 500")));
-    expect((await invoiceSheet({ settings, google: down }, TODAY)).note).toMatch(/couldn't be read \(Google answered 500\)/);
-    expect((await invoiceSheet({ settings: DEFAULT_SETTINGS, google: down }, TODAY)).note).toMatch(/isn't set up/);
+    expect((await invoiceSheet({ settings, google: down }, TODAY)).note).toMatch(/couldn't be reached \(Google answered 500\)/);
+    expect((await invoiceSheet({ settings: DEFAULT_SETTINGS, google: down }, TODAY)).note).toMatch(/once Google is connected/);
   });
 });

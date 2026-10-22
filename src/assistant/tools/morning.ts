@@ -15,30 +15,28 @@
 // Quest Log's items are the user's data from another app, so they come back wrapped
 // as untrusted, as `mcp_read`'s results do.
 //
-// When the invoice is due and Google is set up (Duck's settings, morning), the
-// briefing links this month's draft when Duck made one (`create_sheet_draft`), and
-// otherwise reads the invoice sheet's cells, keeping a local copy of the sheet in
-// the workspace's `data/invoices/`, and says what a draft would set.
+// When the invoice (the entry tagged `duck:invoice`) is due, the briefing links the
+// drafts Duck made this month (`create_sheet_draft`), or offers one: Duck finds the
+// sheet (a link in the entry's description, `find_sheet`, or the user), reads it and
+// works out the changes itself. Google is the user's sign-in (Google Auth).
 
 import { z } from "zod";
 import type { ProjectRef, SessionRef, WorkbenchPort } from "../port";
 import { isFinished, type TaskManager } from "../tasks";
 import { badgeText, type AutopilotManager } from "../autopilot";
 import type { McpHost } from "../mcp";
-import { INVOICE_DEFAULTS, type McpServerSpec } from "../settings";
+import type { McpServerSpec } from "../settings";
 import { wrapMcp } from "./mcp";
 import { choiceLine, compact } from "./read";
 import { isGoogleExpired, googleErrorText } from "../google";
-import { askedFields, changeLine, monthOf, planDraft } from "../invoice";
 import { defineTool, type ToolContext } from "./registry";
 import { prepCandidates, prepPart } from "./prep";
 
 /** The quest_log tools the briefing reads, and nothing else. */
 export const BRIEFING_READS = ["whoami", "get_agenda", "get_calendar_occurrences", "get_stats"] as const;
 
-/** The tag that marks the monthly invoice's entry in quest_log, unless the
- *  invoice settings name another. */
-export const INVOICE_TAG = INVOICE_DEFAULTS.entryTag;
+/** The tag that marks the monthly invoice's entry in quest_log. */
+export const INVOICE_TAG = "duck:invoice";
 /** The Workbench project the briefing is saved in, as `morning-<date>`. */
 export const BRIEFING_PROJECT = "Duck";
 
@@ -51,7 +49,7 @@ const GIT_PROJECTS = 8;
 /** Finished worker tasks this recent are news. */
 const TASK_NEWS_MS = 24 * 3600_000;
 const LIST_MAX = 15;
-/** How long the invoice sheet's read may take before the briefing goes on without it. */
+/** How long listing this month's drafts may take before the briefing goes on without it. */
 const SHEET_MS = 20_000;
 
 const INSTRUCTIONS = [
@@ -71,6 +69,7 @@ interface QlEntry {
   status?: string;
   deadline?: number | null;
   tags?: string[];
+  description?: string | null;
 }
 interface QlAgendaItem {
   effective_millis?: number;
@@ -125,7 +124,7 @@ export interface QuestLogReads {
 }
 
 /** The day from quest_log's reads: what's on, by time; what's open; what's ahead. */
-export function questLogDay(r: QuestLogReads, today: string, invoiceTag: string = INVOICE_TAG) {
+export function questLogDay(r: QuestLogReads, today: string) {
   const occ = (r.calendar?.occurrences ?? []).filter((o) => o.entry?.status !== "CANCELLED");
   const byStart = (a: QlOccurrence, b: QlOccurrence) =>
     (a.is_all_day ? -1 : (a.start_millis ?? 0)) - (b.is_all_day ? -1 : (b.start_millis ?? 0));
@@ -145,7 +144,7 @@ export function questLogDay(r: QuestLogReads, today: string, invoiceTag: string 
     ...(r.agenda?.overdue ?? []).map((a) => ({ e: a.entry, due: a.effective_millis, overdue: true })),
     ...(r.agenda?.all ?? []).map((a) => ({ e: a.entry, due: a.effective_millis, overdue: false })),
     ...occ.map((o) => ({ e: o.entry, due: o.start_millis, overdue: false })),
-  ].find((x) => !!x.e?.tags?.includes(invoiceTag));
+  ].find((x) => !!x.e?.tags?.includes(INVOICE_TAG));
 
   const stats = r.stats?.today;
   return compact({
@@ -171,6 +170,8 @@ export function questLogDay(r: QuestLogReads, today: string, invoiceTag: string 
     invoice: invoice
       ? compact({
           title: invoice.e?.title,
+          // Where its sheet is, usually: a link the user put in the entry.
+          description: invoice.e?.description?.slice(0, 600) || null,
           due: invoice.due != null ? dueLine(invoice.due, today) : null,
           overdue: invoice.overdue,
         })
@@ -320,66 +321,36 @@ async function savePart(port: WorkbenchPort, today: string) {
   };
 }
 
-/** The invoice's sheet, once its entry is due: this month's draft read back when
- *  Duck made one, else the configured cells as they are now and what a draft would
- *  set; or why the sheet couldn't be read. */
+/** What the briefing says about the invoice once its entry is due: the drafts made
+ *  this month, or how to make one. */
 export async function invoiceSheet(ctx: Pick<ToolContext, "settings" | "google">, date: string) {
   const due = "The monthly invoice is due.";
-  const inv = ctx.settings.morning.invoice;
-  const clientId = ctx.settings.morning.googleClientId;
-  if (!inv || !clientId || !ctx.google)
-    return { note: `${due} Remind the user; its sheet isn't set up (Duck's settings, morning).` };
+  const clientId = ctx.settings.google.clientId;
+  if (!clientId || !ctx.google)
+    return {
+      note: `${due} Remind the user. Duck can draft it once Google is connected (Duck's settings, Google Auth).`,
+    };
   const google = ctx.google;
-  const label = (address: string) => inv.fields.find((f) => f.address === address)?.label ?? address;
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
-    return await Promise.race([
-      (async () => {
-        const made = await google.findDraft(clientId, inv, monthOf(date));
-        if (made)
-          return {
-            note: `${due} Duck drafted it already: give the user the link to check it. Sending it is theirs.`,
-            draft: {
-              name: made.name,
-              link: made.url,
-              cells: made.cells.map((c) => compact({ label: label(c.address), cell: c.address, value: c.value })),
-            },
-          };
-        const x = await google.exportInvoice(clientId, inv, date, ctx.settings.workspace);
-        const sheet = {
-          name: x.name,
-          cells: inv.fields.map((f) => {
-            const c = x.cells.find((y) => y.address === f.address);
-            return compact({ label: f.label, cell: f.address, now: c?.value ?? "", formula: c?.formula });
-          }),
-        };
-        const ask = askedFields(inv).map((f) => f.label);
-        if (ask.length)
-          return {
-            note: `${due} Offer to draft it: Duck needs ${ask.join(", ")} from the user first, then create_sheet_draft copies the sheet with this month's cells (the user confirms on a card).`,
-            sheet,
-          };
-        try {
-          const plan = planDraft(inv, x.name, x.cells, date);
-          return {
-            note: plan.changes.length
-              ? `${due} Offer to draft it: create_sheet_draft copies the sheet with these cells set (the user confirms on a card).`
-              : `${due} Its cells already have this month's values; remind the user.`,
-            sheet,
-            ...(plan.changes.length && { draftWouldSet: plan.changes.map(changeLine) }),
-          };
-        } catch (e) {
-          return { note: `${due} Remind the user; a draft can't be planned (${e instanceof Error ? e.message : String(e)}).`, sheet };
-        }
-      })(),
+    const made = await Promise.race([
+      google.drafts(clientId, date.slice(0, 7)),
       new Promise<never>((_, reject) => {
         timer = setTimeout(() => reject(new Error("Google didn't answer in time")), SHEET_MS);
       }),
     ]);
+    if (made.length)
+      return {
+        note: `${due} Duck drafted it already: give the user the link to check it. Sending it is theirs.`,
+        drafts: made.map((d) => ({ name: d.name, link: d.url })),
+      };
+    return {
+      note: `${due} Offer to draft it. On a yes: find its sheet (a link in its description, else find_sheet by name, else ask the user), read it with read_sheet, work out what changes this month and why (dates, the period, the invoice number, amounts; ask the user for what you can't know), then create_sheet_draft, which shows the user a card.`,
+    };
   } catch (e) {
     if (isGoogleExpired(e))
-      return { note: `${due} Google access expired: tell the user to reconnect in Duck's settings (morning).` };
-    return { note: `${due} Remind the user; its sheet couldn't be read (${googleErrorText(e)}).` };
+      return { note: `${due} Google access expired: tell the user to reconnect in Duck's settings (Google Auth).` };
+    return { note: `${due} Remind the user; Google couldn't be reached (${googleErrorText(e)}).` };
   } finally {
     clearTimeout(timer);
   }
@@ -421,9 +392,10 @@ export const morningBriefing = defineTool({
       questLog = `Quest Log couldn't be reached (${ql.failed.whoami}). Say it has to be open and signed in for the calendar and agenda, and brief on the rest.`;
     else {
       const today = ql.whoami?.today ?? localToday;
-      const found = questLogDay(ql, today, ctx.settings.morning.invoice?.entryTag);
+      const found = questLogDay(ql, today);
       const invoice = found.invoice && { ...found.invoice, ...(await invoiceSheet(ctx, today)) };
-      if (invoice && "draft" in invoice && invoice.draft) invoiceDraft = `${invoice.draft.name} (${invoice.draft.link})`;
+      if (invoice && "drafts" in invoice && invoice.drafts?.length)
+        invoiceDraft = invoice.drafts.map((d) => `${d.name} (${d.link})`).join("; ");
       const candidates = prepCandidates(found, found.invoice?.title, ctx.tasks?.list() ?? [], today === localToday ? hhmm(now) : "00:00");
       const day = {
         date: today,

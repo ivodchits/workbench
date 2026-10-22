@@ -1,21 +1,22 @@
-//! The morning routine's invoice sheet. [`assistant_sheet_cells`]
-//! reads the configured cells, shown and as formulas, for the settings' "Test sheet"
-//! and the briefing. [`assistant_sheet_export`] also keeps a local copy of the
-//! original in the workspace's `data/invoices/`: the tab as CSV, the whole file as
-//! xlsx, and a JSON sidecar with the sheet's id, name, the time it was fetched and
-//! the cells. That is the audit record of what a draft started from.
+//! Google Sheets for Duck (the morning routine's invoice, or any sheet the user points
+//! it at). Reads: [`assistant_sheet_search`] finds sheets by name,
+//! [`assistant_sheet_read`] reads a tab (shown values and formulas, capped) for Duck
+//! to work out what a draft should change, and [`assistant_sheet_cells`] reads given
+//! cells. [`assistant_sheet_export`] keeps a local copy of the original in the
+//! workspace's `data/invoices/` (the tab as CSV, the file as xlsx, a JSON sidecar):
+//! the record of what a draft started from.
 //!
 //! Only Google Sheets files are read (an uploaded .xlsx isn't one).
 //!
-//! Phase 3, the draft: [`assistant_sheet_draft`] copies the original into Duck's
-//! drafts folder and sets the planned cells in the copy, after the card the user
-//! confirmed. It refuses a second draft of the same sheet for the same month while
-//! the first is still in Drive, a sheet whose cells changed since the card, and a
-//! target cell holding a formula. The copy is Drive's `files.copy`; when Google
-//! refuses that under `drive.file`, the xlsx export is uploaded as a new Sheet
-//! instead. Every file Duck makes is recorded in `assistant_google_files` (the
-//! folder too), the only files its scopes let it change. [`assistant_sheet_draft_find`]
-//! reads this month's draft back for the briefing.
+//! The draft: [`assistant_sheet_draft`] copies the original into Duck's drafts folder
+//! and sets the cells Duck chose in the copy, after the card the user confirmed. It
+//! refuses a second draft of the same sheet for the same month while the first is
+//! still in Drive, a sheet whose cells changed since the card, and a target cell
+//! holding a formula. The copy is Drive's `files.copy`; when Google refuses that
+//! under `drive.file`, the xlsx export is uploaded as a new Sheet instead. Every file
+//! Duck makes is recorded in `assistant_google_files` (the folder too), the only
+//! files its scopes let it change. [`assistant_sheet_drafts`] lists a month's drafts
+//! still in Drive, for the briefing.
 
 use std::sync::Arc;
 
@@ -32,8 +33,11 @@ const SHEETS: &str = "https://sheets.googleapis.com/v4/spreadsheets";
 const DRIVE: &str = "https://www.googleapis.com/drive/v3/files";
 const SHEET_MIME: &str = "application/vnd.google-apps.spreadsheet";
 const XLSX_MIME: &str = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
-/// The configured cells (up to 6) and the cells their formulas read.
-pub const MAX_CELLS: usize = 12;
+/// The most cells one call reads or a draft sets.
+pub const MAX_CELLS: usize = 20;
+/// What [`assistant_sheet_read`] returns at most of a tab.
+const READ_ROWS: usize = 150;
+const READ_COLS: usize = 26;
 
 #[derive(Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -276,41 +280,184 @@ pub async fn assistant_sheet_draft(
     Ok(Draft { id, name: title, url, month, how: how.into(), created, cells: after.cells })
 }
 
-/// This month's draft of the sheet, read back; null when there is none in Drive.
+/// A draft Duck made, as recorded.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DraftRef {
+    id: String,
+    name: String,
+    url: String,
+    /// The sheet it's a copy of.
+    source: String,
+    month: String,
+    how: String,
+    created: i64,
+}
+
+/// The drafts Duck made for `month` that are still in Drive, newest first.
 #[tauri::command]
-#[allow(clippy::too_many_arguments)]
-pub async fn assistant_sheet_draft_find(
+pub async fn assistant_sheet_drafts(
+    ctx: State<'_, Arc<Assistant>>,
+    auth: State<'_, GoogleAuth>,
+    client_id: String,
+    month: String,
+) -> Result<Vec<DraftRef>, String> {
+    if !is_month(&month) {
+        return Err(format!("not a month: {month}"));
+    }
+    let made = drafts_in(&ctx.db.conn.lock().expect("duck db lock poisoned"), &month).map_err(|e| e.to_string())?;
+    let g = Google { client: &ctx.client, auth: &auth, client_id: client_id.trim() };
+    let mut out = Vec::new();
+    for d in made {
+        if g.alive(&d.file_id).await? {
+            out.push(DraftRef {
+                url: d.url.unwrap_or_else(|| format!("https://docs.google.com/spreadsheets/d/{}/edit", d.file_id)),
+                id: d.file_id,
+                name: d.name,
+                source: d.source.unwrap_or_default(),
+                month: month.clone(),
+                how: d.how.unwrap_or_default(),
+                created: d.created,
+            });
+        }
+    }
+    Ok(out)
+}
+
+/// A sheet found by name.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SheetFound {
+    id: String,
+    name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    modified: Option<String>,
+}
+
+/// Google Sheets whose name contains `query` (the latest changed, without one), at
+/// most 10.
+#[tauri::command]
+pub async fn assistant_sheet_search(
+    ctx: State<'_, Arc<Assistant>>,
+    auth: State<'_, GoogleAuth>,
+    client_id: String,
+    query: String,
+) -> Result<Vec<SheetFound>, String> {
+    let g = Google { client: &ctx.client, auth: &auth, client_id: client_id.trim() };
+    let v = g.json(&search_url(&query)).await?;
+    let files = v.get("files").and_then(Value::as_array).cloned().unwrap_or_default();
+    Ok(files
+        .iter()
+        .filter_map(|f| {
+            Some(SheetFound {
+                id: f.get("id")?.as_str()?.to_string(),
+                name: f.get("name")?.as_str()?.to_string(),
+                modified: f.get("modifiedTime").and_then(Value::as_str).map(str::to_string),
+            })
+        })
+        .collect())
+}
+
+/// Drive's `files.list` for sheets named like `query`.
+fn search_url(query: &str) -> String {
+    let mut q = format!("mimeType='{SHEET_MIME}' and trashed=false");
+    let name: String = query.trim().chars().take(100).collect();
+    if !name.is_empty() {
+        let quoted = name.replace('\\', r"\\").replace('\'', r"\'");
+        q.push_str(&format!(" and name contains '{quoted}'"));
+    }
+    format!(
+        "{DRIVE}?q={}&orderBy=modifiedTime%20desc&pageSize=10&fields=files(id,name,modifiedTime)&supportsAllDrives=true&includeItemsFromAllDrives=true",
+        pct(&q)
+    )
+}
+
+/// One tab of a sheet, for Duck to read.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SheetRead {
+    name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    modified: Option<String>,
+    /// Every tab's name.
+    tabs: Vec<String>,
+    tab: String,
+    /// The non-empty cells, row by row, with their formulas.
+    cells: Vec<Cell>,
+    /// Whether the tab goes on past what was read.
+    cut: bool,
+}
+
+/// A tab's shown values and formulas (the first tab when `tab` is empty), up to
+/// [`READ_ROWS`] rows and [`READ_COLS`] columns.
+#[tauri::command]
+pub async fn assistant_sheet_read(
     ctx: State<'_, Arc<Assistant>>,
     auth: State<'_, GoogleAuth>,
     client_id: String,
     sheet_id: String,
     tab: String,
-    month: String,
-    addresses: Vec<String>,
-) -> Result<Option<Draft>, String> {
-    check(&sheet_id, &tab, &addresses)?;
-    if !is_month(&month) {
-        return Err(format!("not a month: {month}"));
-    }
-    let Some(d) = last_draft(&ctx.db.conn.lock().expect("duck db lock poisoned"), &sheet_id, &month)
-        .map_err(|e| e.to_string())?
-    else {
-        return Ok(None);
-    };
+) -> Result<SheetRead, String> {
+    check_id(&sheet_id)?;
     let g = Google { client: &ctx.client, auth: &auth, client_id: client_id.trim() };
-    if !g.alive(&d.file_id).await? {
-        return Ok(None);
+    let (name, modified) = sheet_meta(&g, &sheet_id).await?;
+    let info = g.json(&format!("{SHEETS}/{sheet_id}?fields=sheets.properties.title")).await?;
+    let tabs: Vec<String> = info
+        .get("sheets")
+        .and_then(Value::as_array)
+        .map(|a| a.iter().filter_map(|t| t.pointer("/properties/title")?.as_str().map(str::to_string)).collect())
+        .unwrap_or_default();
+    let tab = if tab.trim().is_empty() {
+        tabs.first().cloned().ok_or("the sheet has no tabs")?
+    } else if tabs.contains(&tab) {
+        tab
+    } else {
+        return Err(format!("there's no tab \"{tab}\": its tabs are {}", tabs.join(", ")));
+    };
+    let range = pct(&format!("{}!A1:{}{}", quote_tab(&tab), col_name(READ_COLS), READ_ROWS + 1));
+    let url = |render: &str| format!("{SHEETS}/{sheet_id}/values/{range}?valueRenderOption={render}");
+    let (shown_url, formula_url) = (url("FORMATTED_VALUE"), url("FORMULA"));
+    let (shown, formulas) = futures_util::try_join!(g.json(&shown_url), g.json(&formula_url))?;
+    let (cells, cut) = grid_cells(&shown, &formulas);
+    Ok(SheetRead { name, modified, tabs, tab, cells, cut })
+}
+
+/// The non-empty cells of a `values.get` pair (shown, formulas), and whether the
+/// read reached past [`READ_ROWS`] rows.
+fn grid_cells(shown: &Value, formulas: &Value) -> (Vec<Cell>, bool) {
+    let rows = |v: &Value| v.get("values").and_then(Value::as_array).cloned().unwrap_or_default();
+    let (shown, formulas) = (rows(shown), rows(formulas));
+    let text = |v: Option<&Value>| match v {
+        Some(Value::String(s)) => s.clone(),
+        Some(Value::Null) | None => String::new(),
+        Some(other) => other.to_string(),
+    };
+    let mut out = Vec::new();
+    for (r, row) in shown.iter().take(READ_ROWS).enumerate() {
+        let frow = formulas.get(r).and_then(Value::as_array);
+        for (c, v) in row.as_array().into_iter().flatten().enumerate() {
+            let value = text(Some(v));
+            let formula = text(frow.and_then(|f| f.get(c)));
+            let formula = formula.starts_with('=').then_some(formula);
+            if value.is_empty() && formula.is_none() {
+                continue;
+            }
+            out.push(Cell { address: format!("{}{}", col_name(c + 1), r + 1), value, formula });
+        }
     }
-    let cells = read_cells(&g, &d.file_id, &tab, &addresses).await?.cells;
-    Ok(Some(Draft {
-        url: d.url.unwrap_or_else(|| format!("https://docs.google.com/spreadsheets/d/{}/edit", d.file_id)),
-        id: d.file_id,
-        name: d.name,
-        month,
-        how: d.how.unwrap_or_default(),
-        created: d.created,
-        cells,
-    }))
+    (out, shown.len() > READ_ROWS)
+}
+
+/// The letters of the 1-based column `n`: 1 → A, 27 → AA.
+fn col_name(mut n: usize) -> String {
+    let mut s = Vec::new();
+    while n > 0 {
+        n -= 1;
+        s.push(b'A' + (n % 26) as u8);
+        n /= 26;
+    }
+    s.reverse();
+    String::from_utf8(s).unwrap_or_default()
 }
 
 /// The drafts folder's id: the one Duck made with this name, else a new one.
@@ -461,6 +608,27 @@ fn last_draft(conn: &Connection, source: &str, month: &str) -> rusqlite::Result<
     .optional()
 }
 
+/// The drafts made for `month`, newest first.
+fn drafts_in(conn: &Connection, month: &str) -> rusqlite::Result<Vec<FileRecord>> {
+    let mut st = conn.prepare(
+        "SELECT file_id, name, url, how, created, source FROM assistant_google_files
+         WHERE kind = 'draft' AND month = ?1 ORDER BY created DESC",
+    )?;
+    let rows = st.query_map([month], |r| {
+        Ok(FileRecord {
+            file_id: r.get(0)?,
+            kind: "draft",
+            name: r.get(1)?,
+            source: r.get(5)?,
+            month: Some(month.into()),
+            url: r.get(2)?,
+            how: r.get(3)?,
+            created: r.get(4)?,
+        })
+    })?;
+    rows.collect()
+}
+
 /// The latest drafts folder Duck made with this name.
 fn last_folder(conn: &Connection, name: &str) -> rusqlite::Result<Option<String>> {
     conn.query_row(
@@ -473,15 +641,7 @@ fn last_folder(conn: &Connection, name: &str) -> rusqlite::Result<Option<String>
 
 async fn read_cells(g: &Google<'_>, sheet_id: &str, tab: &str, addresses: &[String]) -> Result<SheetCells, String> {
     check(sheet_id, tab, addresses)?;
-    let meta = g
-        .json(&format!("{DRIVE}/{sheet_id}?fields=name,mimeType,modifiedTime&supportsAllDrives=true"))
-        .await?;
-    let mime = meta.get("mimeType").and_then(Value::as_str).unwrap_or("");
-    if mime != SHEET_MIME {
-        return Err(format!("that file isn't a Google Sheet ({mime}): open it in Sheets and save it as one"));
-    }
-    let name = meta.get("name").and_then(Value::as_str).unwrap_or("sheet").to_string();
-    let modified = meta.get("modifiedTime").and_then(Value::as_str).map(str::to_string);
+    let (name, modified) = sheet_meta(g, sheet_id).await?;
     if addresses.is_empty() {
         return Ok(SheetCells { name, modified, cells: Vec::new() });
     }
@@ -512,12 +672,31 @@ fn first_value(reply: &Value, i: usize) -> Option<String> {
     })
 }
 
-fn check(sheet_id: &str, tab: &str, addresses: &[String]) -> Result<(), String> {
+/// A Google Sheet's name and last change; an error for any other kind of file.
+async fn sheet_meta(g: &Google<'_>, sheet_id: &str) -> Result<(String, Option<String>), String> {
+    let meta = g
+        .json(&format!("{DRIVE}/{sheet_id}?fields=name,mimeType,modifiedTime&supportsAllDrives=true"))
+        .await?;
+    let mime = meta.get("mimeType").and_then(Value::as_str).unwrap_or("");
+    if mime != SHEET_MIME {
+        return Err(format!("that file isn't a Google Sheet ({mime}): open it in Sheets and save it as one"));
+    }
+    let name = meta.get("name").and_then(Value::as_str).unwrap_or("sheet").to_string();
+    Ok((name, meta.get("modifiedTime").and_then(Value::as_str).map(str::to_string)))
+}
+
+fn check_id(sheet_id: &str) -> Result<(), String> {
     let id_ok = (20..=128).contains(&sheet_id.len())
         && sheet_id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_');
-    if !id_ok {
-        return Err(format!("not a sheet id: {sheet_id}"));
+    if id_ok {
+        Ok(())
+    } else {
+        Err(format!("not a sheet id: {sheet_id}"))
     }
+}
+
+fn check(sheet_id: &str, tab: &str, addresses: &[String]) -> Result<(), String> {
+    check_id(sheet_id)?;
     if tab.trim().is_empty() || tab.len() > 100 {
         return Err("the tab's name is missing".into());
     }
@@ -647,11 +826,40 @@ mod tests {
         record(&conn, &rec("d2", "draft", Some("2026-10"), 3)).unwrap();
         record(&conn, &rec("d3", "draft", Some("2026-09"), 4)).unwrap();
         assert_eq!(last_draft(&conn, ID, "2026-10").unwrap().unwrap().file_id, "d2");
+        let october: Vec<String> = drafts_in(&conn, "2026-10").unwrap().into_iter().map(|d| d.file_id).collect();
+        assert_eq!(october, vec!["d2", "d1"]);
         assert_eq!(last_folder(&conn, "Duck drafts").unwrap().as_deref(), Some("f1"));
         assert_eq!(last_folder(&conn, "Other").unwrap(), None);
         assert!(conn
             .execute("INSERT INTO assistant_google_files (file_id, kind, name, created) VALUES ('x', 'sheet', 'n', 0)", [])
             .is_err());
+    }
+
+    #[test]
+    fn reads_a_tab_as_cells() {
+        assert_eq!((col_name(1), col_name(26), col_name(27), col_name(52)), ("A".into(), "Z".into(), "AA".into(), "AZ".into()));
+        let shown = json!({"values": [["Invoice", "", "No. 41"], [], ["Total", 1200]]});
+        let formulas = json!({"values": [["Invoice", "", "No. 41"], [], ["Total", "=B5*B6"]]});
+        let (cells, cut) = grid_cells(&shown, &formulas);
+        let got: Vec<(String, String, Option<String>)> =
+            cells.into_iter().map(|c| (c.address, c.value, c.formula)).collect();
+        assert_eq!(
+            got,
+            vec![
+                ("A1".into(), "Invoice".into(), None),
+                ("C1".into(), "No. 41".into(), None),
+                ("A3".into(), "Total".into(), None),
+                ("B3".into(), "1200".into(), Some("=B5*B6".into())),
+            ]
+        );
+        assert!(!cut);
+    }
+
+    #[test]
+    fn searches_sheets_by_name() {
+        let url = search_url("Bob's invoice");
+        assert!(url.contains(&pct("mimeType='application/vnd.google-apps.spreadsheet' and trashed=false and name contains 'Bob\\'s invoice'")), "{url}");
+        assert!(!search_url("  ").contains("name%20contains"));
     }
 
     #[test]
