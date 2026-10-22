@@ -1113,8 +1113,8 @@ describe("routing (M2)", () => {
     // Back to medium: a system message carries the change.
     expect(lastEffort(calls[1].params)).toBe("medium");
     expect(events.filter((e) => e.type === "routing")).toEqual([
-      { type: "routing", threadId: id, brain: "sonnet", effort: "high" },
-      { type: "routing", threadId: id, brain: "sonnet", effort: "medium" },
+      { type: "routing", threadId: id, mode: "assistant", brain: "sonnet", effort: "high" },
+      { type: "routing", threadId: id, mode: "assistant", brain: "sonnet", effort: "medium" },
     ]);
   });
 

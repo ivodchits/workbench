@@ -61,7 +61,9 @@ const BRAIN_ARGS: [&str; 17] = [
     "",
     "--model",
 ];
-const MODEL: &str = "sonnet";
+/// The models a brain runs on: Sonnet, or Opus for a mode set to think there
+/// (step D3).
+const MODELS: [&str; 2] = ["sonnet", "opus"];
 const EFFORTS: [&str; 5] = ["low", "medium", "high", "xhigh", "max"];
 /// The folder in the workspace the brain runs in.
 const BRAIN_DIR: &str = "brain";
@@ -239,8 +241,10 @@ fn priced(model: &str, result: &Value) -> Option<f64> {
 
 /// Start thread `thread_id`'s brain in the workspace `workspace`, with Duck's
 /// system prompt `prompt`, the MCP `tools` its server lists and `effort`.
-/// Replaces one already running for the thread.
+/// Replaces one already running for the thread. `model` is `sonnet` (the default) or
+/// `opus`, for a mode set to think on the subscription (step D3).
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub fn brain_spawn(
     app: AppHandle,
     state: State<'_, BrainManager>,
@@ -249,10 +253,15 @@ pub fn brain_spawn(
     prompt: String,
     tools: Vec<Value>,
     effort: String,
+    model: Option<String>,
 ) -> Result<BrainSpawned, String> {
     let id = uuid::Uuid::parse_str(&thread_id).map_err(|_| "a thread id is a UUID")?.to_string();
     if !EFFORTS.contains(&effort.as_str()) {
         return Err(format!("unknown effort {effort}"));
+    }
+    let model = model.unwrap_or_else(|| MODELS[0].to_string());
+    if !MODELS.contains(&model.as_str()) {
+        return Err(format!("unknown model {model}"));
     }
     let cwd = PathBuf::from(&workspace).join(BRAIN_DIR);
     std::fs::create_dir_all(&cwd).map_err(|e| format!("cannot create {}: {e}", cwd.display()))?;
@@ -268,7 +277,7 @@ pub fn brain_spawn(
     let mut cmd = Command::new(&launcher[0]);
     cmd.args(&launcher[1..])
         .args(BRAIN_ARGS)
-        .arg(MODEL)
+        .arg(&model)
         .args(["--effort", effort.as_str()])
         .arg("--mcp-config")
         .arg(mcp_config(port, &token))

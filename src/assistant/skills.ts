@@ -14,6 +14,7 @@
 //   thread started in it runs with the body as its prompt (with the basics every
 //   mode has and the safety rules), the frontmatter's `tools:` (the common ones
 //   when there are none), `effort:` and `pauses:`, and `title:` for the picker.
+//   `backend: session` makes its threads think on your subscription (step D3).
 // - A skill with a problem, or turned off in the settings, isn't used.
 
 import { SAFETY_RULES } from "./config";
@@ -81,11 +82,13 @@ export function parseSkill(row: SkillFileRow, known: ReadonlySet<string>, disabl
   if (modeId !== null) {
     const effort = field("effort") ?? "medium";
     const pauses = field("pauses");
+    const backend = field("backend");
     const title = field("title") ?? modeId;
     if (!KEBAB.test(modeId) || modeId.length > 40) problems.push("its mode isn't lowercase words joined by hyphens");
     else if (isModeId(modeId)) problems.push(`"${modeId}" is one of Duck's own modes`);
     if (!EFFORT_VALUES.includes(effort as Effort)) problems.push(`effort is one of ${EFFORT_VALUES.join(", ")}`);
     if (pauses !== null && !PATIENCE_VALUES.includes(pauses as Patience)) problems.push(`pauses is one of ${PATIENCE_VALUES.join(", ")}`);
+    if (backend !== null && backend !== "api" && backend !== "session") problems.push("backend is api or session");
     if (title.length > 40) problems.push("its title is longer than 40 characters");
     const own = tools ?? [...COMMON_TOOLS];
     mode = {
@@ -97,6 +100,7 @@ export function parseSkill(row: SkillFileRow, known: ReadonlySet<string>, disabl
       // A mode can always be left.
       tools: own.includes("switch_mode") ? own : [...own, "switch_mode"],
       voicePatience: (pauses as Patience | null) ?? null,
+      ...(backend === "session" && { backend: "session" as const }),
     };
   }
   return {

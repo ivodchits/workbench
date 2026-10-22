@@ -51,7 +51,7 @@ import { COMPACT_REQUEST, compactedText } from "./prompt";
 import { DEFAULT_PROMPTS, type ConfigHost, type Prompts } from "./config";
 import type { RoutinesHost } from "./tools/routines";
 import { MODELS, route, type Brain } from "./routing";
-import { findMode, modeOf, systemFor as modeSystem, type Mode } from "./modes";
+import { findMode, modeOf, systemFor as modeSystem, thinksOnSession, type Mode } from "./modes";
 import { skillsBlock, type SkillsHost } from "./skills";
 import { quotedFromLatest } from "./trust/mandate";
 import {
@@ -102,6 +102,7 @@ import {
   unanswered,
   type BrainHost,
   type BrainMessage,
+  type BrainSpawnOptions,
 } from "./brain/subscription";
 import type { BrainToolCall } from "../ipc/brain";
 
@@ -642,6 +643,8 @@ interface BrainRun {
 interface LiveBrain {
   /** Its session is new: it has seen none of the thread. */
   fresh: boolean;
+  /** What it was started with (model, effort, why): another needs a new process. */
+  spec: string;
   last: number;
   idle?: ReturnType<typeof setTimeout>;
 }
@@ -810,8 +813,11 @@ export function createEngine(deps: EngineDeps): Engine {
     settledWaiters.delete(threadId);
   }
 
+  /** The thread's mode thinks on the subscription (step D3). */
+  const sessionMode = (threadId: string) => thinksOnSession(modeFor(threadId), settings().sessionModes);
+
   /** Which brain a turn runs on (step M3). A model named outright is the API's. */
-  async function chooseBackend(input: Pick<SendInput, "brain">, degraded: boolean): Promise<BackendChoice> {
+  async function chooseBackend(threadId: string, input: Pick<SendInput, "brain">, degraded: boolean): Promise<BackendChoice> {
     if (!deps.brain || input.brain) return { backend: "api", why: "" };
     const limits = await (deps.limits?.() ?? Promise.resolve(null)).catch(() => null);
     return pickBackend({
@@ -819,6 +825,7 @@ export function createEngine(deps: EngineDeps): Engine {
       softReached: degraded,
       creditsOut: creditsOut === monthKey(),
       limits,
+      session: sessionMode(threadId),
     });
   }
 
@@ -843,11 +850,12 @@ export function createEngine(deps: EngineDeps): Engine {
         degraded,
       });
       turn.brain = brain;
-      const choice = await chooseBackend(input, degraded);
+      const choice = await chooseBackend(threadId, input, degraded);
       turn.backend = choice.backend;
       emit({
         type: "routing",
         threadId,
+        mode: modeFor(threadId).id,
         brain,
         effort: want,
         ...(choice.backend === "subscription" && { backend: "subscription" as const }),
@@ -1325,14 +1333,14 @@ export function createEngine(deps: EngineDeps): Engine {
   /** The API refused the turn for want of credits: on to the subscription, if the
    *  policy allows it now, with a card; otherwise the turn ends saying why. */
   async function creditsLoop(threadId: string, turn: Turn, degraded: boolean) {
-    const choice = await chooseBackend({}, degraded);
+    const choice = await chooseBackend(threadId, {}, degraded);
     if (choice.backend !== "subscription") {
       await notice(threadId, { kind: "error", text: `The API credit balance is too low (${choice.why}).` });
       return;
     }
     turn.backend = "subscription";
     backends.set(threadId, "subscription");
-    emit({ type: "routing", threadId, brain: turn.brain, effort: DEFAULT_EFFORT, backend: "subscription" });
+    emit({ type: "routing", threadId, mode: modeFor(threadId).id, brain: turn.brain, effort: DEFAULT_EFFORT, backend: "subscription" });
     await notice(threadId, { kind: "budget", text: switchCard(choice) });
     await brainLoop(threadId, turn);
   }
@@ -1361,13 +1369,26 @@ export function createEngine(deps: EngineDeps): Engine {
     const history = await store.messages(threadId);
     const said = turnMessage(history);
     if (!said) throw new Error("there is no message here to answer");
+    // A mode that thinks here (step D3) runs on its model and effort, and its
+    // prompt says it's here by choice, not for want of credits.
+    const chosen = sessionMode(threadId);
+    const opts: BrainSpawnOptions = chosen
+      ? { model: settings().sessionModel, effort: modeFor(threadId).effort, chosen: true }
+      : {};
+    const spec = JSON.stringify(opts);
     let b = live.get(threadId);
+    if (b && b.spec !== spec) {
+      clearTimeout(b.idle);
+      live.delete(threadId);
+      await host.kill(threadId).catch(() => {});
+      b = undefined;
+    }
     if (!b) {
       await makeRoom();
       const skills = await skillsOf(threadId);
       const system = await systemOf(threadId);
-      const { resumed } = await host.spawn(threadId, mcpTools(toolsOf(threadId)), skills ? `${system}\n\n${skills}` : system);
-      b = { fresh: !resumed, last: Date.now() };
+      const { resumed } = await host.spawn(threadId, mcpTools(toolsOf(threadId)), skills ? `${system}\n\n${skills}` : system, opts);
+      b = { fresh: !resumed, spec, last: Date.now() };
       live.set(threadId, b);
     }
     clearTimeout(b.idle);

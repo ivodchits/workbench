@@ -278,6 +278,16 @@ const MIGRATIONS: &[&str] = &[
     r#"
     UPDATE assistant_threads SET mode = 'assistant' WHERE mode = 'chat';
     "#,
+    // Step D3: how long each of your turns took, and on which brain (`timings.rs`):
+    // the engine's JSON per turn, by when it started (epoch ms).
+    r#"
+    CREATE TABLE turn_timings (
+        id    INTEGER PRIMARY KEY,
+        at    INTEGER NOT NULL,
+        data  TEXT NOT NULL
+    );
+    CREATE INDEX idx_turn_timings_at ON turn_timings(at);
+    "#,
 ];
 
 #[cfg(test)]
@@ -287,7 +297,7 @@ mod tests {
     #[test]
     fn s1_threads_from_before_modes_are_the_assistants() {
         let conn = Connection::open_in_memory().unwrap();
-        crate::db::run_migrations(&conn, &MIGRATIONS[..MIGRATIONS.len() - 1]).unwrap();
+        crate::db::run_migrations(&conn, &MIGRATIONS[..MIGRATIONS.len() - 2]).unwrap();
         conn.execute("INSERT INTO assistant_threads (id, mode, created, updated) VALUES ('old', 'chat', 1, 1)", []).unwrap();
         crate::db::run_migrations(&conn, MIGRATIONS).unwrap();
         let mode: String = conn.query_row("SELECT mode FROM assistant_threads WHERE id = 'old'", [], |r| r.get(0)).unwrap();

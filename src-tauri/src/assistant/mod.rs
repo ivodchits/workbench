@@ -38,6 +38,7 @@ pub mod replay;
 pub mod sheets;
 pub mod subscription_brain;
 mod threads;
+mod timings;
 mod trust;
 mod usage;
 pub mod workspace;
@@ -737,6 +738,18 @@ pub fn assistant_routine_list(ctx: Db<'_>) -> Result<Vec<String>, String> {
 #[tauri::command]
 pub fn assistant_routine_delete(ctx: Db<'_>, id: String) -> Result<(), String> {
     routines::delete(&lock(&ctx), &id)
+}
+
+/// Keep a turn's timing (step D3).
+#[tauri::command]
+pub fn assistant_timing_add(ctx: Db<'_>, at: i64, data: String) -> Result<(), String> {
+    timings::add(&lock(&ctx), at, &data, now_ms())
+}
+
+/// The turns' timings since `since` (epoch ms), oldest first.
+#[tauri::command]
+pub fn assistant_timings(ctx: Db<'_>, since: i64) -> Result<Vec<String>, String> {
+    timings::since(&lock(&ctx), since)
 }
 
 /// Store a session's autopilot record (step P1).

@@ -59,6 +59,7 @@ import {
 import { loadSettings, type SettingsStore } from "./settings";
 import { createSummarizer, ipcSummaryBackend, Summary } from "./summarize";
 import { createTurnMeter } from "./spend";
+import { createTurnClock, statLine, timingStats, type TurnTiming } from "./timings";
 import { createThreadStore, ipcBackend, type ThreadStore } from "./threads";
 import type { ReaderHost } from "./tools/readAloud";
 import type { ScreenHost } from "./tools/screenshot";
@@ -80,7 +81,7 @@ import { DEFERRED, SERVER_TOOLS, TOOL_NAMES, TOOLS } from "./toolset";
 import { createTaskManager, ipcTaskBackend, type Task, type TaskManager } from "./tasks";
 import { voiceMessage } from "./voiceNames";
 import { createSkills, type Skill, type SkillsHost } from "./skills";
-import { allModes, isModeId } from "./modes";
+import { allModes, isModeId, modeOf, thinksOnSession } from "./modes";
 import { skillsList, skillWrite } from "../ipc/duckSkills";
 import { FLOOR } from "./trust/floor";
 import { replay, type ReplayReport } from "./trust/replay";
@@ -89,6 +90,7 @@ import { startTrustWatcher } from "./trust/watcher";
 import { startDelegateWatcher } from "./trust/delegate";
 import { createPromoter, type Promoter } from "./trust/promote";
 import { claudeLocalSettingsRead, claudeLocalSettingsWrite } from "../ipc/fs";
+import { timingAdd, timingsSince } from "../ipc/assistant";
 
 /** Decisions per page of the log. */
 const DECISION_PAGE = 50;
@@ -229,6 +231,17 @@ export function taskView(t: Task): TaskView {
 }
 
 /** Connect a surface to an engine over the protocol. */
+/** Where the turns' timings are kept (step D3). */
+export interface TimingsHost {
+  add(t: TurnTiming): Promise<void>;
+  since(ms: number): Promise<TurnTiming[]>;
+  /** The subscription's 5-hour window now, in percent. */
+  fiveHour(): Promise<number | null>;
+}
+
+/** The settings' readout covers this many days. */
+const TIMINGS_DAYS = 30;
+
 export function endpoint(
   e: Engine,
   s: ThreadStore,
@@ -243,6 +256,7 @@ export function endpoint(
   routines?: RoutinesHost,
   skills?: SkillsHost,
   promoter?: Promoter,
+  timings?: TimingsHost,
 ): DuckEndpoint {
   const listeners = new Set<(ev: DuckEvent) => void>();
   const say = (ev: DuckEvent) => {
@@ -265,6 +279,20 @@ export function endpoint(
     meter.usage(r.purpose, r.costUsd);
     void sendSpend().catch(fail);
   });
+
+  // How long each turn took, on which brain (step D3).
+  if (timings) {
+    const clock = createTurnClock({
+      fiveHour: timings.fiveHour,
+      cost: (threadId) => meter.turns()[threadId] ?? 0,
+      subscriptionModel: (mode) => {
+        const now = settings?.get();
+        return now && thinksOnSession(modeOf(mode), now.sessionModes) ? now.sessionModel : "sonnet";
+      },
+      keep: (t) => void timings.add(t).catch((err: unknown) => console.warn("duck: a turn's timing was dropped", err)),
+    });
+    e.onEvent((ev) => clock.event(ev));
+  }
 
   trust?.subscribe((c) => {
     if (c.decision) say({ type: "decision", row: c.decision });
@@ -436,6 +464,11 @@ export function endpoint(
       case "trust.promotion.dismiss":
         await needPromoter().dismiss(msg.key);
         return;
+      case "timings.get": {
+        const rows = timings ? await timings.since(Date.now() - TIMINGS_DAYS * 86_400_000) : [];
+        answer({ type: "timings", lines: timingStats(rows).map(statLine) });
+        return;
+      }
       case "thread.keep":
         await e.keepThread(msg.threadId, msg.keep);
         return;
@@ -898,6 +931,17 @@ export function initAssistant(): Promise<void> {
       routinesHost,
       skills,
       promoter,
+      {
+        add: (t) => timingAdd(t.at, JSON.stringify(t)),
+        since: async (ms) => (await timingsSince(ms)).flatMap((r) => {
+          try {
+            return [JSON.parse(r) as TurnTiming];
+          } catch {
+            return [];
+          }
+        }),
+        fiveHour: async () => (await localPort.usageLimits())?.fiveHour?.usedPercentage ?? null,
+      },
     );
     epRef = ep;
     duck = createLocalTransport(ep);

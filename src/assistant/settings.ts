@@ -125,6 +125,11 @@ export interface DuckSettings {
   /** Which brain answers (step M3): `auto` moves to the subscription when the API
    *  credits run low and back when they allow; `api` / `subscription` pin one. */
   brainPolicy: BrainPolicy;
+  /** The built-in modes whose threads think on your subscription (step D3, an
+   *  experiment): `chat`, `duck`. Your own modes say so in their skill. */
+  sessionModes: string[];
+  /** The model those threads think on. */
+  sessionModel: "sonnet" | "opus";
 }
 
 export const DEFAULT_TIERS: Record<Tier, TierSpec> = {
@@ -155,6 +160,8 @@ export const DEFAULT_SETTINGS: DuckSettings = {
   compactAt: 100_000,
   google: DEFAULT_GOOGLE,
   brainPolicy: "auto",
+  sessionModes: [],
+  sessionModel: "sonnet",
 };
 
 /** Do Not Disturb "until I turn it off". */
@@ -211,6 +218,9 @@ export function cleanSettings(raw: unknown): Partial<DuckSettings> {
   const compact = whole(r.compactAt, 900_000);
   if (compact !== undefined) out.compactAt = compact === 0 ? 0 : Math.max(COMPACT_MIN, compact);
   if (BRAIN_POLICIES.includes(r.brainPolicy as BrainPolicy)) out.brainPolicy = r.brainPolicy as BrainPolicy;
+  if (Array.isArray(r.sessionModes))
+    out.sessionModes = [...new Set(r.sessionModes.filter((m): m is string => m === "chat" || m === "duck"))];
+  if (r.sessionModel === "sonnet" || r.sessionModel === "opus") out.sessionModel = r.sessionModel;
   if (r.google && typeof r.google === "object") out.google = cleanGoogle(r.google as Record<string, unknown>);
   // The branch's first build kept the client id under `morning`.
   else if (r.morning && typeof r.morning === "object")

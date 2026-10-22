@@ -5146,8 +5146,71 @@ up ("change this", with a circle around it).
   As built, and you've decided whether to keep it as an option, make it the default, or drop
   it.
 - **Out of scope:** making it the default before the measurements.
-
-#### Step D4 — Headless workers over stream-json
+- **As built (2026-10-22):**
+  - **On M3's brain, not a worker session** (changed from the Build). The plan was a
+    worker console with each turn pasted in and the reply read off the transcript on
+    `done`. M3 has since given Duck a headless Claude Code per thread: stream-json, its
+    session kept, and Duck's tools over MCP. A mode that thinks on the subscription
+    uses that. So:
+    - the reply streams and is spoken a sentence at a time, as on the API, instead of
+      waiting for `done`;
+    - the mode's own tools work there, through the same trust gate. "Duck stays in the
+      loop for app actions" needs nothing new: a request to act goes to `switch_mode`
+      as in any chat or duck thread;
+    - it runs in `<workspace>/brain` like M3's, not `conversations/`.
+  - **The flag** (`modes.ts`):
+    - `Mode.backend: "api" | "session"`, with `thinksOnSession(mode, sessionModes)`.
+    - The built-in chat and duck are set in Settings → sessions, "Think on your
+      subscription (experiment): rubber duck, chat, on Sonnet / Opus" (`sessionModes`,
+      `sessionModel`; both off, Sonnet, by default).
+    - Your own modes set it with `backend: session` in the skill.
+    - The assistant is never moved by it: M3's `brainPolicy` decides that.
+  - **The policy** (`brain/policy.ts`). Such a thread goes to the subscription whatever
+    the API budget.
+    - It's back on the API while the 5-hour window is at 70% or the weekly one at 80%:
+      "Back on the API: this mode thinks on your subscription, but it's busy (its
+      5-hour limit is at 75%)."
+    - `brainPolicy: "api"` still pins everything to the API.
+    - Its first turn there gets the card "Now answering on your subscription: this
+      mode is set to think there."
+  - **The process.**
+    - `brain_spawn` takes a `model` (`sonnet` or `opus`).
+    - The thread's brain runs at the mode's effort (the duck `high`, a chat `medium`)
+      instead of M3's fixed `medium`.
+    - Its prompt says it's there by choice, not for want of credits.
+    - A brain running with other options (the model changed in the settings) is
+      restarted on the next turn, resuming its session.
+  - **The numbers** (`timings.ts`, table `turn_timings`). Every turn you start is timed
+    from its start to the first words, the first sentence and the end.
+    - **Where a spoken turn starts.** A spoken turn starts with V4's provisional turn,
+      about when you stopped talking. The first sentence is where the voice starts
+      speaking. The transcript before and the speech after are the same on either
+      brain, so this is the part that differs.
+    - **What else a row records.** An API turn carries its cost. Every turn carries the
+      5-hour window before and after.
+    - **"how they compare"** (under the setting) gives, per mode, brain and model for
+      the past 30 days:
+      - the medians;
+      - $ an hour on the API;
+      - the 5-hour window's % an hour on the subscription.
+      The rates count only conversations of 5 minutes or more (turns at most 10 minutes
+      apart), and a window reset leaves that conversation out of the rate.
+  - **Tests:**
+    - the policy for such a mode, and the spawn options;
+    - a duck thread on Opus at high effort while an assistant thread stays on the API,
+      and the duck back on the API when the subscription is busy;
+    - the brain's prompt, the skill field and the settings;
+    - the clock: a spoken turn on the subscription, only your own turns, the cost, a
+      queued turn;
+    - the readout's medians and rates;
+    - Rust: the table and its pruning.
+    - **Results:** vitest 784 and cargo 324. tsc is clean; eslint and clippy show only
+      the existing warnings.
+  - **Not done yet** (the done-when needs you):
+    - a 15-minute session-backed rubber duck, end to end;
+    - its numbers against the API's (from "how they compare");
+    - the decision: keep it as an option, make it the default, or drop it.
+ — Headless workers over stream-json
 
 - **Goal:** Duck's workers run without a terminal: Claude Code speaking its structured
   protocol (`claude -p --input-format stream-json --output-format stream-json`, as the
@@ -7208,7 +7271,7 @@ T2 goes live after the replay check in its done-when (the past week's prompts th
 | M4 | Permission mode at launch | ☑ |
 | D1 | Worker sessions: workspace, brief, result contract | ☑ |
 | D2 | Offload routing, subscription-limit awareness, Duck as the worker's user | ☑ |
-| D3 | Session-backed thinking modes (experiment) | ☐ |
+| D3 | Session-backed thinking modes (experiment) | ☐ (built 2026-10-22; done when you've run a 15-minute duck on it and decided) |
 | D4 | Headless workers over stream-json | ☑ |
 | B1 | Web search and fetch | ☑ (not tried in the app) |
 | B2 | MCP host + your Firefox | ☐ |

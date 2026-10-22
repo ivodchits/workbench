@@ -93,6 +93,8 @@ export interface DuckState {
   promotions: Promotion[];
   promotionPreview: PromotionPreview | null;
   promoted: { key: string; text: string } | null;
+  /** How long turns took per mode and brain (step D3), once asked for. */
+  timings: string[] | null;
   /** Duck's worker tasks (step D1), newest first. */
   tasks: TaskView[];
   /** The autopilots not stopped (step P1). */
@@ -145,6 +147,7 @@ let state: DuckState = {
   promotions: [],
   promotionPreview: null,
   promoted: null,
+  timings: null,
   tasks: [],
   autopilots: [],
   routines: [],
@@ -457,6 +460,9 @@ function onEvent(e: DuckEvent): void {
     case "promoted":
       set({ promoted: { key: e.key, text: e.text }, promotionPreview: null });
       break;
+    case "timings":
+      set({ timings: e.lines });
+      break;
     case "error":
       // A failed replay is over; its error shows like any other.
       set({ error: e.message, replay: state.replay?.running ? { ...state.replay, running: false } : state.replay });
@@ -706,6 +712,11 @@ export function promote(key: string, to: "claude" | "rule", before: string | nul
 
 export function dismissPromotion(key: string): void {
   post({ type: "trust.promotion.dismiss", key });
+}
+
+/** Ask how long turns took per mode and brain (step D3). */
+export function loadTimings(): void {
+  post({ type: "timings.get" });
 }
 
 /** The newest page of the decision log (`null`), or the page before an id. */

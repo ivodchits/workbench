@@ -4,6 +4,14 @@ import { cellOf, cleanSettings, sheetIdOf } from "./settings";
 const ID = "1AbC_defGhIjKlMnOpQrStUvWxYz0123456789";
 
 describe("the Google settings", () => {
+  it("keeps the modes that think on the subscription to chat and duck, and its model (D3)", () => {
+    expect(cleanSettings({ sessionModes: ["duck", "assistant", "duck", 3, "chat"], sessionModel: "opus" })).toEqual({
+      sessionModes: ["duck", "chat"],
+      sessionModel: "opus",
+    });
+    expect(cleanSettings({ sessionModes: "duck", sessionModel: "haiku" })).toEqual({});
+  });
+
   it("takes a sheet id or the id out of its URL", () => {
     expect(sheetIdOf(ID)).toBe(ID);
     expect(sheetIdOf(`https://docs.google.com/spreadsheets/d/${ID}/edit#gid=0`)).toBe(ID);

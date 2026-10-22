@@ -273,6 +273,9 @@ export type ClientMessage =
    *  the text the preview showed), or as a Duck rule. Answered with `promoted`. */
   | { type: "trust.promote"; key: string; to: "claude" | "rule"; before: string | null }
   | { type: "trust.promotion.dismiss"; key: string }
+  /** How long turns took per mode and brain, the past 30 days (step D3);
+   *  answered with `timings`. */
+  | { type: "timings.get" }
   /** Close a worker task (step D1): its console closes, its files stay. */
   | { type: "task.close"; taskId: string }
   /** Run a worker task again one tier up (step D2), as a new task. */
@@ -330,7 +333,7 @@ export type DuckEvent =
   | { type: "confirmed"; threadId: string; toolUseId: string; allow: boolean }
   | { type: "turnState"; threadId: string; state: TurnState; queued: number }
   /** The model and effort a turn runs at (step M2), as it starts. */
-  | { type: "routing"; threadId: string; brain: Brain; effort: Effort; backend?: Backend }
+  | { type: "routing"; threadId: string; mode?: string; brain: Brain; effort: Effort; backend?: Backend }
   /** The month's API spend, after every metered call and on `sync`. `turns` holds
    *  each thread's latest turn cost (since the app started), in USD. */
   | { type: "spend"; spend: Spend; turns: Record<string, number> }
@@ -364,6 +367,8 @@ export type DuckEvent =
   | { type: "promotionPreview"; preview: PromotionPreview }
   /** A promotion went through: what it did. */
   | { type: "promoted"; key: string; text: string }
+  /** Answer to `timings.get`: a line per mode, brain and model. */
+  | { type: "timings"; lines: string[] }
   /** Duck's skills and the modes (built in, and from skills) (step S2), on `sync`
    *  and after every change. */
   | { type: "skills"; skills: SkillView[]; modes: ModeView[] }

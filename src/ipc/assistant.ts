@@ -247,6 +247,11 @@ export const taskPut = (id: string, data: string): Promise<void> => invoke("assi
 export const taskList = (limit: number): Promise<string[]> => invoke("assistant_task_list", { limit });
 
 // Plan autopilot records (step P1), one per session.
+/** A turn's timing (step D3): the engine's JSON, by when the turn started. */
+export const timingAdd = (at: number, data: string): Promise<void> => invoke("assistant_timing_add", { at, data });
+/** The turns' timings since `since` (epoch ms), oldest first. */
+export const timingsSince = (since: number): Promise<string[]> => invoke("assistant_timings", { since });
+
 export const autopilotPut = (instanceId: string, data: string): Promise<void> =>
   invoke("assistant_autopilot_put", { instanceId, data });
 export const autopilotList = (): Promise<string[]> => invoke("assistant_autopilot_list");

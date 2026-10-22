@@ -27,7 +27,7 @@ import {
   type McpTool,
 } from "../../ipc/brain";
 import { CORE_OPEN } from "../core";
-import type { Notice } from "../protocol";
+import type { Effort, Notice } from "../protocol";
 import { SYSTEM_PROMPT } from "../prompt";
 
 type ToolResult = Anthropic.Beta.BetaToolResultBlockParam;
@@ -47,12 +47,17 @@ export const BRAIN_MAX = 3;
 export const HANDOFF_TURNS = 20;
 export const HANDOFF_CHARS = 40_000;
 
+/** Why a thread is on the subscription brain, as its prompt says it. */
+const WHY_CREDITS = "Duck's API credits are low or spent, so this thread runs here until they're back.";
+/** A mode set to think here (step D3). */
+const WHY_CHOSEN = "this thread's mode is set to think here, so a long conversation costs no API credits.";
+
 /** Duck's prompt (the thread's, step L3), and what's different about running
- *  inside Claude Code. */
-export const brainPrompt = (system: string) => `${system}
+ *  inside Claude Code. `chosen`: the thread's mode thinks here (step D3). */
+export const brainPrompt = (system: string, chosen = false) => `${system}
 
 [Running on the subscription brain]
-You are answering inside Claude Code, headless, on the user's Claude subscription: Duck's API credits are low or spent, so this thread runs here until they're back. You are still Duck, with the same tools, named mcp__duck__<name> (this prompt names them without the prefix). They are all loaded: there is no tool search, so skip that step. Claude Code's own tools are off.
+You are answering inside Claude Code, headless, on the user's Claude subscription: ${chosen ? WHY_CHOSEN : WHY_CREDITS} You are still Duck, with the same tools, named mcp__duck__<name> (this prompt names them without the prefix). They are all loaded: there is no tool search, so skip that step. Claude Code's own tools are off.
 A call that needs the user's OK comes back at once saying a card is waiting for them: it has not run. Don't call it again; tell the user it's waiting for their OK and end your turn. Its result arrives later as a Workbench event.`;
 
 export const BRAIN_PROMPT = brainPrompt(SYSTEM_PROMPT);
@@ -60,9 +65,18 @@ export const BRAIN_PROMPT = brainPrompt(SYSTEM_PROMPT);
 /** What a call parked on a confirmation returns to the brain. */
 export const ASKED = "Waiting for the user: a card asks them to allow this call. It has NOT run. Don't call it again; tell them it's waiting for their OK, and end your turn. Its result comes as a Workbench event once they answer.";
 
+/** How a brain is started for a mode that thinks on the subscription (step D3);
+ *  empty for M3's fallback (Sonnet, `BRAIN_EFFORT`). */
+export interface BrainSpawnOptions {
+  model?: "sonnet" | "opus";
+  effort?: Effort;
+  /** The thread is here by its mode's choice, not for want of credits. */
+  chosen?: boolean;
+}
+
 export interface BrainHost {
   /** `system`: the thread's system prompt (step L3), the built-in one when absent. */
-  spawn(threadId: string, tools: McpTool[], system?: string): Promise<{ resumed: boolean }>;
+  spawn(threadId: string, tools: McpTool[], system?: string, opts?: BrainSpawnOptions): Promise<{ resumed: boolean }>;
   send(threadId: string, text: string): Promise<void>;
   interrupt(threadId: string): Promise<void>;
   kill(threadId: string): Promise<void>;
@@ -83,8 +97,15 @@ export type BrainMessage =
 /** The host over the backend, in Duck's workspace. */
 export function createBrainHost(workspace: () => Promise<string>): BrainHost {
   return {
-    spawn: async (threadId, tools, system) =>
-      brainSpawn(threadId, await workspace(), system ? brainPrompt(system) : BRAIN_PROMPT, tools, BRAIN_EFFORT),
+    spawn: async (threadId, tools, system, opts = {}) =>
+      brainSpawn(
+        threadId,
+        await workspace(),
+        system ? brainPrompt(system, opts.chosen) : BRAIN_PROMPT,
+        tools,
+        opts.effort ?? BRAIN_EFFORT,
+        opts.model,
+      ),
     send: brainSend,
     interrupt: brainInterrupt,
     kill: brainKill,

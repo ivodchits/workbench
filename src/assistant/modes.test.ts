@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { SAFETY_RULES } from "./config";
-import { MODE_IDS, MODES, modeOf, patienceFor, systemFor } from "./modes";
+import { MODE_IDS, MODES, modeOf, patienceFor, systemFor, thinksOnSession } from "./modes";
 import { pickEffort } from "./routing";
 import { DEFERRED, SERVER_TOOLS, TOOL_NAMES, TOOLS } from "./toolset";
 import { createRegistry } from "./tools/registry";
@@ -51,6 +51,15 @@ describe("modes (S1)", () => {
     expect(pickEffort("the sync bug", "duck", "voice")).toBe("high");
     expect(pickEffort("how are you", "chat", "voice")).toBe("medium");
     expect(pickEffort("how are you", "duck", "event")).toBe("medium");
+  });
+
+  it("thinks on the subscription for the built-in modes the settings name, yours by their skill, never the assistant (D3)", () => {
+    expect(thinksOnSession(MODES.duck, ["duck"])).toBe(true);
+    expect(thinksOnSession(MODES.chat, ["duck"])).toBe(false);
+    expect(thinksOnSession(MODES.assistant, ["assistant"])).toBe(false);
+    const coach = { ...MODES.chat, id: "coach", backend: "session" as const };
+    expect(thinksOnSession(coach, [])).toBe(true);
+    expect(thinksOnSession({ ...coach, backend: undefined }, ["coach"])).toBe(false);
   });
 
   it("waits for the more patient of the mode's pauses and your setting", () => {

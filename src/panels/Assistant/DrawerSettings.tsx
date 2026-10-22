@@ -21,7 +21,7 @@ import { useEffect, useState } from "react";
 import { disable, enable, isEnabled } from "@tauri-apps/plugin-autostart";
 import { CLOSE_CHOICES, COMPACT_CHOICES, IDLE_STOP_CHOICES, MAX_WORKERS, TIERS, type DuckSettings } from "../../assistant/settings";
 import { DUCK_PERMISSION_MODES, EFFORTS, SESSION_MODELS } from "../../util/models";
-import { setAvatar, setDuckSettings, setInterrupt, type DuckState } from "./duckState";
+import { loadTimings, setAvatar, setDuckSettings, setInterrupt, type DuckState } from "./duckState";
 import VoiceSettings from "./VoiceSettings";
 import SpeechSettings from "./SpeechSettings";
 import AnnounceSettings from "./AnnounceSettings";
@@ -220,6 +220,7 @@ export default function DrawerSettings({ duck }: { duck: DuckState }) {
                   <option value="subscription">your subscription only</option>
                 </select>
               </label>
+              <SessionModes duck={duck} />
               <label style={{ ...row, alignItems: "center" }}>
                 <span>Sessions Duck starts for coding run on</span>
                 <select
@@ -501,3 +502,61 @@ const row: React.CSSProperties = {
 };
 
 const hint: React.CSSProperties = { color: "var(--wb-textFaint)" };
+
+/** The modes that think on the subscription (step D3, an experiment), and how
+ *  their turns compare with the API's. */
+function SessionModes({ duck }: { duck: DuckState }) {
+  const settings = duck.settings!;
+  const [shown, setShown] = useState(false);
+  const toggle = (mode: string, on: boolean) =>
+    setDuckSettings({
+      sessionModes: on ? [...settings.sessionModes, mode] : settings.sessionModes.filter((m) => m !== mode),
+    });
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+      <div style={{ ...row, alignItems: "center", flexWrap: "wrap" }}>
+        <span>Think on your subscription (experiment):</span>
+        {(["duck", "chat"] as const).map((m) => (
+          <label key={m} style={{ display: "flex", gap: 4, alignItems: "center" }}>
+            <input type="checkbox" checked={settings.sessionModes.includes(m)} onChange={(e) => toggle(m, e.target.checked)} />
+            <span>{m === "duck" ? "rubber duck" : "chat"}</span>
+          </label>
+        ))}
+        <span>on</span>
+        <select
+          value={settings.sessionModel}
+          onChange={(e) => setDuckSettings({ sessionModel: e.target.value as DuckSettings["sessionModel"] })}
+          style={select}
+        >
+          <option value="sonnet">Sonnet</option>
+          <option value="opus">Opus</option>
+        </select>
+        <span style={hint}>(no API credits; back on the API while the subscription is busy)</span>
+      </div>
+      <div style={{ ...row, alignItems: "flex-start", flexDirection: "column", gap: 2 }}>
+        <button
+          type="button"
+          onClick={() => {
+            setShown(true);
+            loadTimings();
+          }}
+          style={{ ...select, cursor: "pointer", padding: "1px 8px" }}
+        >
+          how they compare
+        </button>
+        {shown &&
+          (duck.timings === null ? (
+            <span style={hint}>reading…</span>
+          ) : duck.timings.length === 0 ? (
+            <span style={hint}>No turns timed yet.</span>
+          ) : (
+            duck.timings.map((l) => (
+              <span key={l} style={hint}>
+                {l}
+              </span>
+            ))
+          ))}
+      </div>
+    </div>
+  );
+}

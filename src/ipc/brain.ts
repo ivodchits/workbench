@@ -34,7 +34,8 @@ export const brainSpawn = (
   prompt: string,
   tools: McpTool[],
   effort: string,
-): Promise<{ resumed: boolean }> => invoke("brain_spawn", { threadId, workspace, prompt, tools, effort });
+  model?: "sonnet" | "opus",
+): Promise<{ resumed: boolean }> => invoke("brain_spawn", { threadId, workspace, prompt, tools, effort, model: model ?? null });
 
 export const brainSend = (threadId: string, text: string): Promise<void> => invoke("brain_send", { threadId, text });
 

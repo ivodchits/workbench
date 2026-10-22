@@ -22,6 +22,13 @@
 // Your own modes (step S2) are skills with `mode:` in their frontmatter
 // (`skills.ts`), registered here with `setUserModes` whenever the skills are read.
 // A thread whose mode's skill is gone, or turned off, runs as the assistant.
+//
+// A mode can think on your subscription instead of the API (step D3, an
+// experiment): its threads' turns go to the subscription brain (M3's headless
+// Claude Code) on Sonnet or Opus, so a long conversation costs no API credits.
+// The built-in chat and duck are set so in the settings (`sessionModes`), yours
+// with `backend: session` in the skill. The assistant never is: M3's own policy
+// moves it.
 
 import { SAFETY_RULES } from "./config";
 import type { Effort } from "./protocol";
@@ -46,7 +53,12 @@ export interface Mode {
   /** How patient conversation mode is with pauses here, at least: your own
    *  setting wins when it's more patient. Null: your setting. */
   voicePatience: Patience | null;
+  /** Where its threads think (step D3): `session` is the subscription brain. A
+   *  built-in mode's comes from the settings (`thinksOnSession`). */
+  backend?: ModeBackend;
 }
+
+export type ModeBackend = "api" | "session";
 
 export const BASICS = `- Always reply in English, whatever language the user writes in. The user writes in English, Russian or Spanish, sometimes mixed, and understands English replies; your replies are often spoken by an English voice. Use another language only where the conversation calls for it: quoting, explaining or translating a word or phrase, or when the user explicitly asks for an answer in that language. The user is learning Spanish, so Spanish words and phrases may come up for that reason.
 - Use plain sentences. Use markdown only when it clearly helps; never headings for a short reply.
@@ -172,6 +184,13 @@ export function modeOf(id: string | null | undefined): Mode {
  *  assistant's (`assistant`, from the config the thread was pinned on). */
 export function systemFor(mode: Mode, assistant: string): string {
   return mode.systemPrompt ?? assistant;
+}
+
+/** Whether a thread in `mode` thinks on the subscription brain (step D3): a
+ *  built-in mode in `sessionModes`, or one of yours with `backend: session`. */
+export function thinksOnSession(mode: Mode, sessionModes: readonly string[]): boolean {
+  if (mode.id === "assistant") return false;
+  return isModeId(mode.id) ? sessionModes.includes(mode.id) : mode.backend === "session";
 }
 
 const PATIENCE: readonly Patience[] = ["quick", "patient", "thinking"];

@@ -2,6 +2,8 @@
 // limit, as M2 has it) or the subscription brain, a headless Claude Code on your
 // subscription. Read per turn, so a new month's credits, or the subscription's
 // windows filling up, move the next turn back without anyone deciding it.
+// A thread whose mode thinks on the subscription (step D3) goes there whatever
+// the API budget, while the subscription has room.
 
 import type { RateLimits } from "../../ipc/usageLimits";
 
@@ -40,9 +42,16 @@ export function pickBackend(i: {
   /** The API said the credit balance is too low (this month). */
   creditsOut: boolean;
   limits: RateLimits | null;
+  /** The thread's mode thinks on the subscription (step D3). */
+  session?: boolean;
 }): BackendChoice {
   if (i.policy === "api") return { backend: "api", why: "Duck's brain is set to the API" };
   if (i.policy === "subscription") return { backend: "subscription", why: "Duck's brain is set to your subscription" };
+  if (i.session) {
+    const over = subscriptionOver(i.limits);
+    if (over) return { backend: "api", why: `this mode thinks on your subscription, but it's busy (${over})` };
+    return { backend: "subscription", why: "this mode is set to think there" };
+  }
   if (!i.softReached && !i.creditsOut) return { backend: "api", why: "the API budget has room again" };
   const short = i.creditsOut ? "the API credit balance is too low" : "Duck's API spend is past its soft limit";
   const over = subscriptionOver(i.limits);

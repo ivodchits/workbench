@@ -26,8 +26,10 @@ import {
   storedBlocks,
   toMcpResult,
   TOOL_PREFIX,
+  brainPrompt,
   type BrainHost,
   type BrainMessage,
+  type BrainSpawnOptions,
 } from "./subscription";
 
 type Msg = Anthropic.Beta.BetaMessage;
@@ -62,6 +64,15 @@ describe("which brain answers", () => {
     expect(creditsGone(new Error("400 Your credit balance is too low to access the Anthropic API."))).toBe(true);
     expect(creditsGone(new Error("Duck's monthly API budget is used up"))).toBe(false);
   });
+
+  it("sends a mode set to think on the subscription there, unless pinned to the API or it's busy (D3)", () => {
+    const base = { policy: "auto" as const, softReached: false, creditsOut: false, limits: limits(20), session: true };
+    expect(pickBackend(base)).toEqual({ backend: "subscription", why: "this mode is set to think there" });
+    expect(pickBackend({ ...base, limits: limits(10, 90) }).why).toBe(
+      "this mode thinks on your subscription, but it's busy (its weekly limit is at 90%)",
+    );
+    expect(pickBackend({ ...base, policy: "api" }).backend).toBe("api");
+  });
 });
 
 // ── what the brain is sent and what's kept ─────────────────────────────────
@@ -78,6 +89,11 @@ const row = (role: StoredMessage["role"], content: unknown, source = "desktop"):
 const say = (t: string) => [{ type: "text", text: t }];
 
 describe("the handoff", () => {
+  it("tells a brain whose mode chose it that it's there by choice (D3)", () => {
+    expect(brainPrompt("P", true)).toContain("this thread's mode is set to think here");
+    expect(brainPrompt("P")).toContain("Duck's API credits are low or spent");
+  });
+
   it("gives a new session the thread so far, its profile and the summary; a running one only what it missed", () => {
     seq = 0;
     const core = coreText(addFact(null, "Names & nicknames", '"the game" means project Hollow'))!;
@@ -202,7 +218,7 @@ function fakeBrain(scripts: Script[]) {
     tool?: (c: BrainToolCall) => void;
   } = {};
   const sent: string[] = [];
-  const spawns: { resumed: boolean; tools: string[] }[] = [];
+  const spawns: { resumed: boolean; tools: string[]; opts?: BrainSpawnOptions }[] = [];
   const interrupts: string[] = [];
   const sessions = new Set<string>();
   const answers = new Map<string, (r: McpResult) => void>();
@@ -231,10 +247,10 @@ function fakeBrain(scripts: Script[]) {
     exit: (code, stderr) => on.exit!(threadId, code, stderr),
   });
   const host: BrainHost = {
-    async spawn(threadId, tools) {
+    async spawn(threadId, tools, _system, opts) {
       const resumed = sessions.has(threadId);
       sessions.add(threadId);
-      spawns.push({ resumed, tools: tools.map((t) => t.name) });
+      spawns.push({ resumed, tools: tools.map((t) => t.name), ...(opts && Object.keys(opts).length && { opts }) });
       return { resumed };
     },
     async send(threadId, text) {
@@ -294,6 +310,7 @@ async function setup(opts: {
   policy?: DuckSettings["brainPolicy"];
   degraded?: () => boolean;
   limits?: () => RateLimits | null;
+  settings?: Partial<DuckSettings>;
 }) {
   const store = createThreadStore(memoryBackend());
   await store.load();
@@ -307,12 +324,12 @@ async function setup(opts: {
     brain: brain.host,
     degraded: async () => opts.degraded?.() ?? false,
     limits: async () => opts.limits?.() ?? null,
-    settings: () => ({ ...DEFAULT_SETTINGS, brainPolicy: opts.policy ?? "auto" }),
+    settings: () => ({ ...DEFAULT_SETTINGS, brainPolicy: opts.policy ?? "auto", ...opts.settings }),
   });
   const events: DuckEvent[] = [];
   engine.onEvent((e) => events.push(e));
-  const turn = async (words: string, threadId: string | null = null) => {
-    const id = await engine.send({ threadId, text: words, source: "desktop" });
+  const turn = async (words: string, threadId: string | null = null, mode?: string) => {
+    const id = await engine.send({ threadId, text: words, source: "desktop", ...(mode && { mode }) });
     await engine.settled(id);
     return id;
   };
@@ -363,7 +380,7 @@ describe("turns on the subscription brain", () => {
     expect(sent.map((m) => m.role)).toEqual(["user", "assistant", "user", "assistant"]);
     expect(sent[1].content).toEqual([{ type: "tool_use", id: "toolu_a", name: "get_time", input: {} }]);
     expect(ms.filter((m) => m.role === "assistant").every((m) => m.source === BRAIN_SOURCE)).toBe(true);
-    expect(events).toContainEqual({ type: "routing", threadId: id, brain: "sonnet", effort: "medium", backend: "subscription" });
+    expect(events).toContainEqual({ type: "routing", threadId: id, mode: "assistant", brain: "sonnet", effort: "medium", backend: "subscription" });
 
     await turn("ship it", id);
     expect(brain.spawns).toHaveLength(1); // still running
@@ -413,6 +430,35 @@ describe("turns on the subscription brain", () => {
     // What the API answered meanwhile goes to the brain first.
     expect(brain.sent[1]).toContain("User: and now?\nDuck: Haiku here.");
     expect(brain.sent[1].endsWith("\n\none more")).toBe(true);
+  });
+
+  it("runs a mode set to think on the subscription there (D3), on its model and effort, whatever the budget", async () => {
+    let five = 20;
+    const { store, brain, api, turn } = await setup({
+      settings: { sessionModes: ["duck"], sessionModel: "opus" },
+      limits: () => limits(five),
+      api: [reply("On the API."), reply("The API meanwhile.")],
+      scripts: [
+        async (_t, io) => {
+          io.text("So what changed?");
+          io.done();
+        },
+      ],
+    });
+    const id = await turn("let me think about the sync", null, "duck");
+    expect(api.calls).toHaveLength(0);
+    expect(brain.spawns[0].opts).toEqual({ model: "opus", effort: "high", chosen: true });
+    expect(notices(store.loaded(id))).toEqual(["Now answering on your subscription: this mode is set to think there."]);
+    // The assistant isn't moved by it.
+    await turn("what time is it");
+    expect(api.calls).toHaveLength(1);
+    // A busy subscription sends the duck back to the API, saying why.
+    five = 75;
+    await turn("and the clocks?", id);
+    expect(api.calls).toHaveLength(2);
+    expect(last(notices(store.loaded(id)))).toBe(
+      "Back on the API: this mode thinks on your subscription, but it's busy (its 5-hour limit is at 75%).",
+    );
   });
 
   it("carries a turn the API refuses for want of credits over to the subscription, the message kept", async () => {

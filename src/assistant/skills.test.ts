@@ -65,8 +65,16 @@ describe("skills (S2)", () => {
     expect(plain.mode?.tools).toContain("remember");
     expect(plain.mode?.effort).toBe("medium");
     // Not one of Duck's own, and only the values the settings know.
-    const dup = parseSkill(row("duck2", skill("duck2", "mode: duck\neffort: huge\npauses: slow\n")), KNOWN);
-    expect(dup.problems).toEqual(['"duck" is one of Duck\'s own modes', "effort is one of low, medium, high, xhigh, max", "pauses is one of quick, patient, thinking"]);
+    const dup = parseSkill(row("duck2", skill("duck2", "mode: duck\neffort: huge\npauses: slow\nbackend: cloud\n")), KNOWN);
+    expect(dup.problems).toEqual([
+      '"duck" is one of Duck\'s own modes',
+      "effort is one of low, medium, high, xhigh, max",
+      "pauses is one of quick, patient, thinking",
+      "backend is api or session",
+    ]);
+    // Thinking on the subscription (D3).
+    expect(parseSkill(row("coach", skill("coach", "mode: coach\nbackend: session\n")), KNOWN).mode?.backend).toBe("session");
+    expect(plain.mode).not.toHaveProperty("backend");
     expect(skillsBlock([s])).toContain("- interviewer: interviewer things");
   });
 
