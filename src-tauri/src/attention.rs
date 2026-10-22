@@ -79,11 +79,12 @@ struct TrustItem(tauri::menu::CheckMenuItem<tauri::Wry>);
 
 const MENU_SHOW: &str = "show";
 const MENU_TRUST: &str = "duck-trust";
+const MENU_EXIT: &str = "exit";
 
-/// The right-click menu: bring the window back, and Duck's kill switch, which
-/// works with the window hidden.
+/// The right-click menu: bring the window back, Duck's kill switch, which works
+/// with the window hidden, and Exit.
 fn tray_menu(app: &AppHandle) -> tauri::Result<tauri::menu::Menu<tauri::Wry>> {
-    use tauri::menu::{CheckMenuItem, Menu, MenuItem};
+    use tauri::menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem};
     let show = MenuItem::with_id(app, MENU_SHOW, "Show Workbench", true, None::<&str>)?;
     let trust = CheckMenuItem::with_id(
         app,
@@ -93,7 +94,9 @@ fn tray_menu(app: &AppHandle) -> tauri::Result<tauri::menu::Menu<tauri::Wry>> {
         crate::assistant::trust_paused(app),
         None::<&str>,
     )?;
-    let menu = Menu::with_items(app, &[&show, &trust])?;
+    let sep = PredefinedMenuItem::separator(app)?;
+    let exit = MenuItem::with_id(app, MENU_EXIT, "Exit Workbench", true, None::<&str>)?;
+    let menu = Menu::with_items(app, &[&show, &trust, &sep, &exit])?;
     app.manage(TrustItem(trust));
     Ok(menu)
 }
@@ -107,6 +110,9 @@ fn on_menu_event(app: &AppHandle, event: tauri::menu::MenuEvent) {
                 eprintln!("[tray] trust: {e}");
             }
         }
+        // Quits the whole app, hidden windows too; `RunEvent::Exit` in `lib.rs`
+        // does the cleanup, as for any other quit.
+        MENU_EXIT => app.exit(0),
         _ => {}
     }
 }

@@ -50,9 +50,13 @@ import { isSpeaking, onAnnounced, stopSpeaking } from "./replySpeech";
 
 export type VoicePrefs = Prefs["voice"];
 
+// A global key belongs to one process, so a dev build running next to the installed
+// one gets its own default (its prefs live apart, in `prefs.dev.json`).
+export const DEFAULT_HOTKEY = import.meta.env.DEV ? "Ctrl+Alt+Shift+Space" : "Ctrl+Alt+Space";
+
 export const DEFAULT_VOICE: VoicePrefs = {
   gpu: "never",
-  hotkey: "Ctrl+Alt+Space",
+  hotkey: DEFAULT_HOTKEY,
   device: null,
   sendNow: true,
   toggle: true,
