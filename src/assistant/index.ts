@@ -76,7 +76,7 @@ import { memoryApply, memoryList, memoryStateGet, memoryStateSet } from "../ipc/
 import { createMcpHost } from "./mcp";
 import { createGoogleHost } from "./google";
 import { createRegistry } from "./tools/registry";
-import { DEFERRED, TOOLS } from "./toolset";
+import { DEFERRED, SERVER_TOOLS, TOOL_NAMES, TOOLS } from "./toolset";
 import { createTaskManager, ipcTaskBackend, type Task, type TaskManager } from "./tasks";
 import { voiceMessage } from "./voiceNames";
 import { createSkills, type Skill, type SkillsHost } from "./skills";
@@ -697,13 +697,12 @@ export function initAssistant(): Promise<void> {
       },
     });
     // Duck's skills (S2): the files in the workspace's skills/, read on every request.
-    const toolNames = new Set(TOOLS.map((t) => t.name));
     const skills = createSkills({
       store: {
         list: () => skillsList(settings.get().workspace),
         write: (name, text, expected, message) => skillWrite(settings.get().workspace, name, text, expected, message),
       },
-      tools: () => toolNames,
+      tools: () => TOOL_NAMES,
       disabled: () => settings.get().disabledSkills,
     });
     // The modes they declare are known before any thread of theirs runs.
@@ -744,7 +743,7 @@ export function initAssistant(): Promise<void> {
       skills,
       eventLevel: (threadId, level) => levels.set(threadId, level),
       store: s,
-      registry: createRegistry(TOOLS, { deferred: DEFERRED }),
+      registry: createRegistry(TOOLS, { deferred: DEFERRED, server: SERVER_TOOLS }),
       port: localPort,
       gate: createPolicy({ settings: settings.get, trust, messages: s.loaded }),
       settings: settings.get,

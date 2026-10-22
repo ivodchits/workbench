@@ -36,7 +36,36 @@ interface Block {
   tool_use_id?: string;
   content?: unknown;
   is_error?: boolean;
+  /** A text block's sources (B1: web search results it cites). */
+  citations?: { type: string; url?: string; title?: string | null }[] | null;
 }
+
+/** The server tools shown as chips (B1); the tool search's own calls aren't. */
+const WEB_CALLS = new Set(["web_search", "web_fetch"]);
+const WEB_RESULTS = new Set(["web_search_tool_result", "web_fetch_tool_result"]);
+
+/** A web search's or fetch's result as the chip shows it: each page's title and
+ *  link, or what went wrong. */
+export function webResultText(content: unknown): { text: string; isError: boolean } {
+  const c = content as { type?: string; error_code?: string; url?: string; content?: { title?: string | null; source?: { data?: string } } };
+  if (Array.isArray(content)) {
+    const lines = (content as { title?: string; url?: string }[]).map((r) => `${r.title ?? ""} — ${r.url ?? ""}`.trim());
+    return { text: lines.length ? lines.join("\n") : "no results", isError: false };
+  }
+  if (c?.type?.endsWith("_error")) return { text: `failed: ${c.error_code ?? "unknown error"}`, isError: true };
+  if (c?.type === "web_fetch_result") {
+    const size = c.content?.source?.data?.length;
+    return { text: [c.content?.title, c.url, size ? `${size} characters` : ""].filter(Boolean).join("\n"), isError: false };
+  }
+  return { text: "", isError: false };
+}
+
+const SUPERSCRIPT = "⁰¹²³⁴⁵⁶⁷⁸⁹";
+const sup = (n: number) => [...String(n)].map((d) => SUPERSCRIPT[Number(d)]).join("");
+/** A link target markdown won't misread. */
+const safeUrl = (url: string) => url.replace(/[()\s]/g, (c) => `%${c.charCodeAt(0).toString(16).toUpperCase().padStart(2, "0")}`);
+/** Link text without brackets. */
+const safeTitle = (t: string) => t.replace(/[[\]]/g, "").trim();
 
 const blocksOf = (m: StoredMessage): Block[] =>
   typeof m.content === "string"
@@ -76,6 +105,12 @@ function compactedAtCut(messages: readonly StoredMessage[]): StoredMessage[] {
 export function toItems(messages: readonly StoredMessage[]): Item[] {
   const results = new Map<string, { text: string; isError: boolean }>();
   for (const m of messages) {
+    if (m.role === "assistant") {
+      // A web call's result comes in the same reply (B1).
+      for (const b of blocksOf(m))
+        if (WEB_RESULTS.has(b.type) && b.tool_use_id) results.set(b.tool_use_id, webResultText(b.content));
+      continue;
+    }
     if (m.role !== "user") continue;
     for (const b of blocksOf(m))
       if (b.type === "tool_result" && b.tool_use_id)
@@ -121,9 +156,20 @@ export function toItems(messages: readonly StoredMessage[]): Item[] {
         items.push({ kind: "reply", key: `${key}:${part++}`, text });
       text = "";
     };
+    // The pages the reply cites, numbered in the order it first cites them (B1).
+    const sources: { url: string; title: string }[] = [];
     for (const b of blocksOf(m)) {
-      if (b.type === "text") text += b.text ?? "";
-      else if (b.type === "tool_use" && b.id) {
+      if (b.type === "text") {
+        text += b.text ?? "";
+        const marks = new Set<number>();
+        for (const c of b.citations ?? []) {
+          if (!c.url) continue;
+          let i = sources.findIndex((s) => s.url === c.url);
+          if (i < 0) i = sources.push({ url: c.url, title: safeTitle(c.title ?? "") || c.url }) - 1;
+          marks.add(i);
+        }
+        for (const i of [...marks].sort((a, z) => a - z)) text += `[${sup(i + 1)}](${safeUrl(sources[i].url)})`;
+      } else if ((b.type === "tool_use" || (b.type === "server_tool_use" && WEB_CALLS.has(b.name ?? ""))) && b.id) {
         flush();
         items.push({
           kind: "tool",
@@ -135,6 +181,8 @@ export function toItems(messages: readonly StoredMessage[]): Item[] {
         });
       }
     }
+    if (sources.length)
+      text += `\n\nSources: ${sources.map((s, i) => `${sup(i + 1)} [${s.title}](${safeUrl(s.url)})`).join(" · ")}`;
     flush();
   }
   return items;

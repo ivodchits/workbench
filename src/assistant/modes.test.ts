@@ -3,13 +3,22 @@ import { describe, expect, it } from "vitest";
 import { SAFETY_RULES } from "./config";
 import { MODE_IDS, MODES, modeOf, patienceFor, systemFor } from "./modes";
 import { pickEffort } from "./routing";
-import { DEFERRED, TOOLS } from "./toolset";
+import { DEFERRED, SERVER_TOOLS, TOOL_NAMES, TOOLS } from "./toolset";
 import { createRegistry } from "./tools/registry";
 
 describe("modes (S1)", () => {
   it("names only tools Duck has", () => {
-    const names = new Set(TOOLS.map((t) => t.name));
-    for (const id of MODE_IDS) for (const t of MODES[id].tools ?? []) expect(names, `${id}: ${t}`).toContain(t);
+    for (const id of MODE_IDS) for (const t of MODES[id].tools ?? []) expect(TOOL_NAMES.has(t), `${id}: ${t}`).toBe(true);
+  });
+
+  it("offers the web to the assistant and the chat, not the rubber duck (B1)", () => {
+    const r = createRegistry(TOOLS, { deferred: DEFERRED, server: SERVER_TOOLS });
+    const types = (tools: unknown[]) => tools.map((t) => (t as { type?: string }).type).filter(Boolean);
+    expect(types(r.toolsFor(null))).toEqual(["tool_search_tool_regex_20251119", "web_search_20250305", "web_fetch_20250910"]);
+    expect(types(r.toolsFor(MODES.chat.tools))).toEqual(["web_search_20250305", "web_fetch_20250910"]);
+    expect(types(r.toolsFor(MODES.duck.tools))).toEqual([]);
+    expect(r.toolsFor(null)[1]).toMatchObject({ name: "web_search", max_uses: 5 });
+    expect(r.toolsFor(null)[2]).toMatchObject({ name: "web_fetch", max_uses: 8, max_content_tokens: 12_000 });
   });
 
   it("offers a mode's tools without the tool search, every one loaded", () => {

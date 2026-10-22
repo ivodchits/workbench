@@ -5,8 +5,8 @@ behind each decision are in `assistant-plan.md`. This file describes the code, a
 Duck step updates it as part of its Done when. Duck's self-development sessions (L3)
 read it first.
 
-Last updated: step R3 (2026-10-22). L3 audited it against the code. Since W5 it also
-covers W6, D2, D4, P1, P2, M2, M3, A5, A6, A7, W4, L1, L2, L3, L4, R1, R2, R3, V1 to V5, V7,
+Last updated: step B1 (2026-10-22). L3 audited it against the code. Since W5 it also
+covers W6, D2, D4, P1, P2, M2, M3, A5, A6, A7, W4, L1, L2, L3, L4, R1, R2, R3, B1, V1 to V5, V7,
 V8, S1, S2, X1 and the morning routine. A fresh session changing Duck: read "The shape", then "Where to
 change X" at the end, then the module rows it points to.
 
@@ -58,7 +58,8 @@ change X" at the end, then the module rows it points to.
 | `apiWorker.ts` | The API worker (D2): a worker task run on Duck's API credits instead of a session when the subscription's limits are close (5-hour window at 70%, week at 80%; `tasks.ts` `route()`). A task marked `prep` (the morning routine's `prep_ahead`) never goes to the API: it waits until the window resets. One sub-loop on the tier's model with the server's web search and fetch and one tool of ours, `submit_result`, which writes the same `result.md` / `result.json`. Purpose `api-worker`. |
 | `autopilot.ts` | Plan autopilot (P1, P2): Duck runs a session's "step → /compact → continue" loop. After each turn an `autopilot-review` call (Sonnet, low effort, structured) says `continue`, `needs_you` or `plan_done`. Unattended runs (P2) keep to a window or an end time, pause over a subscription limit (`AUTOPILOT_LIMITS`) and carry on after the reset, pause on the same step failing twice, and check in on a stalled turn. One per session, kept in `assistant_autopilots`. |
 | `modes.ts` | Modes (S1): `MODES` (`assistant`, `chat`, `duck`), each `{title, about, effort, systemPrompt, tools, voicePatience}`; `modeOf(id)` (an unknown id is the assistant), `findMode` / `allModes` / `setUserModes` (S2: the modes from skills), `systemFor(mode, assistant)` (the mode's built-in prompt, or the assistant's from the config), `patienceFor(mode, setting)` (the more patient of the two). `CHAT_PROMPT` and `DUCK_PROMPT` keep `SAFETY_RULES` verbatim. See "Modes" below. |
-| `toolset.ts` | `TOOLS` (every tool Duck has; the test tools in dev builds) and `DEFERRED` (the ones loaded on demand), for `index.ts` and the tests. |
+| `toolset.ts` | `TOOLS` (every tool Duck has; the test tools in dev builds), `DEFERRED` (the ones loaded on demand), `SERVER_TOOLS` (B1: the API's web search and fetch) and `TOOL_NAMES` (Duck's and the server's: what a mode or a skill may name), for `index.ts` and the tests. |
+| `tools/web.ts` | B1: `WEB_TOOLS`, the server's `web_search_20250305` (5 a reply, the user's timezone for local results) and `web_fetch_20250910` (8 a reply, a page cut to 12k tokens). See "The web" below. |
 | `skills.ts` | Skills (S2): `parseSkill(row, known, disabled)` turns a `SKILL.md` (read by `skills.rs`) into `{name, description, body, tools, mode, problems, enabled}`. `tools:` must name Duck's tools; `mode:` makes a `Mode` (the body inside `BASICS` and `SAFETY_RULES`, `tools:` or `COMMON_TOOLS` plus `switch_mode`, `effort`, `pauses`, `title`), and can't be a built-in id. `skillsBlock(skills)`: the `<skills>` block, the usable ones sorted by name, then the modes they add. `createSkills({store, tools, disabled})`: `list()` reads (one read at a time), registers the modes (`setUserModes`) and calls `onChange` when the list differs; `write` goes over `expected` and reads again. See "Skills" below. |
 | `routing.ts` | Per-message routing (M2), no classifier call: effort the thread's mode's (`medium`, `high` for a rubber duck), `high` for "think hard" (English, Russian, Spanish) and research, plan or comparison asks; the model is Sonnet, or Haiku for the rest of the month past the budget's soft limit, where "think hard" sends that one message on Sonnet. |
 | `announce.ts` | Announcements (V5): Duck's reply to a `<workbench_event>` is the news, said at its producer's level (`info`, `report`, `needs_you`) on this PC when you're at it, else a phone with Duck open, else a push. Do Not Disturb, quiet hours, full-screen apps, the Speak switch, waiting for a gap, and batching are its etiquette (`AnnounceSettings`). An announcement never turns the mic on (V8): turning it on within a minute of one said in full opens its thread first (`heardAnnouncement` / `replyTarget` in `voiceState.ts`). |
@@ -75,7 +76,7 @@ change X" at the end, then the module rows it points to.
 | `selfdev.ts` | Duck changing its own code (L3): `SAFETY_PATHS` / `safetyFiles` (the trust engine, `proxy`/`budget`/`key`/`trust.rs`, L4's `gitlane.rs` (the push guard), and `selfdev.ts`, `config.ts`, `tools/improve.ts`), `selfProject` (the project whose folder or name is "workbench", unless named), `improveBrief` (the request, the related `lessons` entries, where to read first, the allowed paths, the safety layer, the test commands, "commit on the branch, don't merge or push", and `result.md`'s contents), `REBUILD`. |
 | `port.ts` / `port.local.ts` | `WorkbenchPort` and its one implementation over the stores. The only file under `src/assistant/` allowed to import `src/state/**` or `src/panels/**`. Members: projects, sessions (live phase, pending choice with its id, worktree, model, last activity), transcript paging, usage limits, a git snapshot of a directory, notes list/read, Duck's spend; and the W2 actions: `sendPrompt` (`state/promptOutbox.ts`: one prompt per turn, confirmed by `UserPromptSubmit`; a stopped session is resumed with the prompt on claude's command line), `createSession` (`startNewSession` from `state/remoteActions`, shared with the phone), start/resume/interrupt/stop/kill, `answerChoice` (refused unless the named prompt is still open), `openPanel`, note writes, `onPhase`; L3's `worktreeChanges` (`instanceDiff` against the project's current branch, and `gitStatusEntries` in the worktree for what isn't committed), `mergeWorktree` (`teardownWorktree` with a merge into the target `worktreeTeardownInfo` names: the rail's own path) and `runInShell` (`newShell`, `whenShellRunning`, then the command typed into the PTY); and W5's plugins: `listPlugins` (the parsed file, each plugin's field values as a run sends them, each action's last run), `pluginsText`, `checkPlugins`, `writePlugins`, `readScript` / `writeScript`, `previewPluginAction` (the argv and cwd the backend would spawn, and the confirm question filled in), `runPluginAction` (`startPluginRunFor` in `panels/pluginRun.ts`: no confirm question, refused while running, the project shown first because task panels are drawn for the shown project only) and `onTaskEnd` (from the tasks store; the last lines come from `terminalPool.readTail`); `startPluginsDraft` (`startNewSession` with `beforeLaunch`, which makes the draft and registers the session before its first launch), `readPluginsDraft`, `clearPluginsDraft`; and T2's: `choiceOf`, `onChoices`, `holdNeedsYou` (`state/promptHold.ts`; `onPhase` also waits on it for a fresh needs-you, and drops one Duck answered), `sessionContext` (the stored mandate, else the transcript's first prompt; the latest prompt; the home folder) and `noteSession` (`state/trustLines.ts`, the line under the card). `createSession` and `startPluginsDraft` store a `mandate` (memory and duck.db `meta`). |
 | `fakePort.test-util.ts` | `fakePort(data)` and the `project()` / `session()` builders: a port over fixture data for the engine's and the tools' tests. Actions are recorded in `calls`, notes writes keep the revision check, `phase()` fires `onPhase`. `toolCtx(port)` is a tool context that records notices and follow-ups. Plugin files are kept as text with a revision counter (`fakeCheck` stands in for the parser), and `endTask()` ends a run. |
-| `tools/registry.ts` | `defineTool({name, description, schema, tier, tierFor?, prepare?, describe?, review?, trust?, timeoutMs?, run})` and `createRegistry(tools)`: the API tool list sorted by name, built once; `tierOf(name)`, `callTier(name, input, port)` (a tier that depends on the input or state), `prepare(...)` (async work the card needs, before the gate; it gets the settings and the Google host too), `describe(...)` (the confirmation card's sentence), `review(...)` (the card's diffs), `trustFacts(...)` (the call's project, rule specifier, text for the floor, and `asks`), and `toolsFor(names)` (S1: a mode's tools, none deferred, built once per set). Tools in `toolset.ts`'s `DEFERRED` (M2: the plugin, autopilot and screen tools and a few rare ones) go out with `defer_loading` and are found with the server's regex tool search, which keeps the fixed prefix small. |
+| `tools/registry.ts` | `defineTool({name, description, schema, tier, tierFor?, prepare?, describe?, review?, trust?, timeoutMs?, run})` and `createRegistry(tools)`: the API tool list sorted by name, built once; `tierOf(name)`, `callTier(name, input, port)` (a tier that depends on the input or state), `prepare(...)` (async work the card needs, before the gate; it gets the settings and the Google host too), `describe(...)` (the confirmation card's sentence), `review(...)` (the card's diffs), `trustFacts(...)` (the call's project, rule specifier, text for the floor, and `asks`), and `toolsFor(names)` (S1: a mode's tools, none deferred, built once per set). `opts.server` (B1) are the API's own tools, sent as they are after the tool search; a mode names them like any other. Tools in `toolset.ts`'s `DEFERRED` (M2: the plugin, autopilot and screen tools and a few rare ones) go out with `defer_loading` and are found with the server's regex tool search, which keeps the fixed prefix small. |
 | `tools/getTime.ts` | `get_time` (read tier): the local date, time and zone. |
 | `tools/read.ts` | The W1 read tools: `list_projects`, `list_sessions`, `get_pending_choice`, `read_session`, `usage_limits`, `git_overview`, `list_notes`, `read_note`, `duck_spend`. Compact JSON, empty fields left out; projects and sessions are named by id or name (`findProject` / `findSession`, which list the choices on a miss or an ambiguity). |
 | `tools/act.ts` | The W2 action tools. Reversible: `send_prompt`, `create_session`, `start_session`, `open_panel`, `wait_for_session`, `create_note`, `append_note`, and `resume_session` on a stopped session. Consequential: `answer_choice`, `interrupt_session`, `stop_session`, `kill_session` (the rail's kill: removes the row; refused with a worktree or a remote tmux session), `write_note`, `delete_note`, and `resume_session` over a running session. Note writes leave a "Duck edited" chip. Each tool's `trust` names its project. `answer_choice`'s facts carry the prompt's kind as the specifier, the Claude Code call a "yes" would allow (for the floor), and `grantedBy` (never for a "don't ask again" option). `stop_session`, `kill_session`, `resume_session` and `delete_note` take `grantedBy` too: the user's words asking for that call. |
@@ -151,7 +152,7 @@ prompt's safety rules cover them.
 | File | What it is |
 |---|---|
 | `duckState.ts` | The desktop's one subscription to the protocol, an external store shared by the button and the drawer: threads, the open thread, loaded messages, streaming text, turn states, locally queued messages, confirmations, spend. Actions (`sendMessage`, `stopTurn`, `answer`, `openThread`, …) only send protocol messages. Persists `assistantDrawer` prefs (width, open thread, interrupt). |
-| `view.ts` | `toItems(messages)`: stored messages → display items (user text, reply text, a tool chip with its result attached, edit chips for notes, the toolbar and the core memory, notices; thinking and system messages hidden). `sessionLink()` reads `#session/<id>` links. |
+| `view.ts` | `toItems(messages)`: stored messages → display items (user text, reply text, a tool chip with its result attached (B1: a web search or fetch too, its result from the same reply, by `webResultText`; cited text gets numbered links and the reply a "Sources" line), edit chips for notes, the toolbar and the core memory, notices; thinking and system messages hidden). `sessionLink()` reads `#session/<id>` links. |
 | `DuckButton.tsx` | The title-bar button ("D.U.C.K.", the icon beside it): toggles the drawer, the acronym tooltip, a confirmation-count badge, an amber/red tint past the soft limit/cap, ⏸ while trust is paused. |
 | `TrustViews.tsx` | `TrustPanel` (kill switch, rules, project modes, the floor with a typed confirmation) and `DecisionsPanel` (the log with make-a-rule / always-ask, the rule from `suggestRule`; and the replay of the past week with its report). Opened from the settings popover; they take the thread's place. |
 | `Drawer.tsx` | The drawer: header (thread list, new, memory, the trust pill that is the kill switch, settings, close), thread view (markdown replies, tool chips, queued bubbles), confirmation cards, spend line, composer (Enter / Shift+Enter / Esc, "think hard" = effort `high` for one message). A task card for a change to Duck (L3, `SelfChange`) adds its branch, the safety badge, and "open diff" / "ask for changes" (fills the composer, `fillComposer`) / "merge…". Always mounted and only hidden, so the thread and scroll survive closing. |
@@ -461,6 +462,28 @@ You write one by hand, or Duck drafts it (`draft_skill`, a card with the file's 
 - **The surfaces**: a `skills` event (on `sync` and after every change) with the skills
   and every mode; the skills settings tab turns them on or off through `settings.set`.
 
+## The web (step B1)
+
+Duck looks things up itself: the API's server tools `web_search` and `web_fetch`
+(`tools/web.ts`), in the assistant's and the chat's tool lists (not the rubber duck's).
+
+- **The server runs them inside the reply.** They have no `run` and never reach the
+  gate: they only read, and a fetch can only open a URL already in the conversation, so
+  a page can't make Duck send anything out. A reply that searches may stop with
+  `pause_turn`, which the loop already resends. The reply is stored whole (the
+  `server_tool_use` and result blocks with it), so the history goes back as it came.
+- **What's quick and what's a worker**: the system prompt's routing rules. One fact, a
+  release note, what one page says: Duck, a few searches at most, saying where it came
+  from. Comparing sources, many pages, a report: `run_task`.
+- **Cost**: the proxy's meter already counts `server_tool_use.web_search_requests` into
+  `assistant_usage.searches` and prices them ($0.01 each); a fetch costs only its tokens,
+  and `max_content_tokens` keeps a page from filling the thread.
+- **The surfaces**: while a search runs the thread shows `tool`; the reply's chips and
+  links come from `view.ts`, so the phone shows the same.
+- **Not covered**: a skill's `tools:` doesn't narrow the server tools (they'd have to leave
+  the request's tool list, which would break the cache), and the subscription brain has
+  only its own tools (`mcpTools` sends those with an input schema).
+
 ## Adding a tool
 
 1. Write `src/assistant/tools/<name>.ts` with `defineTool`:
@@ -668,6 +691,10 @@ being discussed or translated, or an explicit request. Thread titles are English
 Both rules are in `prompt.ts`.
 
 ## Not built yet
+
+- The web (B1) live: built and tested with scripted replies (a paused search sent back
+  whole, chips, citations), not yet asked "what's new in the latest Tauri release?"
+  in the app.
 
 - The phone as an app (R3) on a real phone: built and tested in parts (the key's format
   across WebCrypto and Rust, challenges, sessions, the launch and share parsing), not

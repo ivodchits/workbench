@@ -3074,6 +3074,62 @@ up ("change this", with a circle around it).
 - **Done when:** "what's new in the latest Tauri release?" returns a cited answer, and the
   search count and cost are recorded.
 - **Out of scope:** local scraping.
+- **As built (2026-10-22):**
+  - **The tools** (`src/assistant/tools/web.ts`):
+    - X0's basic versions, `web_search_20250305` (5 a reply) and `web_fetch_20250910`
+      (8 a reply), as X0 decided for quick lookups.
+    - Search gets the user's timezone as an approximate location, for local answers.
+    - A fetched page is cut to 12k tokens (`max_content_tokens`), since it stays in the
+      thread.
+  - **Where they go:**
+    - The registry takes them as `server` tools, sent as they are after the tool search
+      (the frozen prefix changes once).
+    - The assistant has them, and so does the chat mode now: a quick fact is a
+      conversation partner's job. Its prompt moves only real research to an assistant
+      thread. The rubber duck doesn't get them.
+    - A skill may name them in `tools:` (`TOOL_NAMES`).
+  - **The engine:** nothing to run. The server does the search inside the reply.
+    - A `pause_turn` was already resent, and the reply is stored whole, so its
+      `server_tool_use` and result blocks go back as they came.
+    - While one runs, the thread shows `tool`.
+    - They never reach the gate: they only read, and the API lets a fetch open only a
+      URL already in the conversation.
+  - **Effort:** the plan's "raise to medium when they are used" needed nothing. The
+    assistant and the chat already start at medium (S1), and only the user's own toggle
+    goes lower.
+  - **Routing:** the system prompt's rules now give Duck a quick lookup (a fact, a
+    release note, one topic's news, what one page says, such as a shared link from R3),
+    a few searches at most, citing where the answer came from. Comparing sources, many
+    pages and reports stay `run_task`. The examples gained "What's new in the latest
+    Tauri release?" → yourself, `web_search`.
+  - **Citations** (`view.ts`, so the drawer and the phone both get them):
+    - A search or fetch shows as a tool chip with its query or URL. The result inside
+      lists the pages (title — link), or the error.
+    - A cited text block ends in superscript links (`[¹](url)`), and the reply ends
+      with a "Sources" line.
+    - Speech is unchanged: links are added for display only.
+  - **Counted:** the proxy's meter already took `server_tool_use.web_search_requests`
+    into `assistant_usage.searches` and priced them ($0.01 each, D2). A fetch costs its
+    tokens only.
+  - **Haiku past the soft limit** keeps both tools: X0 found Haiku 5.5 takes the basic
+    versions.
+  - **Not covered:**
+    - A skill's `tools:` narrowing doesn't hold back the server tools. Holding them
+      back would mean dropping them from the request's tool list, which breaks the
+      cache.
+    - The subscription brain (M3) has only its own tools: `mcpTools` passes only tools
+      with a schema.
+  - **Tests:**
+    - The registry's lists: the assistant's and the chat's have the web, the duck's
+      doesn't, and the limits are as above.
+    - A paused search reply stored whole and sent back unchanged, with the `tool`
+      state and no local run.
+    - The drawer's chips for a search and a failed fetch, the tool search's own call
+      hidden, and citations numbered once each, with brackets and parentheses made safe.
+    - **Results:** vitest 751 (3 new). tsc is clean; eslint shows only the existing
+      warning.
+  - **Not tried in the app** (yours): the done-when question, "what's new in the latest
+    Tauri release?", with its cited answer, and its search in the spend line.
 
 #### Step B2 — MCP host + your Firefox (quick browser actions)
 
@@ -7064,7 +7120,7 @@ T2 goes live after the replay check in its done-when (the past week's prompts th
 | D2 | Offload routing, subscription-limit awareness, Duck as the worker's user | ☑ |
 | D3 | Session-backed thinking modes (experiment) | ☐ |
 | D4 | Headless workers over stream-json | ☑ |
-| B1 | Web search and fetch | ☐ |
+| B1 | Web search and fetch | ☑ (not tried in the app) |
 | B2 | MCP host + your Firefox | ☐ |
 | V1 | Push-to-talk with local STT on the GPU (desktop) | ☑ (holding the key in the app not tried yet) |
 | V2 | Natural spoken replies | ☑ (the phone half built in R1/R2) |

@@ -23,6 +23,7 @@ import { SUMMARY_TOOLS } from "./tools/summaries";
 import { TASK_TOOLS } from "./tools/tasks";
 import { testAnnounce, testConfirm } from "./tools/testConfirm";
 import { THREAD_TOOLS } from "./tools/threads";
+import { WEB_TOOL_NAMES, WEB_TOOLS } from "./tools/web";
 
 /** Every tool Duck has. Order doesn't matter: the registry sorts them. The
  *  confirmation test tool exists in dev builds only. */
@@ -50,6 +51,12 @@ export const TOOLS = [
   ...SKILL_TOOLS,
   ...(import.meta.env.DEV ? [testConfirm, testAnnounce] : []),
 ];
+
+/** The API's own tools Duck offers (step B1: web search and fetch). */
+export const SERVER_TOOLS = WEB_TOOLS;
+
+/** Every tool's name, Duck's and the server's: what a mode or a skill may name. */
+export const TOOL_NAMES: ReadonlySet<string> = new Set([...TOOLS.map((t) => t.name), ...WEB_TOOL_NAMES]);
 
 /** Tools the model finds with the tool search when it needs them (step M2):
  *  the rarely used, and the large ones that are rarely used. The rest load up

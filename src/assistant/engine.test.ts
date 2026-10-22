@@ -135,6 +135,8 @@ function scripted(steps: Step[]) {
         }
         for (const b of step.content)
           if (b.type === "text") yield delta(b.text);
+          else if (b.type === "server_tool_use")
+            yield { type: "content_block_start", index: 0, content_block: b } as Anthropic.Beta.BetaRawMessageStreamEvent;
       },
       async finalMessage() {
         if ("error" in step) throw step.error;
@@ -199,6 +201,33 @@ async function turn(
 const roles = (ms: readonly StoredMessage[]) => ms.map((m) => m.role);
 
 // ── tests ───────────────────────────────────────────────────────────────────
+
+describe("the web (B1)", () => {
+  it("keeps a reply's searches whole, sends them back as they were, and runs nothing itself", async () => {
+    const search = [
+      { type: "server_tool_use", id: "srv1", name: "web_search", input: { query: "tauri latest release" } },
+      {
+        type: "web_search_tool_result",
+        tool_use_id: "srv1",
+        content: [{ type: "web_search_result", url: "https://tauri.app/blog/2-10", title: "Tauri 2.10", encrypted_content: "e", page_age: null }],
+      },
+    ] as unknown as Block[];
+    const cited = {
+      type: "text",
+      text: "Tauri 2.10 came out with a new updater.",
+      citations: [{ type: "web_search_result_location", url: "https://tauri.app/blog/2-10", title: "Tauri 2.10", cited_text: "…", encrypted_index: "x" }],
+    } as unknown as Block;
+    const { engine, store, events, calls } = await setup([message(search, "pause_turn"), message([cited], "end_turn")]);
+    const id = await turn(engine, "what's new in the latest Tauri release?");
+    const ms = store.loaded(id);
+    expect(roles(ms)).toEqual(["user", "assistant", "assistant"]);
+    expect(ms[1].content).toEqual(search);
+    expect(ms[2].content).toEqual([cited]);
+    // The paused reply goes back as it came, so the server can carry on from it.
+    expect(calls[1].params.messages[calls[1].params.messages.length - 1]).toEqual({ role: "assistant", content: search });
+    expect(events.some((e) => e.type === "turnState" && e.state === "tool")).toBe(true);
+  });
+});
 
 describe("engine", () => {
   it("runs a tool round trip and sends the frozen prefix with the thread purpose", async () => {

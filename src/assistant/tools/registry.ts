@@ -8,6 +8,10 @@
 // out of the prompt until the model finds them with the regex tool search, which
 // keeps the fixed prefix small. A found tool is appended, so the cache holds.
 //
+// Server tools (step B1: web search and fetch) go in the list as they are, after
+// the tool search: the API runs them, so they have no definition here, and a mode
+// offers them by name like any other.
+//
 // Tiers (design → Tools): `read` and `reversible` run without asking; a
 // `consequential` call waits for a confirmation unless the trust policy (T1) says
 // otherwise. A tool's `trust` tells that policy what a call is about.
@@ -186,7 +190,7 @@ export const TOOL_SEARCH = {
 
 export function createRegistry(
   tools: readonly ToolDef[],
-  opts: { deferred?: ReadonlySet<string> } = {},
+  opts: { deferred?: ReadonlySet<string>; server?: readonly Anthropic.Beta.BetaToolUnion[] } = {},
 ): Registry {
   const byName = new Map<string, ToolDef>();
   for (const t of tools) {
@@ -203,6 +207,7 @@ export function createRegistry(
   for (const n of deferred) if (!byName.has(n)) throw new Error(`deferred tool not found: ${n}`);
   const apiTools: Anthropic.Beta.BetaToolUnion[] = [
     ...(deferred.size ? [TOOL_SEARCH] : []),
+    ...(opts.server ?? []),
     ...sorted.map((t) => ({
       name: t.name,
       description: t.description,

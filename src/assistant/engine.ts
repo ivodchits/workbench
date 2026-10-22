@@ -1143,6 +1143,9 @@ export function createEngine(deps: EngineDeps): Engine {
             if (turn.state !== "streaming") setState(threadId, "streaming");
             text += ev.delta.text;
             emit({ type: "delta", threadId, text: ev.delta.text });
+          } else if (ev.type === "content_block_start" && ev.content_block.type === "server_tool_use") {
+            // A web search or fetch (B1) runs on the server, inside this reply.
+            setState(threadId, "tool");
           }
         }
         msg = await stream.finalMessage();

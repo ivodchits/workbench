@@ -17,6 +17,39 @@ const msg = (
 });
 
 describe("toItems", () => {
+  it("shows a web search as a chip, and its citations as numbered links (B1)", () => {
+    seq = 0;
+    const page = (url: string, title: string) => ({ type: "web_search_result", url, title, encrypted_content: "e" });
+    const cite = (url: string, title: string) => ({ type: "web_search_result_location", url, title, cited_text: "…" });
+    const items = toItems([
+      msg("user", [{ type: "text", text: "what's new in Tauri?" }]),
+      msg(
+        "assistant",
+        [
+          { type: "tool_search_tool_result", tool_use_id: "ts1", content: {} },
+          { type: "server_tool_use", id: "ts1", name: "tool_search_tool_regex", input: { pattern: "x" } },
+          { type: "server_tool_use", id: "s1", name: "web_search", input: { query: "tauri release" } },
+          { type: "web_search_tool_result", tool_use_id: "s1", content: [page("https://tauri.app/b(1)", "Tauri [2.10]"), page("https://x.dev", "X")] },
+          { type: "server_tool_use", id: "f1", name: "web_fetch", input: { url: "https://gone.dev" } },
+          { type: "web_fetch_tool_result", tool_use_id: "f1", content: { type: "web_fetch_tool_error", error_code: "url_not_accessible" } },
+          { type: "text", text: "It has a new updater.", citations: [cite("https://tauri.app/b(1)", "Tauri [2.10]")] },
+          { type: "text", text: " And faster builds.", citations: [cite("https://x.dev", "X"), cite("https://tauri.app/b(1)", "Tauri [2.10]")] },
+        ],
+        "duck",
+      ),
+    ]);
+    // The tool search's own call isn't shown; the web's are, with their results.
+    expect(items.map((i) => (i.kind === "tool" ? i.name : i.kind))).toEqual(["user", "web_search", "web_fetch", "reply"]);
+    const [search, fetch] = items.filter((i) => i.kind === "tool");
+    expect(search.result).toEqual({ text: "Tauri [2.10] — https://tauri.app/b(1)\nX — https://x.dev", isError: false });
+    expect(fetch.result).toEqual({ text: "failed: url_not_accessible", isError: true });
+    const reply = items[items.length - 1];
+    expect(reply?.kind === "reply" && reply.text).toBe(
+      "It has a new updater.[¹](https://tauri.app/b%281%29) And faster builds.[¹](https://tauri.app/b%281%29)[²](https://x.dev)" +
+        "\n\nSources: ¹ [Tauri 2.10](https://tauri.app/b%281%29) · ² [X](https://x.dev)",
+    );
+  });
+
   it("shows a compaction's line where it cut, not where it was stored (A6)", () => {
     seq = 0;
     const say = (t: string) => [{ type: "text", text: t }];
