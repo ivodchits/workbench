@@ -42,6 +42,7 @@ import type { StoredMessage, ThreadRow } from "../ipc/assistant";
 import { capMessage, errorMessage, purpose, THREAD_PURPOSE } from "./client";
 import type { WorkbenchPort } from "./port";
 import { CORE_OPEN, coreText, type CoreHost } from "./core";
+import { memoryOff, recallFor, type MemoryHost } from "./memory";
 import { COMPACT_REQUEST, compactedText, SYSTEM_PROMPT, VOICE_NOTE } from "./prompt";
 import { MODELS, route, type Brain } from "./routing";
 import { quotedFromLatest } from "./trust/mandate";
@@ -109,6 +110,7 @@ const MAX_ROUNDS = 25;
 const BETAS = [
   "context-management-2025-06-27",
   "mid-conversation-output-config-2026-07-01",
+  "mid-conversation-system-clear-at-2026-08-21",
   "server-side-fallback-2026-07-01",
   "thinking-binding-controls-2026-08-01",
 ];
@@ -187,6 +189,9 @@ export interface EngineDeps {
   /** Duck's core memory (step W4): read into each new thread, edited by
    *  `remember_core` and `forget`. */
   core?: CoreHost;
+  /** Duck's long-term memory (step L1): searched before each of your messages
+   *  (automatic recall), and the `remember` / `recall` / `forget` tools. */
+  memory?: MemoryHost;
   /** A tool's follow-up event (`later`) is about to be posted, at this level of
    *  news (V5). */
   eventLevel?: (threadId: string, level: Level) => void;
@@ -275,6 +280,9 @@ export interface Engine {
 interface SystemContent {
   content: Anthropic.Beta.BetaContentBlockParam[] | string;
   output_config?: { effort?: Effort };
+  /** Turn-scoped (step L1's recall): shown for this reply only, then cleared by
+   *  the API, and still sent as it was. */
+  clear_at?: "next_user_message";
 }
 
 const STOPPED_UNANSWERED =
@@ -307,8 +315,8 @@ function droppedCore(history: readonly StoredMessage[], through: number): string
 /**
  * The API's view of a thread: notices dropped, and a mid-conversation system
  * message dropped when what follows it would make the request invalid (it must be
- * last or followed by an assistant turn; a turn that failed can leave one followed
- * by the next user message).
+ * last or followed by an assistant turn, other system messages aside; a turn that
+ * failed can leave one followed by the next user message).
  */
 export function toApiMessages(history: readonly StoredMessage[]): ApiMessage[] {
   // After a compaction (step A6), its summary stands in for what it covers.
@@ -331,14 +339,16 @@ export function toApiMessages(history: readonly StoredMessage[]): ApiMessage[] {
       return;
     }
     if (m.role === "system") {
-      const next = kept[i + 1];
+      const next = kept.slice(i + 1).find((n) => n.role !== "system");
       if (next && next.role !== "assistant") return;
       const s = m.content as SystemContent;
       out.push({
         role: "system",
         content: s.content,
         ...(s.output_config && { output_config: s.output_config }),
-      });
+        // Not in the SDK's types yet (a beta field).
+        ...(s.clear_at && ({ clear_at: s.clear_at } as object)),
+      } as ApiMessage);
       return;
     }
     out.push({
@@ -801,6 +811,15 @@ export function createEngine(deps: EngineDeps): Engine {
           source: "duck",
         });
       }
+      // What the long-term memory holds about your message (step L1), for this
+      // reply only: a turn-scoped note after the others, kept as it was sent.
+      const recall = deps.memory && input.source !== "event" ? await recallFor(deps.memory, input.text) : null;
+      if (recall)
+        opening.push({
+          role: "system",
+          content: { content: [{ type: "text", text: recall }], clear_at: "next_user_message" },
+          source: "duck",
+        });
       // A turn on the other brain than the thread's last says so (step M3), and so
       // does the first Haiku turn in a thread (shown, never sent).
       const onHaiku = choice.backend === "api" && brain === "haiku";
@@ -1165,7 +1184,7 @@ export function createEngine(deps: EngineDeps): Engine {
     // action, a file with problems) fails before any card, with the reason.
     if (tool.prepare) {
       try {
-        const env = { settings: settings(), google: deps.google ?? null };
+        const env = { settings: settings(), google: deps.google ?? null, memory: deps.memory ?? null };
         call.prepared = await withTimeout(registry.prepare(u.name, u.input, port, env), tool.timeoutMs);
       } catch (e) {
         call.result = errorResult(u.id, `${u.name} failed: ${errorMessage(e)}`);
@@ -1441,6 +1460,8 @@ export function createEngine(deps: EngineDeps): Engine {
           mcp: deps.mcp ?? null,
           google: deps.google ?? null,
           core: deps.core ?? null,
+          memory: deps.memory ?? null,
+          memoryOff: memoryOff(store.loaded(threadId)),
           request: lastUserText(store.loaded(threadId)),
           startThread: (words, opts) => split(threadId, words, opts),
           threads: threadMoves(threadId),

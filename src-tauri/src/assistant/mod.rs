@@ -8,7 +8,8 @@
 //! workers over stream-json ([`headless`]). Step P1: plan autopilot records
 //! ([`autopilot`]). Step X1: a client for external MCP servers ([`mcp_client`]).
 //! Step M3: the subscription brain ([`subscription_brain`]) and the MCP server
-//! that serves it Duck's tools ([`mcp_server`]).
+//! that serves it Duck's tools ([`mcp_server`]). Step L1: long-term memory, its
+//! index and its commits ([`memory`]).
 //! The morning routine: Google access ([`google`]) and the invoice sheet ([`sheets`]).
 //!
 //! The webview never holds the key. It asks [`assistant_proxy_info`] for the proxy's
@@ -24,6 +25,7 @@ pub mod headless;
 mod key;
 pub mod mcp_client;
 mod mcp_server;
+pub mod memory;
 mod proxy;
 mod summaries;
 pub mod replay;
@@ -381,10 +383,146 @@ pub fn assistant_core_read(workspace: Option<String>) -> Result<(String, Option<
     Ok((workspace::core_path(&d).to_string_lossy().into_owned(), workspace::read_core(&d)?))
 }
 
-/// Write the core memory over the text it was read as (`expected`).
+/// Write the core memory over the text it was read as (`expected`), and commit it
+/// (step L1) with `message` (`memory: …`).
 #[tauri::command]
-pub fn assistant_core_write(workspace: Option<String>, text: String, expected: Option<String>) -> Result<(), String> {
-    workspace::write_core(&workspace::resolve(workspace.as_deref())?, &text, expected.as_deref())
+pub fn assistant_core_write(
+    workspace: Option<String>,
+    text: String,
+    expected: Option<String>,
+    message: Option<String>,
+) -> Result<(), String> {
+    let d = workspace::resolve(workspace.as_deref())?;
+    workspace::write_core(&d, &text, expected.as_deref())?;
+    let msg = message.unwrap_or_else(|| "memory: core memory edited".into());
+    memory::commit(&d, vec!["memory/core.md".into()], msg);
+    Ok(())
+}
+
+// ── long-term memory (step L1) ──
+
+/// The workspace, and the notes root (indexed read-only) when there is one.
+fn memory_roots(
+    app: &AppHandle,
+    workspace: Option<&str>,
+) -> Result<(std::path::PathBuf, Option<std::path::PathBuf>), String> {
+    Ok((workspace::resolve(workspace)?, crate::notes::notes_root(app).ok()))
+}
+
+/// Run file and index work off the main thread.
+async fn blocking<T: Send + 'static>(f: impl FnOnce() -> Result<T, String> + Send + 'static) -> Result<T, String> {
+    tauri::async_runtime::spawn_blocking(f).await.map_err(|e| e.to_string())?
+}
+
+/// Duck changed these memory files: index them now and commit them.
+fn memory_changed(ctx: &Assistant, ws: &std::path::Path, files: Vec<String>, message: String) {
+    if let Err(e) = memory::reindex(&lock(ctx), ws, &files) {
+        eprintln!("duck: reindexing memory failed: {e}");
+    }
+    memory::commit(ws, files, message);
+}
+
+/// The best `k` memory entries and note pieces for `query`.
+#[tauri::command]
+pub async fn assistant_memory_search(
+    app: AppHandle,
+    ctx: Db<'_>,
+    workspace: Option<String>,
+    query: String,
+    k: usize,
+) -> Result<Vec<memory::Hit>, String> {
+    let ctx = ctx.inner().clone();
+    blocking(move || {
+        let (ws, notes) = memory_roots(&app, workspace.as_deref())?;
+        let conn = lock(&ctx);
+        memory::ensure(&conn, &ws, notes.as_deref())?;
+        memory::search(&conn, &ws, notes.as_deref(), &query, k.min(20))
+    })
+    .await
+}
+
+/// Remember an entry under `topic`; secrets are refused.
+#[tauri::command]
+pub async fn assistant_memory_write(
+    ctx: Db<'_>,
+    workspace: Option<String>,
+    topic: String,
+    entry: memory::NewEntry,
+) -> Result<memory::Written, String> {
+    let ctx = ctx.inner().clone();
+    blocking(move || {
+        let ws = workspace::resolve(workspace.as_deref())?;
+        let w = memory::write(&ws, &topic, &entry)?;
+        if let Some(e) = &w.edit {
+            memory_changed(&ctx, &ws, vec![e.file.clone()], memory::subject("", &entry.fact));
+        }
+        Ok(w)
+    })
+    .await
+}
+
+/// The memory entries holding every word of `query` (what a forget would take).
+#[tauri::command]
+pub async fn assistant_memory_matching(
+    app: AppHandle,
+    ctx: Db<'_>,
+    workspace: Option<String>,
+    query: String,
+) -> Result<Vec<memory::Entry>, String> {
+    let ctx = ctx.inner().clone();
+    blocking(move || {
+        let (ws, notes) = memory_roots(&app, workspace.as_deref())?;
+        let conn = lock(&ctx);
+        memory::ensure(&conn, &ws, notes.as_deref())?;
+        memory::matching(&conn, &ws, &query)
+    })
+    .await
+}
+
+/// Remove these entries from their files, as one commit (`message`).
+#[tauri::command]
+pub async fn assistant_memory_forget(
+    ctx: Db<'_>,
+    workspace: Option<String>,
+    entries: Vec<memory::Forget>,
+    message: String,
+) -> Result<Vec<memory::FileEdit>, String> {
+    let ctx = ctx.inner().clone();
+    blocking(move || {
+        let ws = workspace::resolve(workspace.as_deref())?;
+        let edits = memory::forget(&ws, &entries)?;
+        if !edits.is_empty() {
+            memory_changed(&ctx, &ws, edits.iter().map(|e| e.file.clone()).collect(), message);
+        }
+        Ok(edits)
+    })
+    .await
+}
+
+/// Put a memory file back (an undo): only over `expected`; `text: None` removes it.
+#[tauri::command]
+pub async fn assistant_memory_restore(
+    ctx: Db<'_>,
+    workspace: Option<String>,
+    file: String,
+    text: Option<String>,
+    expected: Option<String>,
+    message: String,
+) -> Result<(), String> {
+    let ctx = ctx.inner().clone();
+    blocking(move || {
+        let ws = workspace::resolve(workspace.as_deref())?;
+        memory::restore(&ws, &file, text.as_deref(), expected.as_deref())?;
+        memory_changed(&ctx, &ws, vec![file.replace('\\', "/")], message);
+        Ok(())
+    })
+    .await
+}
+
+/// Every long-term memory entry, for the drawer's Memory view.
+#[tauri::command]
+pub async fn assistant_memory_list(workspace: Option<String>) -> Result<Vec<memory::Entry>, String> {
+    blocking(move || memory::list(&workspace::resolve(workspace.as_deref())?)).await
 }
 
 /// Register a new instance as a worker, before its first launch.

@@ -37,6 +37,7 @@ import type { Level } from "../announce";
 import type { McpHost } from "../mcp";
 import type { GoogleHost } from "../google";
 import type { CoreHost } from "../core";
+import type { MemoryHost } from "../memory";
 
 export type Tier = "read" | "reversible" | "consequential";
 
@@ -74,6 +75,10 @@ export interface ToolContext {
   google?: GoogleHost | null;
   /** Duck's core memory (step W4); absent where there is none. */
   core?: CoreHost | null;
+  /** Duck's long-term memory (step L1); absent where there is none. */
+  memory?: MemoryHost | null;
+  /** You asked Duck not to remember this thread (L1): `remember` refuses. */
+  memoryOff?: boolean;
   /** Start a new Duck thread on `words`, which must be the user's own words from
    *  their latest message here (it throws otherwise). The new thread's turn runs on
    *  its own; resolves to its id. With `go` (step A7), the conversation moves into
@@ -84,7 +89,7 @@ export interface ToolContext {
 }
 
 /** What `prepare` gets besides the port. */
-export type PrepareEnv = Pick<ToolContext, "settings" | "google">;
+export type PrepareEnv = Pick<ToolContext, "settings" | "google" | "memory">;
 
 /** A tool may return text, API content blocks (e.g. an image), or any JSON value. */
 export type ToolOutput =

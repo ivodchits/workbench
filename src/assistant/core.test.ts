@@ -236,7 +236,7 @@ describe("core memory in threads (W4)", () => {
     };
     const { calls, turn } = await setup(
       [
-        message([toolUse("u1", "forget", { fact: "madrid" })], "tool_use"),
+        message([toolUse("u1", "forget_core", { fact: "madrid" })], "tool_use"),
         message([text("Forgotten.")], "end_turn"),
       ],
       racing,

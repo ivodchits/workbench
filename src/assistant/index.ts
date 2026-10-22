@@ -73,6 +73,7 @@ import { SHEET_TOOLS } from "./tools/sheets";
 import { PREP_TOOLS } from "./tools/prep";
 import { MEMORY_TOOLS } from "./tools/memory";
 import { createCoreHost } from "./core";
+import { createMemoryHost } from "./memory";
 import { createMcpHost } from "./mcp";
 import { createGoogleHost } from "./google";
 import { SUMMARY_TOOLS } from "./tools/summaries";
@@ -328,6 +329,13 @@ export function endpoint(
       case "thread.compact":
         await e.compact(msg.threadId);
         return;
+      case "thread.memory":
+        await e.notice(msg.threadId, {
+          kind: "memoryOff",
+          off: msg.off,
+          text: msg.off ? "Duck won't remember this conversation." : "Duck may remember this conversation again.",
+        });
+        return;
       case "sync":
         answer({ type: "threads", threads: [...s.threads()] });
         for (const request of e.pendingRequests())
@@ -578,6 +586,7 @@ export function initAssistant(): Promise<void> {
       mcp: createMcpHost(mcpRequest),
       google: createGoogleHost({ workspacePrepare, sheetExport, sheetCells, sheetDraft, sheetDrafts, sheetSearch, sheetRead }),
       core: createCoreHost(() => settings.get().workspace),
+      memory: createMemoryHost(() => settings.get().workspace),
       eventLevel: (threadId, level) => levels.set(threadId, level),
       store: s,
       registry: createRegistry(TOOLS, { deferred: DEFERRED }),

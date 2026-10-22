@@ -93,10 +93,13 @@ export interface NoteEdit {
   revision: string | null;
 }
 
-/** Duck's edit of its core memory (step W4), for the thread's chip: the diff of
- *  `memory/core.md`, and an undo over the text Duck left. */
+/** Duck's edit of its core memory (step W4) or of a long-term memory file (L1),
+ *  for the thread's chip: the diff, and an undo over the text Duck left. */
 export interface MemoryEdit {
   path: string;
+  /** A long-term memory file, relative to the workspace (`memory/decisions.md`);
+   *  absent for `core.md`. */
+  file?: string;
   /** null: the edit made the file. */
   before: string | null;
   after: string;
@@ -133,8 +136,10 @@ export interface Notice {
     | "budget"
     /** The older turns were summarized for the model (A6). */
     | "compacted"
-    /** Duck edited its core memory (W4). */
-    | "memory";
+    /** Duck edited its core memory (W4) or its long-term memory (L1). */
+    | "memory"
+    /** You asked Duck not to remember this thread, or to again (L1). */
+    | "memoryOff";
   text: string;
   /** `note` only. */
   note?: NoteEdit;
@@ -142,6 +147,8 @@ export interface Notice {
   plugins?: PluginsEdit;
   /** `memory` only. */
   memory?: MemoryEdit;
+  /** `memoryOff` only: false when you turned memory back on. */
+  off?: boolean;
   /** `task` only. */
   task?: { id: string };
   /** `compacted` only: Duck's summary, which the requests send in place of every
@@ -216,6 +223,8 @@ export type ClientMessage =
   | { type: "thread.delete"; threadId: string }
   /** Compact a thread (step A6): now, or once the reply running there is over. */
   | { type: "thread.compact"; threadId: string }
+  /** Don't remember this thread (step L1), or do again. */
+  | { type: "thread.memory"; threadId: string; off: boolean }
   /** Ask for the thread list, the open confirmations and the spend (a surface
    *  connecting). */
   | { type: "sync" }

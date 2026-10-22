@@ -5,8 +5,8 @@ behind each decision are in `assistant-plan.md`. This file describes the code, a
 Duck step updates it as part of its Done when. Duck's self-development sessions (L3)
 read it first.
 
-Last updated: step M3 (2026-10-22). Since W5 it also covers W6,
-D2, D4, P1, P2, M2, A5, A6, A7, W4, R1, R2, V1 to V5, X1 and the morning routine.
+Last updated: step L1 (2026-10-22). Since W5 it also covers W6,
+D2, D4, P1, P2, M2, M3, A5, A6, A7, W4, R1, R2, V1 to V5, X1 and the morning routine.
 
 ## The shape
 
@@ -86,7 +86,8 @@ D2, D4, P1, P2, M2, A5, A6, A7, W4, R1, R2, V1 to V5, X1 and the morning routine
 | `brain/policy.ts` | Which brain answers a turn (M3): `pickBackend` over the `brainPolicy` setting (`auto`, `api`, `subscription`), the API's soft limit, a "credit balance is too low" this month (`creditsGone`), and the subscription's windows (both under 70% / 80%, `SUBSCRIPTION_LIMITS`; no reading counts as room). `switchCard` words the card of a switch. |
 | `brain/subscription.ts` | The subscription brain's engine side (M3): `BrainHost` (`createBrainHost` over `ipc/brain.ts`), `BRAIN_PROMPT` (the system prompt plus what's different inside Claude Code), `mcpTools` (the registry's own definitions, so the two paths never drift), `toMcpResult`, `storedBlocks` / `storedResults` (a reply kept as API messages: no thinking, tool names without `mcp__duck__`, source `brain`), and the handoff: `brainTurn` puts what the session hasn't seen in front of your message (all of the thread for a new session, the compaction's summary for what it covers, the core memory; the turns since its last reply for a running or resumed one), `lastBrainSeq`, `unanswered`. `ASKED` is what a call parked on a card returns. |
 | `core.ts` | Core memory (W4): `memory/core.md` in the workspace, four sections (`CORE_SECTIONS`: About you, Preferences, Standing instructions, Names & nicknames) of one-line bullets. `addFact` / `removeFact` (the fact named, else the one fact containing the words; several is ambiguous and removes nothing), `coreText` (the `<core_memory>` block, null without facts; it says a standing instruction never counts as `grantedBy`), `createCoreHost` over `assistant_core_read` / `assistant_core_write`. Capped at `CORE_MAX_CHARS` (8000, ~2k tokens). |
-| `tools/memory.ts` | W4: `remember_core(section, fact)` and `forget(fact)`, both reversible and loaded (not deferred). Each edit is made on the file as read and written over that text; a save of yours in between makes it read again and redo the edit once. Each leaves a `memory` chip with the diff and an undo. |
+| `memory.ts` | Long-term memory, the engine's side (L1): `MemoryHost` (`createMemoryHost` over `ipc/memory.ts`), automatic recall (`recallFor`: the message searched, `worthRecalling` keeps up to `RECALL_K` = 3 hits, a memory entry holding two of its words or a note three; slower than `RECALL_MS` or failing, it's left out), `recallNote` (the `<recalled_memories>` block, plus the lesson line when `isCorrection` says the message corrects Duck, in English or Russian), `memoryOff` (a thread's latest `memoryOff` notice), `today`. |
+| `tools/memory.ts` | W4: `remember_core(section, fact)` and `forget_core(fact)`, both reversible. Each edit is made on the file as read and written over that text; a save of yours in between makes it read again and redo the edit once; the commit message names the fact. L1: `remember(topic, fact, why, conf, tags)` (reversible; refused in a thread you asked it not to remember), `recall(query)` (read; memory and notes), `forget(query)` (consequential: `prepare` finds the entries holding every word, the card lists them, `run` removes them). All loaded, none deferred. Every write leaves a `memory` chip with the diff and an undo. |
 | `tools/testConfirm.ts` | `test_confirm`, a consequential tool that does nothing, for trying the confirmation card. Registered in dev builds only. |
 | `mcp.ts` / `tools/mcp.ts` | External MCP servers (X1), from the settings' `mcpServers` (default: Quest Log at `http://127.0.0.1:7437/mcp`, no token). `createMcpHost(mcpRequest)` caches a server's `tools/list` for 5 minutes and turns a `tools/call` result into text. The tools are fixed, so a server that's down or changes never touches the cached prefix: `mcp_tools` (read: the servers, or one server's tools with their schemas and `readOnly`), `mcp_read` (read: only the tools named in the server's `readTools`), `mcp_call` (consequential: everything else; card summary `server: tool {args}`, specifier `server:tool` so a rule like `assistant:mcp_call(quest_log:create_entry)` can allow one tool, and `grantedBy`). Results come back in `<mcp_result … untrusted>`. The drawer's settings have an on/off and the URL per server. |
 | `google.ts` | Duck's `GoogleHost`: `search`, `read`, `cells`, `exportSheet` (prepares the workspace first), `draft` (into the `DRAFT_FOLDER`, "Duck drafts") and `drafts` (a month's), over the `assistant_sheet_*` commands. `isGoogleExpired` / `googleErrorText` read the backend's `google_expired:` errors. |
@@ -115,6 +116,7 @@ prompt's safety rules cover them.
 | `budget.rs` | Limits, month-to-date spend, and the cap rule (at the cap only Haiku with a purpose other than `thread` passes). `saved_usd`: this month's subscription-brain turns at their API price (`record_saved`, M3), never part of the spend. |
 | `threads.rs` | Threads, append-only messages and parked batches in `duck.db`; `delete` removes a thread with its messages and batches in one transaction. |
 | `summaries.rs` | The last summary per session (W3), JSON in `meta` under `assistant_summary:<instance>`. |
+| `memory.rs` | Long-term memory (L1). The files: `memory/<topic>.md` (`decisions`, `preferences`, `people`, `goals`, `lessons`, `projects/<name>`; `journal/` is L2's), one bullet per entry, `- 2026-10-22 — fact. Why: … (src: thread:…, conf: high, tags: …)`; `parse_file` reads any bullet, with or without the date and the parenthesis. `write` (secrets refused by `secret_in`: key and token patterns, a password after `:`/`=` or in quotes, long random-looking strings; the same text already in the file isn't written again), `forget` (exact bullets), `restore` (an undo, over the expected text), `list`. The index: `ensure` rescans what changed (by size and time) in `memory/` and, read-only, the notes root, each marked dirty by a `notify` watcher (or rescanned on every search without one); `search` splits the query into `terms` (stop words and numbers dropped, a long word cut by a letter or two so inflections match), ORs them in FTS5 (trigram), and ranks by words matched, then rank; a note hit is labelled `note: <project> / <name>`. `matching` is the AND for `forget`. Git: `commit` queues `commit_now` on the git queue: `git init` on the first change, then a commit of just the files changed, as Duck, none when nothing changed. |
 | `workspace.rs` | Duck's workspace (`prepare`, its `CLAUDE.md`, a `.gitignore` line for `data/`), task folders (`new_task`, `result`, both only under `tasks/`), the workers' registration (`register`: a settings file with the allow list in app data, and a `worker_sessions` row in the main DB) and `launch_args` for `pty_spawn`; the `assistant_tasks` records; the core memory (W4: `read_core`, and `write_core`, which refuses with "stale:" unless the file is still the text it was read as). |
 | `headless.rs` | Headless workers (D4): a worker session as `claude -p` over stream-json both ways. Prompts and interrupts are messages, permission requests are answered as data (racing the `PermissionRequest` hook, the first answer winning); otherwise it is an ordinary session to the status engine, summaries, the trust watcher and the transcript view. |
 | `subscription_brain.rs` | The subscription brain (M3): `brain_spawn` starts thread `t`'s `claude -p` (stream-json both ways, `--include-partial-messages`, `--model sonnet --effort medium`, `--tools ""`, `--strict-mcp-config` with only Duck's server and a per-process bearer token, `--permission-mode dontAsk --allowedTools mcp__duck`, `--setting-sources ""`, Duck's prompt by `--system-prompt-file`) in `<workspace>/brain`, with no `ANTHROPIC_*` or `WORKBENCH_INSTANCE_ID`, no CLAUDE.md, no auto-memory and no deferred tools. Session id = thread id, kept on disk, so a later spawn `--resume`s it. Emits `brain-event` (text deltas, `assistant` / `user` messages, `result`, init) and `brain-exited`; `rate_limit_event` goes to the usage meter (`statusline::ingest_rate_limit_info`), each `result` into the subscription ledger at its API price. `brain_send`, `brain_interrupt`, `brain_kill`, `brain_tool_result`; `kill_all` on exit. |
@@ -135,9 +137,10 @@ prompt's safety rules cover them.
 | `view.ts` | `toItems(messages)`: stored messages → display items (user text, reply text, a tool chip with its result attached, edit chips for notes, the toolbar and the core memory, notices; thinking and system messages hidden). `sessionLink()` reads `#session/<id>` links. |
 | `DuckButton.tsx` | The title-bar button ("D.U.C.K.", the icon beside it): toggles the drawer, the acronym tooltip, a confirmation-count badge, an amber/red tint past the soft limit/cap, ⏸ while trust is paused. |
 | `TrustViews.tsx` | `TrustPanel` (kill switch, rules, project modes, the floor with a typed confirmation) and `DecisionsPanel` (the log with make-a-rule / always-ask, the rule from `suggestRule`; and the replay of the past week with its report). Opened from the settings popover; they take the thread's place. |
-| `Drawer.tsx` | The drawer: header (thread list, new, the trust pill that is the kill switch, settings, close), thread view (markdown replies, tool chips, queued bubbles), confirmation cards, spend line, composer (Enter / Shift+Enter / Esc, "think hard" = effort `high` for one message). Always mounted and only hidden, so the thread and scroll survive closing. |
+| `Drawer.tsx` | The drawer: header (thread list, new, memory, the trust pill that is the kill switch, settings, close), thread view (markdown replies, tool chips, queued bubbles), confirmation cards, spend line, composer (Enter / Shift+Enter / Esc, "think hard" = effort `high` for one message). Always mounted and only hidden, so the thread and scroll survive closing. |
 | `DrawerSettings.tsx` | Queue-or-interrupt, and "start at login, minimized to the tray" (`@tauri-apps/plugin-autostart`; disabled in dev builds); the workers' settings, with "Edit core.md" (W4) and which brain Duck answers on (M3). |
 | `openCore.ts` | `openCoreMemory(workspace)` (W4): prepares the workspace, makes `core.md` with its empty sections if missing, and opens it in the "Duck" project's editor. |
+| `MemoryView.tsx` | The Memory view (L1): the long-term memory by topic, a search over it and the notes, per entry "edit" (the file in the "Duck" project's editor) and "forget", and "don't remember this conversation" for the open thread (a `thread.memory` request, which posts a `memoryOff` notice). |
 | `TasksView.tsx` | The Tasks view (D2): worker tasks newest first, with headline, cost for an API worker, and ways on (open `result.md`, save to notes, open the console, go to the thread). |
 | `OverviewView.tsx` | Every thread at a glance (A5): what each does, its news since you looked, its autopilots and tasks; no model call. |
 | `AnnounceSettings.tsx` / `SpeechSettings.tsx` / `VoiceSettings.tsx` | Settings tabs for announcements (V5), spoken replies (V2: engine, voices, rate, Chirp fallback, downloads) and voice input (V1, V4: the key, microphone, speech-to-text, conversation mode, talking over Duck). |
@@ -219,6 +222,12 @@ prompt's safety rules cover them.
 - The core memory (W4) isn't in `duck.db`: it's `memory/core.md` in Duck's workspace, a
   file you edit, and each thread keeps the copy it started with in its first system
   message.
+- Long-term memory (L1) is files too, `memory/*.md` in the workspace; `duck.db` only
+  indexes them: `memory_fts (body, path, line, entry JSON)` and `notes_fts (body, path,
+  line, label)`, both FTS5 with the trigram tokenizer, and `memory_index_files (kind,
+  path, mtime, size)`, which says what was read. `meta` `memory_index_root:<kind>` is the
+  folder indexed; a different one rebuilds that table. A thread you asked Duck not to
+  remember is a `memoryOff` notice in it.
 
 The main `workbench.db` holds `worker_sessions (instance_id, effort, permission_mode,
 strict_mcp, add_dir)`, which `pty_spawn` reads at each launch.
@@ -294,6 +303,18 @@ the threads started after it, and this one through the tool's result. A read tha
 leaves the block out. After a compaction, `toApiMessages` puts the dropped block back
 in front of the summary (`droppedCore`). In the drawer, settings → "Edit core.md" opens
 the file in the workspace's "Duck" project editor (`openCore.ts`), making it first.
+
+**Long-term memory** (step L1): each of your messages (not an event) is searched before
+its request (`recallFor`), and what's worth recalling goes in a system message of its
+own after the others in the opening, with `clear_at: "next_user_message"` (beta
+`mid-conversation-system-clear-at-2026-08-21`). The model sees it for this reply; it
+stays in the history and is sent back as stored, which the API renders as nothing once
+a later user message exists, so the prefix never changes and it costs nothing after
+its turn. A correction adds the line asking for a `lessons` entry. `toApiMessages`
+keeps a system message followed by another system message (it looks past them to the
+next message). The subscription brain gets the note in its `<duck_context>`, like the
+other notes. Every write is a commit in the workspace's repo; core memory writes too
+(`assistant_core_write` takes the message).
 
 **The subscription brain** (step M3): each turn asks `brain/policy.ts` which brain
 answers. On `subscription`, `brainLoop` replaces `loop`: the opening is stored as
@@ -372,7 +393,12 @@ Both rules are in `prompt.ts`.
 
 - Duck answering Claude Code questions and plans, and promoting rules into Claude Code's
   own settings (T3).
-- Git writes from Duck (left out of W2 on purpose).
+- Git writes from Duck to your projects (left out of W2 on purpose). Duck commits only its
+  own memory files, in its workspace (L1).
+- Long-term memory in the app: built and tested (the index, the files and the commits in
+  `memory.rs`, the recall note and the tools through the engine), not yet tried in a
+  real thread, and the `clear_at` system message not yet sent to the real API.
+  Consolidation, the journal and measuring recall are L2.
 - The subscription brain in the app: built and tested with a fake process, and the same
   flags tried by hand against a stand-in MCP server (M3's As built), not yet through
   Workbench itself.

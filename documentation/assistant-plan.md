@@ -4874,6 +4874,70 @@ up ("change this", with a circle around it).
   - A pasted API key is refused by `remember`.
   - The Duck repo has one commit per memory change.
 - **Out of scope:** consolidation (L2); embeddings.
+- **As built (2026-10-22):**
+  - **The files** (`assistant/memory.rs`): `memory/decisions.md`, `preferences.md`,
+    `people.md`, `goals.md`, `lessons.md` and `projects/<name>.md` in the workspace, made
+    on first use with a one-line header. An entry is `- 2026-10-22 — Decided SQLite for
+    notes sync. Why: one file. (src: thread:…, conf: high, tags: синхронизация
+    заметок)`. **`tags` is new** (beyond the Build's format): other words to find the
+    entry by, in both languages. Keyword search can't match "notes sync" to
+    «синхронизация заметок» by itself, so `remember` asks the model for the words in the
+    other language. Any bullet you write yourself is an entry too, with or without the
+    date and the parenthesis. `core.md` isn't indexed again, since every thread starts with
+    it. `journal/` is indexed when L2 writes it.
+  - **The index:** FTS5 with `tokenize='trigram'` in `duck.db` (`memory_fts`, and
+    `notes_fts` for the project notes, read-only), plus `memory_index_files`, the size
+    and time each file was read at. The `notify` watchers only mark `memory/` or the
+    notes root dirty, and the next search re-reads the files that changed. Without a
+    watcher every search rescans, which is cheap at this size. A query keeps its words of three letters or
+    more, drops English and Russian stop words and numbers, and cuts a word of five or six
+    letters by one and a longer one by two, so «заметок» finds «заметки» and "notes" finds
+    "note". The words are ORed, and a hit counts how many of them it holds.
+  - **Automatic recall:** before each message of yours (not a Workbench event), the
+    search runs on its text, waiting at most 1.5 s. Up to 3 hits go in a system message
+    after the turn's other one, with `clear_at: "next_user_message"` under the beta. A
+    memory entry needs two of the message's words (or its only word); a note needs three,
+    since notes are longer and match more by chance. The note stays in the history and is
+    sent back as stored, as the beta wants, so the prefix and the thinking stay valid and
+    a cleared copy costs nothing. The subscription brain gets it in its `<duck_context>`.
+  - **Tools:** `remember(topic, fact, why, conf, tags)` is reversible, with a chip and an
+    undo. `recall(query)` is read tier. `forget(query)` is consequential: its `prepare`
+    finds the entries holding every word, the card lists them, and confirming removes
+    them. **W4's `forget` is now `forget_core`**, so the two forgets don't share a name.
+    The secret filter runs in Rust, on `fact`, `why` and `tags`. It catches key and token
+    patterns (Anthropic, OpenAI-style, GitHub, Slack, AWS, Google, JWT, private keys), a
+    password after `:`/`=` or in quotes, `api_key = …`, and long random-looking strings.
+    Commit hashes, UUIDs and slugs pass.
+  - **Lessons:** the prompt asks for a `lessons` entry when you correct Duck, and a
+    message that reads like a correction ("no, I meant…", "I said…", «не то», «я же
+    сказал») adds a line saying so to that turn's recall note. The check is a
+    keyword match, not a model call.
+  - **Git:** the workspace becomes a repo (`git init -b main`) on the first change. Each
+    change commits only its own files, as `Duck <duck@workbench.local>`, through
+    `gitqueue`: `memory: <fact>`, `memory: forgot <query>`, `memory: undo in <file>`, and,
+    for W4's core memory, `memory: core: <fact>`. `tasks/` and the rest stay untracked; L4
+    decides what the backup holds.
+  - **Drawer:** a "memory" button opens the Memory view. It lists entries by topic, has a
+    search over memory and notes, and each entry has "edit" (the file in the Duck
+    project's editor) and "forget". "Don't remember this conversation" posts a
+    `memoryOff` notice in the thread, and `remember` refuses there. L2's consolidation
+    will read the same flag.
+  - **Done when:**
+    - Decided in one thread, surfaced later in either language: `memory.rs` tests the index
+      with an English entry tagged in Russian, found by "so, about the notes sync" and by
+      «что там с синхронизацией заметок?». A project note is found by "what did I write
+      about the auth refactor" and labelled `note: Workbench / auth`. `memory.test.ts`
+      checks the note in a real engine turn: its position, `clear_at`, and that it is sent
+      back unchanged on the next request.
+    - "Forget what I said about X": the card, then the files, the index and the undo
+      (both test files).
+    - A pasted API key is refused (`memory.rs`).
+    - One commit per change, and only that change's files (`memory.rs`, against real git).
+    - Not tried in the app yet, and the `clear_at` message hasn't been sent to the real
+      API. Its placement, a second system message right after the first, follows the
+      beta's docs but is untested.
+  - **Verified:** vitest 668 (9 new), tsc and eslint clean, cargo tests 292 (6 new),
+    clippy shows only the existing `badge.rs` warning.
 
 #### Step L2 — Consolidation, journal, and recall quality
 
@@ -6342,7 +6406,7 @@ T2 goes live after the replay check in its done-when (the past week's prompts th
 | V4 | Hands-free conversation mode | ☑ (live: talking over Duck on speakers, and the phone, not tried yet) |
 | V5 | Proactive announcements | ☑ (the reply window built with V4) |
 | V6 | Wake word on the PC (experimental) | ☐ |
-| L1 | Long-term memory: files, index, recall | ☐ |
+| L1 | Long-term memory: files, index, recall | ☑ (not tried in the app yet) |
 | L2 | Consolidation, journal, and recall quality | ☐ |
 | L3 | Self-development through Opus sessions | ☐ |
 | L4 | Routines, backup and housekeeping | ☐ |

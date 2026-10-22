@@ -32,6 +32,7 @@ import { formatAgo } from "../../util/format";
 import { renderMarkdown } from "../Editor/markdown";
 import "../../theme/markdown.css";
 import "../../theme/assistant.css";
+import { memoryRestore } from "../../ipc/memory";
 import { coreWorkspace, EMPTY_CORE } from "../../assistant/core";
 import { coreWrite } from "../../ipc/assistant";
 import type {
@@ -59,6 +60,7 @@ import {
 } from "./voiceState";
 import { voicePtt, voiceToggle } from "../../ipc/voice";
 import { TasksPanel } from "./TasksView";
+import { MemoryPanel } from "./MemoryView";
 import { OverviewPanel } from "./OverviewView";
 import { DecisionsPanel, TrustPanel } from "./TrustViews";
 import type { ThreadRow } from "../../ipc/assistant";
@@ -315,6 +317,7 @@ export default function AssistantDrawer() {
         <DecisionsPanel duck={duck} onBack={() => showThread(duck.current)} />
       )}
       {view === "tasks" && <TasksPanel duck={duck} onBack={() => showThread(duck.current)} />}
+      {view === "memory" && <MemoryPanel duck={duck} onBack={() => showThread(duck.current)} />}
       {view === "overview" && (
         <OverviewPanel duck={duck} onBack={() => showThread(duck.current)} onOpen={(id) => showThread(id)} />
       )}
@@ -337,7 +340,7 @@ export default function AssistantDrawer() {
   );
 }
 
-type View = "thread" | "trust" | "decisions" | "tasks" | "overview";
+type View = "thread" | "trust" | "decisions" | "tasks" | "overview" | "memory";
 
 /** The breadcrumbs: other threads with news since you looked, each a click away. */
 function Elsewhere({ duck, onOpen }: { duck: DuckState; onOpen: (id: string) => void }) {
@@ -529,6 +532,17 @@ function Header({
             ` · ${duck.tasks.filter((t) => t.state === "running" || t.state === "queued").length}`}
         </button>
       )}
+      <button
+        type="button"
+        style={btn}
+        title="what Duck remembers, and not remembering this thread"
+        onClick={() => {
+          onView("memory");
+          setMenu(null);
+        }}
+      >
+        memory
+      </button>
       <TrustPill duck={duck} />
       <button
         type="button"
@@ -862,16 +876,18 @@ function ItemView({ item, active }: { item: Item; active: boolean }) {
           staleText="can't undo: the plugin file changed since"
         />
       );
-    case "memory":
+    case "memory": {
+      const label = item.edit.file?.replace(/^memory\//, "") ?? "core.md";
       return (
         <EditChip
           text={item.text}
-          project="core memory"
-          files={[{ label: "core.md", before: item.edit.before ?? "", after: item.edit.after }]}
+          project={item.edit.file ? "memory" : "core memory"}
+          files={[{ label, before: item.edit.before ?? "", after: item.edit.after }]}
           undo={() => undoMemoryEdit(item.edit)}
-          staleText="can't undo: core.md changed since"
+          staleText={`can't undo: ${label} changed since`}
         />
       );
+    }
     case "task":
       return <TaskCard taskId={item.taskId} text={item.text} />;
     case "notice":
@@ -1135,10 +1151,16 @@ async function undoNoteEdit(e: NoteEdit): Promise<string> {
   return "undone";
 }
 
-/** Put the core memory back as it was before Duck's edit (W4), if nobody changed
- *  it since. */
+/** Put the core memory (W4) or a long-term memory file (L1) back as it was
+ *  before Duck's edit, if nobody changed it since. */
 async function undoMemoryEdit(e: MemoryEdit): Promise<string> {
-  await coreWrite(coreWorkspace(e.path), e.before ?? EMPTY_CORE, e.after);
+  if (e.file) {
+    // A long-term memory file (L1): its workspace is the path without the file.
+    const workspace = e.path.slice(0, e.path.length - e.file.length - 1);
+    await memoryRestore(workspace, e.file, e.before, e.after, `memory: undo in ${e.file}`);
+    return "undone";
+  }
+  await coreWrite(coreWorkspace(e.path), e.before ?? EMPTY_CORE, e.after, "memory: core: undo");
   return "undone";
 }
 

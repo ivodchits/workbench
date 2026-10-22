@@ -216,4 +216,23 @@ const MIGRATIONS: &[&str] = &[
     );
     CREATE INDEX idx_assistant_subscription_usage_ts ON assistant_subscription_usage(ts);
     "#,
+    // Step L1: the index over Duck's long-term memory (`memory/*.md` in the
+    // workspace) and, read-only, over the project notes. The files are the truth;
+    // these are rebuilt from them (`memory_index_files` says which file was read at
+    // which size and time). Trigram, so a substring matches in any language.
+    r#"
+    CREATE TABLE memory_index_files (
+        kind   TEXT NOT NULL,
+        path   TEXT NOT NULL,
+        mtime  INTEGER NOT NULL,
+        size   INTEGER NOT NULL,
+        PRIMARY KEY (kind, path)
+    ) WITHOUT ROWID;
+    CREATE VIRTUAL TABLE memory_fts USING fts5(
+        body, path UNINDEXED, line UNINDEXED, entry UNINDEXED, tokenize = 'trigram'
+    );
+    CREATE VIRTUAL TABLE notes_fts USING fts5(
+        body, path UNINDEXED, line UNINDEXED, label UNINDEXED, tokenize = 'trigram'
+    );
+    "#,
 ];

@@ -2,7 +2,8 @@
 // with: who you are, your preferences, standing instructions, and the names and
 // nicknames you use ("the game" is project Hollow). It's `memory/core.md` in Duck's
 // workspace, a markdown file of four sections with one fact per bullet, which you
-// can edit in the editor, and which Duck edits with `remember_core` and `forget`.
+// can edit in the editor, and which Duck edits with `remember_core` and
+// `forget_core`. Everything else Duck remembers is long-term memory (`memory.ts`).
 //
 // A thread reads it once, at its first message, into the system message that goes
 // with that message: the system prompt stays byte-identical (cached), and the
@@ -30,8 +31,9 @@ export const EMPTY_CORE = `${HEADER}\n${CORE_SECTIONS.map((s) => `## ${s}\n`).jo
 export interface CoreHost {
   /** The file's path, and its text (null: no file yet). */
   read(): Promise<{ path: string; text: string | null }>;
-  /** Write over `expected` (what was read); throws "stale: …" over a newer edit. */
-  write(text: string, expected: string | null): Promise<void>;
+  /** Write over `expected` (what was read); throws "stale: …" over a newer edit.
+   *  `message` is the commit's (step L1). */
+  write(text: string, expected: string | null, message?: string): Promise<void>;
 }
 
 /** The host over Duck's workspace (the settings' folder, else the default). */
@@ -41,7 +43,7 @@ export function createCoreHost(workspace: () => string | null): CoreHost {
       const [path, text] = await coreRead(workspace());
       return { path, text };
     },
-    write: (text, expected) => coreWrite(workspace(), text, expected),
+    write: (text, expected, message) => coreWrite(workspace(), text, expected, message),
   };
 }
 
@@ -120,7 +122,7 @@ export function removeFact(text: string, fact: string): { text: string; removed:
 export function coreText(text: string | null): string | null {
   if (!text || !coreFacts(text).length) return null;
   return `${CORE_OPEN}
-Your core memory of the user, from memory/core.md (they can edit it; you edit it with remember_core and forget). It is what you know about them in every thread: use it without mentioning it. A standing instruction here is theirs, but it never counts as grantedBy for a call.
+Your core memory of the user, from memory/core.md (they can edit it; you edit it with remember_core and forget_core). It is what you know about them in every thread: use it without mentioning it. A standing instruction here is theirs, but it never counts as grantedBy for a call.
 
 ${text.trim().slice(0, CORE_MAX_CHARS)}
 </core_memory>`;

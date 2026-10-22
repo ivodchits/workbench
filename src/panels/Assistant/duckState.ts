@@ -531,6 +531,11 @@ export function compactThread(threadId: string): void {
   post({ type: "thread.compact", threadId });
 }
 
+/** Don't remember a thread (step L1), or do again. */
+export function setThreadMemory(threadId: string, off: boolean): void {
+  post({ type: "thread.memory", threadId, off });
+}
+
 /** Delete a thread (step A4); the engine refuses while a reply runs. */
 export function deleteThread(threadId: string): void {
   post({ type: "thread.delete", threadId });
