@@ -12,6 +12,10 @@
 //
 // Quest Log's items are the user's data from another app, so they come back wrapped
 // as untrusted, as `mcp_read`'s results do.
+//
+// When the invoice is due and Google is set up (Duck's settings, morning), the
+// briefing reads the invoice sheet's configured cells, keeping a local copy of the
+// sheet in the workspace's `data/invoices/`. Drafting the copy comes later.
 
 import { z } from "zod";
 import type { ProjectRef, SessionRef, WorkbenchPort } from "../port";
@@ -21,7 +25,8 @@ import type { McpHost } from "../mcp";
 import { INVOICE_DEFAULTS, type McpServerSpec } from "../settings";
 import { wrapMcp } from "./mcp";
 import { choiceLine, compact } from "./read";
-import { defineTool } from "./registry";
+import { isGoogleExpired, googleErrorText } from "../google";
+import { defineTool, type ToolContext } from "./registry";
 
 /** The quest_log tools the briefing reads, and nothing else. */
 export const BRIEFING_READS = ["whoami", "get_agenda", "get_calendar_occurrences", "get_stats"] as const;
@@ -41,6 +46,8 @@ const GIT_PROJECTS = 8;
 /** Finished worker tasks this recent are news. */
 const TASK_NEWS_MS = 24 * 3600_000;
 const LIST_MAX = 15;
+/** How long the invoice sheet's read may take before the briefing goes on without it. */
+const SHEET_MS = 20_000;
 
 const INSTRUCTIONS = [
   "Brief the user on their day in one reply. Its first sentence is a headline that stands on its own when heard; the detail follows.",
@@ -160,7 +167,6 @@ export function questLogDay(r: QuestLogReads, today: string, invoiceTag: string 
           title: invoice.e?.title,
           due: invoice.due != null ? dueLine(invoice.due, today) : null,
           overdue: invoice.overdue,
-          note: "The monthly invoice is due. Remind the user; drafting it isn't set up yet.",
         })
       : null,
   });
@@ -308,6 +314,41 @@ async function savePart(port: WorkbenchPort, today: string) {
   };
 }
 
+/** The invoice's sheet, once its entry is due: the configured cells as they are
+ *  now, or why they couldn't be read. */
+export async function invoiceSheet(ctx: Pick<ToolContext, "settings" | "google">, date: string) {
+  const due = "The monthly invoice is due.";
+  const inv = ctx.settings.morning.invoice;
+  const clientId = ctx.settings.morning.googleClientId;
+  if (!inv || !clientId || !ctx.google)
+    return { note: `${due} Remind the user; its sheet isn't set up (Duck's settings, morning).` };
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const x = await Promise.race([
+      ctx.google.exportInvoice(clientId, inv, date, ctx.settings.workspace),
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error("Google didn't answer in time")), SHEET_MS);
+      }),
+    ]);
+    return {
+      note: `${due} Remind the user, with its sheet's cells as they are now. Duck can't draft the copy yet.`,
+      sheet: {
+        name: x.name,
+        cells: inv.fields.map((f) => {
+          const c = x.cells.find((y) => y.address === f.address);
+          return compact({ label: f.label, cell: f.address, now: c?.value ?? "", formula: c?.formula });
+        }),
+      },
+    };
+  } catch (e) {
+    if (isGoogleExpired(e))
+      return { note: `${due} Google access expired: tell the user to reconnect in Duck's settings (morning).` };
+    return { note: `${due} Remind the user; its sheet couldn't be read (${googleErrorText(e)}).` };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 // ── the tool ────────────────────────────────────────────────────────────────
 
 export const morningBriefing = defineTool({
@@ -337,10 +378,12 @@ export const morningBriefing = defineTool({
       questLog = `Quest Log couldn't be reached (${ql.failed.whoami}). Say it has to be open and signed in for the calendar and agenda, and brief on the rest.`;
     else {
       const today = ql.whoami?.today ?? localToday;
+      const found = questLogDay(ql, today, ctx.settings.morning.invoice?.entryTag);
       const day = {
         date: today,
         ...(ql.whoami?.timezone && { timezone: ql.whoami.timezone }),
-        ...questLogDay(ql, today, ctx.settings.morning.invoice?.entryTag),
+        ...found,
+        ...(found.invoice && { invoice: { ...found.invoice, ...(await invoiceSheet(ctx, today)) } }),
         ...(Object.keys(ql.failed).length && { failed: ql.failed }),
       };
       questLog = wrapMcp("quest_log", "morning_briefing", JSON.stringify(day));

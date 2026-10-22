@@ -33,6 +33,7 @@ import type { ThreadMoves } from "./threads";
 import type { HaikuCall } from "./haikuTask";
 import type { Level } from "../announce";
 import type { McpHost } from "../mcp";
+import type { GoogleHost } from "../google";
 
 export type Tier = "read" | "reversible" | "consequential";
 
@@ -66,6 +67,8 @@ export interface ToolContext {
   haiku?: HaikuCall | null;
   /** External MCP servers (step X1); null where there are none (some tests). */
   mcp: McpHost | null;
+  /** The morning routine's Google sheet; absent where there is none. */
+  google?: GoogleHost | null;
   /** Start a new Duck thread on `words`, which must be the user's own words from
    *  their latest message here (it throws otherwise). The new thread's turn runs on
    *  its own; resolves to its id. With `go` (step A7), the conversation moves into

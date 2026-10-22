@@ -290,3 +290,53 @@ export const mcpRequest = (
   timeoutMs?: number,
 ): Promise<unknown> =>
   invoke("assistant_mcp_request", { url, tokenEnv, method, params, timeoutMs });
+
+/** The morning routine's Google access: whether it's connected and whether the
+ *  OAuth client's secret is stored (`secretTarget` names the credential for
+ *  `cmdkey`). Tokens never come back to the webview. */
+export interface GoogleStatus {
+  connected: boolean;
+  secretStored: boolean;
+  secretTarget: string;
+}
+
+export interface SheetCell {
+  address: string;
+  /** As the sheet shows it. */
+  value: string;
+  /** The formula, when the cell holds one. */
+  formula?: string;
+}
+
+export interface SheetCells {
+  name: string;
+  modified?: string;
+  cells: SheetCell[];
+}
+
+/** The cells, and where the local copy of the sheet went. */
+export interface SheetExport extends SheetCells {
+  csv: string;
+  xlsx: string;
+  sidecar: string;
+}
+
+export const googleStatus = (): Promise<GoogleStatus> => invoke("assistant_google_status");
+
+/** Sign in to Google in the browser; resolves once the consent comes back. */
+export const googleConnect = (clientId: string): Promise<GoogleStatus> =>
+  invoke("assistant_google_connect", { clientId });
+
+export const googleDisconnect = (): Promise<GoogleStatus> => invoke("assistant_google_disconnect");
+
+export const sheetCells = (clientId: string, sheetId: string, tab: string, addresses: string[]): Promise<SheetCells> =>
+  invoke("assistant_sheet_cells", { clientId, sheetId, tab, addresses });
+
+export const sheetExport = (
+  clientId: string,
+  workspace: string,
+  date: string,
+  sheetId: string,
+  tab: string,
+  addresses: string[],
+): Promise<SheetExport> => invoke("assistant_sheet_export", { clientId, workspace, date, sheetId, tab, addresses });

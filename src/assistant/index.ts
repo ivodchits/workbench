@@ -17,6 +17,8 @@ import { homeDir } from "@tauri-apps/api/path";
 import {
   getSpend,
   mcpRequest,
+  sheetExport,
+  workspacePrepare,
   onUsage,
   replayCalls,
   type Spend,
@@ -62,6 +64,7 @@ import { QUIET_TOOLS, type QuietHost } from "./tools/quiet";
 import { MCP_TOOLS } from "./tools/mcp";
 import { MORNING_TOOLS } from "./tools/morning";
 import { createMcpHost } from "./mcp";
+import { createGoogleHost } from "./google";
 import { SUMMARY_TOOLS } from "./tools/summaries";
 import { createRegistry } from "./tools/registry";
 import { TASK_TOOLS } from "./tools/tasks";
@@ -552,6 +555,7 @@ export function initAssistant(): Promise<void> {
       quiet: quietHost,
       haiku: (input, signal) => oneShot("haiku_task", input, { signal }),
       mcp: createMcpHost(mcpRequest),
+      google: createGoogleHost({ workspacePrepare, sheetExport }),
       eventLevel: (threadId, level) => levels.set(threadId, level),
       store: s,
       registry: createRegistry(TOOLS, { deferred: DEFERRED }),

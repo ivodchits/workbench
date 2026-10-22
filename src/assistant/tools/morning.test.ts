@@ -3,9 +3,10 @@ import { describe, expect, it } from "vitest";
 import { Autopilot, type AutopilotManager } from "../autopilot";
 import { fakePort, project, session, toolCtx } from "../fakePort.test-util";
 import type { McpCallResult, McpHost } from "../mcp";
-import { QUEST_LOG } from "../settings";
+import type { GoogleHost } from "../google";
+import { DEFAULT_SETTINGS, QUEST_LOG, type InvoiceSettings } from "../settings";
 import type { Task, TaskManager } from "../tasks";
-import { addDays, BRIEFING_READS, isoDate, morningBriefing, questLogDay } from "./morning";
+import { addDays, BRIEFING_READS, invoiceSheet, isoDate, morningBriefing, questLogDay } from "./morning";
 
 /** Local epoch ms for "YYYY-MM-DD" at hh:mm. */
 const at = (date: string, h: number, m = 0) => {
@@ -272,5 +273,61 @@ describe("morning_briefing", () => {
 
     const none = (await morningBriefing.run({}, toolCtx(fakePort({})))) as Record<string, unknown>;
     expect(none).not.toHaveProperty("save");
+  });
+});
+
+describe("the invoice sheet in the briefing", () => {
+  const invoice: InvoiceSettings = {
+    sheetId: "1AbC_defGhIjKlMnOpQrStUvWxYz0123456789",
+    tab: "Invoices",
+    draftFolder: "Duck drafts",
+    entryTag: "bill",
+    fields: [
+      { label: "Date", address: "B2", kind: "date", rule: "today" },
+      { label: "Amount", address: "F10", kind: "amount", rule: "same_as_last" },
+    ],
+  };
+  const settings = { ...DEFAULT_SETTINGS, morning: { googleClientId: "123.apps.googleusercontent.com", invoice } };
+  const google = (fn: GoogleHost["exportInvoice"]): GoogleHost => ({ exportInvoice: fn });
+
+  it("reads the configured cells when the invoice entry (by its tag) is due", async () => {
+    const asked: unknown[] = [];
+    const host = google((clientId, inv, date) => {
+      asked.push([clientId, inv.sheetId, date]);
+      return Promise.resolve({
+        name: "Invoices",
+        cells: [
+          { address: "B2", value: "2026-09-01" },
+          { address: "F10", value: "$1,200.00", formula: "=C5*C6" },
+        ],
+        csv: "c",
+        xlsx: "x",
+        sidecar: "s",
+      });
+    });
+    const ql = questLog();
+    (ql.get_agenda as { all: { entry: { tags: string[] } }[] }).all[2].entry.tags = ["bill"];
+    const ctx = { ...toolCtx(fakePort({}), settings), mcp: fakeMcp(ql).host, google: host };
+    const out = (await morningBriefing.run({}, ctx)) as { questLog: string };
+    expect(asked).toEqual([["123.apps.googleusercontent.com", invoice.sheetId, TODAY]]);
+    const day = JSON.parse(out.questLog.split("\n")[1]) as { invoice: Record<string, unknown> };
+    expect(day.invoice).toMatchObject({
+      title: "Send invoice",
+      sheet: {
+        name: "Invoices",
+        cells: [
+          { label: "Date", cell: "B2", now: "2026-09-01" },
+          { label: "Amount", cell: "F10", now: "$1,200.00", formula: "=C5*C6" },
+        ],
+      },
+    });
+  });
+
+  it("says to reconnect when Google access expired, and what else went wrong otherwise", async () => {
+    const expired = google(() => Promise.reject(new Error("google_expired: Google access expired, reconnect in Duck's settings")));
+    expect((await invoiceSheet({ settings, google: expired }, TODAY)).note).toMatch(/reconnect in Duck's settings/);
+    const down = google(() => Promise.reject(new Error("Google answered 500")));
+    expect((await invoiceSheet({ settings, google: down }, TODAY)).note).toMatch(/couldn't be read \(Google answered 500\)/);
+    expect((await invoiceSheet({ settings: DEFAULT_SETTINGS, google: down }, TODAY)).note).toMatch(/isn't set up/);
   });
 });
