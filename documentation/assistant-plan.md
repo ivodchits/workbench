@@ -4195,6 +4195,35 @@ up ("change this", with a circle around it).
 - **Out of scope:** listening with the screen off (R4); echo on the desktop, which V4
   part 2 handles.
 
+#### Step V8 — Announcements don't turn the mic on (small fix, added 2026-10-22)
+
+- **Goal:** after Duck says an announcement out loud, it doesn't start listening. The mic
+  opens only when you turn conversation mode on yourself (reported 2026-10-22: "after it
+  announces something, it immediately turns on talking mode and starts listening").
+- **Why it happens:** V5's reply window, built with V4. When an announcement has been said
+  in full, `onAnnounced` → `replyWindow` in `voiceState.ts` calls `voice_reply_window`,
+  which runs the conversation pipeline for 8 s. Its pref `voice.replyWindow` is on by
+  default, and an install that saved its voice prefs has `true` stored.
+- **Depends on:** nothing. Small; it goes alongside V7.
+- **Build:**
+  - Remove the reply window: `replyWindow` and its `onAnnounced` hook in `voiceState.ts`,
+    the setting in `VoiceSettings.tsx`, the pref, `voice_reply_window` and its window
+    state in `src-tauri/src/voice/`, and `Conversation.window`. A stored `replyWindow`
+    pref is ignored.
+  - Replying to an announcement is what you do yourself: the key, the drawer's mic, or
+    typing. A reply still goes to the announcement's thread: the drawer opens on it once
+    it's been said (as today when the window isn't hidden), so the key's turn lands there.
+  - "Say 'read it'" in announcements becomes "press the key and say 'read it'" wherever
+    the prompt or the spoken text offers it.
+- **Key files:** `src/panels/Assistant/voiceState.ts`, `replySpeech.ts`,
+  `VoiceSettings.tsx`, `src/ipc/voice.ts`, `src/ipc/prefs.ts`,
+  `src-tauri/src/voice/mod.rs`, `conversation.rs`.
+- **Done when:**
+  - An announcement said in full leaves the mic off: no conversation state, no level
+    events, no turn (tested).
+  - Conversation mode still starts from the key and the drawer's mic.
+  - A turn after an announcement goes to the announcement's thread.
+
 ### Track R — Remote
 
 #### Step R1 — Assistant endpoints on the remote server
@@ -6538,7 +6567,7 @@ X0 ─┬─▶ A1 ─▶ A2 ─┬─▶ A3 ─┬─▶ W2 ─┬─▶ T1 ─
     ├─▶ M1 ─▶ M4 (permission mode at launch)
     └─▶ V1 (after A3) ─▶ V2 (after X0's listening test) ─┬─▶ V3 (needs W3)
                                                           └─▶ V4
-    V1 ─▶ V6 (experimental; better after V2, V4) ;  V4 ─▶ V7 (high priority)
+    V1 ─▶ V6 (experimental; better after V2, V4) ;  V4 ─▶ V7 (high priority) ;  V5 ─▶ V8 (small)
     M2 + W4 ─▶ S1 ─▶ S2 ;  M2 + D2 ─▶ M3
     W4 + D1 ─▶ L1 ─▶ L2 ;  D2 + S2 + L1 + T1 ─▶ L3 ;  L1 + D2 + S2 ─▶ L4
     V2 + V4 + D1 ─▶ V5 ;  W2 + W3 + T2 + D2 ─▶ P1 (V5 for spoken stops) ─▶ P2
@@ -6567,7 +6596,8 @@ X0 ─┬─▶ A1 ─▶ A2 ─┬─▶ A3 ─┬─▶ W2 ─┬─▶ T1 ─
    long-term memory.*
 5. L2, S2, **L3** (self-development: from here Duck can help build the rest), **L4**,
    **V7** (high priority, added 2026-10-22: Duck on the phone cuts itself off hearing its
-   own voice; right after the step in progress), R3, then B1,
+   own voice; right after the step in progress), **V8** (small, added 2026-10-22:
+   announcements no longer turn the mic on; alongside V7, right after it), R3, then B1,
    T3, D3; B2 only if quick browser actions turn out to need it; **R4** once
    R3 shows you really use Duck from the phone.
 
@@ -6737,6 +6767,7 @@ T2 goes live after the replay check in its done-when (the past week's prompts th
 | V5 | Proactive announcements | ☑ (the reply window built with V4) |
 | V6 | Wake word on the PC (experimental) | ☐ |
 | V7 | Duck stops hearing itself on the phone (high priority) | ☐ |
+| V8 | Announcements don't turn the mic on (small fix) | ☐ |
 | L1 | Long-term memory: files, index, recall | ☑ (not tried in the app yet) |
 | L2 | Consolidation, journal, and recall quality | ☑ (not tried in the app; hit-rate review 2026-11-05) |
 | L3 | Self-development through Opus sessions | ☑ (not tried in the app; no real Opus branch yet) |
