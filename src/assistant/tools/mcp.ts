@@ -54,8 +54,13 @@ async function call(
 ): Promise<string> {
   const r = await host(ctx).callTool(server, tool, args ?? {}, TIMEOUT_MS - 2_000);
   if (r.isError) throw new Error(`${server.name}: ${tool} failed: ${r.text}`);
-  const body = r.text.replace(/<\/mcp_result>/gi, "</mcp_result_>");
-  return `<mcp_result server="${attr(server.name)}" tool="${attr(tool)}" untrusted>\n${body}\n</mcp_result>`;
+  return wrapMcp(server.name, tool, r.text);
+}
+
+/** A server's text wrapped as untrusted, any closing tag inside defused. */
+export function wrapMcp(server: string, tool: string, text: string): string {
+  const body = text.replace(/<\/mcp_result>/gi, "</mcp_result_>");
+  return `<mcp_result server="${attr(server)}" tool="${attr(tool)}" untrusted>\n${body}\n</mcp_result>`;
 }
 
 /** The call's arguments in one short line, for the card. */

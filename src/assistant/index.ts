@@ -60,6 +60,7 @@ import { READ_ALOUD_TOOLS, type ReaderHost } from "./tools/readAloud";
 import { SCREENSHOT_TOOLS, type ScreenHost } from "./tools/screenshot";
 import { QUIET_TOOLS, type QuietHost } from "./tools/quiet";
 import { MCP_TOOLS } from "./tools/mcp";
+import { MORNING_TOOLS } from "./tools/morning";
 import { createMcpHost } from "./mcp";
 import { SUMMARY_TOOLS } from "./tools/summaries";
 import { createRegistry } from "./tools/registry";
@@ -103,6 +104,7 @@ const TOOLS = [
   ...THREAD_TOOLS,
   ...HAIKU_TOOLS,
   ...MCP_TOOLS,
+  ...MORNING_TOOLS,
   ...(import.meta.env.DEV ? [testConfirm, testAnnounce] : []),
 ];
 

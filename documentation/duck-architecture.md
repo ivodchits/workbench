@@ -79,6 +79,7 @@ D2, D4, P1, P2, M2, A5, A7, R1, R2 and V1 to V5.
 | `tools/quiet.ts` | V5: `set_quiet`, Do Not Disturb and the Speak switch by voice or text. |
 | `tools/testConfirm.ts` | `test_confirm`, a consequential tool that does nothing, for trying the confirmation card. Registered in dev builds only. |
 | `mcp.ts` / `tools/mcp.ts` | External MCP servers (X1), from the settings' `mcpServers` (default: Quest Log at `http://127.0.0.1:7437/mcp`, no token). `createMcpHost(mcpRequest)` caches a server's `tools/list` for 5 minutes and turns a `tools/call` result into text. The tools are fixed, so a server that's down or changes never touches the cached prefix: `mcp_tools` (read: the servers, or one server's tools with their schemas and `readOnly`), `mcp_read` (read: only the tools named in the server's `readTools`), `mcp_call` (consequential: everything else; card summary `server: tool {args}`, specifier `server:tool` so a rule like `assistant:mcp_call(quest_log:create_entry)` can allow one tool, and `grantedBy`). Results come back in `<mcp_result … untrusted>`. The drawer's settings have an on/off and the URL per server. |
+| `tools/morning.ts` | `morning_briefing` (the morning routine, phase 1; read tier, 30 s): only when the user asks ("morning routine"). One call gathers the day in code, no model call: a fixed list of quest_log reads through `ctx.mcp` (`whoami`, `get_agenda`, `get_calendar_occurrences` today to +2 days, `get_stats`, in parallel, a failed read noted) reduced to the schedule by time, overdue and open items, what's ahead and the invoice entry (tag `duck:invoice`), wrapped as untrusted; and Workbench's sessions waiting on the user, worker tasks, autopilots, limits and the git exceptions of projects in use. The result carries the briefing's order (the system prompt is frozen and has no dates) and where to save it: the "Duck" project's `morning-<date>` note, made with `create_note` or added to with `append_note`. Quest Log down: it says so and briefs on the rest. |
 
 Outside the folder, `src/transcript/plainText.ts` (`readPlainText`) writes a session's
 recent items as text for `read_session`: user, Claude, one line per tool call, cut to a
@@ -301,4 +302,5 @@ Both rules are in `prompt.ts`.
 - Duck answering Claude Code questions and plans, and promoting rules into Claude Code's
   own settings (T3).
 - Git writes from Duck (left out of W2 on purpose).
-- The morning routine (`morning_briefing`, the invoice draft from a Google Sheet copy).
+- The morning routine's Google half: access, the invoice draft from a Google Sheet copy, and prep
+  ahead of the day (`morning_briefing` itself is built).
