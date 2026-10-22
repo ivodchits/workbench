@@ -104,7 +104,8 @@ pub fn resolve(dir: Option<&str>) -> Result<PathBuf, String> {
 }
 
 /// Make the workspace (and its `tasks/`), and write its `CLAUDE.md` if it has none.
-/// A `CLAUDE.md` already there is the user's to edit and is left alone.
+/// A `CLAUDE.md` already there is the user's to edit and is left alone. Its
+/// `.gitignore` keeps `data/` (the invoice exports) out of any backup remote.
 pub fn prepare(dir: &Path) -> Result<(), String> {
     if dir.exists() && !dir.is_dir() {
         return Err(format!("{} is a file, not a folder", dir.display()));
@@ -115,7 +116,26 @@ pub fn prepare(dir: &Path) -> Result<(), String> {
     if !md.exists() {
         std::fs::write(&md, CLAUDE_MD).map_err(|e| format!("cannot write {}: {e}", md.display()))?;
     }
-    Ok(())
+    ignore_data(dir)
+}
+
+/// The folder for the morning routine's local data (invoice exports).
+pub const DATA: &str = "data";
+
+/// Add `data/` to the workspace's `.gitignore`, unless a line already covers it.
+fn ignore_data(dir: &Path) -> Result<(), String> {
+    let path = dir.join(".gitignore");
+    let text = std::fs::read_to_string(&path).unwrap_or_default();
+    let covered = text
+        .lines()
+        .map(str::trim)
+        .any(|l| matches!(l, "data" | "data/" | "/data" | "/data/"));
+    if covered {
+        return Ok(());
+    }
+    let sep = if text.is_empty() || text.ends_with('\n') { "" } else { "\n" };
+    std::fs::write(&path, format!("{text}{sep}{DATA}/\n"))
+        .map_err(|e| format!("cannot write {}: {e}", path.display()))
 }
 
 /// A folder name from a task's title: lowercase ASCII words joined by `-`, at most
@@ -406,6 +426,16 @@ mod tests {
         prepare(&ws).unwrap();
         assert_eq!(std::fs::read_to_string(ws.join("CLAUDE.md")).unwrap(), "mine");
         assert!(ws.join(TASKS).is_dir());
+        std::fs::remove_dir_all(ws).unwrap();
+    }
+
+    #[test]
+    fn prepare_ignores_data_once() {
+        let ws = scratch("ignore");
+        std::fs::write(ws.join(".gitignore"), "*.tmp").unwrap();
+        prepare(&ws).unwrap();
+        prepare(&ws).unwrap();
+        assert_eq!(std::fs::read_to_string(ws.join(".gitignore")).unwrap(), "*.tmp\ndata/\n");
         std::fs::remove_dir_all(ws).unwrap();
     }
 
