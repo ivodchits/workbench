@@ -73,6 +73,8 @@ export interface ThreadRow {
   mode: string;
   created: number;
   updated: number;
+  /** Kept from the clean-up of idle threads (step L4). */
+  keep?: boolean;
 }
 
 /** `notice` is shown in the thread but never sent to the API. */
@@ -104,6 +106,9 @@ export const threadMessages = (threadId: string): Promise<StoredMessage[]> =>
   invoke("assistant_thread_messages", { threadId });
 export const threadTitle = (threadId: string, title: string): Promise<void> =>
   invoke("assistant_thread_title", { threadId, title });
+/** Keep a thread from the clean-up of idle threads (step L4), or stop keeping it. */
+export const threadKeep = (threadId: string, keep: boolean): Promise<void> =>
+  invoke("assistant_thread_keep", { threadId, keep });
 /** Delete a thread with its messages and parked batches (step A4). */
 export const threadDelete = (threadId: string): Promise<void> =>
   invoke("assistant_thread_delete", { threadId });

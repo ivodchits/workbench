@@ -48,6 +48,9 @@ export interface TrustFacts {
   /** Why this call always asks, whatever the rules say (a plugin action whose
    *  file asks to confirm it). Treated as the floor. */
   asks?: string;
+  /** A named floor exception the call claims (`FLOOR_EXCEPTIONS`, step L4): the
+   *  one exact text it allows doesn't trip that entry. */
+  floorException?: string;
   /** Match rules as this tool instead (`assistant:answer_choice` for keys pressed
    *  into an open prompt, W6): the call does what that tool does. */
   asTool?: string;
@@ -126,6 +129,7 @@ export function decide(req: TrustRequest, cfg: TrustConfig, deps: DecideDeps): D
   const floor = floorHit(
     [...(req.facts.texts ?? []), ...callTexts(req.facts.call)],
     cfg.floorOff,
+    req.facts.floorException,
   );
   if (floor) return out({ outcome: "ask", layer: "floor", reason: `floor: ${floor.label}` });
   if (req.facts.asks) return out({ outcome: "ask", layer: "floor", reason: req.facts.asks });

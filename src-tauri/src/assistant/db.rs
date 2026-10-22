@@ -263,4 +263,14 @@ const MIGRATIONS: &[&str] = &[
         hash       TEXT NOT NULL
     );
     "#,
+    // Step L4: Duck's routines (`routines.rs`), the engine's JSON record each, and
+    // the pin that keeps a thread from the clean-up of idle threads.
+    r#"
+    CREATE TABLE routines (
+        id          TEXT PRIMARY KEY,
+        data        TEXT NOT NULL,
+        updated_at  INTEGER NOT NULL
+    );
+    ALTER TABLE assistant_threads ADD COLUMN keep INTEGER NOT NULL DEFAULT 0;
+    "#,
 ];

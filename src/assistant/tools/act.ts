@@ -387,6 +387,12 @@ const reached = (until: Until, phase: SessionPhase) =>
 /** Live watches, one per thread and session: watching again replaces it. */
 const watches = new Map<string, () => void>();
 
+/** The threads with a live watch (housekeeping leaves them, step L4). Keys are
+ *  `${threadId}:${sessionId}`; session ids have no colon. */
+export function watchedThreads(): Set<string> {
+  return new Set([...watches.keys()].map((k) => k.slice(0, k.lastIndexOf(":"))));
+}
+
 /** Stop every watch (tests). */
 export function clearWatches(): void {
   for (const stop of [...watches.values()]) stop();

@@ -11,6 +11,7 @@ import { decide } from "./trust/decide";
 import { findGrant, GRANT_TTL_MS } from "./trust/mandate";
 import { memoryTrust } from "./trust/memoryTrust.test-util";
 import { createTrustStore, RATE_LIMIT, STARTER_RULES } from "./trust/store";
+import { ROUTINE_TOOLS } from "./tools/routines";
 
 const NOW = 1_000_000_000_000;
 
@@ -60,7 +61,7 @@ async function setup(
     ],
     notes: {},
   });
-  const registry = createRegistry(ACT_TOOLS);
+  const registry = createRegistry([...ACT_TOOLS, ...ROUTINE_TOOLS]);
   const settings = { ...DEFAULT_SETTINGS, ...opts.settings };
   const gate = createPolicy({
     settings: () => settings,
@@ -91,6 +92,34 @@ async function setup(
   };
   return { trust, verdict, ask, log, flushed };
 }
+
+describe("Duck's backup push (step L4)", () => {
+  it("runs on its starter rule, past the floor by its named exception", async () => {
+    const { verdict, flushed } = await setup();
+    expect(verdict("git_push", {})).toBe("run");
+    const log = await flushed();
+    expect(log.map((d) => [d.tool, d.decision, d.layer])).toEqual([["assistant:git_push", "allow", "rule"]]);
+  });
+
+  it("without the rule it asks as any consequential call, not as the floor; it can't be forced", async () => {
+    const { ask, trust, flushed } = await setup();
+    const rule = trust.config().rules.find((r) => r.pattern === "assistant:git_push(duck-data origin)")!;
+    await trust.removeRule(rule.id);
+    const a = ask("git_push", { repo: "duck-data", remote: "origin" });
+    expect(typeof a === "string" ? a : a.verdict).toBe("ask");
+    expect((await flushed()).map((d) => [d.layer, d.reason])).toEqual([["default", "no rule allows it"]]);
+    // There's no argument to force it with, nor another repo or remote.
+    expect(verdict2(ask("git_push", { repo: "duck-data", remote: "origin", force: true }))).toBe("ask");
+    expect(() => ROUTINE_TOOLS.find((t) => t.name === "git_push")!.schema.parse({ remote: "backup" })).toThrow();
+  });
+
+  it("setting up the backup, a GitHub repo, always asks", async () => {
+    const { verdict } = await setup({ messages: [said(0, "yes, back it up to GitHub")] });
+    expect(verdict("set_up_backup", { name: "duck-data" })).toBe("ask");
+  });
+});
+
+const verdict2 = (a: ReturnType<Awaited<ReturnType<typeof setup>>["ask"]>) => (typeof a === "string" ? a : a.verdict);
 
 describe("trust on the starter rules", () => {
   it("are written once, on the first load", async () => {

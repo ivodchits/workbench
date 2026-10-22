@@ -103,14 +103,38 @@ export const FLOOR: readonly FloorEntry[] = [
   },
 ];
 
-/** The first floor entry the text trips, skipping those turned off. */
+/** A named exception (step L4): one entry lets through one exact text, for the
+ *  tool that claims the exception by its id. Every other entry still applies to
+ *  that text, so a forced push trips `force` (and `push`, which the exact text
+ *  can't carry `--force` past). */
+export interface FloorException {
+  id: string;
+  /** The floor entry it excepts. */
+  entry: string;
+  label: string;
+  allows: RegExp;
+}
+
+export const FLOOR_EXCEPTIONS: readonly FloorException[] = [
+  {
+    id: "duck-data-push",
+    entry: "push",
+    label: "Duck backing up its own data repo to its private origin, never forced",
+    allows: /^git push origin HEAD(?::refs\/heads\/[\w.-]+(?:\/[\w.-]+)*)? \(duck-data\)$/,
+  },
+];
+
+/** The first floor entry the text trips, skipping those turned off. A text the
+ *  claimed `exception` allows doesn't trip the entry it excepts. */
 export function floorHit(
   texts: readonly string[],
   off: readonly string[] = [],
+  exception?: string,
 ): FloorEntry | null {
   for (const e of FLOOR) {
     if (off.includes(e.id)) continue;
-    if (texts.some((t) => e.test.test(t))) return e;
+    const ex = exception ? FLOOR_EXCEPTIONS.find((x) => x.id === exception && x.entry === e.id) : undefined;
+    if (texts.some((t) => e.test.test(t) && !ex?.allows.test(t))) return e;
   }
   return null;
 }

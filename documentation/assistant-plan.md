@@ -5296,6 +5296,122 @@ up ("change this", with a circle around it).
     one, and one a task reports to.
 - **Out of scope:** routines while Workbench isn't running (that's the "separate Duck" path
   in §Separable, not separate).
+- **As built (2026-10-22):**
+  - **Built before S2**, which L4 depends on. Only the `skill` action needs S2 and it isn't
+    built. A `message` action stands in for now: Duck gets the routine's text in its
+    thread when it's due ("Run the morning routine") and does it with its tools, so the
+    morning briefing can already be a routine.
+  - **Routines** (`src/assistant/routines.ts`, the `routines` table, `routines.rs`):
+    - **Schedules:** every hour, every day, a weekday, or a date of the month (1–28), at
+      a local time.
+    - **`idle`:** the plan's "after the first idle hour". It waits for an hour away from
+      the slot on, the way the nightly tidy does. A slot whose day has gone by (the app
+      was closed, or you never left) runs at once.
+    - **Missed runs:** one missed while the app was closed runs once at the next start
+      (the first check is 30 s after start, then every minute). The next slot is counted
+      from then: no backlog.
+    - **Actions:** a message to Duck, a worker task from a brief, or a built-in job.
+    - **Built-in routines:** the hourly backup, Sunday housekeeping, and the docs
+      clean-up on the 1st of the month. They can be paused, not deleted.
+    - **Tools:** `schedule_routine` (named so that the deferred-tool search finds it by
+      "routine"; the plan says `schedule`), `list_routines` and `pause_routine` (pause,
+      resume or delete), all reversible.
+    - **Settings:** a new "routines" tab shows each routine with its next and last run,
+      and run now, pause, resume and delete.
+  - **Git lanes** (`gitlane.rs`):
+    - **The mechanical lane** is the git queue memory commits already use. The push is
+      queued behind them, so it carries what they wrote, and nothing blocks a reply.
+    - **Push outcomes:** pushed, nothing, no remote, offline, auth, rejected, lock,
+      detached, or failed. Reports reach the built-in routines' "Housekeeping" thread as
+      Workbench events, not as `duck-git` attention items.
+    - **The judgment lane:** a rejected push or a lock starts a `quiet` worker task: the
+      standard tier, a code task in a worktree of the data repo.
+    - **The repair worker never pushes.** It merges `origin` into its branch. Duck then
+      merges that branch and pushes it itself, so the push stays in one place, under the
+      floor exception.
+    - **Escalation:** a blocked repair is the only time you hear of it (needs-you).
+    - **New `quiet` flag on tasks:** a routine's own task doesn't tell its thread it
+      started, is waiting, or finished; the routine reads the outcome itself.
+  - **Backup:**
+    - **Setting it up** is `set_up_backup(name)` (a card that always asks, since it
+      creates a GitHub repo) or the settings' button, which asks once more. It runs
+      `gh repo create <name> --private --source <workspace> --remote origin --push`.
+      First it writes and commits a README saying the repo is private.
+    - **When it pushes:** after each nightly tidy, and hourly when there's something
+      to push.
+    - **No remote:** a weekly reminder.
+    - **Failures:** told once as info, then as needs-you after a day; told again when it
+      works.
+    - **The floor exception** is a mechanism, not a special case: `FLOOR_EXCEPTIONS` in
+      `trust/floor.ts`. A tool claims one by id in its trust facts. It lets exactly
+      `git push origin HEAD (duck-data)` past the `push` entry, and every other entry
+      still reads that text.
+    - **`git_push`** (Duck backing up now) claims it, and its starter rule
+      `allow assistant:git_push(duck-data origin)` lets it run. An install seeded before
+      L4 asks until you add the rule; the card's "always allow" makes it.
+    - **The routine's own push is code, not a model call,** so there's no trust check
+      on it. Its arguments are fixed, and `refuse_force` checks them anyway.
+    - **`gitlane.rs` joins L3's safety layer** (`SAFETY_PATHS`), so a change to Duck
+      that touches the push guard gets the badge and asks twice.
+  - **Housekeeping:**
+    - **Duck's part, without a worker** (`assistant_housekeep`):
+      - task folders older than 30 days keep `brief.md`, `result.md` and `result.json`,
+        and get a line in `tasks/INDEX.md`;
+      - those results and the index are committed, so they're backed up (before this,
+        only memory and config were);
+      - uncommitted leftovers in `memory/` and `config/` are committed;
+      - `git gc --auto` runs.
+
+      These were in the plan's brief for the worker. They need no judgment, and the task
+      folders aren't in git, so a worker in a worktree couldn't see them.
+    - **The worker** tidies `memory/` (and lints `skills/` if there is one). It's
+      `quiet`, standard tier, in a worktree. The branch is `agent/<slug>` (the existing
+      worktree path, as in L3), not `housekeeping/<date>`.
+    - **"Only tidies" is checked in code.** Every file must be under `memory/` or
+      `skills/` and committed. Every entry the branch drops (`review_branch`: bullets
+      removed whose fact isn't in what it adds) must be in its `result.json` `removed`,
+      with a reason and a source.
+    - **Then:** Duck merges it with the rail's teardown (a fast-forward when `main`
+      didn't move), pushes, and reports at info level. Otherwise the thread gets the
+      branch and what it would drop, and `merge_housekeeping` merges it on your OK.
+    - **Old threads:** deleted through `engine.deleteThread`, with the setting "Delete
+      threads idle for" (7 days by default; 0 is off) and a pin (● in the thread list,
+      the new `keep` column).
+    - **"Open on a surface"** means the drawer or a phone showed the thread in the last
+      12 hours (the new `thread.view` message).
+    - **Also never deleted:** a thread with a running or parked turn or a watch; one a
+      task that isn't closed, an autopilot or a routine reports to; and one talked in
+      since the tidy last read it.
+    - **The report** names the deleted threads.
+  - **Docs clean-up:** monthly, as a `self` code task through `improveBrief` (Opus
+    `medium`, as `improve_duck` scope `code`). You review and merge it like any change to
+    Duck.
+  - **Done when:**
+    - The Duck repo has a private remote and is pushed after consolidation: **not done.**
+      `gh repo create` is outward-facing and waits for you (the settings' button or
+      `set_up_backup`). The push is tested against a local bare remote. The push after
+      the tidy is wired, but not tested.
+    - Ten memory writes commit in the background with no added reply latency: tested. Ten
+      queued commits return in under 100 ms, and the push behind them carries all ten
+      (`gitlane.rs`).
+    - A simulated non-fast-forward push is repaired by a background worker without
+      interrupting you:
+      - the rejection, against real git (another clone pushed first; the remote keeps
+        its commit, nothing forced);
+      - the repair flow, with fakes: a quiet task, its branch merged, pushed again, no
+        message to you; a blocked repair asks you.
+    - Skipping Sunday runs housekeeping on the next start: tested.
+    - A forced-push attempt is refused: tested. `refuse_force` covers every spelling, the
+      floor exception doesn't let a forced text through, and `git_push` has no argument
+      to force with.
+    - A housekeeping run produces a tidy branch and is fast-forwarded: tested with fakes.
+      The mechanical part and the branch review are tested against real git.
+    - A routine missed while the app was closed runs once on the next start: tested.
+    - Housekeeping deletes the threads idle for 7 days and keeps a pinned one, an open
+      one, and one a task reports to: tested.
+  - **Verified:** vitest 721 (24 new), tsc and eslint clean (the existing `TornWindow.tsx`
+    warning). Cargo tests 305 (9 new), and clippy shows only the existing `badge.rs`
+    warning. Not tried in the app.
 
 ### Track P — Plan autopilot
 
@@ -6624,7 +6740,7 @@ T2 goes live after the replay check in its done-when (the past week's prompts th
 | L1 | Long-term memory: files, index, recall | ☑ (not tried in the app yet) |
 | L2 | Consolidation, journal, and recall quality | ☑ (not tried in the app; hit-rate review 2026-11-05) |
 | L3 | Self-development through Opus sessions | ☑ (not tried in the app; no real Opus branch yet) |
-| L4 | Routines, backup and housekeeping | ☐ |
+| L4 | Routines, backup and housekeeping | ☑ (not tried in the app; the backup remote waits for your OK) |
 | S1 | Modes: chat and rubber duck | ☐ |
 | S2 | Skills and user-defined modes | ☐ |
 | R1 | Assistant endpoints on the remote server | ☑ |

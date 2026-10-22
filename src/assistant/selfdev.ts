@@ -7,12 +7,13 @@
 import type { ProjectRef, WorkbenchPort } from "./port";
 import { findProject } from "./tools/read";
 
-/** The safety layer: the trust engine, the API key's proxy and the budget, and the
- *  guards of self-development itself. A branch touching one of these gets the red
+/** The safety layer: the trust engine, the API key's proxy and the budget, the
+ *  data repo's push guard (L4's `gitlane.rs`), and the guards of self-development
+ *  itself. A branch touching one of these gets the red
  *  badge, and its merge a second confirm. */
 export const SAFETY_PATHS: readonly RegExp[] = [
   /^src\/assistant\/trust\//,
-  /^src-tauri\/src\/assistant\/(?:proxy|budget|key|trust)\.rs$/,
+  /^src-tauri\/src\/assistant\/(?:proxy|budget|key|trust|gitlane)\.rs$/,
   /^src\/assistant\/(?:selfdev|config)\.ts$/,
   /^src\/assistant\/tools\/improve\.ts$/,
 ];
@@ -76,7 +77,7 @@ ${lessonLines}
 
 ${where}
 
-The safety layer is \`src/assistant/trust/\`, \`src-tauri/src/assistant/{proxy,budget,key,trust}.rs\`, and the guards of this very process (\`src/assistant/selfdev.ts\`, \`src/assistant/config.ts\`, \`src/assistant/tools/improve.ts\`). Leave it alone unless the request is about it. A change there is flagged to the user and needs their second confirm before it's merged; if you must touch it, say why at the top of result.md.
+The safety layer is \`src/assistant/trust/\`, \`src-tauri/src/assistant/{proxy,budget,key,trust,gitlane}.rs\`, and the guards of this very process (\`src/assistant/selfdev.ts\`, \`src/assistant/config.ts\`, \`src/assistant/tools/improve.ts\`). Leave it alone unless the request is about it. A change there is flagged to the user and needs their second confirm before it's merged; if you must touch it, say why at the top of result.md.
 
 ## Done means
 

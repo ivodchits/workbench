@@ -28,6 +28,7 @@ import type { Summarizer } from "../summarize";
 import type { TaskManager } from "../tasks";
 import type { AutopilotManager } from "../autopilot";
 import type { TrustFacts } from "../trust/decide";
+import type { RoutinesHost } from "./routines";
 import type { ReaderHost } from "./readAloud";
 import type { ScreenHost } from "./screenshot";
 import type { QuietHost } from "./quiet";
@@ -80,6 +81,8 @@ export interface ToolContext {
   memory?: MemoryHost | null;
   /** Duck's prompt files (step L3); absent where there are none. */
   config?: ConfigHost | null;
+  /** Routines and the backup (step L4); absent where there are none. */
+  routines?: RoutinesHost | null;
   /** You asked Duck not to remember this thread (L1): `remember` refuses. */
   memoryOff?: boolean;
   /** Start a new Duck thread on `words`, which must be the user's own words from

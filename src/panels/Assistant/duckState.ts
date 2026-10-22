@@ -23,6 +23,8 @@ import { notifyAlert } from "../../ipc/attention";
 import { getNotificationConfig } from "../../state/notifications";
 import type {
   AutopilotView,
+  BackupView,
+  RoutineView,
   ClientMessage,
   ConfirmRequest,
   DuckEvent,
@@ -80,6 +82,9 @@ export interface DuckState {
   tasks: TaskView[];
   /** The autopilots not stopped (step P1). */
   autopilots: AutopilotView[];
+  /** Duck's routines and its backup (step L4). */
+  routines: RoutineView[];
+  backup: BackupView | null;
   /** What's being read aloud (step V3), or null. */
   reader: ReaderView | null;
   /** Replies not seen yet, per thread. */
@@ -120,6 +125,8 @@ let state: DuckState = {
   replay: null,
   tasks: [],
   autopilots: [],
+  routines: [],
+  backup: null,
   reader: null,
   unread: {},
   news: {},
@@ -410,6 +417,9 @@ function onEvent(e: DuckEvent): void {
     case "autopilots":
       set({ autopilots: e.autopilots });
       break;
+    case "routines":
+      set({ routines: e.routines, backup: e.backup });
+      break;
     case "replay":
       set({ replay: { running: !e.report, done: e.done, of: e.of, report: e.report } });
       break;
@@ -469,6 +479,7 @@ export function openThread(threadId: string | null): void {
   set({ current: threadId, error: null });
   if (threadId) {
     if (!state.messages[threadId]) post({ type: "thread.open", threadId });
+    post({ type: "thread.view", surface: "desktop", threadId });
     savePrefs({ threadId });
     seen(threadId);
   }
@@ -542,6 +553,21 @@ export function setThreadMemory(threadId: string, off: boolean): void {
 /** Delete a thread (step A4); the engine refuses while a reply runs. */
 export function deleteThread(threadId: string): void {
   post({ type: "thread.delete", threadId });
+}
+
+/** Keep a thread from housekeeping's clean-up of idle threads (L4), or stop. */
+export function keepThread(threadId: string, keep: boolean): void {
+  post({ type: "thread.keep", threadId, keep });
+}
+
+/** Pause, resume, delete or run now one of Duck's routines (L4). */
+export function setRoutine(id: string, action: "pause" | "resume" | "delete" | "run"): void {
+  post({ type: "routine.set", id, action });
+}
+
+/** Back Duck's data up to a new private GitHub repo (L4). */
+export function createBackup(name: string): void {
+  post({ type: "backup.create", name });
 }
 
 export function clearError(): void {

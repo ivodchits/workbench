@@ -18,6 +18,8 @@ pub struct Thread {
     pub mode: String,
     pub created: i64,
     pub updated: i64,
+    /// Kept from L4's clean-up of idle threads (the pin in the thread list).
+    pub keep: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -49,6 +51,7 @@ fn thread_row(r: &rusqlite::Row) -> rusqlite::Result<Thread> {
         mode: r.get(2)?,
         created: r.get(3)?,
         updated: r.get(4)?,
+        keep: r.get::<_, i64>(5)? != 0,
     })
 }
 
@@ -70,7 +73,7 @@ pub fn create(conn: &Connection, id: &str, mode: &str, now: i64) -> Result<Threa
 
 pub fn get(conn: &Connection, id: &str) -> Result<Option<Thread>, String> {
     conn.query_row(
-        "SELECT id, title, mode, created, updated FROM assistant_threads WHERE id = ?1",
+        "SELECT id, title, mode, created, updated, keep FROM assistant_threads WHERE id = ?1",
         [id],
         thread_row,
     )
@@ -82,13 +85,24 @@ pub fn get(conn: &Connection, id: &str) -> Result<Option<Thread>, String> {
 pub fn list(conn: &Connection) -> Result<Vec<Thread>, String> {
     let mut stmt = conn
         .prepare(
-            "SELECT id, title, mode, created, updated FROM assistant_threads
+            "SELECT id, title, mode, created, updated, keep FROM assistant_threads
              ORDER BY updated DESC, created DESC",
         )
         .map_err(|e| e.to_string())?;
     let rows = stmt.query_map([], thread_row).map_err(|e| e.to_string())?;
     rows.collect::<rusqlite::Result<_>>()
         .map_err(|e| e.to_string())
+}
+
+/// Pin a thread so the clean-up of idle threads (L4) leaves it, or unpin it.
+pub fn set_keep(conn: &Connection, id: &str, keep: bool) -> Result<(), String> {
+    let n = conn
+        .execute("UPDATE assistant_threads SET keep = ?2 WHERE id = ?1", (id, keep as i64))
+        .map_err(|e| e.to_string())?;
+    if n == 0 {
+        return Err(format!("no thread {id}"));
+    }
+    Ok(())
 }
 
 pub fn set_title(conn: &Connection, id: &str, title: &str) -> Result<(), String> {

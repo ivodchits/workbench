@@ -229,6 +229,14 @@ export type ClientMessage =
   | { type: "thread.compact"; threadId: string }
   /** Don't remember this thread (step L1), or do again. */
   | { type: "thread.memory"; threadId: string; off: boolean }
+  /** Keep a thread from housekeeping's clean-up of idle threads (step L4). */
+  | { type: "thread.keep"; threadId: string; keep: boolean }
+  /** The thread a surface shows now (null: none), so housekeeping leaves it (L4). */
+  | { type: "thread.view"; surface: string; threadId: string | null }
+  /** Pause, resume, delete or run now a routine (step L4). */
+  | { type: "routine.set"; id: string; action: "pause" | "resume" | "delete" | "run" }
+  /** Set up the backup: a private GitHub repo (the settings' button, step L4). */
+  | { type: "backup.create"; name: string }
   /** Ask for the thread list, the open confirmations and the spend (a surface
    *  connecting). */
   | { type: "sync" }
@@ -335,6 +343,8 @@ export type DuckEvent =
   | { type: "tasks"; tasks: TaskView[] }
   /** Every autopilot not stopped (step P1), on `sync` and after every change. */
   | { type: "autopilots"; autopilots: AutopilotView[] }
+  /** Duck's routines and its backup (step L4), on `sync` and after every change. */
+  | { type: "routines"; routines: RoutineView[]; backup: BackupView | null }
   /** The replay's progress (`report` null, judged so far), then its report. */
   | { type: "replay"; done: number; of: number; report: ReplayReport | null }
   /** What's being read aloud (step V3), on `sync` and after every change; null
@@ -351,6 +361,31 @@ export interface Transport {
 }
 
 /** What a transport connects to: the running Duck. */
+/** A routine, for the settings (step L4). */
+export interface RoutineView {
+  id: string;
+  title: string;
+  /** The schedule in words. */
+  when: string;
+  does: string;
+  on: boolean;
+  builtIn: boolean;
+  /** Epoch ms. */
+  next: number;
+  last: number | null;
+  lastResult: string | null;
+}
+
+/** Where Duck's data is backed up (step L4). */
+export interface BackupView {
+  repo: boolean;
+  remote: string | null;
+  /** Commits not pushed yet; null when never pushed. */
+  ahead: number | null;
+  /** The last push's error while it's failing. */
+  failing: string | null;
+}
+
 export interface DuckEndpoint {
   /** With `reply`, the answers to this request (`threads`, `history`, an error…)
    *  go there only; changes still go to every surface. */

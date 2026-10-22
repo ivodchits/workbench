@@ -143,6 +143,11 @@ export const Task = z.object({
     })
     .nullable()
     .default(null),
+  // Step L4.
+  /** Started by a routine, which reads its outcome itself (housekeeping, a backup
+   *  repair): its thread isn't told it started, waits or finished. A worker's
+   *  question still goes to Duck. */
+  quiet: z.boolean().default(false),
 });
 export type Task = z.infer<typeof Task>;
 
@@ -207,6 +212,8 @@ export interface RunRequest {
   prep?: boolean;
   /** A change to Duck itself (step L3). */
   self?: boolean;
+  /** A routine's own task (step L4): the thread isn't told about it. */
+  quiet?: boolean;
 }
 
 /** How often finished tasks are checked for tidying up. */
@@ -459,7 +466,7 @@ export function createTaskManager(deps: TaskDeps): TaskManager {
     update(t.id, { state: "running", started: now(), runStarted: now(), notBefore: null });
     const where = await route(t);
     if ("until" in where) {
-      const first = tasks.get(t.id)?.why !== where.why;
+      const first = tasks.get(t.id)?.why !== where.why && !t.quiet;
       update(t.id, { state: "queued", started: null, runStarted: null, notBefore: where.until, why: where.why });
       if (first)
         deps.tell(
@@ -476,7 +483,7 @@ export function createTaskManager(deps: TaskDeps): TaskManager {
     }
     const headless = deps.settings().headlessWorkers;
     update(t.id, { runner: "session", why: where.why, headless });
-    if (where.why)
+    if (where.why && !t.quiet)
       deps.tell(t.threadId, `Task ${label(t)} is a code task, so it runs in a session although ${where.why}. Mention it to the user.`, "info");
     try {
       const projectId = t.kind === "code" ? t.projectId! : await duckProjectId(t.workspace);
@@ -495,7 +502,7 @@ export function createTaskManager(deps: TaskDeps): TaskManager {
       port.setDuckTask(made.id, t.title);
       // The clock starts once the prompt is on its way.
       update(t.id, { instanceId: made.id, projectId, runStarted: now() });
-      if (made.message) deps.tell(t.threadId, `Task ${label(t)} started with a warning: ${made.message}`, "info");
+      if (made.message && !t.quiet) deps.tell(t.threadId, `Task ${label(t)} started with a warning: ${made.message}`, "info");
     } catch (e) {
       finish(t.id, { state: "failed", error: `It couldn't start: ${errorText(e)}` });
     }
@@ -504,7 +511,7 @@ export function createTaskManager(deps: TaskDeps): TaskManager {
   /** Record an outcome, tell the thread, and start the next task. */
   function finish(id: string, patch: Partial<Task> & { state: TaskState }): void {
     const t = update(id, { finished: now(), ...patch });
-    if (t.state !== "closed") {
+    if (t.state !== "closed" && !t.quiet) {
       const level = t.state === "needs_decision" || t.state === "blocked" ? "needs_you" : "report";
       if (t.self && t.instanceId && t.state !== "failed")
         void withChanges(t).then((c) => deps.tell(c.threadId, report(c), level));
@@ -760,6 +767,7 @@ export function createTaskManager(deps: TaskDeps): TaskManager {
         prep: req.prep === true,
         self: req.self === true,
         changes: null,
+        quiet: req.quiet === true,
       });
       void pump();
       await starting.get(t.id);

@@ -74,6 +74,7 @@ import {
   connectDuck,
   compactThread,
   deleteThread,
+  keepThread,
   fillComposer,
   getDuckState,
   isBusy,
@@ -714,6 +715,24 @@ function ThreadListRow({
         <span style={{ color: "var(--wb-textFaint)" }}>
           {formatAgo(Math.floor(t.updated / 1000))}
         </span>
+      </button>
+      <button
+        type="button"
+        aria-label={`${t.keep ? "unpin" : "pin"} ${title}`}
+        aria-pressed={!!t.keep}
+        title={
+          t.keep
+            ? "kept: housekeeping won't delete this thread when it's idle (click to unpin)"
+            : "keep this thread: housekeeping deletes idle threads, but not pinned ones"
+        }
+        onClick={() => keepThread(t.id, !t.keep)}
+        style={{
+          ...plainBtn,
+          color: t.keep ? "var(--wb-accent)" : "var(--wb-textDim2)",
+          visibility: t.keep || hover || t.id === duck.current ? "visible" : "hidden",
+        }}
+      >
+        {t.keep ? "●" : "○"}
       </button>
       <button
         type="button"

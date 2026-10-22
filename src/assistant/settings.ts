@@ -99,6 +99,9 @@ export interface DuckSettings {
   /** A finished task is closed, and its session taken off the rail, after this many
    *  hours (its files and transcript stay); 0 never. */
   closeFinishedHours: number;
+  /** The weekly housekeeping (step L4) deletes Duck threads with no activity for
+   *  this many days ("Delete threads idle for"); 0 never. */
+  deleteIdleThreadsDays: number;
   /** How Duck announces news (step V5). */
   announce: AnnounceSettings;
   /** Duck's Do Not Disturb (V5): nothing is spoken until this moment (epoch ms);
@@ -134,6 +137,7 @@ export const DEFAULT_SETTINGS: DuckSettings = {
   summaryOnDone: false,
   workerIdleStopMinutes: 30,
   closeFinishedHours: 24,
+  deleteIdleThreadsDays: 7,
   announce: DEFAULT_ANNOUNCE,
   dndUntil: null,
   mcpServers: [QUEST_LOG],
@@ -148,6 +152,8 @@ export const DND_FOREVER = 8.64e15;
 /** The choices the settings offer for the two tidy-up waits. */
 export const IDLE_STOP_CHOICES = [10, 30, 60, 180, 0] as const;
 export const CLOSE_CHOICES = [4, 24, 72, 168, 0] as const;
+/** The choices for deleting idle threads (step L4), in days; 0 never. */
+export const DELETE_IDLE_CHOICES = [7, 14, 30, 90, 0] as const;
 
 export const MAX_WORKERS = 5;
 
@@ -178,6 +184,8 @@ export function cleanSettings(raw: unknown): Partial<DuckSettings> {
   if (idle !== undefined) out.workerIdleStopMinutes = idle;
   const close = whole(r.closeFinishedHours, 24 * 90);
   if (close !== undefined) out.closeFinishedHours = close;
+  const idleDays = whole(r.deleteIdleThreadsDays, 3650);
+  if (idleDays !== undefined) out.deleteIdleThreadsDays = idleDays;
   if (r.dndUntil === null) out.dndUntil = null;
   else if (typeof r.dndUntil === "number" && r.dndUntil > 0) out.dndUntil = Math.min(r.dndUntil, DND_FOREVER);
   if (r.announce && typeof r.announce === "object") out.announce = cleanAnnounce(r.announce as Record<string, unknown>);

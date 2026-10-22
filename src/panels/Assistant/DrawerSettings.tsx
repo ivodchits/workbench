@@ -5,6 +5,8 @@
 // - sessions: Duck's prompts and permission answers, summaries, the coding model
 //   (W2, T2, W3, M4);
 // - workers: D1's worker sessions;
+// - routines: what Duck does on a schedule, the backup of its data, and the
+//   clean-up of idle threads (L4);
 // - voice: push-to-talk and speech to text (V1);
 // - announcements: Speak, and when Duck speaks up about news (V5);
 // - google auth: Duck's Google sign-in (Drive and Sheets) and the speech key.
@@ -23,9 +25,10 @@ import SpeechSettings from "./SpeechSettings";
 import AnnounceSettings from "./AnnounceSettings";
 import GoogleSettings from "./GoogleSettings";
 import { openCoreMemory } from "./openCore";
+import RoutinesSettings from "./RoutinesSettings";
 
 /** The settings' categories, in tab order. */
-const TABS = ["drawer", "sessions", "workers", "voice", "announcements", "google auth"] as const;
+const TABS = ["drawer", "sessions", "workers", "routines", "voice", "announcements", "google auth"] as const;
 type Tab = (typeof TABS)[number];
 
 /** The tab last shown, kept while the app runs. */
@@ -257,6 +260,7 @@ export default function DrawerSettings({ duck }: { duck: DuckState }) {
             <Waiting />
           ))}
         {tab === "workers" && (duck.settings ? <Workers settings={duck.settings} /> : <Waiting />)}
+        {tab === "routines" && (duck.settings ? <RoutinesSettings duck={duck} settings={duck.settings} /> : <Waiting />)}
         {tab === "voice" && (
           <>
             <VoiceSettings />

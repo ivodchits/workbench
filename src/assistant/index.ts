@@ -24,6 +24,7 @@ import {
   sheetSearch,
   sheetExport,
   workspacePrepare,
+  taskResult,
   onUsage,
   replayCalls,
   type Spend,
@@ -73,6 +74,11 @@ import { SHEET_TOOLS } from "./tools/sheets";
 import { PREP_TOOLS } from "./tools/prep";
 import { MEMORY_TOOLS } from "./tools/memory";
 import { IMPROVE_TOOLS } from "./tools/improve";
+import { ROUTINE_TOOLS, routineView, type RoutinesHost } from "./tools/routines";
+import { watchedThreads } from "./tools/act";
+import { createRoutines, Routine, type RoutineBackend } from "./routines";
+import { createHousekeeping, type GitLane, type Housekeeping } from "./housekeeping";
+import { backupCreate, backupPush, backupStatus, branchReview, housekeep, routineDelete, routineList, routinePut } from "../ipc/routines";
 import { createCoreHost } from "./core";
 import { createConfig, ipcConfigStore } from "./config";
 import { createMemoryHost, type TidyReport } from "./memory";
@@ -127,6 +133,7 @@ const TOOLS = [
   ...PREP_TOOLS,
   ...MEMORY_TOOLS,
   ...IMPROVE_TOOLS,
+  ...ROUTINE_TOOLS,
   ...(import.meta.env.DEV ? [testConfirm, testAnnounce] : []),
 ];
 
@@ -150,6 +157,7 @@ const DEFERRED = new Set([
   "prep_ahead",
   "merge_duck_change",
   "rebuild_duck",
+  ...ROUTINE_TOOLS.map((t) => t.name),
 ]);
 
 /** Where the spend comes from: the ledger commands in the app, fakes in tests. */
@@ -184,6 +192,30 @@ let consolidator: Consolidator | null = null;
 
 /** How often the nightly tidy (step L2) checks whether it's due. */
 const TIDY_CHECK_MS = 5 * 60_000;
+/** How often routines (step L4) check what's due. */
+const ROUTINE_CHECK_MS = 60_000;
+/** A thread a surface showed this recently counts as open there (L4). */
+const VIEWED_MS = 12 * 3_600_000;
+
+/** The thread each surface shows (`thread.view`), and when it said so. */
+const viewing = new Map<string, { threadId: string; at: number }>();
+
+/** Routine records in duck.db; a record that no longer parses is skipped. */
+const ipcRoutineBackend: RoutineBackend = {
+  put: (r) => routinePut(r.id, JSON.stringify(r)),
+  async list() {
+    const out: Routine[] = [];
+    for (const row of await routineList()) {
+      try {
+        out.push(Routine.parse(JSON.parse(row)));
+      } catch (e) {
+        console.warn("duck: a routine record didn't parse", e);
+      }
+    }
+    return out;
+  },
+  remove: routineDelete,
+};
 
 /** The text blocks of a stored message. */
 function replyText(content: unknown): string {
@@ -267,6 +299,7 @@ export function endpoint(
   autopilot?: AutopilotManager,
   reader?: ReaderLink,
   onSettings?: () => void,
+  routines?: RoutinesHost,
 ): DuckEndpoint {
   const listeners = new Set<(ev: DuckEvent) => void>();
   const say = (ev: DuckEvent) => {
@@ -308,6 +341,21 @@ export function endpoint(
     to({ type: "autopilots", autopilots });
   };
   autopilot?.subscribe(() => sendAutopilots());
+  const sendRoutines = async (to = say) => {
+    if (!routines) return;
+    const st = await routines.backup.status().catch(() => null);
+    const b = routines.routines.list().find((r) => r.action.kind === "job" && r.action.job === "backup");
+    const failing = b && typeof b.memo.failingSince === "number" && typeof b.memo.lastError === "string" ? b.memo.lastError : null;
+    to({
+      type: "routines",
+      routines: routines.routines.list().map((r) => {
+        const v = routineView(r);
+        return { id: r.id, title: r.title, when: v.when, does: v.does, on: r.enabled, builtIn: r.builtIn, next: r.nextRun, last: r.lastRun, lastResult: r.lastResult };
+      }),
+      backup: st && { repo: st.repo, remote: st.remote, ahead: st.ahead, failing },
+    });
+  };
+  routines?.routines.subscribe(() => void sendRoutines().catch(fail));
   reader?.subscribe((v) => say({ type: "reader", reader: v }));
   const needTrust = () => {
     if (!trust) throw new Error("Duck's trust settings didn't load.");
@@ -357,6 +405,7 @@ export function endpoint(
         if (trust) answer({ type: "trust", trust: trustView(trust) });
         sendTasks(answer);
         sendAutopilots(answer);
+        await sendRoutines(answer);
         if (reader) answer({ type: "reader", reader: reader.reader.view() });
         await sendSpend(answer);
         return;
@@ -404,6 +453,29 @@ export function endpoint(
           answer({ type: "replay", done, of, report: null }),
         );
         answer({ type: "replay", done: report.judged, of: report.judged, report });
+        return;
+      }
+      case "thread.keep":
+        await e.keepThread(msg.threadId, msg.keep);
+        return;
+      case "thread.view":
+        if (msg.threadId) viewing.set(msg.surface, { threadId: msg.threadId, at: Date.now() });
+        else viewing.delete(msg.surface);
+        return;
+      case "routine.set": {
+        if (!routines) throw new Error("Routines aren't available here.");
+        const r = routines.routines;
+        if (msg.action === "delete") await r.remove(msg.id);
+        else if (msg.action === "run") await r.runNow(msg.id);
+        else await r.setEnabled(msg.id, msg.action === "resume");
+        return;
+      }
+      case "backup.create": {
+        if (!routines) throw new Error("Routines aren't available here.");
+        await routines.backup.create(msg.name);
+        const b = routines.routines.list().find((x) => x.action.kind === "job" && x.action.job === "backup");
+        if (b) await routines.routines.runNow(b.id);
+        await sendRoutines();
         return;
       }
       case "task.close":
@@ -608,10 +680,79 @@ export function initAssistant(): Promise<void> {
     });
     memory.question = () => tidier.question();
     memory.suggestion = () => tidier.suggestion();
-    memory.tidy = () => tidier.run();
+    // Routines (step L4): the backup, the weekly housekeeping, the monthly docs
+    // clean-up, and the user's own.
+    const ws = () => settings.get().workspace;
+    const git: GitLane = {
+      status: () => backupStatus(ws()),
+      push: () => backupPush(ws()),
+      review: (b) => branchReview(ws(), b),
+      housekeep: (cutoff) => housekeep(ws(), cutoff),
+    };
+    let housekeeping: Housekeeping | null = null;
+    const routines = createRoutines({
+      backend: ipcRoutineBackend,
+      run: (r) => (housekeeping ? housekeeping.run(r) : Promise.reject(new Error("housekeeping isn't ready"))),
+      idleMs: () => getPresence().then((p) => p.idleMs),
+    });
+    const pushAfterTidy = () => {
+      const b = routines.list().find((r) => r.action.kind === "job" && r.action.job === "backup");
+      if (b) void routines.runNow(b.id).catch((e: unknown) => console.warn("duck: the backup after the tidy failed", e));
+    };
+    housekeeping = createHousekeeping({
+      routines,
+      tasks,
+      port: localPort,
+      settings: settings.get,
+      git,
+      duckProject: async () => (await localPort.ensureProject("Duck", await workspacePrepare(ws()))).id,
+      threads: {
+        list: () => s.threads(),
+        create: async (title) => {
+          if (!engineRef) throw new Error("Duck isn't started yet.");
+          return (await engineRef.newThread(undefined, title)).id;
+        },
+        remove: async (id) => {
+          if (!engineRef) throw new Error("Duck isn't started yet.");
+          await engineRef.deleteThread(id);
+        },
+      },
+      busy: (id) => {
+        const state = engineRef?.state(id) ?? "idle";
+        if (state !== "idle") return state === "waiting" ? "parked on a card" : "a reply is running";
+        if (s.pending().some((b) => b.threadId === id)) return "parked on a card";
+        if (watchedThreads().has(id)) return "it watches a session";
+        const now = Date.now();
+        for (const v of viewing.values()) if (v.threadId === id && now - v.at < VIEWED_MS) return "open on a surface";
+        return null;
+      },
+      piloted: () => new Set(autopilot.list().filter((a) => a.state !== "stopped").map((a) => a.threadId)),
+      consolidatedTo: async () => (await tidier.last())?.at ?? null,
+      resultJson: (t) => taskResult(t.workspace, t.folder).then((r) => r.json),
+      tell: (threadId, text, level) => {
+        levels.set(threadId, level);
+        void engineRef
+          ?.send({ threadId, text: eventText(text), source: "event" })
+          .catch((e: unknown) => console.warn("duck: a routine's report was dropped", e));
+      },
+    });
+    const routinesHost: RoutinesHost = {
+      routines,
+      housekeeping,
+      backup: { status: git.status, create: (name) => backupCreate(ws(), name) },
+    };
+    memory.tidy = () =>
+      tidier.run().then((r) => {
+        pushAfterTidy();
+        return r;
+      });
     consolidator = tidier;
     setInterval(
-      () => void tidier.tick().catch((e: unknown) => console.warn("duck: the nightly memory tidy failed", e)),
+      () =>
+        void tidier
+          .tick()
+          .then((r) => r && pushAfterTidy())
+          .catch((e: unknown) => console.warn("duck: the nightly memory tidy failed", e)),
       TIDY_CHECK_MS,
     );
     const engine = createEngine({
@@ -627,6 +768,7 @@ export function initAssistant(): Promise<void> {
       core: createCoreHost(() => settings.get().workspace),
       memory,
       config: createConfig(ipcConfigStore(() => settings.get().workspace)),
+      routines: routinesHost,
       eventLevel: (threadId, level) => levels.set(threadId, level),
       store: s,
       registry: createRegistry(TOOLS, { deferred: DEFERRED }),
@@ -711,6 +853,13 @@ export function initAssistant(): Promise<void> {
     });
     await tasks.load().catch((e: unknown) => console.error("duck: worker tasks didn't load", e));
     await autopilot.load().catch((e: unknown) => console.error("duck: autopilots didn't load", e));
+    await routines.load().catch((e: unknown) => console.error("duck: routines didn't load", e));
+    void housekeeping.check().catch(() => {});
+    // The first check soon after start: a routine missed while the app was closed
+    // runs once now.
+    const tickRoutines = () => void routines.tick().catch((e: unknown) => console.warn("duck: a routine failed", e));
+    setTimeout(tickRoutines, 30_000);
+    setInterval(tickRoutines, ROUTINE_CHECK_MS);
     const ep = endpoint(
       engine,
       s,
@@ -728,6 +877,7 @@ export function initAssistant(): Promise<void> {
         },
       },
       () => announcer.poke(),
+      routinesHost,
     );
     epRef = ep;
     duck = createLocalTransport(ep);

@@ -22,6 +22,7 @@ mod autopilot;
 mod budget;
 pub mod config;
 mod db;
+pub mod gitlane;
 pub mod google;
 pub mod headless;
 mod key;
@@ -29,6 +30,7 @@ pub mod mcp_client;
 mod mcp_server;
 pub mod memory;
 mod proxy;
+mod routines;
 mod summaries;
 pub mod replay;
 pub mod sheets;
@@ -223,6 +225,12 @@ pub fn assistant_thread_messages(ctx: Db<'_>, thread_id: String) -> Result<Vec<M
 #[tauri::command]
 pub fn assistant_thread_title(ctx: Db<'_>, thread_id: String, title: String) -> Result<(), String> {
     threads::set_title(&lock(&ctx), &thread_id, &title)
+}
+
+/// Keep a thread from the clean-up of idle threads (step L4), or stop keeping it.
+#[tauri::command]
+pub fn assistant_thread_keep(ctx: Db<'_>, thread_id: String, keep: bool) -> Result<(), String> {
+    threads::set_keep(&lock(&ctx), &thread_id, keep)
 }
 
 /// Append one message; `message.seq` must be the thread's next (append-only).
@@ -610,6 +618,42 @@ pub fn assistant_config_write(
     Ok(())
 }
 
+/// Where Duck's data is backed up, and how far behind (step L4).
+#[tauri::command]
+pub async fn assistant_backup_status(workspace: Option<String>) -> Result<gitlane::BackupStatus, String> {
+    let ws = workspace::resolve(workspace.as_deref())?;
+    tauri::async_runtime::spawn_blocking(move || gitlane::status(&ws)).await.map_err(|e| e.to_string())
+}
+
+/// Push Duck's data to its backup remote, behind the repo's other git jobs. Never forced.
+#[tauri::command]
+pub async fn assistant_backup_push(workspace: Option<String>) -> Result<gitlane::PushOutcome, String> {
+    let ws = workspace::resolve(workspace.as_deref())?;
+    tauri::async_runtime::spawn_blocking(move || gitlane::push(&ws)).await.map_err(|e| e.to_string())
+}
+
+/// Create a private GitHub repo as the backup remote (the caller asked first).
+#[tauri::command]
+pub async fn assistant_backup_create(workspace: Option<String>, name: String) -> Result<String, String> {
+    let ws = workspace::resolve(workspace.as_deref())?;
+    tauri::async_runtime::spawn_blocking(move || gitlane::create(&ws, &name)).await.map_err(|e| e.to_string())?
+}
+
+/// Housekeeping's mechanical part: task folders dated before `cutoff` folded into
+/// the index, leftovers committed, `git gc --auto`.
+#[tauri::command]
+pub async fn assistant_housekeep(workspace: Option<String>, cutoff: String) -> Result<gitlane::HousekeepReport, String> {
+    let ws = workspace::resolve(workspace.as_deref())?;
+    tauri::async_runtime::spawn_blocking(move || gitlane::housekeep(&ws, &cutoff)).await.map_err(|e| e.to_string())?
+}
+
+/// What a branch of Duck's data changes: its files and the memory entries it drops.
+#[tauri::command]
+pub async fn assistant_branch_review(workspace: Option<String>, branch: String) -> Result<gitlane::BranchReview, String> {
+    let ws = workspace::resolve(workspace.as_deref())?;
+    tauri::async_runtime::spawn_blocking(move || gitlane::review_branch(&ws, &branch)).await.map_err(|e| e.to_string())?
+}
+
 /// Pin a thread on the prompts it starts with (a pinned thread keeps its pin).
 #[tauri::command]
 pub fn assistant_config_pin(ctx: Db<'_>, thread_id: String, hash: String, json: String) -> Result<(), String> {
@@ -649,6 +693,23 @@ pub fn assistant_task_put(ctx: Db<'_>, id: String, data: String) -> Result<(), S
 #[tauri::command]
 pub fn assistant_task_list(ctx: Db<'_>, limit: u32) -> Result<Vec<String>, String> {
     workspace::list_tasks(&lock(&ctx), limit.clamp(1, 500))
+}
+
+/// Store a routine's record (step L4).
+#[tauri::command]
+pub fn assistant_routine_put(ctx: Db<'_>, id: String, data: String) -> Result<(), String> {
+    routines::put(&lock(&ctx), &id, &data, now_ms())
+}
+
+/// Every routine's record.
+#[tauri::command]
+pub fn assistant_routine_list(ctx: Db<'_>) -> Result<Vec<String>, String> {
+    routines::list(&lock(&ctx))
+}
+
+#[tauri::command]
+pub fn assistant_routine_delete(ctx: Db<'_>, id: String) -> Result<(), String> {
+    routines::delete(&lock(&ctx), &id)
 }
 
 /// Store a session's autopilot record (step P1).

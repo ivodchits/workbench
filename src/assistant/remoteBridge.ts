@@ -337,6 +337,7 @@ export function startRemoteBridge(d: BridgeDeps): RemoteBridge {
     if (i.kind === "open") conns.add(i.conn);
     else if (i.kind === "close") {
       conns.delete(i.conn);
+      d.duck.handle({ type: "thread.view", surface: `phone:${i.conn}`, threadId: null });
       for (let k = wanted.length - 1; k >= 0; k--) if (wanted[k].conn === i.conn) wanted.splice(k, 1);
       for (let k = sent.length - 1; k >= 0; k--) if (sent[k].conn === i.conn) sent.splice(k, 1);
     } else {
@@ -352,6 +353,9 @@ export function startRemoteBridge(d: BridgeDeps): RemoteBridge {
         const s = speaking.get(msg.threadId);
         if (s) s.stopped = true;
       }
+      // What the phone shows, for housekeeping (L4).
+      if (msg.type === "thread.open" || (msg.type === "send" && msg.threadId))
+        d.duck.handle({ type: "thread.view", surface: `phone:${i.conn}`, threadId: msg.threadId });
       d.duck.handle(msg, (e) => toPhone(i.conn, e));
     }
   });

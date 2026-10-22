@@ -67,6 +67,8 @@ export interface ThreadBackend {
   pendingPut(id: string, threadId: string, data: unknown): Promise<void>;
   pendingList(): Promise<{ id: string; threadId: string; data: unknown }[]>;
   pendingClear(id: string): Promise<void>;
+  /** Step L4; a backend without it keeps the pin in memory only. */
+  threadKeep?(threadId: string, keep: boolean): Promise<void>;
 }
 
 export const ipcBackend: ThreadBackend = ipc;
@@ -82,6 +84,8 @@ export interface ThreadStore {
   loaded(threadId: string): readonly StoredMessage[];
   create(mode?: string): Promise<ThreadRow>;
   setTitle(threadId: string, title: string): Promise<ThreadRow | undefined>;
+  /** Keep a thread from housekeeping's clean-up of idle threads (step L4). */
+  setKeep(threadId: string, keep: boolean): Promise<ThreadRow | undefined>;
   append(
     threadId: string,
     role: StoredRole,
@@ -167,6 +171,12 @@ export function createThreadStore(
     async setTitle(threadId, title) {
       await backend.threadTitle(threadId, title);
       patchThread(threadId, { title: title.trim() });
+      emit();
+      return threads.find((t) => t.id === threadId);
+    },
+    async setKeep(threadId, keep) {
+      await backend.threadKeep?.(threadId, keep);
+      patchThread(threadId, { keep });
       emit();
       return threads.find((t) => t.id === threadId);
     },

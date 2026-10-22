@@ -24,6 +24,8 @@ export const STARTER_RULES: readonly { effect: Effect; pattern: string }[] = [
   { effect: "allow", pattern: "assistant:write_note" },
   { effect: "allow", pattern: "assistant:interrupt_session" },
   { effect: "allow", pattern: "assistant:answer_choice(question)" },
+  // Step L4: Duck's backup push, which the floor lets through by name.
+  { effect: "allow", pattern: "assistant:git_push(duck-data origin)" },
 ];
 // Stopping or killing a session, deleting a note, a permission answer and resuming
 // over a running session have no rule: they ask, unless the user's own words asked

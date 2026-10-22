@@ -45,6 +45,7 @@ import { CORE_OPEN, coreText, type CoreHost } from "./core";
 import { memoryOff, recallFor, recallRow, type MemoryHost, type Recall } from "./memory";
 import { COMPACT_REQUEST, compactedText } from "./prompt";
 import { DEFAULT_PROMPTS, type ConfigHost, type Prompts } from "./config";
+import type { RoutinesHost } from "./tools/routines";
 import { MODELS, route, type Brain } from "./routing";
 import { quotedFromLatest } from "./trust/mandate";
 import {
@@ -208,6 +209,8 @@ export interface EngineDeps {
   /** Duck's prompts as files (step L3): the system prompt and the voice note each
    *  thread was pinned on. The built-in ones when absent. */
   config?: ConfigHost;
+  /** Routines and the backup (step L4), for their tools. */
+  routines?: RoutinesHost;
   /** Whether the API budget is past its soft limit (step M2): turns then run on
    *  Haiku. Not degraded when absent or when it fails. */
   degraded?: () => Promise<boolean>;
@@ -253,10 +256,13 @@ export interface SendInput {
 export interface Engine {
   /** Send a message; resolves to the thread id once it's appended or queued. */
   send(input: SendInput): Promise<string>;
-  newThread(mode?: string): Promise<ThreadRow>;
+  /** A new thread; `title` names it at once (Duck's own threads, step L4). */
+  newThread(mode?: string, title?: string): Promise<ThreadRow>;
   /** Delete a thread. Refused while a turn runs; a parked one is dropped with its
    *  confirmations and queue. */
   deleteThread(threadId: string): Promise<void>;
+  /** Keep a thread from the clean-up of idle threads (step L4), or stop. */
+  keepThread(threadId: string, keep: boolean): Promise<void>;
   stop(threadId: string): void;
   /** A provisional turn stands: its message is kept and the reply carries on. */
   commit(threadId: string): void;
@@ -1499,6 +1505,7 @@ export function createEngine(deps: EngineDeps): Engine {
           core: deps.core ?? null,
           memory: deps.memory ?? null,
           config: deps.config ?? null,
+          routines: deps.routines ?? null,
           memoryOff: memoryOff(store.loaded(threadId)),
           request: lastUserText(store.loaded(threadId)),
           startThread: (words, opts) => split(threadId, words, opts),
@@ -1636,13 +1643,19 @@ export function createEngine(deps: EngineDeps): Engine {
   return {
     send,
 
-    async newThread(mode) {
-      const t = await store.create(mode);
+    async newThread(mode, title) {
+      const made = await store.create(mode);
+      const t = (title && (await store.setTitle(made.id, title))) || made;
       emit({ type: "thread", thread: t });
       return t;
     },
 
     deleteThread: removeThread,
+    async keepThread(threadId, keep) {
+      const t = await store.setKeep(threadId, keep);
+      if (!t) throw new Error(`no thread ${threadId}`);
+      emit({ type: "thread", thread: t });
+    },
 
     stop(threadId) {
       queues.delete(threadId);
