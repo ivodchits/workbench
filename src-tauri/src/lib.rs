@@ -7,6 +7,7 @@ mod accel;
 mod assistant;
 mod filedrop;
 mod attention;
+mod badge;
 mod db;
 mod fs;
 mod git;
@@ -19,6 +20,7 @@ mod plugins;
 mod pty;
 mod registry;
 mod remote;
+mod shutdown;
 mod skills;
 mod statusline;
 mod sys;
@@ -30,6 +32,7 @@ use tauri::Manager;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    shutdown::keep_stdio_to_self();
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_store::Builder::default().build())
@@ -401,13 +404,13 @@ pub fn run() {
             attention::notify_alert,
             attention::update_tray_badge,
             attention::update_tray_usage,
+            badge::set_tray_dot,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
         .run(|app, event| {
             if let tauri::RunEvent::Exit = event {
-                hooks::uninstall_dev(app);
-                assistant::headless::kill_all(app);
+                shutdown::on_exit(app);
             }
         });
 }

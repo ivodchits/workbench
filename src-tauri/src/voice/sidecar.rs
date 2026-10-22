@@ -18,7 +18,7 @@
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -77,10 +77,16 @@ struct Proc {
     stdin: ChildStdin,
     stdout: BufReader<ChildStdout>,
     next_id: u64,
+    /// [`Sidecar::pid`], cleared when this goes.
+    pid: Arc<AtomicU32>,
 }
 
 impl Drop for Proc {
     fn drop(&mut self) {
+        // The venv's `python.exe` is a launcher: the interpreter is its child. (The
+        // unwaited `child` keeps the pid from being reused meanwhile.)
+        let _ = self.pid.compare_exchange(self.child.id(), 0, Ordering::SeqCst, Ordering::SeqCst);
+        crate::pty::kill_tree(self.child.id());
         let _ = self.child.kill();
         let _ = self.child.wait();
     }
@@ -101,6 +107,8 @@ pub struct Sidecar {
     dir: PathBuf,
     models: PathBuf,
     proc: Mutex<Option<Proc>>,
+    /// The live process's id (0 = none), for [`Self::stop`] while a call holds `proc`.
+    pid: Arc<AtomicU32>,
     last_used: Mutex<Instant>,
     /// Stay loaded however long it's idle.
     keep: AtomicBool,
@@ -112,6 +120,7 @@ impl Sidecar {
             dir,
             models,
             proc: Mutex::new(None),
+            pid: Arc::new(AtomicU32::new(0)),
             last_used: Mutex::new(Instant::now()),
             keep: AtomicBool::new(false),
         }
@@ -201,7 +210,8 @@ impl Sidecar {
         let stdin = child.stdin.take().ok_or("no stdin")?;
         let stdout = BufReader::new(child.stdout.take().ok_or("no stdout")?);
         lower_priority(&child);
-        Ok(Proc { child, stdin, stdout, next_id: 1 })
+        self.pid.store(child.id(), Ordering::SeqCst);
+        Ok(Proc { child, stdin, stdout, next_id: 1, pid: Arc::clone(&self.pid) })
     }
 
     /// One request and its reply on the live process (started if needed). A broken
@@ -264,10 +274,16 @@ impl Sidecar {
         self.proc.lock().is_ok_and(|p| p.is_some())
     }
 
-    #[cfg(test)]
-    pub fn kill(&self) {
-        if let Ok(mut p) = self.proc.lock() {
-            *p = None;
+    /// Stop the process, even mid-call (the app is quitting): the call then fails
+    /// on the dead pipe and lets it go.
+    pub fn stop(&self) {
+        match self.proc.try_lock() {
+            Ok(mut p) => *p = None,
+            // Something holds the process; while it lives, its pid can't be reused.
+            Err(_) => match self.pid.load(Ordering::SeqCst) {
+                0 => {}
+                pid => crate::pty::kill_tree(pid),
+            },
         }
     }
 
@@ -375,7 +391,7 @@ mod tests {
             assert!(pcm.len() > RATE as usize / 2);
         }
         assert!(s.synth(Engine::Silero, "abc 123", "kseniya", 1.0).is_err(), "Silero refuses text it can't say");
-        s.kill();
+        s.stop();
         assert!(!s.running());
     }
 }

@@ -11,6 +11,7 @@
     "autostart:default",
     "core:window:allow-close",
     "core:window:allow-destroy",
-    "core:window:allow-set-focus"
+    "core:window:allow-set-focus",
+    "core:window:allow-set-overlay-icon"
   ]
 }

@@ -46,6 +46,7 @@ import { initAppearance, useFontZoomWheel } from "./state/appearance";
 import { initTearOff } from "./state/tearoff";
 import { initRemoteActions } from "./state/remoteActions";
 import { initNotifications } from "./state/notifications";
+import { startDuckBadge } from "./state/duckBadgeHost";
 import { initRemoteServer } from "./state/remoteServer";
 import { draftImageNames } from "./state/composer";
 import { prunePastedImages } from "./ipc/os";
@@ -109,6 +110,8 @@ function App() {
     // Duck (step A2): the assistant engine, its threads and open confirmations.
     // App-lifetime and idempotent; without the backend Duck simply stays off.
     void initAssistant();
+    // Duck's unread count on the taskbar icon and a dot on the tray.
+    startDuckBadge();
     // Per-console terminal/transcript choice (step T3), restored from prefs.
     void initViewModes();
     // The project toolbar (step K1): follow plugin files changing, and task runs

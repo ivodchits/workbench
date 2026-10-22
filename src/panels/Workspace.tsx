@@ -133,6 +133,7 @@ import { routePanelFocus, setDockApi } from "../state/dock";
 import { registerLayoutController } from "../state/presets";
 import { tearOff } from "../state/tearoff";
 import { release } from "./terminalPool";
+import { positionForNewPanel } from "./dockPlacement";
 
 interface LayoutSnapshot {
   tree: SerializedDockview;
@@ -396,7 +397,7 @@ function Workspace() {
       if (a.getPanel(session.instanceId)) continue;
       const title = inst.find((i) => i.id === session.instanceId)?.title ?? "console";
       const params: ConsolePanelParams = { instanceId: session.instanceId };
-      const position = a.panels.length > 0 ? ({ direction: "right" } as const) : undefined;
+      const position = positionForNewPanel(a);
       a.addPanel({
         id: session.instanceId,
         component: "console",
@@ -438,7 +439,7 @@ function Workspace() {
     for (const shell of projShells) {
       if (a.getPanel(shell.shellId)) continue;
       const params: ShellPanelParams = { shellId: shell.shellId };
-      const position = a.panels.length > 0 ? ({ direction: "right" } as const) : undefined;
+      const position = positionForNewPanel(a);
       a.addPanel({
         id: shell.shellId,
         component: "shell",
@@ -473,7 +474,7 @@ function Workspace() {
     for (const editor of projEditors) {
       if (a.getPanel(editor.editorId)) continue;
       const params: EditorPanelParams = { editorId: editor.editorId };
-      const position = a.panels.length > 0 ? ({ direction: "right" } as const) : undefined;
+      const position = positionForNewPanel(a);
       a.addPanel({
         id: editor.editorId,
         component: "editor",
@@ -507,7 +508,7 @@ function Workspace() {
     for (const diff of projDiffs) {
       if (a.getPanel(diff.diffId)) continue;
       const params: DiffPanelParams = { diffId: diff.diffId };
-      const position = a.panels.length > 0 ? ({ direction: "right" } as const) : undefined;
+      const position = positionForNewPanel(a);
       a.addPanel({
         id: diff.diffId,
         component: "diff",
@@ -541,7 +542,7 @@ function Workspace() {
     for (const mcp of projMcps) {
       if (a.getPanel(mcp.mcpId)) continue;
       const params: McpPanelParams = { mcpId: mcp.mcpId };
-      const position = a.panels.length > 0 ? ({ direction: "right" } as const) : undefined;
+      const position = positionForNewPanel(a);
       a.addPanel({
         id: mcp.mcpId,
         component: "mcpManager",
@@ -575,7 +576,7 @@ function Workspace() {
     for (const skill of projSkills) {
       if (a.getPanel(skill.skillId)) continue;
       const params: SkillPanelParams = { skillId: skill.skillId };
-      const position = a.panels.length > 0 ? ({ direction: "right" } as const) : undefined;
+      const position = positionForNewPanel(a);
       a.addPanel({
         id: skill.skillId,
         component: "skillManager",
@@ -609,7 +610,7 @@ function Workspace() {
     for (const git of projGits) {
       if (a.getPanel(git.gitId)) continue;
       const params: GitPanelParams = { gitId: git.gitId };
-      const position = a.panels.length > 0 ? ({ direction: "right" } as const) : undefined;
+      const position = positionForNewPanel(a);
       a.addPanel({
         id: git.gitId,
         component: "git",
@@ -641,7 +642,7 @@ function Workspace() {
     for (const n of projNotes) {
       if (a.getPanel(n.notesId)) continue;
       const params: NotesPanelParams = { notesId: n.notesId };
-      const position = a.panels.length > 0 ? ({ direction: "right" } as const) : undefined;
+      const position = positionForNewPanel(a);
       a.addPanel({
         id: n.notesId,
         component: "notes",
@@ -672,7 +673,7 @@ function Workspace() {
     for (const t of openTasks.filter((t) => t.projectId === projId)) {
       if (a.getPanel(t.taskId)) continue;
       const params: TaskPanelParams = { taskId: t.taskId };
-      const position = a.panels.length > 0 ? ({ direction: "right" } as const) : undefined;
+      const position = positionForNewPanel(a);
       a.addPanel({
         id: t.taskId,
         component: "task",

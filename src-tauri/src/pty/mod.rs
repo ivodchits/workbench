@@ -533,6 +533,19 @@ impl PtyManager {
     }
 
     /// Drop every session mapped to `instance_id` (a headless worker that ended).
+    /// Stop every child, each with its whole tree, as the app quits: `claude`'s MCP
+    /// servers would outlive it otherwise. One `taskkill` for them all.
+    pub fn kill_all(&self) {
+        let sessions: Vec<PtySession> = self.sessions.lock().unwrap().drain().map(|(_, s)| s).collect();
+        let pids: Vec<u32> = sessions.iter().filter_map(|s| s.child.process_id()).collect();
+        kill_trees(&pids);
+        for mut session in sessions {
+            let _ = session.child.kill();
+        }
+        self.by_session.lock().unwrap().clear();
+        self.pending_rotation.lock().unwrap().clear();
+    }
+
     pub fn forget_instance(&self, instance_id: &str) {
         self.by_session.lock().unwrap().retain(|_, v| v != instance_id);
     }
@@ -1404,19 +1417,32 @@ fn kill_instance(mgr: &PtyManager, instance_id: &str) {
 /// link (`cmd.exe` → `npm` → `node` → a dev server), and killing it alone leaves the
 /// rest running.
 pub(crate) fn kill_tree(pid: u32) {
+    kill_trees(&[pid]);
+}
+
+/// [`kill_tree`] for several processes at once.
+pub(crate) fn kill_trees(pids: &[u32]) {
+    if pids.is_empty() {
+        return;
+    }
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
         const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        let _ = std::process::Command::new("taskkill")
-            .args(["/PID", &pid.to_string(), "/T", "/F"])
+        let mut cmd = std::process::Command::new("taskkill");
+        for pid in pids {
+            cmd.args(["/PID", &pid.to_string()]);
+        }
+        let _ = cmd
+            .args(["/T", "/F"])
             .creation_flags(CREATE_NO_WINDOW)
+            .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .status();
     }
     #[cfg(not(windows))]
-    {
+    for pid in pids {
         // The child leads its own session (portable-pty starts it that way), so its
         // process group is the tree.
         let _ = std::process::Command::new("kill").args(["-TERM", &format!("-{pid}")]).status();
