@@ -1665,7 +1665,6 @@ function VoiceLine({ voice }: { voice: VoiceState }) {
 function ConversationLine({ voice, busy }: { voice: VoiceState; busy: boolean }) {
   const speech = useSpeechState();
   const c = voice.conversation;
-  const label = c.window ? "reply" : "conversation";
   const text =
     c.phase === "preparing"
       ? "getting the voice ready…"
@@ -1688,7 +1687,7 @@ function ConversationLine({ voice, busy }: { voice: VoiceState; busy: boolean })
       role="status"
       style={{ display: "flex", alignItems: "center", gap: 8, font: "11px var(--wb-mono)", color: live ? "var(--wb-accent)" : "var(--wb-textDim2)" }}
     >
-      <span style={{ color: "var(--wb-textFaint)" }}>{label}:</span>
+      <span style={{ color: "var(--wb-textFaint)" }}>conversation:</span>
       <span style={{ flex: 1, minWidth: 0 }}>{text}</span>
       {live && <LevelMeter />}
     </div>
@@ -1763,7 +1762,7 @@ function ReaderBar() {
 function MicButton({ voice }: { voice: VoiceState }) {
   const held = useRef(false);
   if (voice.prefs.press === "conversation") {
-    const on = voice.conversation.on && !voice.conversation.window;
+    const on = voice.conversation.on;
     const key = voice.prefs.hotkey;
     return (
       <button

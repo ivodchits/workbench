@@ -5,9 +5,9 @@ behind each decision are in `assistant-plan.md`. This file describes the code, a
 Duck step updates it as part of its Done when. Duck's self-development sessions (L3)
 read it first.
 
-Last updated: step V7 (2026-10-22). L3 audited it against the code. Since W5 it also
-covers W6, D2, D4, P1, P2, M2, M3, A5, A6, A7, W4, L1, L2, L3, L4, R1, R2, V1 to V5, X1
-and the morning routine. A fresh session changing Duck: read "The shape", then "Where to
+Last updated: step V8 (2026-10-22). L3 audited it against the code. Since W5 it also
+covers W6, D2, D4, P1, P2, M2, M3, A5, A6, A7, W4, L1, L2, L3, L4, R1, R2, V1 to V5, V7,
+V8, X1 and the morning routine. A fresh session changing Duck: read "The shape", then "Where to
 change X" at the end, then the module rows it points to.
 
 ## The shape
@@ -58,7 +58,7 @@ change X" at the end, then the module rows it points to.
 | `apiWorker.ts` | The API worker (D2): a worker task run on Duck's API credits instead of a session when the subscription's limits are close (5-hour window at 70%, week at 80%; `tasks.ts` `route()`). A task marked `prep` (the morning routine's `prep_ahead`) never goes to the API: it waits until the window resets. One sub-loop on the tier's model with the server's web search and fetch and one tool of ours, `submit_result`, which writes the same `result.md` / `result.json`. Purpose `api-worker`. |
 | `autopilot.ts` | Plan autopilot (P1, P2): Duck runs a session's "step → /compact → continue" loop. After each turn an `autopilot-review` call (Sonnet, low effort, structured) says `continue`, `needs_you` or `plan_done`. Unattended runs (P2) keep to a window or an end time, pause over a subscription limit (`AUTOPILOT_LIMITS`) and carry on after the reset, pause on the same step failing twice, and check in on a stalled turn. One per session, kept in `assistant_autopilots`. |
 | `routing.ts` | Per-message routing (M2), no classifier call: effort `medium`, `high` for a rubber-duck thread, "think hard" (English, Russian, Spanish) and research, plan or comparison asks; the model is Sonnet, or Haiku for the rest of the month past the budget's soft limit, where "think hard" sends that one message on Sonnet. |
-| `announce.ts` | Announcements (V5): Duck's reply to a `<workbench_event>` is the news, said at its producer's level (`info`, `report`, `needs_you`) on this PC when you're at it, else a phone with Duck open, else a push. Do Not Disturb, quiet hours, full-screen apps, the Speak switch, waiting for a gap, and batching are its etiquette (`AnnounceSettings`). |
+| `announce.ts` | Announcements (V5): Duck's reply to a `<workbench_event>` is the news, said at its producer's level (`info`, `report`, `needs_you`) on this PC when you're at it, else a phone with Duck open, else a push. Do Not Disturb, quiet hours, full-screen apps, the Speak switch, waiting for a gap, and batching are its etiquette (`AnnounceSettings`). An announcement never turns the mic on (V8): turning it on within a minute of one said in full opens its thread first (`heardAnnouncement` / `replyTarget` in `voiceState.ts`). |
 | `speakable.ts` | Spoken replies' words (V2): `Sentences` cuts a stream into whole sentences, `toSpoken` makes one sayable, `langOf` picks Kokoro (English) or Silero (Russian), and a Russian sentence with digits or Latin letters gets the `speakable_ru` Haiku rewrite or `russianFallback`. |
 | `reader.ts` | Read-aloud (V3): a source in sections, each made when its turn comes (narrated by Haiku first in `narrate` mode), played on the desktop or the phone that asked, after the reply is over; pause / resume / next / previous / stop, and a position kept per source for "continue reading". |
 | `voiceNames.ts` | The name fixer (V1): project and session names and a term list, said in Russian and written in Cyrillic by Parakeet, put back in their own spelling with loose matching for longer names. |

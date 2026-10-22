@@ -111,8 +111,6 @@ export interface ConversationState {
   /** Which run (a newer one replaces an older one's late events). */
   run: number;
   state: ConversationPhase;
-  /** A reply window after an announcement, not the mode. */
-  window: boolean;
   /** "wait" holds the turn open. */
   held: boolean;
   /** You can talk over Duck now. */
@@ -131,13 +129,10 @@ export interface VoiceTurn {
   text: string;
   /** `provisional`: start on it; `withdrawn`: you went on, drop it; `final`: it stands. */
   phase: "provisional" | "withdrawn" | "final";
-  window: boolean;
 }
 
 export const voiceConversation = (on: boolean): Promise<void> => invoke("voice_conversation", { on });
 export const voiceConversationOn = (): Promise<boolean> => invoke("voice_conversation_on");
-/** Listen `secs` for a reply after an announcement. */
-export const voiceReplyWindow = (secs: number): Promise<void> => invoke("voice_reply_window", { secs });
 
 export function onConversationState(cb: (s: ConversationState) => void): Promise<UnlistenFn> {
   return listen<ConversationState>("conversation-state", (e) => cb(e.payload));

@@ -36,8 +36,8 @@
 //! on and off (`press: conversation`); `press: dictation` keeps the key for one
 //! dictation as above. Its turn detector is [`turn`]; [`endpoint`] says whether
 //! the output is headphones, and on speakers [`aec`] cancels Duck's echo, so you
-//! can talk over Duck either way. After a spoken announcement the webview opens a short
-//! reply window through the same pipeline ([`voice_reply_window`]).
+//! can talk over Duck either way. Only you turn it on: an announcement doesn't
+//! (V8).
 
 pub mod aec;
 pub mod assets;
@@ -128,7 +128,7 @@ pub struct VoiceState {
     hotkey: Mutex<Option<String>>,
     /// A recording in progress, and when it began.
     recording: Mutex<Option<(capture::Recorder, Instant)>>,
-    /// Conversation mode or a reply window, while one runs (step V4).
+    /// Conversation mode, while it runs (step V4).
     conversation: Mutex<Option<conversation::Handle>>,
     runs: AtomicU64,
 }
@@ -194,8 +194,7 @@ fn presses(app: &AppHandle) -> Press {
 /// mode it starts or stops, else it starts.
 fn key_down(app: &AppHandle) {
     if presses(app) == Press::Conversation {
-        let on = conversing(app) == Some(conversation::Kind::Mode);
-        set_conversation(app, !on);
+        set_conversation(app, !conversing(app));
     } else if toggles(app) && recording(app) {
         release(app)
     } else {
@@ -210,22 +209,22 @@ fn key_up(app: &AppHandle) {
     }
 }
 
-/// What's running: the mode, a reply window, or nothing.
-fn conversing(app: &AppHandle) -> Option<conversation::Kind> {
-    let s = app.try_state::<VoiceState>()?;
-    let c = s.conversation.lock().ok()?;
-    c.as_ref().map(|h| h.kind)
+/// Whether conversation mode is running.
+fn conversing(app: &AppHandle) -> bool {
+    app.try_state::<VoiceState>().and_then(|s| s.conversation.lock().ok().map(|c| c.is_some())).unwrap_or(false)
 }
 
-/// Start conversation mode or a reply window, replacing whatever runs (the
-/// window gives way to the mode); stop it with `None`.
-fn run_conversation(app: &AppHandle, kind: Option<conversation::Kind>) {
+/// Start conversation mode, replacing a run that's still going; stop it with
+/// `false`.
+fn set_conversation(app: &AppHandle, on: bool) {
     let Some(s) = app.try_state::<VoiceState>() else { return };
     let Ok(mut slot) = s.conversation.lock() else { return };
     if let Some(old) = slot.take() {
         let _ = old.cmds.send(conversation::Cmd::Stop);
     }
-    let Some(kind) = kind else { return };
+    if !on {
+        return;
+    }
     // One microphone user at a time: a dictation in progress is dropped.
     if let Some(rec) = s.recording.lock().ok().and_then(|mut r| r.take()) {
         let _ = rec.0.stop();
@@ -242,7 +241,7 @@ fn run_conversation(app: &AppHandle, kind: Option<conversation::Kind>) {
     };
     let run = s.runs.fetch_add(1, Ordering::SeqCst) + 1;
     let done_app = app.clone();
-    let cmds = conversation::start(app.clone(), Arc::clone(&s.engine), settings, kind, run, move || {
+    let cmds = conversation::start(app.clone(), Arc::clone(&s.engine), settings, run, move || {
         // Ended by itself, or stopped: forget it, unless another took its place.
         let Some(s) = done_app.try_state::<VoiceState>() else { return false };
         let Ok(mut slot) = s.conversation.lock() else { return false };
@@ -255,7 +254,7 @@ fn run_conversation(app: &AppHandle, kind: Option<conversation::Kind>) {
             None => !recording(&done_app),
         }
     });
-    *slot = Some(conversation::Handle { cmds, kind, run });
+    *slot = Some(conversation::Handle { cmds, run });
 }
 
 /// Conversation mode for a phone (step V4 part 3): the same pipeline, on the
@@ -286,19 +285,15 @@ pub fn start_phone_conversation(
     };
     let run = s.runs.fetch_add(1, Ordering::SeqCst) + 1;
     let source = conversation::Source::Stream(audio);
-    Some(conversation::start_on(io, Arc::clone(&s.engine), settings, conversation::Kind::Mode, run, source, || true))
-}
-
-fn set_conversation(app: &AppHandle, on: bool) {
-    run_conversation(app, on.then_some(conversation::Kind::Mode));
+    Some(conversation::start_on(io, Arc::clone(&s.engine), settings, run, source, || true))
 }
 
 /// Start recording (the key went down). A second press while recording is ignored.
 fn press(app: &AppHandle) {
     let Some(s) = app.try_state::<VoiceState>() else { return };
     // A dictation takes the microphone from conversation mode.
-    if conversing(app).is_some() {
-        run_conversation(app, None);
+    if conversing(app) {
+        set_conversation(app, false);
     }
     let Ok(mut rec) = s.recording.lock() else { return };
     if rec.is_some() {
@@ -431,19 +426,10 @@ pub fn voice_conversation(app: AppHandle, on: bool) {
     set_conversation(&app, on);
 }
 
-/// Whether conversation mode is on (not a reply window).
+/// Whether conversation mode is on.
 #[tauri::command]
 pub fn voice_conversation_on(app: AppHandle) -> bool {
-    conversing(&app) == Some(conversation::Kind::Mode)
-}
-
-/// Listen for a reply for `secs` after an announcement (V5's reply window).
-/// Nothing when conversation mode is on (it listens anyway) or a dictation runs.
-#[tauri::command]
-pub fn voice_reply_window(app: AppHandle, secs: u32) {
-    if conversing(&app).is_none() && !recording(&app) {
-        run_conversation(&app, Some(conversation::Kind::Window(Duration::from_secs(secs.clamp(3, 30) as u64))));
-    }
+    conversing(&app)
 }
 
 /// The microphones, for the settings.

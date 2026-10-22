@@ -265,7 +265,6 @@ pub fn run() {
             voice::voice_devices,
             voice::voice_conversation,
             voice::voice_conversation_on,
-            voice::voice_reply_window,
             voice::tts::tts_configure,
             voice::tts::tts_say,
             voice::tts::tts_end,

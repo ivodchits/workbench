@@ -36,9 +36,9 @@
 //! - **Off** by the key or the drawer, by "that's all for now", or after minutes
 //!   of quiet (`autoOffMin`); the microphone is released at once.
 //!
-//! The **reply window** (V5's, built here) is the same pipeline for a few seconds
-//! after Duck announces something: a reply goes to that thread, and the window
-//! closes when it's sent or when nothing was said.
+//! Nothing else turns it on: after Duck announces something, you reply with the
+//! key or the drawer's mic (V8 removed V5's reply window, which listened by
+//! itself).
 //!
 //! **The phone** (V4 part 3) runs the same pipeline here, on the desktop: its page
 //! streams its microphone over Duck's socket, and a [`Surface`] stands for where a
@@ -439,13 +439,6 @@ pub struct Settings {
     pub cue: bool,
 }
 
-/// What's running: the mode, or a reply window of so many seconds.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum Kind {
-    Mode,
-    Window(Duration),
-}
-
 pub const STATE_EVENT: &str = "conversation-state";
 pub const TURN_EVENT: &str = "voice-turn";
 pub const LEVEL_EVENT: &str = "conversation-level";
@@ -458,8 +451,6 @@ pub struct StateEvent {
     /// `preparing`, `listening`, `hearing` (you're talking), `grace` (a turn just
     /// went out), `deaf` (Duck speaking on speakers), `off` or `error`.
     pub state: &'static str,
-    /// A reply window, not the mode.
-    pub window: bool,
     /// "wait" is holding the turn open.
     pub held: bool,
     /// You can talk over Duck now.
@@ -480,17 +471,15 @@ pub struct TurnEvent {
     pub text: String,
     /// `provisional` (start on it), `withdrawn` (you went on: drop it) or `final`.
     pub phase: &'static str,
-    pub window: bool,
 }
 
 pub enum Cmd {
     Stop,
 }
 
-/// A running mode or window: its commands, and which run it is.
+/// A running mode: its commands, and which run it is.
 pub struct Handle {
     pub cmds: Sender<Cmd>,
-    pub kind: Kind,
     pub run: u64,
 }
 
@@ -721,7 +710,7 @@ impl Audio {
     }
 }
 
-/// Start a mode or a window on the desktop on a thread of its own, as run `id`.
+/// Start the mode on the desktop on a thread of its own, as run `id`.
 /// `done` runs when it ends, however it ends, and says whether it was still the
 /// one running (not replaced, nor stopped by a dictation, which has the listening
 /// sign now).
@@ -729,11 +718,10 @@ pub fn start(
     app: AppHandle,
     engine: Arc<Engine>,
     settings: Settings,
-    kind: Kind,
     id: u64,
     done: impl FnOnce() -> bool + Send + 'static,
 ) -> Sender<Cmd> {
-    start_on(Box::new(Desktop(app)), engine, settings, kind, id, Source::Mic, done)
+    start_on(Box::new(Desktop(app)), engine, settings, id, Source::Mic, done)
 }
 
 /// Start a run on any surface, hearing `source` (see [`start`]).
@@ -741,15 +729,13 @@ pub fn start_on(
     io: Box<dyn Surface>,
     engine: Arc<Engine>,
     settings: Settings,
-    kind: Kind,
     id: u64,
     source: Source,
     done: impl FnOnce() -> bool + Send + 'static,
 ) -> Sender<Cmd> {
     let (tx, rx) = mpsc::channel();
     let spawned = std::thread::Builder::new().name("voice-conversation".into()).spawn(move || {
-        let window = matches!(kind, Kind::Window(_));
-        let result = run(io.as_ref(), &engine, &settings, kind, id, &rx, source);
+        let result = run(io.as_ref(), &engine, &settings, id, &rx, source);
         let (state, message) = match result {
             Ok(m) => ("off", m),
             Err(e) => ("error", Some(e)),
@@ -760,7 +746,6 @@ pub fn start_on(
         io.state(&StateEvent {
             run: id,
             state,
-            window,
             held: false,
             duplex: false,
             message,
@@ -781,15 +766,13 @@ fn run(
     io: &dyn Surface,
     engine: &Arc<Engine>,
     s: &Settings,
-    kind: Kind,
     id: u64,
     cmds: &Receiver<Cmd>,
     source: Source,
 ) -> Result<Option<String>, String> {
-    let window = matches!(kind, Kind::Window(_));
     let run = id;
     let emit = |state: &'static str, held: bool, duplex: bool, cancelling: bool, suppression: Option<f32>, output: &Option<String>| {
-        io.state(&StateEvent { run, state, window, held, duplex, message: None, cancelling, suppression, output: output.clone() });
+        io.state(&StateEvent { run, state, held, duplex, message: None, cancelling, suppression, output: output.clone() });
     };
     emit("preparing", false, false, false, None, &None);
     let root = engine.root().to_path_buf();
@@ -823,11 +806,7 @@ fn run(
         }
     };
 
-    let mut machine = Machine::new(match kind {
-        Kind::Mode => s.patience.policy(),
-        // A reply to an announcement is short.
-        Kind::Window(_) => Patience::Quick.policy(),
-    });
+    let mut machine = Machine::new(s.patience.policy());
     let mut audio = Audio { buf: VecDeque::with_capacity(KEEP), start: 0 };
     // What's heard (through the echo canceller when it runs), and the microphone as
     // it came, sample for sample from the front.
@@ -838,9 +817,7 @@ fn run(
     let mut sent: Option<String> = None;
     let mut bye = false;
 
-    let began = Instant::now();
     let mut active = Instant::now();
-    let mut heard_any = false;
     let mut output = io.output();
     let mut output_at = Instant::now();
     let mut voice_until: Option<Instant> = None;
@@ -948,7 +925,6 @@ fn run(
             while let Some(ev) = queue.pop_front() {
                 match ev {
                     Event::Started => {
-                        heard_any = true;
                         active = Instant::now();
                     }
                     Event::Segment { from, to } => {
@@ -1021,30 +997,27 @@ fn run(
                         }
                         turn_id += 1;
                         if bye {
-                            io.turn(&TurnEvent { run, id: turn_id, text, phase: "final", window });
+                            io.turn(&TurnEvent { run, id: turn_id, text, phase: "final" });
                             return Ok(Some("Conversation mode is off (you said so).".into()));
                         }
                         if s.cue {
                             io.cue();
                         }
-                        io.turn(&TurnEvent { run, id: turn_id, text: text.clone(), phase: "provisional", window });
+                        io.turn(&TurnEvent { run, id: turn_id, text: text.clone(), phase: "provisional" });
                         sent = Some(text);
                     }
                     Event::Resumed => {
                         if sent.take().is_some() {
-                            io.turn(&TurnEvent { run, id: turn_id, text: String::new(), phase: "withdrawn", window });
+                            io.turn(&TurnEvent { run, id: turn_id, text: String::new(), phase: "withdrawn" });
                         }
                         active = Instant::now();
                     }
                     Event::Committed => {
                         if let Some(text) = sent.take() {
-                            io.turn(&TurnEvent { run, id: turn_id, text, phase: "final", window });
+                            io.turn(&TurnEvent { run, id: turn_id, text, phase: "final" });
                         }
                         parts.clear();
                         active = Instant::now();
-                        if window {
-                            return Ok(None);
-                        }
                     }
                 }
             }
@@ -1076,14 +1049,9 @@ fn run(
             level_at = Instant::now();
         }
         let idle = !machine.in_turn() && !machine.in_grace();
-        match kind {
-            Kind::Mode if idle && active.elapsed() >= s.auto_off => {
-                let min = s.auto_off.as_secs().div_ceil(60);
-                return Ok(Some(format!("Conversation mode turned off after {min} minute{} of quiet.", if min == 1 { "" } else { "s" })));
-            }
-            Kind::Window(d) if idle && !heard_any && began.elapsed() >= d => return Ok(None),
-            Kind::Window(d) if idle && began.elapsed() >= d + Duration::from_secs(30) => return Ok(None),
-            _ => {}
+        if idle && active.elapsed() >= s.auto_off {
+            let min = s.auto_off.as_secs().div_ceil(60);
+            return Ok(Some(format!("Conversation mode turned off after {min} minute{} of quiet.", if min == 1 { "" } else { "s" })));
         }
     }
 }
@@ -1381,7 +1349,7 @@ mod tests {
             cue: false,
         };
         let (done_tx, done_rx) = mpsc::channel();
-        let _cmds = start_on(Box::new(Arc::clone(&kept)), engine, settings, Kind::Mode, 1, Source::Stream(rx), move || {
+        let _cmds = start_on(Box::new(Arc::clone(&kept)), engine, settings, 1, Source::Stream(rx), move || {
             let _ = done_tx.send(());
             true
         });

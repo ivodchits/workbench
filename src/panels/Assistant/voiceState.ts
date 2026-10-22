@@ -22,8 +22,10 @@
 // - Talking over Duck stops its voice here too, so the rest of the reply isn't
 //   queued after the backend cut it. On speakers the backend cancels Duck's echo
 //   (part 2); the echo it measured removing is kept for the settings (`echo`).
-// - After a spoken announcement, a short reply window listens (V5's, `replyWindow`):
-//   a reply opens that thread and goes there.
+// - An announcement never turns the mic on (V8 removed V5's reply window, which
+//   listened by itself). You reply with the key or the drawer's mic: turned on
+//   within a minute of an announcement said in full, it opens that thread first,
+//   so what you say goes there.
 
 import { useSyncExternalStore } from "react";
 import { fixNames, voiceMessage } from "../../assistant/voiceNames";
@@ -37,7 +39,6 @@ import {
   voiceConfigure,
   voiceConversation,
   voiceConversationOn,
-  voiceReplyWindow,
   type ConversationPhase,
   type ConversationState,
   type Transcript,
@@ -65,18 +66,15 @@ export const DEFAULT_VOICE: VoicePrefs = {
   echo: "auto",
   autoOffMin: 5,
   cue: true,
-  replyWindow: true,
   recordPhone: false,
 };
 
-/** How long the reply window after an announcement listens, seconds. */
-export const REPLY_WINDOW_S = 8;
+/** Turning the mic on this soon after an announcement replies to it. */
+export const REPLY_AFTER_MS = 60_000;
 
 export interface Conversation {
-  /** The mode or a reply window is running. */
+  /** The mode is running. */
   on: boolean;
-  /** It's a reply window, not the mode. */
-  window: boolean;
   phase: ConversationPhase;
   held: boolean;
   /** You can talk over Duck (unless set not to). */
@@ -107,7 +105,6 @@ export interface VoiceState {
 
 const OFF: Conversation = {
   on: false,
-  window: false,
   phase: "off",
   held: false,
   duplex: false,
@@ -202,13 +199,13 @@ export function setConversation(on: boolean): void {
 }
 
 export function toggleConversation(): void {
-  setConversation(!(state.conversation.on && !state.conversation.window));
+  setConversation(!state.conversation.on);
 }
 
 /** The newest run heard: an older one's late events are ignored. */
 let run = 0;
-/** Where the reply window's reply goes. */
-let windowThread: string | null = null;
+/** The last announcement said in full, and when. */
+let announced: { threadId: string; at: number } | null = null;
 /** Turns sent provisionally, by id, with their thread. */
 const sent = new Map<number, string>();
 
@@ -221,11 +218,9 @@ export function routeTurn(
     commit: (threadId: string) => void;
     withdraw: (threadId: string) => void;
     send: (text: string) => void;
-    open: (threadId: string) => void;
   },
   text: string,
 ): void {
-  if (t.window && windowThread && t.phase !== "withdrawn" && d.current() !== windowThread) d.open(windowThread);
   switch (t.phase) {
     case "provisional": {
       const thread = d.current();
@@ -257,7 +252,6 @@ function onTurn(t: VoiceTurn): void {
       commit: commitTurn,
       withdraw: withdrawTurn,
       send: (text) => sendMessage(text, undefined, "voice"),
-      open: openThread,
     },
     t.phase === "withdrawn" ? "" : messageFor(t, knownNames()),
   );
@@ -269,16 +263,15 @@ function onConversation(s: ConversationState): void {
   const on = s.state !== "off" && s.state !== "error";
   // Talking over Duck: the backend cut its voice; drop the rest of the reply.
   if (s.state === "hearing" && s.duplex && isSpeaking()) stopSpeaking();
-  if (!on) {
-    windowThread = null;
-    sent.clear();
+  if (!on) sent.clear();
+  if (s.state === "preparing") {
+    replyHere();
+    // Turned on (by the key too): the drawer opens, unless the window is hidden.
+    if (document.visibilityState === "visible") setDrawerOpen(true);
   }
-  // Turned on (by the key too): the drawer opens, unless the window is hidden.
-  if (s.state === "preparing" && !s.window && document.visibilityState === "visible") setDrawerOpen(true);
   set({
     conversation: {
       on,
-      window: s.window,
       phase: s.state,
       held: s.held,
       duplex: s.duplex,
@@ -289,11 +282,23 @@ function onConversation(s: ConversationState): void {
   });
 }
 
-/** An announcement was said: listen a moment for a reply to it. */
-function replyWindow(threadId: string): void {
-  if (!state.prefs.replyWindow || state.conversation.on || state.phase !== "idle") return;
-  windowThread = threadId;
-  void voiceReplyWindow(REPLY_WINDOW_S).catch((e: unknown) => console.warn("voice: the reply window didn't open", e));
+/** An announcement was said in full. The mic stays off: turning it on soon after
+ *  replies to it. */
+export function heardAnnouncement(threadId: string, now = Date.now()): void {
+  announced = { threadId, at: now };
+}
+
+/** You turned the mic on: the thread it replies to, if an announcement was said
+ *  just before (once). Exported for the tests. */
+export function replyTarget(now = Date.now()): string | null {
+  const a = announced;
+  announced = null;
+  return a && now - a.at <= REPLY_AFTER_MS ? a.threadId : null;
+}
+
+function replyHere(): void {
+  const t = replyTarget();
+  if (t && getDuckState().current !== t) openThread(t);
 }
 
 let started: Promise<void> | null = null;
@@ -306,6 +311,7 @@ export function initVoice(): Promise<void> {
     configure(prefs);
     await onVoiceState(({ state: phase, message }) => {
       set({ phase, message });
+      if (phase === "listening") replyHere();
       if (phase === "listening" && document.visibilityState === "visible") setDrawerOpen(true);
     });
     await onVoiceTranscript(heard);
@@ -314,7 +320,7 @@ export function initVoice(): Promise<void> {
     await onConversationLevel((l) => {
       level = l;
     });
-    onAnnounced(replyWindow);
+    onAnnounced(heardAnnouncement);
     // After a reload, the mode may still be on.
     if (await voiceConversationOn().catch(() => false))
       set({ conversation: { ...OFF, on: true, phase: "listening" } });

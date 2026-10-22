@@ -69,8 +69,6 @@ export interface Prefs {
     echo: "auto" | "full" | "half";
     autoOffMin: number;
     cue: boolean;
-    /** Listen for a reply after a spoken announcement (V5's reply window). */
-    replyWindow: boolean;
     /** Save the phone's conversation runs for measuring its echo (V7, debug). */
     recordPhone?: boolean;
   };

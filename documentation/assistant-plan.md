@@ -903,7 +903,8 @@ at the right moment.
   "Listen" action that plays the spoken summary.
 
 **The Speak toggle comes first** (decided 2026-10-18). A master **Speak** switch decides
-whether Duck uses its voice at all: spoken replies, announcements and the reply window.
+whether Duck uses its voice at all: spoken replies, announcements and the reply window
+(the reply window was removed in V8: an announcement doesn't turn the mic on).
 - It's one click on a speaker icon next to the Duck button, also in the drawer header, the
   tray menu, the phone tab, a hotkey and by voice ("Duck, stop talking" / «Дак, молчи»).
 - **Speak off** means text only: announcements arrive as a badge, drawer messages and
@@ -924,7 +925,7 @@ Announcements:
 | Stay quiet over full-screen apps, except *needs you* | on |
 | Batch window for updates arriving together | 20 s |
 | Repeat unanswered *needs you* | after 10 min, once |
-| Reply window after speaking | on, 8 s |
+| Reply window after speaking | on, 8 s (removed in V8) |
 | "Around" means input within | 2 min |
 | Push to the phone when not around | on |
 
@@ -4297,6 +4298,23 @@ up ("change this", with a circle around it).
     events, no turn (tested).
   - Conversation mode still starts from the key and the drawer's mic.
   - A turn after an announcement goes to the announcement's thread.
+- **As built (2026-10-22):**
+  - **Removed:** `voice_reply_window`, `conversation::Kind` (the run is always the mode
+    now; `start`/`start_on` lost the parameter, `Handle.kind` went), the `window` flag
+    on `conversation-state` and `voice-turn`, the pref `voice.replyWindow` and its
+    setting, `voiceReplyWindow`, `Conversation.window`, and the drawer's "reply:"
+    label. A stored `replyWindow` is ignored.
+  - **The announcement's thread:** `onAnnounced` now only notes the thread and when
+    (`heardAnnouncement` in `voiceState.ts`). Turning the mic on within a minute
+    (`REPLY_AFTER_MS`) opens that thread first, once: a conversation run reaching
+    `preparing` (the key or the drawer's mic) or a dictation reaching `listening`. The
+    drawer isn't switched while you're away, so a thread you were reading isn't taken
+    from under you; it moves only when you start talking.
+  - **"Say 'read it'":** nothing spoken or in the prompts offered it; the only mention
+    was the removed setting's hint, so there was nothing to reword.
+  - **Tests:** an announcement said in full calls nothing that opens the mic, and the
+    next run opens its thread (once); the minute's limit. vitest 724 (2 new); cargo
+    314; tsc, eslint and clippy clean (the existing warnings). Not tried in the app.
 
 ### Track R — Remote
 
@@ -6841,7 +6859,7 @@ T2 goes live after the replay check in its done-when (the past week's prompts th
 | V5 | Proactive announcements | ☑ (the reply window built with V4) |
 | V6 | Wake word on the PC (experimental) | ☐ |
 | V7 | Duck stops hearing itself on the phone (high priority) | ☐ (built 2026-10-22; done when measured on your phone) |
-| V8 | Announcements don't turn the mic on (small fix) | ☐ |
+| V8 | Announcements don't turn the mic on (small fix) | ☑ |
 | L1 | Long-term memory: files, index, recall | ☑ (not tried in the app yet) |
 | L2 | Consolidation, journal, and recall quality | ☑ (not tried in the app; hit-rate review 2026-11-05) |
 | L3 | Self-development through Opus sessions | ☑ (not tried in the app; no real Opus branch yet) |

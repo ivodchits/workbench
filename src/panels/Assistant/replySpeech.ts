@@ -25,8 +25,8 @@
 //   reader holds its place.
 // - Speak (V5) is the master switch: off, nothing here uses the voice but
 //   Ctrl+Shift+L. Announcements (`announce`) speak through the same queue.
-// - Once an announcement has been said, `onAnnounced` hears its thread, and
-//   conversation mode (V4) opens the reply window for it.
+// - Once an announcement has been said, `onAnnounced` hears its thread: turning
+//   the mic on soon after replies there (V8: the mic stays off by itself).
 // - A conversation Duck moved into another thread (A7): the reply there is said
 //   after the rest of "Moving to the Demiurge thread.", not over it.
 

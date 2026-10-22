@@ -5,8 +5,7 @@
 //
 // Step V4: what the key does (conversation mode, or one message), how patient
 // conversation mode is with pauses, talking over Duck (with the echo removed, as
-// last measured), its auto-off, the chime, and the reply window after an
-// announcement.
+// last measured), its auto-off and the chime.
 
 import { useCallback, useEffect, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
@@ -172,17 +171,6 @@ export default function VoiceSettings() {
       <label style={row}>
         <input type="checkbox" checked={prefs.cue} onChange={(e) => setVoicePrefs({ cue: e.target.checked })} />
         <span>A soft chime when your turn goes to Duck</span>
-      </label>
-      <label style={row}>
-        <input
-          type="checkbox"
-          checked={prefs.replyWindow}
-          onChange={(e) => setVoicePrefs({ replyWindow: e.target.checked })}
-        />
-        <span>
-          Listen for a reply after Duck announces something
-          <span style={hint}> (8 seconds; &quot;yes, read it&quot;)</span>
-        </span>
       </label>
       <label style={row}>
         <input
