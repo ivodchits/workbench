@@ -142,6 +142,7 @@ function subscribe(cb: () => void): () => void {
   };
 }
 
+export const subscribeDuck = subscribe;
 export const getDuckState = (): DuckState => state;
 
 export function useDuckState(): DuckState {

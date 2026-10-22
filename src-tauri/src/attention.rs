@@ -26,6 +26,13 @@ pub struct TrayState {
 }
 
 impl TrayState {
+    /// Swap the tray icon (the badge module's red dot).
+    pub(crate) fn set_icon(&self, icon: tauri::image::Image<'static>) {
+        if let Some(ref i) = self.icon {
+            let _ = i.set_icon(Some(icon));
+        }
+    }
+
     /// Rebuild and apply the tooltip from the current signals. `Workbench`, plus a
     /// needs-you clause and/or a usage clause when present.
     fn refresh(&self) {

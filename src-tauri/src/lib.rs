@@ -7,6 +7,7 @@ mod accel;
 mod assistant;
 mod filedrop;
 mod attention;
+mod badge;
 mod db;
 mod fs;
 mod git;
@@ -394,6 +395,7 @@ pub fn run() {
             attention::notify_alert,
             attention::update_tray_badge,
             attention::update_tray_usage,
+            badge::set_tray_dot,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
