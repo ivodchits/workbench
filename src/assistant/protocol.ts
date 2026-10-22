@@ -119,7 +119,9 @@ export interface Notice {
     /** A read aloud stopped before its end (V3). */
     | "reader"
     /** The thread moved to Haiku past the budget's soft limit (M2). */
-    | "budget";
+    | "budget"
+    /** The older turns were summarized for the model (A6). */
+    | "compacted";
   text: string;
   /** `note` only. */
   note?: NoteEdit;
@@ -127,6 +129,9 @@ export interface Notice {
   plugins?: PluginsEdit;
   /** `task` only. */
   task?: { id: string };
+  /** `compacted` only: Duck's summary, which the requests send in place of every
+   *  message up to and including `through` (a seq). */
+  compaction?: { summary: string; through: number };
 }
 
 /** A worker task as a surface shows it (step D1). */
@@ -194,6 +199,8 @@ export type ClientMessage =
   | { type: "thread.new"; mode?: string }
   /** Delete a thread (refused while a reply is running: stop it first). */
   | { type: "thread.delete"; threadId: string }
+  /** Compact a thread (step A6): now, or once the reply running there is over. */
+  | { type: "thread.compact"; threadId: string }
   /** Ask for the thread list, the open confirmations and the spend (a surface
    *  connecting). */
   | { type: "sync" }

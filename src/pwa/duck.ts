@@ -940,10 +940,10 @@ function taskCard(taskId: string, text: string): HTMLElement {
   return card;
 }
 
-const NOTICE_GLYPH: Partial<Record<Notice["kind"], string>> = { keys: "⌨", autopilot: "⟳", screen: "▣", reader: "♪", budget: "$" };
+const NOTICE_GLYPH: Partial<Record<Notice["kind"], string>> = { keys: "⌨", autopilot: "⟳", screen: "▣", reader: "♪", budget: "$", compacted: "⇲" };
 
 function noticeLine(n: Notice): HTMLElement {
-  const quiet = n.kind === "stopped" || n.kind === "keys" || n.kind === "autopilot" || n.kind === "screen" || n.kind === "reader";
+  const quiet = n.kind === "stopped" || n.kind === "keys" || n.kind === "autopilot" || n.kind === "screen" || n.kind === "reader" || n.kind === "compacted";
   return el("div", `duck-notice ${quiet ? "muted" : "needs"}`, `${NOTICE_GLYPH[n.kind] ?? "!"} ${n.text}`);
 }
 

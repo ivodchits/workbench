@@ -5,7 +5,7 @@ behind each decision are in `assistant-plan.md`. This file describes the code, a
 Duck step updates it as part of its Done when. Duck's self-development sessions (L3)
 read it first.
 
-Last updated: step W5 (2026-10-19).
+Last updated: step A6 (2026-10-22).
 
 ## The shape
 
@@ -33,7 +33,7 @@ Last updated: step W5 (2026-10-19).
 | File | What it is |
 |---|---|
 | `index.ts` | `initAssistant()` (called from `App.tsx` with the other engines) builds the store, the trust store, the registry and the engine; `getDuck()` returns the in-process transport. `endpoint()` maps protocol messages onto the engine and adds the spend (from a `SpendSource`: the ledger commands and `assistant-usage` events) and the trust messages (`trustView()` adds the floor's labels). |
-| `protocol.ts` | The Duck Protocol, version 1: `ClientMessage` (send, stop, confirm, thread.new, thread.delete, sync, thread.open, settings.set, trust.pause, trust.rule.add, trust.rule.remove, trust.mode, trust.floor, trust.decisions, trust.replay, task.close) and `DuckEvent` (threads, history, thread, threadDeleted, message, delta, tool, confirm, confirmed, turnState, spend, settings, trust, decisions, decision, tasks, replay, error). A `ConfirmRequest` carries the tool's `summary` and, for a file edit, `review` (each file's before and after, shown as diffs); a `note` notice carries a `NoteEdit` (before, after, revision) and a `plugins` notice a `PluginsEdit` (the plugin file and its scripts, before and after, and the new revision) for the drawer's chips. Source `event` marks a follow-up from Workbench, not the user. `createLocalTransport` stamps `v`. |
+| `protocol.ts` | The Duck Protocol, version 1: `ClientMessage` (send, stop, confirm, thread.new, thread.delete, thread.compact, sync, thread.open, settings.set, trust.pause, trust.rule.add, trust.rule.remove, trust.mode, trust.floor, trust.decisions, trust.replay, task.close) and `DuckEvent` (threads, history, thread, threadDeleted, message, delta, tool, confirm, confirmed, turnState, spend, settings, trust, decisions, decision, tasks, replay, error). A `ConfirmRequest` carries the tool's `summary` and, for a file edit, `review` (each file's before and after, shown as diffs); a `note` notice carries a `NoteEdit` (before, after, revision) and a `plugins` notice a `PluginsEdit` (the plugin file and its scripts, before and after, and the new revision) for the drawer's chips. Source `event` marks a follow-up from Workbench, not the user. `createLocalTransport` stamps `v`. |
 | `settings.ts` | Duck's settings (pref `assistant`): `confirmPrompts` (ask before every prompt sent to a session), `codingModel` (what `create_session` uses for coding work) `answerSessionPrompts` (T2: off by default, which keeps the trust watcher in shadow mode for every project), `codingPermissionMode` (M4), and the workers' `maxWorkers`, `workspace` and `tiers` (D1: each tier's model and effort). Loaded at start, changed only through `settings.set`. |
 | `policy.ts` | `createPolicy({settings, trust, messages})`: the gate, an adapter over the trust engine. It builds a `TrustRequest`, runs `decide`, applies the rate guard and logs the decision. A `deny` becomes the call's error, and a rate-guard trip a `trust` notice. Without a trust store it is W2's: consequential calls ask, and prompts too when `confirmPrompts` is on. |
 | `trust/rules.ts` | Rules in Claude Code's syntax (`assistant:write_note`, `assistant:answer_choice(question)`, `Bash(npm test:*)`, `Edit(src/**)`, `WebFetch(domain:x)`): `parseRule`, `matches`, `evaluate` (deny > ask > allow, global plus the call's project). |
@@ -157,6 +157,8 @@ prompt's safety rules cover them.
 - `assistant_trust_modes (project_id, mode)`: only projects that aren't `live`.
 - `assistant_tasks (id, data JSON, updated_at)`: worker tasks (D1).
 - `meta` `assistant_summary:<instance>`: a session's last summary (W3).
+- A thread's compactions (A6) are `notice` rows in `assistant_messages`, so there is no
+  table for them.
 
 The main `workbench.db` holds `worker_sessions (instance_id, effort, permission_mode,
 strict_mcp, add_dir)`, which `pty_spawn` reads at each launch.
@@ -209,6 +211,19 @@ One turn on a thread (`engine.ts`):
    - Any other failure becomes an `error` notice.
    - After 25 rounds in one turn the engine stops with a `rounds` notice.
 
+**Compaction** (step A6, after the loop, still inside the turn): when the turn's
+last request was past the `compactAt` setting (input tokens, cached included; 0 is
+off), or the thread was asked to compact (`thread.compact`, or the `compact_thread`
+tool, which waits for its reply to end), `compactionCut` picks where to cut: the
+start of one of the last 2 turns that fit 30% of the threshold, else the end. The
+thread's own model writes a summary over the thread up to the cut plus
+`COMPACT_REQUEST` (same tools and system: the cache holds; purpose `compact`). It's
+stored as a `compacted` notice `{summary, through}`. `toApiMessages` then drops
+every message up to `through` and puts the summary (`compactedText`, in
+`<thread_summary>`) in front of the first kept one. The stored messages stay; the
+drawer draws the line at the cut. A parked turn compacts once answered; a stop
+drops it; a failure is an error notice.
+
 **Deleting a thread** (`deleteThread`): refused while a reply runs (stop it first). A
 parked thread is deleted with its batch, so its confirmations vanish; its queue is
 dropped. Every surface gets `threadDeleted`. Spend rows are kept.
@@ -216,7 +231,8 @@ dropped. Every surface gets `threadDeleted`. Spend rows are kept.
 **Other rules:**
 - **Queueing:** a message sent while a turn runs, or while one is parked, waits in a
   per-thread queue and runs next. It is never dropped.
-- **History is append-only.** `toApiMessages` only filters what is sent: it drops notices,
+- **History is append-only.** `toApiMessages` only filters what is sent: it drops notices
+  (a `compacted` one replaces what it covers with its summary),
   and drops a system message that a failed turn left in front of a user message (the API
   needs a system message to be last or followed by an assistant turn).
 - **Thread titles:** the first message of a new thread is named by the `title` primitive

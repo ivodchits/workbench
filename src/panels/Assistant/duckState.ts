@@ -526,6 +526,11 @@ export function sendTo(threadId: string, text: string, source: Source): void {
   post({ type: "send", threadId, text, source });
 }
 
+/** Compact a thread (step A6): now, or once the reply running there is over. */
+export function compactThread(threadId: string): void {
+  post({ type: "thread.compact", threadId });
+}
+
 /** Delete a thread (step A4); the engine refuses while a reply runs. */
 export function deleteThread(threadId: string): void {
   post({ type: "thread.delete", threadId });

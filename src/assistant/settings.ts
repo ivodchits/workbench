@@ -95,6 +95,9 @@ export interface DuckSettings {
   dndUntil: number | null;
   /** External MCP servers (step X1). */
   mcpServers: McpServerSpec[];
+  /** A thread whose request has grown past this many input tokens is compacted
+   *  once its turn is over (step A6); 0 never. */
+  compactAt: number;
 }
 
 export const DEFAULT_TIERS: Record<Tier, TierSpec> = {
@@ -118,6 +121,7 @@ export const DEFAULT_SETTINGS: DuckSettings = {
   announce: DEFAULT_ANNOUNCE,
   dndUntil: null,
   mcpServers: [QUEST_LOG],
+  compactAt: 100_000,
 };
 
 /** Do Not Disturb "until I turn it off". */
@@ -128,6 +132,12 @@ export const IDLE_STOP_CHOICES = [10, 30, 60, 180, 0] as const;
 export const CLOSE_CHOICES = [4, 24, 72, 168, 0] as const;
 
 export const MAX_WORKERS = 5;
+
+/** The thresholds the settings offer for compacting a thread (step A6). */
+export const COMPACT_CHOICES = [60_000, 100_000, 150_000, 0] as const;
+/** The lowest threshold a hand-edited pref may set: below it, a thread would be
+ *  compacted every few turns. */
+export const COMPACT_MIN = 20_000;
 
 /** Keep only known keys with valid values, so a hand-edited pref can't break Duck. */
 export function cleanSettings(raw: unknown): Partial<DuckSettings> {
@@ -156,6 +166,8 @@ export function cleanSettings(raw: unknown): Partial<DuckSettings> {
   if (r.workspace === null) out.workspace = null;
   else if (typeof r.workspace === "string") out.workspace = r.workspace.trim() || null;
   if (Array.isArray(r.mcpServers)) out.mcpServers = cleanMcpServers(r.mcpServers);
+  const compact = whole(r.compactAt, 900_000);
+  if (compact !== undefined) out.compactAt = compact === 0 ? 0 : Math.max(COMPACT_MIN, compact);
   if (r.tiers && typeof r.tiers === "object") {
     const t = r.tiers as Record<string, Partial<TierSpec> | undefined>;
     out.tiers = Object.fromEntries(

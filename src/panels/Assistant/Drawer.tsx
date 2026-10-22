@@ -66,6 +66,7 @@ import {
   controlReader,
   rerunTask,
   connectDuck,
+  compactThread,
   deleteThread,
   getDuckState,
   isBusy,
@@ -676,6 +677,23 @@ function ThreadListRow({
       </button>
       <button
         type="button"
+        aria-label={`compact ${title}`}
+        title={
+          running
+            ? "compacts once Duck's reply here is over"
+            : "compact this thread: Duck summarizes its older turns, so it costs less (every message stays here)"
+        }
+        onClick={() => compactThread(t.id)}
+        style={{
+          ...plainBtn,
+          color: "var(--wb-textDim2)",
+          visibility: hover || t.id === duck.current ? "visible" : "hidden",
+        }}
+      >
+        ⇲
+      </button>
+      <button
+        type="button"
         aria-label={`delete ${title}`}
         title={
           running
@@ -826,6 +844,7 @@ function ItemView({ item, active }: { item: Item; active: boolean }) {
     case "notice":
       return (
         <div
+          title={item.notice.compaction?.summary}
           style={{
             margin: "4px 16px",
             color:
@@ -833,7 +852,8 @@ function ItemView({ item, active }: { item: Item; active: boolean }) {
               item.notice.kind === "keys" ||
               item.notice.kind === "autopilot" ||
               item.notice.kind === "screen" ||
-              item.notice.kind === "reader"
+              item.notice.kind === "reader" ||
+              item.notice.kind === "compacted"
                 ? "var(--wb-textFaint)"
                 : item.notice.kind === "budget"
                   ? "var(--wb-working)"
@@ -846,7 +866,7 @@ function ItemView({ item, active }: { item: Item; active: boolean }) {
   }
 }
 
-const NOTICE_GLYPH: Partial<Record<Notice["kind"], string>> = { keys: "⌨", autopilot: "⟳", screen: "▣", reader: "♪", budget: "$" };
+const NOTICE_GLYPH: Partial<Record<Notice["kind"], string>> = { keys: "⌨", autopilot: "⟳", screen: "▣", reader: "♪", budget: "$", compacted: "⇲" };
 
 const TASK_STATE: Record<string, string> = {
   queued: "waiting for a free worker",

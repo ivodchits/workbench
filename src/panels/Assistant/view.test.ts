@@ -17,6 +17,27 @@ const msg = (
 });
 
 describe("toItems", () => {
+  it("shows a compaction's line where it cut, not where it was stored (A6)", () => {
+    seq = 0;
+    const say = (t: string) => [{ type: "text", text: t }];
+    const items = toItems([
+      msg("user", say("old")),
+      msg("assistant", say("old reply"), "duck"),
+      msg("user", say("kept")),
+      msg("assistant", say("kept reply"), "duck"),
+      msg("notice", { kind: "compacted", text: "Compacted here", compaction: { summary: "s", through: 1 } }, "duck"),
+      msg("notice", { kind: "compacted", text: "Nothing to compact yet" }, "duck"),
+    ]);
+    expect(items.map((i) => (i.kind === "notice" ? i.notice.text : i.kind))).toEqual([
+      "user",
+      "reply",
+      "Compacted here",
+      "user",
+      "reply",
+      "Nothing to compact yet",
+    ]);
+  });
+
   it("folds a tool round trip into text, a chip with its result, and the answer", () => {
     seq = 0;
     const items = toItems([

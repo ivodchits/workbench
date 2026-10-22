@@ -21,12 +21,19 @@
 //
 // History is append-only (thinking blocks are bound to it; the cache is a prefix
 // match), so a stopped reply keeps only its text, and a broken one is not stored.
+//
+// Compaction (step A6): once a turn is over, a thread whose last request was past
+// the `compactAt` setting (or that the user asked to compact) gets a summary of its
+// older turns, written by the same model over the same prefix, so the request reads
+// the cache. The summary is stored as a `compacted` notice naming the last message
+// it covers; requests send it in place of those messages, and the last few turns
+// go verbatim. The stored messages stay, so the drawer still shows everything.
 
 import Anthropic from "@anthropic-ai/sdk";
 import type { StoredMessage, ThreadRow } from "../ipc/assistant";
 import { capMessage, errorMessage, purpose, THREAD_PURPOSE } from "./client";
 import type { WorkbenchPort } from "./port";
-import { SYSTEM_PROMPT, VOICE_NOTE } from "./prompt";
+import { COMPACT_REQUEST, compactedText, SYSTEM_PROMPT, VOICE_NOTE } from "./prompt";
 import { MODELS, route, type Brain } from "./routing";
 import { quotedFromLatest } from "./trust/mandate";
 import {
@@ -211,6 +218,9 @@ export interface Engine {
   /** Show a notice in the thread (the model never sees it): the trust watcher's
    *  word about a session's prompt. */
   notice(threadId: string, n: Notice): Promise<void>;
+  /** Compact a thread (step A6): now, or once the turn running there is over.
+   *  Resolves once it's started or scheduled; `settled` waits for it. */
+  compact(threadId: string): Promise<void>;
 }
 
 // ── history → request ───────────────────────────────────────────────────────
@@ -241,7 +251,9 @@ function hasText(m: StoredMessage): boolean {
  * by the next user message).
  */
 export function toApiMessages(history: readonly StoredMessage[]): ApiMessage[] {
-  const kept = history.filter((m) => m.role !== "notice");
+  // After a compaction (step A6), its summary stands in for what it covers.
+  const c = lastCompaction(history);
+  const kept = history.filter((m) => m.role !== "notice" && (!c || m.seq > c.through));
   // A message the user stopped before any reply would read as one still to
   // answer; it gets a note saying so (derived the same way every time, so the
   // history the model sees stays append-only).
@@ -274,7 +286,86 @@ export function toApiMessages(history: readonly StoredMessage[]): ApiMessage[] {
       content: m.content as ApiMessage["content"],
     });
   });
+  if (c) {
+    // The cut is always at the start of a turn, so what follows is your message:
+    // the summary goes in front of it, in the same user turn.
+    const head = { type: "text" as const, text: compactedText(c.summary) };
+    if (out[0]?.role === "user") out[0] = { ...out[0], content: [head, ...asBlocks(out[0].content)] };
+    else out.unshift({ role: "user", content: [head] });
+  }
   return out;
+}
+
+// ── compaction (step A6) ────────────────────────────────────────────────────
+
+type Compaction = NonNullable<Notice["compaction"]>;
+
+/** The thread's latest compaction, if it has one. */
+export function lastCompaction(history: readonly StoredMessage[]): Compaction | null {
+  for (let i = history.length - 1; i >= 0; i--) {
+    const m = history[i];
+    const c = m.role === "notice" ? (m.content as Notice | null)?.compaction : undefined;
+    if (c) return c;
+  }
+  return null;
+}
+
+/** Turns a compaction keeps verbatim, at most. */
+export const KEEP_TURNS = 2;
+/** The share of the threshold those turns may take; a bigger turn is summarized. */
+export const TAIL_SHARE = 0.3;
+/** The line the drawer shows where a thread was compacted. */
+export const COMPACTED_LINE = "Compacted here: Duck now works from a summary of the turns above.";
+export const NOTHING_TO_COMPACT = "Nothing to compact yet: this thread has no older turns to summarize.";
+export const COMPACT_PURPOSE = "compact";
+
+/** A rough token count of the messages as sent (four characters a token). */
+export function estimateTokens(messages: readonly StoredMessage[]): number {
+  let chars = 0;
+  for (const m of messages) if (m.role !== "notice") chars += JSON.stringify(m.content ?? "").length;
+  return Math.ceil(chars / 4);
+}
+
+/**
+ * Where a compaction cuts `history`: the index of the first message kept
+ * verbatim. That's the start of one of the last `KEEP_TURNS` turns (a message of
+ * yours or a Workbench event, never tool results), as long as the turns from there
+ * fit `tailTokens`; otherwise the end, and everything is summarized. At least one
+ * turn since the last compaction is always summarized. Null when there's none.
+ */
+export function compactionCut(history: readonly StoredMessage[], tailTokens: number): number | null {
+  const prev = lastCompaction(history)?.through ?? -1;
+  const starts: number[] = [];
+  history.forEach((m, i) => {
+    if (m.role === "user" && m.source !== "duck" && m.seq > prev && hasText(m)) starts.push(i);
+  });
+  if (starts.length === 0) return null;
+  let cut = history.length;
+  for (let k = 1; k <= Math.min(KEEP_TURNS, starts.length - 1); k++) {
+    const i = starts[starts.length - k];
+    if (estimateTokens(history.slice(i)) > tailTokens) break;
+    cut = i;
+  }
+  return cut;
+}
+
+/** The input tokens a request was billed for, cached or not. */
+function inputTokens(u: Anthropic.Beta.BetaUsage | undefined): number {
+  if (!u) return 0;
+  return (u.input_tokens ?? 0) + (u.cache_creation_input_tokens ?? 0) + (u.cache_read_input_tokens ?? 0);
+}
+
+/** The request that writes a compaction's summary: the thread up to the cut, as
+ *  sent before (so it reads the cache), then the instruction. */
+export function compactionMessages(summarized: readonly StoredMessage[]): ApiMessage[] {
+  const messages = toApiMessages(summarized);
+  // A turn that failed can leave a system message last, which only a reply may follow.
+  while (messages[messages.length - 1]?.role === "system") messages.pop();
+  const ask = { type: "text" as const, text: COMPACT_REQUEST };
+  const last = messages[messages.length - 1];
+  if (last?.role === "user") messages[messages.length - 1] = { ...last, content: [...asBlocks(last.content), ask] };
+  else messages.push({ role: "user", content: [ask] });
+  return messages;
 }
 
 /** The effort in force at the end of `messages`. */
@@ -474,6 +565,10 @@ export function createEngine(deps: EngineDeps): Engine {
   const trails = new Map<Surface, string[]>();
   /** The model each thread's latest turn ran on (for the budget card). */
   const brains = new Map<string, Brain>();
+  /** Each thread's last request size in input tokens (step A6). */
+  const sizes = new Map<string, number>();
+  /** Threads to compact once their turn is over: asked for, not past the threshold. */
+  const compactAsked = new Set<string>();
 
   const emit = (e: DuckEvent) => {
     for (const l of listeners) {
@@ -597,6 +692,7 @@ export function createEngine(deps: EngineDeps): Engine {
       }
       brains.set(threadId, brain);
       await loop(threadId, turn);
+      await afterTurn(threadId, turn);
     } catch (e) {
       if (await kept(threadId, turn))
         await notice(threadId, { kind: "error", text: errorMessage(e) }).catch(
@@ -663,7 +759,58 @@ export function createEngine(deps: EngineDeps): Engine {
         moves.set(threadId, { to, surface: surface(), ...(said ?? {}) });
       },
       remove: removeThread,
+      compact: () => void compactAsked.add(threadId),
     };
+  }
+
+  /** The turn is over: compact the thread if it has grown past the threshold, or
+   *  was asked to be. A parked turn waits until it's answered; a stopped one
+   *  isn't compacted. */
+  async function afterTurn(threadId: string, turn: Turn) {
+    const asked = compactAsked.has(threadId);
+    const at = settings().compactAt;
+    if (!asked && !(at > 0 && (sizes.get(threadId) ?? 0) > at)) return;
+    if (store.pending().some((b) => b.threadId === threadId)) return;
+    compactAsked.delete(threadId);
+    if (turn.ctl.signal.aborted || turn.withdrawn) return;
+    await compactThread(threadId, turn, asked);
+  }
+
+  /** One compaction, inside `turn` (which keeps the thread busy, so a message
+   *  sent meanwhile waits for it). Its failure is a notice; a stop drops it. */
+  async function compactThread(threadId: string, turn: Turn, asked: boolean) {
+    setState(threadId, "thinking");
+    try {
+      const history = await store.messages(threadId);
+      const at = settings().compactAt || DEFAULT_SETTINGS.compactAt;
+      const cut = compactionCut(history, at * TAIL_SHARE);
+      if (cut === null) {
+        if (asked) await notice(threadId, { kind: "compacted", text: NOTHING_TO_COMPACT });
+        return;
+      }
+      const stream = await deps.stream(buildParams(registry, compactionMessages(history.slice(0, cut)), turn.brain), {
+        signal: turn.ctl.signal,
+        ...purpose(COMPACT_PURPOSE),
+      });
+      for await (const ev of stream) void ev;
+      const msg = await stream.finalMessage();
+      const summary = msg.content
+        .flatMap((b) => (b.type === "text" ? [b.text] : []))
+        .join("")
+        .trim();
+      if (msg.stop_reason === "refusal" || !summary) throw new Error("the summary came back empty");
+      await notice(threadId, {
+        kind: "compacted",
+        text: COMPACTED_LINE,
+        compaction: { summary, through: history[cut - 1].seq },
+      });
+      sizes.delete(threadId);
+    } catch (e) {
+      if (turn.ctl.signal.aborted) return;
+      await notice(threadId, { kind: "error", text: `Compacting this thread failed: ${errorMessage(e)}` }).catch(
+        () => {},
+      );
+    }
   }
 
   async function removeThread(threadId: string) {
@@ -674,6 +821,8 @@ export function createEngine(deps: EngineDeps): Engine {
       );
     queues.delete(threadId);
     moves.delete(threadId);
+    sizes.delete(threadId);
+    compactAsked.delete(threadId);
     for (const [k, t] of trails) trails.set(k, t.filter((x) => x !== threadId));
     await store.remove(threadId);
     emit({ type: "threadDeleted", threadId });
@@ -736,6 +885,7 @@ export function createEngine(deps: EngineDeps): Engine {
           }
         }
         msg = await stream.finalMessage();
+        sizes.set(threadId, inputTokens(msg.usage));
       } catch (e) {
         if (!(await kept(threadId, turn))) return;
         if (signal.aborted || e instanceof Anthropic.APIUserAbortError) {
@@ -956,6 +1106,7 @@ export function createEngine(deps: EngineDeps): Engine {
         return;
       }
       await loop(threadId, turn);
+      await afterTurn(threadId, turn);
     } catch (e) {
       await notice(threadId, { kind: "error", text: errorMessage(e) }).catch(
         () => {},
@@ -1127,6 +1278,24 @@ export function createEngine(deps: EngineDeps): Engine {
     async notice(threadId, n) {
       if (!store.thread(threadId)) return; // deleted since
       await notice(threadId, n);
+    },
+
+    async compact(threadId) {
+      if (!store.thread(threadId)) throw new Error(`no thread ${threadId}`);
+      if (busy(threadId)) {
+        compactAsked.add(threadId);
+        return;
+      }
+      const turn: Turn = { ctl: new AbortController(), state: "thinking", brain: brains.get(threadId) ?? "sonnet" };
+      turns.set(threadId, turn);
+      void (async () => {
+        try {
+          if (!brains.has(threadId) && (await isDegraded())) turn.brain = "haiku";
+          await compactThread(threadId, turn, true);
+        } finally {
+          settle(threadId);
+        }
+      })();
     },
   };
 }

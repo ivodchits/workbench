@@ -114,6 +114,7 @@ const DEFERRED = new Set([
   ...AUTOPILOT_TOOLS.map((t) => t.name),
   ...SCREEN_TOOLS.map((t) => t.name),
   "delete_thread",
+  "compact_thread",
   "delete_note",
   "task_rerun",
   "save_screenshot",
@@ -301,6 +302,9 @@ export function endpoint(
         return;
       case "thread.delete":
         await e.deleteThread(msg.threadId);
+        return;
+      case "thread.compact":
+        await e.compact(msg.threadId);
         return;
       case "sync":
         answer({ type: "threads", threads: [...s.threads()] });

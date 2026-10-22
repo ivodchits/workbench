@@ -14,7 +14,7 @@
 
 import { useEffect, useState } from "react";
 import { disable, enable, isEnabled } from "@tauri-apps/plugin-autostart";
-import { CLOSE_CHOICES, IDLE_STOP_CHOICES, MAX_WORKERS, TIERS, type DuckSettings } from "../../assistant/settings";
+import { CLOSE_CHOICES, COMPACT_CHOICES, IDLE_STOP_CHOICES, MAX_WORKERS, TIERS, type DuckSettings } from "../../assistant/settings";
 import { DUCK_PERMISSION_MODES, EFFORTS, SESSION_MODELS } from "../../util/models";
 import { setAvatar, setDuckSettings, setInterrupt, type DuckState } from "./duckState";
 import VoiceSettings from "./VoiceSettings";
@@ -171,6 +171,21 @@ export default function DrawerSettings({ duck }: { duck: DuckState }) {
                     (a Haiku call per alert, about $0.002)
                   </span>
                 </span>
+              </label>
+              <label style={{ ...row, alignItems: "center" }}>
+                <span>Compact a thread past</span>
+                <select
+                  value={duck.settings.compactAt}
+                  onChange={(e) => setDuckSettings({ compactAt: Number(e.target.value) })}
+                  style={select}
+                >
+                  {COMPACT_CHOICES.map((n) => (
+                    <option key={n} value={n}>
+                      {n === 0 ? "never" : `${n / 1000}k tokens`}
+                    </option>
+                  ))}
+                </select>
+                <span style={hint}>(older turns become a summary; every message stays here)</span>
               </label>
               <McpServers settings={duck.settings} />
               <label style={{ ...row, alignItems: "center" }}>

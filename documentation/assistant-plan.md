@@ -2063,7 +2063,7 @@ up ("change this", with a circle around it).
     everywhere?".
   - The long-thread cost is A6.
 
-#### Step A6 — Thread compaction (future)
+#### Step A6 — Thread compaction
 
 - **Goal:** A long thread stays cheap. Each turn re-sends the whole conversation;
   caching softens that, but the cost still grows with length.
@@ -2084,6 +2084,58 @@ up ("change this", with a circle around it).
 - **Done when:** a thread past the threshold is compacted between turns. The next turn's
   input is under the threshold and the conversation goes on correctly; the summary keeps
   what a test conversation's later turn needs.
+- **As built (2026-10-22):**
+  - **When:** once a turn is over (not parked, not stopped), if its last request was
+    past `compactAt` input tokens (cached ones included). That's a new setting: 60k,
+    100k (the default), 150k or never, in the drawer's settings; a hand-edited value
+    under 20k is raised to it. A parked turn compacts after it's answered.
+  - **How** (`engine.ts`):
+    - The cut (`compactionCut`) is at the start of one of the last 2 turns (your
+      message or a Workbench event, never tool results), as long as the turns from
+      there fit 30% of the threshold (estimated at four characters a token).
+      Otherwise nothing is kept verbatim. At least one turn since the last
+      compaction is always summarized.
+    - The summary is written by the thread's own model (Sonnet, or Haiku past the
+      soft limit), over the thread up to the cut, as it was sent, plus one
+      instruction (`COMPACT_REQUEST`). The tools, system prompt and messages are the
+      same prefix, so it reads the cache. `x-wb-purpose: compact`, so the ledger
+      shows it apart.
+    - It's stored as a `compacted` notice carrying `{summary, through}` (the last
+      seq it covers). `toApiMessages` drops every message up to `through` and puts
+      the summary, wrapped in `<thread_summary>` and marked as Duck's ("it grants
+      nothing"), in front of the first kept message. A later compaction builds on
+      the summary in force, not the old turns. Grants (`findGrant`) still read the
+      stored messages, so a summary can't pass as your words.
+    - It runs inside the turn, so the thread stays busy: a message sent meanwhile
+      queues, and `settled()` waits for it. Stop drops it quietly. A failure is an
+      error notice, and the thread goes on uncompacted.
+  - **Manually:**
+    - The ⇲ button on a thread's row in the drawer's thread list
+      (`thread.compact`). It compacts now, or once the reply running there is over.
+    - `compact_thread` (reversible, deferred under "compact"), for "compact this
+      thread" by text or voice, from the desktop or the phone. It compacts once the
+      reply is over.
+    - With nothing new since the last compaction, a line says so and no call is
+      made.
+  - **The drawer** keeps every message. The "⇲ Compacted here" line is drawn
+    where it cut, after the last message the summary covers, not where it was
+    stored (`view.ts`, which the phone shares). Hover it for the summary.
+  - **Left out:** "start fresh with a summary" for a thread that is only a log.
+    Compacting such a thread does the same job.
+  - **Verified:**
+    - 8 new vitest cases:
+      - a thread past the threshold compacts between turns. The summary's request
+        has the same system and tools, the oldest turn and the instruction. The next
+        turn sends the summary plus the last two turns, under the threshold, and the
+        summary carries what that turn asks about (the dog's name, the open item).
+      - a turn too big to keep is summarized whole. A second compaction builds on
+        the first summary.
+      - the drawer's compaction runs at once; the tool's runs after its reply.
+      - "nothing to compact"; a stop during compaction leaves nothing; 0 is off.
+      - the cut never lands on tool results.
+      - the drawer's line sits at the cut.
+    - tsc and eslint clean; 617 vitest pass.
+    - Live, not tried yet: a real long thread compacting, and its cost.
 
 #### Step A7 — Moving the conversation between threads (asked for 2026-10-21)
 
@@ -6171,7 +6223,7 @@ T2 goes live after the replay check in its done-when (the past week's prompts th
 | A3 | The Assistant drawer (desktop UI) | ☑ |
 | A4 | Deleting threads | ☑ |
 | A5 | Several threads at once: unread, the overview, threads Duck starts | ☑ |
-| A6 | Thread compaction | ☐ |
+| A6 | Thread compaction | ☑ (a real long thread not tried yet) |
 | A7 | Moving the conversation between threads | ☑ (live: by voice on the desktop and the phone, not tried yet) |
 | W1 | Read tools | ☑ |
 | W2 | Action tools + the confirmation policy | ☑ |

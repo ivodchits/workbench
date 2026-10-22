@@ -17,6 +17,10 @@
 //
 // Cleaning up (2026-10-21): `delete_thread` deletes threads for good, so it's
 // consequential: a card names each one, unless the user's own words asked for it.
+//
+// Compaction (step A6): `compact_thread` summarizes this thread's older turns once
+// this reply is over, as the engine does by itself past the threshold. Reversible:
+// the messages stay, only what the model is sent changes.
 
 import { z } from "zod";
 
@@ -39,6 +43,8 @@ export interface ThreadMoves {
   go(threadId: string, words?: string): void;
   /** Delete a thread with its messages (refused while a turn runs there). */
   remove(threadId: string): Promise<void>;
+  /** Compact this thread once this reply is over (step A6). */
+  compact(): void;
 }
 
 /** How many threads `list_threads` shows. */
@@ -232,4 +238,19 @@ export const deleteThread = defineTool({
   },
 });
 
-export const THREAD_TOOLS = [startThread, listThreads, goToThread, deleteThread];
+export const compactThread = defineTool({
+  name: "compact_thread",
+  description: [
+    "Compact this thread: once this reply is over, its older turns are replaced, in what you're sent from then on, by a summary you write of them; the last few turns stay as they are. The user still sees every message.",
+    "Use it when the user asks (\"compact this thread\", \"summarize and carry on\"). Long threads are also compacted by themselves past a size set in Duck's settings, so don't offer it unasked.",
+    "Reply in a few words that it will be compacted once you're done here.",
+  ].join(" "),
+  schema: z.object({}),
+  tier: "reversible",
+  run(_input, ctx) {
+    ctx.threads.compact();
+    return "This thread will be compacted as soon as this reply is over.";
+  },
+});
+
+export const THREAD_TOOLS = [startThread, listThreads, goToThread, deleteThread, compactThread];

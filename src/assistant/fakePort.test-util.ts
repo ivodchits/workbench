@@ -534,6 +534,7 @@ export function toolCtx(
     replies: {} as Record<string, string>,
     trailIds: [] as string[],
     moved: [] as { to: string; words?: string }[],
+    compacted: 0,
     threads: {
       list: () => ctx.rows,
       lastReply: (id: string) => ctx.replies[id] ?? null,
@@ -544,6 +545,9 @@ export function toolCtx(
       remove(id: string) {
         ctx.rows = ctx.rows.filter((t) => t.id !== id);
         return Promise.resolve();
+      },
+      compact() {
+        ctx.compacted++;
       },
     },
     notices: [] as Notice[],

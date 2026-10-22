@@ -53,6 +53,25 @@ export function resultText(content: unknown): string {
     .join("\n");
 }
 
+/** A compaction's line (step A6) is stored when it's made, after the turns it
+ *  kept; it's shown where it cut, after the last message it covers. */
+function compactedAtCut(messages: readonly StoredMessage[]): StoredMessage[] {
+  const through = (m: StoredMessage) =>
+    m.role === "notice" ? (m.content as Notice | null)?.compaction?.through : undefined;
+  const seqs = new Set(messages.map((m) => m.seq));
+  const moved = (m: StoredMessage) => {
+    const t = through(m);
+    return t !== undefined && t !== m.seq && seqs.has(t) ? t : undefined;
+  };
+  const at = new Map<number, StoredMessage[]>();
+  for (const m of messages) {
+    const t = moved(m);
+    if (t !== undefined) at.set(t, [...(at.get(t) ?? []), m]);
+  }
+  if (at.size === 0) return [...messages];
+  return messages.flatMap((m) => (moved(m) !== undefined ? [] : [m, ...(at.get(m.seq) ?? [])]));
+}
+
 export function toItems(messages: readonly StoredMessage[]): Item[] {
   const results = new Map<string, { text: string; isError: boolean }>();
   for (const m of messages) {
@@ -66,7 +85,7 @@ export function toItems(messages: readonly StoredMessage[]): Item[] {
   }
 
   const items: Item[] = [];
-  for (const m of messages) {
+  for (const m of compactedAtCut(messages)) {
     const key = `${m.threadId}:${m.seq}`;
     if (m.role === "notice") {
       const n = m.content as Notice;
