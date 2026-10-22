@@ -172,6 +172,7 @@ export default function DrawerSettings({ duck }: { duck: DuckState }) {
                   </span>
                 </span>
               </label>
+              <McpServers settings={duck.settings} />
               <label style={{ ...row, alignItems: "center" }}>
                 <span>Sessions Duck starts for coding run on</span>
                 <select
@@ -301,6 +302,38 @@ function Avatar({ duck }: { duck: DuckState }) {
           </label>
         </>
       )}
+    </>
+  );
+}
+
+/** External MCP servers Duck may use (X1): each on or off, and its address. A
+ *  server's token, if it needs one, is an environment variable named in the
+ *  prefs (`tokenEnv`), never typed here. */
+function McpServers({ settings }: { settings: DuckSettings }) {
+  const servers = settings.mcpServers;
+  const [urls, setUrls] = useState(() => servers.map((s) => s.url));
+  useEffect(() => setUrls(servers.map((s) => s.url)), [servers]);
+  const patch = (i: number, p: Partial<DuckSettings["mcpServers"][number]>) =>
+    setDuckSettings({ mcpServers: servers.map((s, j) => (j === i ? { ...s, ...p } : s)) });
+  return (
+    <>
+      {servers.map((s, i) => (
+        <label key={s.name} style={{ ...row, alignItems: "center" }}>
+          <input type="checkbox" checked={s.enabled} onChange={(e) => patch(i, { enabled: e.target.checked })} />
+          <span>Use {s.name}</span>
+          <input
+            value={urls[i] ?? s.url}
+            onChange={(e) => setUrls(urls.map((u, j) => (j === i ? e.target.value : u)))}
+            onBlur={() => {
+              const url = (urls[i] ?? "").trim();
+              if (url && url !== s.url) patch(i, { url });
+              else setUrls(servers.map((x) => x.url));
+            }}
+            style={{ ...select, flex: 1, minWidth: 0 }}
+          />
+          <span style={hint}>(MCP; its app must be open)</span>
+        </label>
+      ))}
     </>
   );
 }
