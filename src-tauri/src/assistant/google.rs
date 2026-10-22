@@ -43,6 +43,9 @@ const CALL_TIMEOUT: Duration = Duration::from_secs(30);
 /// the `google_expired:` prefix.
 pub const EXPIRED: &str = "google_expired: Google access expired, reconnect in Duck's settings";
 
+/// What a call fails with for a 404: a file that's gone, or that the account can't open.
+pub const NOT_FOUND: &str = "Google can't find that file: check its id, and that the connected account can open it";
+
 /// Tauri-managed: the access token in use.
 #[derive(Default)]
 pub struct GoogleAuth {
@@ -199,15 +202,27 @@ async fn access_token(client: &reqwest::Client, auth: &GoogleAuth, client_id: &s
     }
 }
 
-/// GET a Google API URL with the access token; the body. A 401 drops the token in
-/// memory and tries once more with a fresh one.
-pub async fn get(client: &reqwest::Client, auth: &GoogleAuth, client_id: &str, url: &str) -> Result<Vec<u8>, String> {
+/// A request body and its content type.
+pub type Body = (String, Vec<u8>);
+
+/// Call a Google API URL with the access token; the reply's body. A 401 drops the
+/// token in memory and tries once more with a fresh one. The scopes keep every
+/// write to files Duck made.
+pub async fn send(
+    client: &reqwest::Client,
+    auth: &GoogleAuth,
+    client_id: &str,
+    method: reqwest::Method,
+    url: &str,
+    body: Option<&Body>,
+) -> Result<Vec<u8>, String> {
     for attempt in 0..2 {
         let token = access_token(client, auth, client_id).await?;
-        let resp = client
-            .get(url)
-            .timeout(CALL_TIMEOUT)
-            .bearer_auth(&token)
+        let mut req = client.request(method.clone(), url).timeout(CALL_TIMEOUT).bearer_auth(&token);
+        if let Some((kind, bytes)) = body {
+            req = req.header("Content-Type", kind.as_str()).body(bytes.clone());
+        }
+        let resp = req
             .send()
             .await
             .map_err(|e| if e.is_timeout() { "Google didn't answer in time".into() } else { format!("calling Google failed: {e}") })?;
@@ -231,7 +246,7 @@ fn api_error(status: u16, body: &[u8]) -> String {
         .ok()
         .and_then(|v| v.pointer("/error/message").and_then(Value::as_str).map(str::to_string));
     match (status, msg) {
-        (404, _) => "Google can't find that sheet: check its id, and that the connected account can open it".into(),
+        (404, _) => NOT_FOUND.into(),
         (_, Some(m)) => format!("Google refused ({status}): {m}"),
         (_, None) => format!("Google answered {status}"),
     }

@@ -217,6 +217,8 @@ pub fn run() {
             assistant::google::assistant_google_disconnect,
             assistant::sheets::assistant_sheet_cells,
             assistant::sheets::assistant_sheet_export,
+            assistant::sheets::assistant_sheet_draft,
+            assistant::sheets::assistant_sheet_draft_find,
             statusline::session_context,
             voice::voice_status,
             voice::voice_prepare,

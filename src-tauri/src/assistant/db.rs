@@ -186,4 +186,22 @@ const MIGRATIONS: &[&str] = &[
         updated_at   INTEGER NOT NULL
     );
     "#,
+    // Morning routine (phase 3): every Google Drive file Duck created, the only ones
+    // its `drive.file` scope lets it change. `kind` is `folder` (the drafts folder,
+    // `name` its name) or `draft` (an invoice copy of `source`, for `month`
+    // "YYYY-MM": one per source and month). `how` is the way the copy was made
+    // (`copy` or `upload`).
+    r#"
+    CREATE TABLE assistant_google_files (
+        file_id  TEXT PRIMARY KEY,
+        kind     TEXT NOT NULL CHECK (kind IN ('folder', 'draft')),
+        name     TEXT NOT NULL,
+        source   TEXT,
+        month    TEXT,
+        url      TEXT,
+        how      TEXT,
+        created  INTEGER NOT NULL
+    );
+    CREATE INDEX idx_assistant_google_files_draft ON assistant_google_files(source, month);
+    "#,
 ];

@@ -340,3 +340,43 @@ export const sheetExport = (
   tab: string,
   addresses: string[],
 ): Promise<SheetExport> => invoke("assistant_sheet_export", { clientId, workspace, date, sheetId, tab, addresses });
+
+/** A copy of the invoice sheet Duck made (phase 3), with its configured cells. */
+export interface SheetDraft {
+  id: string;
+  name: string;
+  url: string;
+  month: string;
+  /** `copy` (Drive's copy) or `upload` (the xlsx export, converted). */
+  how: string;
+  created: number;
+  cells: SheetCell[];
+}
+
+export interface CellValue {
+  address: string;
+  value: string;
+}
+
+/** Copy the sheet into the drafts folder and set `updates` in the copy; `expect` is
+ *  the original's cells as the card showed them. */
+export const sheetDraft = (
+  clientId: string,
+  sheetId: string,
+  tab: string,
+  folder: string,
+  title: string,
+  month: string,
+  expect: CellValue[],
+  updates: CellValue[],
+): Promise<SheetDraft> =>
+  invoke("assistant_sheet_draft", { clientId, sheetId, tab, folder, title, month, expect, updates });
+
+/** This month's draft, read back; null when there is none in Drive. */
+export const sheetDraftFind = (
+  clientId: string,
+  sheetId: string,
+  tab: string,
+  month: string,
+  addresses: string[],
+): Promise<SheetDraft | null> => invoke("assistant_sheet_draft_find", { clientId, sheetId, tab, month, addresses });
