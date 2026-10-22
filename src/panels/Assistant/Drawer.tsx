@@ -34,6 +34,7 @@ import "../../theme/markdown.css";
 import "../../theme/assistant.css";
 import { memoryRestore } from "../../ipc/memory";
 import { coreWorkspace, EMPTY_CORE } from "../../assistant/core";
+import { MODE_IDS, MODES, modeOf } from "../../assistant/modes";
 import { coreWrite } from "../../ipc/assistant";
 import type {
   ConfirmRequest,
@@ -73,6 +74,7 @@ import {
   rerunTask,
   connectDuck,
   compactThread,
+  currentMode,
   deleteThread,
   keepThread,
   fillComposer,
@@ -84,6 +86,7 @@ import {
   sendMessage,
   setDrawerOpen,
   setDrawerWidth,
+  setNewMode,
   setTrustPaused,
   stopTurn,
   toggleDrawer,
@@ -495,6 +498,7 @@ function Header({
         >
           {title}
         </span>
+        <ModeBadge mode={currentMode(duck)} />
         <span style={{ color: "var(--wb-textFaint)" }}>▾</span>
       </button>
       <button
@@ -709,6 +713,7 @@ function ThreadListRow({
         >
           {title}
         </span>
+        <ModeBadge mode={t.mode} />
         {duck.asks.some((a) => a.threadId === t.id) && (
           <span style={{ color: "var(--wb-needs)" }}>●</span>
         )}
@@ -830,11 +835,7 @@ function ThreadBody({ duck }: { duck: DuckState }) {
       }}
       style={{ flex: 1, minHeight: 0, overflowY: "auto", padding: "10px 0" }}
     >
-      {!id && (
-        <div style={{ padding: "18px 16px", color: "var(--wb-textFaint)" }}>
-          A new thread. Ask Duck anything about your sessions.
-        </div>
-      )}
+      {!id && <NewThreadModes mode={duck.newMode} />}
       {items.map((it) => (
         <ItemView key={it.key} item={it} active={state !== "idle"} />
       ))}
@@ -848,6 +849,55 @@ function ThreadBody({ duck }: { duck: DuckState }) {
       {queued.map((q, i) => (
         <UserBubble key={`q${i}`} text={q} queued />
       ))}
+    </div>
+  );
+}
+
+/** A thread's mode (step S1), unless it's the assistant's. */
+function ModeBadge({ mode }: { mode: string }) {
+  const m = modeOf(mode);
+  if (m.id === "assistant") return null;
+  return (
+    <span
+      title={`a ${m.title} thread: ${m.about}`}
+      style={{
+        flex: "0 0 auto",
+        fontSize: 11,
+        padding: "0 5px",
+        borderRadius: 3,
+        border: "1px solid var(--wb-border)",
+        color: "var(--wb-textDim2)",
+      }}
+    >
+      {m.title}
+    </span>
+  );
+}
+
+/** A new thread: what it will be (step S1). The mode is the thread's for life. */
+function NewThreadModes({ mode }: { mode: DuckState["newMode"] }) {
+  return (
+    <div style={{ padding: "18px 16px", color: "var(--wb-textFaint)" }}>
+      <div style={{ display: "flex", gap: 6, marginBottom: 8 }}>
+        {MODE_IDS.map((m) => (
+          <button
+            key={m}
+            type="button"
+            aria-pressed={m === mode}
+            title={MODES[m].about}
+            onClick={() => setNewMode(m)}
+            style={{
+              ...btn,
+              ...(m === mode && { color: "var(--wb-accent)", borderColor: "var(--wb-accent)" }),
+            }}
+          >
+            {MODES[m].title}
+          </button>
+        ))}
+      </div>
+      {mode === "assistant" && "A new thread. Ask Duck anything about your sessions."}
+      {mode === "chat" && "A new chat: talk about anything. Duck doesn't touch the app here."}
+      {mode === "duck" && "A rubber duck: think a problem through out loud. Duck asks questions and doesn't solve unless you ask; say \"let's wrap up\" for a note."}
     </div>
   );
 }

@@ -21,10 +21,16 @@
 // Compaction (step A6): `compact_thread` summarizes this thread's older turns once
 // this reply is over, as the engine does by itself past the threshold. Reversible:
 // the messages stay, only what the model is sent changes.
+//
+// Modes (step S1): `switch_mode` is `start_thread` with `go` into a thread of
+// another mode ("let's rubber-duck the sync bug" opens a duck thread, and the
+// words go there, so it answers with a question). A mode is a thread's for life,
+// so switching always means a new thread, seeded with a brief.
 
 import { z } from "zod";
 
 import type { ThreadRow } from "../../ipc/assistant";
+import { MODE_IDS, MODES, modeOf } from "../modes";
 import { grantArg } from "./act";
 import { defineTool } from "./registry";
 
@@ -253,4 +259,32 @@ export const compactThread = defineTool({
   },
 });
 
-export const THREAD_TOOLS = [startThread, listThreads, goToThread, deleteThread, compactThread];
+export const switchMode = defineTool({
+  name: "switch_mode",
+  description: [
+    "Move the conversation into a new thread of another mode: once this reply is over, the user's view opens it, their words go there as their message, and it answers there.",
+    `The modes: ${MODE_IDS.map((m) => `"${m}" (${MODES[m].about})`).join(", ")}.`,
+    "Use it when the user wants another kind of help than this thread gives: to think a problem through (\"let's rubber-duck the sync bug\", \"давай подумаем над…\") → duck; a general conversation (\"let's just chat\") → chat; anything that acts on the app, or needs the web, from a chat or duck thread → assistant.",
+    "`words`: the user's own words for what they want there, copied exactly from their latest message (not paraphrased, not translated). `brief`: a few sentences of what the new thread needs to know (the project, the session, what was said here); it starts without this thread's history.",
+    "Reply here in a few words (\"Let's think it through in a duck thread.\"), and don't answer the request here.",
+  ].join(" "),
+  schema: z.object({
+    mode: z.enum(MODE_IDS as [string, ...string[]]),
+    words: z.string().trim().min(6).max(4_000),
+    brief: z.string().trim().max(4_000).optional(),
+  }),
+  tier: "reversible",
+  async run({ mode, words, brief }, ctx) {
+    const here = modeOf(ctx.threads.list().find((t) => t.id === ctx.threadId)?.mode);
+    if (here.id === mode) throw new Error(`this thread is already a ${here.title} thread; answer here`);
+    const id = await ctx.startThread(words, { go: true, brief, mode });
+    return {
+      thread: id,
+      mode,
+      moving: true,
+      next: "the conversation moves there once this reply is over; say so in a few words, and don't answer the request here",
+    };
+  },
+});
+
+export const THREAD_TOOLS = [startThread, listThreads, goToThread, deleteThread, compactThread, switchMode];

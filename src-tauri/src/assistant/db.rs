@@ -273,4 +273,24 @@ const MIGRATIONS: &[&str] = &[
     );
     ALTER TABLE assistant_threads ADD COLUMN keep INTEGER NOT NULL DEFAULT 0;
     "#,
+    // Step S1: modes. Every thread so far was the assistant's, stored as "chat",
+    // which is now the chat partner's mode.
+    r#"
+    UPDATE assistant_threads SET mode = 'assistant' WHERE mode = 'chat';
+    "#,
 ];
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn s1_threads_from_before_modes_are_the_assistants() {
+        let conn = Connection::open_in_memory().unwrap();
+        crate::db::run_migrations(&conn, &MIGRATIONS[..MIGRATIONS.len() - 1]).unwrap();
+        conn.execute("INSERT INTO assistant_threads (id, mode, created, updated) VALUES ('old', 'chat', 1, 1)", []).unwrap();
+        crate::db::run_migrations(&conn, MIGRATIONS).unwrap();
+        let mode: String = conn.query_row("SELECT mode FROM assistant_threads WHERE id = 'old'", [], |r| r.get(0)).unwrap();
+        assert_eq!(mode, "assistant");
+    }
+}

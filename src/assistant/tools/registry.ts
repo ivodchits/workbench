@@ -89,7 +89,7 @@ export interface ToolContext {
    *  their latest message here (it throws otherwise). The new thread's turn runs on
    *  its own; resolves to its id. With `go` (step A7), the conversation moves into
    *  it once this reply is over, and its turn starts then, with `brief` as a note. */
-  startThread(words: string, opts?: { go?: boolean; brief?: string }): Promise<string>;
+  startThread(words: string, opts?: { go?: boolean; brief?: string; mode?: string }): Promise<string>;
   /** Duck's threads, and moving the conversation between them (step A7). */
   threads: ThreadMoves;
 }
@@ -144,6 +144,9 @@ export function defineTool<S extends z.ZodType, P = undefined>(
 export interface Registry {
   /** The `tools` array for the request, sorted by name. */
   readonly apiTools: Anthropic.Beta.BetaToolUnion[];
+  /** The `tools` array of a mode (step S1): only `names`, none deferred (the
+   *  set is small), built once per set. Every tool when null. */
+  toolsFor(names: readonly string[] | null): Anthropic.Beta.BetaToolUnion[];
   get(name: string): ToolDef | undefined;
   /** The tool's declared tier; an unknown tool counts as consequential. */
   tierOf(name: string): Tier;
@@ -201,8 +204,23 @@ export function createRegistry(
       ...(deferred.has(t.name) && { defer_loading: true }),
     })),
   ];
+  const subsets = new Map<string, Anthropic.Beta.BetaToolUnion[]>();
   return {
     apiTools,
+    toolsFor(names) {
+      if (!names) return apiTools;
+      const key = [...names].sort().join(",");
+      let tools = subsets.get(key);
+      if (!tools) {
+        const want = new Set(names);
+        tools = apiTools.flatMap((t) => {
+          if (!("name" in t) || !want.has(t.name)) return [];
+          return "defer_loading" in t ? [{ ...t, defer_loading: false }] : [t];
+        });
+        subsets.set(key, tools);
+      }
+      return tools;
+    },
     get: (name) => byName.get(name),
     tierOf: (name) => byName.get(name)?.tier ?? "consequential",
     callTier(name, input, port) {

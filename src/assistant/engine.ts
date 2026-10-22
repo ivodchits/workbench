@@ -36,6 +36,10 @@
 // on its own and answers the brain at once that it's waiting; the user's answer
 // goes back to it as a Workbench event. An API turn the API refuses for want of
 // credits carries on there, the user's message kept.
+//
+// Modes (step S1, `modes.ts`): a thread's mode gives its system prompt, its tools
+// and the effort it starts at, for its whole life. A call to a tool outside the
+// mode fails with the reason.
 
 import Anthropic from "@anthropic-ai/sdk";
 import type { StoredMessage, ThreadRow } from "../ipc/assistant";
@@ -47,6 +51,7 @@ import { COMPACT_REQUEST, compactedText } from "./prompt";
 import { DEFAULT_PROMPTS, type ConfigHost, type Prompts } from "./config";
 import type { RoutinesHost } from "./tools/routines";
 import { MODELS, route, type Brain } from "./routing";
+import { modeOf, systemFor as modeSystem, type Mode } from "./modes";
 import { quotedFromLatest } from "./trust/mandate";
 import {
   USER_SOURCES,
@@ -251,6 +256,8 @@ export interface SendInput {
   /** Duck's brief of where things stood, for a thread the conversation moved
    *  into (step A7): a system note after the message, never the user's words. */
   brief?: string;
+  /** The mode of the thread a `null` `threadId` starts (step S1). */
+  mode?: string;
 }
 
 export interface Engine {
@@ -467,6 +474,7 @@ export function buildParams(
   messages: ApiMessage[],
   brain: Brain = "sonnet",
   system: string = DEFAULT_PROMPTS.system,
+  tools: Anthropic.Beta.BetaToolUnion[] = registry.apiTools,
 ): Params {
   return {
     model: MODELS[brain],
@@ -482,7 +490,7 @@ export function buildParams(
     ...(brain === "sonnet" && { fallbacks: "default" as const }),
     // tools → system is the frozen prefix: one explicit 1-hour breakpoint at its
     // end; automatic caching (also 1 hour: longer TTLs must come first) for the tail.
-    tools: registry.apiTools,
+    tools,
     system: [{ type: "text", text: system, cache_control: CACHE_1H }],
     cache_control: CACHE_1H,
     context_management: CONTEXT_EDITS,
@@ -704,6 +712,12 @@ export function createEngine(deps: EngineDeps): Engine {
           return DEFAULT_PROMPTS;
         })
       : Promise.resolve(DEFAULT_PROMPTS);
+  /** The thread's mode (step S1); the assistant for one not known. */
+  const modeFor = (threadId: string): Mode => modeOf(store.thread(threadId)?.mode);
+  /** The thread's system prompt: its mode's, or the assistant's it was pinned on. */
+  const systemOf = async (threadId: string): Promise<string> =>
+    modeSystem(modeFor(threadId), (await promptsFor(threadId)).system);
+  const toolsOf = (threadId: string) => registry.toolsFor(modeFor(threadId).tools);
   /** The subscription brains running, and the turns listening to them. */
   const live = new Map<string, LiveBrain>();
   const brainRuns = new Map<string, BrainRun>();
@@ -794,7 +808,7 @@ export function createEngine(deps: EngineDeps): Engine {
       const { brain, effort: want } = route({
         text: input.text,
         source: input.source,
-        mode: store.thread(threadId)?.mode,
+        mode: modeFor(threadId).id,
         effort: input.effort,
         brain: input.brain,
         degraded,
@@ -992,8 +1006,9 @@ export function createEngine(deps: EngineDeps): Engine {
         if (asked) await notice(threadId, { kind: "compacted", text: NOTHING_TO_COMPACT });
         return;
       }
-      const { system } = await promptsFor(threadId);
-      const stream = await deps.stream(buildParams(registry, compactionMessages(history.slice(0, cut)), turn.brain, system), {
+      const system = await systemOf(threadId);
+      const messages = compactionMessages(history.slice(0, cut));
+      const stream = await deps.stream(buildParams(registry, messages, turn.brain, system, toolsOf(threadId)), {
         signal: turn.ctl.signal,
         ...purpose(COMPACT_PURPOSE),
       });
@@ -1081,11 +1096,11 @@ export function createEngine(deps: EngineDeps): Engine {
       }
       setState(threadId, "thinking");
       const messages = toApiMessages(await requestHistory(threadId, turn));
-      const { system } = await promptsFor(threadId);
+      const system = await systemOf(threadId);
       let text = "";
       let msg: Anthropic.Beta.BetaMessage;
       try {
-        const stream = await deps.stream(buildParams(registry, messages, turn.brain, system), {
+        const stream = await deps.stream(buildParams(registry, messages, turn.brain, system, toolsOf(threadId)), {
           signal,
           ...purpose(THREAD_PURPOSE),
         });
@@ -1217,6 +1232,15 @@ export function createEngine(deps: EngineDeps): Engine {
     // A call whose input doesn't fit its schema can't run: it fails at once
     // with the reason rather than asking the user to allow it.
     if (!tool || !tool.schema.safeParse(u.input).success) return call;
+    // Only the mode's tools (step S1): another one is the assistant's to call.
+    const allowed = modeFor(threadId).tools;
+    if (allowed && !allowed.includes(u.name)) {
+      call.result = errorResult(
+        u.id,
+        `${u.name} isn't available in this ${modeFor(threadId).title} thread. If the user wants it, use switch_mode to move the request to an assistant thread.`,
+      );
+      return call;
+    }
     // What the card shows is worked out first; a call that can't be (no such
     // action, a file with problems) fails before any card, with the reason.
     if (tool.prepare) {
@@ -1296,7 +1320,7 @@ export function createEngine(deps: EngineDeps): Engine {
     let b = live.get(threadId);
     if (!b) {
       await makeRoom();
-      const { resumed } = await host.spawn(threadId, mcpTools(registry.apiTools), (await promptsFor(threadId)).system);
+      const { resumed } = await host.spawn(threadId, mcpTools(toolsOf(threadId)), await systemOf(threadId));
       b = { fresh: !resumed, last: Date.now() };
       live.set(threadId, b);
     }
@@ -1574,12 +1598,12 @@ export function createEngine(deps: EngineDeps): Engine {
     }
   }
 
-  async function ensureThread(threadId: string | null): Promise<string> {
+  async function ensureThread(threadId: string | null, mode?: string): Promise<string> {
     if (threadId) {
       if (!store.thread(threadId)) throw new Error(`no thread ${threadId}`);
       return threadId;
     }
-    const t = await store.create();
+    const t = await store.create(modeOf(mode).id);
     emit({ type: "thread", thread: t });
     return t.id;
   }
@@ -1588,7 +1612,7 @@ export function createEngine(deps: EngineDeps): Engine {
    *  their message (same source), so its mandate and grants are theirs. A fixed
    *  line says where it came from. With `go` (step A7), its turn starts once this
    *  one is over, as the conversation moves into it. */
-  async function split(from: string, words: string, opts: { go?: boolean; brief?: string } = {}): Promise<string> {
+  async function split(from: string, words: string, opts: { go?: boolean; brief?: string; mode?: string } = {}): Promise<string> {
     let said: { text: string; source: Source };
     try {
       said = carried(from, words, opts.go ? "Moved here by Duck from" : "Split off by Duck from");
@@ -1597,7 +1621,7 @@ export function createEngine(deps: EngineDeps): Engine {
         "start_thread takes the user's own words from their latest message, quoted exactly (at least a few words); these aren't in it.",
       );
     }
-    const t = await store.create();
+    const t = await store.create(opts.mode ? modeOf(opts.mode).id : undefined);
     emit({ type: "thread", thread: t });
     if (!opts.go) return send({ threadId: t.id, ...said });
     const brief = opts.brief?.trim() ? briefNote(store.thread(from)?.title, opts.brief) : undefined;
@@ -1606,8 +1630,9 @@ export function createEngine(deps: EngineDeps): Engine {
   }
 
   async function send(input: SendInput): Promise<string> {
-    const threadId = await ensureThread(input.threadId);
+    const threadId = await ensureThread(input.threadId, input.mode);
     const msg = { ...input, threadId };
+    delete msg.mode;
     if (busy(threadId)) {
       // Only a turn that starts at once can be provisional; a queued one is sent
       // as it is (conversation mode waits for a busy thread's turn to stand).

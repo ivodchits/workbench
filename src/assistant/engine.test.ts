@@ -19,10 +19,11 @@ import {
 } from "./engine";
 import { fakePort } from "./fakePort.test-util";
 import type { DuckEvent } from "./protocol";
-import { VOICE_NOTE } from "./prompt";
+import { DUCK_PROMPT } from "./modes";
+import { SYSTEM_PROMPT, VOICE_NOTE } from "./prompt";
 import { createThreadStore, type ThreadBackend } from "./threads";
 import { getTime } from "./tools/getTime";
-import { goToThread, listThreads, startThread } from "./tools/threads";
+import { goToThread, listThreads, startThread, switchMode } from "./tools/threads";
 import { createRegistry, defineTool, type ToolDef } from "./tools/registry";
 
 type Msg = Anthropic.Beta.BetaMessage;
@@ -1167,5 +1168,64 @@ describe("prompts as data (step L3)", () => {
     expect(systems).toEqual(["System A", "System A", "System B"]);
     const sys = store.loaded(second).find((m) => m.role === "system")!;
     expect((sys.content as { content: { text: string }[] }).content[0].text).toBe("Voice B");
+  });
+});
+
+describe("modes (S1)", () => {
+  const tick = () => new Promise((r) => setTimeout(r, 20));
+  const firstText = (m: StoredMessage) => (m.content as { text: string }[])[0].text;
+  const systemText = (p: Params) => (p.system as Anthropic.Beta.BetaTextBlockParam[])[0].text;
+  const toolNames = (p: Params) => p.tools?.map((t) => (t as { name: string }).name);
+
+  it("a duck thread runs on its own prompt and tools, at high effort; the assistant's on everything", async () => {
+    const { engine, store, calls } = await setup(
+      [message([text("What breaks first?")], "end_turn"), message([text("Done.")], "end_turn")],
+      [getTime, sendPrompt, switchMode],
+    );
+    const d = await engine.send({ threadId: null, text: "the sync bug", source: "desktop", mode: "duck" });
+    await engine.settled(d);
+    expect(store.thread(d)?.mode).toBe("duck");
+    expect(systemText(calls[0].params)).toBe(DUCK_PROMPT);
+    expect(toolNames(calls[0].params)).toEqual(["get_time", "switch_mode"]);
+    const sys = calls[0].params.messages.find((m) => m.role === "system") as { output_config?: { effort: string } };
+    expect(sys.output_config).toEqual({ effort: "high" });
+
+    const a = await turn(engine, "what time is it?");
+    expect(store.thread(a)?.mode).toBe("assistant");
+    expect(systemText(calls[1].params)).toBe(SYSTEM_PROMPT);
+    expect(toolNames(calls[1].params)).toEqual(["get_time", "send_prompt", "switch_mode"]);
+  });
+
+  it("a call to a tool outside the mode fails with the reason", async () => {
+    const { engine, store } = await setup(
+      [message([toolUse("t1", "send_prompt", { session: "api", text: "go" })], "tool_use"), message([text("I can't here.")], "end_turn")],
+      [getTime, sendPrompt],
+    );
+    const id = await engine.send({ threadId: null, text: "tell api to go", source: "desktop", mode: "chat" });
+    await engine.settled(id);
+    const r = (store.loaded(id)[1 + 1].content as Anthropic.Beta.BetaToolResultBlockParam[])[0];
+    expect(r.is_error).toBe(true);
+    expect(r.content).toContain("isn't available in this chat thread");
+  });
+
+  it("switch_mode moves the conversation into a new duck thread with the user's words", async () => {
+    const words = "давай подумаем над синхронизацией заметок";
+    const { engine, store, events, calls } = await setup(
+      [
+        message([toolUse("t1", "switch_mode", { mode: "duck", words, brief: "Notes sync in the Workbench project." })], "tool_use"),
+        message([text("Let's think it through in a duck thread.")], "end_turn"),
+        message([text("What happens when both devices edit offline?")], "end_turn"),
+      ],
+      [switchMode],
+    );
+    const a = await turn(engine, words);
+    const b = events.find((e) => e.type === "goThread") as { threadId: string } | undefined;
+    expect(b).toBeDefined();
+    expect(store.thread(b!.threadId)?.mode).toBe("duck");
+    await tick();
+    await engine.settled(b!.threadId);
+    expect(firstText(store.loaded(b!.threadId)[0])).toContain(words);
+    expect(systemText(calls[2].params)).toBe(DUCK_PROMPT);
+    expect(store.thread(a)?.mode).toBe("assistant");
   });
 });

@@ -3910,6 +3910,70 @@ up ("change this", with a circle around it).
   - Wrap-up produces a note.
   - A chat thread answers general questions without touching sessions.
 - **Out of scope:** user-defined modes (S2).
+- **As built (2026-10-22):**
+  - **`src/assistant/modes.ts`:** `MODES` with `{id, title, about, effort, systemPrompt,
+    tools, voicePatience}`. There's no `model` field: every mode is Sonnet, and M2's
+    routing still moves turns to Haiku past the soft limit. There's no `ttsStyle`
+    either: Duck's voice is the same in every mode.
+    - **assistant:** the pinned `config/system.md` (L3) and every tool.
+    - **chat:** its own prompt (a conversation partner that doesn't act on the app),
+      memory, read-aloud, `set_quiet`, screenshots and the thread moves. No web tool
+      yet (B1); a request that needs one moves to an assistant thread.
+    - **duck:** its own prompt (one question at a time, reflect back, name assumptions,
+      don't solve unless asked; the wrap-up). It can read projects, sessions, summaries,
+      notes, git and a terminal's screen, plus `create_note` and `create_session` for
+      the hand-off.
+    - **Effort:** the design's table says `medium` for the duck, but M2's routing had
+      already put rubber-duck threads at `high`, so the mode keeps `high`.
+    - Both built-in prompts keep the safety rules verbatim (tested). They're built in,
+      not config files: S2 brings modes as files.
+  - **The engine:**
+    - It reads the thread's mode for every request, compaction and subscription-brain
+      spawn: the mode's system prompt and `registry.toolsFor(mode.tools)`. A mode's
+      tool set is small, so it goes out with nothing deferred and no tool search.
+    - A call to a tool outside the mode fails at once with a pointer to `switch_mode`.
+    - A new thread takes the mode sent with its first message (`send.mode`).
+  - **Old threads:** `assistant_threads.mode` was always `chat` and meant the
+    assistant. A duck.db migration makes those `assistant`, so `chat` is free for the
+    chat mode, and an unknown mode reads as the assistant.
+  - **`switch_mode(mode, words, brief)`** (`tools/threads.ts`): A7's move into a new
+    thread of that mode. The user's words, checked to be theirs, go there as their
+    message; the brief goes as a system note; the drawer (or the phone) follows. Each
+    prompt says when to use it, the assistant's with the "давай подумаем…" example.
+  - **The wrap-up** is the duck prompt's: a markdown summary under Problem, What we
+    concluded, Open questions and Next steps, saved with `create_note` in the project.
+    Then it offers a coding session and, on a yes, runs `create_session` with the note
+    as the prompt.
+  - **Voice patience per thread:**
+    - The chat mode is at least `patient` and the duck at least `thinking`; your own
+      setting wins when it's more patient.
+    - A new command, `voice_conversation_patience`, changes a running conversation's
+      policy (`Cmd::Patience` → `Machine::set_policy`).
+    - `voiceState.ts` sends it when a run starts listening and when you move threads.
+      The phone keeps its own pauses setting.
+  - **The drawer:**
+    - A new thread shows the three modes as buttons, with a line on each
+      (`DuckState.newMode`); "+ new" resets it to the assistant.
+    - A thread that isn't the assistant's has a badge, in the thread list and the
+      header.
+    - The phone has no picker or badge yet.
+  - **`toolset.ts`:** `TOOLS` and `DEFERRED` moved out of `index.ts`, so a test checks
+    that every tool a mode names exists.
+  - **Not built:** starting conversation mode by asking for it ("let's talk", V4's
+    leftover), and modes on the phone.
+  - **Tests:**
+    - The engine: a duck thread's prompt, tools and high effort next to an assistant
+      thread's; a call outside the mode refused; `switch_mode` moving "давай подумаем
+      над синхронизацией заметок" into a duck thread.
+    - The modes: the names exist, the deferral is dropped and cached, the safety
+      rules, unknown ids, efforts and patience.
+    - The pauses follow the thread; the Rust machine takes a new policy; the
+      migration.
+    - Results: vitest 734 (10 new) and cargo 316 (2 new). tsc, eslint and clippy show
+      only the existing warnings.
+  - **Not tried in the app** (yours): the done-when checks live, a duck thread asking
+    instead of answering by voice, a wrap-up note, a chat thread answering a general
+    question.
 
 #### Step S2 — Skills and user-defined modes
 
@@ -6864,7 +6928,7 @@ T2 goes live after the replay check in its done-when (the past week's prompts th
 | L2 | Consolidation, journal, and recall quality | ☑ (not tried in the app; hit-rate review 2026-11-05) |
 | L3 | Self-development through Opus sessions | ☑ (not tried in the app; no real Opus branch yet) |
 | L4 | Routines, backup and housekeeping | ☑ (not tried in the app; the backup remote waits for your OK) |
-| S1 | Modes: chat and rubber duck | ☐ |
+| S1 | Modes: chat and rubber duck | ☑ |
 | S2 | Skills and user-defined modes | ☐ |
 | R1 | Assistant endpoints on the remote server | ☑ |
 | R2 | PWA Assistant tab with mic | ☑ (a real phone not tried yet) |

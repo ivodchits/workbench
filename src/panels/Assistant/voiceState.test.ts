@@ -1,10 +1,17 @@
 import { describe, expect, it, vi } from "vitest";
 
+const duck = vi.hoisted(() => ({
+  mode: "assistant",
+  listeners: [] as (() => void)[],
+  conversation: null as ((s: import("../../ipc/voice").ConversationState) => void) | null,
+}));
 vi.mock("./duckState", () => ({
   sendMessage: vi.fn(),
   setDrawerOpen: vi.fn(),
   openThread: vi.fn(),
   getDuckState: () => ({ current: "t-open" }),
+  currentMode: () => duck.mode,
+  subscribeDuck: (cb: () => void) => duck.listeners.push(cb),
 }));
 vi.mock("./replySpeech", () => ({ isSpeaking: () => false, onAnnounced: vi.fn(), stopSpeaking: vi.fn() }));
 vi.mock("../../state/registry", () => ({ getRegistry: () => ({ projects: [], instances: [] }) }));
@@ -13,13 +20,17 @@ vi.mock("../../ipc/voice", () => {
   const on = () => vi.fn(async () => () => {});
   return {
     onConversationLevel: on(),
-    onConversationState: on(),
+    onConversationState: vi.fn(async (cb: (s: ConversationState) => void) => {
+      duck.conversation = cb;
+      return () => {};
+    }),
     onVoiceState: on(),
     onVoiceTranscript: on(),
     onVoiceTurn: on(),
     voiceConfigure: vi.fn(async () => {}),
     voiceConversation: vi.fn(async () => {}),
     voiceConversationOn: vi.fn(async () => false),
+    voiceConversationPatience: vi.fn(async () => {}),
   };
 });
 
@@ -116,5 +127,40 @@ describe("after an announcement (V8)", () => {
     expect(replyTarget(1000 + REPLY_AFTER_MS)).toBeNull();
     heardAnnouncement("t2", 1000);
     expect(replyTarget(1001 + REPLY_AFTER_MS)).toBeNull();
+  });
+});
+
+describe("conversation mode's pauses (S1)", () => {
+  it("follow the thread its turns go to", async () => {
+    vi.stubGlobal("document", { visibilityState: "hidden" });
+    await initVoice();
+    const state = duck.conversation!;
+    const s = (st: ConversationState["state"], run = 5): ConversationState => ({
+      run,
+      state: st,
+      held: false,
+      duplex: false,
+      message: null,
+      cancelling: false,
+      suppression: null,
+      output: null,
+    });
+    const asked = vi.mocked(ipc.voiceConversationPatience);
+    asked.mockClear();
+    // The assistant's thread: your setting (quick), which the run started on.
+    state(s("preparing"));
+    state(s("listening"));
+    expect(asked).not.toHaveBeenCalled();
+    // Into a duck thread: it waits for you to think.
+    duck.mode = "duck";
+    for (const l of duck.listeners) l();
+    expect(asked).toHaveBeenCalledExactlyOnceWith("thinking");
+    // Off, then on again in it: the new run starts on the setting, so it's said again.
+    state(s("off"));
+    state(s("preparing", 6));
+    state(s("listening", 6));
+    expect(asked).toHaveBeenCalledTimes(2);
+    duck.mode = "assistant";
+    vi.unstubAllGlobals();
   });
 });

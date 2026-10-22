@@ -211,6 +211,8 @@ export type ClientMessage =
       brain?: Brain;
       /** Conversation mode (step V4): start now, keep only on `turn.commit`. */
       provisional?: boolean;
+      /** The mode of the thread a `null` `threadId` starts (step S1). */
+      mode?: string;
     }
   | { type: "stop"; threadId: string }
   /** A provisional turn stands, or is dropped (you went on talking). */

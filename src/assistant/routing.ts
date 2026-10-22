@@ -1,9 +1,10 @@
 // Per-message routing (step M2): which model and effort a turn runs at. No
 // classifier call: a few rules over the message and the thread.
 //
-// Effort: `medium` by default, `high` for a rubber-duck thread, for "think hard"
-// and its Russian and Spanish forms, and for a message that asks for research, a
-// plan, a comparison or a browser chore. A Workbench event runs at `medium`.
+// Effort: the thread's mode's (`modes.ts`: `medium`, `high` for a rubber duck),
+// and `high` for "think hard" and its Russian and Spanish forms, and for a message
+// that asks for research, a plan, a comparison or a browser chore. A Workbench
+// event runs at `medium`.
 //
 // Model: Sonnet, except past the budget's soft limit, when turns run on Haiku for
 // the rest of the month. There, "think hard" (said, or the drawer's toggle) sends
@@ -11,6 +12,7 @@
 // so the cache stays; a model change re-reads the thread once on the other model.
 
 import type { Backend } from "./brain/policy";
+import { modeOf } from "./modes";
 import type { Effort, Source } from "./protocol";
 import { MAIN_MODEL, PRIMITIVE_MODEL } from "./prompt";
 
@@ -53,9 +55,8 @@ export function pickEffort(text: string, mode: string | undefined, source: Sourc
   // Events are Workbench's: "a task finished, tell the user". Their words are
   // results and transcripts, not the user asking for depth.
   if (source === "event") return "medium";
-  if (mode === "duck") return "high";
   if (asksHard(text) || INVOLVED.some((r) => r.test(text))) return "high";
-  return "medium";
+  return modeOf(mode).effort;
 }
 
 export interface Route {

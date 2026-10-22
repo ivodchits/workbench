@@ -432,6 +432,18 @@ pub fn voice_conversation_on(app: AppHandle) -> bool {
     conversing(&app)
 }
 
+/// The pauses for the thread conversation mode's turns now go to (step S1: a
+/// rubber duck waits longer). Nothing when the mode is off: the next run starts
+/// on the setting, and the webview says again.
+#[tauri::command]
+pub fn voice_conversation_patience(app: AppHandle, patience: conversation::Patience) {
+    let Some(s) = app.try_state::<VoiceState>() else { return };
+    let Ok(c) = s.conversation.lock() else { return };
+    if let Some(h) = c.as_ref() {
+        let _ = h.cmds.send(conversation::Cmd::Patience(patience));
+    }
+}
+
 /// The microphones, for the settings.
 #[tauri::command]
 pub fn voice_devices() -> Vec<String> {

@@ -39,6 +39,7 @@ import {
   voiceConfigure,
   voiceConversation,
   voiceConversationOn,
+  voiceConversationPatience,
   type ConversationPhase,
   type ConversationState,
   type Transcript,
@@ -46,7 +47,18 @@ import {
   type VoiceTurn,
 } from "../../ipc/voice";
 import { getRegistry } from "../../state/registry";
-import { commitTurn, getDuckState, openThread, sendMessage, sendProvisional, setDrawerOpen, withdrawTurn } from "./duckState";
+import { modeOf, patienceFor, type Patience } from "../../assistant/modes";
+import {
+  commitTurn,
+  currentMode,
+  getDuckState,
+  openThread,
+  sendMessage,
+  sendProvisional,
+  setDrawerOpen,
+  subscribeDuck,
+  withdrawTurn,
+} from "./duckState";
 import { isSpeaking, onAnnounced, stopSpeaking } from "./replySpeech";
 
 export type VoicePrefs = Prefs["voice"];
@@ -168,6 +180,7 @@ export function setVoicePrefs(patch: Partial<VoicePrefs>): void {
   set({ prefs });
   void setPref("voice", prefs);
   configure(prefs);
+  pausesHere();
 }
 
 /** The names the fixer puts back: projects and sessions. */
@@ -264,6 +277,8 @@ function onConversation(s: ConversationState): void {
   // Talking over Duck: the backend cut its voice; drop the rest of the reply.
   if (s.state === "hearing" && s.duplex && isSpeaking()) stopSpeaking();
   if (!on) sent.clear();
+  // A new run starts on the setting; the thread's pauses go once it listens.
+  if (s.state === "preparing" || !on) pausesSent = state.prefs.patience;
   if (s.state === "preparing") {
     replyHere();
     // Turned on (by the key too): the drawer opens, unless the window is hidden.
@@ -280,6 +295,20 @@ function onConversation(s: ConversationState): void {
     },
     ...(s.suppression !== null ? { echo: { db: s.suppression, output: s.output } } : {}),
   });
+  if (s.state !== "preparing") pausesHere();
+}
+
+/** The pauses the running conversation was last given. */
+let pausesSent: Patience | null = null;
+
+/** Conversation mode's pauses follow the thread its turns go to (step S1): a
+ *  rubber duck waits longer than the assistant. Exported for the tests. */
+export function pausesHere(): void {
+  if (!state.conversation.on || state.conversation.phase === "preparing") return;
+  const want = patienceFor(modeOf(currentMode(getDuckState())), state.prefs.patience);
+  if (want === pausesSent) return;
+  pausesSent = want;
+  void voiceConversationPatience(want).catch((e: unknown) => console.warn("voice: the pauses didn't change", e));
 }
 
 /** An announcement was said in full. The mic stays off: turning it on soon after
@@ -321,6 +350,7 @@ export function initVoice(): Promise<void> {
       level = l;
     });
     onAnnounced(heardAnnouncement);
+    subscribeDuck(pausesHere);
     // After a reload, the mode may still be on.
     if (await voiceConversationOn().catch(() => false))
       set({ conversation: { ...OFF, on: true, phase: "listening" } });

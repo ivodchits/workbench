@@ -192,6 +192,11 @@ impl Machine {
         self.phase == Phase::Turn
     }
 
+    /// Another policy, from the next check on (step S1).
+    pub fn set_policy(&mut self, policy: Policy) {
+        self.policy = policy;
+    }
+
     pub fn in_grace(&self) -> bool {
         matches!(self.phase, Phase::Grace(_))
     }
@@ -475,6 +480,8 @@ pub struct TurnEvent {
 
 pub enum Cmd {
     Stop,
+    /// The pauses for the thread the turns now go to (step S1: a mode's).
+    Patience(Patience),
 }
 
 /// A running mode: its commands, and which run it is.
@@ -840,6 +847,7 @@ fn run(
     loop {
         match cmds.try_recv() {
             Ok(Cmd::Stop) | Err(mpsc::TryRecvError::Disconnected) => return Ok(None),
+            Ok(Cmd::Patience(p)) => machine.set_policy(p.policy()),
             Err(mpsc::TryRecvError::Empty) => {}
         }
         match blocks.recv_timeout(Duration::from_millis(100)) {
@@ -1101,6 +1109,16 @@ mod tests {
         // The stretch covers the speech, padded.
         let Event::Segment { from, to } = evs[1].1 else { panic!() };
         assert!(from <= 8000 - PAD + FRAME && (27_200..=27_200 + PAD + FRAME).contains(&to));
+    }
+
+    #[test]
+    fn a_new_policy_holds_from_the_next_pause() {
+        // A duck thread's (step S1): a 1 s pause no longer ends the turn.
+        let mut m = Machine::new(Patience::Quick.policy());
+        m.set_policy(Patience::Thinking.policy());
+        let evs = feed(&mut m, &[(1.0, true), (1.0, false), (1.0, true), (4.0, false)], 0.9);
+        assert_eq!(kinds(&evs), ["started", "segment", "segment", "end"]);
+        assert!(evs[3].0 > 5.9, "{}", evs[3].0);
     }
 
     #[test]

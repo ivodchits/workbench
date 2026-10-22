@@ -161,7 +161,7 @@ export function createThreadStore(
     thread: (id) => threads.find((t) => t.id === id),
     messages: ensure,
     loaded: (id) => messages.get(id) ?? [],
-    async create(mode = "chat") {
+    async create(mode = "assistant") {
       const t = await backend.threadCreate(newId(), mode);
       threads = [t, ...threads];
       messages.set(t.id, []);

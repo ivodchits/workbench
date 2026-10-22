@@ -133,6 +133,9 @@ export interface VoiceTurn {
 
 export const voiceConversation = (on: boolean): Promise<void> => invoke("voice_conversation", { on });
 export const voiceConversationOn = (): Promise<boolean> => invoke("voice_conversation_on");
+/** The pauses for the thread a running conversation's turns go to (step S1). */
+export const voiceConversationPatience = (patience: Patience): Promise<void> =>
+  invoke("voice_conversation_patience", { patience });
 
 export function onConversationState(cb: (s: ConversationState) => void): Promise<UnlistenFn> {
   return listen<ConversationState>("conversation-state", (e) => cb(e.payload));

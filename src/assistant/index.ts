@@ -60,21 +60,10 @@ import { loadSettings, type SettingsStore } from "./settings";
 import { createSummarizer, ipcSummaryBackend, Summary } from "./summarize";
 import { createTurnMeter } from "./spend";
 import { createThreadStore, ipcBackend, type ThreadStore } from "./threads";
-import { ACT_TOOLS } from "./tools/act";
-import { PLUGIN_TOOLS } from "./tools/plugins";
-import { getTime } from "./tools/getTime";
-import { READ_TOOLS } from "./tools/read";
-import { SCREEN_TOOLS } from "./tools/screen";
-import { READ_ALOUD_TOOLS, type ReaderHost } from "./tools/readAloud";
-import { SCREENSHOT_TOOLS, type ScreenHost } from "./tools/screenshot";
-import { QUIET_TOOLS, type QuietHost } from "./tools/quiet";
-import { MCP_TOOLS } from "./tools/mcp";
-import { MORNING_TOOLS } from "./tools/morning";
-import { SHEET_TOOLS } from "./tools/sheets";
-import { PREP_TOOLS } from "./tools/prep";
-import { MEMORY_TOOLS } from "./tools/memory";
-import { IMPROVE_TOOLS } from "./tools/improve";
-import { ROUTINE_TOOLS, routineView, type RoutinesHost } from "./tools/routines";
+import type { ReaderHost } from "./tools/readAloud";
+import type { ScreenHost } from "./tools/screenshot";
+import type { QuietHost } from "./tools/quiet";
+import { routineView, type RoutinesHost } from "./tools/routines";
 import { watchedThreads } from "./tools/act";
 import { createRoutines, Routine, type RoutineBackend } from "./routines";
 import { createHousekeeping, type GitLane, type Housekeeping } from "./housekeeping";
@@ -86,15 +75,10 @@ import { Consolidation, createConsolidator, type Consolidator } from "./consolid
 import { memoryApply, memoryList, memoryStateGet, memoryStateSet } from "../ipc/memory";
 import { createMcpHost } from "./mcp";
 import { createGoogleHost } from "./google";
-import { SUMMARY_TOOLS } from "./tools/summaries";
 import { createRegistry } from "./tools/registry";
-import { TASK_TOOLS } from "./tools/tasks";
-import { AUTOPILOT_TOOLS } from "./tools/autopilot";
-import { THREAD_TOOLS } from "./tools/threads";
-import { HAIKU_TOOLS } from "./tools/haikuTask";
+import { DEFERRED, TOOLS } from "./toolset";
 import { createTaskManager, ipcTaskBackend, type Task, type TaskManager } from "./tasks";
 import { voiceMessage } from "./voiceNames";
-import { testAnnounce, testConfirm } from "./tools/testConfirm";
 import { FLOOR } from "./trust/floor";
 import { replay, type ReplayReport } from "./trust/replay";
 import { createTrustStore, ipcTrustBackend, type TrustStore } from "./trust/store";
@@ -110,55 +94,6 @@ export function trustView(t: TrustStore): TrustView {
     floor: FLOOR.map((f) => ({ id: f.id, label: f.label, on: !c.floorOff.includes(f.id) })),
   };
 }
-
-/** Every tool Duck has. Order doesn't matter: the registry sorts them. The
- *  confirmation test tool exists in dev builds only. */
-const TOOLS = [
-  getTime,
-  ...READ_TOOLS,
-  ...ACT_TOOLS,
-  ...PLUGIN_TOOLS,
-  ...TASK_TOOLS,
-  ...SUMMARY_TOOLS,
-  ...SCREEN_TOOLS,
-  ...READ_ALOUD_TOOLS,
-  ...SCREENSHOT_TOOLS,
-  ...QUIET_TOOLS,
-  ...AUTOPILOT_TOOLS,
-  ...THREAD_TOOLS,
-  ...HAIKU_TOOLS,
-  ...MCP_TOOLS,
-  ...MORNING_TOOLS,
-  ...SHEET_TOOLS,
-  ...PREP_TOOLS,
-  ...MEMORY_TOOLS,
-  ...IMPROVE_TOOLS,
-  ...ROUTINE_TOOLS,
-  ...(import.meta.env.DEV ? [testConfirm, testAnnounce] : []),
-];
-
-/** Tools the model finds with the tool search when it needs them (step M2):
- *  the rarely used, and the large ones that are rarely used. The rest load up
- *  front, so most turns need no search. */
-const DEFERRED = new Set([
-  ...PLUGIN_TOOLS.map((t) => t.name),
-  ...AUTOPILOT_TOOLS.map((t) => t.name),
-  ...SCREEN_TOOLS.map((t) => t.name),
-  "delete_thread",
-  "compact_thread",
-  "delete_note",
-  "task_rerun",
-  "save_screenshot",
-  "set_quiet",
-  "duck_spend",
-  "find_sheet",
-  "read_sheet",
-  "create_sheet_draft",
-  "prep_ahead",
-  "merge_duck_change",
-  "rebuild_duck",
-  ...ROUTINE_TOOLS.map((t) => t.name),
-]);
 
 /** Where the spend comes from: the ledger commands in the app, fakes in tests. */
 export interface SpendSource {

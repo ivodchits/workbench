@@ -42,6 +42,7 @@ import type { ReplayReport } from "../../assistant/trust/replay";
 import type { Effect } from "../../assistant/trust/rules";
 import type { DecisionRow, Spend, StoredMessage, ThreadRow } from "../../ipc/assistant";
 import type { Route } from "../../assistant/routing";
+import type { ModeId } from "../../assistant/modes";
 import { getPref, setPref, type AssistantDrawerPrefs } from "../../ipc/prefs";
 import { onReplyDelta, onToolStart, onTurnEnded, onUserMessage, stopSpeaking } from "./replySpeech";
 
@@ -52,6 +53,8 @@ export interface DuckState {
   threads: ThreadRow[];
   /** The thread on screen; `null` = a new thread, created by the first send. */
   current: string | null;
+  /** The mode a new thread starts in (step S1), picked in the drawer. */
+  newMode: ModeId;
   /** Messages of the threads opened so far. */
   messages: Record<string, StoredMessage[]>;
   /** Reply text streaming in, per thread. */
@@ -107,6 +110,7 @@ let state: DuckState = {
   open: false,
   threads: [],
   current: null,
+  newMode: "assistant",
   messages: {},
   streaming: {},
   provisional: {},
@@ -476,7 +480,7 @@ export function toggleDrawer(): void {
 /** Show a thread (loading its history the first time), or `null` for a new one. */
 export function openThread(threadId: string | null): void {
   adopting = false;
-  set({ current: threadId, error: null });
+  set({ current: threadId, error: null, ...(threadId === null && { newMode: "assistant" as const }) });
   if (threadId) {
     if (!state.messages[threadId]) post({ type: "thread.open", threadId });
     post({ type: "thread.view", surface: "desktop", threadId });
@@ -513,7 +517,17 @@ export function sendMessage(text: string, effort?: Effort, source: Source = "des
     });
   }
   if (!threadId) adopting = true;
-  post({ type: "send", threadId, text, source, effort });
+  post({ type: "send", threadId, text, source, effort, ...(!threadId && { mode: state.newMode }) });
+}
+
+/** The mode the new thread on screen starts in (step S1). */
+export function setNewMode(mode: ModeId): void {
+  set({ newMode: mode });
+}
+
+/** The mode of the thread on screen, or of the new one (step S1). */
+export function currentMode(s: DuckState = state): string {
+  return s.current ? (s.threads.find((t) => t.id === s.current)?.mode ?? "assistant") : s.newMode;
 }
 
 /** Conversation mode (step V4): a turn that starts now and may be withdrawn.
