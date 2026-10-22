@@ -6,6 +6,7 @@
 import { getPref, setPref } from "../ipc/prefs";
 import { DEFAULT_ANNOUNCE, type AnnounceSettings, type SpeakWhen } from "./announce";
 import { DUCK_PERMISSION_MODES, EFFORTS, SESSION_MODELS } from "../util/models";
+import { BRAIN_POLICIES, type BrainPolicy } from "./brain/policy";
 
 /** A worker task's tier (step D1): how much model and effort it gets. */
 export const TIERS = ["standard", "involved", "serious"] as const;
@@ -110,6 +111,9 @@ export interface DuckSettings {
   compactAt: number;
   /** Google access (Drive and Sheets). */
   google: GoogleSettings;
+  /** Which brain answers (step M3): `auto` moves to the subscription when the API
+   *  credits run low and back when they allow; `api` / `subscription` pin one. */
+  brainPolicy: BrainPolicy;
 }
 
 export const DEFAULT_TIERS: Record<Tier, TierSpec> = {
@@ -135,6 +139,7 @@ export const DEFAULT_SETTINGS: DuckSettings = {
   mcpServers: [QUEST_LOG],
   compactAt: 100_000,
   google: DEFAULT_GOOGLE,
+  brainPolicy: "auto",
 };
 
 /** Do Not Disturb "until I turn it off". */
@@ -181,6 +186,7 @@ export function cleanSettings(raw: unknown): Partial<DuckSettings> {
   if (Array.isArray(r.mcpServers)) out.mcpServers = cleanMcpServers(r.mcpServers);
   const compact = whole(r.compactAt, 900_000);
   if (compact !== undefined) out.compactAt = compact === 0 ? 0 : Math.max(COMPACT_MIN, compact);
+  if (BRAIN_POLICIES.includes(r.brainPolicy as BrainPolicy)) out.brainPolicy = r.brainPolicy as BrainPolicy;
   if (r.google && typeof r.google === "object") out.google = cleanGoogle(r.google as Record<string, unknown>);
   // The branch's first build kept the client id under `morning`.
   else if (r.morning && typeof r.morning === "object")

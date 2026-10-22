@@ -41,6 +41,9 @@ export interface Spend {
   limits: Limits;
   softReached: boolean;
   capReached: boolean;
+  /** This month's subscription-brain turns at their API price (step M3): spared,
+   *  not spent. */
+  savedUsd: number;
 }
 
 export interface UsageRecord {

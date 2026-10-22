@@ -2,7 +2,7 @@
 //! leaves nothing running and a `tauri dev` terminal gets its prompt back.
 //!
 //! 1. Child processes, each with its whole tree: consoles (`claude` and the MCP
-//!    servers it started, shells, tasks), Duck's headless workers, the speech sidecar.
+//!    servers it started, shells, tasks), Duck's headless workers and subscription brains, the speech sidecar.
 //! 2. This dev build's entries in `~/.claude/settings.json`, and the global shortcuts.
 //! 3. The tray icon.
 //! 4. Every window, which closes its WebView2 controller while the app is still up.
@@ -59,6 +59,7 @@ pub fn on_exit(app: &AppHandle) {
 
 fn stop_children(app: &AppHandle) {
     crate::assistant::headless::kill_all(app);
+    crate::assistant::subscription_brain::kill_all(app);
     if let Some(pty) = app.try_state::<crate::pty::PtyManager>() {
         pty.kill_all();
     }

@@ -1382,7 +1382,12 @@ function SpendLine({ duck }: { duck: DuckState }) {
       }}
     >
       {turn !== undefined && <span>this turn {usd(turn)}</span>}
-      {route?.brain === "haiku" && (
+      {route?.backend === "subscription" && (
+        <span title="Duck's API credits are low: this thread answers on your Claude subscription" style={{ color: "var(--wb-working)" }}>
+          subscription
+        </span>
+      )}
+      {route?.backend !== "subscription" && route?.brain === "haiku" && (
         <span title="past the budget's soft limit: Haiku, unless you ask to think hard" style={{ color: "var(--wb-working)" }}>
           haiku
         </span>
@@ -1391,6 +1396,7 @@ function SpendLine({ duck }: { duck: DuckState }) {
       <span style={{ marginLeft: "auto", color: tone }}>
         month {usd(s.monthUsd)} / {usd(s.limits.hardCapUsd)}
         {projected !== null && ` · on track for ${usd(projected)}`}
+        {s.savedUsd > 0.005 && ` · saved ${usd(s.savedUsd)} on your subscription`}
       </span>
     </div>
   );

@@ -367,7 +367,7 @@ fn norm_dir(p: &str) -> String {
 /// becomes `-`), e.g. `C:\Users\me\repo` → `C--Users-me-repo`. Used only as a fast
 /// path to the right `~/.claude/projects` subfolder; the per-file `cwd` check below
 /// is the real authority, so an encoding quirk just falls back to a full scan.
-fn encode_cwd_to_folder(cwd: &str) -> String {
+pub(crate) fn encode_cwd_to_folder(cwd: &str) -> String {
     cwd.chars()
         .map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '-' })
         .collect()

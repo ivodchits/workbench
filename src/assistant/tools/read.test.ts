@@ -419,6 +419,7 @@ describe("read tools", () => {
       limits: { hardCapUsd: 20, softRatio: 0.8 },
       softReached: false,
       capReached: false,
+      savedUsd: 0.25,
     };
     expect((await run(duckSpend, {}, { spend })).out).toEqual({
       today: "$0.0123",
@@ -426,6 +427,7 @@ describe("read tools", () => {
       onTrackFor: "$4.50",
       cap: "$20.00",
       softLimit: "$16.00",
+      savedOnSubscription: "$0.2500",
       byPurpose: ["thread: $1.40 (12 calls)", "title: $0.0001 (3 calls)"],
     });
     vi.useRealTimers();

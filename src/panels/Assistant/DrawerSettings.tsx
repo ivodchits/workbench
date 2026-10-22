@@ -190,6 +190,18 @@ export default function DrawerSettings({ duck }: { duck: DuckState }) {
                 </select>
                 <span style={hint}>(older turns become a summary; every message stays here)</span>
               </label>
+              <label style={{ ...row, alignItems: "center" }}>
+                <span>Duck answers on</span>
+                <select
+                  value={duck.settings.brainPolicy}
+                  onChange={(e) => setDuckSettings({ brainPolicy: e.target.value as DuckSettings["brainPolicy"] })}
+                  style={select}
+                >
+                  <option value="auto">the API, your subscription when credits run low</option>
+                  <option value="api">the API only</option>
+                  <option value="subscription">your subscription only</option>
+                </select>
+              </label>
               <McpServers settings={duck.settings} />
               <label style={{ ...row, alignItems: "center" }}>
                 <span>Sessions Duck starts for coding run on</span>

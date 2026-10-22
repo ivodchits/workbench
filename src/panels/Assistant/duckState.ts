@@ -381,7 +381,7 @@ function onEvent(e: DuckEvent): void {
       set({ spend: e.spend, turns: e.turns });
       break;
     case "routing":
-      set({ routing: { ...state.routing, [e.threadId]: { brain: e.brain, effort: e.effort } } });
+      set({ routing: { ...state.routing, [e.threadId]: { brain: e.brain, effort: e.effort, backend: e.backend } } });
       break;
     case "settings":
       set({ settings: e.settings });

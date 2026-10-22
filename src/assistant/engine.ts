@@ -28,6 +28,14 @@
 // the cache. The summary is stored as a `compacted` notice naming the last message
 // it covers; requests send it in place of those messages, and the last few turns
 // go verbatim. The stored messages stay, so the drawer still shows everything.
+//
+// The subscription brain (step M3): when the policy (`brain/policy.ts`) picks it,
+// a turn runs in a headless Claude Code on the subscription instead of this loop.
+// Its replies are stored as any turn's; its tool calls come back here through the
+// same gate, confirmations and time budgets. A call that must be confirmed parks
+// on its own and answers the brain at once that it's waiting; the user's answer
+// goes back to it as a Workbench event. An API turn the API refuses for want of
+// credits carries on there, the user's message kept.
 
 import Anthropic from "@anthropic-ai/sdk";
 import type { StoredMessage, ThreadRow } from "../ipc/assistant";
@@ -69,6 +77,24 @@ import type { GoogleHost } from "./google";
 import type { ThreadMoves } from "./tools/threads";
 import type { HaikuCall } from "./tools/haikuTask";
 import type { Level } from "./announce";
+import type { RateLimits } from "../ipc/usageLimits";
+import { creditsGone, pickBackend, switchCard, type Backend, type BackendChoice } from "./brain/policy";
+import {
+  ASKED,
+  BRAIN_IDLE_MS,
+  BRAIN_MAX,
+  BRAIN_SOURCE,
+  brainTurn,
+  lastBrainSeq,
+  mcpTools,
+  storedBlocks,
+  storedResults,
+  toMcpResult,
+  unanswered,
+  type BrainHost,
+  type BrainMessage,
+} from "./brain/subscription";
+import type { BrainToolCall } from "../ipc/brain";
 
 type Params = Anthropic.Beta.Messages.MessageCreateParamsStreaming;
 type ApiMessage = Anthropic.Beta.BetaMessageParam;
@@ -176,6 +202,10 @@ export interface EngineDeps {
   /** Whether the API budget is past its soft limit (step M2): turns then run on
    *  Haiku. Not degraded when absent or when it fails. */
   degraded?: () => Promise<boolean>;
+  /** The subscription brain (step M3). Without it, every turn is on the API. */
+  brain?: BrainHost;
+  /** The subscription's usage windows, for the brain policy. */
+  limits?: () => Promise<RateLimits | null>;
 }
 
 /** The core memory's block for a new thread, or null (none, or unreadable). */
@@ -372,7 +402,7 @@ export function compactionCut(history: readonly StoredMessage[], tailTokens: num
   const prev = lastCompaction(history)?.through ?? -1;
   const starts: number[] = [];
   history.forEach((m, i) => {
-    if (m.role === "user" && m.source !== "duck" && m.seq > prev && hasText(m)) starts.push(i);
+    if (m.role === "user" && m.source !== "duck" && m.source !== BRAIN_SOURCE && m.seq > prev && hasText(m)) starts.push(i);
   });
   if (starts.length === 0) return null;
   let cut = history.length;
@@ -459,6 +489,11 @@ function errorResult(id: string, text: string): ToolResult {
 }
 
 const DECLINED = "The user declined this action. It was not carried out.";
+
+/** What a brain's failed `result` says. */
+function brainError(r: { subtype: string; result?: string; errors?: string[] }): string {
+  return r.result?.trim() || r.errors?.join("; ") || r.subtype.replace(/_/g, " ");
+}
 const STOPPED =
   "The user stopped the turn before this finished. Treat it as not done.";
 
@@ -546,6 +581,35 @@ interface Held {
 export const HAIKU_CARD =
   "Duck's API budget is past its soft limit: switching to Haiku for the rest of the month. Sonnet stays available per message (\"think hard\").";
 
+/** The month a "credit balance is too low" is remembered for. */
+const monthKey = () => new Date().toISOString().slice(0, 7);
+
+/** The user's message a turn answers: the last one with words that isn't Duck's. */
+function turnMessage(history: readonly StoredMessage[]): StoredMessage | undefined {
+  for (let i = history.length - 1; i >= 0; i--) {
+    const m = history[i];
+    if (m.role === "user" && m.source !== "duck" && m.source !== BRAIN_SOURCE && hasText(m)) return m;
+  }
+  return undefined;
+}
+
+/** One brain turn being heard: what its process says, and its end. */
+interface BrainRun {
+  message(msg: BrainMessage): void;
+  exit(code: number | null, stderr: string): void;
+}
+
+/** A brain process the engine started and hasn't stopped. */
+interface LiveBrain {
+  /** Its session is new: it has seen none of the thread. */
+  fresh: boolean;
+  last: number;
+  idle?: ReturnType<typeof setTimeout>;
+}
+
+/** What the card back on the API adds when the turn runs on Haiku. */
+export const HAIKU_MEANWHILE = 'Haiku answers meanwhile; "think hard" sends a message on Sonnet.';
+
 /** A provisional turn nobody decided on is kept after this long. */
 export const PROVISIONAL_MAX_MS = 15_000;
 
@@ -582,6 +646,7 @@ interface Turn {
   ctl: AbortController;
   state: TurnState;
   brain: Brain;
+  backend: Backend;
   held?: Held;
   withdrawn?: boolean;
 }
@@ -604,6 +669,21 @@ export function createEngine(deps: EngineDeps): Engine {
   const sizes = new Map<string, number>();
   /** Threads to compact once their turn is over: asked for, not past the threshold. */
   const compactAsked = new Set<string>();
+  /** The brain each thread's latest turn ran on (step M3), for the switch card. */
+  const backends = new Map<string, Backend>();
+  /** The month the API last said the credit balance is too low. */
+  let creditsOut: string | null = null;
+  /** The subscription brains running, and the turns listening to them. */
+  const live = new Map<string, LiveBrain>();
+  const brainRuns = new Map<string, BrainRun>();
+  deps.brain?.onEvent((threadId, msg) => brainRuns.get(threadId)?.message(msg));
+  deps.brain?.onExit((threadId, code, stderr) => {
+    const b = live.get(threadId);
+    if (b) clearTimeout(b.idle);
+    live.delete(threadId);
+    brainRuns.get(threadId)?.exit(code, stderr);
+  });
+  deps.brain?.onToolCall((call) => void brainCall(call));
 
   const emit = (e: DuckEvent) => {
     for (const l of listeners) {
@@ -659,8 +739,20 @@ export function createEngine(deps: EngineDeps): Engine {
     settledWaiters.delete(threadId);
   }
 
+  /** Which brain a turn runs on (step M3). A model named outright is the API's. */
+  async function chooseBackend(input: Pick<SendInput, "brain">, degraded: boolean): Promise<BackendChoice> {
+    if (!deps.brain || input.brain) return { backend: "api", why: "" };
+    const limits = await (deps.limits?.() ?? Promise.resolve(null)).catch(() => null);
+    return pickBackend({
+      policy: settings().brainPolicy,
+      softReached: degraded,
+      creditsOut: creditsOut === monthKey(),
+      limits,
+    });
+  }
+
   async function start(threadId: string, input: SendInput) {
-    const turn: Turn = { ctl: new AbortController(), state: "thinking", brain: "sonnet" };
+    const turn: Turn = { ctl: new AbortController(), state: "thinking", brain: "sonnet", backend: "api" };
     turns.set(threadId, turn);
     setState(threadId, "thinking");
     try {
@@ -676,7 +768,15 @@ export function createEngine(deps: EngineDeps): Engine {
         degraded,
       });
       turn.brain = brain;
-      emit({ type: "routing", threadId, brain, effort: want });
+      const choice = await chooseBackend(input, degraded);
+      turn.backend = choice.backend;
+      emit({
+        type: "routing",
+        threadId,
+        brain,
+        effort: want,
+        ...(choice.backend === "subscription" && { backend: "subscription" as const }),
+      });
       const opening: Opening[] = [
         { role: "user", content: [{ type: "text", text: input.text }], source: input.source },
       ];
@@ -701,8 +801,16 @@ export function createEngine(deps: EngineDeps): Engine {
           source: "duck",
         });
       }
-      // The first Haiku turn in a thread says so (shown, never sent).
-      if (brain === "haiku" && brains.get(threadId) !== "haiku")
+      // A turn on the other brain than the thread's last says so (step M3), and so
+      // does the first Haiku turn in a thread (shown, never sent).
+      const onHaiku = choice.backend === "api" && brain === "haiku";
+      if (choice.backend !== (backends.get(threadId) ?? "api"))
+        opening.push({
+          role: "notice",
+          content: { kind: "budget", text: `${switchCard(choice)}${onHaiku ? ` ${HAIKU_MEANWHILE}` : ""}` },
+          source: "duck",
+        });
+      else if (onHaiku && brains.get(threadId) !== "haiku")
         opening.push({ role: "notice", content: { kind: "budget", text: HAIKU_CARD }, source: "duck" });
       const named = () => {
         if (!first || !deps.nameThread) return;
@@ -729,8 +837,11 @@ export function createEngine(deps: EngineDeps): Engine {
         for (const m of opening) await append(threadId, m.role, m.content, m.source);
         named();
       }
-      brains.set(threadId, brain);
-      await loop(threadId, turn);
+      // The API's model, which a subscription turn didn't use.
+      if (choice.backend === "api") brains.set(threadId, brain);
+      backends.set(threadId, choice.backend);
+      if (choice.backend === "subscription") await brainLoop(threadId, turn);
+      else if ((await loop(threadId, turn)) === "credits") await creditsLoop(threadId, turn, degraded);
       await afterTurn(threadId, turn);
     } catch (e) {
       if (await kept(threadId, turn))
@@ -862,6 +973,13 @@ export function createEngine(deps: EngineDeps): Engine {
     moves.delete(threadId);
     sizes.delete(threadId);
     compactAsked.delete(threadId);
+    backends.delete(threadId);
+    const b = live.get(threadId);
+    if (b) {
+      clearTimeout(b.idle);
+      live.delete(threadId);
+      void deps.brain?.kill(threadId).catch(() => {});
+    }
     for (const [k, t] of trails) trails.set(k, t.filter((x) => x !== threadId));
     await store.remove(threadId);
     emit({ type: "threadDeleted", threadId });
@@ -895,8 +1013,10 @@ export function createEngine(deps: EngineDeps): Engine {
     return [...stored, ...held];
   }
 
-  /** Model rounds until the turn ends, parks, or is stopped. */
-  async function loop(threadId: string, turn: Turn) {
+  /** Model rounds until the turn ends, parks, or is stopped. "credits": the API
+   *  refused it for want of credits, with the subscription brain there to take it
+   *  (nothing of the failed request is kept). */
+  async function loop(threadId: string, turn: Turn): Promise<"credits" | void> {
     const signal = turn.ctl.signal;
     for (let round = 0; round < MAX_ROUNDS; round++) {
       if (signal.aborted) {
@@ -938,6 +1058,10 @@ export function createEngine(deps: EngineDeps): Engine {
             );
           await notice(threadId, { kind: "stopped", text: "Stopped." });
           return;
+        }
+        if (creditsGone(e) && deps.brain && !text.trim()) {
+          creditsOut = monthKey();
+          return "credits";
         }
         const cap = capMessage(e);
         await notice(
@@ -1007,40 +1131,7 @@ export function createEngine(deps: EngineDeps): Engine {
     setState(threadId, "tool");
     const notices: string[] = [];
     const calls: BatchCall[] = [];
-    for (const u of uses) {
-      const tool = registry.get(u.name);
-      const call: BatchCall = { id: u.id, name: u.name, input: u.input, state: "done" };
-      calls.push(call);
-      // A call whose input doesn't fit its schema can't run: it fails at once
-      // with the reason rather than asking the user to allow it.
-      if (!tool || !tool.schema.safeParse(u.input).success) continue;
-      // What the card shows is worked out first; a call that can't be (no such
-      // action, a file with problems) fails before any card, with the reason.
-      if (tool.prepare) {
-        try {
-          const env = { settings: settings(), google: deps.google ?? null };
-          call.prepared = await withTimeout(registry.prepare(u.name, u.input, port, env), tool.timeoutMs);
-        } catch (e) {
-          call.result = errorResult(u.id, `${u.name} failed: ${errorMessage(e)}`);
-          continue;
-        }
-      }
-      const tier = registry.callTier(u.name, u.input, port);
-      const a = verdictOf(
-        gate({
-          name: u.name,
-          input: u.input,
-          tier,
-          threadId,
-          toolUseId: u.id,
-          summary: tier === "read" ? undefined : registry.describe(u.name, u.input, port, call.prepared),
-          facts: tier === "read" ? undefined : registry.trustFacts(u.name, u.input, port, call.prepared),
-        }),
-      );
-      if (a.notice) notices.push(a.notice);
-      if (a.verdict === "ask") call.state = "ask";
-      if (a.verdict === "deny") call.result = errorResult(u.id, a.reason ?? DECLINED);
-    }
+    for (const u of uses) calls.push(await judge(threadId, u, notices));
     for (const text of notices) await notice(threadId, { kind: "trust", text });
     await Promise.all(
       calls.map(async (c, i) => {
@@ -1059,6 +1150,264 @@ export function createEngine(deps: EngineDeps): Engine {
       }
     }
     return null;
+  }
+
+  /** A call before it runs: what its card needs, the gate's verdict (`ask` to
+   *  confirm), or its result already when it can't run. The gate's word for the
+   *  thread goes in `notices`. */
+  async function judge(threadId: string, u: ToolUse, notices: string[]): Promise<BatchCall> {
+    const tool = registry.get(u.name);
+    const call: BatchCall = { id: u.id, name: u.name, input: u.input, state: "done" };
+    // A call whose input doesn't fit its schema can't run: it fails at once
+    // with the reason rather than asking the user to allow it.
+    if (!tool || !tool.schema.safeParse(u.input).success) return call;
+    // What the card shows is worked out first; a call that can't be (no such
+    // action, a file with problems) fails before any card, with the reason.
+    if (tool.prepare) {
+      try {
+        const env = { settings: settings(), google: deps.google ?? null };
+        call.prepared = await withTimeout(registry.prepare(u.name, u.input, port, env), tool.timeoutMs);
+      } catch (e) {
+        call.result = errorResult(u.id, `${u.name} failed: ${errorMessage(e)}`);
+        return call;
+      }
+    }
+    const tier = registry.callTier(u.name, u.input, port);
+    const a = verdictOf(
+      gate({
+        name: u.name,
+        input: u.input,
+        tier,
+        threadId,
+        toolUseId: u.id,
+        summary: tier === "read" ? undefined : registry.describe(u.name, u.input, port, call.prepared),
+        facts: tier === "read" ? undefined : registry.trustFacts(u.name, u.input, port, call.prepared),
+      }),
+    );
+    if (a.notice) notices.push(a.notice);
+    if (a.verdict === "ask") call.state = "ask";
+    if (a.verdict === "deny") call.result = errorResult(u.id, a.reason ?? DECLINED);
+    return call;
+  }
+
+  // ── the subscription brain (step M3) ──
+
+  /** The API refused the turn for want of credits: on to the subscription, if the
+   *  policy allows it now, with a card; otherwise the turn ends saying why. */
+  async function creditsLoop(threadId: string, turn: Turn, degraded: boolean) {
+    const choice = await chooseBackend({}, degraded);
+    if (choice.backend !== "subscription") {
+      await notice(threadId, { kind: "error", text: `The API credit balance is too low (${choice.why}).` });
+      return;
+    }
+    turn.backend = "subscription";
+    backends.set(threadId, "subscription");
+    emit({ type: "routing", threadId, brain: turn.brain, effort: DEFAULT_EFFORT, backend: "subscription" });
+    await notice(threadId, { kind: "budget", text: switchCard(choice) });
+    await brainLoop(threadId, turn);
+  }
+
+  /** Stop the brains idle longest while as many as the cap are running. */
+  async function makeRoom() {
+    const idle = [...live.entries()].filter(([id]) => !turns.has(id)).sort((a, b) => a[1].last - b[1].last);
+    while (live.size >= BRAIN_MAX && idle.length) {
+      const [id, b] = idle.shift()!;
+      clearTimeout(b.idle);
+      live.delete(id);
+      await deps.brain!.kill(id).catch(() => {});
+    }
+  }
+
+  /** A turn on the subscription brain: started if it isn't running, sent what it
+   *  hasn't seen with your message, and heard until its result. */
+  async function brainLoop(threadId: string, turn: Turn) {
+    const host = deps.brain!;
+    if (!(await kept(threadId, turn))) return;
+    if (turn.ctl.signal.aborted) {
+      await notice(threadId, { kind: "stopped", text: "Stopped." });
+      return;
+    }
+    setState(threadId, "thinking");
+    const history = await store.messages(threadId);
+    const said = turnMessage(history);
+    if (!said) throw new Error("there is no message here to answer");
+    let b = live.get(threadId);
+    if (!b) {
+      await makeRoom();
+      const { resumed } = await host.spawn(threadId, mcpTools(registry.apiTools));
+      b = { fresh: !resumed, last: Date.now() };
+      live.set(threadId, b);
+    }
+    clearTimeout(b.idle);
+    const seen = b.fresh ? null : lastBrainSeq(history.filter((m) => m.seq < said.seq));
+    b.fresh = false;
+    try {
+      await brainRun(threadId, turn, said.seq, brainTurn(history, said.seq, seen));
+    } finally {
+      const now = live.get(threadId);
+      if (now) {
+        now.last = Date.now();
+        now.idle = setTimeout(() => {
+          if (turns.has(threadId) || live.get(threadId) !== now) return;
+          live.delete(threadId);
+          void host.kill(threadId).catch(() => {});
+        }, BRAIN_IDLE_MS);
+      }
+    }
+  }
+
+  /** Send `text` and keep what the brain says until the turn's result (or its
+   *  process ending). Calls it left without a result get one saying so, so the
+   *  thread stays a valid history for the API. */
+  function brainRun(threadId: string, turn: Turn, turnSeq: number, text: string): Promise<void> {
+    const host = deps.brain!;
+    const signal = turn.ctl.signal;
+    return new Promise((resolve) => {
+      let reply: { id: string; blocks: Anthropic.Beta.BetaContentBlockParam[] } | null = null;
+      let streamed = "";
+      let chain: Promise<unknown> = Promise.resolve();
+      let done = false;
+      const put = (role: StoredMessage["role"], content: unknown) => {
+        chain = chain.then(() => append(threadId, role, content, BRAIN_SOURCE));
+      };
+      // A stopped reply keeps what was said, as on the API.
+      const flush = (keepStreamed: boolean) => {
+        if (keepStreamed && streamed.trim()) {
+          reply ??= { id: "", blocks: [] };
+          reply.blocks.push({ type: "text", text: streamed });
+        }
+        if (reply?.blocks.length) put("assistant", reply.blocks);
+        reply = null;
+        streamed = "";
+      };
+      const onAbort = () => void host.interrupt(threadId).catch(() => {});
+      const finish = (n?: Notice) => {
+        if (done) return;
+        done = true;
+        brainRuns.delete(threadId);
+        signal.removeEventListener("abort", onAbort);
+        chain = chain
+          .then(async () => {
+            const open = unanswered(await store.messages(threadId), turnSeq);
+            if (open.length) await append(threadId, "user", open.map((id) => errorResult(id, STOPPED)), BRAIN_SOURCE);
+            if (n) await notice(threadId, n);
+          })
+          .catch((e) => console.error("duck: keeping the brain's turn failed", e));
+        void chain.then(() => resolve());
+      };
+      brainRuns.set(threadId, {
+        message(msg) {
+          switch (msg.type) {
+            case "stream_event": {
+              const t = msg.event.delta?.type === "text_delta" ? msg.event.delta.text : undefined;
+              if (!t) return;
+              if (turn.state !== "streaming") setState(threadId, "streaming");
+              streamed += t;
+              emit({ type: "delta", threadId, text: t });
+              return;
+            }
+            case "assistant":
+              // One message per content block, the same id for one reply.
+              if (reply && reply.id !== msg.message.id) flush(false);
+              reply ??= { id: msg.message.id, blocks: [] };
+              reply.blocks.push(...storedBlocks(msg.message.content));
+              streamed = "";
+              return;
+            case "user": {
+              flush(false);
+              const results = storedResults(msg.message.content);
+              if (results.length) put("user", results);
+              setState(threadId, "thinking");
+              return;
+            }
+            case "result":
+              flush(signal.aborted);
+              if (signal.aborted) finish({ kind: "stopped", text: "Stopped." });
+              else if (msg.is_error || msg.subtype !== "success")
+                finish({ kind: "error", text: `Duck's subscription brain: ${brainError(msg)}` });
+              else finish();
+              return;
+          }
+        },
+        exit(code, stderr) {
+          flush(true);
+          const why = stderr.trim().split("\n").pop()?.trim();
+          finish(
+            signal.aborted
+              ? { kind: "stopped", text: "Stopped." }
+              : {
+                  kind: "error",
+                  text: `Duck's subscription brain stopped mid-turn${code !== null ? ` (exit code ${code})` : ""}${why ? `: ${why}` : ""}. Your next message starts it again.`,
+                },
+          );
+        },
+      });
+      signal.addEventListener("abort", onAbort);
+      host.send(threadId, text).catch((e) => {
+        live.delete(threadId);
+        void host.kill(threadId).catch(() => {});
+        brainRuns.get(threadId)?.exit(null, errorMessage(e));
+      });
+    });
+  }
+
+  /** The brain called one of Duck's tools: judged and run as on the API, or parked
+   *  on a card (the brain hears it's waiting). Answered either way. */
+  async function brainCall(c: BrainToolCall) {
+    const host = deps.brain!;
+    const id = c.toolUseId ?? `toolu_${c.callId.replace(/[^A-Za-z0-9_-]/g, "")}`;
+    const use = { type: "tool_use", id, name: c.name, input: c.input } as ToolUse;
+    let r: ToolResult;
+    try {
+      const turn = turns.get(c.threadId);
+      if (!turn || turn.backend !== "subscription") r = errorResult(id, "No turn of yours is running in this thread.");
+      else {
+        setState(c.threadId, "tool");
+        const notices: string[] = [];
+        const call = await judge(c.threadId, use, notices);
+        for (const text of notices) await notice(c.threadId, { kind: "trust", text });
+        if (call.result) r = call.result as ToolResult;
+        else if (call.state === "ask") {
+          const batch: PendingBatch = { id: newId(), threadId: c.threadId, calls: [call], brain: true };
+          await store.putPending(batch);
+          emit({ type: "confirm", request: request(c.threadId, batch.id, call) });
+          r = { type: "tool_result", tool_use_id: id, content: ASKED };
+        } else r = await execute(c.threadId, turn, use, call.prepared);
+      }
+    } catch (e) {
+      r = errorResult(id, `${c.name} failed: ${errorMessage(e)}`);
+    }
+    await host.answer(c.callId, toMcpResult(r)).catch((e) => console.warn("duck: a tool result didn't reach the brain", e));
+  }
+
+  /** A brain call parked on a card is answered: run if allowed, and the brain told
+   *  as a Workbench event (it heard "waiting" at the time). A stop drops it. */
+  async function resumeBrain(batch: PendingBatch, stopped: boolean) {
+    const { threadId } = batch;
+    const turn: Turn = { ctl: new AbortController(), state: "tool", brain: "sonnet", backend: "subscription" };
+    try {
+      const said: string[] = [];
+      for (const c of batch.calls) {
+        if (c.state === "allowed" && !stopped) {
+          const use = { type: "tool_use", id: c.id, name: c.name, input: c.input } as ToolUse;
+          const r = await execute(threadId, turn, use, c.prepared);
+          const out = typeof r.content === "string" ? r.content : JSON.stringify(r.content);
+          said.push(`${c.name} ${r.is_error ? "failed" : "ran"}: ${out}`);
+        } else said.push(`${c.name} was declined by the user and not carried out.`);
+      }
+      await store.clearPending(batch.id);
+      if (stopped) await notice(threadId, { kind: "stopped", text: "Stopped." });
+      else
+        void send({
+          threadId,
+          text: eventText(`The user answered the card for your earlier call.\n${said.join("\n")}`),
+          source: "event",
+        }).catch((e) => console.warn("duck: a confirmation's result was dropped", e));
+    } catch (e) {
+      await notice(threadId, { kind: "error", text: errorMessage(e) }).catch(() => {});
+    } finally {
+      if (!turns.has(threadId) && !busy(threadId)) settle(threadId);
+    }
   }
 
   async function execute(
@@ -1121,7 +1470,7 @@ export function createEngine(deps: EngineDeps): Engine {
    *  back in one message, and carry on with the turn. */
   async function resume(batch: PendingBatch, stopped: boolean) {
     const { threadId } = batch;
-    const turn: Turn = { ctl: new AbortController(), state: "tool", brain: brains.get(threadId) ?? "sonnet" };
+    const turn: Turn = { ctl: new AbortController(), state: "tool", brain: brains.get(threadId) ?? "sonnet", backend: "api" };
     turns.set(threadId, turn);
     try {
       // Parked before a restart: the model the budget calls for now.
@@ -1147,7 +1496,7 @@ export function createEngine(deps: EngineDeps): Engine {
         await notice(threadId, { kind: "stopped", text: "Stopped." });
         return;
       }
-      await loop(threadId, turn);
+      if ((await loop(threadId, turn)) === "credits") await creditsLoop(threadId, turn, await isDegraded());
       await afterTurn(threadId, turn);
     } catch (e) {
       await notice(threadId, { kind: "error", text: errorMessage(e) }).catch(
@@ -1247,7 +1596,7 @@ export function createEngine(deps: EngineDeps): Engine {
       }
       // Parked on a confirmation: answer every open call with "stopped".
       const batch = store.pending().find((b) => b.threadId === threadId);
-      if (batch) void resume(batch, true);
+      if (batch) void (batch.brain ? resumeBrain(batch, true) : resume(batch, true));
     },
 
     commit(threadId) {
@@ -1271,7 +1620,8 @@ export function createEngine(deps: EngineDeps): Engine {
             b.threadId === threadId &&
             b.calls.some((c) => c.id === toolUseId && c.state === "ask"),
         );
-      if (!batch || turns.has(threadId)) return;
+      // A brain's call parks on its own while the brain's turn may still run.
+      if (!batch || (turns.has(threadId) && !batch.brain)) return;
       const calls = batch.calls.map((c) =>
         c.id === toolUseId
           ? { ...c, state: allow ? ("allowed" as const) : ("denied" as const) }
@@ -1283,7 +1633,7 @@ export function createEngine(deps: EngineDeps): Engine {
         await store.putPending(next);
         return;
       }
-      await resume(next, false);
+      await (next.brain ? resumeBrain(next, false) : resume(next, false));
     },
 
     pendingRequests() {
@@ -1328,7 +1678,7 @@ export function createEngine(deps: EngineDeps): Engine {
         compactAsked.add(threadId);
         return;
       }
-      const turn: Turn = { ctl: new AbortController(), state: "thinking", brain: brains.get(threadId) ?? "sonnet" };
+      const turn: Turn = { ctl: new AbortController(), state: "thinking", brain: brains.get(threadId) ?? "sonnet", backend: "api" };
       turns.set(threadId, turn);
       void (async () => {
         try {

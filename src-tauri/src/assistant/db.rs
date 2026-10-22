@@ -204,4 +204,16 @@ const MIGRATIONS: &[&str] = &[
     );
     CREATE INDEX idx_assistant_google_files_draft ON assistant_google_files(source, month);
     "#,
+    // Step M3: the turns Duck's subscription brain answered, priced as the API would
+    // have priced them (`api_usd`): what they spared of the API credits. Never part
+    // of the spend, which `assistant_usage` alone makes up.
+    r#"
+    CREATE TABLE assistant_subscription_usage (
+        id       INTEGER PRIMARY KEY,
+        ts       INTEGER NOT NULL,
+        model    TEXT NOT NULL,
+        api_usd  REAL NOT NULL
+    );
+    CREATE INDEX idx_assistant_subscription_usage_ts ON assistant_subscription_usage(ts);
+    "#,
 ];

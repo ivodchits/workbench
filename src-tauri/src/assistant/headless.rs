@@ -98,16 +98,16 @@ pub struct HeadlessSpawned {
     cwd: String,
 }
 
-fn user_message(text: &str) -> Value {
+pub(crate) fn user_message(text: &str) -> Value {
     json!({ "type": "user", "message": { "role": "user", "content": text } })
 }
 
-fn control_request(request: Value) -> Value {
+pub(crate) fn control_request(request: Value) -> Value {
     let id = format!("wb-{}", NEXT_REQUEST.fetch_add(1, Ordering::Relaxed));
     json!({ "type": "control_request", "request_id": id, "request": request })
 }
 
-fn write_line(stdin: &mut ChildStdin, msg: &Value) -> Result<(), String> {
+pub(crate) fn write_line(stdin: &mut ChildStdin, msg: &Value) -> Result<(), String> {
     let mut line = msg.to_string();
     line.push('\n');
     stdin

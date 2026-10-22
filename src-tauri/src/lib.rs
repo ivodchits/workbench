@@ -154,6 +154,8 @@ pub fn run() {
         .manage(pty::PtyManager::default())
         // Duck's headless workers (step D4).
         .manage(assistant::headless::HeadlessManager::default())
+        // Duck's subscription brains (step M3).
+        .manage(assistant::subscription_brain::BrainManager::default())
         // Account-wide usage-limit snapshot, fed by the managed statusline (step 3.2).
         // Managed up front so the ingest route can write it before setup completes.
         .manage(statusline::LimitsState::default())
@@ -257,6 +259,11 @@ pub fn run() {
             assistant::headless::headless_interrupt,
             assistant::headless::headless_answer,
             assistant::headless::headless_kill,
+            assistant::subscription_brain::brain_spawn,
+            assistant::subscription_brain::brain_send,
+            assistant::subscription_brain::brain_interrupt,
+            assistant::subscription_brain::brain_kill,
+            assistant::subscription_brain::brain_tool_result,
             window::window_open_torn,
             remote::remote_start,
             remote::remote_stop,

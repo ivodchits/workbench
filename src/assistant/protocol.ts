@@ -9,6 +9,7 @@
 import type { DecisionRow, Spend, StoredMessage, ThreadRow } from "../ipc/assistant";
 import type { ReaderView } from "./reader";
 import type { Brain } from "./routing";
+import type { Backend } from "./brain/policy";
 import type { DuckSettings } from "./settings";
 import type { Mode, TrustConfig } from "./trust/decide";
 import type { ReplayReport } from "./trust/replay";
@@ -127,7 +128,8 @@ export interface Notice {
     | "screen"
     /** A read aloud stopped before its end (V3). */
     | "reader"
-    /** The thread moved to Haiku past the budget's soft limit (M2). */
+    /** The thread moved to Haiku past the budget's soft limit (M2), or to the
+     *  other brain (M3). */
     | "budget"
     /** The older turns were summarized for the model (A6). */
     | "compacted"
@@ -295,7 +297,7 @@ export type DuckEvent =
   | { type: "confirmed"; threadId: string; toolUseId: string; allow: boolean }
   | { type: "turnState"; threadId: string; state: TurnState; queued: number }
   /** The model and effort a turn runs at (step M2), as it starts. */
-  | { type: "routing"; threadId: string; brain: Brain; effort: Effort }
+  | { type: "routing"; threadId: string; brain: Brain; effort: Effort; backend?: Backend }
   /** The month's API spend, after every metered call and on `sync`. `turns` holds
    *  each thread's latest turn cost (since the app started), in USD. */
   | { type: "spend"; spend: Spend; turns: Record<string, number> }

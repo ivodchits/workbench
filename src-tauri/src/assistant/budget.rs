@@ -113,6 +113,18 @@ pub struct Spend {
     /// `month_usd` is at or past the soft limit / the hard cap.
     pub soft_reached: bool,
     pub cap_reached: bool,
+    /// This month's turns on the subscription brain (step M3), priced as the API
+    /// would have: credits spared, not spent.
+    pub saved_usd: f64,
+}
+
+/// Record one subscription-brain turn (step M3) at its API price.
+pub fn record_saved(conn: &Connection, ts: i64, model: &str, api_usd: f64) -> rusqlite::Result<()> {
+    conn.execute(
+        "INSERT INTO assistant_subscription_usage (ts, model, api_usd) VALUES (?1, ?2, ?3)",
+        rusqlite::params![ts, model, api_usd],
+    )?;
+    Ok(())
 }
 
 pub fn spend(conn: &Connection, limits: Limits) -> rusqlite::Result<Spend> {
@@ -136,7 +148,13 @@ pub fn spend(conn: &Connection, limits: Limits) -> rusqlite::Result<Spend> {
         })?;
         rows.collect()
     };
+    let saved_usd: f64 = conn.query_row(
+        &format!("SELECT COALESCE(SUM(api_usd), 0) FROM assistant_subscription_usage WHERE ts >= {MONTH_START}"),
+        [],
+        |r| r.get(0),
+    )?;
     Ok(Spend {
+        saved_usd,
         today_usd,
         month_usd,
         by_model: buckets("model")?,
@@ -197,6 +215,21 @@ mod tests {
         assert_eq!(s.by_model[0].calls, 2);
         assert_eq!(s.by_purpose.len(), 2);
         assert!(s.soft_reached && s.cap_reached);
+        assert_eq!(s.saved_usd, 0.0);
+    }
+
+    #[test]
+    fn subscription_turns_are_saved_not_spent() {
+        let db = DuckDb::open_in_memory().unwrap();
+        let conn = db.conn.lock().unwrap();
+        let now = now_ms();
+        record_saved(&conn, now, "claude-sonnet-5-5", 0.25).unwrap();
+        record_saved(&conn, now, "claude-sonnet-5-5", 0.5).unwrap();
+        record_saved(&conn, now - 40 * 86_400_000, "claude-sonnet-5-5", 9.0).unwrap();
+        let s = spend(&conn, Limits::default()).unwrap();
+        assert!((s.saved_usd - 0.75).abs() < 1e-9);
+        assert_eq!(s.month_usd, 0.0);
+        assert!(!s.soft_reached);
     }
 
     #[test]

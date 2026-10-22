@@ -2931,6 +2931,75 @@ up ("change this", with a circle around it).
     it.
 - **Out of scope:** running workers or `haiku_task` through the subscription brain (workers
   already are sessions; primitives stay on Haiku API until the hard cap).
+- **As built (2026-10-22):**
+  - **No `Brain` interface over the engine** (changed from the Build): the API loop stays
+    the engine's own, and a turn picks per turn between it and `brainLoop`. The
+    subscription side is `src/assistant/brain/` (`policy.ts`, `subscription.ts` with the
+    `BrainHost` the engine is given) and two Rust modules; the drawer and the tool
+    registry see no difference. An `ApiBrain` wrapper would only have renamed the loop.
+  - **The process** (`subscription_brain.rs`): one `claude -p` per thread on the
+    subscription, with the Build's flags plus `--include-partial-messages` (text as it
+    comes), `--setting-sources ""` (no hooks or statusline from your settings) and the
+    environment `CLAUDE_CODE_DISABLE_CLAUDE_MDS`, `CLAUDE_CODE_DISABLE_AUTO_MEMORY` and
+    `ENABLE_TOOL_SEARCH=false` (with `--tools ""` there is no tool search, so every tool
+    loads up front). It runs in `<workspace>/brain`, so its sessions stay out of the Duck
+    project's resume list. **Sessions persist** (changed from `--no-session-persistence`):
+    the session id is the thread's, so after the 30-minute idle stop, or a restart, the
+    next turn `--resume`s it instead of re-reading the thread. At most 3 run at once.
+    Effort stays `medium` for the process (the Build's default).
+  - **The MCP server** (`mcp_server.rs`): JSON-RPC written out, not `rmcp`; four methods
+    and a token are all it needs. Claude Code 2.1.308 probes `server/discover` first (a
+    "method not found" sends it to `initialize`) and opens the optional GET stream, which
+    gets a 405.
+  - **Its tools** are `mcpTools(registry.apiTools)`, the same definitions the API gets.
+    A call goes to the webview and through `judge` (the API path's validation, `prepare`
+    and trust gate, now shared) and `execute` (the time budget). **A confirmation doesn't
+    hold the call**: the call parks on its own card and the brain hears at once that it's
+    waiting, says so and ends its turn. Your answer runs it and goes back as a Workbench
+    event, which starts the brain's next turn. So nothing waits inside a turn, as the
+    guardrails want.
+  - **What's kept:** the thread stays the record. The brain's replies are stored as API
+    messages (no thinking, tool names without `mcp__duck__`, source `brain`), so the
+    drawer shows them like any turn and the thread can go back to the API as it is. A
+    call left without a result (a stop, a crash) gets a "stopped" one.
+  - **The handoff, in place** (changed from "a new thread with a Haiku summary"): the
+    thread carries on, as M2's Haiku degrade does. What the brain's session hasn't seen
+    goes in front of your message as `<thread_so_far>`: the whole thread for a new session
+    (the compaction's summary where there is one, and the core memory), and only the
+    turns the API answered since for a running or resumed one. It's a plain transcript of
+    the last 20 turns (40k characters at most), not a Haiku summary, so switching costs
+    no API credits, which may be gone.
+  - **Switching** (`policy.ts`, read each turn): `auto` moves to the subscription past the
+    soft limit or after a "credit balance is too low" this month, while the 5-hour window
+    is under 70% and the weekly under 80% (no reading yet counts as room), and back to the
+    API (Haiku past the soft limit) when either fills. A new month's credits bring the next
+    turn back to the API by themselves. The card, a `budget` notice on a thread's first
+    turn on the other brain: "Now answering on your subscription: Duck's API spend is past
+    its soft limit." / "Back on the API: …, but your subscription is busy (its 5-hour limit
+    is at 75%). Haiku answers meanwhile; …". A credits error before any text carries the
+    same turn on to the brain, the message kept. Settings → "Duck answers on": `auto`,
+    `the API only`, `your subscription only`.
+  - **Readings:** the brain's `rate_limit_event` (`unifiedWindows`, fractions: 0.01 is
+    the statusline's 1%) feeds the same usage meter as the statusline. Each `result` is
+    priced from its `usage` with Duck's own price table into
+    `assistant_subscription_usage` (not `total_cost_usd`, which may count a resumed
+    session's earlier runs); the spend line adds "saved $X on your subscription" and a
+    "subscription" chip, and `duck_spend` returns `savedOnSubscription`.
+  - **Done when:**
+    - Tool choice: tried by hand with the real `BRAIN_PROMPT` and all 65 tools behind a
+      stand-in MCP server (2026-10-22): the 4 requests tried ("what's the backend agent
+      doing", "remember that the blog means project Quill", "send 'run the tests' to the
+      api session", "what time is it") each picked the expected tool. The send parked and
+      the brain said it was waiting for your OK. First text in ~0.8 s warm (2 s cold), a
+      turn in ~2.5 s. Not the full 20 X0 requests.
+    - Forcing the soft limit with the subscription at 20%, then 75%, and a "credit
+      balance too low" error mid-conversation: `brain.test.ts` with a fake process. So
+      are a process dying mid-turn (an error notice, the next message re-spawns and
+      resumes) and a stop.
+    - Not tried in the app yet.
+  - **Verified:** vitest 659 (7 new), tsc and eslint clean, cargo tests 286 (7 new: the
+    MCP handshake and token, the brain's arguments and forwarding, the API price of a
+    turn, the rate-limit windows, the saved spend).
 
 #### Step M4 — Permission mode at launch
 
@@ -6259,7 +6328,7 @@ T2 goes live after the replay check in its done-when (the past week's prompts th
 | W6 | Screen and keys: Duck's hands on the terminal | ☑ |
 | M1 | Model per Claude Code session | ☑ |
 | M2 | Effort routing, Haiku workers, budget-aware degrade | ☑ (not tried live yet) |
-| M3 | Subscription brain: headless Claude Code as the fallback main thread | ☐ |
+| M3 | Subscription brain: headless Claude Code as the fallback main thread | ☑ (not tried in the app yet) |
 | M4 | Permission mode at launch | ☑ |
 | D1 | Worker sessions: workspace, brief, result contract | ☑ |
 | D2 | Offload routing, subscription-limit awareness, Duck as the worker's user | ☑ |

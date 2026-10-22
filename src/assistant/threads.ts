@@ -51,6 +51,9 @@ export interface PendingBatch {
   id: string;
   threadId: string;
   calls: BatchCall[];
+  /** One call of the subscription brain's (step M3), which heard it's waiting:
+   *  its answer goes back as a Workbench event, not as the turn's next request. */
+  brain?: boolean;
 }
 
 /** The persistence the store needs; the IPC commands in the app, fakes in tests. */

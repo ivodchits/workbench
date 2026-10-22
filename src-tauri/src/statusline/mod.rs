@@ -102,6 +102,22 @@ impl RateLimits {
         }
     }
 
+    fn from_rate_limit_info(info: &Value) -> Option<Self> {
+        let windows = info.get("unifiedWindows")?;
+        let window = |k: &str| {
+            let w = windows.get(k)?;
+            Some(RateWindow {
+                used_percentage: w.get("utilization").and_then(Value::as_f64)? * 100.0,
+                resets_at: w.get("resetsAt").and_then(Value::as_i64).unwrap_or(0),
+            })
+        };
+        Some(Self {
+            five_hour: window("five_hour"),
+            seven_day: window("seven_day"),
+            received_at: now(),
+        })
+    }
+
     fn is_empty(&self) -> bool {
         self.five_hour.is_none() && self.seven_day.is_none()
     }
@@ -152,7 +168,20 @@ pub fn ingest(app: &AppHandle, body: &[u8]) {
     let Some(rl) = v.get("rate_limits") else {
         return;
     };
-    let limits = RateLimits::parse(rl);
+    store(app, RateLimits::parse(rl));
+}
+
+/// Fold in the `rate_limit_info` of a headless `claude -p`'s `rate_limit_event`
+/// (Duck's subscription brain, step M3): the same windows, as fractions
+/// (`unifiedWindows.five_hour.utilization` 0.01 is the statusline's 1%).
+pub fn ingest_rate_limit_info(app: &AppHandle, info: &Value) {
+    if let Some(limits) = RateLimits::from_rate_limit_info(info) {
+        store(app, limits);
+    }
+}
+
+/// Keep `limits` as the snapshot, persist it and tell the frontend.
+fn store(app: &AppHandle, limits: RateLimits) {
     if limits.is_empty() {
         return;
     }
@@ -433,6 +462,23 @@ function readGitHead(dir) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A headless `claude -p`'s rate-limit windows read as the statusline's (M3).
+    #[test]
+    fn rate_limit_info_reads_as_percentages() {
+        let info = serde_json::json!({
+            "status": "allowed",
+            "unifiedWindows": {
+                "five_hour": { "utilization": 0.01, "resetsAt": 1792712400 },
+                "seven_day": { "utilization": 0.75, "resetsAt": 1793289600 }
+            }
+        });
+        let l = RateLimits::from_rate_limit_info(&info).unwrap();
+        assert!((l.five_hour.as_ref().unwrap().used_percentage - 1.0).abs() < 1e-9);
+        assert_eq!(l.seven_day.as_ref().unwrap().resets_at, 1793289600);
+        assert!(RateLimits::from_rate_limit_info(&serde_json::json!({})).is_none());
+        assert!(RateLimits::from_rate_limit_info(&serde_json::json!({ "unifiedWindows": {} })).unwrap().is_empty());
+    }
 
     /// Both rolling windows parse, carrying percentage + reset epoch.
     #[test]

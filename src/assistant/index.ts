@@ -35,6 +35,7 @@ import { listMonitors, saveScreenshot, screenshot } from "../ipc/screen";
 import { badgeText, createAutopilot, ipcAutopilotBackend, type AutopilotManager } from "./autopilot";
 import { errorMessage, getClient, oneShot, structured } from "./client";
 import { createEngine, eventText, type Engine } from "./engine";
+import { createBrainHost } from "./brain/subscription";
 import { createPolicy } from "./policy";
 import { ttsRender, ttsWarm } from "../ipc/tts";
 import { ipcLink, startRemoteBridge, type RemoteBridge } from "./remoteBridge";
@@ -584,6 +585,8 @@ export function initAssistant(): Promise<void> {
       gate: createPolicy({ settings: settings.get, trust, messages: s.loaded }),
       settings: settings.get,
       degraded: () => localPort.spend().then((x) => x.softReached),
+      brain: createBrainHost(() => workspacePrepare(settings.get().workspace)),
+      limits: () => localPort.usageLimits(),
       stream: async (params, opts) =>
         (await getClient()).beta.messages.stream(params, opts),
       nameThread: (text) => oneShot("title", text.slice(0, 2000)),

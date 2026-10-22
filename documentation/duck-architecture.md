@@ -5,8 +5,8 @@ behind each decision are in `assistant-plan.md`. This file describes the code, a
 Duck step updates it as part of its Done when. Duck's self-development sessions (L3)
 read it first.
 
-Last updated: step W4 (2026-10-22). Since W5 it also covers W6,
-D2, D4, P1, P2, M2, A5, A6, A7, R1, R2, V1 to V5, X1 and the morning routine.
+Last updated: step M3 (2026-10-22). Since W5 it also covers W6,
+D2, D4, P1, P2, M2, A5, A6, A7, W4, R1, R2, V1 to V5, X1 and the morning routine.
 
 ## The shape
 
@@ -16,8 +16,14 @@ D2, D4, P1, P2, M2, A5, A6, A7, R1, R2, V1 to V5, X1 and the morning routine.
   phone R1)                    tools/: registry + tools
                                threads.ts ──▶ assistant_* commands ──▶ duck.db
                                port.ts ──▶ port.local.ts ──▶ Workbench stores
+                               brain/ ──▶ brain_* commands ──▶ claude -p on the subscription (M3)
+                                  ▲                                │ tools/call
+                                  └── brain-tool-call ◀── /duck/mcp ◀┘
 ```
 
+- **Two brains.** A turn runs on the API (the engine's own loop) or, when the API credits
+  run low, on the subscription brain: a headless Claude Code per thread whose only tools
+  are Duck's, served over MCP and run by the same engine (step M3).
 - **The engine runs in TypeScript, in the main window**, because the app's live state and
   actions are there. Rust holds what must stay out of JavaScript: the API key, the proxy,
   spend accounting, and storage.
@@ -77,6 +83,8 @@ D2, D4, P1, P2, M2, A5, A6, A7, R1, R2, V1 to V5, X1 and the morning routine.
 | `tools/screenshot.ts` | V3: `screenshot` (downscaled PNG as image blocks, with the monitor list) and `save_screenshot`. |
 | `tools/readAloud.ts` | V3: `read_aloud` resolves a source (a session's reply, a note, a summary, text) and hands it to the reader in `verbatim`, `narrate` or `summary` mode. |
 | `tools/quiet.ts` | V5: `set_quiet`, Do Not Disturb and the Speak switch by voice or text. |
+| `brain/policy.ts` | Which brain answers a turn (M3): `pickBackend` over the `brainPolicy` setting (`auto`, `api`, `subscription`), the API's soft limit, a "credit balance is too low" this month (`creditsGone`), and the subscription's windows (both under 70% / 80%, `SUBSCRIPTION_LIMITS`; no reading counts as room). `switchCard` words the card of a switch. |
+| `brain/subscription.ts` | The subscription brain's engine side (M3): `BrainHost` (`createBrainHost` over `ipc/brain.ts`), `BRAIN_PROMPT` (the system prompt plus what's different inside Claude Code), `mcpTools` (the registry's own definitions, so the two paths never drift), `toMcpResult`, `storedBlocks` / `storedResults` (a reply kept as API messages: no thinking, tool names without `mcp__duck__`, source `brain`), and the handoff: `brainTurn` puts what the session hasn't seen in front of your message (all of the thread for a new session, the compaction's summary for what it covers, the core memory; the turns since its last reply for a running or resumed one), `lastBrainSeq`, `unanswered`. `ASKED` is what a call parked on a card returns. |
 | `core.ts` | Core memory (W4): `memory/core.md` in the workspace, four sections (`CORE_SECTIONS`: About you, Preferences, Standing instructions, Names & nicknames) of one-line bullets. `addFact` / `removeFact` (the fact named, else the one fact containing the words; several is ambiguous and removes nothing), `coreText` (the `<core_memory>` block, null without facts; it says a standing instruction never counts as `grantedBy`), `createCoreHost` over `assistant_core_read` / `assistant_core_write`. Capped at `CORE_MAX_CHARS` (8000, ~2k tokens). |
 | `tools/memory.ts` | W4: `remember_core(section, fact)` and `forget(fact)`, both reversible and loaded (not deferred). Each edit is made on the file as read and written over that text; a save of yours in between makes it read again and redo the edit once. Each leaves a `memory` chip with the diff and an undo. |
 | `tools/testConfirm.ts` | `test_confirm`, a consequential tool that does nothing, for trying the confirmation card. Registered in dev builds only. |
@@ -104,11 +112,13 @@ prompt's safety rules cover them.
 | `key.rs` | The API key in Windows Credential Manager (`duck/anthropic-api-key`, `duck-dev/…` for debug builds), and the Google credentials (`google.rs`). |
 | `proxy.rs` | `/anthropic/{*path}` on the hook server: token check, CORS for the app's origins, endpoint allow-list, budget check, key swap, streaming forward, usage tap. |
 | `usage.rs` | The price table, the stream meter, and ledger rows. |
-| `budget.rs` | Limits, month-to-date spend, and the cap rule (at the cap only Haiku with a purpose other than `thread` passes). |
+| `budget.rs` | Limits, month-to-date spend, and the cap rule (at the cap only Haiku with a purpose other than `thread` passes). `saved_usd`: this month's subscription-brain turns at their API price (`record_saved`, M3), never part of the spend. |
 | `threads.rs` | Threads, append-only messages and parked batches in `duck.db`; `delete` removes a thread with its messages and batches in one transaction. |
 | `summaries.rs` | The last summary per session (W3), JSON in `meta` under `assistant_summary:<instance>`. |
 | `workspace.rs` | Duck's workspace (`prepare`, its `CLAUDE.md`, a `.gitignore` line for `data/`), task folders (`new_task`, `result`, both only under `tasks/`), the workers' registration (`register`: a settings file with the allow list in app data, and a `worker_sessions` row in the main DB) and `launch_args` for `pty_spawn`; the `assistant_tasks` records; the core memory (W4: `read_core`, and `write_core`, which refuses with "stale:" unless the file is still the text it was read as). |
 | `headless.rs` | Headless workers (D4): a worker session as `claude -p` over stream-json both ways. Prompts and interrupts are messages, permission requests are answered as data (racing the `PermissionRequest` hook, the first answer winning); otherwise it is an ordinary session to the status engine, summaries, the trust watcher and the transcript view. |
+| `subscription_brain.rs` | The subscription brain (M3): `brain_spawn` starts thread `t`'s `claude -p` (stream-json both ways, `--include-partial-messages`, `--model sonnet --effort medium`, `--tools ""`, `--strict-mcp-config` with only Duck's server and a per-process bearer token, `--permission-mode dontAsk --allowedTools mcp__duck`, `--setting-sources ""`, Duck's prompt by `--system-prompt-file`) in `<workspace>/brain`, with no `ANTHROPIC_*` or `WORKBENCH_INSTANCE_ID`, no CLAUDE.md, no auto-memory and no deferred tools. Session id = thread id, kept on disk, so a later spawn `--resume`s it. Emits `brain-event` (text deltas, `assistant` / `user` messages, `result`, init) and `brain-exited`; `rate_limit_event` goes to the usage meter (`statusline::ingest_rate_limit_info`), each `result` into the subscription ledger at its API price. `brain_send`, `brain_interrupt`, `brain_kill`, `brain_tool_result`; `kill_all` on exit. |
+| `mcp_server.rs` | Duck's MCP server (M3) at `/duck/mcp` on the hook server, JSON-RPC by hand: `initialize`, `ping`, `tools/list` (the tools the brain was started with), `tools/call` (a `brain-tool-call` event to the webview, awaited up to 10 min). The bearer token picks the thread; anything else is 401, and a GET (the optional event stream) is 405. |
 | `autopilot.rs` | Autopilot records (P1): one JSON row per session in `assistant_autopilots`, with its capped step log. |
 | `replay.rs` | `scan(dir, days, max)`: the tool calls in the transcripts touched in the window, each with its outcome (`ran`, `rejected`, `denied`, `error`, `none`), the conversation's first prompt and the latest one before it, and the permission mode. Behind `assistant_replay_calls`, on a worker thread. |
 | `trust.rs` | Rules, project modes, floor-off, the seeded flag, the kill switch (`meta` `assistant_trust_paused`), sessions' mandates (`meta` `assistant_mandate:<instance>`) and the decision log. `set_trust_paused` in `mod.rs` writes the flag, ticks the tray item (`attention::set_trust_check`) and emits `assistant-trust-paused`. |
@@ -126,7 +136,7 @@ prompt's safety rules cover them.
 | `DuckButton.tsx` | The title-bar button ("D.U.C.K.", the icon beside it): toggles the drawer, the acronym tooltip, a confirmation-count badge, an amber/red tint past the soft limit/cap, ⏸ while trust is paused. |
 | `TrustViews.tsx` | `TrustPanel` (kill switch, rules, project modes, the floor with a typed confirmation) and `DecisionsPanel` (the log with make-a-rule / always-ask, the rule from `suggestRule`; and the replay of the past week with its report). Opened from the settings popover; they take the thread's place. |
 | `Drawer.tsx` | The drawer: header (thread list, new, the trust pill that is the kill switch, settings, close), thread view (markdown replies, tool chips, queued bubbles), confirmation cards, spend line, composer (Enter / Shift+Enter / Esc, "think hard" = effort `high` for one message). Always mounted and only hidden, so the thread and scroll survive closing. |
-| `DrawerSettings.tsx` | Queue-or-interrupt, and "start at login, minimized to the tray" (`@tauri-apps/plugin-autostart`; disabled in dev builds); the workers' settings, with "Edit core.md" (W4). |
+| `DrawerSettings.tsx` | Queue-or-interrupt, and "start at login, minimized to the tray" (`@tauri-apps/plugin-autostart`; disabled in dev builds); the workers' settings, with "Edit core.md" (W4) and which brain Duck answers on (M3). |
 | `openCore.ts` | `openCoreMemory(workspace)` (W4): prepares the workspace, makes `core.md` with its empty sections if missing, and opens it in the "Duck" project's editor. |
 | `TasksView.tsx` | The Tasks view (D2): worker tasks newest first, with headline, cost for an API worker, and ways on (open `result.md`, save to notes, open the console, go to the thread). |
 | `OverviewView.tsx` | Every thread at a glance (A5): what each does, its news since you looked, its autopilots and tasks; no model call. |
@@ -188,6 +198,8 @@ prompt's safety rules cover them.
 ### `duck.db` tables
 
 - `assistant_usage`: one row per API call.
+- `assistant_subscription_usage (ts, model, api_usd)`: one row per subscription-brain turn
+  (M3), priced as the API would have; the spend line's "saved".
 - `meta`: budget limits.
 - `assistant_threads (id, title, mode, created, updated)`.
 - `assistant_messages (thread_id, seq, ts, role, content JSON, source)`: append-only; a
@@ -283,6 +295,28 @@ leaves the block out. After a compaction, `toApiMessages` puts the dropped block
 in front of the summary (`droppedCore`). In the drawer, settings → "Edit core.md" opens
 the file in the workspace's "Duck" project editor (`openCore.ts`), making it first.
 
+**The subscription brain** (step M3): each turn asks `brain/policy.ts` which brain
+answers. On `subscription`, `brainLoop` replaces `loop`: the opening is stored as
+usual, the thread's brain process starts if it isn't running (`BrainHost.spawn`, with
+`mcpTools(registry.apiTools)`; at most 3 run, the one idle longest is stopped for a
+fourth, and each stops after 30 minutes idle), and `brainTurn`'s text goes to it.
+`brainRun` hears it until its `result`: text deltas are emitted, replies stored per
+message id (`storedBlocks`, source `brain`), tool results stored as the brain's loop
+adds them, and a call left without a result gets a "stopped" one, so the thread stays
+a valid history for the API. A stop interrupts it and keeps what was said; a process
+that ends mid-turn is an error notice, and the next message spawns it again (resuming
+its session). Its tool calls come back as `brain-tool-call` (`brainCall`): `judge`
+(the same validation, `prepare` and gate as `runBatch`) then `execute`; an `ask`
+parks that one call as its own batch (`brain: true`), and the brain hears `ASKED` at
+once. Confirming one runs it in `resumeBrain` and sends the outcome to the thread as a
+Workbench event, which starts the brain's next turn. The card: a turn on the other
+brain than the thread's last posts a `budget` notice (`switchCard`); back on the API
+on Haiku, it says so instead of `HAIKU_CARD`. An API request that fails with "credit
+balance is too low" (before any text) returns `"credits"` from `loop`; the engine
+remembers it for the month and, if the policy allows, carries the same turn on to the
+brain (`creditsLoop`), your message kept. `effort` is `medium` for the brain's whole
+process; the drawer's spend line shows a "subscription" chip and the month's "saved".
+
 **Deleting a thread** (`deleteThread`): refused while a reply runs (stop it first). A
 parked thread is deleted with its batch, so its confirmations vanish; its queue is
 dropped. Every surface gets `threadDeleted`. Spend rows are kept.
@@ -339,5 +373,8 @@ Both rules are in `prompt.ts`.
 - Duck answering Claude Code questions and plans, and promoting rules into Claude Code's
   own settings (T3).
 - Git writes from Duck (left out of W2 on purpose).
+- The subscription brain in the app: built and tested with a fake process, and the same
+  flags tried by hand against a stand-in MCP server (M3's As built), not yet through
+  Workbench itself.
 - Running the morning routine's Google half against real Google: sign-in, the copy and the
   cell writes are built and tested with fakes only.

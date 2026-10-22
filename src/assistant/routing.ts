@@ -10,6 +10,7 @@
 // that one message on Sonnet. It goes out as a per-message effort system message,
 // so the cache stays; a model change re-reads the thread once on the other model.
 
+import type { Backend } from "./brain/policy";
 import type { Effort, Source } from "./protocol";
 import { MAIN_MODEL, PRIMITIVE_MODEL } from "./prompt";
 
@@ -60,6 +61,8 @@ export function pickEffort(text: string, mode: string | undefined, source: Sourc
 export interface Route {
   brain: Brain;
   effort: Effort;
+  /** The subscription brain answers instead (step M3); the API when absent. */
+  backend?: Backend;
 }
 
 /**

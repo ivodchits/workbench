@@ -7,6 +7,8 @@
 //! task folders, launch flags and task records ([`workspace`]). Step D4: headless
 //! workers over stream-json ([`headless`]). Step P1: plan autopilot records
 //! ([`autopilot`]). Step X1: a client for external MCP servers ([`mcp_client`]).
+//! Step M3: the subscription brain ([`subscription_brain`]) and the MCP server
+//! that serves it Duck's tools ([`mcp_server`]).
 //! The morning routine: Google access ([`google`]) and the invoice sheet ([`sheets`]).
 //!
 //! The webview never holds the key. It asks [`assistant_proxy_info`] for the proxy's
@@ -21,10 +23,12 @@ pub mod google;
 pub mod headless;
 mod key;
 pub mod mcp_client;
+mod mcp_server;
 mod proxy;
 mod summaries;
 pub mod replay;
 pub mod sheets;
+pub mod subscription_brain;
 mod threads;
 mod trust;
 mod usage;
@@ -79,8 +83,9 @@ pub fn init(app: &AppHandle, data_dir: &std::path::Path) -> Result<(), String> {
 
 /// The proxy routes, for the hook server to merge; `None` if [`init`] failed.
 pub fn router(app: &AppHandle) -> Option<Router> {
+    // The subscription brain's MCP server (step M3) shares it.
     app.try_state::<Arc<Assistant>>()
-        .map(|ctx| proxy::router(ctx.inner().clone()))
+        .map(|ctx| proxy::router(ctx.inner().clone()).merge(mcp_server::router(app.clone())))
 }
 
 fn now_ms() -> i64 {
