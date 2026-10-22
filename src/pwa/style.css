@@ -397,6 +397,28 @@ body .wb-tx-open-plan { display: none; }
 #duck-thread-list .name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 #duck-thread-list .when, .duck-decision .when { color: var(--dim); font-size: 12px; white-space: nowrap; }
 #duck-pause { color: var(--needs); border-color: var(--needs); font-weight: 600; }
+
+/* Duck from the home screen (assistant plan R3). */
+#duck-tap { align-items: center; justify-content: center; gap: 14px; }
+#duck-tap-btn {
+  width: min(64vw, 260px); height: min(64vw, 260px); border-radius: 50%;
+  font-size: 22px; font-weight: 700; color: #ffd84a; border: 2px solid #ffd84a; background: transparent;
+}
+#duck-tap-btn:disabled { color: var(--dim); border-color: var(--line); }
+#duck-tap-skip { background: transparent; border-color: transparent; color: var(--dim); }
+#duck-tap p { text-align: center; }
+#duck-install { display: flex; gap: 8px; align-items: center; margin: 0 2px 8px; font-size: 13px; color: var(--dim); }
+#duck-install span { flex: 1; }
+#duck-install button { min-height: 32px; padding: 2px 10px; }
+#duck-install-go { color: var(--accent); }
+#duck-install.hidden, #duck-share.hidden, #duck-home-install.hidden { display: none; }
+#duck-share { border: 1px solid var(--accent); border-radius: 8px; padding: 8px 10px; margin-bottom: 8px; font-size: 13px; }
+#duck-share .head { display: flex; align-items: center; justify-content: space-between; }
+#duck-share .head button { min-height: 30px; padding: 2px 10px; background: transparent; }
+#duck-share-text { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 20vh; overflow-y: auto; margin: 4px 0 6px; }
+#duck-share .bar { display: flex; gap: 6px; flex-wrap: wrap; }
+#duck-share .bar button { min-height: 36px; padding: 4px 10px; color: var(--accent); border-color: var(--accent); }
+#duck-home-install { color: var(--accent); border-color: var(--accent); }
 #duck-pause.hidden, #duck-older.hidden { display: none; }
 .duck-decision { border-bottom: 1px solid var(--line); padding: 6px 0; font-size: 13px; overflow-wrap: anywhere; }
 .duck-decision .head { display: flex; gap: 8px; align-items: baseline; }

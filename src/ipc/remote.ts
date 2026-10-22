@@ -67,6 +67,8 @@ export interface RemoteDevice {
   approved: boolean;
   /** Epoch seconds it stops working: unless used (approved) or approved (waiting). */
   expiresAt: number;
+  /** It paired with a device key (assistant R3): its token alone opens nothing. */
+  bound: boolean;
 }
 
 /** One kind of auth failure from one address (step R2). */

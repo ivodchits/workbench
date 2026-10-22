@@ -1,10 +1,15 @@
 //! The pure parts of remote auth (step R2): pairing codes and the gate that rate-limits
 //! and locks out `/pair`, constant-time comparison, device expiry, the `Origin` check,
-//! and the auth-failure log the Remote Access menu shows. No I/O and no clock reads —
-//! callers pass `now` — so every rule here is unit-tested.
+//! and the auth-failure log the Remote Access menu shows. Step R3 adds the device key:
+//! its proof, the challenges it signs and the sessions a proof buys. No I/O and no
+//! clock reads — callers pass `now` — so every rule here is unit-tested.
 
 use std::collections::VecDeque;
 
+use base64::engine::general_purpose::URL_SAFE_NO_PAD as B64;
+use base64::Engine;
+use p256::ecdsa::signature::Verifier;
+use p256::ecdsa::{Signature, VerifyingKey};
 use serde::Serialize;
 
 /// How long a freshly minted pairing code stays valid (seconds). A code is shown on
@@ -199,6 +204,145 @@ pub fn origin_ok(origin: Option<&str>, host: Option<&str>) -> bool {
         .strip_prefix("http://")
         .or_else(|| origin.strip_prefix("https://"));
     matches!(rest, Some(h) if h.eq_ignore_ascii_case(host))
+}
+
+// --- the device key (step R3) ----------------------------------------------------
+//
+// A phone that pairs over https makes a P-256 key pair in the browser (WebCrypto, the
+// private half not extractable, kept in IndexedDB) and sends the public half with the
+// pairing code. From then on its token alone opens nothing: once per visit it signs a
+// fresh challenge and gets a session, a second token that lives only in the page's
+// memory and here. A token copied out of the phone's storage is useless without the
+// key, which can't be copied out at all.
+
+/// What a device signs: this, then the challenge.
+pub const PROOF_PREFIX: &str = "workbench-remote-session:";
+
+/// How long a challenge can be answered.
+pub const CHALLENGE_TTL_SECS: u64 = 60;
+/// Challenges outstanding at once; a new one drops the oldest.
+pub const CHALLENGES_MAX: usize = 32;
+
+/// A session ends after this long unused, and after [`SESSION_MAX_SECS`] in any case.
+pub const SESSION_IDLE_SECS: u64 = 4 * 3600;
+pub const SESSION_MAX_SECS: u64 = 24 * 3600;
+/// Sessions kept per device; a new one drops its oldest (a phone with tabs open).
+pub const SESSIONS_PER_DEVICE: usize = 4;
+
+/// 256 bits from the OS random source (two v4 UUIDs, hyphen-free).
+pub fn random_token() -> String {
+    format!(
+        "{}{}",
+        uuid::Uuid::new_v4().simple(),
+        uuid::Uuid::new_v4().simple()
+    )
+}
+
+/// A public key as the phone sends it (base64url of the 65-byte uncompressed point,
+/// WebCrypto's `raw` export), or None if it isn't a P-256 point.
+pub fn parse_public_key(b64: &str) -> Option<VerifyingKey> {
+    let bytes = B64.decode(b64.trim()).ok()?;
+    VerifyingKey::from_sec1_bytes(&bytes).ok()
+}
+
+/// Whether `signature` (base64url of WebCrypto's 64-byte `r‖s`) signs
+/// [`PROOF_PREFIX`] + `challenge` under `public_key`.
+pub fn proof_ok(public_key: &str, challenge: &str, signature: &str) -> bool {
+    let Some(key) = parse_public_key(public_key) else {
+        return false;
+    };
+    let Ok(bytes) = B64.decode(signature.trim()) else {
+        return false;
+    };
+    let Ok(sig) = Signature::from_slice(&bytes) else {
+        return false;
+    };
+    key.verify(format!("{PROOF_PREFIX}{challenge}").as_bytes(), &sig).is_ok()
+}
+
+/// The challenges handed out and not yet answered. Each answers once.
+#[derive(Default)]
+pub struct Challenges {
+    live: VecDeque<(String, u64)>,
+}
+
+impl Challenges {
+    pub fn issue(&mut self, now: u64) -> String {
+        self.live.retain(|(_, at)| at + CHALLENGE_TTL_SECS > now);
+        while self.live.len() >= CHALLENGES_MAX {
+            self.live.pop_front();
+        }
+        let nonce = random_token();
+        self.live.push_back((nonce.clone(), now));
+        nonce
+    }
+
+    /// Use up `nonce`: true if it was handed out and is still fresh.
+    pub fn take(&mut self, nonce: &str, now: u64) -> bool {
+        let Some(i) = self.live.iter().position(|(n, _)| ct_eq(n.as_bytes(), nonce.as_bytes())) else {
+            return false;
+        };
+        let (_, at) = self.live.remove(i).expect("found above");
+        at + CHALLENGE_TTL_SECS > now
+    }
+}
+
+struct Session {
+    token: String,
+    device: String,
+    started: u64,
+    used: u64,
+}
+
+/// The sessions device keys have bought. In memory only: a restart of the desktop
+/// asks every phone for a fresh proof.
+#[derive(Default)]
+pub struct Sessions {
+    live: Vec<Session>,
+}
+
+impl Sessions {
+    /// A new session for `device`.
+    pub fn start(&mut self, device: &str, now: u64) -> String {
+        self.expire(now);
+        let mine: Vec<usize> = (0..self.live.len()).filter(|&i| self.live[i].device == device).collect();
+        if mine.len() >= SESSIONS_PER_DEVICE {
+            let oldest = mine.into_iter().min_by_key(|&i| self.live[i].used).expect("not empty");
+            self.live.remove(oldest);
+        }
+        let token = random_token();
+        self.live.push(Session { token: token.clone(), device: device.to_string(), started: now, used: now });
+        token
+    }
+
+    /// The device behind session `token`, if it is live; using it keeps it so. Every
+    /// session is compared in constant time.
+    pub fn device(&mut self, token: &str, now: u64) -> Option<String> {
+        self.expire(now);
+        let mut hit = None;
+        for (i, s) in self.live.iter().enumerate() {
+            if ct_eq(s.token.as_bytes(), token.as_bytes()) {
+                hit = Some(i);
+            }
+        }
+        let s = &mut self.live[hit?];
+        s.used = now;
+        Some(s.device.clone())
+    }
+
+    /// End every session of `device` (revoked, removed).
+    pub fn end_device(&mut self, device: &str) {
+        self.live.retain(|s| s.device != device);
+    }
+
+    pub fn clear(&mut self) {
+        self.live.clear();
+    }
+
+    fn expire(&mut self, now: u64) {
+        self.live
+            .retain(|s| s.used + SESSION_IDLE_SECS > now && s.started + SESSION_MAX_SECS > now);
+    }
 }
 
 /// One kind of failure from one address, with how often it happened.
@@ -406,5 +550,85 @@ mod tests {
             log.record(&n.to_string(), "x", 4);
         }
         assert_eq!(log.entries().len(), AUTH_LOG_KEEP);
+    }
+
+    /// A key as the phone makes it, and its public half as the phone sends it.
+    fn phone_key() -> (p256::ecdsa::SigningKey, String) {
+        let key = p256::ecdsa::SigningKey::random(&mut rand_core::OsRng);
+        let public = B64.encode(key.verifying_key().to_encoded_point(false).as_bytes());
+        (key, public)
+    }
+
+    fn sign(key: &p256::ecdsa::SigningKey, challenge: &str) -> String {
+        use p256::ecdsa::signature::Signer;
+        let sig: Signature = key.sign(format!("{PROOF_PREFIX}{challenge}").as_bytes());
+        B64.encode(sig.to_bytes())
+    }
+
+    #[test]
+    fn a_proof_is_the_challenge_signed_with_the_paired_key() {
+        let (key, public) = phone_key();
+        assert!(parse_public_key(&public).is_some());
+        assert!(parse_public_key("not a key").is_none());
+        assert!(parse_public_key(&B64.encode([4u8; 65])).is_none(), "not on the curve");
+        assert!(proof_ok(&public, "abc", &sign(&key, "abc")));
+        assert!(!proof_ok(&public, "abd", &sign(&key, "abc")), "another challenge");
+        let (other, _) = phone_key();
+        assert!(!proof_ok(&public, "abc", &sign(&other, "abc")), "another key");
+        assert!(!proof_ok(&public, "abc", "AAAA"));
+        assert!(!proof_ok("", "abc", &sign(&key, "abc")));
+    }
+
+    /// Made by WebCrypto (Node's, as the phone's browser does it: a `raw` public key
+    /// and a 64-byte signature), so the two sides read each other.
+    #[test]
+    fn reads_what_webcrypto_makes() {
+        let public = "BOKSDd84-Gul-XvILV1fRtkiWtxOnRwgaLqpEi4-aBrK_rdSCJA3W02a4VdxMeIyKCamPXDNjnEtUds-Yd_lw4c";
+        let sig = "pfnQUJ1XbHQAXHDI4p-OLPw03Gg3VZASB__jQn13DZdnp1iRQGvoDesenQzppFk6g4GLMNIY6QO60TcBrx2HMA";
+        assert!(proof_ok(public, "fixture-challenge", sig));
+        assert!(!proof_ok(public, "fixture-challengf", sig));
+    }
+
+    #[test]
+    fn a_challenge_answers_once_and_soon() {
+        let mut c = Challenges::default();
+        let a = c.issue(100);
+        assert!(!c.take("made up", 100));
+        assert!(c.take(&a, 100 + CHALLENGE_TTL_SECS - 1));
+        assert!(!c.take(&a, 101), "used up");
+        let b = c.issue(200);
+        assert!(!c.take(&b, 200 + CHALLENGE_TTL_SECS), "too late");
+        let first = c.issue(300);
+        for _ in 0..CHALLENGES_MAX {
+            c.issue(300);
+        }
+        assert!(!c.take(&first, 300), "a flood pushes the oldest out");
+    }
+
+    #[test]
+    fn sessions_last_while_used_and_a_day_at_most() {
+        let mut s = Sessions::default();
+        let t = s.start("phone", 0);
+        assert_eq!(s.device(&t, 10).as_deref(), Some("phone"));
+        assert_eq!(s.device("other", 10), None);
+        // Used every few hours, it lasts the day, and no longer.
+        let mut at = 0;
+        while at + SESSION_IDLE_SECS - 60 < SESSION_MAX_SECS {
+            at += SESSION_IDLE_SECS - 60;
+            assert!(s.device(&t, at).is_some(), "at {at}");
+        }
+        assert_eq!(s.device(&t, SESSION_MAX_SECS), None);
+        // Unused, it ends.
+        let u = s.start("phone", 0);
+        assert_eq!(s.device(&u, SESSION_IDLE_SECS), None);
+        // A device's oldest session goes when it has too many; revoking ends them all.
+        let first = s.start("phone", 1);
+        let rest: Vec<String> = (0..SESSIONS_PER_DEVICE).map(|i| s.start("phone", 2 + i as u64)).collect();
+        let tablet = s.start("tablet", 9);
+        assert_eq!(s.device(&first, 20), None);
+        assert!(rest.iter().all(|t| s.device(t, 20).is_some()));
+        s.end_device("phone");
+        assert!(rest.iter().all(|t| s.device(t, 21).is_none()));
+        assert_eq!(s.device(&tablet, 21).as_deref(), Some("tablet"));
     }
 }

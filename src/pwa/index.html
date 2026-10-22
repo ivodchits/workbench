@@ -152,6 +152,14 @@
       </div>
       <canvas id="duck-avatar" aria-hidden="true"></canvas>
 
+      <!-- "Talk to Duck" from the home screen (assistant plan R3): the mic needs a tap
+           before it can start, so the shortcut opens on one big button. -->
+      <div id="duck-tap" class="hidden duck-panel">
+        <button id="duck-tap-btn" type="button">tap to talk</button>
+        <p id="duck-tap-note" class="muted"></p>
+        <button id="duck-tap-skip" type="button">or type instead</button>
+      </div>
+
       <div id="duck-chat">
         <div id="duck-scroll">
           <div id="duck-list"></div>
@@ -190,6 +198,14 @@
           <button type="button" data-dnd="on">on</button>
         </div>
         <div id="duck-dnd-note" class="muted"></div>
+        <div class="muted">the app opens on</div>
+        <div class="duck-seg">
+          <button type="button" data-pref="openOn=dashboard">the dashboard</button>
+          <button type="button" data-pref="openOn=duck">Duck</button>
+        </div>
+        <div class="muted">on the home screen</div>
+        <p id="duck-home-note" class="muted"></p>
+        <button id="duck-home-install" class="hidden" type="button">install the app</button>
         <div class="muted">speak replies</div>
         <div class="duck-seg">
           <button type="button" data-pref="speak=voice">to what I say</button>
@@ -232,6 +248,20 @@
           <button type="button" data-reader="toggle" aria-label="pause">❚❚</button>
           <button type="button" data-reader="next" aria-label="next section">⏭</button>
           <button type="button" data-reader="stop" aria-label="stop reading">■</button>
+        </div>
+        <div id="duck-install" class="hidden">
+          <span>Put Duck on your home screen: one tap to talk, and share pages to it.</span>
+          <button id="duck-install-go" type="button">how</button>
+          <button id="duck-install-close" type="button" aria-label="dismiss">✕</button>
+        </div>
+        <!-- What another app shared (R3), waiting to go with a message. -->
+        <div id="duck-share" class="hidden">
+          <div class="head">
+            <span class="muted">shared with Duck</span>
+            <button id="duck-share-drop" type="button" aria-label="drop the share">✕</button>
+          </div>
+          <div id="duck-share-text"></div>
+          <div id="duck-share-asks" class="bar"></div>
         </div>
         <div id="duck-voice" class="hidden" aria-live="polite"></div>
         <div id="duck-composer">

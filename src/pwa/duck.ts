@@ -30,6 +30,12 @@
 //   words for yours. So conversation mode speaks in the desktop's voice. "echo
 //   path" picks how the voice leaves the page (`duckSpeech.ts`), for measuring
 //   which one the browser's own echo cancellation helps with.
+// - R3: the installed app's shortcuts and shares open Duck (`launchDuck`, from
+//   `launch.ts`): "Talk to Duck" on a big tap-to-talk button (the mic needs a tap),
+//   "Ask Duck" on the composer, "New task" on a new thread, "What needs me?" asked
+//   at once, and a share on a new thread with the shared item above the composer
+//   (one tap to summarize it, make a task of it or remember it). "the app opens
+//   on" makes Duck the start view, and the settings say how to install the app.
 
 import { langOf, Sentences } from "../assistant/speakable";
 import {
@@ -54,6 +60,7 @@ import { chime, stream, type Streaming } from "./converse";
 import { SpeechQueue } from "./speechQueue";
 import { micAvailable, record, type Recording } from "./mic";
 import { api, ApiError, checkAccess, openSocket } from "./net";
+import { SHARE_ASKS, shareBody, shareLines, shareMessage, STATUS_ASK, takeShare, TASK_LEAD, type Launch } from "./launch";
 
 const RECONNECT_MS = 2000;
 const STICK_PX = 48;
@@ -73,9 +80,13 @@ interface Prefs {
   duck: boolean;
   /** How Duck's voice leaves the page (V7). */
   echoPath: EchoPath;
+  /** What the app shows when it opens plainly (R3). */
+  openOn: "dashboard" | "duck";
 }
 
-const DEFAULT_PREFS: Prefs = { speak: "voice", voice: "desktop", sendNow: true, duck: true, echoPath: "separate" };
+const DEFAULT_PREFS: Prefs = { speak: "voice", voice: "desktop", sendNow: true, duck: true, echoPath: "separate", openOn: "dashboard" };
+/** The "put Duck on your home screen" line was dismissed. */
+const INSTALL_HINT_KEY = "wb-duck-install-hint";
 const LOOK: DuckLook = { ink: "color", chars: "classic", cols: 56, fps: 20 };
 
 const STATE_LABEL: Record<Exclude<TurnState, "idle">, string> = {
@@ -133,7 +144,7 @@ setEchoPath(prefs.echoPath);
 let view: DuckView = emptyView();
 let adopting = false;
 let shown = false;
-let panel: "chat" | "threads" | "decisions" | "settings" = "chat";
+let panel: "chat" | "threads" | "decisions" | "settings" | "tap" = "chat";
 let ws: WebSocket | null = null;
 let retry: ReturnType<typeof setTimeout> | null = null;
 /** The thread a push or a link asked for, opened once the list is in. */
@@ -141,6 +152,15 @@ let wantThread: string | null = null;
 let stopDuck: (() => void) | null = null;
 let stuck = true;
 let deps: { console: (instanceId: string) => void; refused: () => void } = { console: () => {}, refused: () => {} };
+// R3: what a shortcut or a share asked for.
+/** Open on a new thread once the threads are known, not the last one. */
+let fresh = false;
+/** Sent once the threads are known ("What needs me?"). */
+let pendingAsk: string | null = null;
+/** A share waiting to go with a message: the message's part, and what's shown. */
+let shared: { body: string; preview: string } | null = null;
+/** The browser's install prompt, kept for the settings' button. */
+let installPrompt: (Event & { prompt(): Promise<void> }) | null = null;
 
 // Speech: the queue, and the phone's own voice's reply.
 const queue = new SpeechQueue(
@@ -277,7 +297,12 @@ function onFrame(f: RemoteDuckFrame): void {
     })();
     const pick = [wantThread, view.current, saved].find((id) => id && view.threads.some((t) => t.id === id));
     wantThread = null;
-    openThread(pick ?? view.threads[0]?.id ?? null);
+    openThread(fresh ? null : (pick ?? view.threads[0]?.id ?? null));
+    fresh = false;
+    if (pendingAsk) {
+      send(pendingAsk, false);
+      pendingAsk = null;
+    }
   } else if (f.type === "threads" && wantThread && view.threads.some((t) => t.id === wantThread)) {
     openThread(wantThread);
     wantThread = null;
@@ -316,7 +341,8 @@ function openThread(id: string | null): void {
   store(THREAD_KEY, id);
   stuck = true;
   if (id) post({ type: "thread.open", threadId: id });
-  panel = "chat";
+  // The tap-to-talk screen stays until it's tapped.
+  if (panel !== "tap") panel = "chat";
   paint("open");
 }
 
@@ -356,11 +382,20 @@ function send(text: string, voice: boolean, talked: { provisional: boolean } | n
 
 function sendComposer(): void {
   const text = $<HTMLTextAreaElement>("duck-text");
-  if (!text.value.trim() || ws?.readyState !== WebSocket.OPEN) return;
-  send(text.value, dictated);
+  if ((!text.value.trim() && !shared) || ws?.readyState !== WebSocket.OPEN) return;
+  if (shared) sendShare(text.value, dictated);
+  else send(text.value, dictated);
   text.value = "";
   dictated = false;
   fitComposer();
+}
+
+/** Send the waiting share with `ask`. */
+function sendShare(ask: string, voice: boolean): void {
+  if (!shared || ws?.readyState !== WebSocket.OPEN) return;
+  send(shareMessage(ask, shared.body), voice);
+  shared = null;
+  paintShare();
 }
 
 function stopAll(): void {
@@ -608,6 +643,47 @@ function paintConn(text: string, cls = ""): void {
   const c = $("duck-conn");
   c.textContent = text;
   c.className = cls;
+  paintTap();
+}
+
+/** The tap-to-talk screen: the button works once the desktop is there. */
+function paintTap(): void {
+  const live = ws?.readyState === WebSocket.OPEN;
+  const b = $<HTMLButtonElement>("duck-tap-btn");
+  b.disabled = !live || !micAvailable();
+  b.textContent = live ? "tap to talk" : "connecting…";
+  $("duck-tap-note").textContent = micAvailable()
+    ? "Conversation mode: just talk, and Duck answers out loud."
+    : "Conversation mode needs the mic, which this page can't have here (open the https address).";
+}
+
+function paintShare(): void {
+  $("duck-share").classList.toggle("hidden", !shared);
+  $("duck-share-text").textContent = shared?.preview ?? "";
+  $<HTMLTextAreaElement>("duck-text").placeholder = shared ? "or say what to do with it…" : "ask Duck…";
+}
+
+/** Installed: opened from its own icon, not in a browser tab. */
+function installed(): boolean {
+  return matchMedia("(display-mode: standalone)").matches || (navigator as { standalone?: boolean }).standalone === true;
+}
+
+function paintInstall(): void {
+  let dismissed = false;
+  try {
+    dismissed = localStorage.getItem(INSTALL_HINT_KEY) !== null;
+  } catch {
+    // no storage: show it
+  }
+  $("duck-install").classList.toggle("hidden", installed() || dismissed);
+}
+
+function homeNote(): string {
+  if (installed())
+    return "Installed. Long-press its icon for Talk to Duck, Ask Duck, New task and What needs me?, and drag one to the home screen for a one-tap button. Share a page to Workbench to hand it to Duck.";
+  if (!isSecureContext) return "The app installs from the https (public) address, not this one.";
+  if (installPrompt) return "Install the app for its own icon, Duck's shortcuts and sharing to Duck.";
+  return "In the browser's ⋮ menu, choose “Install app” (or “Add to Home screen”). Then long-press the new icon for Duck's shortcuts.";
 }
 
 function scroller(): HTMLElement {
@@ -727,8 +803,9 @@ function paint(why: string, before?: DuckView): void {
   if (!shown) return;
   $("duck-thread").textContent = `${view.threads.find((t) => t.id === view.current)?.title || (view.current ? "a thread" : "new thread")} ▾`;
   paintTrust();
-  for (const p of ["chat", "threads", "decisions", "settings"] as const) $(`duck-${p}`).classList.toggle("hidden", panel !== p);
+  for (const p of ["chat", "threads", "decisions", "settings", "tap"] as const) $(`duck-${p}`).classList.toggle("hidden", panel !== p);
   $("duck-dock").classList.toggle("hidden", panel !== "chat");
+  if (panel === "tap") paintTap();
   if (panel === "threads") paintThreads();
   if (panel === "decisions") paintDecisions();
   if (panel === "settings") paintSettings();
@@ -747,6 +824,8 @@ function paint(why: string, before?: DuckView): void {
     paintSpend();
     paintError();
     paintReader();
+    paintShare();
+    paintInstall();
   }
   paintVoice();
 }
@@ -1091,6 +1170,8 @@ function paintSettings(): void {
     const now = String(prefs[key as keyof Prefs]);
     b.classList.toggle("on", now === value);
   }
+  $("duck-home-note").textContent = homeNote();
+  $("duck-home-install").classList.toggle("hidden", !installPrompt || installed());
 }
 
 function setPrefs(patch: Partial<Prefs>): void {
@@ -1135,6 +1216,52 @@ function closeDuck(): void {
   hush();
   stopAvatar();
   disconnect();
+}
+
+/** Duck is the start view (the "the app opens on" setting). */
+export function duckOnStart(): boolean {
+  return prefs.openOn === "duck";
+}
+
+/** Open Duck as a shortcut or a share asked (R3). */
+export async function launchDuck(launch: Launch): Promise<void> {
+  const composer = $<HTMLTextAreaElement>("duck-text");
+  switch (launch) {
+    case "talk":
+      panel = "tap";
+      openDuck();
+      return;
+    case "chat":
+      openDuck();
+      composer.focus();
+      return;
+    case "task":
+      fresh = true;
+      openDuck();
+      composer.value = TASK_LEAD;
+      fitComposer();
+      composer.focus();
+      return;
+    case "status":
+      pendingAsk = STATUS_ASK;
+      openDuck();
+      return;
+    case "share": {
+      const s = await takeShare();
+      shared = s && shareBody(s) ? { body: shareBody(s), preview: shareLines(s).join("\n") } : null;
+      fresh = shared !== null;
+      openDuck();
+      if (!shared) {
+        view = { ...view, error: "Nothing came with the share, or it was too old." };
+        paint("share");
+      }
+      return;
+    }
+    case "share-lost":
+      openDuck();
+      view = { ...view, error: "The share didn't reach Duck: the app wasn't ready for it. Open the app once, then share again." };
+      paint("share");
+  }
 }
 
 /** The thread a tapped push opened the page on (`#duck=…`), once. */
@@ -1228,6 +1355,51 @@ export function initDuck(d: typeof deps): void {
   $("duck-stop").onclick = stopAll;
   wireMic();
   wireTalk();
+
+  // R3: the tap-to-talk screen, a share's quick asks, installing.
+  $("duck-tap-btn").onclick = () => {
+    panel = "chat";
+    paint("panel");
+    void startTalk();
+  };
+  $("duck-tap-skip").onclick = () => {
+    panel = "chat";
+    paint("panel");
+    $("duck-text").focus();
+  };
+  const asks = $("duck-share-asks");
+  for (const a of SHARE_ASKS) {
+    const b = el("button", "", a.label);
+    b.type = "button";
+    b.onclick = () => sendShare(a.ask, false);
+    asks.append(b);
+  }
+  $("duck-share-drop").onclick = () => {
+    shared = null;
+    paintShare();
+  };
+  window.addEventListener("beforeinstallprompt", (e) => {
+    e.preventDefault(); // the settings and the hint offer it instead of the browser's bar
+    installPrompt = e as Event & { prompt(): Promise<void> };
+    paint("install");
+  });
+  window.addEventListener("appinstalled", () => {
+    installPrompt = null;
+    paint("install");
+  });
+  const install = () => {
+    if (installPrompt) void installPrompt.prompt().finally(() => (installPrompt = null));
+    else {
+      panel = "settings";
+      paint("panel");
+    }
+  };
+  $("duck-home-install").onclick = install;
+  $("duck-install-go").onclick = install;
+  $("duck-install-close").onclick = () => {
+    store(INSTALL_HINT_KEY, "1");
+    paintInstall();
+  };
 
   document.addEventListener("visibilitychange", () => {
     if (!shown) return;

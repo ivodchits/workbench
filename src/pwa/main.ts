@@ -5,7 +5,8 @@
 // the same framework-free modules the desktop uses.
 //
 // Three views: pairing (no token), waiting (a token the desktop has not allowed yet,
-// step R2), and the app.
+// step R2), and the app. The app opens on Duck when a shortcut or a share asks
+// (`?duck=…`, assistant plan R3), or when that's the start view chosen.
 
 import "@xterm/xterm/css/xterm.css";
 import "./style.css";
@@ -13,7 +14,8 @@ import "./style.css";
 import { initConsole, openConsole, updateConsole } from "./console";
 import { initDashboard } from "./dashboard";
 import { $ } from "./dom";
-import { initDuck, openDuck, takeLaunchThread } from "./duck";
+import { duckOnStart, initDuck, launchDuck, openDuck, takeLaunchThread } from "./duck";
+import { takeLaunch } from "./launch";
 import { checkAccess, connect, forget, isPaired, pair } from "./net";
 import { initNewSession, openNewSession } from "./newSession";
 import { initNotes } from "./notes";
@@ -77,9 +79,13 @@ function showApp(): void {
   const notes = initNotes();
   initPush((id) => openConsole(id));
   initDuck({ console: (id) => openConsole(id), refused: lostAccess });
-  // Opened by tapping a push about a card Duck waits on (step R2).
+  // Opened by tapping a push about a card Duck waits on (step R2), by an app
+  // shortcut or a share (R3), or plainly with Duck as the start view.
   const duckThread = takeLaunchThread();
+  const duckLaunch = takeLaunch();
   if (duckThread) openDuck(duckThread);
+  else if (duckLaunch) void launchDuck(duckLaunch);
+  else if (duckOnStart()) openDuck();
   // Opened by tapping a push (step R6): show that instance once it is known.
   let launch = takeLaunchInstance();
   connect({

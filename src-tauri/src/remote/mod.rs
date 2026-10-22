@@ -30,6 +30,13 @@
 //! logged for the menu. Every change to devices, the code or the log is announced to
 //! the webview as `remote-changed`.
 //!
+//! **Device keys (assistant plan R3):** a phone that pairs over https sends a public
+//! key with the code. Its token then opens nothing by itself: the page signs a
+//! challenge (`/auth/challenge`, `/auth/session`) and uses the session it gets, which
+//! lives only in memory (here and in the page). See [`auth`]'s "the device key".
+//! A phone paired over plain http (the tailnet address) has no WebCrypto, so no key,
+//! and works on its token as before; the menu says which devices are bound.
+//!
 //! **Public access (step R3):** the server also listens on `127.0.0.1`, and an
 //! opt-in switch has Tailscale Funnel proxy a public `https://…ts.net` address to that
 //! listener ([`funnel`]). A background *keeper* thread holds things in place: it binds
@@ -130,6 +137,9 @@ struct RemoteInner {
     devices: Vec<Device>,
     /// The pairing code and the limits on trying it.
     gate: PairGate,
+    /// What device keys sign, and the sessions their proofs bought (assistant R3).
+    challenges: auth::Challenges,
+    sessions: auth::Sessions,
     /// Recent auth failures, for the menu.
     log: AuthLog,
 }
@@ -144,6 +154,9 @@ struct Device {
     last_seen: Option<u64>,
     last_addr: Option<String>,
     approved: bool,
+    /// The device key's public half (base64url SEC1), when it paired with one. Its
+    /// token alone is then refused: it needs a session.
+    public_key: Option<String>,
 }
 
 /// What a presented token is worth.
@@ -196,6 +209,8 @@ pub fn init(app: &AppHandle) {
             snapshot: "{}".to_string(),
             devices: live,
             gate: PairGate::default(),
+            challenges: auth::Challenges::default(),
+            sessions: auth::Sessions::default(),
             log,
         }),
         kick: watch::channel(0).0,
@@ -227,7 +242,7 @@ fn load_devices(app: &AppHandle) -> Vec<Device> {
     );
     let mut out = Vec::new();
     if let Ok(mut stmt) = conn.prepare(
-        "SELECT id, token, name, paired_at, last_seen, last_addr, approved FROM remote_devices",
+        "SELECT id, token, name, paired_at, last_seen, last_addr, approved, public_key FROM remote_devices",
     ) {
         if let Ok(rows) = stmt.query_map([], |r| {
             Ok(Device {
@@ -238,6 +253,7 @@ fn load_devices(app: &AppHandle) -> Vec<Device> {
                 last_seen: r.get::<_, Option<i64>>(4)?.map(|v| v as u64),
                 last_addr: r.get(5)?,
                 approved: r.get::<_, i64>(6)? != 0,
+                public_key: r.get(7)?,
             })
         }) {
             out.extend(rows.flatten());
@@ -438,14 +454,16 @@ fn kick(state: &RemoteState) {
 }
 
 /// Check a pairing attempt from `addr` and, on success, mint + persist a device token
-/// that waits for approval on the desktop. Called by the (unauthenticated) `/pair`
-/// handler; the outcome decides its answer.
+/// that waits for approval on the desktop, bound to `public_key` when one came (and
+/// parses; one that doesn't is dropped, so the page learns from `bound` below).
+/// Called by the (unauthenticated) `/pair` handler; the outcome decides its answer.
 fn try_pair(
     state: &Arc<RemoteState>,
     code: &str,
     name: &str,
     addr: &str,
-) -> Result<String, PairOutcome> {
+    public_key: Option<&str>,
+) -> Result<(String, bool), PairOutcome> {
     let outcome = state.inner.lock().unwrap().gate.attempt(code, now());
     match outcome {
         PairOutcome::Paired => {}
@@ -467,11 +485,11 @@ fn try_pair(
         }
     }
     // 256-bit unguessable token (two v4 UUIDs concatenated, hyphen-free).
-    let token = format!(
-        "{}{}",
-        uuid::Uuid::new_v4().simple(),
-        uuid::Uuid::new_v4().simple()
-    );
+    let token = auth::random_token();
+    let public_key = public_key
+        .map(str::trim)
+        .filter(|k| auth::parse_public_key(k).is_some())
+        .map(str::to_string);
     let id = uuid::Uuid::new_v4().simple().to_string()[..16].to_string();
     let name: String = name.chars().take(NAME_MAX).collect();
     let device = Device {
@@ -482,24 +500,39 @@ fn try_pair(
         last_seen: None,
         last_addr: Some(addr.to_string()),
         approved: false,
+        public_key,
     };
+    let bound = device.public_key.is_some();
     {
         let db = state.app.state::<Db>();
         let conn = db.conn.lock().expect("db lock poisoned");
         let _ = conn.execute(
-            "INSERT INTO remote_devices (id, token, name, paired_at, last_seen, last_addr, approved)
-             VALUES (?1, ?2, ?3, ?4, NULL, ?5, 0)",
-            (&device.id, &device.token, &device.name, device.paired_at as i64, addr),
+            "INSERT INTO remote_devices (id, token, name, paired_at, last_seen, last_addr, approved, public_key)
+             VALUES (?1, ?2, ?3, ?4, NULL, ?5, 0, ?6)",
+            (&device.id, &device.token, &device.name, device.paired_at as i64, addr, &device.public_key),
         );
     }
     state.inner.lock().unwrap().devices.push(device);
     changed(state);
-    Ok(token)
+    Ok((token, bound))
 }
 
-/// What `token`, presented from `addr`, is worth. Every device is compared in
-/// constant time, so the answer's timing doesn't depend on which (if any) matched. A
-/// grant records the device's `last_seen` and address. An expired device is dropped.
+/// The device whose token is `token`. Every device is compared in constant time, so
+/// the answer's timing doesn't depend on which (if any) matched.
+fn device_by_token(state: &RemoteState, token: &str) -> Option<Device> {
+    let inner = state.inner.lock().unwrap();
+    let mut hit = None;
+    for (i, d) in inner.devices.iter().enumerate() {
+        if auth::ct_eq(d.token.as_bytes(), token.as_bytes()) {
+            hit = Some(i);
+        }
+    }
+    hit.map(|i| inner.devices[i].clone())
+}
+
+/// What `token`, presented from `addr`, is worth: a session a device key bought, or a
+/// device token (refused for a device with a key, which must use a session). A grant
+/// records the device's `last_seen` and address. An expired device is dropped.
 fn check_token(state: &Arc<RemoteState>, token: Option<&str>, addr: &str) -> Access {
     let token = token.unwrap_or("");
     if token.is_empty() {
@@ -507,20 +540,25 @@ fn check_token(state: &Arc<RemoteState>, token: Option<&str>, addr: &str) -> Acc
         return Access::Denied;
     }
     let now = now();
-    let found = {
-        let inner = state.inner.lock().unwrap();
-        let mut hit = None;
-        for (i, d) in inner.devices.iter().enumerate() {
-            if auth::ct_eq(d.token.as_bytes(), token.as_bytes()) {
-                hit = Some(i);
-            }
-        }
-        hit.map(|i| inner.devices[i].clone())
+    let session = state.inner.lock().unwrap().sessions.device(token, now);
+    let found = match &session {
+        Some(id) => state.inner.lock().unwrap().devices.iter().find(|d| &d.id == id).cloned(),
+        None => device_by_token(state, token),
     };
     let Some(device) = found else {
-        log_failure(state, addr, "unknown device token");
+        log_failure(state, addr, if session.is_some() { "a session of a removed device" } else { "unknown device token" });
         return Access::Denied;
     };
+    if session.is_none() && device.public_key.is_some() && device.approved {
+        log_failure(state, addr, &format!("“{}” token used without its device key", device.name));
+        return Access::Denied;
+    }
+    grant(state, device, addr, now)
+}
+
+/// The rest of [`check_token`] once the device is known: expiry, approval, and the
+/// record of its use.
+fn grant(state: &Arc<RemoteState>, device: Device, addr: &str, now: u64) -> Access {
     if let Some(why) =
         auth::device_expired(device.approved, device.paired_at, device.last_seen, now)
     {
@@ -547,6 +585,53 @@ fn check_token(state: &Arc<RemoteState>, token: Option<&str>, addr: &str) -> Acc
     Access::Granted(device.id)
 }
 
+/// Why `/auth/session` refused.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum SessionRefusal {
+    /// No such device, or the proof failed: pair again.
+    Denied,
+    /// Proven, but the desktop hasn't allowed it yet.
+    Pending,
+    /// The device paired without a key; its token is what it uses.
+    NoKey,
+    /// The challenge expired or was used: ask for another.
+    Stale,
+}
+
+/// Start a session for the device behind `token`, if `signature` signs `challenge`
+/// with the key it paired with.
+fn start_session(
+    state: &Arc<RemoteState>,
+    token: Option<&str>,
+    challenge: &str,
+    signature: &str,
+    addr: &str,
+) -> Result<String, SessionRefusal> {
+    let now = now();
+    let token = token.unwrap_or("");
+    let found = if token.is_empty() { None } else { device_by_token(state, token) };
+    let Some(device) = found else {
+        log_failure(state, addr, "unknown device token");
+        return Err(SessionRefusal::Denied);
+    };
+    let Some(key) = device.public_key.clone() else {
+        return Err(SessionRefusal::NoKey);
+    };
+    if !state.inner.lock().unwrap().challenges.take(challenge, now) {
+        return Err(SessionRefusal::Stale);
+    }
+    if !auth::proof_ok(&key, challenge, signature) {
+        log_failure(state, addr, &format!("“{}” device key proof failed", device.name));
+        return Err(SessionRefusal::Denied);
+    }
+    let id = device.id.clone();
+    match grant(state, device, addr, now) {
+        Access::Granted(_) => Ok(state.inner.lock().unwrap().sessions.start(&id, now)),
+        Access::Pending => Err(SessionRefusal::Pending),
+        Access::Denied => Err(SessionRefusal::Denied),
+    }
+}
+
 /// Whether the device behind an open socket still has access.
 fn device_valid(state: &RemoteState, id: &str) -> bool {
     let inner = state.inner.lock().unwrap();
@@ -556,7 +641,11 @@ fn device_valid(state: &RemoteState, id: &str) -> bool {
 /// Forget a device everywhere and close its sockets.
 fn remove_device(state: &RemoteState, id: &str) {
     delete_device_row(&state.app, id);
-    state.inner.lock().unwrap().devices.retain(|d| d.id != id);
+    {
+        let mut inner = state.inner.lock().unwrap();
+        inner.devices.retain(|d| d.id != id);
+        inner.sessions.end_device(id);
+    }
     kick(state);
     changed(state);
 }
@@ -614,6 +703,8 @@ pub struct RemoteDevice {
     pub approved: bool,
     /// Epoch seconds it stops working unless used (approved) or approved (pending).
     pub expires_at: u64,
+    /// It paired with a device key (assistant R3): its token alone opens nothing.
+    pub bound: bool,
 }
 
 fn status_of(state: &Arc<RemoteState>) -> RemoteStatus {
@@ -653,6 +744,7 @@ fn list_devices(state: &RemoteState) -> Vec<RemoteDevice> {
             } else {
                 d.paired_at + auth::PENDING_TTL_SECS
             },
+            bound: d.public_key.is_some(),
         })
         .collect();
     out.sort_by_key(|d| std::cmp::Reverse(d.paired_at));
@@ -688,6 +780,7 @@ pub fn remote_stop(state: State<'_, Arc<RemoteState>>) -> RemoteStatus {
         inner.bound_addr = None;
         inner.local_addr = None;
         inner.gate.clear();
+        inner.sessions.clear();
         // A funnel to a stopped server only answers 502; take it down too. The switch
         // stays as it is, so turning the server back on restores it.
         if inner.public.enabled {

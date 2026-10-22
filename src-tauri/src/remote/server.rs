@@ -15,6 +15,14 @@
 //! - `POST /pair` — exchange a one-time pairing code for a device bearer token, which
 //!   works once the device is approved on the desktop. Unauthenticated (the code *is*
 //!   the gate), rate-limited and locked out after wrong codes (`auth::PairGate`).
+//! - `GET /api/auth/challenge`, `POST /api/auth/session` — a device key's proof
+//!   (assistant plan R3): a fresh challenge (unauthenticated), then the device token
+//!   with the challenge signed, for a session token that stands in for the device
+//!   token from then on. A device that paired with a key needs one; its token alone is
+//!   refused everywhere else.
+//! - `POST /share` — where Android sends a share when the service worker isn't there
+//!   to take it (R3; it reads the share and hands it to the page). A navigation can't
+//!   carry the token, so this only sends the page to say the share was lost.
 //! - `GET /api/state` — the latest webview snapshot (auth: `Authorization: Bearer`).
 //!   Also how a phone learns where it stands: 401 for an unknown token, 403 while it
 //!   waits for approval.
@@ -63,7 +71,10 @@ use tauri::{Emitter, Manager};
 use tokio::sync::broadcast;
 
 use super::auth::{self, PairOutcome};
-use super::{check_token, device_valid, log_failure, try_pair, Access, RemoteState};
+use super::{
+    check_token, device_valid, log_failure, start_session, try_pair, Access, RemoteState,
+    SessionRefusal,
+};
 use crate::pty::{PtyManager, RemoteMsg};
 
 /// Spawn the server on Tauri's runtime and return its task handle. The parent aborts
@@ -87,7 +98,16 @@ async fn run(listener: std::net::TcpListener, state: Arc<RemoteState>) -> std::i
         .route("/icon-192.png", get(icon_192))
         .route("/icon-512.png", get(icon_512))
         .route("/icon-maskable-512.png", get(icon_maskable))
+        // The app shortcuts' icons (assistant plan R3).
+        .route("/icon-talk-96.png", get(|| async { png(include_bytes!("pwa/icon-talk-96.png")) }))
+        .route("/icon-chat-96.png", get(|| async { png(include_bytes!("pwa/icon-chat-96.png")) }))
+        .route("/icon-task-96.png", get(|| async { png(include_bytes!("pwa/icon-task-96.png")) }))
+        .route("/icon-status-96.png", get(|| async { png(include_bytes!("pwa/icon-status-96.png")) }))
         .route("/pair", post(pair))
+        // Device keys and shares (assistant plan R3).
+        .route("/api/auth/challenge", get(auth_challenge))
+        .route("/api/auth/session", post(auth_session))
+        .route("/share", post(share_lost))
         .route("/api/state", get(api_state))
         .route("/api/ws", get(api_ws))
         .route("/api/action", post(api_action))
@@ -182,6 +202,9 @@ struct PairReq {
     code: String,
     #[serde(default)]
     name: String,
+    /// The device key's public half (assistant R3), when the browser could make one.
+    #[serde(default, rename = "publicKey")]
+    public_key: Option<String>,
 }
 
 /// Exchange a valid pairing code for a device token (which waits for approval on the
@@ -197,11 +220,12 @@ async fn pair(
     } else {
         req.name.trim().to_string()
     };
-    let (status, error) = match try_pair(&state, &req.code, &name, &client_addr(peer, &headers)) {
-        Ok(token) => {
+    let addr = client_addr(peer, &headers);
+    let (status, error) = match try_pair(&state, &req.code, &name, &addr, req.public_key.as_deref()) {
+        Ok((token, bound)) => {
             return (
                 StatusCode::OK,
-                Json(json!({ "token": token, "pending": true })),
+                Json(json!({ "token": token, "pending": true, "bound": bound })),
             )
                 .into_response()
         }
@@ -226,6 +250,55 @@ async fn pair(
         ),
     };
     (status, Json(json!({ "error": error }))).into_response()
+}
+
+/// A challenge for a device key to sign. Unauthenticated: it proves nothing until
+/// signed, and answers once.
+async fn auth_challenge(State(state): State<Arc<RemoteState>>) -> Response {
+    let nonce = state.inner.lock().unwrap().challenges.issue(super::now());
+    (
+        [(header::CACHE_CONTROL, "no-store")],
+        Json(json!({ "challenge": nonce })),
+    )
+        .into_response()
+}
+
+#[derive(Deserialize)]
+struct SessionReq {
+    challenge: String,
+    signature: String,
+}
+
+/// Trade the device token and a signed challenge for a session. 401: pair again; 403:
+/// waiting for approval; 409: ask for a new challenge (`stale`) or use the token
+/// (`noKey`).
+async fn auth_session(
+    State(state): State<Arc<RemoteState>>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    Json(req): Json<SessionReq>,
+) -> Response {
+    let addr = client_addr(peer, &headers);
+    match start_session(&state, bearer(&headers).as_deref(), &req.challenge, &req.signature, &addr) {
+        Ok(session) => (
+            [(header::CACHE_CONTROL, "no-store")],
+            Json(json!({ "session": session })),
+        )
+            .into_response(),
+        Err(SessionRefusal::Denied) => StatusCode::UNAUTHORIZED.into_response(),
+        Err(SessionRefusal::Pending) => (
+            StatusCode::FORBIDDEN,
+            Json(json!({ "error": "waiting for approval on the desktop", "pending": true })),
+        )
+            .into_response(),
+        Err(SessionRefusal::NoKey) => (StatusCode::CONFLICT, Json(json!({ "error": "noKey" }))).into_response(),
+        Err(SessionRefusal::Stale) => (StatusCode::CONFLICT, Json(json!({ "error": "stale" }))).into_response(),
+    }
+}
+
+/// A share that reached the server: the service worker wasn't running to take it.
+async fn share_lost() -> Response {
+    (StatusCode::SEE_OTHER, [(header::LOCATION, "/?duck=share-lost")]).into_response()
 }
 
 /// One header as text, when present and readable.

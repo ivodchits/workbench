@@ -250,6 +250,12 @@ const MIGRATIONS: &[&str] = &[
         add_dir         TEXT
     );
     "#,
+    // v15 -> v16: device keys (assistant plan R3). A phone that pairs over https sends
+    // the public half of a key its browser made (base64url SEC1, P-256); NULL for one
+    // paired without (plain http, or before this), which keeps working on its token.
+    r#"
+    ALTER TABLE remote_devices ADD COLUMN public_key TEXT;
+    "#,
 ];
 
 /// Apply any migrations the database hasn't seen yet, advancing

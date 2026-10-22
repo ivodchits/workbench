@@ -410,8 +410,8 @@ function PublicUrl({ url }: { url: string }) {
 /** One paired device: allow / turn away while it waits, revoke once allowed. */
 function DeviceRow({ device: d }: { device: RemoteDevice }) {
   const detail = d.approved
-    ? [d.lastAddr, d.lastSeen ? `seen ${formatAgo(d.lastSeen)}` : "never used"]
-    : [d.lastAddr, `waiting · ${formatCountdown(d.expiresAt)} left`];
+    ? [d.lastAddr, d.lastSeen ? `seen ${formatAgo(d.lastSeen)}` : "never used", d.bound ? "key-bound" : "no device key"]
+    : [d.lastAddr, `waiting · ${formatCountdown(d.expiresAt)} left`, d.bound ? "key-bound" : "no device key"];
   return (
     <div style={{ padding: "4px 12px", display: "flex", alignItems: "center", gap: 8 }}>
       <div style={{ flex: 1, minWidth: 0, lineHeight: 1.45 }}>
@@ -427,7 +427,14 @@ function DeviceRow({ device: d }: { device: RemoteDevice }) {
         </div>
         <div
           style={{ color: "var(--wb-textFaint)", fontSize: 10 }}
-          title={d.approved ? `stops working in ${formatCountdown(d.expiresAt)} unless used` : undefined}
+          title={[
+            d.approved ? `stops working in ${formatCountdown(d.expiresAt)} unless used` : "",
+            d.bound
+              ? "Its browser holds a key that can't be copied out; the token alone opens nothing."
+              : "Paired without a device key (over plain http, or before keys): its token alone gets in. Pair it again on the https address to bind one.",
+          ]
+            .filter(Boolean)
+            .join("\n")}
         >
           {detail.filter(Boolean).join(" · ")}
         </div>

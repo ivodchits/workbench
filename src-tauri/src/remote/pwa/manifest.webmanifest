@@ -9,8 +9,16 @@
   "background_color": "#14161a",
   "theme_color": "#14161a",
   "icons": [
-    { "src": "/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
-    { "src": "/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
-    { "src": "/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
-  ]
+    {"src": "/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any"},
+    {"src": "/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any"},
+    {"src": "/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable"}
+  ],
+  "id": "/",
+  "shortcuts": [
+    {"name": "Talk to Duck", "short_name": "Talk", "description": "Conversation mode, one tap away", "url": "/?duck=talk", "icons": [{"src": "/icon-talk-96.png", "sizes": "96x96", "type": "image/png"}]},
+    {"name": "Ask Duck", "short_name": "Ask", "description": "Type or say a question", "url": "/?duck=chat", "icons": [{"src": "/icon-chat-96.png", "sizes": "96x96", "type": "image/png"}]},
+    {"name": "New task", "short_name": "Task", "description": "Give Duck something to get done", "url": "/?duck=task", "icons": [{"src": "/icon-task-96.png", "sizes": "96x96", "type": "image/png"}]},
+    {"name": "What needs me?", "short_name": "Needs me", "description": "What's waiting for you", "url": "/?duck=status", "icons": [{"src": "/icon-status-96.png", "sizes": "96x96", "type": "image/png"}]}
+  ],
+  "share_target": {"action": "/share", "method": "POST", "enctype": "multipart/form-data", "params": {"title": "title", "text": "text", "url": "url"}}
 }

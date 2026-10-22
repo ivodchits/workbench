@@ -14,8 +14,15 @@
 //
 // The build (`vite.pwa.config.js`) writes the cache name: it carries a hash of the
 // shell, so any change to the page or its assets drops the old cache on activate.
+//
+// Sharing to Duck (assistant plan R3): Android posts a share to `/share` (the
+// manifest's `share_target`). A navigation can't carry the device token, so the
+// worker takes the share itself, keeps it for the page in its own cache, and sends
+// the page to `/?duck=share`, which hands it to Duck.
 
 const CACHE = "__WB_CACHE__";
+/** Where a share waits for the page; not the shell's, so a new shell keeps it. */
+const SHARE_CACHE = "wb-share";
 const SHELL = ["/", "/manifest.webmanifest", "/icon-192.png", "/icon-512.png"];
 
 self.addEventListener("install", (event) => {
@@ -26,16 +33,20 @@ self.addEventListener("activate", (event) => {
   event.waitUntil(
     caches
       .keys()
-      .then((keys) => Promise.all(keys.filter((k) => k !== CACHE).map((k) => caches.delete(k))))
+      .then((keys) => Promise.all(keys.filter((k) => k !== CACHE && k !== SHARE_CACHE).map((k) => caches.delete(k))))
       .then(() => self.clients.claim()),
   );
 });
 
 self.addEventListener("fetch", (event) => {
   const req = event.request;
+  const url = new URL(req.url);
+  if (req.method === "POST" && url.pathname === "/share") {
+    event.respondWith(takeShare(req));
+    return;
+  }
   if (req.method !== "GET") return; // POST /pair, POST /api/action: pass straight through
 
-  const url = new URL(req.url);
   // Never cache the live data plane — let it hit the network (and fail cleanly when off).
   if (url.pathname.startsWith("/api") || url.pathname === "/pair") return;
 
@@ -51,6 +62,27 @@ self.addEventListener("fetch", (event) => {
       .catch(() => caches.match(req).then((hit) => hit || caches.match("/"))),
   );
 });
+
+/** Keep a share (title, text, link) for the page and open Duck on it. Only one
+ *  waits: a newer share replaces it. Files aren't taken until attachments (G1). */
+async function takeShare(req) {
+  const field = (form, name) => {
+    const v = form.get(name);
+    return typeof v === "string" ? v.slice(0, 20000) : "";
+  };
+  let share = null;
+  try {
+    const form = await req.formData();
+    share = { title: field(form, "title"), text: field(form, "text"), url: field(form, "url"), at: Date.now() };
+  } catch {
+    // An unreadable post: the page says the share was lost.
+  }
+  if (share) {
+    const cache = await caches.open(SHARE_CACHE);
+    await cache.put("/__share", new Response(JSON.stringify(share), { headers: { "Content-Type": "application/json" } }));
+  }
+  return Response.redirect(new URL(share ? "/?duck=share" : "/?duck=share-lost", self.location.origin).href, 303);
+}
 
 // --- push (step R6) ---------------------------------------------------------------
 // The desktop pushes on needs-you and escalation: { title, body, instanceId, tag }.

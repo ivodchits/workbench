@@ -5,8 +5,8 @@ behind each decision are in `assistant-plan.md`. This file describes the code, a
 Duck step updates it as part of its Done when. Duck's self-development sessions (L3)
 read it first.
 
-Last updated: step S2 (2026-10-22). L3 audited it against the code. Since W5 it also
-covers W6, D2, D4, P1, P2, M2, M3, A5, A6, A7, W4, L1, L2, L3, L4, R1, R2, V1 to V5, V7,
+Last updated: step R3 (2026-10-22). L3 audited it against the code. Since W5 it also
+covers W6, D2, D4, P1, P2, M2, M3, A5, A6, A7, W4, L1, L2, L3, L4, R1, R2, R3, V1 to V5, V7,
 V8, S1, S2, X1 and the morning routine. A fresh session changing Duck: read "The shape", then "Where to
 change X" at the end, then the module rows it points to.
 
@@ -216,7 +216,8 @@ prompt's safety rules cover them.
   `src-tauri/src/remote/pwa/` (`duck.ts`; conversation mode's mic in `converse.ts`, Duck's
   voice in `duckSpeech.ts` and `speechQueue.ts`). The `Phone` surface in `assistant.rs`
   is a phone's conversation run: its socket, what it's playing and saying
-  (`conv.playing`, `conv.said`), its echo reference and its recording.
+  (`conv.playing`, `conv.said`), its echo reference and its recording. R3 made the PWA
+  an app: see "The phone as an app" below.
 - The dock's root has `isolation: isolate`, so dockview's layers (floating groups at
   z-index 999) stay under the drawer (z-index 60) while modals (100) stay above it.
 - Start at login: `tauri-plugin-autostart` (pinned `~2.5.1`; later versions need Tauri
@@ -565,6 +566,46 @@ sentences played, every event at its sample). `tools/voice-eval/score_phone.py` 
 them chain by chain, and the ignored test `barge_in_on_a_phone_recording` replays one
 through the Rust chain.
 
+## The phone as an app (step R3)
+
+The PWA installs on Android as an app (a WebAPK, from the https Funnel address), and
+Duck is one tap from its icon.
+
+- **Shortcuts** (the manifest's `shortcuts`, in `src-tauri/src/remote/pwa/`, with their
+  icons): "Talk to Duck" (`/?duck=talk`), "Ask Duck" (`chat`), "New task" (`task`),
+  "What needs me?" (`status`). `launch.ts` reads the query once (`takeLaunch`), and
+  `duck.ts`'s `launchDuck` opens Duck for it:
+  - talk: a big tap-to-talk button (the `tap` panel), since the mic needs a tap; it
+    starts conversation mode;
+  - chat: the composer; task: a new thread with "New task: " in the composer;
+  - status: asks "What needs me right now?" in the open thread once the threads are in.
+- **Sharing** (the manifest's `share_target`, POST multipart to `/share`): a navigation
+  can't carry the token, so the service worker (`sw.js`, `takeShare`) takes the post,
+  keeps title, text and link in its own `wb-share` cache, and sends the page to
+  `/?duck=share`. The page opens a new thread with the share above the composer; one tap
+  sends it with "summarize", "make a task of it" or "remember it", or with what you
+  type. The message wraps it in `<shared>`, which the safety rules call data. Text and
+  links only: files wait for G1. A share the worker missed lands on the server's
+  `/share`, which sends the page to say so.
+- **Start view and install**: Duck's settings on the phone have "the app opens on:
+  dashboard / Duck" (`Prefs.openOn`) and "on the home screen" (how to install, the
+  browser's install prompt when it offers one). Not installed, the chat shows a
+  dismissible line about it.
+- **Device keys** (`deviceKey.ts`, `net.ts`, `remote/auth.rs`, `remote/mod.rs`):
+  - At pairing over https the page makes a P-256 key pair (private half not
+    extractable, kept in IndexedDB) and sends the public half with the code
+    (`remote_devices.public_key`).
+  - Such a device's token opens nothing by itself: `checkAccess` gets a challenge
+    (`GET /api/auth/challenge`), signs it, and trades token and signature for a session
+    (`POST /api/auth/session`). The session, in the page's memory and the server's
+    only, is the credential from then on. It ends after 4 hours unused, a day at most,
+    a desktop restart, or a revoke. A refused session is renewed the same way (the
+    sockets' reconnect asks, `api` retries once).
+  - Paired over plain http (no WebCrypto), a device has no key and uses its token as
+    before. The Remote Access menu says which devices are key-bound.
+- **Pushes** were already deep links: a push names its thread, and tapping it opens Duck
+  there (`#duck=<thread>`, or `open-duck` to an open page).
+
 ## Where to change X
 
 - **What Duck says, its routing rules and examples, the tool tiers' wording**: the files
@@ -602,6 +643,11 @@ through the Rust chain.
   `voiceState.ts`; announcements in `announce.ts`. A phone's echo: `aec.rs` (`Feed`),
   `conversation.rs` (`Surface::reference`, `BargeCheck`), the `Phone` surface in
   `remote/assistant.rs`, and the page's `conv.said` in `src/pwa/duck.ts`.
+- **The phone app's shortcuts, sharing and start view**: the manifest
+  (`src-tauri/src/remote/pwa/manifest.webmanifest`), `src/pwa/launch.ts`,
+  `launchDuck` in `src/pwa/duck.ts`, and `takeShare` in `src/pwa/sw.js`. How a phone
+  proves its key: `remote/auth.rs` (the rules), `remote/mod.rs` (`start_session`,
+  `check_token`), and `src/pwa/deviceKey.ts` and `net.ts`.
 - **Storage**: a table is a migration appended to `db.rs`'s list, never an edit of one.
 - **Tests**: `npm run lint`, `npm test`, and `cargo test --lib` in `src-tauri` (with
   `CARGO_TARGET_DIR=target-test` while a dev build runs).
@@ -622,6 +668,11 @@ being discussed or translated, or an explicit request. Thread titles are English
 Both rules are in `prompt.ts`.
 
 ## Not built yet
+
+- The phone as an app (R3) on a real phone: built and tested in parts (the key's format
+  across WebCrypto and Rust, challenges, sessions, the launch and share parsing), not
+  yet tried installed: the shortcuts on a long-press, "Talk to Duck" pinned to the home
+  screen, a page shared from Chrome summarized. Shared files and images wait for G1.
 
 - Modes in the app (S1): built and tested with the scripted engine, not yet tried live
   (a duck thread asking instead of answering, the wrap-up note, a chat thread). Not

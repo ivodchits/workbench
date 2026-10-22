@@ -15,7 +15,17 @@ const here = (rel) => fileURLToPath(new URL(rel, import.meta.url));
 
 /** The static shell assets the server embeds as they are; hashed into the cache name. */
 const STATIC_DIR = here("./src-tauri/src/remote/pwa/");
-const STATIC = ["manifest.webmanifest", "icon-192.png", "icon-512.png", "icon-maskable-512.png"];
+const STATIC = [
+  "manifest.webmanifest",
+  "icon-192.png",
+  "icon-512.png",
+  "icon-maskable-512.png",
+  // The app shortcuts' (assistant plan R3).
+  "icon-talk-96.png",
+  "icon-chat-96.png",
+  "icon-task-96.png",
+  "icon-status-96.png",
+];
 
 /** Fold the script and stylesheet into `index.html`, and write `sw.js` with a cache
  *  name taken from the shell's content. */

@@ -4691,6 +4691,76 @@ up ("change this", with a circle around it).
   - "Talk to Duck" pinned on the home screen opens straight into a tap-to-talk screen.
   - Sharing a web page from Chrome to Duck produces a summary in the thread.
 - **Out of scope:** a native app (R4).
+- **As built (2026-10-22):**
+  - **Shortcuts:** the manifest's four, each with its own 96 px icon drawn like the
+    app's (a mic, a speech bubble, a plus, a "!").
+    - `src/pwa/launch.ts` reads `?duck=` once and takes it off the address;
+      `launchDuck` in `duck.ts` acts on it.
+    - **"Talk to Duck"** opens a big tap-to-talk button. It's enabled once the socket
+      is live, and the tap starts conversation mode (V4) inside the gesture, so the
+      mic and the audio unlock.
+    - **"Ask Duck"** opens the composer.
+    - **"New task"** opens a new thread with "New task: " in the composer.
+    - **"What needs me?"** asks "What needs me right now?" in the open thread once the
+      threads are in.
+  - **The share target:** a multipart POST to `/share`, as planned, but the server
+    can't take it there. A share is a navigation, and a navigation can't carry the
+    bearer token (the PWA has no cookies). So:
+    - The service worker takes the post (`takeShare` in `sw.js`), keeps title, text and
+      link in its own `wb-share` cache, and redirects to `/?duck=share`.
+    - The page opens a new thread with the share above the composer, and one tap sends
+      it: "summarize", "make a task of it", "remember it". Or type what to do with it.
+    - The message wraps what was shared in `<shared>`. The safety rules (and so every
+      mode's) now call text there data.
+    - A link Chrome puts in `text` is said once.
+    - Summarizing a link goes to a worker, as the system prompt already says for
+      anything on the web (Duck has no fetch until B1).
+    - The server's `/share` only catches a share the worker missed, and sends the page
+      to say it was lost.
+  - **Images aren't shared yet:** the engine has no image blocks until G1, so the
+    manifest accepts title, text and link only, and Duck isn't offered in an image's
+    share sheet. G1 adds `files` there and in `takeShare`.
+  - **Start view:** the "the app opens on" setting (dashboard / Duck, the phone's Duck
+    settings).
+  - **Pushes:** Duck's pushes already named their thread and opened Duck on it (R1, V5),
+    so nothing changed.
+  - **Install hint:**
+    - The settings' "on the home screen" says how to install. Installed, it says how to
+      use the shortcuts. It keeps the browser's install prompt for a button.
+    - Not installed, the chat shows a dismissible line.
+    - Over the tailnet's plain http it says to use the https address.
+  - **Device key:**
+    - **The key:** at pairing over https, a P-256 key pair from WebCrypto (the private
+      half not extractable, the pair in IndexedDB). The public half goes with the code,
+      stored in `remote_devices.public_key` (migration 16), and the menu shows
+      "key-bound" or "no device key".
+    - **Proving it:** rather than signing every request, the page proves the key once
+      per visit. It gets a challenge (`GET /api/auth/challenge`, one use, 60 s, 32 at
+      most), signs `workbench-remote-session:` + the challenge, and trades the device
+      token and the signature for a session (`POST /api/auth/session`).
+    - **The session:** in memory only, here and in the page. It ends after 4 hours
+      unused, a day at most, a desktop restart, or a revoke, and it's renewed the same
+      way.
+    - **What changed for such a device:** its token alone is refused everywhere, and
+      logged. A token copied out of the phone's storage gets nothing, and the key can't
+      be copied at all.
+    - **Phones without a key:** a phone paired over plain http (no WebCrypto), or before
+      R3, keeps working on its token. Pair it again on the https address to bind it.
+  - **Tests:**
+    - **Rust:** a signature made by WebCrypto (Node's) verifies in Rust; proofs under
+      another key or for another challenge fail; challenges answer once and expire;
+      sessions stay alive while used, last a day at most, a device keeps 4 at most, and
+      a revoke ends them.
+    - **TypeScript:** the key's format (a 65-byte point, a 64-byte `r‖s` that verifies);
+      the launch, share lines, wrapper and message.
+    - **Results:** vitest 748 (5 new) and cargo 322 (4 new). tsc is clean; eslint and
+      clippy show only the existing warnings. The page grew 21 KB, to 513 KB.
+  - **Not tried on the phone** (yours):
+    - Install it from the https address. A phone paired before R3 has no key: pair it
+      again there to bind one.
+    - Then the three done-when checks: a long-press shows the shortcuts, "Talk to Duck"
+      pinned opens on tap-to-talk, and a page shared from Chrome gets a summary.
+  - **R4's gate:** decide after some real use of this. Nothing in R4 is started.
 
 #### Step R4 — Android companion app (gate: R3 sees real use)
 
@@ -6561,6 +6631,9 @@ checked in the scratch PTY first.
   - **Phone (PWA):** a 📎 button (`<input type="file" multiple>`, with the camera
     offered for images), paste, and the bytes uploaded over the Duck Protocol in chunks
     (`attach.chunk` / `attach.done` frames on the authed socket), staged the same way.
+  - **Shares:** R3's share target takes title, text and link only. Add `files`
+    (images, PDFs) to the manifest's `share_target` and to `takeShare` in `sw.js`, and
+    stage them like a 📎 pick.
   - **Engine:** a user message carries `attachment` parts. `toApiMessages` expands them
     as §Pictures and files says (images to at most 1568 px on the long side, PDFs as
     `document` blocks, text files up to 50 KB as text in an `<attachment>` wrapper,
@@ -7009,7 +7082,7 @@ T2 goes live after the replay check in its done-when (the past week's prompts th
 | S2 | Skills and user-defined modes | ☑ (not tried in the app) |
 | R1 | Assistant endpoints on the remote server | ☑ |
 | R2 | PWA Assistant tab with mic | ☑ (a real phone not tried yet) |
-| R3 | The PWA as an app: shortcuts, share target, Duck start view | ☐ |
+| R3 | The PWA as an app: shortcuts, share target, Duck start view | ☑ (not tried on the phone) |
 | R4 | Android companion app (gate: R3 sees real use) | ☐ |
 | T1 | Trust engine for the Assistant's own actions | ☑ |
 | T2 | Auto-answering Claude Code permission prompts | ☑ |
