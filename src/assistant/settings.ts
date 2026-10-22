@@ -77,6 +77,12 @@ export interface DuckSettings {
    *  project is in shadow mode for them: decided and logged, left to the user.
    *  Off until the user has checked the replay. */
   answerSessionPrompts: boolean;
+  /** A session's plan (step T3): Duck reviews it against the session's task and
+   *  `show`s the review beside the plan, or `approve`s a plan that passes (with
+   *  "Yes, manually approve edits") and shows the rest. */
+  planApproval: "show" | "approve";
+  /** Promotion offers taken or dismissed (step T3), `<projectId> <pattern>`. */
+  settledPromotions: string[];
   /** The permission mode such a session starts in (step M4); null leaves the
    *  project's default. */
   codingPermissionMode: (typeof DUCK_PERMISSION_MODES)[number] | null;
@@ -131,6 +137,8 @@ export const DEFAULT_SETTINGS: DuckSettings = {
   confirmPrompts: false,
   codingModel: "opus",
   answerSessionPrompts: false,
+  planApproval: "show",
+  settledPromotions: [],
   codingPermissionMode: null,
   maxWorkers: 3,
   headlessWorkers: true,
@@ -172,6 +180,9 @@ export function cleanSettings(raw: unknown): Partial<DuckSettings> {
   const out: Partial<DuckSettings> = {};
   if (typeof r.confirmPrompts === "boolean") out.confirmPrompts = r.confirmPrompts;
   if (typeof r.answerSessionPrompts === "boolean") out.answerSessionPrompts = r.answerSessionPrompts;
+  if (r.planApproval === "show" || r.planApproval === "approve") out.planApproval = r.planApproval;
+  if (Array.isArray(r.settledPromotions))
+    out.settledPromotions = [...new Set(r.settledPromotions.filter((k): k is string => typeof k === "string" && k.length <= 600))].slice(-500);
   if (typeof r.summaryOnDone === "boolean") out.summaryOnDone = r.summaryOnDone;
   if (typeof r.headlessWorkers === "boolean") out.headlessWorkers = r.headlessWorkers;
   if (SESSION_MODELS.includes(r.codingModel as DuckSettings["codingModel"]))

@@ -56,6 +56,7 @@ async function setup(
     judge?: JudgeCall;
     answering?: boolean;
     heldOk?: boolean;
+    holdOther?: (id: string) => Promise<boolean>;
   } = {},
 ): Promise<Setup> {
   const { backend, log } = memoryTrust();
@@ -82,6 +83,7 @@ async function setup(
     judge,
     notice: (threadId, text) => notices.push({ threadId, text }),
     answering: () => opts.answering ?? true,
+    holdOther: opts.holdOther,
     optionsWaitMs: opts.optionsWaitMs ?? 200,
     promptWaitMs: 50,
   });
@@ -283,6 +285,19 @@ describe("trust watcher", () => {
     const t = await setup({ rules: [["allow", "AskUserQuestion"]] });
     t.port.setChoice("s1", { ...permission({}), kind: "question", toolName: "AskUserQuestion" });
     expect(await t.port.hold!("s1")).toBe(true);
+    expect(t.log).toEqual([]);
+  });
+
+  it("leaves a question's needs-you to the delegate watcher's hold (T3), even one that arrives late", async () => {
+    const asked: string[] = [];
+    const t = await setup({ holdOther: (id) => (asked.push(id), Promise.resolve(false)) });
+    t.port.setChoice("s1", { ...permission({}), kind: "question", toolName: "AskUserQuestion" });
+    expect(await t.port.hold!("s1")).toBe(false);
+    t.port.setChoice("s1", null);
+    const told = t.port.hold!("s1");
+    t.port.setChoice("s1", { ...permission({}), kind: "plan", toolName: "ExitPlanMode" });
+    expect(await told).toBe(false);
+    expect(asked).toEqual(["s1", "s1"]);
     expect(t.log).toEqual([]);
   });
 

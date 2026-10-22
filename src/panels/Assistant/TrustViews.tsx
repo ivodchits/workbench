@@ -8,13 +8,18 @@
 import { useEffect, useState } from "react";
 import type { Mode } from "../../assistant/trust/decide";
 import type { ReplayRow } from "../../assistant/trust/replay";
+import { lineDiff, PROMOTE_AT, type PromotionPreview } from "../../assistant/trust/promote";
 import { suggestRule, type Effect } from "../../assistant/trust/rules";
 import type { DecisionRow } from "../../ipc/assistant";
 import { getRegistry } from "../../state/registry";
 import { formatAgo } from "../../util/format";
 import {
   addTrustRule,
+  closePromotionPreview,
+  dismissPromotion,
   loadDecisions,
+  previewPromotion,
+  promote,
   removeTrustRule,
   runReplay,
   setFloorEntry,
@@ -260,6 +265,8 @@ const LAYER_LABEL: Record<string, string> = {
   default: "no rule",
   judge: "judge",
   superseded: "answered first",
+  delegated: "delegated question",
+  "plan-review": "plan review",
 };
 
 export function DecisionsPanel({ duck, onBack }: { duck: DuckState; onBack: () => void }) {
@@ -269,6 +276,7 @@ export function DecisionsPanel({ duck, onBack }: { duck: DuckState; onBack: () =
   return (
     <Shell title={`decisions · auto-approved today: ${today}`} onBack={onBack}>
       {!duck.trust && <div style={faint}>Trust didn't load.</div>}
+      {duck.trust && <PromotionsSection duck={duck} />}
       {duck.trust && <ReplaySection duck={duck} />}
       {rows.length === 0 && <div style={faint}>Nothing decided yet.</div>}
       {rows.map((d) => (
@@ -284,6 +292,87 @@ export function DecisionsPanel({ duck, onBack }: { duck: DuckState; onBack: () =
         </button>
       )}
     </Shell>
+  );
+}
+
+/**
+ * Promotion (step T3): patterns Duck approved often in a project, offered for the
+ * project's own Claude Code allow list (a diff of `.claude/settings.local.json`
+ * first) or as a Duck rule.
+ */
+function PromotionsSection({ duck }: { duck: DuckState }) {
+  const list = duck.promotions;
+  const preview = duck.promotionPreview;
+  if (list.length === 0 && !duck.promoted) return null;
+  return (
+    <Section
+      title={`suggested: approved ${PROMOTE_AT}+ times`}
+      hint="On Claude Code's allow list, the session stops asking at all; as a Duck rule, Duck answers it without the judge."
+    >
+      {duck.promoted && <div style={{ ...faint, marginBottom: 4 }}>done: {duck.promoted.text}</div>}
+      {list.map((p) => (
+        <div key={p.key} style={{ padding: "4px 0", borderBottom: "1px solid var(--wb-border)" }}>
+          <div style={{ wordBreak: "break-word" }}>
+            <span style={{ color: EFFECT_COLOR.allow, marginRight: 6 }}>{p.pattern}</span>
+            <span style={faint}>
+              {projectName(p.projectId)} · {p.count} times{p.shadow ? ` (${p.shadow} in shadow, answered by you)` : ""} ·
+              last {formatAgo(Math.floor(p.last / 1000))}
+            </span>
+          </div>
+          <div style={{ ...faint, wordBreak: "break-word" }}>e.g. {p.example}</div>
+          <div style={{ display: "flex", gap: 10, marginTop: 2 }}>
+            <button type="button" style={linkBtn} onClick={() => previewPromotion(p.key)}>
+              add to Claude Code's allow list…
+            </button>
+            {!p.ruled && (
+              <button type="button" style={linkBtn} onClick={() => promote(p.key, "rule")}>
+                make it a Duck rule
+              </button>
+            )}
+            <button type="button" style={linkBtn} onClick={() => dismissPromotion(p.key)}>
+              dismiss
+            </button>
+          </div>
+          {preview?.key === p.key && <PromotionDiff preview={preview} />}
+        </div>
+      ))}
+    </Section>
+  );
+}
+
+function PromotionDiff({ preview }: { preview: PromotionPreview }) {
+  const lines = lineDiff(preview.before ?? "", preview.after);
+  return (
+    <div style={{ marginTop: 4, padding: 6, border: "1px solid var(--wb-border)" }}>
+      <div style={{ ...faint, wordBreak: "break-all" }}>
+        {preview.path}
+        {preview.before === null && " (new file)"}
+      </div>
+      {preview.already ? (
+        <div style={faint}>It's on the list already.</div>
+      ) : (
+        <pre style={{ margin: "4px 0", whiteSpace: "pre-wrap", wordBreak: "break-all", font: "11px var(--wb-mono)" }}>
+          {lines.map((l, i) => (
+            <div
+              key={i}
+              style={{
+                color: l.op === "+" ? "var(--wb-done)" : l.op === "-" ? "var(--wb-delText)" : "var(--wb-textFaint)",
+              }}
+            >
+              {l.op} {l.text}
+            </div>
+          ))}
+        </pre>
+      )}
+      <div style={{ display: "flex", gap: 8 }}>
+        <button type="button" style={btn} onClick={() => promote(preview.key, "claude", preview.before)}>
+          {preview.already ? "mark as done" : "write it"}
+        </button>
+        <button type="button" style={btn} onClick={closePromotionPreview}>
+          cancel
+        </button>
+      </div>
+    </div>
   );
 }
 

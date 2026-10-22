@@ -68,6 +68,14 @@ export function quotedFromLatest(messages: readonly StoredMessage[], quote: stri
   return null;
 }
 
+/** Whether `quote` is in `text` (the user's latest message): how a session is
+ *  handed over to Duck (`create_session`'s `delegatedBy`, step T3) only on the
+ *  user's own words. */
+export function quotes(text: string | null, quote: string): boolean {
+  const q = unquote(quote);
+  return !!text && q.length >= MIN_QUOTE && norm(text).includes(q);
+}
+
 /** The user's latest message in the thread (what a session Duck starts is for:
  *  its mandate, step T2), or null. Events and Duck's own messages don't count. */
 export function lastUserText(messages: readonly StoredMessage[]): string | null {

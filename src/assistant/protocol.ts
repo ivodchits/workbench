@@ -12,6 +12,7 @@ import type { Brain } from "./routing";
 import type { Backend } from "./brain/policy";
 import type { DuckSettings } from "./settings";
 import type { Mode, TrustConfig } from "./trust/decide";
+import type { Promotion, PromotionPreview } from "./trust/promote";
 import type { ReplayReport } from "./trust/replay";
 import type { Effect } from "./trust/rules";
 
@@ -265,6 +266,13 @@ export type ClientMessage =
   /** Replay the past `days`' Claude Code tool calls through the prompt policy
    *  (step T2), with the judge on up to `judgeMax` of them. */
   | { type: "trust.replay"; days: number; judgeMax: number }
+  /** What promoting an often-approved pattern to Claude Code's allow list would
+   *  write (step T3); answered with `promotionPreview`. */
+  | { type: "trust.promotion.preview"; key: string }
+  /** Promote it: to the project's Claude Code allow list (written over `before`,
+   *  the text the preview showed), or as a Duck rule. Answered with `promoted`. */
+  | { type: "trust.promote"; key: string; to: "claude" | "rule"; before: string | null }
+  | { type: "trust.promotion.dismiss"; key: string }
   /** Close a worker task (step D1): its console closes, its files stay. */
   | { type: "task.close"; taskId: string }
   /** Run a worker task again one tier up (step D2), as a new task. */
@@ -349,6 +357,13 @@ export type DuckEvent =
   | { type: "routines"; routines: RoutineView[]; backup: BackupView | null }
   /** The replay's progress (`report` null, judged so far), then its report. */
   | { type: "replay"; done: number; of: number; report: ReplayReport | null }
+  /** The patterns approved often enough to promote (step T3), on `sync` and after
+   *  every change. */
+  | { type: "promotions"; promotions: Promotion[] }
+  /** Answer to `trust.promotion.preview`. */
+  | { type: "promotionPreview"; preview: PromotionPreview }
+  /** A promotion went through: what it did. */
+  | { type: "promoted"; key: string; text: string }
   /** Duck's skills and the modes (built in, and from skills) (step S2), on `sync`
    *  and after every change. */
   | { type: "skills"; skills: SkillView[]; modes: ModeView[] }

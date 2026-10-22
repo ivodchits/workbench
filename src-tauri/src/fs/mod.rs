@@ -112,6 +112,44 @@ pub fn ensure_claude_md(root_path: String) -> Result<String, String> {
     Ok(path.to_string_lossy().into_owned())
 }
 
+/// A project's `.claude/settings.local.json` (step T3, promoting an approval to
+/// Claude Code's own allow list): its text, or `None` when there is none yet.
+#[tauri::command]
+pub fn claude_local_settings_read(root_path: String) -> Result<Option<String>, String> {
+    let path = local_settings(&root_path);
+    match std::fs::read_to_string(&path) {
+        Ok(t) => Ok(Some(t)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(format!("cannot read {}: {e}", path.display())),
+    }
+}
+
+/// Replace it with `content`, made with its folder when missing. Refused
+/// (`stale:`) when the file isn't what the preview was made from (`expected`,
+/// `None`: no file), so a change made meanwhile is never lost.
+#[tauri::command]
+pub fn claude_local_settings_write(
+    root_path: String,
+    content: String,
+    expected: Option<String>,
+) -> Result<(), String> {
+    if !Path::new(&root_path).is_dir() {
+        return Err(format!("{root_path} isn't a folder"));
+    }
+    if claude_local_settings_read(root_path.clone())? != expected {
+        return Err("stale: .claude/settings.local.json changed since it was read".into());
+    }
+    let path = local_settings(&root_path);
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir).map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
+    }
+    std::fs::write(&path, content).map_err(|e| format!("cannot write {}: {e}", path.display()))
+}
+
+fn local_settings(root: &str) -> std::path::PathBuf {
+    Path::new(root).join(".claude").join("settings.local.json")
+}
+
 /// The final path component for user-facing messages, falling back to the whole
 /// path if it has no file name.
 fn file_label(path: &str) -> String {
@@ -119,4 +157,29 @@ fn file_label(path: &str) -> String {
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_else(|| path.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn local_settings_are_made_and_never_overwritten_stale() {
+        let d = std::env::temp_dir().join(format!("wb-fs-local-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let root = d.to_string_lossy().into_owned();
+        assert_eq!(claude_local_settings_read(root.clone()).unwrap(), None);
+        // Made with its folder.
+        claude_local_settings_write(root.clone(), "{}\n".into(), None).unwrap();
+        assert_eq!(claude_local_settings_read(root.clone()).unwrap().as_deref(), Some("{}\n"));
+        // Written from a stale read: refused, the file kept.
+        let err = claude_local_settings_write(root.clone(), "{\"a\":1}".into(), None).unwrap_err();
+        assert!(err.starts_with("stale:"), "{err}");
+        claude_local_settings_write(root.clone(), "{\"a\":1}".into(), Some("{}\n".into())).unwrap();
+        assert_eq!(claude_local_settings_read(root.clone()).unwrap().as_deref(), Some("{\"a\":1}"));
+        // No such project folder.
+        assert!(claude_local_settings_write(d.join("gone").to_string_lossy().into_owned(), "{}".into(), None).is_err());
+        let _ = std::fs::remove_dir_all(&d);
+    }
 }

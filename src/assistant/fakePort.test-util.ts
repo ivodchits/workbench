@@ -10,6 +10,7 @@ import type { TranscriptPage } from "../ipc/transcript";
 import type { RateLimits } from "../ipc/usageLimits";
 import type {
   AutopilotBadgeRef,
+  ChoiceAdvice,
   ChoiceRef,
   GitSnapshot,
   ProjectRef,
@@ -110,6 +111,8 @@ export interface FakePort extends WorkbenchPort {
   hold: ((instanceId: string) => Promise<boolean>) | null;
   /** What `noteSession` showed. */
   lines: { id: string; text: string; acted: boolean }[];
+  /** What `adviseChoice` showed (T3). */
+  advice: ({ id: string } & ChoiceAdvice)[];
   /** Whether permission prompts are held (`holdPermissions`). */
   holding: boolean;
   /** The autopilot lines shown (`setAutopilotBadge`). */
@@ -171,6 +174,7 @@ export function fakePort(data: FakePortData = {}): FakePort {
     calls: [],
     hold: null,
     lines: [],
+    advice: [],
     holding: false,
     badges: new Map(),
     back: new Set(),
@@ -455,11 +459,15 @@ export function fakePort(data: FakePortData = {}): FakePort {
         threadId: null,
         lastPrompt: null,
         home: null,
+        delegated: false,
         ...data.contexts?.[id],
       });
     },
     noteSession(id, line) {
       port.lines.push({ id, ...line });
+    },
+    adviseChoice(id, advice) {
+      port.advice.push({ id, ...advice });
     },
     ensureProject(name, rootPath) {
       const same = (p: string) => p.replace(/\\/g, "/").toLowerCase();

@@ -753,6 +753,26 @@
   color: var(--wb-textDim2);
 }
 
+/* Duck's word on the prompt (step T3): a suggested answer or a plan review. */
+.wb-chc-advice {
+  flex: 0 0 auto;
+  padding: 3px 8px;
+  border-left: 2px solid var(--wb-textDim2);
+  color: var(--wb-text);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.wb-chc-advice-pass,
+.wb-chc-advice-answered {
+  border-left-color: var(--wb-done);
+}
+
+.wb-chc-advice-concerns,
+.wb-chc-advice-yours {
+  border-left-color: var(--wb-needs);
+}
+
 /* A plan card's "open plan" (step P1). */
 .wb-tx-open-plan {
   margin-top: 6px;

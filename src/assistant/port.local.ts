@@ -85,6 +85,7 @@ import {
 } from "../state/status";
 import { getOpenTasks, getTask, isLive, onTasksChange } from "../state/tasks";
 import { setTrustLine } from "../state/trustLines";
+import { setChoiceAdvice } from "../state/choiceAdvice";
 import { createTranscript } from "../transcript/model";
 import { effectiveModel } from "../util/models";
 import type {
@@ -182,7 +183,7 @@ async function storedMandate(instanceId: string): Promise<Mandate | null> {
     const raw = await mandateGet(instanceId);
     const v = raw ? (JSON.parse(raw) as Partial<Mandate>) : null;
     if (v && typeof v.text === "string" && typeof v.threadId === "string")
-      m = { text: v.text, threadId: v.threadId };
+      m = { text: v.text, threadId: v.threadId, ...(v.delegated === true && { delegated: true }) };
   } catch {
     // unreadable: treated as none
   }
@@ -595,10 +596,14 @@ export const localPort: WorkbenchPort = {
       threadId: m?.threadId ?? null,
       lastPrompt: last && last.trim() !== mandate?.trim() ? last : null,
       home: await home,
+      delegated: m?.delegated === true,
     };
   },
   noteSession(id, line) {
     setTrustLine(id, { ...line, at: Date.now() });
+  },
+  adviseChoice(id, advice) {
+    setChoiceAdvice(id, advice);
   },
   async ensureProject(name, rootPath) {
     const same = (p: string) => p.replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();

@@ -110,6 +110,27 @@ describe("action tools", () => {
     expect(queued.out.delivery).toMatch(/^queued: .*together with anything else waiting/);
   });
 
+  it("create_session hands a session over to Duck only on the user's own words (T3)", async () => {
+    const request = "Start a session to tidy the logging, and handle its questions yourself.";
+    const port = fakePort(data());
+    const ctx = { ...toolCtx(port), request };
+    const out = (await createSession.run(
+      createSession.schema.parse({ project: "backend", delegatedBy: "handle its questions yourself" }),
+      ctx,
+    )) as { delegated: string };
+    expect(port.calls[0].args[0]).toMatchObject({ mandate: { text: request, threadId: "t", delegated: true } });
+    expect(out.delegated).toMatch(/^yes/);
+    // Words the user didn't say don't hand it over.
+    const other = fakePort(data());
+    const refused = (await createSession.run(
+      createSession.schema.parse({ project: "backend", delegatedBy: "answer everything for me" }),
+      { ...toolCtx(other), request },
+    )) as { delegated: string };
+    expect(other.calls[0].args[0]).toMatchObject({ mandate: { text: request, threadId: "t" } });
+    expect((other.calls[0].args[0] as { mandate: object }).mandate).not.toHaveProperty("delegated");
+    expect(refused.delegated).toMatch(/^no/);
+  });
+
   it("create_session runs coding work on the coding model unless told otherwise", async () => {
     const coding = await run(
       createSession,

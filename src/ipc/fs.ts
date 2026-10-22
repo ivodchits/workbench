@@ -38,3 +38,14 @@ export function writeFile(path: string, content: string): Promise<void> {
 export function ensureClaudeMd(rootPath: string): Promise<string> {
   return invoke("ensure_claude_md", { rootPath });
 }
+
+/** A project's `.claude/settings.local.json` (step T3); null when there is none. */
+export function claudeLocalSettingsRead(rootPath: string): Promise<string | null> {
+  return invoke("claude_local_settings_read", { rootPath });
+}
+
+/** Replace it (made with its folder when missing). Refused (`stale:`) when the file
+ *  isn't `expected` any more (null: there was none). */
+export function claudeLocalSettingsWrite(rootPath: string, content: string, expected: string | null): Promise<void> {
+  return invoke("claude_local_settings_write", { rootPath, content, expected });
+}

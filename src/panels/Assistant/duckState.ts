@@ -40,6 +40,7 @@ import type {
 import type { ReaderView } from "../../assistant/reader";
 import type { DuckSettings } from "../../assistant/settings";
 import type { Mode } from "../../assistant/trust/decide";
+import type { Promotion, PromotionPreview } from "../../assistant/trust/promote";
 import type { ReplayReport } from "../../assistant/trust/replay";
 import type { Effect } from "../../assistant/trust/rules";
 import type { DecisionRow, Spend, StoredMessage, ThreadRow } from "../../ipc/assistant";
@@ -87,6 +88,11 @@ export interface DuckState {
   decisionsMore: boolean;
   /** The trust replay (step T2): running (judged `done` of `of`), or its report. */
   replay: { running: boolean; done: number; of: number; report: ReplayReport | null } | null;
+  /** Often-approved patterns to promote (step T3), the diff shown for one, and
+   *  what the last promotion did. */
+  promotions: Promotion[];
+  promotionPreview: PromotionPreview | null;
+  promoted: { key: string; text: string } | null;
   /** Duck's worker tasks (step D1), newest first. */
   tasks: TaskView[];
   /** The autopilots not stopped (step P1). */
@@ -136,6 +142,9 @@ let state: DuckState = {
   decisions: [],
   decisionsMore: false,
   replay: null,
+  promotions: [],
+  promotionPreview: null,
+  promoted: null,
   tasks: [],
   autopilots: [],
   routines: [],
@@ -439,6 +448,15 @@ function onEvent(e: DuckEvent): void {
     case "replay":
       set({ replay: { running: !e.report, done: e.done, of: e.of, report: e.report } });
       break;
+    case "promotions":
+      set({ promotions: e.promotions });
+      break;
+    case "promotionPreview":
+      set({ promotionPreview: e.preview });
+      break;
+    case "promoted":
+      set({ promoted: { key: e.key, text: e.text }, promotionPreview: null });
+      break;
     case "error":
       // A failed replay is over; its error shows like any other.
       set({ error: e.message, replay: state.replay?.running ? { ...state.replay, running: false } : state.replay });
@@ -668,6 +686,26 @@ export function setFloorEntry(id: string, enabled: boolean): void {
 export function runReplay(days: number, judgeMax: number): void {
   set({ replay: { running: true, done: 0, of: 0, report: null } });
   post({ type: "trust.replay", days, judgeMax });
+}
+
+/** Show what promoting `key` to Claude Code's allow list would write (T3). */
+export function previewPromotion(key: string): void {
+  set({ error: null, promotionPreview: null });
+  post({ type: "trust.promotion.preview", key });
+}
+
+export function closePromotionPreview(): void {
+  set({ promotionPreview: null });
+}
+
+/** Promote `key`: to Claude Code's list over the previewed `before`, or as a rule. */
+export function promote(key: string, to: "claude" | "rule", before: string | null = null): void {
+  set({ error: null });
+  post({ type: "trust.promote", key, to, before });
+}
+
+export function dismissPromotion(key: string): void {
+  post({ type: "trust.promotion.dismiss", key });
 }
 
 /** The newest page of the decision log (`null`), or the page before an id. */

@@ -429,6 +429,8 @@ pub fn run() {
             fs::read_file,
             fs::write_file,
             fs::ensure_claude_md,
+            fs::claude_local_settings_read,
+            fs::claude_local_settings_write,
             sys::open_path,
             sys::reveal_path,
             sys::open_scratchpad,

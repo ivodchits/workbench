@@ -182,6 +182,18 @@ export default function DrawerSettings({ duck }: { duck: DuckState }) {
                 </span>
               </label>
               <label style={{ ...row, alignItems: "center" }}>
+                <span>Sessions' plans:</span>
+                <select
+                  value={duck.settings.planApproval}
+                  onChange={(e) => setDuckSettings({ planApproval: e.target.value as DuckSettings["planApproval"] })}
+                  style={select}
+                >
+                  <option value="show">show me the plan with Duck's review</option>
+                  <option value="approve">approve if Duck's review passes</option>
+                </select>
+                <span style={hint}>(reviewed against what the session is for; edits still ask)</span>
+              </label>
+              <label style={{ ...row, alignItems: "center" }}>
                 <span>Compact a thread past</span>
                 <select
                   value={duck.settings.compactAt}

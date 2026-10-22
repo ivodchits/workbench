@@ -6419,6 +6419,96 @@ checked in the scratch PTY first.
   - A plan review shows up beside the plan card.
 - **Out of scope:** editing Claude Code's global (user-level) settings; promotion is
   per-project only.
+- **As built (2026-10-22):**
+  - **Promotion** (`src/assistant/trust/promote.ts`):
+    - **What counts.** The newest 2000 decisions are counted. A pattern is `suggestRule`'s:
+      a command's first words, a file tool's folder, or a host. It's offered once it was
+      approved 3 times in one project by a rule or the judge.
+    - **Shadow counts too.** Shadow decisions count: with `answerSessionPrompts` off (the
+      default), those prompts were answered by you, so they're your approvals.
+    - **What's never offered.** A bare tool name is never offered, and neither are
+      Duck's own tools or questions.
+    - **Where it's offered.** The decisions view lists the offers under "suggested",
+      with the count and an example call.
+    - **"add to Claude Code's allow list…"** shows `.claude/settings.local.json` before
+      and after as a line diff. "write it" puts the pattern on `permissions.allow` and
+      keeps everything else in the file, including its indent.
+      - The new Rust commands `claude_local_settings_read` and
+        `claude_local_settings_write` (`src-tauri/src/fs/mod.rs`) do the file work.
+        They make the file and its `.claude/` folder when missing.
+      - A write is refused (`stale:`) when the file changed after the preview read
+        it, as the plan's "existing fs commands" would not.
+      - A file that isn't valid JSON, or whose `permissions.allow` isn't a list, is
+        left for you to fix.
+    - **"make it a Duck rule"** adds a project allow rule. It isn't offered when an
+      allow rule already covers the pattern.
+    - **Settled offers.** Taking an offer either way, or dismissing it, settles it.
+      Settled offers are kept in the setting `settledPromotions`.
+  - **Questions and plans** (`trust/delegate.ts`, `startDelegateWatcher`):
+    - **Which sessions.** Every session with a mandate, except autopilot runs (P1
+      settles their questions) and Duck's workers (D2: Duck is their user).
+    - **Handing a session over.** `create_session` takes `delegatedBy`: the user's
+      words handing the session over, quoted from their latest message and checked
+      there (`mandate.ts` `quotes`).
+      - On a match the mandate is stored with `delegated: true`, and
+        `SessionContext.delegated` reads it back.
+      - Without a match the session starts anyway, and the tool's result says that
+        its questions go to you.
+    - **Questions.** Sonnet (`delegate-question`, adaptive thinking, the frozen
+      `ANSWER_SYSTEM`) picks the answer you'd most likely give, by the mandate. The
+      question goes inside `<question>`, the task inside `<task>`, and tags inside them
+      are defanged.
+      - **A delegated session:** the answer goes in.
+        - A decision row records it: layer `delegated`, its one-sentence reason, the
+          question and the answer. That's the logged rationale.
+        - A line goes under the session's card, and a notice to the thread that
+          started it.
+      - **Any other session:** the pick shows on the choice card as "Duck suggests
+        2. Redis: …".
+      - **A serious question,** or one only the console can answer (several
+        questions, multi-select), is always left to you, with the reason.
+    - **Plans.**
+      - **The review.** Sonnet (`plan-review`, `PLAN_SYSTEM`) reviews the plan against
+        the mandate and gives a verdict, pass or concerns, with a summary and the
+        concerns. The review shows on the plan card as soon as it's done.
+      - **Approving.** The new setting "Sessions' plans" (`planApproval`) chooses
+        "show me the plan with Duck's review" (the default) or "approve if Duck's review
+        passes".
+        - Approval picks "Yes, manually approve edits", by its label from the options
+          read off the screen. The session's edits then still reach the permission
+          prompts, and the trust watcher.
+        - No such option, or concerns: the plan is left to you, and the decision is
+          logged.
+    - **Trust.** Answering and approving follow trust: paused, the session's guard
+      tripped or the project `off` only advises, and `shadow` logs "would answer" or
+      "would approve".
+    - **Alerts.** The needs-you of a question or plan Duck may answer waits for it.
+      The trust watcher's hold hands such prompts to the delegate watcher
+      (`holdOther`), even when the prompt reaches the store after the alert. One that
+      Duck only advises on is told at once.
+  - **The choice card** (`state/choiceAdvice.ts`, port `adviseChoice`) shows Duck's line,
+    in green for a pass or an answer and amber for concerns or "yours".
+  - **The decisions view** labels the new layers: delegated question, plan review.
+  - **Not built:** the optional daily digest, and Duck's advice on the phone's card.
+  - **Tests:**
+    - 12 for questions and plans (`delegate.test.ts`):
+      - a delegated question answered, logged and told, with no alert;
+      - a suggestion that is told at once, and a serious question;
+      - shadow mode, and the sessions skipped;
+      - a question you answered first, and the defanging;
+      - a plan reviewed only; a plan approved by label after the options were read;
+      - concerns, unknown options, and trust paused.
+    - 10 for promotion (`promote.test.ts`): the counting rules, `withAllow`, the diff,
+      a preview and write, a stale write refused, a rule, a dismissal, and new decisions
+      counted.
+    - Also: `create_session`'s `delegatedBy` (matched and refused), the trust watcher
+      handing a question's hold over, and the Rust settings file (made, stale refused).
+    - **Results:** vitest 775 and cargo 323. tsc is clean; eslint and clippy show only
+      the existing warnings.
+  - **Not tried in the app** (the done-when):
+    - a promoted pattern that Claude Code no longer asks about;
+    - a delegated session's question answered, with its reason in the decision log;
+    - a plan review beside a real plan card.
 
 #### Step T4 — Permission answers through the `PermissionRequest` hook
 
@@ -7142,7 +7232,7 @@ T2 goes live after the replay check in its done-when (the past week's prompts th
 | R4 | Android companion app (gate: R3 sees real use) | ☐ |
 | T1 | Trust engine for the Assistant's own actions | ☑ |
 | T2 | Auto-answering Claude Code permission prompts | ☑ |
-| T3 | Learning loop: promote rules, questions and plans | ☐ |
+| T3 | Learning loop: promote rules, questions and plans | ☑ (not tried in the app) |
 | T4 | Permission answers through the `PermissionRequest` hook | ☑ |
 | P1 | Autopilot loop for one session | ☑ |
 | P2 | Unattended runs: limits, windows, stalls, checklists, several sessions | ☑ (the overnight run not tried yet) |

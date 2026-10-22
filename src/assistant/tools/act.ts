@@ -19,6 +19,7 @@ import { isStale } from "../../ipc/notes";
 import { DUCK_PERMISSION_MODES, SESSION_MODELS } from "../../util/models";
 import type { PromptDelivery, SessionPhase, SessionRef, WorkbenchPort } from "../port";
 import type { NoteEdit } from "../protocol";
+import { quotes } from "../trust/mandate";
 import {
   choiceLine,
   compact,
@@ -112,7 +113,7 @@ export const sendPrompt = defineTool({
 export const createSession = defineTool({
   name: "create_session",
   description:
-    "Start a new Workbench session (a Claude Code console) in a project, optionally with a first prompt and in its own git worktree. Leave `model` out for coding or other professional work: it then runs on the coding model from Duck's settings. Pass `project` to use the project's own default model instead, or a model name when the user asks for one. `permissionMode` works the same way: leave it out for Duck's coding setting, `project` for the project's default, or a mode when the user asks for one (`acceptEdits` takes file edits without asking, `plan` only plans). The new session gets the focus, as when the user makes one.",
+    "Start a new Workbench session (a Claude Code console) in a project, optionally with a first prompt and in its own git worktree. Leave `model` out for coding or other professional work: it then runs on the coding model from Duck's settings. Pass `project` to use the project's own default model instead, or a model name when the user asks for one. `permissionMode` works the same way: leave it out for Duck's coding setting, `project` for the project's default, or a mode when the user asks for one (`acceptEdits` takes file edits without asking, `plan` only plans). When the user hands the session over to you (\"handle its questions\", \"don't bother me with it\"), quote those words of theirs in `delegatedBy`: you then answer its questions for them, and leave only the serious ones to them. The new session gets the focus, as when the user makes one.",
   schema: z.object({
     project: projectArg,
     prompt: z
@@ -131,6 +132,11 @@ export const createSession = defineTool({
       .describe("Isolate it in a new git worktree (local projects only)."),
     model: z.enum([...SESSION_MODELS, "project"]).optional(),
     permissionMode: z.enum([...DUCK_PERMISSION_MODES, "project"]).optional(),
+    delegatedBy: z
+      .string()
+      .max(500)
+      .optional()
+      .describe("The user's own words handing the session over to you, quoted from their latest message."),
   }),
   tier: "reversible",
   // A worktree's setup command (an install) can take a while.
@@ -141,9 +147,11 @@ export const createSession = defineTool({
   },
   trust: (input, port) => ({ ...onProject(input, port), texts: input.prompt ? [input.prompt] : [] }),
   async run(
-    { project, prompt, title, worktree, model, permissionMode },
+    { project, prompt, title, worktree, model, permissionMode, delegatedBy },
     { port, settings, request, threadId },
   ) {
+    // Handed over only on the user's own words (step T3).
+    const delegated = !!delegatedBy?.trim() && quotes(request, delegatedBy);
     const p = findProject(port, project);
     if (worktree && p.remote)
       throw new Error(`${p.name} is a remote project: worktrees are local only.`);
@@ -158,7 +166,7 @@ export const createSession = defineTool({
       model: m,
       permissionMode: mode,
       // What the session is for, in the user's words: its prompts are judged by it.
-      mandate: request ? { text: request, threadId } : undefined,
+      mandate: request ? { text: request, threadId, ...(delegated && { delegated: true }) } : undefined,
     });
     return compact({
       id: made.id,
@@ -168,6 +176,11 @@ export const createSession = defineTool({
       permissionMode: mode ?? "the project's default",
       worktree: worktree ?? null,
       prompt: prompt?.trim() ? "sent once Claude Code is ready (queued on its card if it never is)" : null,
+      delegated: delegatedBy?.trim()
+        ? delegated
+          ? "yes: you answer its questions, the serious ones go to the user"
+          : "no: those words aren't in the user's latest message, so its questions go to them"
+        : null,
       warning: made.message,
     });
   },

@@ -20,7 +20,8 @@
 // lands, is left alone and logged as `superseded`. Every decision except "trust
 // doesn't apply" goes to the log and leaves a line under the session's card.
 //
-// Questions and plans are T3's: they go to you untouched.
+// Questions and plans are T3's (`delegate.ts`); their needs-you waits on its hold
+// (`holdOther`).
 
 import type { DecisionRow } from "../../ipc/assistant";
 import type { ChoiceRef, SessionContext, SessionRef, WorkbenchPort } from "../port";
@@ -54,14 +55,42 @@ export interface WatcherDeps {
   notice(threadId: string, text: string): void;
   /** Answer prompts (the setting); false keeps every project in shadow mode. */
   answering?: () => boolean;
+  /** The hold for a question's or a plan's needs-you (T3's delegate watcher). */
+  holdOther?: (instanceId: string) => Promise<boolean>;
   now?: () => number;
   optionsWaitMs?: number;
   promptWaitMs?: number;
 }
 
-const EMPTY_CONTEXT: SessionContext = { mandate: null, from: null, threadId: null, lastPrompt: null, home: null };
+const EMPTY_CONTEXT: SessionContext = { mandate: null, from: null, threadId: null, lastPrompt: null, home: null, delegated: false };
 
 const code = (s: string) => `\`${s.replace(/`/g, "'")}\``;
+
+/** Resolves with the session's prompt once `ok` holds for it (or it's gone), or
+ *  with what it is when `ms` runs out. */
+export function waitForChoice(
+  port: Pick<WorkbenchPort, "choiceOf" | "onChoices">,
+  id: string,
+  ok: (c: ChoiceRef | null) => boolean,
+  ms: number,
+): Promise<ChoiceRef | null> {
+  return new Promise((resolve) => {
+    const check = () => {
+      const c = port.choiceOf(id);
+      if (!ok(c)) return false;
+      done(c);
+      return true;
+    };
+    const done = (c: ChoiceRef | null) => {
+      off();
+      clearTimeout(timer);
+      resolve(c);
+    };
+    const off = port.onChoices(() => void check());
+    const timer = setTimeout(() => done(port.choiceOf(id)), ms);
+    check();
+  });
+}
 
 export function startTrustWatcher(deps: WatcherDeps): () => void {
   const { port, trust } = deps;
@@ -75,27 +104,6 @@ export function startTrustWatcher(deps: WatcherDeps): () => void {
   const waiting = new Map<string, ((tell: Promise<boolean>) => void)[]>();
   const highStreak = new Map<string, number>();
   let stopped = false;
-
-  /** Resolves with the session's prompt once `ok` holds for it (or it's gone),
-   *  or with what it is when `ms` runs out. */
-  function waitForChoice(id: string, ok: (c: ChoiceRef | null) => boolean, ms: number): Promise<ChoiceRef | null> {
-    return new Promise((resolve) => {
-      const check = () => {
-        const c = port.choiceOf(id);
-        if (!ok(c)) return false;
-        done(c);
-        return true;
-      };
-      const done = (c: ChoiceRef | null) => {
-        off();
-        clearTimeout(timer);
-        resolve(c);
-      };
-      const off = port.onChoices(() => void check());
-      const timer = setTimeout(() => done(port.choiceOf(id)), ms);
-      check();
-    });
-  }
 
   function log(s: SessionRef, choice: ChoiceRef, d: Decision, answeredBy: DecisionRow["answeredBy"] = null): void {
     const row: Omit<DecisionRow, "id"> = {
@@ -240,7 +248,7 @@ export function startTrustWatcher(deps: WatcherDeps): () => void {
     // allow / deny: press a key, if the prompt is still the one decided.
     let key: number | "deny" = "deny";
     if (d.outcome === "allow") {
-      const c = await waitForChoice(s.id, (x) => gone(x) || pickYes(x!) !== null, optionsWait);
+      const c = await waitForChoice(port, s.id, (x) => gone(x) || pickYes(x!) !== null, optionsWait);
       if (gone(c)) {
         log(s, choice, { ...d, layer: "superseded", reason: `answered first; would have allowed (${d.reason})` });
         return true;
@@ -286,11 +294,19 @@ export function startTrustWatcher(deps: WatcherDeps): () => void {
   /** The last prompt picked up per session, so each is decided once. */
   const seen = new Map<string, string>();
 
+  const other = (id: string) => deps.holdOther?.(id) ?? Promise.resolve(true);
+
   /** Pick up every permission prompt that just opened. */
   function scan(): void {
     if (stopped) return;
     for (const s of port.listSessions()) {
       const c = s.choice;
+      // A needs-you waiting for a question or a plan: that's the other hold's.
+      if (c && c.kind !== "permission" && waiting.has(s.id)) {
+        const tell = other(s.id);
+        for (const w of waiting.get(s.id) ?? []) w(tell);
+        waiting.delete(s.id);
+      }
       if (!c || c.kind !== "permission" || c.sent !== null) continue;
       if (handling.get(s.id)?.choiceId === c.id || seen.get(s.id) === c.id) continue;
       seen.set(s.id, c.id);
@@ -301,7 +317,7 @@ export function startTrustWatcher(deps: WatcherDeps): () => void {
     const h = handling.get(id);
     const c = port.choiceOf(id);
     if (h && (!c || c.id === h.choiceId)) return h.tell;
-    if (c && c.kind !== "permission") return Promise.resolve(true);
+    if (c && c.kind !== "permission") return other(id);
     if (c && seen.get(id) === c.id) return Promise.resolve(true); // decided already
     // The prompt hasn't reached the choice store yet: wait for it a moment.
     return new Promise((resolve) => {

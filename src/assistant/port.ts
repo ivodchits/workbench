@@ -271,6 +271,9 @@ export interface WorkbenchPort {
   sessionContext(instanceId: string): Promise<SessionContext>;
   /** A line under the session's card in the rail ("auto-approved `npm test`"). */
   noteSession(instanceId: string, line: { text: string; acted: boolean }): void;
+  /** Duck's word on a session's open question or plan (step T3), shown on its
+   *  choice card while that prompt is open. */
+  adviseChoice(instanceId: string, advice: ChoiceAdvice): void;
 
   // ── worker sessions (D1) ──
 
@@ -351,6 +354,18 @@ export interface Mandate {
   text: string;
   /** Duck's thread the request came from. */
   threadId: string;
+  /** The user handed the session over (step T3): Duck answers its questions. */
+  delegated?: boolean;
+}
+
+/** Duck's word on an open question or plan (step T3). */
+export interface ChoiceAdvice {
+  /** The prompt it is about; shown only while that one is open. */
+  choiceId: string;
+  /** A suggested answer, the answer Duck gave, a question left to the user, or a
+   *  plan review's verdict. */
+  tone: "suggestion" | "answered" | "yours" | "pass" | "concerns";
+  text: string;
 }
 
 export interface SessionContext {
@@ -364,6 +379,8 @@ export interface SessionContext {
   lastPrompt: string | null;
   /** The user's home folder, for `~/` rules. */
   home: string | null;
+  /** The user handed the session over (step T3). */
+  delegated: boolean;
 }
 
 export interface PluginRunRequest {

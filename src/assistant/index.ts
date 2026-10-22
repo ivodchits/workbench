@@ -86,6 +86,9 @@ import { FLOOR } from "./trust/floor";
 import { replay, type ReplayReport } from "./trust/replay";
 import { createTrustStore, ipcTrustBackend, type TrustStore } from "./trust/store";
 import { startTrustWatcher } from "./trust/watcher";
+import { startDelegateWatcher } from "./trust/delegate";
+import { createPromoter, type Promoter } from "./trust/promote";
+import { claudeLocalSettingsRead, claudeLocalSettingsWrite } from "../ipc/fs";
 
 /** Decisions per page of the log. */
 const DECISION_PAGE = 50;
@@ -239,6 +242,7 @@ export function endpoint(
   onSettings?: () => void,
   routines?: RoutinesHost,
   skills?: SkillsHost,
+  promoter?: Promoter,
 ): DuckEndpoint {
   const listeners = new Set<(ev: DuckEvent) => void>();
   const say = (ev: DuckEvent) => {
@@ -317,6 +321,14 @@ export function endpoint(
     if (!trust) throw new Error("Duck's trust settings didn't load.");
     return trust;
   };
+  const sendPromotions = (to = say) => {
+    if (promoter) to({ type: "promotions", promotions: promoter.list() });
+  };
+  promoter?.subscribe(() => sendPromotions());
+  const needPromoter = () => {
+    if (!promoter) throw new Error("Promotions aren't available here.");
+    return promoter;
+  };
 
   /** `answer`: where the answers to this request go (the surface that asked, or
    *  every surface). */
@@ -359,6 +371,7 @@ export function endpoint(
           answer({ type: "confirm", request });
         if (settings) answer({ type: "settings", settings: settings.get() });
         if (trust) answer({ type: "trust", trust: trustView(trust) });
+        sendPromotions(answer);
         sendTasks(answer);
         sendAutopilots(answer);
         await sendRoutines(answer);
@@ -414,6 +427,15 @@ export function endpoint(
         answer({ type: "replay", done: report.judged, of: report.judged, report });
         return;
       }
+      case "trust.promotion.preview":
+        answer({ type: "promotionPreview", preview: await needPromoter().preview(msg.key) });
+        return;
+      case "trust.promote":
+        answer({ type: "promoted", key: msg.key, text: await needPromoter().promote(msg.key, msg.to, msg.before) });
+        return;
+      case "trust.promotion.dismiss":
+        await needPromoter().dismiss(msg.key);
+        return;
       case "thread.keep":
         await e.keepThread(msg.threadId, msg.keep);
         return;
@@ -754,6 +776,21 @@ export function initAssistant(): Promise<void> {
         (await getClient()).beta.messages.stream(params, opts),
       nameThread: (text) => oneShot("title", text.slice(0, 2000)),
     });
+    const trustNotice = (threadId: string, text: string) =>
+      void engine
+        .notice(threadId, { kind: "trust", text })
+        .catch((e: unknown) => console.warn("duck: a trust notice was dropped", e));
+    // Questions and plans outside autopilot runs and workers (T3).
+    const delegate = trust
+      ? startDelegateWatcher({
+          port: localPort,
+          trust,
+          call: (r) => structured(r),
+          notice: trustNotice,
+          planApproval: () => settings.get().planApproval,
+          skip: (id) => autopilot.get(id)?.state === "running",
+        })
+      : null;
     // Claude Code permission prompts (T2): decided under the same trust store.
     if (trust)
       startTrustWatcher({
@@ -761,11 +798,20 @@ export function initAssistant(): Promise<void> {
         trust,
         judge: (r) => structured(r),
         answering: () => settings.get().answerSessionPrompts,
-        notice: (threadId, text) =>
-          void engine
-            .notice(threadId, { kind: "trust", text })
-            .catch((e: unknown) => console.warn("duck: a trust notice was dropped", e)),
+        holdOther: delegate ? (id) => delegate.hold(id) : undefined,
+        notice: trustNotice,
       });
+    // Often-approved patterns, offered for Claude Code's allow list (T3).
+    const promoter = trust
+      ? createPromoter({
+          trust,
+          projects: () => localPort.listProjects(),
+          settled: () => settings.get().settledPromotions,
+          settle: (keys) => settings.set({ settledPromotions: keys }).then(() => {}),
+          readSettings: claudeLocalSettingsRead,
+          writeSettings: claudeLocalSettingsWrite,
+        })
+      : undefined;
     const replayer: Replayer | undefined = trust
       ? async (days, judgeMax, progress) =>
           replay(await replayCalls(days, REPLAY_MAX_CALLS), {
@@ -851,6 +897,7 @@ export function initAssistant(): Promise<void> {
       () => announcer.poke(),
       routinesHost,
       skills,
+      promoter,
     );
     epRef = ep;
     duck = createLocalTransport(ep);

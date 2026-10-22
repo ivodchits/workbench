@@ -20,6 +20,7 @@ import {
   type PendingChoice,
 } from "../state/pendingChoice";
 import { answerChoice } from "../state/remoteActions";
+import { useChoiceAdvice } from "../state/choiceAdvice";
 import { renderPendingTool } from "../transcript/render";
 import { planRef } from "../transcript/feed";
 import { openPlan } from "./openPlan";
@@ -47,6 +48,8 @@ function ChoiceCard({ instanceId, choice, onShowTerminal }: ChoiceCardProps) {
   const [stalled, setStalled] = useState(false);
   const { id, kind, toolName, input, source } = choice;
   const held = choice.held !== null;
+  // Duck's suggested answer or plan review (step T3).
+  const advice = useChoiceAdvice(instanceId, id);
 
   // What is being asked, drawn by the transcript renderer (which is what makes
   // tool input — untrusted text — safe to show).
@@ -167,6 +170,8 @@ function ChoiceCard({ instanceId, choice, onShowTerminal }: ChoiceCardProps) {
           />
         )}
       </div>
+
+      {advice && <div className={`wb-chc-advice wb-chc-advice-${advice.tone}`}>{advice.text}</div>}
 
       {choice.sent ? (
         <div className="wb-chc-note">
