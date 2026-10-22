@@ -18,7 +18,7 @@ import type { ProjectRef, SessionRef, WorkbenchPort } from "../port";
 import { isFinished, type TaskManager } from "../tasks";
 import { badgeText, type AutopilotManager } from "../autopilot";
 import type { McpHost } from "../mcp";
-import type { McpServerSpec } from "../settings";
+import { INVOICE_DEFAULTS, type McpServerSpec } from "../settings";
 import { wrapMcp } from "./mcp";
 import { choiceLine, compact } from "./read";
 import { defineTool } from "./registry";
@@ -26,8 +26,9 @@ import { defineTool } from "./registry";
 /** The quest_log tools the briefing reads, and nothing else. */
 export const BRIEFING_READS = ["whoami", "get_agenda", "get_calendar_occurrences", "get_stats"] as const;
 
-/** The tag that marks the monthly invoice's entry in quest_log. */
-export const INVOICE_TAG = "duck:invoice";
+/** The tag that marks the monthly invoice's entry in quest_log, unless the
+ *  invoice settings name another. */
+export const INVOICE_TAG = INVOICE_DEFAULTS.entryTag;
 /** The Workbench project the briefing is saved in, as `morning-<date>`. */
 export const BRIEFING_PROJECT = "Duck";
 
@@ -100,8 +101,6 @@ function occurrenceTime(o: QlOccurrence): string {
     : hhmm(o.start_millis);
 }
 
-const isInvoice = (e: QlEntry | undefined) => !!e?.tags?.includes(INVOICE_TAG);
-
 /** What the quest_log reads came back as, raw. */
 export interface QuestLogReads {
   whoami?: { today?: string; timezone?: string };
@@ -113,7 +112,7 @@ export interface QuestLogReads {
 }
 
 /** The day from quest_log's reads: what's on, by time; what's open; what's ahead. */
-export function questLogDay(r: QuestLogReads, today: string) {
+export function questLogDay(r: QuestLogReads, today: string, invoiceTag: string = INVOICE_TAG) {
   const occ = (r.calendar?.occurrences ?? []).filter((o) => o.entry?.status !== "CANCELLED");
   const byStart = (a: QlOccurrence, b: QlOccurrence) =>
     (a.is_all_day ? -1 : (a.start_millis ?? 0)) - (b.is_all_day ? -1 : (b.start_millis ?? 0));
@@ -133,7 +132,7 @@ export function questLogDay(r: QuestLogReads, today: string) {
     ...(r.agenda?.overdue ?? []).map((a) => ({ e: a.entry, due: a.effective_millis, overdue: true })),
     ...(r.agenda?.all ?? []).map((a) => ({ e: a.entry, due: a.effective_millis, overdue: false })),
     ...occ.map((o) => ({ e: o.entry, due: o.start_millis, overdue: false })),
-  ].find((x) => isInvoice(x.e));
+  ].find((x) => !!x.e?.tags?.includes(invoiceTag));
 
   const stats = r.stats?.today;
   return compact({
@@ -341,7 +340,7 @@ export const morningBriefing = defineTool({
       const day = {
         date: today,
         ...(ql.whoami?.timezone && { timezone: ql.whoami.timezone }),
-        ...questLogDay(ql, today),
+        ...questLogDay(ql, today, ctx.settings.morning.invoice?.entryTag),
         ...(Object.keys(ql.failed).length && { failed: ql.failed }),
       };
       questLog = wrapMcp("quest_log", "morning_briefing", JSON.stringify(day));

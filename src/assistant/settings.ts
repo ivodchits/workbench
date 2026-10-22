@@ -55,6 +55,51 @@ export const QUEST_LOG: McpServerSpec = {
   ],
 };
 
+/** How a date cell of the invoice draft is filled (the morning routine's invoice). */
+export const DATE_RULES = [
+  "today",
+  "first_of_month",
+  "last_of_month",
+  "first_of_prev_month",
+  "last_of_prev_month",
+] as const;
+export type DateRule = (typeof DATE_RULES)[number];
+
+/** Where the amount comes from: a fixed number, the cell's current value, arithmetic
+ *  over other cells of the sheet (`formula`, e.g. `C5*C6`), or Duck asks. */
+export const AMOUNT_SOURCES = ["fixed", "same_as_last", "cells", "ask"] as const;
+export type AmountSource = (typeof AMOUNT_SOURCES)[number];
+
+export type InvoiceField =
+  | { label: string; address: string; kind: "date"; rule: DateRule }
+  | { label: string; address: string; kind: "amount"; rule: AmountSource; value?: number; formula?: string };
+
+/** The monthly invoice: the user's Google Sheet, the cells a draft changes, and the
+ *  quest_log entry that says it's due. None of it is secret. */
+export interface InvoiceSettings {
+  sheetId: string;
+  tab: string;
+  /** The Drive folder drafts go in (Duck creates it). */
+  draftFolder: string;
+  /** The quest_log tag that marks the invoice entry. */
+  entryTag: string;
+  fields: InvoiceField[];
+}
+
+/** The morning routine's Google half. The OAuth client's secret, if it has one, and
+ *  the refresh token live in Credential Manager, never here. */
+export interface MorningSettings {
+  /** The Desktop OAuth client id from the user's Google Cloud project. */
+  googleClientId: string | null;
+  invoice: InvoiceSettings | null;
+}
+
+export const DEFAULT_MORNING: MorningSettings = { googleClientId: null, invoice: null };
+
+export const INVOICE_DEFAULTS = { draftFolder: "Duck drafts", entryTag: "duck:invoice" } as const;
+
+export const MAX_INVOICE_FIELDS = 6;
+
 export interface DuckSettings {
   /** Ask before every prompt Duck sends to a session. Off = only consequential
    *  actions ask. */
@@ -95,6 +140,8 @@ export interface DuckSettings {
   dndUntil: number | null;
   /** External MCP servers (step X1). */
   mcpServers: McpServerSpec[];
+  /** The morning routine's Google access and invoice. */
+  morning: MorningSettings;
 }
 
 export const DEFAULT_TIERS: Record<Tier, TierSpec> = {
@@ -118,6 +165,7 @@ export const DEFAULT_SETTINGS: DuckSettings = {
   announce: DEFAULT_ANNOUNCE,
   dndUntil: null,
   mcpServers: [QUEST_LOG],
+  morning: DEFAULT_MORNING,
 };
 
 /** Do Not Disturb "until I turn it off". */
@@ -156,6 +204,7 @@ export function cleanSettings(raw: unknown): Partial<DuckSettings> {
   if (r.workspace === null) out.workspace = null;
   else if (typeof r.workspace === "string") out.workspace = r.workspace.trim() || null;
   if (Array.isArray(r.mcpServers)) out.mcpServers = cleanMcpServers(r.mcpServers);
+  if (r.morning && typeof r.morning === "object") out.morning = cleanMorning(r.morning as Record<string, unknown>);
   if (r.tiers && typeof r.tiers === "object") {
     const t = r.tiers as Record<string, Partial<TierSpec> | undefined>;
     out.tiers = Object.fromEntries(
@@ -201,6 +250,76 @@ export function cleanMcpServers(raw: unknown[]): McpServerSpec[] {
     });
   }
   return out;
+}
+
+const CLIENT_ID = /^[A-Za-z0-9._-]{8,200}$/;
+const SHEET_ID = /^[A-Za-z0-9_-]{20,128}$/;
+const CELL = /^\$?([A-Z]{1,3})\$?([1-9][0-9]{0,6})$/;
+/** A `cells` formula: cell addresses, numbers, + - * / and brackets. */
+const FORMULA = /^[A-Z0-9$.+\-*/() ]{1,200}$/;
+const TAG = /^[^\s,]{1,64}$/;
+
+/** A sheet id, or the id out of a pasted docs.google.com URL. */
+export function sheetIdOf(v: string): string | null {
+  const s = v.trim();
+  const id = /\/spreadsheets\/d\/([A-Za-z0-9_-]+)/.exec(s)?.[1] ?? s;
+  return SHEET_ID.test(id) ? id : null;
+}
+
+/** An A1 cell address, uppercase without `$`; null when it isn't one cell. */
+export function cellOf(v: string): string | null {
+  const m = CELL.exec(v.trim().toUpperCase());
+  return m ? `${m[1]}${m[2]}` : null;
+}
+
+export function cleanMorning(r: Record<string, unknown>): MorningSettings {
+  const id = typeof r.googleClientId === "string" ? r.googleClientId.trim() : "";
+  return {
+    googleClientId: CLIENT_ID.test(id) ? id : null,
+    invoice: r.invoice && typeof r.invoice === "object" ? cleanInvoice(r.invoice as Record<string, unknown>) : null,
+  };
+}
+
+/** The invoice config, or null without a valid sheet and tab. Fields with a bad or
+ *  repeated address, or a rule that doesn't fit their kind, are dropped. */
+export function cleanInvoice(r: Record<string, unknown>): InvoiceSettings | null {
+  const sheetId = typeof r.sheetId === "string" ? sheetIdOf(r.sheetId) : null;
+  const tab = typeof r.tab === "string" ? r.tab.trim().slice(0, 100) : "";
+  if (!sheetId || !tab) return null;
+  const text = (v: unknown, def: string, max: number) =>
+    typeof v === "string" && v.trim() ? v.trim().slice(0, max) : def;
+  const tag = typeof r.entryTag === "string" ? r.entryTag.trim() : "";
+  const fields: InvoiceField[] = [];
+  for (const v of Array.isArray(r.fields) ? r.fields : []) {
+    if (fields.length >= MAX_INVOICE_FIELDS) break;
+    if (!v || typeof v !== "object") continue;
+    const f = v as Record<string, unknown>;
+    const address = typeof f.address === "string" ? cellOf(f.address) : null;
+    if (!address || fields.some((x) => x.address === address)) continue;
+    const label = text(f.label, address, 60);
+    if (f.kind === "date" && DATE_RULES.includes(f.rule as DateRule)) {
+      fields.push({ label, address, kind: "date", rule: f.rule as DateRule });
+    } else if (f.kind === "amount" && AMOUNT_SOURCES.includes(f.rule as AmountSource)) {
+      const rule = f.rule as AmountSource;
+      if (rule === "fixed") {
+        if (typeof f.value !== "number" || !Number.isFinite(f.value)) continue;
+        fields.push({ label, address, kind: "amount", rule, value: f.value });
+      } else if (rule === "cells") {
+        const formula = typeof f.formula === "string" ? f.formula.trim().toUpperCase() : "";
+        if (!FORMULA.test(formula) || !/[A-Z]/.test(formula)) continue;
+        fields.push({ label, address, kind: "amount", rule, formula });
+      } else {
+        fields.push({ label, address, kind: "amount", rule });
+      }
+    }
+  }
+  return {
+    sheetId,
+    tab,
+    draftFolder: text(r.draftFolder, INVOICE_DEFAULTS.draftFolder, 100),
+    entryTag: TAG.test(tag) ? tag : INVOICE_DEFAULTS.entryTag,
+    fields,
+  };
 }
 
 function cleanAnnounce(r: Record<string, unknown>): AnnounceSettings {
