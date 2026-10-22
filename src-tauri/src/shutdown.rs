@@ -60,6 +60,7 @@ pub fn on_exit(app: &AppHandle) {
 fn stop_children(app: &AppHandle) {
     crate::assistant::headless::kill_all(app);
     crate::assistant::subscription_brain::kill_all(app);
+    crate::assistant::mcp_host::kill_all(app);
     if let Some(pty) = app.try_state::<crate::pty::PtyManager>() {
         pty.kill_all();
     }

@@ -1043,19 +1043,17 @@ function confirmCard(ask: ConfirmRequest): HTMLElement {
   if (ask.summary) card.append(details(`ask:${ask.toolUseId}`, el("summary", "muted", "details"), input));
   else card.append(input());
   const bar = el("div", "bar");
-  const allow = el("button", "ok", "allow");
-  const deny = el("button", "no", "deny");
-  for (const [b, yes] of [
-    [allow, true],
-    [deny, false],
-  ] as const) {
+  // A card with choices (B2: the login card) has a button per way to allow it.
+  const yes = ask.choices?.length ? ask.choices : [{ id: "", label: "allow" }];
+  const buttons = [...yes.map((c) => ({ b: el("button", "ok", c.label), allow: true, choice: c.id })), { b: el("button", "no", ask.denyLabel ?? "deny"), allow: false, choice: "" }];
+  for (const { b, allow, choice } of buttons) {
     b.type = "button";
     b.onclick = () => {
-      allow.disabled = deny.disabled = true;
-      post({ type: "confirm", threadId: ask.threadId, toolUseId: ask.toolUseId, allow: yes });
+      for (const x of buttons) x.b.disabled = true;
+      post({ type: "confirm", threadId: ask.threadId, toolUseId: ask.toolUseId, allow, ...(choice && { choice }) });
     };
   }
-  bar.append(allow, deny);
+  bar.append(...buttons.map((x) => x.b));
   card.append(bar);
   return card;
 }

@@ -12,6 +12,18 @@ describe("the Google settings", () => {
     expect(cleanSettings({ sessionModes: "duck", sessionModel: "haiku" })).toEqual({});
   });
 
+  it("keeps the hosted servers' names and Firefox's profiles (B2)", () => {
+    expect(
+      cleanSettings({
+        mcpHost: ["firefox", "firefox", "bad name!", 4],
+        firefox: { server: "", agentProfile: "x\" -url", agentBrowser: " Firefox 2 ", personalSites: ["https://YouTrack.cloud/x", "", 3] },
+      }),
+    ).toEqual({
+      mcpHost: ["firefox"],
+      firefox: { server: "firefox", agentProfile: "claude-agent", agentBrowser: "Firefox 2", personalBrowser: "", personalSites: ["youtrack.cloud"] },
+    });
+  });
+
   it("takes a sheet id or the id out of its URL", () => {
     expect(sheetIdOf(ID)).toBe(ID);
     expect(sheetIdOf(`https://docs.google.com/spreadsheets/d/${ID}/edit#gid=0`)).toBe(ID);

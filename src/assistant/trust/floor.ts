@@ -101,6 +101,15 @@ export const FLOOR: readonly FloorEntry[] = [
     hits: ["gh pr create --fill", "gh issue comment 3 -b hi", "gh api repos/x -X POST", "mcp__claude_ai_Gmail__send_message"],
     misses: ["gh pr view 3", "gh issue list", "gh api repos/x"],
   },
+  {
+    id: "browser-account",
+    label: "in your browser: logging in, paying, or sending a message",
+    // What the hosted Firefox tools say about a click or a submit on such an
+    // element (B2, `tools/mcpHost.ts`).
+    test: /^browser (?:login|payment|send):/,
+    hits: ["browser login: Sign in", "browser payment: Pay now · r12 button", "browser send: Send"],
+    misses: ["browser click: Next", "the login page is slow", "send it later"],
+  },
 ];
 
 /** A named exception (step L4): one entry lets through one exact text, for the

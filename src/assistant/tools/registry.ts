@@ -12,6 +12,11 @@
 // the tool search: the API runs them, so they have no definition here, and a mode
 // offers them by name like any other.
 //
+// A hosted MCP server's tools (step B2: `firefox__*`) are known only at run time,
+// from the server's cached list: `setExternal` puts them after Duck's own, always
+// deferred. A deferred tool nothing has found yet doesn't touch the cached prefix,
+// so a server added or changed between requests costs nothing.
+//
 // Tiers (design → Tools): `read` and `reversible` run without asking; a
 // `consequential` call waits for a confirmation unless the trust policy (T1) says
 // otherwise. A tool's `trust` tells that policy what a call is about.
@@ -40,6 +45,7 @@ import type { ThreadMoves } from "./threads";
 import type { HaikuCall } from "./haikuTask";
 import type { Level } from "../announce";
 import type { McpHost } from "../mcp";
+import type { HostedCaller } from "./mcpHost";
 import type { GoogleHost } from "../google";
 import type { CoreHost } from "../core";
 import type { MemoryHost } from "../memory";
@@ -78,6 +84,9 @@ export interface ToolContext {
   haiku?: HaikuCall | null;
   /** External MCP servers (step X1); null where there are none (some tests). */
   mcp: McpHost | null;
+  /** The hosted stdio servers and the browser's profiles (step B2); absent where
+   *  there are none. */
+  hosted?: HostedCaller | null;
   /** The morning routine's Google sheet; absent where there is none. */
   google?: GoogleHost | null;
   /** Duck's core memory (step W4); absent where there is none. */
@@ -118,10 +127,13 @@ export interface ToolDef<S extends z.ZodType = z.ZodType, P = unknown> {
   name: string;
   description: string;
   schema: S;
+  /** The input schema sent to the API as it is, instead of `schema`'s (step B2: an
+   *  MCP server's own JSON Schema; `schema` then only checks it's an object). */
+  inputSchema?: Record<string, unknown>;
   tier: Tier;
   /** A tier that depends on the input or the app's state (resuming a session that
    *  is running ends its process); `tier` when absent or when it throws. */
-  tierFor?(input: z.infer<S>, port: WorkbenchPort): Tier;
+  tierFor?(input: z.infer<S>, port: WorkbenchPort, prepared?: P): Tier;
   /** Work the card needs done before the gate (JSON-safe result). A throw fails
    *  the call with its message, before any card. */
   prepare?(input: z.infer<S>, port: WorkbenchPort, env?: PrepareEnv): Promise<P>;
@@ -129,6 +141,12 @@ export interface ToolDef<S extends z.ZodType = z.ZodType, P = unknown> {
   describe?(input: z.infer<S>, port: WorkbenchPort, prepared: P): string;
   /** Files the card shows as diffs. */
   review?(input: z.infer<S>, prepared: P): ReviewItem[];
+  /** The card's ways to allow it (step B2: the login card), in place of one
+   *  "allow"; the one picked reaches `run` as `prepared.choice` (`prepare` must
+   *  return an object). An answer without a choice takes the first. */
+  choices?: readonly { id: string; label: string }[];
+  /** The card's "deny" button, when it isn't "deny" ("Skip"). */
+  denyLabel?: string;
   /** What the trust engine needs about the call: its project, a specifier for
    *  rules, text for the floor. `{projectId: null}` when absent or when it throws. */
   trust?(input: z.infer<S>, port: WorkbenchPort, prepared: P): TrustFacts;
@@ -152,8 +170,12 @@ export function defineTool<S extends z.ZodType, P = undefined>(
 }
 
 export interface Registry {
-  /** The `tools` array for the request, sorted by name. */
+  /** The `tools` array for the request: Duck's own sorted by name, then the
+   *  hosted servers' (B2), deferred. */
   readonly apiTools: Anthropic.Beta.BetaToolUnion[];
+  /** Replace the hosted servers' tools (step B2). A name that is one of Duck's
+   *  own is left out. */
+  setExternal(tools: readonly ToolDef[]): void;
   /** The `tools` array of a mode (step S1): only `names`, none deferred (the
    *  set is small), built once per set. Every tool when null. */
   toolsFor(names: readonly string[] | null): Anthropic.Beta.BetaToolUnion[];
@@ -161,7 +183,7 @@ export interface Registry {
   /** The tool's declared tier; an unknown tool counts as consequential. */
   tierOf(name: string): Tier;
   /** The tier of this call: `tierFor` over valid input, else the declared tier. */
-  callTier(name: string, input: unknown, port: WorkbenchPort): Tier;
+  callTier(name: string, input: unknown, port: WorkbenchPort, prepared?: unknown): Tier;
   /** The tool's `prepare` over valid input; undefined when it has none. Throws
    *  what `prepare` throws. */
   prepare(name: string, input: unknown, port: WorkbenchPort, env?: PrepareEnv): Promise<unknown>;
@@ -205,19 +227,40 @@ export function createRegistry(
   // against the schema before the call reaches us; the engine validates again).
   const deferred = opts.deferred ?? new Set<string>();
   for (const n of deferred) if (!byName.has(n)) throw new Error(`deferred tool not found: ${n}`);
-  const apiTools: Anthropic.Beta.BetaToolUnion[] = [
+  const own: Anthropic.Beta.BetaToolUnion[] = [
     ...(deferred.size ? [TOOL_SEARCH] : []),
     ...(opts.server ?? []),
     ...sorted.map((t) => ({
       name: t.name,
       description: t.description,
-      input_schema: inputSchema(t.schema),
+      input_schema: t.inputSchema ? (t.inputSchema as Anthropic.Beta.BetaTool.InputSchema) : inputSchema(t.schema),
       ...(deferred.has(t.name) && { defer_loading: true }),
     })),
   ];
+  let external = new Map<string, ToolDef>();
+  let apiTools = own;
   const subsets = new Map<string, Anthropic.Beta.BetaToolUnion[]>();
+  const lookup = (name: string) => byName.get(name) ?? external.get(name);
   return {
-    apiTools,
+    get apiTools() {
+      return apiTools;
+    },
+    setExternal(tools) {
+      external = new Map();
+      for (const t of tools) if (!byName.has(t.name) && !external.has(t.name)) external.set(t.name, t);
+      const ext = [...external.values()].sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+      apiTools = [
+        ...(ext.length && !deferred.size ? [TOOL_SEARCH] : []),
+        ...own,
+        ...ext.map((t) => ({
+          name: t.name,
+          description: t.description,
+          input_schema: t.inputSchema ? (t.inputSchema as Anthropic.Beta.BetaTool.InputSchema) : inputSchema(t.schema),
+          defer_loading: true,
+        })),
+      ];
+      subsets.clear();
+    },
     toolsFor(names) {
       if (!names) return apiTools;
       const key = [...names].sort().join(",");
@@ -232,27 +275,27 @@ export function createRegistry(
       }
       return tools;
     },
-    get: (name) => byName.get(name),
-    tierOf: (name) => byName.get(name)?.tier ?? "consequential",
-    callTier(name, input, port) {
-      const t = byName.get(name);
+    get: (name) => lookup(name),
+    tierOf: (name) => lookup(name)?.tier ?? "consequential",
+    callTier(name, input, port, prepared) {
+      const t = lookup(name);
       if (!t) return "consequential";
       const parsed = t.schema.safeParse(input);
       if (!t.tierFor || !parsed.success) return t.tier;
       try {
-        return t.tierFor(parsed.data, port);
+        return t.tierFor(parsed.data, port, prepared);
       } catch {
         return t.tier;
       }
     },
     async prepare(name, input, port, env) {
-      const t = byName.get(name);
+      const t = lookup(name);
       const parsed = t?.schema.safeParse(input);
       if (!t?.prepare || !parsed?.success) return undefined;
       return t.prepare(parsed.data, port, env);
     },
     describe(name, input, port, prepared) {
-      const t = byName.get(name);
+      const t = lookup(name);
       const parsed = t?.schema.safeParse(input);
       if (!t?.describe || !parsed?.success) return undefined;
       try {
@@ -262,7 +305,7 @@ export function createRegistry(
       }
     },
     review(name, input, prepared) {
-      const t = byName.get(name);
+      const t = lookup(name);
       const parsed = t?.schema.safeParse(input);
       if (!t?.review || !parsed?.success) return undefined;
       try {
@@ -272,7 +315,7 @@ export function createRegistry(
       }
     },
     trustFacts(name, input, port, prepared) {
-      const t = byName.get(name);
+      const t = lookup(name);
       const parsed = t?.schema.safeParse(input);
       if (!t?.trust || !parsed?.success) return { projectId: null };
       try {

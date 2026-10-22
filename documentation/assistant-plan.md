@@ -3194,6 +3194,114 @@ up ("change this", with a circle around it).
   - No `uvx` / Python process remains 10 minutes later.
 - **Out of scope:** other browsers, and Anthropic's client-side `browser_toolset` (it would
   need a Firefox executor; revisit only if the bridge falls short).
+- **As built (2026-10-22):** built ahead of its gate, on request, before D1's latency was
+  shown to matter.
+  - **The host** (`src-tauri/src/assistant/mcp_host.rs`, on `rmcp` 3.5 with
+    `TokioChildProcess`):
+    - Commands `mcp_host_tools(server, refresh)`, `mcp_host_call(server, tool, args)`,
+      plus `mcp_host_servers`, `mcp_host_running`, `mcp_host_stop` and
+      `firefox_start_profile`.
+    - A server's definition comes from `mcp_list` over your home folder (user scope
+      first). Only stdio servers: http ones are X1's. Its environment goes to the
+      child and never back to the webview; the settings list shows a server's name and
+      its command's name only, since the arguments can hold a token.
+    - Lazy spawn on first call (`CREATE_NO_WINDOW`; no shell, except `cmd /c` for a
+      `.cmd` shim such as `npx`). A reaper stops a server idle 10 minutes; stopping is
+      `kill_tree` on its pid, so uvx's Python child goes too, and every server is
+      stopped on exit. rmcp's own kill-on-drop only kills uvx, and its job-object
+      wrapper would drop `CREATE_NO_WINDOW` (it needs `windows` 0.62's flag type).
+    - **The tool list is kept in `duck.db`** (`mcp_tool_cache`), by a hash of the
+      command line. At start Duck knows a server's tools without starting it, and a
+      new commit of the bridge is a new key.
+    - Live check (an ignored test, `live_firefox_bridge_starts_lists_and_dies`): your
+      real bridge starts, lists 51 tools, answers `browsers_list`, and after the stop
+      neither uvx nor its two children are running.
+  - **The tools** (`src/assistant/tools/mcpHost.ts`, `hosted.ts`):
+    - Each opted-in server's tools become `<server>__<tool>` (`firefox__tabs_list`),
+      with the server's own JSON Schema. They're always deferred, added after Duck's
+      own (`Registry.setExternal`): a deferred tool nothing has found yet doesn't
+      touch the cached prefix, so turning a server on costs nothing.
+    - They're rebuilt at start and after each settings change. "refresh" asks the
+      server again (it starts).
+    - **The tiers** are the plan's:
+      - read: browsers, tabs, windows, history, bookmarks, a page's text, HTML,
+        snapshot or screenshot;
+      - in-app (reversible): navigating, tabs, clicking, typing, keys;
+      - consequential: upload, running a script, changing bookmarks or history,
+        pasting your own clipboard, and any tool not in the lists.
+    - **By the element.** A click, a submitted field or an Enter on something that
+      reads as submit, pay, log in or send is consequential. What it reads as comes
+      from its text, its selector, or the tab's last snapshot line for its ref; the
+      host keeps the latest snapshot per tab.
+      - Logging in, paying and sending also trip a new floor entry,
+        `browser-account` ("in your browser: logging in, paying, or sending a
+        message").
+      - Typing into a password, card or one-time-code field is refused before any
+        card.
+    - Results come back in `<mcp_result … profile="agent" untrusted>`, screenshots as
+      images. Another server's tools are read when the server marks them
+      `readOnlyHint`, consequential otherwise.
+    - The system prompt has a line on quick Firefox actions: do them yourself, in the
+      agent profile; the personal profile only with a reason; `browser_login` on a
+      login page.
+  - **The two profiles** (`src/assistant/browser.ts`):
+    - **`browsers_select` isn't offered to the model** (changed from the Build, which
+      had the prompt tell it to select the agent). Duck keeps each thread in its
+      profile and selects it before every call, one call at a time, so a page can't
+      talk Duck into your personal browser.
+    - **Agent** is the default. If it isn't connected, Duck waits up to 8 s first
+      (found live: a bridge Duck has just started sees no browser for a few seconds,
+      and starting the profile again would make Firefox say it's already running).
+      Then it runs `firefox.exe -P claude-agent --no-remote` and waits up to 25 s for
+      the add-on.
+    - **Which browser is which.** The agent is the browser named in the settings, else
+      the one whose name has the profile's name, else the only connected one that isn't
+      yours. Yours is the one you name.
+    - **`use_personal_browser(reason, site?)`**:
+      - Consequential, so it asks. Its trust request is `assistant:firefox` with the
+        specifier `profile:personal` or `profile:personal@<site>`: allow the whole
+        profile with `assistant:firefox(profile:personal*)`, one site with
+        `assistant:firefox(profile:personal@<site>)`. That's a deviation from the
+        Build's literal `profile:personal`, so that a rule can name a site.
+      - A site on the settings' list (subdomains too) runs without asking.
+      - `use_agent_browser` moves the thread back.
+    - Every browser chip shows "agent profile" or "your profile".
+  - **The login card**:
+    - `browser_login(url, why)` always asks (`asks`, so no rule allows it).
+    - The card has the Build's three choices: "I'll log in in the agent profile",
+      "Use my personal profile", "Skip".
+    - The agent choice opens the page in a new tab there and tells Duck to wait for
+      you. Yours moves the thread to your profile.
+    - For this, a confirmation card can now offer choices: `ToolDef.choices`
+      and `denyLabel`, `ConfirmRequest.choices`, and `confirm`'s `choice`, which `run`
+      reads as `prepared.choice`. A plain allow from an older surface takes the first
+      choice. The drawer and the phone show a button per choice.
+  - **Settings → skills:**
+    - "From your Claude Code config": each stdio server with an on/off (`mcpHost`), its
+      tool count, whether it's running, its last error, and "refresh".
+    - "Firefox": the agent profile's name, the agent's and your profile's names as
+      `browsers_list` shows them, and the sites your profile may be used for without
+      asking.
+  - **Tests:**
+    - the browser list and which browser is which; selecting per thread, one call at a
+      time; the grace before starting the profile, the start, and an add-on that
+      never connects; the snapshot refs;
+    - the tiers, the floor, the password refusal; the names; untrusted results and
+      images;
+    - the personal profile's card and site list; the login card's three ways;
+    - the registry's runtime tools in a real request; a card's choice reaching `run`;
+    - the hosted sync and its view, the settings, the chips' profile;
+    - Rust: the cache key and table, and profile names.
+    - **Results:** vitest 803 and cargo 326, plus the live test. tsc is clean; eslint
+      and clippy show only the existing warnings.
+  - **Not done yet** (the done-when needs you, in the app):
+    - "open my GitHub notifications and list the unread ones" in the agent profile
+      (logged in once there), while a Claude Code session also has its bridge;
+    - your personal profile, which needs the add-on installed there and its name in
+      the settings, then the card naming the profile and the reason;
+    - a login page giving the three-choice card;
+    - no uvx or Python process 10 minutes after the last call. The stop itself is
+      checked live; the 10-minute reaper isn't.
 
 ### Track V — Voice
 
@@ -7274,7 +7382,7 @@ T2 goes live after the replay check in its done-when (the past week's prompts th
 | D3 | Session-backed thinking modes (experiment) | ☐ (built 2026-10-22; done when you've run a 15-minute duck on it and decided) |
 | D4 | Headless workers over stream-json | ☑ |
 | B1 | Web search and fetch | ☑ (not tried in the app) |
-| B2 | MCP host + your Firefox | ☐ |
+| B2 | MCP host + your Firefox | ☐ (built 2026-10-22; done when you've tried the done-when items in the app) |
 | V1 | Push-to-talk with local STT on the GPU (desktop) | ☑ (holding the key in the app not tried yet) |
 | V2 | Natural spoken replies | ☑ (the phone half built in R1/R2) |
 | V3 | Read-aloud and screen reading | ☑ (the desktop's speakers not tried live) |

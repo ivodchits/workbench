@@ -24,6 +24,8 @@ export type Item =
       name: string;
       input: unknown;
       result: { text: string; isError: boolean } | null;
+      /** The Firefox profile a browser call ran in (B2). */
+      profile?: "agent" | "personal";
     }
   | { kind: "notice"; key: string; notice: Notice };
 
@@ -58,6 +60,12 @@ export function webResultText(content: unknown): { text: string; isError: boolea
     return { text: [c.content?.title, c.url, size ? `${size} characters` : ""].filter(Boolean).join("\n"), isError: false };
   }
   return { text: "", isError: false };
+}
+
+/** The profile a hosted browser call names in its result, or its error (B2). */
+export function profileOf(text: string | undefined): { profile?: "agent" | "personal" } {
+  const m = text && (/^<mcp_result [^>]* profile="(agent|personal)"/.exec(text) ?? /\((agent|personal) profile\)/.exec(text));
+  return m ? { profile: m[1] as "agent" | "personal" } : {};
 }
 
 const SUPERSCRIPT = "⁰¹²³⁴⁵⁶⁷⁸⁹";
@@ -178,6 +186,7 @@ export function toItems(messages: readonly StoredMessage[]): Item[] {
           name: b.name ?? "?",
           input: b.input,
           result: results.get(b.id) ?? null,
+          ...profileOf(results.get(b.id)?.text),
         });
       }
     }

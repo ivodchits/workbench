@@ -1230,6 +1230,11 @@ function ToolChip({
       >
         <span style={{ color }}>{mark}</span>
         <span style={{ color: "var(--wb-accent)" }}>{item.name}</span>
+        {item.profile && (
+          <span style={{ color: item.profile === "personal" ? "var(--wb-needs)" : "var(--wb-textFaint)" }}>
+            {item.profile === "personal" ? "your profile" : "agent profile"}
+          </span>
+        )}
         <span
           style={{
             overflow: "hidden",
@@ -1480,20 +1485,24 @@ function ConfirmCard({ ask }: { ask: ConfirmRequest }) {
       {details && (
         <div style={{ ...pre, maxHeight: 160 }}>{readableInput(ask.input)}</div>
       )}
-      <div style={{ display: "flex", gap: 8 }}>
-        <button
-          type="button"
-          style={{
-            ...btn,
-            borderColor: "var(--wb-done)",
-            color: "var(--wb-done)",
-          }}
-          onClick={() => answer(ask, true)}
-        >
-          allow
-        </button>
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+        {/* A card with choices (B2: the login card) has a button per way to allow it. */}
+        {(ask.choices?.length ? ask.choices : [{ id: "", label: "allow" }]).map((c) => (
+          <button
+            key={c.id || "allow"}
+            type="button"
+            style={{
+              ...btn,
+              borderColor: "var(--wb-done)",
+              color: "var(--wb-done)",
+            }}
+            onClick={() => answer(ask, true, c.id || undefined)}
+          >
+            {c.label}
+          </button>
+        ))}
         <button type="button" style={btn} onClick={() => answer(ask, false)}>
-          deny
+          {ask.denyLabel ?? "deny"}
         </button>
       </div>
     </div>

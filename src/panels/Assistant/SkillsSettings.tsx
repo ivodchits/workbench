@@ -1,6 +1,7 @@
 // The skills tab of Duck's settings (step S2): Duck's capabilities in one place.
 // Its skills and modes, files in the workspace's `skills/` (each on or off, opened
-// in the editor), and the external MCP servers it may use (X1).
+// in the editor), the external MCP servers it may use (X1), and the stdio servers
+// from your Claude Code config Duck hosts itself, your Firefox bridge first (B2).
 //
 // Skills are made by asking Duck ("make that a skill"), which shows the draft on a
 // card, or by writing `skills/<name>/SKILL.md` by hand; either is read on Duck's
@@ -9,7 +10,7 @@
 import { useEffect, useState } from "react";
 
 import type { DuckSettings } from "../../assistant/settings";
-import { setDuckSettings, type DuckState } from "./duckState";
+import { loadHosted, setDuckSettings, type DuckState } from "./duckState";
 import { openDuckFile } from "./openCore";
 
 function Skills({ duck, settings }: { duck: DuckState; settings: DuckSettings }) {
@@ -94,6 +95,101 @@ function McpServers({ settings }: { settings: DuckSettings }) {
   );
 }
 
+/** The stdio servers in your Claude Code config (B2), each opted in for Duck: its
+ *  tools become Duck's (`<server>__*`), the server starting on first use and
+ *  stopping after 10 minutes idle. */
+function HostedServers({ duck, settings }: { duck: DuckState; settings: DuckSettings }) {
+  useEffect(() => loadHosted(), []);
+  const servers = duck.hosted;
+  const toggle = (name: string, on: boolean) => {
+    const rest = settings.mcpHost.filter((n) => n !== name);
+    setDuckSettings({ mcpHost: on ? [...rest, name] : rest });
+  };
+  if (!servers) return <div style={hint}>loading…</div>;
+  if (servers.length === 0)
+    return <div style={hint}>No stdio servers in your Claude Code config (the MCP panel adds them).</div>;
+  return (
+    <>
+      {servers.map((s) => (
+        <div key={s.name} style={{ ...row, alignItems: "center", cursor: "default" }}>
+          <input
+            type="checkbox"
+            checked={s.on}
+            aria-label={`let Duck use ${s.name}`}
+            onChange={(e) => toggle(s.name, e.target.checked)}
+          />
+          <span>
+            {s.name}
+            {s.command && <span style={hint}> ({s.command})</span>}
+          </span>
+          {s.on && (
+            <span style={s.error ? { color: "var(--wb-needs)" } : hint}>
+              {s.error ?? (s.tools === null ? "listing…" : `${s.tools} tools${s.running ? " · running" : ""}`)}
+            </span>
+          )}
+          {s.on && (
+            <button type="button" style={btn} onClick={() => loadHosted(s.name)} title="Ask the server for its tools again (it starts)">
+              refresh
+            </button>
+          )}
+        </div>
+      ))}
+    </>
+  );
+}
+
+/** Duck in your Firefox (B2): which browser is the agent and which is yours, and
+ *  the sites your personal profile may be used for without asking. */
+function FirefoxSettingsRow({ settings }: { settings: DuckSettings }) {
+  const fx = settings.firefox;
+  const [draft, setDraft] = useState(fx);
+  const [sites, setSites] = useState(fx.personalSites.join(", "));
+  useEffect(() => {
+    setDraft(fx);
+    setSites(fx.personalSites.join(", "));
+  }, [fx]);
+  const save = (p: Partial<DuckSettings["firefox"]>) => setDuckSettings({ firefox: { ...fx, ...p } });
+  const field = (key: "agentProfile" | "agentBrowser" | "personalBrowser", label: string, placeholder: string) => (
+    <label style={{ ...row, alignItems: "center" }}>
+      <span style={{ minWidth: 150 }}>{label}</span>
+      <input
+        value={draft[key]}
+        placeholder={placeholder}
+        onChange={(e) => setDraft({ ...draft, [key]: e.target.value })}
+        onBlur={() => draft[key].trim() !== fx[key] && save({ [key]: draft[key].trim() })}
+        style={{ ...select, flex: 1, minWidth: 0 }}
+      />
+    </label>
+  );
+  if (!settings.mcpHost.includes(fx.server))
+    return <div style={hint}>Turn on "{fx.server}" above for Duck to act in your Firefox.</div>;
+  return (
+    <>
+      {field("agentProfile", "agent profile", "claude-agent")}
+      {field("agentBrowser", "agent in the bridge", "the one connected browser")}
+      {field("personalBrowser", "your own profile", "not set up")}
+      <label style={{ ...row, alignItems: "center" }}>
+        <span style={{ minWidth: 150 }}>yours, without asking</span>
+        <input
+          value={sites}
+          placeholder="sites, comma-separated"
+          onChange={(e) => setSites(e.target.value)}
+          onBlur={() => {
+            const list = sites.split(/[\s,]+/).filter(Boolean);
+            if (list.join(",") !== fx.personalSites.join(",")) save({ personalSites: list });
+          }}
+          style={{ ...select, flex: 1, minWidth: 0 }}
+        />
+      </label>
+      <div style={hint}>
+        Duck works in the agent profile and opens it when it's closed. The names are as the bridge's browsers_list shows
+        them (the add-on's options page). Your own profile needs the add-on too; using it asks, except for the sites
+        listed.
+      </div>
+    </>
+  );
+}
+
 export default function SkillsSettings({ duck, settings }: { duck: DuckState; settings: DuckSettings }) {
   return (
     <>
@@ -101,6 +197,10 @@ export default function SkillsSettings({ duck, settings }: { duck: DuckState; se
       <Skills duck={duck} settings={settings} />
       <div style={heading}>MCP servers</div>
       <McpServers settings={settings} />
+      <div style={heading}>From your Claude Code config</div>
+      <HostedServers duck={duck} settings={settings} />
+      <div style={heading}>Firefox</div>
+      <FirefoxSettingsRow settings={settings} />
     </>
   );
 }

@@ -36,7 +36,7 @@ which = "7"
 # tokio `sync` for the broadcast/oneshot channels that fan snapshots to clients and
 # stop the server gracefully.
 axum = { version = "0.8", features = ["ws"] }
-tokio = { version = "1", features = ["net", "sync", "macros", "time"] }
+tokio = { version = "1", features = ["net", "sync", "macros", "time", "process"] }
 # Step 4.3: enumerate local network interfaces to find the Tailscale address
 # (100.64.0.0/10) the remote server binds to — we never bind broader than the tailnet.
 if-addrs = "0.13"
@@ -71,6 +71,10 @@ rand_core = { version = "0.6", features = ["getrandom"] }
 # `futures-util` maps the byte stream through the usage meter.
 reqwest = { version = "0.13", default-features = false, features = ["stream", "native-tls", "http2"] }
 futures-util = "0.3"
+# Step B2: Duck's host for stdio MCP servers from your Claude Code config (your
+# Firefox bridge). `rmcp` speaks the protocol over the child's pipes; the process
+# is started without a window and its tree killed when idle.
+rmcp = { version = "3.5", default-features = false, features = ["client", "transport-child-process"] }
 tauri-plugin-autostart = "~2.5.1"
 # Step V1: speech to text on the device. `ort` is pinned to rc.12 (rc.14 broke
 # transcribe-rs in X0, and our Parakeet runner is adapted from it); `load-dynamic`

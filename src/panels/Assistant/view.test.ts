@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { StoredMessage } from "../../ipc/assistant";
-import { lineDiff, oneLine, overviewOrder, readableInput, sessionLink, toItems, unreadTotal } from "./view";
+import { lineDiff, oneLine, overviewOrder, profileOf, readableInput, sessionLink, toItems, unreadTotal } from "./view";
 
 let seq = 0;
 const msg = (
@@ -223,5 +223,14 @@ describe("threads at a glance", () => {
     );
     expect(order.map((t) => t.id)).toEqual(["d", "c", "a", "b"]);
     expect(unreadTotal({ unread: { a: 1, d: 2 } })).toBe(3);
+  });
+});
+
+describe("browser chips (B2)", () => {
+  it("name the profile a call ran in", () => {
+    expect(profileOf('<mcp_result server="firefox" tool="tabs_list" profile="personal" untrusted>\n…')).toEqual({ profile: "personal" });
+    expect(profileOf("content_click failed (agent profile): no such element")).toEqual({ profile: "agent" });
+    expect(profileOf('<mcp_result server="quest_log" tool="x" untrusted>')).toEqual({});
+    expect(profileOf(undefined)).toEqual({});
   });
 });

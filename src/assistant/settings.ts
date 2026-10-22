@@ -7,6 +7,7 @@ import { getPref, setPref } from "../ipc/prefs";
 import { DEFAULT_ANNOUNCE, type AnnounceSettings, type SpeakWhen } from "./announce";
 import { DUCK_PERMISSION_MODES, EFFORTS, SESSION_MODELS } from "../util/models";
 import { BRAIN_POLICIES, type BrainPolicy } from "./brain/policy";
+import { DEFAULT_FIREFOX, siteOf, type FirefoxSettings } from "./browser";
 
 /** A worker task's tier (step D1): how much model and effort it gets. */
 export const TIERS = ["standard", "involved", "serious"] as const;
@@ -115,6 +116,11 @@ export interface DuckSettings {
   dndUntil: number | null;
   /** External MCP servers (step X1). */
   mcpServers: McpServerSpec[];
+  /** The stdio servers from your Claude Code config Duck hosts (step B2), by
+   *  name; each is opted in, so a new server isn't exposed by itself. */
+  mcpHost: string[];
+  /** Duck in your Firefox (B2): the bridge, the agent and personal profiles. */
+  firefox: FirefoxSettings;
   /** Duck's skills turned off in the settings (step S2), by name. */
   disabledSkills: string[];
   /** A thread whose request has grown past this many input tokens is compacted
@@ -156,6 +162,8 @@ export const DEFAULT_SETTINGS: DuckSettings = {
   announce: DEFAULT_ANNOUNCE,
   dndUntil: null,
   mcpServers: [QUEST_LOG],
+  mcpHost: [],
+  firefox: DEFAULT_FIREFOX,
   disabledSkills: [],
   compactAt: 100_000,
   google: DEFAULT_GOOGLE,
@@ -213,6 +221,9 @@ export function cleanSettings(raw: unknown): Partial<DuckSettings> {
   if (r.workspace === null) out.workspace = null;
   else if (typeof r.workspace === "string") out.workspace = r.workspace.trim() || null;
   if (Array.isArray(r.mcpServers)) out.mcpServers = cleanMcpServers(r.mcpServers);
+  if (Array.isArray(r.mcpHost))
+    out.mcpHost = [...new Set(r.mcpHost.filter((n): n is string => typeof n === "string" && HOSTED_NAME.test(n)))].slice(0, 20);
+  if (r.firefox && typeof r.firefox === "object") out.firefox = cleanFirefox(r.firefox as Record<string, unknown>);
   if (Array.isArray(r.disabledSkills))
     out.disabledSkills = [...new Set(r.disabledSkills.filter((n): n is string => typeof n === "string" && n.length <= 64))].slice(0, 200);
   const compact = whole(r.compactAt, 900_000);
@@ -270,6 +281,27 @@ export function cleanMcpServers(raw: unknown[]): McpServerSpec[] {
     });
   }
   return out;
+}
+
+/** A server's name in your Claude Code config. */
+const HOSTED_NAME = /^[A-Za-z0-9_.-]{1,64}$/;
+const PROFILE_NAME = /^[\p{L}\p{N} ._-]{1,64}$/u;
+
+function cleanFirefox(r: Record<string, unknown>): FirefoxSettings {
+  const text = (v: unknown, ok: (s: string) => boolean, d: string) => {
+    const s = typeof v === "string" ? v.trim() : "";
+    return s && ok(s) ? s : d;
+  };
+  const sites = Array.isArray(r.personalSites)
+    ? [...new Set(r.personalSites.filter((x): x is string => typeof x === "string").map((x) => siteOf(x)).filter((x): x is string => !!x))]
+    : [];
+  return {
+    server: text(r.server, (s) => HOSTED_NAME.test(s), DEFAULT_FIREFOX.server),
+    agentProfile: text(r.agentProfile, (s) => PROFILE_NAME.test(s), DEFAULT_FIREFOX.agentProfile),
+    agentBrowser: text(r.agentBrowser, (s) => s.length <= 64, ""),
+    personalBrowser: text(r.personalBrowser, (s) => s.length <= 64, ""),
+    personalSites: sites.slice(0, 100),
+  };
 }
 
 const CLIENT_ID = /^[A-Za-z0-9._-]{8,200}$/;

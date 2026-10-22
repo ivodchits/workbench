@@ -210,7 +210,7 @@ export type RemoteDuckMessage =
   /** A provisional turn stands, or is dropped (you went on talking). */
   | { type: "turn.commit"; threadId: string }
   | { type: "turn.withdraw"; threadId: string }
-  | { type: "confirm"; threadId: string; toolUseId: string; allow: boolean }
+  | { type: "confirm"; threadId: string; toolUseId: string; allow: boolean; choice?: string }
   /** The kill switch: pauses trust. Resuming is done on the desktop. */
   | { type: "trust.pause" }
   | { type: "trust.decisions"; before: number | null }

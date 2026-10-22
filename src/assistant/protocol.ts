@@ -57,6 +57,11 @@ export interface ConfirmRequest {
   summary?: string;
   /** Files the call changes, shown as diffs (W5: the plugin file, its scripts). */
   review?: ReviewItem[];
+  /** Ways to allow it (B2: the login card), shown in place of "allow"; the
+   *  answer names one as `choice`. */
+  choices?: { id: string; label: string }[];
+  /** The "deny" button's label when it isn't "deny". */
+  denyLabel?: string;
 }
 
 /** One file a call changes, for the card's diff. */
@@ -186,6 +191,22 @@ export interface TaskView {
   changes: { branch: string; files: string[]; uncommitted: string[]; safety: string[] } | null;
 }
 
+/** A stdio MCP server from your Claude Code config, as Duck's settings list it
+ *  (step B2). */
+export interface HostedServerView {
+  name: string;
+  /** Its command's name ("uvx"), never its arguments or environment. */
+  command: string | null;
+  /** Opted in: its tools are Duck's. */
+  on: boolean;
+  /** It's the Firefox bridge (`settings.firefox.server`). */
+  browser: boolean;
+  running: boolean;
+  /** How many tools Duck has from it; null when not listed. */
+  tools: number | null;
+  error: string | null;
+}
+
 /** A session's plan autopilot as a surface shows it (step P1). */
 export interface AutopilotView {
   instanceId: string;
@@ -224,6 +245,8 @@ export type ClientMessage =
       threadId: string;
       toolUseId: string;
       allow: boolean;
+      /** Which of the card's `choices` (B2). */
+      choice?: string;
     }
   | { type: "thread.new"; mode?: string }
   /** Delete a thread (refused while a reply is running: stop it first). */
@@ -276,6 +299,9 @@ export type ClientMessage =
   /** How long turns took per mode and brain, the past 30 days (step D3);
    *  answered with `timings`. */
   | { type: "timings.get" }
+  /** The stdio MCP servers Duck could host (step B2); answered with `hosted`.
+   *  With `refresh`, that server's tools are listed again (it starts). */
+  | { type: "hosted.get"; refresh?: string }
   /** Close a worker task (step D1): its console closes, its files stay. */
   | { type: "task.close"; taskId: string }
   /** Run a worker task again one tier up (step D2), as a new task. */
@@ -369,6 +395,8 @@ export type DuckEvent =
   | { type: "promoted"; key: string; text: string }
   /** Answer to `timings.get`: a line per mode, brain and model. */
   | { type: "timings"; lines: string[] }
+  /** Answer to `hosted.get`, and after a settings change. */
+  | { type: "hosted"; servers: HostedServerView[] }
   /** Duck's skills and the modes (built in, and from skills) (step S2), on `sync`
    *  and after every change. */
   | { type: "skills"; skills: SkillView[]; modes: ModeView[] }

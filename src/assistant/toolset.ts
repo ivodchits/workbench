@@ -7,6 +7,7 @@ import { getTime } from "./tools/getTime";
 import { HAIKU_TOOLS } from "./tools/haikuTask";
 import { IMPROVE_TOOLS } from "./tools/improve";
 import { MCP_TOOLS } from "./tools/mcp";
+import { BROWSER_TOOLS } from "./tools/mcpHost";
 import { MEMORY_TOOLS } from "./tools/memory";
 import { MORNING_TOOLS } from "./tools/morning";
 import { PLUGIN_TOOLS } from "./tools/plugins";
@@ -42,6 +43,7 @@ export const TOOLS = [
   ...THREAD_TOOLS,
   ...HAIKU_TOOLS,
   ...MCP_TOOLS,
+  ...BROWSER_TOOLS,
   ...MORNING_TOOLS,
   ...SHEET_TOOLS,
   ...PREP_TOOLS,
@@ -79,5 +81,6 @@ export const DEFERRED = new Set([
   "merge_duck_change",
   "rebuild_duck",
   "draft_skill",
+  ...BROWSER_TOOLS.map((t) => t.name),
   ...ROUTINE_TOOLS.map((t) => t.name),
 ]);

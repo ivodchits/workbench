@@ -70,7 +70,7 @@ const Message = z.discriminatedUnion("type", [
   z.object({ type: z.literal("stop"), threadId: id }),
   z.object({ type: z.literal("turn.commit"), threadId: id }),
   z.object({ type: z.literal("turn.withdraw"), threadId: id }),
-  z.object({ type: z.literal("confirm"), threadId: id, toolUseId: id, allow: z.boolean() }),
+  z.object({ type: z.literal("confirm"), threadId: id, toolUseId: id, allow: z.boolean(), choice: z.string().max(64).optional() }),
   z.object({ type: z.literal("trust.pause") }),
   z.object({ type: z.literal("trust.decisions"), before: z.number().int().nullable() }),
   z.object({ type: z.literal("task.close"), taskId: id }),

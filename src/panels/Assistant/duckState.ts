@@ -29,6 +29,7 @@ import type {
   ConfirmRequest,
   DuckEvent,
   Effort,
+  HostedServerView,
   ModeView,
   ReaderAction,
   SkillView,
@@ -95,6 +96,8 @@ export interface DuckState {
   promoted: { key: string; text: string } | null;
   /** How long turns took per mode and brain (step D3), once asked for. */
   timings: string[] | null;
+  /** The stdio MCP servers Duck could host (step B2), once asked for. */
+  hosted: HostedServerView[] | null;
   /** Duck's worker tasks (step D1), newest first. */
   tasks: TaskView[];
   /** The autopilots not stopped (step P1). */
@@ -148,6 +151,7 @@ let state: DuckState = {
   promotionPreview: null,
   promoted: null,
   timings: null,
+  hosted: null,
   tasks: [],
   autopilots: [],
   routines: [],
@@ -463,6 +467,9 @@ function onEvent(e: DuckEvent): void {
     case "timings":
       set({ timings: e.lines });
       break;
+    case "hosted":
+      set({ hosted: e.servers });
+      break;
     case "error":
       // A failed replay is over; its error shows like any other.
       set({ error: e.message, replay: state.replay?.running ? { ...state.replay, running: false } : state.replay });
@@ -628,12 +635,13 @@ export function stopTurn(): void {
   if (state.current) post({ type: "stop", threadId: state.current });
 }
 
-export function answer(a: ConfirmRequest, allow: boolean): void {
+export function answer(a: ConfirmRequest, allow: boolean, choice?: string): void {
   post({
     type: "confirm",
     threadId: a.threadId,
     toolUseId: a.toolUseId,
     allow,
+    ...(choice && { choice }),
   });
 }
 
@@ -717,6 +725,12 @@ export function dismissPromotion(key: string): void {
 /** Ask how long turns took per mode and brain (step D3). */
 export function loadTimings(): void {
   post({ type: "timings.get" });
+}
+
+/** Ask for the stdio MCP servers Duck could host (step B2); `refresh` lists that
+ *  server's tools again, starting it. */
+export function loadHosted(refresh?: string): void {
+  post({ type: "hosted.get", ...(refresh && { refresh }) });
 }
 
 /** The newest page of the decision log (`null`), or the page before an id. */

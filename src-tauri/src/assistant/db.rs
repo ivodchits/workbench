@@ -288,6 +288,15 @@ const MIGRATIONS: &[&str] = &[
     );
     CREATE INDEX idx_turn_timings_at ON turn_timings(at);
     "#,
+    // Step B2: an MCP server's tool list (`mcp_host.rs`), by a hash of its command
+    // line, so Duck's tools are known at start without spawning the server.
+    r#"
+    CREATE TABLE mcp_tool_cache (
+        key    TEXT PRIMARY KEY,
+        tools  TEXT NOT NULL,
+        at     INTEGER NOT NULL
+    );
+    "#,
 ];
 
 #[cfg(test)]
@@ -297,7 +306,7 @@ mod tests {
     #[test]
     fn s1_threads_from_before_modes_are_the_assistants() {
         let conn = Connection::open_in_memory().unwrap();
-        crate::db::run_migrations(&conn, &MIGRATIONS[..MIGRATIONS.len() - 2]).unwrap();
+        crate::db::run_migrations(&conn, &MIGRATIONS[..MIGRATIONS.len() - 3]).unwrap();
         conn.execute("INSERT INTO assistant_threads (id, mode, created, updated) VALUES ('old', 'chat', 1, 1)", []).unwrap();
         crate::db::run_migrations(&conn, MIGRATIONS).unwrap();
         let mode: String = conn.query_row("SELECT mode FROM assistant_threads WHERE id = 'old'", [], |r| r.get(0)).unwrap();

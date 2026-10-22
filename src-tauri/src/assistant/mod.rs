@@ -12,6 +12,8 @@
 //! index and its commits ([`memory`]); step L2 its consolidation and recall log.
 //! Step L3: Duck's prompts as files, and each thread's pin on them ([`config`]).
 //! Step S2: Duck's skills, `skills/*/SKILL.md` in its workspace ([`skills`]).
+//! Step B2: a host for stdio MCP servers from your Claude Code config, your Firefox
+//! bridge first ([`mcp_host`]).
 //! The morning routine: Google access ([`google`]) and the invoice sheet ([`sheets`]).
 //!
 //! The webview never holds the key. It asks [`assistant_proxy_info`] for the proxy's
@@ -28,6 +30,7 @@ pub mod google;
 pub mod headless;
 mod key;
 pub mod mcp_client;
+pub mod mcp_host;
 mod mcp_server;
 pub mod memory;
 mod proxy;
@@ -80,6 +83,7 @@ pub fn init(app: &AppHandle, data_dir: &std::path::Path) -> Result<(), String> {
         .build()
         .map_err(|e| format!("building the HTTP client: {e}"))?;
     app.manage(mcp_client::McpSessions::default());
+    app.manage(mcp_host::McpHost::default());
     app.manage(google::GoogleAuth::default());
     app.manage(Arc::new(Assistant {
         app: app.clone(),

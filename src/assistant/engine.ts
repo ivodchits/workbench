@@ -82,6 +82,7 @@ import type { ReaderHost } from "./tools/readAloud";
 import type { ScreenHost } from "./tools/screenshot";
 import type { QuietHost } from "./tools/quiet";
 import type { McpHost } from "./mcp";
+import type { HostedCaller } from "./tools/mcpHost";
 import type { GoogleHost } from "./google";
 import type { ThreadMoves } from "./tools/threads";
 import type { HaikuCall } from "./tools/haikuTask";
@@ -193,6 +194,8 @@ export interface EngineDeps {
   haiku?: HaikuCall;
   /** External MCP servers (step X1), for the `mcp_*` tools. */
   mcp?: McpHost;
+  /** The hosted stdio servers and the browser's profiles (step B2). */
+  hosted?: HostedCaller;
   /** The morning routine's Google sheet, for `morning_briefing`. */
   google?: GoogleHost;
   /** Duck's core memory (step W4): read into each new thread, edited by
@@ -281,7 +284,8 @@ export interface Engine {
   /** A provisional turn is dropped (you went on talking): its request is
    *  aborted, and nothing of it is kept. */
   withdraw(threadId: string): void;
-  confirm(threadId: string, toolUseId: string, allow: boolean): Promise<void>;
+  /** `choice`: which of the card's choices allowed it (B2), for a tool that has them. */
+  confirm(threadId: string, toolUseId: string, allow: boolean, choice?: string): Promise<void>;
   /** Re-announce parked confirmations (after a reload). */
   pendingRequests(): ConfirmRequest[];
   state(threadId: string): TurnState;
@@ -1310,7 +1314,7 @@ export function createEngine(deps: EngineDeps): Engine {
         return call;
       }
     }
-    const tier = registry.callTier(u.name, u.input, port);
+    const tier = registry.callTier(u.name, u.input, port, call.prepared);
     const a = verdictOf(
       gate({
         name: u.name,
@@ -1592,6 +1596,7 @@ export function createEngine(deps: EngineDeps): Engine {
           quiet: deps.quiet ?? null,
           haiku: deps.haiku ?? null,
           mcp: deps.mcp ?? null,
+          hosted: deps.hosted ?? null,
           google: deps.google ?? null,
           core: deps.core ?? null,
           memory: deps.memory ?? null,
@@ -1725,6 +1730,7 @@ export function createEngine(deps: EngineDeps): Engine {
   ): ConfirmRequest {
     const summary = registry.describe(c.name, c.input, port, c.prepared);
     const review = registry.review(c.name, c.input, c.prepared);
+    const tool = registry.get(c.name);
     return {
       threadId,
       batchId,
@@ -1733,7 +1739,18 @@ export function createEngine(deps: EngineDeps): Engine {
       input: c.input,
       ...(summary && { summary }),
       ...(review?.length && { review }),
+      ...(tool?.choices?.length && { choices: tool.choices.map((x) => ({ ...x })) }),
+      ...(tool?.denyLabel && { denyLabel: tool.denyLabel }),
     };
+  }
+
+  /** The card's choice (B2) kept in the call's `prepared`, for `run`: the one
+   *  picked, or the first when the answer had none (a plain "allow"). */
+  function chosen(c: BatchCall, choice: string | undefined): Partial<BatchCall> {
+    const choices = registry.get(c.name)?.choices;
+    if (!choices?.length) return {};
+    const id = choices.some((x) => x.id === choice) ? choice! : choices[0].id;
+    return { prepared: { ...((c.prepared as object | undefined) ?? {}), choice: id } };
   }
 
   return {
@@ -1780,7 +1797,7 @@ export function createEngine(deps: EngineDeps): Engine {
       emit({ type: "withdrawn", threadId });
     },
 
-    async confirm(threadId, toolUseId, allow) {
+    async confirm(threadId, toolUseId, allow, choice) {
       const batch = store
         .pending()
         .find(
@@ -1792,7 +1809,7 @@ export function createEngine(deps: EngineDeps): Engine {
       if (!batch || (turns.has(threadId) && !batch.brain)) return;
       const calls = batch.calls.map((c) =>
         c.id === toolUseId
-          ? { ...c, state: allow ? ("allowed" as const) : ("denied" as const) }
+          ? { ...c, state: allow ? ("allowed" as const) : ("denied" as const), ...(allow && chosen(c, choice)) }
           : c,
       );
       const next = { ...batch, calls };

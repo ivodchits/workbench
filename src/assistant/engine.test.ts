@@ -1366,3 +1366,81 @@ describe("skills (S2)", () => {
     expect(sys.output_config).toEqual({ effort: "high" });
   });
 });
+
+describe("a card with choices, and a hosted server's tools (B2)", () => {
+  const pick = defineTool({
+    name: "pick",
+    description: "Ask how.",
+    schema: z.object({}),
+    tier: "consequential",
+    choices: [
+      { id: "a", label: "the first way" },
+      { id: "b", label: "the second way" },
+    ],
+    denyLabel: "Skip",
+    prepare: async () => ({}) as { choice?: string },
+    trust: () => ({ projectId: null, asks: "always" }),
+    run: (_i, ctx) => `chose ${(ctx.prepared as { choice?: string }).choice}`,
+  });
+  const resultText = (m: StoredMessage) =>
+    (m.content as Anthropic.Beta.BetaToolResultBlockParam[])[0].content as string;
+
+  it("shows the choices, and runs with the one picked (or the first, on a plain allow)", async () => {
+    const { engine, store, events } = await setup(
+      [
+        message([toolUse("p", "pick", {})], "tool_use"),
+        message([text("done")], "end_turn"),
+        message([toolUse("q", "pick", {})], "tool_use"),
+        message([text("done")], "end_turn"),
+      ],
+      [getTime, pick],
+    );
+    const id = await turn(engine, "do it");
+    const ask = events.find((e) => e.type === "confirm");
+    expect(ask?.type === "confirm" && ask.request.choices).toEqual([
+      { id: "a", label: "the first way" },
+      { id: "b", label: "the second way" },
+    ]);
+    expect(ask?.type === "confirm" && ask.request.denyLabel).toBe("Skip");
+    await engine.confirm(id, "p", true, "b");
+    await engine.settled(id);
+    expect(resultText(store.loaded(id)[2])).toBe("chose b");
+
+    await turn(engine, "again", id);
+    await engine.confirm(id, "q", true);
+    await engine.settled(id);
+    expect(resultText(store.loaded(id)[store.loaded(id).length - 2])).toBe("chose a");
+  });
+
+  it("adds a server's tools deferred, after Duck's own, between requests", async () => {
+    const store = createThreadStore(memoryBackend());
+    await store.load();
+    const s = scripted([
+      message([text("hi")], "end_turn"),
+      message([toolUse("f", "firefox__tabs_list", {})], "tool_use"),
+      message([text("two tabs")], "end_turn"),
+    ]);
+    const registry = createRegistry([getTime]);
+    const engine = createEngine({ stream: s.stream, registry, port, store });
+    const id = await turn(engine, "hello");
+    expect(s.calls[0].params.tools?.map((t) => (t as { name: string }).name)).toEqual(["get_time"]);
+    registry.setExternal([
+      defineTool({
+        name: "firefox__tabs_list",
+        description: "List tabs",
+        schema: z.record(z.string(), z.unknown()),
+        inputSchema: { type: "object", properties: { window_id: { type: "integer" } } },
+        tier: "read",
+        run: () => "tab 1, tab 2",
+      }) as ToolDef,
+      // One of Duck's own names is never replaced.
+      defineTool({ name: "get_time", description: "x", schema: z.object({}), tier: "consequential", run: () => "no" }) as ToolDef,
+    ]);
+    await turn(engine, "what tabs are open?", id);
+    const tools = s.calls[1].params.tools as { name: string; defer_loading?: boolean; input_schema?: unknown }[];
+    expect(tools.map((t) => t.name)).toEqual(["tool_search_tool_regex", "get_time", "firefox__tabs_list"]);
+    expect(tools[2]).toMatchObject({ defer_loading: true, input_schema: { properties: { window_id: { type: "integer" } } } });
+    expect(resultText(store.loaded(id)[4])).toBe("tab 1, tab 2");
+    expect(registry.tierOf("get_time")).toBe("read");
+  });
+});

@@ -77,6 +77,9 @@ import { memoryApply, memoryList, memoryStateGet, memoryStateSet } from "../ipc/
 import { createMcpHost } from "./mcp";
 import { createGoogleHost } from "./google";
 import { createRegistry } from "./tools/registry";
+import { createBrowserHost } from "./browser";
+import { createHostedSync, type HostedSync } from "./hosted";
+import { firefoxStartProfile, mcpHostCall, mcpHostRunning, mcpHostServers, mcpHostTools } from "../ipc/mcpHost";
 import { DEFERRED, SERVER_TOOLS, TOOL_NAMES, TOOLS } from "./toolset";
 import { createTaskManager, ipcTaskBackend, type Task, type TaskManager } from "./tasks";
 import { voiceMessage } from "./voiceNames";
@@ -257,6 +260,7 @@ export function endpoint(
   skills?: SkillsHost,
   promoter?: Promoter,
   timings?: TimingsHost,
+  hosted?: HostedSync,
 ): DuckEndpoint {
   const listeners = new Set<(ev: DuckEvent) => void>();
   const say = (ev: DuckEvent) => {
@@ -375,7 +379,7 @@ export function endpoint(
         e.withdraw(msg.threadId);
         return;
       case "confirm":
-        await e.confirm(msg.threadId, msg.toolUseId, msg.allow);
+        await e.confirm(msg.threadId, msg.toolUseId, msg.allow, msg.choice);
         return;
       case "thread.new":
         await e.newThread(msg.mode);
@@ -416,6 +420,12 @@ export function endpoint(
         onSettings?.();
         // A skill turned on or off is told by the list's change.
         if (msg.settings.disabledSkills) void skills?.list().catch(fail);
+        // A hosted server turned on or off (B2): its tools come or go.
+        if (hosted && (msg.settings.mcpHost || msg.settings.firefox))
+          void hosted
+            .sync()
+            .then(async () => say({ type: "hosted", servers: await hosted.view() }))
+            .catch(fail);
         return;
       case "dnd":
         if (!settings) throw new Error("Duck's settings aren't available.");
@@ -464,6 +474,11 @@ export function endpoint(
       case "trust.promotion.dismiss":
         await needPromoter().dismiss(msg.key);
         return;
+      case "hosted.get": {
+        if (hosted && msg.refresh) await hosted.sync(msg.refresh);
+        answer({ type: "hosted", servers: hosted ? await hosted.view() : [] });
+        return;
+      }
       case "timings.get": {
         const rows = timings ? await timings.since(Date.now() - TIMINGS_DAYS * 86_400_000) : [];
         answer({ type: "timings", lines: timingStats(rows).map(statLine) });
@@ -781,6 +796,18 @@ export function initAssistant(): Promise<void> {
           .catch((e: unknown) => console.warn("duck: the nightly memory tidy failed", e)),
       TIDY_CHECK_MS,
     );
+    // Duck's own processes for stdio MCP servers, your Firefox bridge first (B2).
+    const registry = createRegistry(TOOLS, { deferred: DEFERRED, server: SERVER_TOOLS });
+    const browser = createBrowserHost({ call: mcpHostCall, startProfile: firefoxStartProfile });
+    const hosted = createHostedSync({
+      registry,
+      settings: settings.get,
+      listTools: mcpHostTools,
+      servers: mcpHostServers,
+      running: mcpHostRunning,
+      refLine: browser.refLine,
+    });
+    void hosted.sync().catch((e: unknown) => console.warn("duck: the hosted MCP servers didn't load", e));
     const engine = createEngine({
       tasks,
       autopilot,
@@ -790,6 +817,7 @@ export function initAssistant(): Promise<void> {
       quiet: quietHost,
       haiku: (input, signal) => oneShot("haiku_task", input, { signal }),
       mcp: createMcpHost(mcpRequest),
+      hosted: { call: mcpHostCall, browser },
       google: createGoogleHost({ workspacePrepare, sheetExport, sheetCells, sheetDraft, sheetDrafts, sheetSearch, sheetRead }),
       core: createCoreHost(() => settings.get().workspace),
       memory,
@@ -798,7 +826,7 @@ export function initAssistant(): Promise<void> {
       skills,
       eventLevel: (threadId, level) => levels.set(threadId, level),
       store: s,
-      registry: createRegistry(TOOLS, { deferred: DEFERRED, server: SERVER_TOOLS }),
+      registry,
       port: localPort,
       gate: createPolicy({ settings: settings.get, trust, messages: s.loaded }),
       settings: settings.get,
@@ -942,6 +970,7 @@ export function initAssistant(): Promise<void> {
         }),
         fiveHour: async () => (await localPort.usageLimits())?.fiveHour?.usedPercentage ?? null,
       },
+      hosted,
     );
     epRef = ep;
     duck = createLocalTransport(ep);
