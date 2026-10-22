@@ -70,8 +70,8 @@ export default function ProjectToolbar() {
     if (view.problems.length > 0) {
       body = (
         <>
-          <Separator />
           <ProblemsButton projectId={projectId} view={view} />
+          <Separator />
         </>
       );
     } else if (view.file && view.file.plugins.length > 0) {
@@ -143,9 +143,9 @@ function Groups({
   const folded = plugins.slice(fit);
   return (
     <div ref={rootRef} style={{ display: "flex", alignItems: "center", flex: "0 0 auto", marginRight: 6 }}>
-      <Separator />
       <div style={{ display: "flex", alignItems: "center", gap: GROUP_GAP }}>{shown.map(group)}</div>
       {folded.length > 0 && <MoreMenu>{folded.map(group)}</MoreMenu>}
+      <Separator />
       <div
         ref={measureRef}
         aria-hidden
