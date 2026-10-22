@@ -9,7 +9,7 @@
 //! ([`autopilot`]). Step X1: a client for external MCP servers ([`mcp_client`]).
 //! Step M3: the subscription brain ([`subscription_brain`]) and the MCP server
 //! that serves it Duck's tools ([`mcp_server`]). Step L1: long-term memory, its
-//! index and its commits ([`memory`]).
+//! index and its commits ([`memory`]); step L2 its consolidation and recall log.
 //! The morning routine: Google access ([`google`]) and the invoice sheet ([`sheets`]).
 //!
 //! The webview never holds the key. It asks [`assistant_proxy_info`] for the proxy's
@@ -517,6 +517,67 @@ pub async fn assistant_memory_restore(
         Ok(())
     })
     .await
+}
+
+/// Make one consolidation's changes (step L2) and commit them as one (`message`).
+#[tauri::command]
+pub async fn assistant_memory_apply(
+    ctx: Db<'_>,
+    workspace: Option<String>,
+    plan: memory::Apply,
+    message: String,
+) -> Result<memory::Applied, String> {
+    let ctx = ctx.inner().clone();
+    blocking(move || {
+        let ws = workspace::resolve(workspace.as_deref())?;
+        let done = memory::apply(&ws, &plan)?;
+        if !done.edits.is_empty() {
+            memory_changed(&ctx, &ws, done.edits.iter().map(|e| e.file.clone()).collect(), message);
+        }
+        Ok(done)
+    })
+    .await
+}
+
+/// The consolidation's own state (step L2), as JSON in `meta`: its last run, the
+/// contradictions waiting to be asked, the skill ideas. `None` removes it.
+const MEMORY_STATE_KEYS: [&str; 3] = ["consolidation", "questions", "skill_offers"];
+const MEMORY_STATE_MAX: usize = 256 * 1024;
+
+fn memory_state_key(key: &str) -> Result<String, String> {
+    if MEMORY_STATE_KEYS.contains(&key) {
+        Ok(format!("memory_state:{key}"))
+    } else {
+        Err(format!("not a memory state: {key}"))
+    }
+}
+
+#[tauri::command]
+pub fn assistant_memory_state_get(ctx: Db<'_>, key: String) -> Result<Option<String>, String> {
+    trust::meta(&lock(&ctx), &memory_state_key(&key)?)
+}
+
+#[tauri::command]
+pub fn assistant_memory_state_set(ctx: Db<'_>, key: String, value: Option<String>) -> Result<(), String> {
+    let k = memory_state_key(&key)?;
+    let conn = lock(&ctx);
+    match value {
+        Some(v) if v.len() > MEMORY_STATE_MAX => Err(format!("the {key} state is too large")),
+        Some(v) => trust::set_meta(&conn, &k, &v),
+        None => conn.execute("DELETE FROM meta WHERE key = ?1", [&k]).map(|_| ()).map_err(|e| e.to_string()),
+    }
+}
+
+/// Log one automatic recall (step L2).
+#[tauri::command]
+pub fn assistant_recall_log(ctx: Db<'_>, row: memory::RecallRow) -> Result<(), String> {
+    memory::log_recall(&lock(&ctx), &row)
+}
+
+/// The recall hit rate since `since` (epoch ms).
+#[tauri::command]
+pub fn assistant_recall_stats(ctx: Db<'_>, since: i64) -> Result<memory::RecallStats, String> {
+    memory::recall_stats(&lock(&ctx), since)
 }
 
 /// Every long-term memory entry, for the drawer's Memory view.

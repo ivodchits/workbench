@@ -7,10 +7,10 @@ import Anthropic from "@anthropic-ai/sdk";
 import { describe, expect, it } from "vitest";
 
 import type { StoredMessage, ThreadRow } from "../ipc/assistant";
-import type { MemoryEntry, MemoryHit, NewMemoryEntry } from "../ipc/memory";
+import type { MemoryEntry, MemoryHit, NewMemoryEntry, RecallRow } from "../ipc/memory";
 import { createEngine, toApiMessages, type StreamFn, type StreamLike } from "./engine";
 import { fakePort } from "./fakePort.test-util";
-import { isCorrection, memoryOff, recallNote, RECALL_OPEN, worthRecalling, type MemoryHost } from "./memory";
+import { isCorrection, memoryOff, recallNote, RECALL_OPEN, stems, usedHit, worthRecalling, type MemoryHost } from "./memory";
 import type { DuckEvent } from "./protocol";
 import { DEFAULT_SETTINGS } from "./settings";
 import { createThreadStore, type ThreadBackend } from "./threads";
@@ -314,5 +314,60 @@ describe("long-term memory in threads (L1)", () => {
     const result = JSON.stringify(store.loaded(id).filter((m) => m.role === "user").pop()!.content);
     expect(result).toContain("Decided SQLite for notes sync");
     expect(result).toContain("2/2 words");
+  });
+});
+
+describe("the recall log and the tidy's questions (L2)", () => {
+  it("guesses whether a reply used a hit from the hit's own words", () => {
+    const h = { ...hit("memory", 2, 4, SQLITE.text), entry: SQLITE };
+    const q = "Let's get back to the notes sync design";
+    expect(usedHit(h, q, "We'll keep SQLite: it's one file.")).toBe(true);
+    // Words the message itself has don't count: echoing "notes sync" isn't use.
+    expect(usedHit(h, q, "Sure, the notes sync design. Where were we?")).toBe(false);
+    expect([...stems("Заметки, заметок; synchronization")]).toEqual(["замет", "synchronizati"]);
+  });
+
+  it("logs each recall with what the reply used and whether Duck searched itself", async () => {
+    const mem = fakeMemory([SQLITE]);
+    const rows: RecallRow[] = [];
+    mem.host.log = async (r) => void rows.push(r);
+    const { engine, turn } = await setup(
+      [
+        message([text("We'll keep SQLite: it's one file.")], "end_turn"),
+        message([toolUse("q1", "recall", { query: "themes" })], "tool_use"),
+        message([text("Nothing on themes.")], "end_turn"),
+        message([text("Fine.")], "end_turn"),
+      ],
+      mem.host,
+    );
+    const id = await turn("Let's get back to the notes sync design");
+    await turn("and the colour themes?", id);
+    await new Promise((r) => setTimeout(r, 0));
+    expect(rows.map((r) => [r.shown, r.used, r.selfRecall])).toEqual([
+      [1, 1, false],
+      [0, 0, true],
+    ]);
+    expect(rows[0]).toMatchObject({ threadId: id, query: "Let's get back to the notes sync design", hits: [{ label: "decisions", used: true }] });
+    // Not in a thread you asked Duck not to remember.
+    await engine.notice(id, { kind: "memoryOff", off: true, text: "off" });
+    await turn("notes sync once more", id);
+    await new Promise((r) => setTimeout(r, 0));
+    expect(rows).toHaveLength(2);
+  });
+
+  it("asks about a contradiction once, in the next message's note", async () => {
+    const mem = fakeMemory();
+    const asks = ["Earlier: Postgres for notes sync. Today: SQLite. Which holds?"];
+    mem.host.question = async () => asks.shift() ?? null;
+    const { calls, turn } = await setup(
+      [message([text("Quick one: Postgres or SQLite?")], "end_turn"), message([text("SQLite it is.")], "end_turn")],
+      mem.host,
+    );
+    const id = await turn("morning");
+    const note = JSON.stringify(calls[0].messages[1]);
+    expect(note).toContain("<memory_question>");
+    expect(note).toContain("Earlier: Postgres for notes sync. Today: SQLite. Which holds?");
+    await turn("SQLite", id);
+    expect(calls[1].messages.map((m) => m.role)).toEqual(["user", "system", "assistant", "user"]);
   });
 });

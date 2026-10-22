@@ -73,7 +73,9 @@ import { SHEET_TOOLS } from "./tools/sheets";
 import { PREP_TOOLS } from "./tools/prep";
 import { MEMORY_TOOLS } from "./tools/memory";
 import { createCoreHost } from "./core";
-import { createMemoryHost } from "./memory";
+import { createMemoryHost, type TidyReport } from "./memory";
+import { Consolidation, createConsolidator, type Consolidator } from "./consolidate";
+import { memoryApply, memoryList, memoryStateGet, memoryStateSet } from "../ipc/memory";
 import { createMcpHost } from "./mcp";
 import { createGoogleHost } from "./google";
 import { SUMMARY_TOOLS } from "./tools/summaries";
@@ -173,6 +175,10 @@ const REPLAY_MAX_CALLS = 20_000;
 
 let started: Promise<void> | null = null;
 let duck: Transport | null = null;
+let consolidator: Consolidator | null = null;
+
+/** How often the nightly tidy (step L2) checks whether it's due. */
+const TIDY_CHECK_MS = 5 * 60_000;
 
 /** The text blocks of a stored message. */
 function replyText(content: unknown): string {
@@ -575,6 +581,25 @@ export function initAssistant(): Promise<void> {
         desktopSpeech.setSpeakOn(on);
       },
     };
+    // Long-term memory (L1), tidied every night (L2).
+    const memory = createMemoryHost(() => settings.get().workspace);
+    const tidier = createConsolidator({
+      threads: () => s.threads(),
+      messages: (id) => s.messages(id),
+      tasks: () => tasks.list(),
+      list: () => memoryList(settings.get().workspace),
+      apply: (plan, message) => memoryApply(settings.get().workspace, plan, message),
+      state: { get: memoryStateGet, set: memoryStateSet },
+      call: (input, signal) => oneShot("consolidate", input, { schema: Consolidation, signal }),
+      idleMs: () => getPresence().then((p) => p.idleMs),
+    });
+    memory.question = () => tidier.question();
+    memory.tidy = () => tidier.run();
+    consolidator = tidier;
+    setInterval(
+      () => void tidier.tick().catch((e: unknown) => console.warn("duck: the nightly memory tidy failed", e)),
+      TIDY_CHECK_MS,
+    );
     const engine = createEngine({
       tasks,
       autopilot,
@@ -586,7 +611,7 @@ export function initAssistant(): Promise<void> {
       mcp: createMcpHost(mcpRequest),
       google: createGoogleHost({ workspacePrepare, sheetExport, sheetCells, sheetDraft, sheetDrafts, sheetSearch, sheetRead }),
       core: createCoreHost(() => settings.get().workspace),
-      memory: createMemoryHost(() => settings.get().workspace),
+      memory,
       eventLevel: (threadId, level) => levels.set(threadId, level),
       store: s,
       registry: createRegistry(TOOLS, { deferred: DEFERRED }),
@@ -712,6 +737,17 @@ export function initAssistant(): Promise<void> {
     console.error("duck: init failed", e);
   });
   return started;
+}
+
+/** Tidy Duck's long-term memory now (the Memory view's button). */
+export function tidyMemory(): Promise<TidyReport> {
+  if (!consolidator) return Promise.reject(new Error("Duck isn't started yet."));
+  return consolidator.run();
+}
+
+/** The last tidy, for the Memory view. */
+export function lastTidy(): Promise<{ date: string; report: TidyReport } | null> {
+  return consolidator?.last() ?? Promise.resolve(null);
 }
 
 /** The transport to the running Duck, or `null` until `initAssistant` finished. */

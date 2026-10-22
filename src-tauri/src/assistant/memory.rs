@@ -4,7 +4,8 @@
 //!
 //! - **The files.** One per topic: `decisions.md`, `preferences.md`, `people.md`,
 //!   `goals.md`, `lessons.md` (what Duck learned about working with you), and
-//!   `projects/<name>.md`; `journal/` is L2's. Each entry is a bullet:
+//!   `projects/<name>.md`, and the journal (step L2), `journal/<YYYY-MM>.md`, a
+//!   bullet per day. Each entry is a bullet:
 //!   `- 2026-10-22 — Decided SQLite for notes sync. Why: one file. (src: thread:…,
 //!   conf: high, tags: синхронизация заметок)`. You can edit them; a bullet without
 //!   the date or the parenthesis is still an entry. `core.md` (W4) is the profile
@@ -21,6 +22,11 @@
 //! - **Secrets** are refused before anything is written ([`secret_in`]).
 //! - **Git.** The workspace becomes a repo on the first change, and each change is
 //!   one commit of just its files, through the background git queue.
+//! - **Consolidation** (step L2): the engine's nightly pass decides what to add,
+//!   merge and retire, and [`apply`] makes all of it, and the day's journal bullet,
+//!   in one go, for one commit.
+//! - **The recall log** (step L2): every automatic recall, what it showed and what
+//!   the reply used, in `recall_log`, for the hit rate ([`recall_stats`]).
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Component, Path, PathBuf};
@@ -394,6 +400,9 @@ fn write_file(path: &Path, text: Option<&str>) -> Result<(), String> {
 /// A new topic file's head.
 fn header(file: &str) -> String {
     let topic = topic_of(file);
+    if let Some(month) = topic.strip_prefix("journal/") {
+        return format!("# Journal, {month}\n\nWhat Duck wrote about each day when it tidied its memory. Edit freely.\n\n");
+    }
     let title = match topic.strip_prefix("projects/") {
         Some(p) => format!("Project: {p}"),
         None => {
@@ -504,6 +513,200 @@ pub fn list(workspace: &Path) -> Result<Vec<Entry>, String> {
         }
     }
     Ok(out)
+}
+
+// ── consolidation (step L2) ──
+
+/// An entry a consolidation adds: a new one, or what a merge became.
+#[derive(Deserialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct Add {
+    pub topic: String,
+    pub entry: NewEntry,
+}
+
+/// The day's journal paragraph.
+#[derive(Deserialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct Journal {
+    /// `YYYY-MM-DD`: the day it's about.
+    pub date: String,
+    pub text: String,
+}
+
+/// What one consolidation run changes.
+#[derive(Deserialize, Debug, Clone, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct Apply {
+    /// Removed first: the merged and the retired entries.
+    #[serde(default)]
+    pub remove: Vec<Forget>,
+    #[serde(default)]
+    pub add: Vec<Add>,
+    pub journal: Option<Journal>,
+}
+
+#[derive(Serialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct Applied {
+    /// One per file changed, from before the run to after it.
+    pub edits: Vec<FileEdit>,
+    /// What wasn't written, and why (a secret, too long, not a topic).
+    pub skipped: Vec<String>,
+}
+
+/// The longest journal paragraph.
+pub const JOURNAL_MAX: usize = 2000;
+
+/// The journal file a day's bullet goes in: `memory/journal/2026-10.md`.
+pub fn journal_file(date: &str) -> Result<String, String> {
+    let d = date.trim();
+    match split_date(d) {
+        (Some(day), "") => Ok(format!("{DIR}/journal/{}.md", &day[..7])),
+        _ => Err(format!("not a date: {date}")),
+    }
+}
+
+/// Note a file's text before the run first touches it.
+fn keep_before(before: &mut BTreeMap<String, Option<String>>, workspace: &Path, file: &str) -> Result<(), String> {
+    let file = file.replace('\\', "/");
+    if let std::collections::btree_map::Entry::Vacant(e) = before.entry(file) {
+        let text = read_opt(&workspace.join(e.key()), MAX_FILE_BYTES)?;
+        e.insert(text);
+    }
+    Ok(())
+}
+
+/// Make a consolidation's changes: the removals, then the additions, then the
+/// journal bullet. An addition that can't be written (a secret, too long, not a
+/// topic) is skipped and said; the rest still happen.
+pub fn apply(workspace: &Path, a: &Apply) -> Result<Applied, String> {
+    let mut before: BTreeMap<String, Option<String>> = BTreeMap::new();
+    let mut skipped = Vec::new();
+    for f in &a.remove {
+        check_file(&f.file)?;
+        keep_before(&mut before, workspace, &f.file)?;
+    }
+    forget(workspace, &a.remove)?;
+    for add in &a.add {
+        let file = match topic_file(&add.topic) {
+            Ok(f) => f,
+            Err(e) => {
+                skipped.push(format!("{}: {e}", clip(&one_line(&add.entry.fact), 80)));
+                continue;
+            }
+        };
+        keep_before(&mut before, workspace, &file)?;
+        if let Err(e) = write(workspace, &add.topic, &add.entry) {
+            skipped.push(format!("{}: {e}", clip(&one_line(&add.entry.fact), 80)));
+        }
+    }
+    if let Some(j) = &a.journal {
+        let text = clip(&one_line(&j.text), JOURNAL_MAX);
+        if let Some(what) = secret_in(&text) {
+            skipped.push(format!("the journal: refused, it looks like it holds {what}"));
+        } else if !text.is_empty() {
+            let file = journal_file(&j.date)?;
+            keep_before(&mut before, workspace, &file)?;
+            let path = workspace.join(&file);
+            let line = format!("{} — {text} (src: tidy)", j.date.trim());
+            let after = match before.get(&file).cloned().flatten() {
+                Some(t) => appended(&t, &line),
+                None => format!("{}- {line}\n", header(&file)),
+            };
+            write_file(&path, Some(&after))?;
+        }
+    }
+    let mut edits = Vec::new();
+    for (file, b) in before {
+        let path = workspace.join(&file);
+        let after = read_opt(&path, MAX_FILE_BYTES)?;
+        if after != b {
+            edits.push(FileEdit { file, path: path.to_string_lossy().into_owned(), before: b, after });
+        }
+    }
+    Ok(Applied { edits, skipped })
+}
+
+// ── the recall log (step L2) ──
+
+/// One automatic recall: what was searched and shown, and what the reply used.
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct RecallRow {
+    pub at: i64,
+    pub thread_id: String,
+    /// The message searched (its start).
+    pub query: String,
+    /// Hits the search found, before the threshold.
+    pub candidates: i64,
+    /// Hits shown to the model.
+    pub shown: i64,
+    /// Of those, the ones the reply used.
+    pub used: i64,
+    /// Duck called `recall` itself in that turn.
+    pub self_recall: bool,
+    /// The hits shown, `[{label, file, line, matched, terms, used}]`.
+    pub hits: serde_json::Value,
+}
+
+/// How long the log keeps a row.
+const RECALL_LOG_DAYS: i64 = 90;
+const QUERY_CHARS: usize = 300;
+
+pub fn log_recall(conn: &Connection, r: &RecallRow) -> Result<(), String> {
+    db(conn.execute(
+        "INSERT INTO recall_log (at, thread_id, query, candidates, shown, used, self_recall, hits)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        params![
+            r.at,
+            r.thread_id,
+            clip(&one_line(&r.query), QUERY_CHARS),
+            r.candidates,
+            r.shown,
+            r.used,
+            r.self_recall,
+            r.hits.to_string()
+        ],
+    ))?;
+    db(conn.execute("DELETE FROM recall_log WHERE at < ?1", [r.at - RECALL_LOG_DAYS * 86_400_000]))?;
+    Ok(())
+}
+
+/// The hit rate since `since` (epoch ms).
+#[derive(Serialize, Debug, Clone, Default, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct RecallStats {
+    /// Messages searched.
+    pub searched: i64,
+    /// Messages that got at least one hit shown.
+    pub with_hits: i64,
+    /// Hits shown, and how many of them the reply used.
+    pub shown: i64,
+    pub used: i64,
+    /// Turns where Duck called `recall` itself, and those of them where nothing
+    /// had been shown: likely misses.
+    pub self_recall: i64,
+    pub missed: i64,
+}
+
+pub fn recall_stats(conn: &Connection, since: i64) -> Result<RecallStats, String> {
+    db(conn.query_row(
+        "SELECT COUNT(*), COALESCE(SUM(shown > 0), 0), COALESCE(SUM(shown), 0), COALESCE(SUM(used), 0),
+                COALESCE(SUM(self_recall), 0), COALESCE(SUM(self_recall AND shown = 0), 0)
+         FROM recall_log WHERE at >= ?1",
+        [since],
+        |r| {
+            Ok(RecallStats {
+                searched: r.get(0)?,
+                with_hits: r.get(1)?,
+                shown: r.get(2)?,
+                used: r.get(3)?,
+                self_recall: r.get(4)?,
+                missed: r.get(5)?,
+            })
+        },
+    ))
 }
 
 /// `(relative path, mtime ms, size)` of the memory files under `workspace`.
@@ -1141,6 +1344,76 @@ mod tests {
         assert!(restore(&ws, &edits[0].file, edits[0].before.as_deref(), Some("something else")).is_err());
         restore(&ws, &edits[0].file, edits[0].before.as_deref(), edits[0].after.as_deref()).unwrap();
         assert_eq!(list(&ws).unwrap().len(), 2);
+    }
+
+    #[test]
+    fn a_consolidation_merges_retires_and_journals_in_one_edit_per_file() {
+        let ws = temp("apply");
+        let a = write(&ws, "decisions", &entry("Use Postgres for notes sync", None)).unwrap().entry;
+        let b = write(&ws, "decisions", &entry("Notes sync will use Postgres", None)).unwrap().entry;
+        let old = write(&ws, "goals", &entry("Ship the beta by October 1", None)).unwrap().entry;
+        let plan = Apply {
+            remove: vec![
+                Forget { file: a.file.clone(), raw: a.raw.clone() },
+                Forget { file: b.file.clone(), raw: b.raw.clone() },
+                Forget { file: old.file.clone(), raw: old.raw.clone() },
+            ],
+            add: vec![
+                Add { topic: "decisions".into(), entry: entry("Notes sync uses Postgres", Some("синхронизация заметок")) },
+                Add { topic: "preferences".into(), entry: entry("token sk-ant-api03-abcdefghijklmnopqrstuvwxyz0123456789", None) },
+                Add { topic: "nonsense".into(), entry: entry("anything", None) },
+            ],
+            journal: Some(Journal { date: "2026-10-22".into(), text: "Worked on the notes sync.\nDecided Postgres.".into() }),
+        };
+        let done = apply(&ws, &plan).unwrap();
+        let files: Vec<&str> = done.edits.iter().map(|e| e.file.as_str()).collect();
+        assert_eq!(files, ["memory/decisions.md", "memory/goals.md", "memory/journal/2026-10.md"]);
+        assert_eq!(done.skipped.len(), 2, "{:?}", done.skipped);
+        let left: Vec<String> = list(&ws).unwrap().into_iter().map(|e| format!("{}: {}", e.topic, e.text)).collect();
+        assert_eq!(
+            left,
+            [
+                "decisions: Notes sync uses Postgres. Why: one file, no server",
+                "journal/2026-10: Worked on the notes sync. Decided Postgres.",
+            ]
+        );
+        let journal = std::fs::read_to_string(ws.join("memory/journal/2026-10.md")).unwrap();
+        assert!(journal.starts_with("# Journal, 2026-10\n"), "{journal}");
+        assert!(journal.ends_with("- 2026-10-22 — Worked on the notes sync. Decided Postgres. (src: tidy)\n"), "{journal}");
+        // The edit runs from before the run to after it.
+        let d = &done.edits[0];
+        assert!(d.before.as_deref().unwrap().contains("Use Postgres for notes sync"));
+        assert!(!d.after.as_deref().unwrap().contains("Use Postgres for notes sync"));
+        assert!(journal_file("2026-10-22x").is_err());
+    }
+
+    #[test]
+    fn the_recall_log_counts_hits_used_and_misses() {
+        let d = DuckDb::open_in_memory().unwrap();
+        let conn = d.conn.lock().unwrap();
+        let row = |at: i64, shown: i64, used: i64, self_recall: bool| RecallRow {
+            at,
+            thread_id: "t".into(),
+            query: "so, about the notes sync".into(),
+            candidates: shown + 1,
+            shown,
+            used,
+            self_recall,
+            hits: serde_json::json!([]),
+        };
+        let day = 86_400_000;
+        log_recall(&conn, &row(100 * day, 2, 1, false)).unwrap();
+        log_recall(&conn, &row(100 * day + 1, 0, 0, true)).unwrap();
+        log_recall(&conn, &row(100 * day + 2, 1, 1, true)).unwrap();
+        log_recall(&conn, &row(100 * day + 3, 0, 0, false)).unwrap();
+        assert_eq!(
+            recall_stats(&conn, 0).unwrap(),
+            RecallStats { searched: 4, with_hits: 2, shown: 3, used: 2, self_recall: 2, missed: 1 }
+        );
+        assert_eq!(recall_stats(&conn, 100 * day + 2).unwrap().searched, 2);
+        // Rows past the keep are pruned by the next write.
+        log_recall(&conn, &row(200 * day, 0, 0, false)).unwrap();
+        assert_eq!(recall_stats(&conn, 0).unwrap().searched, 1);
     }
 
     #[test]

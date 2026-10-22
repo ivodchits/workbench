@@ -42,7 +42,7 @@ import type { StoredMessage, ThreadRow } from "../ipc/assistant";
 import { capMessage, errorMessage, purpose, THREAD_PURPOSE } from "./client";
 import type { WorkbenchPort } from "./port";
 import { CORE_OPEN, coreText, type CoreHost } from "./core";
-import { memoryOff, recallFor, type MemoryHost } from "./memory";
+import { memoryOff, recallFor, recallRow, type MemoryHost, type Recall } from "./memory";
 import { COMPACT_REQUEST, compactedText, SYSTEM_PROMPT, VOICE_NOTE } from "./prompt";
 import { MODELS, route, type Brain } from "./routing";
 import { quotedFromLatest } from "./trust/mandate";
@@ -812,14 +812,16 @@ export function createEngine(deps: EngineDeps): Engine {
         });
       }
       // What the long-term memory holds about your message (step L1), for this
-      // reply only: a turn-scoped note after the others, kept as it was sent.
+      // reply only: a turn-scoped note after the others, kept as it was sent. It
+      // also carries a contradiction the tidy wants to ask about (step L2).
       const recall = deps.memory && input.source !== "event" ? await recallFor(deps.memory, input.text) : null;
-      if (recall)
+      if (recall?.note)
         opening.push({
           role: "system",
-          content: { content: [{ type: "text", text: recall }], clear_at: "next_user_message" },
+          content: { content: [{ type: "text", text: recall.note }], clear_at: "next_user_message" },
           source: "duck",
         });
+      const before = history[history.length - 1]?.seq ?? 0;
       // A turn on the other brain than the thread's last says so (step M3), and so
       // does the first Haiku turn in a thread (shown, never sent).
       const onHaiku = choice.backend === "api" && brain === "haiku";
@@ -861,6 +863,7 @@ export function createEngine(deps: EngineDeps): Engine {
       backends.set(threadId, choice.backend);
       if (choice.backend === "subscription") await brainLoop(threadId, turn);
       else if ((await loop(threadId, turn)) === "credits") await creditsLoop(threadId, turn, degraded);
+      if (recall) logRecall(threadId, recall, before);
       await afterTurn(threadId, turn);
     } catch (e) {
       if (await kept(threadId, turn))
@@ -935,6 +938,16 @@ export function createEngine(deps: EngineDeps): Engine {
   /** The turn is over: compact the thread if it has grown past the threshold, or
    *  was asked to be. A parked turn waits until it's answered; a stopped one
    *  isn't compacted. */
+  /** Log a turn's automatic recall with what the reply used of it (step L2); not
+   *  in a thread you asked Duck not to remember. */
+  function logRecall(threadId: string, recall: Recall, after: number) {
+    const log = deps.memory?.log;
+    const messages = store.loaded(threadId);
+    if (!log || memoryOff(messages)) return;
+    const row = recallRow(threadId, recall, messages.filter((m) => m.seq > after), Date.now());
+    void log(row).catch((e: unknown) => console.warn("duck: the recall log failed", e));
+  }
+
   async function afterTurn(threadId: string, turn: Turn) {
     const asked = compactAsked.has(threadId);
     const at = settings().compactAt;

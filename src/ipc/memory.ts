@@ -92,3 +92,55 @@ export const memoryRestore = (
 
 export const memoryList = (workspace: string | null): Promise<MemoryEntry[]> =>
   invoke("assistant_memory_list", { workspace });
+
+// ── consolidation and the recall log (step L2) ──
+
+/** What one consolidation run changes. */
+export interface MemoryPlan {
+  /** Removed first: the merged and the retired entries. */
+  remove: { file: string; raw: string }[];
+  add: { topic: string; entry: NewMemoryEntry }[];
+  journal: { date: string; text: string } | null;
+}
+
+export interface MemoryApplied {
+  edits: MemoryFileEdit[];
+  /** What wasn't written, and why. */
+  skipped: string[];
+}
+
+/** Make a consolidation's changes, as one commit. */
+export const memoryApply = (workspace: string | null, plan: MemoryPlan, message: string): Promise<MemoryApplied> =>
+  invoke("assistant_memory_apply", { workspace, plan, message });
+
+export type MemoryStateKey = "consolidation" | "questions" | "skill_offers";
+
+export const memoryStateGet = (key: MemoryStateKey): Promise<string | null> =>
+  invoke("assistant_memory_state_get", { key });
+export const memoryStateSet = (key: MemoryStateKey, value: string | null): Promise<void> =>
+  invoke("assistant_memory_state_set", { key, value });
+
+/** One automatic recall. */
+export interface RecallRow {
+  at: number;
+  threadId: string;
+  query: string;
+  candidates: number;
+  shown: number;
+  used: number;
+  selfRecall: boolean;
+  hits: { label: string; file: string; line: number; matched: number; terms: number; used: boolean }[];
+}
+
+export interface RecallStats {
+  searched: number;
+  withHits: number;
+  shown: number;
+  used: number;
+  selfRecall: number;
+  /** Duck searched itself after nothing had been shown. */
+  missed: number;
+}
+
+export const recallLog = (row: RecallRow): Promise<void> => invoke("assistant_recall_log", { row });
+export const recallStats = (since: number): Promise<RecallStats> => invoke("assistant_recall_stats", { since });

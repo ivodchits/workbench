@@ -4967,6 +4967,58 @@ up ("change this", with a circle around it).
   - The recall hit-rate numbers are in As built, with the embeddings decision recorded.
 - **Out of scope:** cross-device sync of memory (it's a git repo; a remote can be added by
   hand).
+- **As built (2026-10-22):**
+  - **The pass** (`src/assistant/consolidate.ts`): one Haiku call (`PRIMITIVES.consolidate`,
+    `x-wb-purpose: consolidate`, thinking on, structured output) over the window since the
+    last run: the memory as it is, each entry with an id (`[e12]`, "new" for those dated in
+    the window), your conversations newest first up to 60k characters (about 20k tokens,
+    ~$0.02), and the worker tasks that finished. Workbench events are left out, and so is
+    every thread you asked Duck not to remember. With no activity there's no call. The
+    answer has new entries, merges (ids → one entry), contradictions (ids and a question),
+    retirements (with why), a journal paragraph, and skill ideas.
+  - **Applying it:** contradictions are taken first and their entries kept out of the
+    rest; a merge needs two real ids; an id that's made up or already used is dropped; a
+    topic that isn't one is skipped. Everything else is one `assistant_memory_apply`:
+    removals, additions (through `write`, so the secret filter and the duplicate check
+    hold), then the day's bullet in `memory/journal/<YYYY-MM>.md`, as **one commit**
+    whose message lists each change (`memory: tidied 2026-10-22 (1 new, 2 merged, 1
+    retired)`, then a line per merge, retirement and addition). That message, and the run's
+    record in `duck.db`, are the log; git has the old text.
+  - **The journal** is a bullet per day, `- 2026-10-21 — <paragraph> (src: tidy)`, dated by
+    the newest activity it covers (a 01:30 run writes up the evening before). It's indexed
+    with the rest, so recall finds it, and shown in the Memory view.
+  - **Contradictions** wait in `duck.db` and go, one per message, into the recall note of
+    your next message in any thread, as a `<memory_question>`: "ask this once, briefly,
+    then forget the entry that no longer holds and remember the one that does". The fix
+    goes through `forget`'s card, so you see what's removed.
+  - **When:** `tick` every 5 minutes; it runs once per local date, after midnight, once
+    you've been away an hour (the idle time from presence), or after 10 minutes away when
+    the last run is over 36 hours old (the PC was off at night). A failed run waits an
+    hour. On demand: "tidy your memory" (`tidy_memory`, reversible) or "tidy now" in the
+    Memory view.
+  - **Recall log:** after each turn with automatic recall (not in a `memoryOff` thread), a
+    `recall_log` row: what the search found, what was shown, which hits the reply used,
+    and whether Duck called `recall` itself. "Used" is a guess: the reply says two of the
+    hit's own words (not the message's). A self-search after nothing was shown counts as
+    a likely miss. The Memory view shows the past 14 days.
+  - **Skill ideas** (requests made at least twice with the same steps) wait in `duck.db`,
+    one per request; S2 offers them.
+  - **Done when:**
+    - A readable journal after a week of use: not yet, it needs the week. The bullet's
+      format and dating are tested (`memory.rs`, `consolidate.test.ts`).
+    - A deliberate contradiction caught and asked about: with a scripted answer, the
+      question is stored, carried by the next message's note once, and not the one
+      after (`consolidate.test.ts`, `memory.test.ts` through the engine). Whether Haiku
+      spots it is untested; the prompt names the case.
+    - Duplicates merged: the plan removes both and adds one, in one apply and one commit
+      (`consolidate.test.ts`, `memory.rs`).
+    - **The recall hit-rate numbers: none yet**, the log starts now. The embeddings
+      decision waits for them: review on 2026-11-05, and add `multilingual-e5-small` only
+      if the misses (self-searches after nothing was shown) or the unused share say
+      keyword recall isn't enough.
+    - Not tried in the app, and the consolidation call hasn't run against the API.
+  - **Verified:** vitest 679 (11 new), tsc and eslint clean, cargo tests 294 (2 new),
+    clippy shows only the existing `badge.rs` warning.
 
 #### Step L3 — Self-development through Opus sessions
 
@@ -6407,7 +6459,7 @@ T2 goes live after the replay check in its done-when (the past week's prompts th
 | V5 | Proactive announcements | ☑ (the reply window built with V4) |
 | V6 | Wake word on the PC (experimental) | ☐ |
 | L1 | Long-term memory: files, index, recall | ☑ (not tried in the app yet) |
-| L2 | Consolidation, journal, and recall quality | ☐ |
+| L2 | Consolidation, journal, and recall quality | ☑ (not tried in the app; hit-rate review 2026-11-05) |
 | L3 | Self-development through Opus sessions | ☐ |
 | L4 | Routines, backup and housekeeping | ☐ |
 | S1 | Modes: chat and rubber duck | ☐ |

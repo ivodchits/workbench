@@ -1,14 +1,24 @@
 // The drawer's Memory view (step L1): Duck's long-term memory by topic, a search
 // (which finds project notes too), and per entry a way to open its file in the
 // editor or forget it. "Don't remember this conversation" turns `remember` off for
-// the thread you're in. Takes the place of the thread while open.
+// the thread you're in. Takes the place of the thread while open. Step L2: the
+// last tidy and what it changed, "tidy now", and automatic recall's hit rate.
 
 import { useCallback, useEffect, useState } from "react";
 
-import { memoryOff } from "../../assistant/memory";
+import { lastTidy, tidyMemory } from "../../assistant";
+import { memoryOff, type TidyReport } from "../../assistant/memory";
 import { localPort } from "../../assistant/port.local";
 import { workspacePrepare } from "../../ipc/assistant";
-import { memoryForget, memoryList, memorySearch, type MemoryEntry, type MemoryHit } from "../../ipc/memory";
+import {
+  memoryForget,
+  memoryList,
+  memorySearch,
+  recallStats,
+  type MemoryEntry,
+  type MemoryHit,
+  type RecallStats,
+} from "../../ipc/memory";
 import { setActiveProject } from "../../state/activeProject";
 import { openProjectFile } from "../../state/editors";
 import { setThreadMemory, type DuckState } from "./duckState";
@@ -72,6 +82,65 @@ function HitRow({ h }: { h: MemoryHit }) {
   );
 }
 
+/** The hit rate over this many days. */
+const STATS_DAYS = 14;
+
+function TidyBox({ onTidied }: { onTidied: () => void }) {
+  const [last, setLast] = useState<{ date: string; report: TidyReport } | null>(null);
+  const [stats, setStats] = useState<RecallStats | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [note, setNote] = useState<string | null>(null);
+  const [open, setOpen] = useState(false);
+  const load = useCallback(() => {
+    lastTidy().then(setLast).catch(() => {});
+    recallStats(Date.now() - STATS_DAYS * 86_400_000).then(setStats).catch(() => {});
+  }, []);
+  useEffect(load, [load]);
+  const tidy = () => {
+    setBusy(true);
+    setNote(null);
+    tidyMemory()
+      .then((r) => {
+        if (!r.ran) setNote("Nothing new since the last tidy.");
+        load();
+        onTidied();
+      })
+      .catch((e: unknown) => setNote(e instanceof Error ? e.message : String(e)))
+      .finally(() => setBusy(false));
+  };
+  const r = last?.report;
+  const pct = (a: number, b: number) => (b ? `${Math.round((100 * a) / b)}%` : "–");
+  return (
+    <div style={{ marginBottom: 8, color: "var(--wb-textFaint)" }}>
+      <div style={{ display: "flex", gap: 8, alignItems: "baseline", flexWrap: "wrap" }}>
+        <span>
+          {last
+            ? `tidied ${last.date}${r?.ran ? `: ${r.added} new, ${r.merged} merged, ${r.retired} retired${r.questions ? `, ${r.questions} to ask` : ""}` : ", nothing new"}`
+            : "not tidied yet"}
+        </span>
+        {!!r?.log.length && (
+          <button type="button" style={link} onClick={() => setOpen(!open)}>
+            {open ? "hide" : "what changed"}
+          </button>
+        )}
+        <button type="button" style={link} disabled={busy} onClick={tidy}>
+          {busy ? "tidying…" : "tidy now"}
+        </button>
+      </div>
+      {open && r && (
+        <div style={{ whiteSpace: "pre-wrap", marginTop: 2 }}>{[...r.log, ...r.skipped.map((s) => `skipped: ${s}`)].join("\n")}</div>
+      )}
+      {note && <div style={{ color: "var(--wb-needs)" }}>{note}</div>}
+      {stats && stats.searched > 0 && (
+        <div title="Automatic recall over the last 14 days: a hit counts as used when the reply says its words">
+          recall, {STATS_DAYS} days: {stats.searched} messages, {stats.withHits} with hits, {stats.shown} shown, {stats.used} used (
+          {pct(stats.used, stats.shown)}); Duck searched itself {stats.selfRecall} times, {stats.missed} after nothing was shown
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function MemoryPanel({ duck, onBack }: { duck: DuckState; onBack: () => void }) {
   const workspace = duck.settings?.workspace ?? null;
   const [entries, setEntries] = useState<MemoryEntry[] | null>(null);
@@ -106,6 +175,7 @@ export function MemoryPanel({ duck, onBack }: { duck: DuckState; onBack: () => v
           don't remember this conversation
         </label>
       )}
+      <TidyBox onTidied={load} />
       <div style={{ display: "flex", gap: 6, marginBottom: 8 }}>
         <input
           value={query}

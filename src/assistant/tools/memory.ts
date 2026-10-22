@@ -3,7 +3,8 @@
 // L1): `remember` adds an entry to a topic file, `recall` searches the entries and
 // the project notes, `forget` previews the entries it matches on a card and then
 // removes them. The writes leave a "Duck remembered" chip in the thread with the
-// diff and an undo, and each is a commit in the workspace's repo.
+// diff and an undo, and each is a commit in the workspace's repo. Step L2:
+// `tidy_memory` runs the daily consolidation now.
 //
 // An edit is made on the file as it is now and written over that text; if you
 // saved the file in between, it's read again and the edit redone on yours.
@@ -221,4 +222,29 @@ export const forget = defineTool<typeof forgetSchema, ForgetPlan>({
   },
 });
 
-export const MEMORY_TOOLS = [rememberCore, forgetCore, remember, recall, forget];
+export const tidyMemory = defineTool({
+  name: "tidy_memory",
+  description:
+    "Tidy your long-term memory now (\"tidy your memory\"), as the nightly pass does: read what happened since the last tidy, add what's missing, merge duplicates, retire what no longer holds, note contradictions to ask about, and write the journal. One commit; the result says what changed.",
+  schema: z.object({}),
+  tier: "reversible",
+  timeoutMs: 180_000,
+  async run(_input, ctx) {
+    const tidy = memory(ctx).tidy;
+    if (!tidy) throw new Error("Tidying isn't available here.");
+    const r = await tidy();
+    if (!r.ran) return { tidied: false, why: "nothing new since the last tidy" };
+    return {
+      tidied: true,
+      added: r.added,
+      merged: r.merged,
+      retired: r.retired,
+      questionsToAsk: r.questions,
+      changes: r.log,
+      ...(r.skipped.length && { skipped: r.skipped }),
+      ...(r.journal && { journal: r.journal }),
+    };
+  },
+});
+
+export const MEMORY_TOOLS = [rememberCore, forgetCore, remember, recall, forget, tidyMemory];

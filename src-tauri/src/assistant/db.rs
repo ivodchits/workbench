@@ -235,4 +235,20 @@ const MIGRATIONS: &[&str] = &[
         body, path UNINDEXED, line UNINDEXED, label UNINDEXED, tokenize = 'trigram'
     );
     "#,
+    // Step L2: every automatic recall, what it showed and how much of that the reply
+    // used, for the hit rate. `hits` is JSON; rows older than 90 days are pruned.
+    r#"
+    CREATE TABLE recall_log (
+        id           INTEGER PRIMARY KEY,
+        at           INTEGER NOT NULL,
+        thread_id    TEXT NOT NULL,
+        query        TEXT NOT NULL,
+        candidates   INTEGER NOT NULL,
+        shown        INTEGER NOT NULL,
+        used         INTEGER NOT NULL,
+        self_recall  INTEGER NOT NULL,
+        hits         TEXT NOT NULL
+    );
+    CREATE INDEX idx_recall_log_at ON recall_log(at);
+    "#,
 ];
