@@ -55,6 +55,16 @@ export const QUEST_LOG: McpServerSpec = {
   ],
 };
 
+/** Duck's Google access (Drive and Sheets: the morning routine's invoice). The OAuth
+ *  client's secret, if it has one, and the refresh token live in Credential
+ *  Manager, never here. */
+export interface GoogleSettings {
+  /** The Desktop OAuth client id from the user's Google Cloud project. */
+  clientId: string | null;
+}
+
+export const DEFAULT_GOOGLE: GoogleSettings = { clientId: null };
+
 export interface DuckSettings {
   /** Ask before every prompt Duck sends to a session. Off = only consequential
    *  actions ask. */
@@ -98,6 +108,8 @@ export interface DuckSettings {
   /** A thread whose request has grown past this many input tokens is compacted
    *  once its turn is over (step A6); 0 never. */
   compactAt: number;
+  /** Google access (Drive and Sheets). */
+  google: GoogleSettings;
 }
 
 export const DEFAULT_TIERS: Record<Tier, TierSpec> = {
@@ -122,6 +134,7 @@ export const DEFAULT_SETTINGS: DuckSettings = {
   dndUntil: null,
   mcpServers: [QUEST_LOG],
   compactAt: 100_000,
+  google: DEFAULT_GOOGLE,
 };
 
 /** Do Not Disturb "until I turn it off". */
@@ -168,6 +181,10 @@ export function cleanSettings(raw: unknown): Partial<DuckSettings> {
   if (Array.isArray(r.mcpServers)) out.mcpServers = cleanMcpServers(r.mcpServers);
   const compact = whole(r.compactAt, 900_000);
   if (compact !== undefined) out.compactAt = compact === 0 ? 0 : Math.max(COMPACT_MIN, compact);
+  if (r.google && typeof r.google === "object") out.google = cleanGoogle(r.google as Record<string, unknown>);
+  // The branch's first build kept the client id under `morning`.
+  else if (r.morning && typeof r.morning === "object")
+    out.google = cleanGoogle({ clientId: (r.morning as Record<string, unknown>).googleClientId });
   if (r.tiers && typeof r.tiers === "object") {
     const t = r.tiers as Record<string, Partial<TierSpec> | undefined>;
     out.tiers = Object.fromEntries(
@@ -213,6 +230,28 @@ export function cleanMcpServers(raw: unknown[]): McpServerSpec[] {
     });
   }
   return out;
+}
+
+const CLIENT_ID = /^[A-Za-z0-9._-]{8,200}$/;
+const SHEET_ID = /^[A-Za-z0-9_-]{20,128}$/;
+const CELL = /^\$?([A-Z]{1,3})\$?([1-9][0-9]{0,6})$/;
+
+/** A sheet id, or the id out of a pasted docs.google.com URL. */
+export function sheetIdOf(v: string): string | null {
+  const s = v.trim();
+  const id = /\/spreadsheets\/d\/([A-Za-z0-9_-]+)/.exec(s)?.[1] ?? s;
+  return SHEET_ID.test(id) ? id : null;
+}
+
+/** An A1 cell address, uppercase without `$`; null when it isn't one cell. */
+export function cellOf(v: string): string | null {
+  const m = CELL.exec(v.trim().toUpperCase());
+  return m ? `${m[1]}${m[2]}` : null;
+}
+
+export function cleanGoogle(r: Record<string, unknown>): GoogleSettings {
+  const id = typeof r.clientId === "string" ? r.clientId.trim() : "";
+  return { clientId: CLIENT_ID.test(id) ? id : null };
 }
 
 function cleanAnnounce(r: Record<string, unknown>): AnnounceSettings {

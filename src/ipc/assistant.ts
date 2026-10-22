@@ -290,3 +290,125 @@ export const mcpRequest = (
   timeoutMs?: number,
 ): Promise<unknown> =>
   invoke("assistant_mcp_request", { url, tokenEnv, method, params, timeoutMs });
+
+/** The morning routine's Google access: whether it's connected and whether the
+ *  OAuth client's secret is stored (`secretTarget` names the credential for
+ *  `cmdkey`). Tokens never come back to the webview. */
+export interface GoogleStatus {
+  connected: boolean;
+  secretStored: boolean;
+  secretTarget: string;
+}
+
+export interface SheetCell {
+  address: string;
+  /** As the sheet shows it. */
+  value: string;
+  /** The formula, when the cell holds one. */
+  formula?: string;
+}
+
+export interface SheetCells {
+  name: string;
+  modified?: string;
+  cells: SheetCell[];
+}
+
+/** The cells, and where the local copy of the sheet went. */
+export interface SheetExport extends SheetCells {
+  csv: string;
+  xlsx: string;
+  sidecar: string;
+}
+
+export const googleStatus = (): Promise<GoogleStatus> => invoke("assistant_google_status");
+
+/** Sign in to Google in the browser; resolves once the consent comes back. */
+export const googleConnect = (clientId: string): Promise<GoogleStatus> =>
+  invoke("assistant_google_connect", { clientId });
+
+export const googleDisconnect = (): Promise<GoogleStatus> => invoke("assistant_google_disconnect");
+
+export const sheetCells = (clientId: string, sheetId: string, tab: string, addresses: string[]): Promise<SheetCells> =>
+  invoke("assistant_sheet_cells", { clientId, sheetId, tab, addresses });
+
+export const sheetExport = (
+  clientId: string,
+  workspace: string,
+  date: string,
+  sheetId: string,
+  tab: string,
+  addresses: string[],
+): Promise<SheetExport> => invoke("assistant_sheet_export", { clientId, workspace, date, sheetId, tab, addresses });
+
+/** A copy of the invoice sheet Duck made (phase 3), with its configured cells. */
+export interface SheetDraft {
+  id: string;
+  name: string;
+  url: string;
+  month: string;
+  /** `copy` (Drive's copy) or `upload` (the xlsx export, converted). */
+  how: string;
+  created: number;
+  cells: SheetCell[];
+}
+
+export interface CellValue {
+  address: string;
+  value: string;
+}
+
+/** Copy the sheet into the drafts folder and set `updates` in the copy; `expect` is
+ *  the original's cells as the card showed them. */
+export const sheetDraft = (
+  clientId: string,
+  sheetId: string,
+  tab: string,
+  folder: string,
+  title: string,
+  month: string,
+  expect: CellValue[],
+  updates: CellValue[],
+): Promise<SheetDraft> =>
+  invoke("assistant_sheet_draft", { clientId, sheetId, tab, folder, title, month, expect, updates });
+
+/** A draft Duck made, as recorded (phase 3). */
+export interface DraftRef {
+  id: string;
+  name: string;
+  url: string;
+  /** The sheet it's a copy of. */
+  source: string;
+  month: string;
+  how: string;
+  created: number;
+}
+
+/** The drafts Duck made for `month` ("YYYY-MM") that are still in Drive. */
+export const sheetDrafts = (clientId: string, month: string): Promise<DraftRef[]> =>
+  invoke("assistant_sheet_drafts", { clientId, month });
+
+export interface SheetFound {
+  id: string;
+  name: string;
+  modified?: string;
+}
+
+/** Google Sheets whose name contains `query`, latest changed first (at most 10). */
+export const sheetSearch = (clientId: string, query: string): Promise<SheetFound[]> =>
+  invoke("assistant_sheet_search", { clientId, query });
+
+/** One tab of a sheet: its non-empty cells with their formulas. */
+export interface SheetRead {
+  name: string;
+  modified?: string;
+  tabs: string[];
+  tab: string;
+  cells: SheetCell[];
+  /** The tab goes on past what was read. */
+  cut: boolean;
+}
+
+/** A tab of the sheet (the first one when `tab` is empty). */
+export const sheetRead = (clientId: string, sheetId: string, tab: string): Promise<SheetRead> =>
+  invoke("assistant_sheet_read", { clientId, sheetId, tab });

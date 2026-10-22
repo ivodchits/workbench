@@ -17,6 +17,13 @@ import { homeDir } from "@tauri-apps/api/path";
 import {
   getSpend,
   mcpRequest,
+  sheetCells,
+  sheetDraft,
+  sheetDrafts,
+  sheetRead,
+  sheetSearch,
+  sheetExport,
+  workspacePrepare,
   onUsage,
   replayCalls,
   type Spend,
@@ -60,7 +67,11 @@ import { READ_ALOUD_TOOLS, type ReaderHost } from "./tools/readAloud";
 import { SCREENSHOT_TOOLS, type ScreenHost } from "./tools/screenshot";
 import { QUIET_TOOLS, type QuietHost } from "./tools/quiet";
 import { MCP_TOOLS } from "./tools/mcp";
+import { MORNING_TOOLS } from "./tools/morning";
+import { SHEET_TOOLS } from "./tools/sheets";
+import { PREP_TOOLS } from "./tools/prep";
 import { createMcpHost } from "./mcp";
+import { createGoogleHost } from "./google";
 import { SUMMARY_TOOLS } from "./tools/summaries";
 import { createRegistry } from "./tools/registry";
 import { TASK_TOOLS } from "./tools/tasks";
@@ -103,6 +114,9 @@ const TOOLS = [
   ...THREAD_TOOLS,
   ...HAIKU_TOOLS,
   ...MCP_TOOLS,
+  ...MORNING_TOOLS,
+  ...SHEET_TOOLS,
+  ...PREP_TOOLS,
   ...(import.meta.env.DEV ? [testConfirm, testAnnounce] : []),
 ];
 
@@ -120,6 +134,10 @@ const DEFERRED = new Set([
   "save_screenshot",
   "set_quiet",
   "duck_spend",
+  "find_sheet",
+  "read_sheet",
+  "create_sheet_draft",
+  "prep_ahead",
 ]);
 
 /** Where the spend comes from: the ledger commands in the app, fakes in tests. */
@@ -554,6 +572,7 @@ export function initAssistant(): Promise<void> {
       quiet: quietHost,
       haiku: (input, signal) => oneShot("haiku_task", input, { signal }),
       mcp: createMcpHost(mcpRequest),
+      google: createGoogleHost({ workspacePrepare, sheetExport, sheetCells, sheetDraft, sheetDrafts, sheetSearch, sheetRead }),
       eventLevel: (threadId, level) => levels.set(threadId, level),
       store: s,
       registry: createRegistry(TOOLS, { deferred: DEFERRED }),

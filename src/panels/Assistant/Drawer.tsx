@@ -428,6 +428,26 @@ function Header({
   useEffect(() => {
     if (!duck.open) setMenu(null);
   }, [duck.open]);
+  // The settings popover stays inside the drawer: its height is the room between
+  // the header and the drawer's bottom, measured while it's open.
+  const [room, setRoom] = useState<number | null>(null);
+  useEffect(() => {
+    if (menu !== "settings") return;
+    const measure = () => {
+      const head = rootRef.current;
+      const drawer = head?.parentElement;
+      if (!head || !drawer) return;
+      setRoom(Math.max(120, drawer.getBoundingClientRect().bottom - head.getBoundingClientRect().bottom - 10));
+    };
+    measure();
+    const ro = new ResizeObserver(measure);
+    if (rootRef.current?.parentElement) ro.observe(rootRef.current.parentElement);
+    window.addEventListener("resize", measure);
+    return () => {
+      ro.disconnect();
+      window.removeEventListener("resize", measure);
+    };
+  }, [menu]);
 
   return (
     <div
@@ -560,8 +580,8 @@ function Header({
             ...popover,
             right: 8,
             width: 320,
-            // Taller than the window allows, its tabs scroll.
-            maxHeight: "calc(100vh - 96px)",
+            // Taller than the drawer allows, its tabs scroll.
+            maxHeight: room ?? "calc(100vh - 96px)",
             display: "flex",
             flexDirection: "column",
           }}

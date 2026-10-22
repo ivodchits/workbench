@@ -17,7 +17,7 @@ import { defineTool, type ToolContext } from "./registry";
 /** How much of a running worker's last reply `task_status` shows. */
 const PROGRESS_CHARS = 1500;
 
-function manager(ctx: ToolContext): TaskManager {
+export function manager(ctx: ToolContext): TaskManager {
   if (!ctx.tasks) throw new Error("Worker tasks aren't available here.");
   return ctx.tasks;
 }
@@ -40,7 +40,7 @@ const minutes = (from: number | null, to: number | null) =>
   from === null ? null : Math.max(0, Math.round(((to ?? Date.now()) - from) / 60_000));
 
 /** A task as the model reads it. */
-function view(t: Task) {
+export function view(t: Task) {
   return compact({
     id: t.id,
     title: t.title,

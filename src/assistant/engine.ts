@@ -64,6 +64,7 @@ import type { ReaderHost } from "./tools/readAloud";
 import type { ScreenHost } from "./tools/screenshot";
 import type { QuietHost } from "./tools/quiet";
 import type { McpHost } from "./mcp";
+import type { GoogleHost } from "./google";
 import type { ThreadMoves } from "./tools/threads";
 import type { HaikuCall } from "./tools/haikuTask";
 import type { Level } from "./announce";
@@ -154,6 +155,8 @@ export interface EngineDeps {
   haiku?: HaikuCall;
   /** External MCP servers (step X1), for the `mcp_*` tools. */
   mcp?: McpHost;
+  /** The morning routine's Google sheet, for `morning_briefing`. */
+  google?: GoogleHost;
   /** A tool's follow-up event (`later`) is about to be posted, at this level of
    *  news (V5). */
   eventLevel?: (threadId: string, level: Level) => void;
@@ -979,7 +982,8 @@ export function createEngine(deps: EngineDeps): Engine {
       // action, a file with problems) fails before any card, with the reason.
       if (tool.prepare) {
         try {
-          call.prepared = await withTimeout(registry.prepare(u.name, u.input, port), tool.timeoutMs);
+          const env = { settings: settings(), google: deps.google ?? null };
+          call.prepared = await withTimeout(registry.prepare(u.name, u.input, port, env), tool.timeoutMs);
         } catch (e) {
           call.result = errorResult(u.id, `${u.name} failed: ${errorMessage(e)}`);
           continue;
@@ -1050,6 +1054,7 @@ export function createEngine(deps: EngineDeps): Engine {
           quiet: deps.quiet ?? null,
           haiku: deps.haiku ?? null,
           mcp: deps.mcp ?? null,
+          google: deps.google ?? null,
           request: lastUserText(store.loaded(threadId)),
           startThread: (words, opts) => split(threadId, words, opts),
           threads: threadMoves(threadId),

@@ -32,6 +32,36 @@ pub fn google_tts() -> Option<String> {
     imp::read("duck/google-tts-key").filter(|k| !k.is_empty())
 }
 
+/// The morning routine's Google refresh token (`duck-dev/…` for a debug build),
+/// written by the OAuth flow in [`super::google`], never by hand.
+pub const GOOGLE_TOKEN: &str = if cfg!(debug_assertions) {
+    "duck-dev/google-sheets-token"
+} else {
+    "duck/google-sheets-token"
+};
+
+/// The Desktop OAuth client's secret, when Google issued one: one credential for
+/// both builds, stored with `cmdkey /generic:duck/google-oauth-secret /user:duck
+/// /pass:<secret>`. A Desktop client's secret isn't confidential, but it is kept
+/// out of prefs all the same.
+pub const GOOGLE_SECRET: &str = "duck/google-oauth-secret";
+
+pub fn google_token() -> Option<String> {
+    imp::read(GOOGLE_TOKEN).filter(|k| !k.is_empty())
+}
+
+pub fn set_google_token(token: &str) -> Result<(), String> {
+    imp::write(GOOGLE_TOKEN, token.trim())
+}
+
+pub fn clear_google_token() -> Result<(), String> {
+    imp::delete(GOOGLE_TOKEN)
+}
+
+pub fn google_secret() -> Option<String> {
+    imp::read(GOOGLE_SECRET).filter(|k| !k.is_empty())
+}
+
 pub fn set(key: &str) -> Result<(), String> {
     let key = key.trim();
     if key.is_empty() {

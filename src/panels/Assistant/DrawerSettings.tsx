@@ -6,7 +6,8 @@
 //   (W2, T2, W3, M4);
 // - workers: D1's worker sessions;
 // - voice: push-to-talk and speech to text (V1);
-// - announcements: Speak, and when Duck speaks up about news (V5).
+// - announcements: Speak, and when Duck speaks up about news (V5);
+// - google auth: Duck's Google sign-in (Drive and Sheets) and the speech key.
 // Duck's own settings go to the engine over the protocol. The login entry is the
 // OS's own (`tauri-plugin-autostart`), so its state is read back from the OS rather
 // than kept in prefs. A dev build can't set it: the entry would point at the debug
@@ -20,9 +21,10 @@ import { setAvatar, setDuckSettings, setInterrupt, type DuckState } from "./duck
 import VoiceSettings from "./VoiceSettings";
 import SpeechSettings from "./SpeechSettings";
 import AnnounceSettings from "./AnnounceSettings";
+import GoogleSettings from "./GoogleSettings";
 
 /** The settings' categories, in tab order. */
-const TABS = ["drawer", "sessions", "workers", "voice", "announcements"] as const;
+const TABS = ["drawer", "sessions", "workers", "voice", "announcements", "google auth"] as const;
 type Tab = (typeof TABS)[number];
 
 /** The tab last shown, kept while the app runs. */
@@ -249,6 +251,7 @@ export default function DrawerSettings({ duck }: { duck: DuckState }) {
           </>
         )}
         {tab === "announcements" && (duck.settings ? <AnnounceSettings settings={duck.settings} /> : <Waiting />)}
+        {tab === "google auth" && (duck.settings ? <GoogleSettings settings={duck.settings} /> : <Waiting />)}
         {error && <div style={{ color: "var(--wb-needs)" }}>{error}</div>}
       </div>
     </div>
