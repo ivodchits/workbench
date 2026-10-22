@@ -126,6 +126,27 @@ describe("morning_briefing", () => {
     expect(out.instructions).toMatch(/headline/);
   });
 
+  it("offers prep for meetings still ahead and near deadlines, and lists the day's prep", async () => {
+    const ql = questLog();
+    (ql.get_calendar_occurrences as { occurrences: unknown[] }).occurrences.push({
+      date: TODAY,
+      start_millis: at(TODAY, 23, 59),
+      is_all_day: false,
+      entry: entry("e10", "Late review", { type: "EVENT" }),
+    });
+    const ctx = { ...toolCtx(fakePort({})), mcp: fakeMcp(ql).host };
+    const now = Date.now();
+    ctx.tasks = fakeTasks([{ id: "p1", title: "Checklist: Renew passport", prep: true, state: "done", created: now - 60_000, headline: "Checklist ready" }]);
+    const out = (await morningBriefing.run({}, ctx)) as { questLog: string; prepared: unknown; instructions: string };
+    const day = JSON.parse(out.questLog.split("\n")[1]) as { prepCandidates?: { title: string }[] };
+    // Standup at 9:00 is offered only before 9:00; Renew passport has its prep.
+    expect(day.prepCandidates?.map((c) => c.title)).toContain("Late review");
+    expect(day.prepCandidates?.map((c) => c.title)).not.toContain("Renew passport");
+    expect(day.prepCandidates?.map((c) => c.title)).not.toContain("Send invoice");
+    expect(out.prepared).toEqual({ prep: [{ id: "p1", title: "Checklist: Renew passport", state: "done", headline: "Checklist ready" }] });
+    expect(out.instructions).toMatch(/prep_ahead only when the user says yes/);
+  });
+
   it("carries on with Workbench's half when Quest Log can't be reached", async () => {
     const down = new Error("couldn't reach http://127.0.0.1:7437/mcp (is the app that serves it running?)");
     const { host } = fakeMcp(Object.fromEntries(BRIEFING_READS.map((t) => [t, down])));
@@ -354,8 +375,8 @@ describe("the invoice sheet in the briefing", () => {
     const ql = questLog();
     (ql.get_agenda as { all: { entry: { tags: string[] } }[] }).all[2].entry.tags = ["bill"];
     const ctx = { ...toolCtx(fakePort({}), settings), mcp: fakeMcp(ql).host, google: after };
-    const out = (await morningBriefing.run({}, ctx)) as { prepared: string };
-    expect(out.prepared).toBe(`This month's invoice draft: ${made.name} (${made.url}).`);
+    const out = (await morningBriefing.run({}, ctx)) as { prepared: unknown };
+    expect(out.prepared).toEqual({ invoiceDraft: `${made.name} (${made.url})` });
   });
 
   it("says to reconnect when Google access expired, and what else went wrong otherwise", async () => {

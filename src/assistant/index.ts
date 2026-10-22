@@ -67,6 +67,7 @@ import { QUIET_TOOLS, type QuietHost } from "./tools/quiet";
 import { MCP_TOOLS } from "./tools/mcp";
 import { MORNING_TOOLS } from "./tools/morning";
 import { INVOICE_TOOLS } from "./tools/invoice";
+import { PREP_TOOLS } from "./tools/prep";
 import { createMcpHost } from "./mcp";
 import { createGoogleHost } from "./google";
 import { SUMMARY_TOOLS } from "./tools/summaries";
@@ -113,6 +114,7 @@ const TOOLS = [
   ...MCP_TOOLS,
   ...MORNING_TOOLS,
   ...INVOICE_TOOLS,
+  ...PREP_TOOLS,
   ...(import.meta.env.DEV ? [testConfirm, testAnnounce] : []),
 ];
 
@@ -130,6 +132,7 @@ const DEFERRED = new Set([
   "set_quiet",
   "duck_spend",
   "create_sheet_draft",
+  "prep_ahead",
 ]);
 
 /** Where the spend comes from: the ledger commands in the app, fakes in tests. */
