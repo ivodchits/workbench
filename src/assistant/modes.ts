@@ -15,9 +15,13 @@
 //   sessions, notes and git (read-only), and "let's wrap up" writes a note and
 //   offers to hand it to a coding session.
 //
-// The chat and duck prompts are built in (S2 brings modes as files); both keep
-// the assistant's safety rules verbatim. Threads from before S1 were the
-// assistant's: their stored mode "chat" became "assistant" (duck.db's migration).
+// The chat and duck prompts are built in; both keep the assistant's safety rules
+// verbatim. Threads from before S1 were the assistant's: their stored mode "chat"
+// became "assistant" (duck.db's migration).
+//
+// Your own modes (step S2) are skills with `mode:` in their frontmatter
+// (`skills.ts`), registered here with `setUserModes` whenever the skills are read.
+// A thread whose mode's skill is gone, or turned off, runs as the assistant.
 
 import { SAFETY_RULES } from "./config";
 import type { Effort } from "./protocol";
@@ -28,7 +32,8 @@ export type ModeId = "assistant" | "chat" | "duck";
 export type Patience = "quick" | "patient" | "thinking";
 
 export interface Mode {
-  id: ModeId;
+  /** A built-in `ModeId`, or a skill's `mode:`. */
+  id: string;
   title: string;
   /** One line for the drawer's picker. */
   about: string;
@@ -43,7 +48,7 @@ export interface Mode {
   voicePatience: Patience | null;
 }
 
-const BASICS = `- Always reply in English, whatever language the user writes in. The user writes in English, Russian or Spanish, sometimes mixed, and understands English replies; your replies are often spoken by an English voice. Use another language only where the conversation calls for it: quoting, explaining or translating a word or phrase, or when the user explicitly asks for an answer in that language. The user is learning Spanish, so Spanish words and phrases may come up for that reason.
+export const BASICS = `- Always reply in English, whatever language the user writes in. The user writes in English, Russian or Spanish, sometimes mixed, and understands English replies; your replies are often spoken by an English voice. Use another language only where the conversation calls for it: quoting, explaining or translating a word or phrase, or when the user explicitly asks for an answer in that language. The user is learning Spanish, so Spanish words and phrases may come up for that reason.
 - Use plain sentences. Use markdown only when it clearly helps; never headings for a short reply.
 - The user often speaks rather than types; a spoken message is a transcript and may have misheard words, English names and terms written in Cyrillic, and missing punctuation. Read it generously, by what makes sense here. When names in it were corrected, the raw transcript follows as (voice; as heard: "…"): if a correction looks wrong, go by the raw words.
 - A thread starts with a <core_memory> block of who the user is and what they prefer. A turn may carry a <recalled_memories> note from your long-term memory: use the entries that help, quietly. Save to it with remember what will matter again (a decision and why, a preference, a fact about a project or a person), one short entry per call with tags in English and Russian; remember_core for a lasting fact or standing instruction they ask you to keep. Never save a password, key or token.
@@ -74,7 +79,7 @@ ${BASICS}
 ${SAFETY_RULES}`;
 
 /** The tools every mode but the assistant shares. */
-const COMMON_TOOLS = [
+export const COMMON_TOOLS = [
   "get_time",
   "remember",
   "recall",
@@ -87,6 +92,7 @@ const COMMON_TOOLS = [
   "go_to_thread",
   "compact_thread",
   "switch_mode",
+  "load_skill",
 ];
 
 export const MODES: Record<ModeId, Mode> = {
@@ -138,9 +144,28 @@ export const MODE_IDS = Object.keys(MODES) as ModeId[];
 
 export const isModeId = (id: unknown): id is ModeId => typeof id === "string" && id in MODES;
 
+/** The modes from your skills (step S2), by id. */
+let userModes = new Map<string, Mode>();
+
+/** Register the modes your skills declare (replacing the ones before). */
+export function setUserModes(modes: readonly Mode[]): void {
+  userModes = new Map(modes.filter((m) => !isModeId(m.id)).map((m) => [m.id, m]));
+}
+
+/** A mode by id, built in or yours; null for one not known. */
+export function findMode(id: string | null | undefined): Mode | null {
+  if (isModeId(id)) return MODES[id];
+  return (id && userModes.get(id)) || null;
+}
+
+/** Every mode: the built-in ones, then yours by id. */
+export function allModes(): Mode[] {
+  return [...MODE_IDS.map((m) => MODES[m]), ...[...userModes.values()].sort((a, b) => a.id.localeCompare(b.id))];
+}
+
 /** A thread's mode by its stored id; an unknown one is the assistant. */
 export function modeOf(id: string | null | undefined): Mode {
-  return isModeId(id) ? MODES[id] : MODES.assistant;
+  return findMode(id) ?? MODES.assistant;
 }
 
 /** The system prompt a thread in `mode` runs with: the mode's own, or the

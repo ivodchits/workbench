@@ -49,6 +49,9 @@ export interface MemoryHost {
   /** Step L3: a change to Duck to suggest (at most one a week), marked offered;
    *  null for none. */
   suggestion?(): Promise<string | null>;
+  /** Step S2: a repeated request to offer as a skill (at most one a week),
+   *  marked offered; null for none. */
+  skillOffer?(): Promise<string | null>;
 }
 
 /** What a tidy did (step L2). */
@@ -128,16 +131,22 @@ export function suggestionLine(s: string): string {
   return `<duck_suggestion>\nWhile tidying your memory you noticed something you keep getting wrong, which a change to yourself could fix: ${s}\nMention it once, briefly, at a natural point in your reply, and offer to do it with improve_duck. Start it only if the user says yes.\n</duck_suggestion>`;
 }
 
+/** A request the tidy saw repeated (step S2), to offer once as a skill. */
+export function skillOfferLine(s: string): string {
+  return `<skill_suggestion>\nWhile tidying your memory you noticed a request the user keeps making: ${s}\nOffer once, briefly, at a natural point in your reply, to make it a skill so it goes the same way every time. Write it with draft_skill only if the user says yes.\n</skill_suggestion>`;
+}
+
 /** The turn-scoped note for a message: what was recalled, for a correction the
- *  lesson line, a contradiction to ask about, and a change to Duck to suggest.
- *  Null when there's none. */
+ *  lesson line, a contradiction to ask about, and a change to Duck or a skill to
+ *  suggest. Null when there's none. */
 export function recallNote(
   hits: readonly MemoryHit[],
   correction: boolean,
   question: string | null = null,
   suggestion: string | null = null,
+  skillOffer: string | null = null,
 ): string | null {
-  if (!hits.length && !correction && !question && !suggestion) return null;
+  if (!hits.length && !correction && !question && !suggestion && !skillOffer) return null;
   const parts: string[] = [];
   if (hits.length)
     parts.push(
@@ -146,6 +155,7 @@ export function recallNote(
   if (correction) parts.push(LESSON_LINE);
   if (question) parts.push(questionLine(question));
   if (suggestion) parts.push(suggestionLine(suggestion));
+  if (skillOffer) parts.push(skillOfferLine(skillOffer));
   return parts.join("\n\n");
 }
 
@@ -174,13 +184,19 @@ export async function recallFor(host: MemoryHost | undefined, text: string): Pro
     console.warn(`duck: ${what} failed`, e);
     return null;
   };
-  const [found, question, suggestion] = await Promise.all([
+  // One offer a turn: a skill only when there's no change to Duck to suggest.
+  const offer = async (): Promise<[string | null, string | null]> => {
+    const s = host.suggestion ? await host.suggestion().catch(warn("the suggestion")) : null;
+    if (s) return [s, null];
+    return [null, host.skillOffer ? await host.skillOffer().catch(warn("the skill offer")) : null];
+  };
+  const [found, question, [suggestion, skillOffer]] = await Promise.all([
     inTime(host.search(query, RECALL_K * 3).catch(warn("recall")), null),
     host.question ? inTime(host.question().catch(warn("the memory question")), null) : null,
-    host.suggestion ? inTime(host.suggestion().catch(warn("the suggestion")), null) : null,
+    inTime(offer(), [null, null] as [string | null, string | null]),
   ]);
   const hits = worthRecalling(found ?? []);
-  return { note: recallNote(hits, correction, question, suggestion), query, candidates: found?.length ?? 0, hits };
+  return { note: recallNote(hits, correction, question, suggestion, skillOffer), query, candidates: found?.length ?? 0, hits };
 }
 
 // ── the recall log (step L2) ──

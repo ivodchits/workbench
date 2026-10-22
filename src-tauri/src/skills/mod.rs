@@ -202,26 +202,46 @@ fn build_skill(name: &str, scope: &str, skill_md: &Path, plugin: Option<String>)
 /// two scalars matter here, so this is a deliberately tiny line scanner rather than
 /// a full YAML parse.
 fn parse_frontmatter(text: &str) -> (Option<String>, Option<String>) {
-    let mut lines = text.lines();
-    // The file must open with a `---` fence (allowing a UTF-8 BOM).
-    let first = lines.next().unwrap_or("").trim_start_matches('\u{feff}').trim();
-    if first != "---" {
+    let Some((fields, _)) = frontmatter(text) else {
         return (None, None);
+    };
+    let get = |k: &str| fields.iter().find(|(f, _)| f == k).map(|(_, v)| v.clone());
+    (get("name"), get("description"))
+}
+
+/// A leading frontmatter block's `key: value` lines (values unquoted, in file
+/// order) and the body after it; `None` when the file doesn't open with a `---`
+/// fence (a UTF-8 BOM allowed). Lines without a `key:` (YAML lists, comments) are
+/// skipped. Duck's skills (step S2) read their `mode:`, `tools:` and the rest with it.
+pub(crate) fn frontmatter(text: &str) -> Option<(Vec<(String, String)>, &str)> {
+    let text = text.trim_start_matches('\u{feff}');
+    let mut rest = text;
+    let mut next_line = || {
+        if rest.is_empty() {
+            return None;
+        }
+        let (line, after) = rest.split_once('\n').unwrap_or((rest, ""));
+        rest = after;
+        Some(line)
+    };
+    if next_line()?.trim() != "---" {
+        return None;
     }
-    let mut name = None;
-    let mut description = None;
-    for line in lines {
+    let mut fields = Vec::new();
+    while let Some(line) = next_line() {
         let trimmed = line.trim();
         if trimmed == "---" {
-            break; // end of frontmatter
+            return Some((fields, rest));
         }
-        if let Some(v) = trimmed.strip_prefix("name:") {
-            name = Some(unquote(v.trim()));
-        } else if let Some(v) = trimmed.strip_prefix("description:") {
-            description = Some(unquote(v.trim()));
+        if let Some((k, v)) = trimmed.split_once(':') {
+            let k = k.trim();
+            if !k.is_empty() && !k.starts_with('#') && !k.starts_with('-') && !k.contains(' ') {
+                fields.push((k.to_owned(), unquote(v.trim())));
+            }
         }
     }
-    (name, description)
+    // No closing fence: the whole file was frontmatter.
+    Some((fields, ""))
 }
 
 /// Strip a single pair of matching surrounding quotes, if present.
@@ -239,7 +259,7 @@ fn unquote(s: &str) -> String {
 
 /// `^[a-z0-9]+(-[a-z0-9]+)*$` — lowercase alphanumerics in hyphen-separated groups,
 /// no leading/trailing/double hyphens. Hand-rolled to avoid a regex dependency.
-fn is_kebab_case(s: &str) -> bool {
+pub(crate) fn is_kebab_case(s: &str) -> bool {
     if s.is_empty() {
         return false;
     }

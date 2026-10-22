@@ -40,6 +40,7 @@ import type { GoogleHost } from "../google";
 import type { CoreHost } from "../core";
 import type { MemoryHost } from "../memory";
 import type { ConfigHost } from "../config";
+import type { SkillsHost } from "../skills";
 
 export type Tier = "read" | "reversible" | "consequential";
 
@@ -83,6 +84,11 @@ export interface ToolContext {
   config?: ConfigHost | null;
   /** Routines and the backup (step L4); absent where there are none. */
   routines?: RoutinesHost | null;
+  /** Duck's skills (step S2); absent where there are none. */
+  skills?: SkillsHost | null;
+  /** A loaded skill's `tools:` (step S2): the rest of this turn may call only
+   *  these, and load_skill. */
+  narrow?(skill: string, tools: readonly string[]): void;
   /** You asked Duck not to remember this thread (L1): `remember` refuses. */
   memoryOff?: boolean;
   /** Start a new Duck thread on `words`, which must be the user's own words from
@@ -95,7 +101,7 @@ export interface ToolContext {
 }
 
 /** What `prepare` gets besides the port. */
-export type PrepareEnv = Pick<ToolContext, "settings" | "google" | "memory"> & Partial<Pick<ToolContext, "tasks" | "config">>;
+export type PrepareEnv = Pick<ToolContext, "settings" | "google" | "memory"> & Partial<Pick<ToolContext, "tasks" | "config" | "skills">>;
 
 /** A tool may return text, API content blocks (e.g. an image), or any JSON value. */
 export type ToolOutput =

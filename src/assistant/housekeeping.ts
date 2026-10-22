@@ -469,6 +469,10 @@ export function createHousekeeping(deps: HousekeepingDeps): Housekeeping {
         await tell(r, `Your routine "${r.title}" (${scheduleText(r.schedule)}) is due: ${a.text}`, "report");
         return "sent to Duck";
       }
+      if (a.kind === "skill") {
+        await tell(r, `Your routine "${r.title}" (${scheduleText(r.schedule)}) is due: run the skill "${a.skill}" (load_skill), as if the user asked for it.`, "report");
+        return "sent to Duck";
+      }
       if (a.kind === "task") {
         const t = await tasks.run({ threadId: await threadFor(r), title: r.title, brief: a.brief, kind: a.taskKind, tier: a.tier });
         return started(t);

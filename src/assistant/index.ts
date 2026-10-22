@@ -79,6 +79,9 @@ import { createRegistry } from "./tools/registry";
 import { DEFERRED, TOOLS } from "./toolset";
 import { createTaskManager, ipcTaskBackend, type Task, type TaskManager } from "./tasks";
 import { voiceMessage } from "./voiceNames";
+import { createSkills, type Skill, type SkillsHost } from "./skills";
+import { allModes, isModeId } from "./modes";
+import { skillsList, skillWrite } from "../ipc/duckSkills";
 import { FLOOR } from "./trust/floor";
 import { replay, type ReplayReport } from "./trust/replay";
 import { createTrustStore, ipcTrustBackend, type TrustStore } from "./trust/store";
@@ -235,6 +238,7 @@ export function endpoint(
   reader?: ReaderLink,
   onSettings?: () => void,
   routines?: RoutinesHost,
+  skills?: SkillsHost,
 ): DuckEndpoint {
   const listeners = new Set<(ev: DuckEvent) => void>();
   const say = (ev: DuckEvent) => {
@@ -291,6 +295,23 @@ export function endpoint(
     });
   };
   routines?.routines.subscribe(() => void sendRoutines().catch(fail));
+  const skillsEvent = (list: Skill[]): DuckEvent => ({
+    type: "skills",
+    skills: list.map((x) => ({
+      name: x.name,
+      description: x.description,
+      path: x.path,
+      mode: x.mode?.id ?? null,
+      tools: x.tools,
+      problems: x.problems,
+      enabled: x.enabled,
+    })),
+    modes: allModes().map((m) => ({ id: m.id, title: m.title, about: m.about, own: !isModeId(m.id) })),
+  });
+  const sendSkills = async (to = say) => {
+    if (skills) to(skillsEvent(await skills.list()));
+  };
+  skills?.onChange((list) => say(skillsEvent(list)));
   reader?.subscribe((v) => say({ type: "reader", reader: v }));
   const needTrust = () => {
     if (!trust) throw new Error("Duck's trust settings didn't load.");
@@ -341,6 +362,7 @@ export function endpoint(
         sendTasks(answer);
         sendAutopilots(answer);
         await sendRoutines(answer);
+        await sendSkills(answer).catch(fail);
         if (reader) answer({ type: "reader", reader: reader.reader.view() });
         await sendSpend(answer);
         return;
@@ -351,6 +373,8 @@ export function endpoint(
           settings: await settings.set(msg.settings),
         });
         onSettings?.();
+        // A skill turned on or off is told by the list's change.
+        if (msg.settings.disabledSkills) void skills?.list().catch(fail);
         return;
       case "dnd":
         if (!settings) throw new Error("Duck's settings aren't available.");
@@ -615,6 +639,7 @@ export function initAssistant(): Promise<void> {
     });
     memory.question = () => tidier.question();
     memory.suggestion = () => tidier.suggestion();
+    memory.skillOffer = () => tidier.skillOffer();
     // Routines (step L4): the backup, the weekly housekeeping, the monthly docs
     // clean-up, and the user's own.
     const ws = () => settings.get().workspace;
@@ -671,6 +696,18 @@ export function initAssistant(): Promise<void> {
           .catch((e: unknown) => console.warn("duck: a routine's report was dropped", e));
       },
     });
+    // Duck's skills (S2): the files in the workspace's skills/, read on every request.
+    const toolNames = new Set(TOOLS.map((t) => t.name));
+    const skills = createSkills({
+      store: {
+        list: () => skillsList(settings.get().workspace),
+        write: (name, text, expected, message) => skillWrite(settings.get().workspace, name, text, expected, message),
+      },
+      tools: () => toolNames,
+      disabled: () => settings.get().disabledSkills,
+    });
+    // The modes they declare are known before any thread of theirs runs.
+    await skills.list().catch((e: unknown) => console.warn("duck: the skills couldn't be read", e));
     const routinesHost: RoutinesHost = {
       routines,
       housekeeping,
@@ -704,6 +741,7 @@ export function initAssistant(): Promise<void> {
       memory,
       config: createConfig(ipcConfigStore(() => settings.get().workspace)),
       routines: routinesHost,
+      skills,
       eventLevel: (threadId, level) => levels.set(threadId, level),
       store: s,
       registry: createRegistry(TOOLS, { deferred: DEFERRED }),
@@ -813,6 +851,7 @@ export function initAssistant(): Promise<void> {
       },
       () => announcer.poke(),
       routinesHost,
+      skills,
     );
     epRef = ep;
     duck = createLocalTransport(ep);

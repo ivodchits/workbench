@@ -7,6 +7,8 @@
 // - workers: D1's worker sessions;
 // - routines: what Duck does on a schedule, the backup of its data, and the
 //   clean-up of idle threads (L4);
+// - skills: Duck's skills and modes as files, and the MCP servers it may use (S2:
+//   its capabilities in one place);
 // - voice: push-to-talk and speech to text (V1);
 // - announcements: Speak, and when Duck speaks up about news (V5);
 // - google auth: Duck's Google sign-in (Drive and Sheets) and the speech key.
@@ -26,9 +28,10 @@ import AnnounceSettings from "./AnnounceSettings";
 import GoogleSettings from "./GoogleSettings";
 import { openCoreMemory } from "./openCore";
 import RoutinesSettings from "./RoutinesSettings";
+import SkillsSettings from "./SkillsSettings";
 
 /** The settings' categories, in tab order. */
-const TABS = ["drawer", "sessions", "workers", "routines", "voice", "announcements", "google auth"] as const;
+const TABS = ["drawer", "sessions", "workers", "routines", "skills", "voice", "announcements", "google auth"] as const;
 type Tab = (typeof TABS)[number];
 
 /** The tab last shown, kept while the app runs. */
@@ -205,7 +208,6 @@ export default function DrawerSettings({ duck }: { duck: DuckState }) {
                   <option value="subscription">your subscription only</option>
                 </select>
               </label>
-              <McpServers settings={duck.settings} />
               <label style={{ ...row, alignItems: "center" }}>
                 <span>Sessions Duck starts for coding run on</span>
                 <select
@@ -261,6 +263,7 @@ export default function DrawerSettings({ duck }: { duck: DuckState }) {
           ))}
         {tab === "workers" && (duck.settings ? <Workers settings={duck.settings} /> : <Waiting />)}
         {tab === "routines" && (duck.settings ? <RoutinesSettings duck={duck} settings={duck.settings} /> : <Waiting />)}
+        {tab === "skills" && (duck.settings ? <SkillsSettings duck={duck} settings={duck.settings} /> : <Waiting />)}
         {tab === "voice" && (
           <>
             <VoiceSettings />
@@ -337,38 +340,6 @@ function Avatar({ duck }: { duck: DuckState }) {
           </label>
         </>
       )}
-    </>
-  );
-}
-
-/** External MCP servers Duck may use (X1): each on or off, and its address. A
- *  server's token, if it needs one, is an environment variable named in the
- *  prefs (`tokenEnv`), never typed here. */
-function McpServers({ settings }: { settings: DuckSettings }) {
-  const servers = settings.mcpServers;
-  const [urls, setUrls] = useState(() => servers.map((s) => s.url));
-  useEffect(() => setUrls(servers.map((s) => s.url)), [servers]);
-  const patch = (i: number, p: Partial<DuckSettings["mcpServers"][number]>) =>
-    setDuckSettings({ mcpServers: servers.map((s, j) => (j === i ? { ...s, ...p } : s)) });
-  return (
-    <>
-      {servers.map((s, i) => (
-        <label key={s.name} style={{ ...row, alignItems: "center" }}>
-          <input type="checkbox" checked={s.enabled} onChange={(e) => patch(i, { enabled: e.target.checked })} />
-          <span>Use {s.name}</span>
-          <input
-            value={urls[i] ?? s.url}
-            onChange={(e) => setUrls(urls.map((u, j) => (j === i ? e.target.value : u)))}
-            onBlur={() => {
-              const url = (urls[i] ?? "").trim();
-              if (url && url !== s.url) patch(i, { url });
-              else setUrls(servers.map((x) => x.url));
-            }}
-            style={{ ...select, flex: 1, minWidth: 0 }}
-          />
-          <span style={hint}>(MCP; its app must be open)</span>
-        </label>
-      ))}
     </>
   );
 }

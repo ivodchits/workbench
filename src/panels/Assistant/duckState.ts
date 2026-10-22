@@ -29,7 +29,9 @@ import type {
   ConfirmRequest,
   DuckEvent,
   Effort,
+  ModeView,
   ReaderAction,
+  SkillView,
   Source,
   TaskView,
   TrustView,
@@ -42,7 +44,7 @@ import type { ReplayReport } from "../../assistant/trust/replay";
 import type { Effect } from "../../assistant/trust/rules";
 import type { DecisionRow, Spend, StoredMessage, ThreadRow } from "../../ipc/assistant";
 import type { Route } from "../../assistant/routing";
-import type { ModeId } from "../../assistant/modes";
+import { MODE_IDS, MODES } from "../../assistant/modes";
 import { getPref, setPref, type AssistantDrawerPrefs } from "../../ipc/prefs";
 import { onReplyDelta, onToolStart, onTurnEnded, onUserMessage, stopSpeaking } from "./replySpeech";
 
@@ -54,7 +56,11 @@ export interface DuckState {
   /** The thread on screen; `null` = a new thread, created by the first send. */
   current: string | null;
   /** The mode a new thread starts in (step S1), picked in the drawer. */
-  newMode: ModeId;
+  newMode: string;
+  /** The modes a new thread can start in: the built-in ones, then yours (S2). */
+  modes: ModeView[];
+  /** Duck's skills (step S2). */
+  skills: SkillView[];
   /** Messages of the threads opened so far. */
   messages: Record<string, StoredMessage[]>;
   /** Reply text streaming in, per thread. */
@@ -111,6 +117,9 @@ let state: DuckState = {
   threads: [],
   current: null,
   newMode: "assistant",
+  // The built-in ones until the engine sends the list.
+  modes: MODE_IDS.map((m) => ({ id: m, title: MODES[m].title, about: MODES[m].about, own: false })),
+  skills: [],
   messages: {},
   streaming: {},
   provisional: {},
@@ -424,6 +433,9 @@ function onEvent(e: DuckEvent): void {
     case "routines":
       set({ routines: e.routines, backup: e.backup });
       break;
+    case "skills":
+      set({ skills: e.skills, modes: e.modes });
+      break;
     case "replay":
       set({ replay: { running: !e.report, done: e.done, of: e.of, report: e.report } });
       break;
@@ -521,7 +533,7 @@ export function sendMessage(text: string, effort?: Effort, source: Source = "des
 }
 
 /** The mode the new thread on screen starts in (step S1). */
-export function setNewMode(mode: ModeId): void {
+export function setNewMode(mode: string): void {
   set({ newMode: mode });
 }
 

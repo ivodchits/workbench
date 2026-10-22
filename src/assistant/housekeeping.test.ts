@@ -376,4 +376,12 @@ describe("the other actions", () => {
     await l.routines.runNow(m.id);
     expect(l.threads.find((x) => x.id === l.tells[1].threadId)?.title).toBe("Morning briefing");
   });
+
+  it("a skill routine (S2) tells its thread to run the skill", async () => {
+    const l = lab({ threads: [row("t1", 0)] });
+    await l.routines.load();
+    const r = await l.routines.add({ title: "Morning", schedule: { every: "day", at: "08:30" }, action: { kind: "skill", skill: "morning-briefing" }, threadId: "t1" });
+    expect(await l.routines.runNow(r.id)).toBe("sent to Duck");
+    expect(l.tells[0].text).toBe('Your routine "Morning" (every day at 08:30) is due: run the skill "morning-briefing" (load_skill), as if the user asked for it.');
+  });
 });

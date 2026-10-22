@@ -109,6 +109,8 @@ export interface DuckSettings {
   dndUntil: number | null;
   /** External MCP servers (step X1). */
   mcpServers: McpServerSpec[];
+  /** Duck's skills turned off in the settings (step S2), by name. */
+  disabledSkills: string[];
   /** A thread whose request has grown past this many input tokens is compacted
    *  once its turn is over (step A6); 0 never. */
   compactAt: number;
@@ -141,6 +143,7 @@ export const DEFAULT_SETTINGS: DuckSettings = {
   announce: DEFAULT_ANNOUNCE,
   dndUntil: null,
   mcpServers: [QUEST_LOG],
+  disabledSkills: [],
   compactAt: 100_000,
   google: DEFAULT_GOOGLE,
   brainPolicy: "auto",
@@ -192,6 +195,8 @@ export function cleanSettings(raw: unknown): Partial<DuckSettings> {
   if (r.workspace === null) out.workspace = null;
   else if (typeof r.workspace === "string") out.workspace = r.workspace.trim() || null;
   if (Array.isArray(r.mcpServers)) out.mcpServers = cleanMcpServers(r.mcpServers);
+  if (Array.isArray(r.disabledSkills))
+    out.disabledSkills = [...new Set(r.disabledSkills.filter((n): n is string => typeof n === "string" && n.length <= 64))].slice(0, 200);
   const compact = whole(r.compactAt, 900_000);
   if (compact !== undefined) out.compactAt = compact === 0 ? 0 : Math.max(COMPACT_MIN, compact);
   if (BRAIN_POLICIES.includes(r.brainPolicy as BrainPolicy)) out.brainPolicy = r.brainPolicy as BrainPolicy;

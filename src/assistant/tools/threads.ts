@@ -30,7 +30,7 @@
 import { z } from "zod";
 
 import type { ThreadRow } from "../../ipc/assistant";
-import { MODE_IDS, MODES, modeOf } from "../modes";
+import { findMode, MODE_IDS, MODES, modeOf } from "../modes";
 import { grantArg } from "./act";
 import { defineTool } from "./registry";
 
@@ -263,18 +263,20 @@ export const switchMode = defineTool({
   name: "switch_mode",
   description: [
     "Move the conversation into a new thread of another mode: once this reply is over, the user's view opens it, their words go there as their message, and it answers there.",
-    `The modes: ${MODE_IDS.map((m) => `"${m}" (${MODES[m].about})`).join(", ")}.`,
+    `The modes: ${MODE_IDS.map((m) => `"${m}" (${MODES[m].about})`).join(", ")}, and the user's own modes listed in <skills>.`,
     "Use it when the user wants another kind of help than this thread gives: to think a problem through (\"let's rubber-duck the sync bug\", \"давай подумаем над…\") → duck; a general conversation (\"let's just chat\") → chat; anything that acts on the app, or needs the web, from a chat or duck thread → assistant.",
     "`words`: the user's own words for what they want there, copied exactly from their latest message (not paraphrased, not translated). `brief`: a few sentences of what the new thread needs to know (the project, the session, what was said here); it starts without this thread's history.",
     "Reply here in a few words (\"Let's think it through in a duck thread.\"), and don't answer the request here.",
   ].join(" "),
   schema: z.object({
-    mode: z.enum(MODE_IDS as [string, ...string[]]),
+    mode: z.string().trim().min(1).max(40),
     words: z.string().trim().min(6).max(4_000),
     brief: z.string().trim().max(4_000).optional(),
   }),
   tier: "reversible",
   async run({ mode, words, brief }, ctx) {
+    const to = findMode(mode);
+    if (!to) throw new Error(`no mode "${mode}": the modes are ${MODE_IDS.join(", ")}, and the ones in <skills>`);
     const here = modeOf(ctx.threads.list().find((t) => t.id === ctx.threadId)?.mode);
     if (here.id === mode) throw new Error(`this thread is already a ${here.title} thread; answer here`);
     const id = await ctx.startThread(words, { go: true, brief, mode });

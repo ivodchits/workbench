@@ -5,9 +5,9 @@ behind each decision are in `assistant-plan.md`. This file describes the code, a
 Duck step updates it as part of its Done when. Duck's self-development sessions (L3)
 read it first.
 
-Last updated: step S1 (2026-10-22). L3 audited it against the code. Since W5 it also
+Last updated: step S2 (2026-10-22). L3 audited it against the code. Since W5 it also
 covers W6, D2, D4, P1, P2, M2, M3, A5, A6, A7, W4, L1, L2, L3, L4, R1, R2, V1 to V5, V7,
-V8, S1, X1 and the morning routine. A fresh session changing Duck: read "The shape", then "Where to
+V8, S1, S2, X1 and the morning routine. A fresh session changing Duck: read "The shape", then "Where to
 change X" at the end, then the module rows it points to.
 
 ## The shape
@@ -43,7 +43,7 @@ change X" at the end, then the module rows it points to.
 |---|---|
 | `index.ts` | `initAssistant()` (called from `App.tsx` with the other engines) builds the store, the trust store, the registry and the engine; `getDuck()` returns the in-process transport. `endpoint()` maps protocol messages onto the engine and adds the spend (from a `SpendSource`: the ledger commands and `assistant-usage` events) and the trust messages (`trustView()` adds the floor's labels). |
 | `protocol.ts` | The Duck Protocol, version 1: `ClientMessage` (send, stop, confirm, thread.new, thread.delete, thread.compact, sync, thread.open, settings.set, trust.pause, trust.rule.add, trust.rule.remove, trust.mode, trust.floor, trust.decisions, trust.replay, task.close, task.rerun, task.diff (L3: open a change to Duck's branch in the Diff/Review panel), thread.memory (L1: "don't remember this conversation"), L4's thread.keep (the pin that keeps a thread from the clean-up), thread.view (the thread a surface shows: the drawer sends it on every switch, the bridge for each phone), routine.set (pause, resume, delete, run now) and backup.create (the settings' button), autopilot, reader, dnd, and V4's turn.commit / turn.withdraw for a `provisional` send) and `DuckEvent` (threads, history, thread, threadDeleted, message, delta, provisional, withdrawn, goThread, tool, confirm, confirmed, turnState, routing, spend, settings, trust, decisions, decision, tasks, autopilots, routines (L4: every routine as a `RoutineView` and the backup as a `BackupView`), replay, reader, error). A `ConfirmRequest` carries the tool's `summary` and, for a file edit, `review` (each file's before and after, shown as diffs); a `note` notice carries a `NoteEdit` (before, after, revision) and a `plugins` notice a `PluginsEdit` (the plugin file and its scripts, before and after, and the new revision) and a `memory` notice a `MemoryEdit` (`core.md`'s path, before and after, W4) for the drawer's chips. Source `event` marks a follow-up from Workbench, not the user. `createLocalTransport` stamps `v`. |
-| `settings.ts` | Duck's settings (pref `assistant`): `confirmPrompts` (ask before every prompt sent to a session), `codingModel` (what `create_session` uses for coding work) `answerSessionPrompts` (T2: off by default, which keeps the trust watcher in shadow mode for every project), `codingPermissionMode` (M4), the workers' `maxWorkers`, `headlessWorkers` (D4), `workspace`, `tiers` (D1: each tier's model and effort), `workerIdleStopMinutes` and `closeFinishedHours`, `summaryOnDone` (W3), `announce` and `dndUntil` (V5), `mcpServers` (X1), `compactAt` (A6: compact a thread past this many input tokens; 0 never), `deleteIdleThreadsDays` (L4: housekeeping deletes threads idle this long; 7, 0 never), and `google` (the Desktop OAuth client id for Drive and Sheets; the first build's `morning.googleClientId` is taken over). Loaded at start, changed only through `settings.set`. |
+| `settings.ts` | Duck's settings (pref `assistant`): `confirmPrompts` (ask before every prompt sent to a session), `codingModel` (what `create_session` uses for coding work) `answerSessionPrompts` (T2: off by default, which keeps the trust watcher in shadow mode for every project), `codingPermissionMode` (M4), the workers' `maxWorkers`, `headlessWorkers` (D4), `workspace`, `tiers` (D1: each tier's model and effort), `workerIdleStopMinutes` and `closeFinishedHours`, `summaryOnDone` (W3), `announce` and `dndUntil` (V5), `mcpServers` (X1), `disabledSkills` (S2: skills turned off, by name), `compactAt` (A6: compact a thread past this many input tokens; 0 never), `deleteIdleThreadsDays` (L4: housekeeping deletes threads idle this long; 7, 0 never), and `google` (the Desktop OAuth client id for Drive and Sheets; the first build's `morning.googleClientId` is taken over). Loaded at start, changed only through `settings.set`. |
 | `policy.ts` | `createPolicy({settings, trust, messages})`: the gate, an adapter over the trust engine. It builds a `TrustRequest`, runs `decide`, applies the rate guard and logs the decision. A `deny` becomes the call's error, and a rate-guard trip a `trust` notice. Without a trust store it is W2's: consequential calls ask, and prompts too when `confirmPrompts` is on. |
 | `trust/rules.ts` | Rules in Claude Code's syntax (`assistant:write_note`, `assistant:answer_choice(question)`, `Bash(npm test:*)`, `Edit(src/**)`, `WebFetch(domain:x)`): `parseRule`, `matches`, `evaluate` (deny > ask > allow, global plus the call's project). |
 | `trust/floor.ts` | `FLOOR`: the always-ask entries as data, each with must-catch and must-pass examples; `floorHit(texts, off, exception?)`. L4: `FLOOR_EXCEPTIONS`, named exceptions a tool claims in its facts (`floorException`): each lets one exact text past one entry, and every other entry still reads it. The only one is `duck-data-push` (`git push origin HEAD (duck-data)` past `push`). |
@@ -57,8 +57,9 @@ change X" at the end, then the module rows it points to.
 | `tasks.ts` | Worker tasks (D1): `createTaskManager({port, backend, settings, tell})` keeps the records (`assistant_tasks`), starts queued tasks while `maxWorkers` allows (a start takes its slot synchronously), settles a task on its worker's turn end from a fresh `result.json` (one nudge, then the last reply), reports every outcome to the asking thread as a `<workbench_event>`, and handles follow-ups, closing and the records left running by a restart. `firstPrompt`, `briefText`, `tierOf`, `parseResult` are exported for tests. L3: a task marked `self` (a change to Duck, from `improve_duck`) has its branch read when it finishes (`port.worktreeChanges`, checked by `safetyFiles`) before the thread is told; the record keeps `changes` (branch, base, files, the uncommitted ones, the ones in the safety layer), and the report says them. L4: a task marked `quiet` (a routine's own: housekeeping, a backup repair) never tells its thread that it started, waits or finished; the routine reads its outcome. A worker's question still goes to Duck. |
 | `apiWorker.ts` | The API worker (D2): a worker task run on Duck's API credits instead of a session when the subscription's limits are close (5-hour window at 70%, week at 80%; `tasks.ts` `route()`). A task marked `prep` (the morning routine's `prep_ahead`) never goes to the API: it waits until the window resets. One sub-loop on the tier's model with the server's web search and fetch and one tool of ours, `submit_result`, which writes the same `result.md` / `result.json`. Purpose `api-worker`. |
 | `autopilot.ts` | Plan autopilot (P1, P2): Duck runs a session's "step → /compact → continue" loop. After each turn an `autopilot-review` call (Sonnet, low effort, structured) says `continue`, `needs_you` or `plan_done`. Unattended runs (P2) keep to a window or an end time, pause over a subscription limit (`AUTOPILOT_LIMITS`) and carry on after the reset, pause on the same step failing twice, and check in on a stalled turn. One per session, kept in `assistant_autopilots`. |
-| `modes.ts` | Modes (S1): `MODES` (`assistant`, `chat`, `duck`), each `{title, about, effort, systemPrompt, tools, voicePatience}`; `modeOf(id)` (an unknown id is the assistant), `systemFor(mode, assistant)` (the mode's built-in prompt, or the assistant's from the config), `patienceFor(mode, setting)` (the more patient of the two). `CHAT_PROMPT` and `DUCK_PROMPT` keep `SAFETY_RULES` verbatim. See "Modes" below. |
+| `modes.ts` | Modes (S1): `MODES` (`assistant`, `chat`, `duck`), each `{title, about, effort, systemPrompt, tools, voicePatience}`; `modeOf(id)` (an unknown id is the assistant), `findMode` / `allModes` / `setUserModes` (S2: the modes from skills), `systemFor(mode, assistant)` (the mode's built-in prompt, or the assistant's from the config), `patienceFor(mode, setting)` (the more patient of the two). `CHAT_PROMPT` and `DUCK_PROMPT` keep `SAFETY_RULES` verbatim. See "Modes" below. |
 | `toolset.ts` | `TOOLS` (every tool Duck has; the test tools in dev builds) and `DEFERRED` (the ones loaded on demand), for `index.ts` and the tests. |
+| `skills.ts` | Skills (S2): `parseSkill(row, known, disabled)` turns a `SKILL.md` (read by `skills.rs`) into `{name, description, body, tools, mode, problems, enabled}`. `tools:` must name Duck's tools; `mode:` makes a `Mode` (the body inside `BASICS` and `SAFETY_RULES`, `tools:` or `COMMON_TOOLS` plus `switch_mode`, `effort`, `pauses`, `title`), and can't be a built-in id. `skillsBlock(skills)`: the `<skills>` block, the usable ones sorted by name, then the modes they add. `createSkills({store, tools, disabled})`: `list()` reads (one read at a time), registers the modes (`setUserModes`) and calls `onChange` when the list differs; `write` goes over `expected` and reads again. See "Skills" below. |
 | `routing.ts` | Per-message routing (M2), no classifier call: effort the thread's mode's (`medium`, `high` for a rubber duck), `high` for "think hard" (English, Russian, Spanish) and research, plan or comparison asks; the model is Sonnet, or Haiku for the rest of the month past the budget's soft limit, where "think hard" sends that one message on Sonnet. |
 | `announce.ts` | Announcements (V5): Duck's reply to a `<workbench_event>` is the news, said at its producer's level (`info`, `report`, `needs_you`) on this PC when you're at it, else a phone with Duck open, else a push. Do Not Disturb, quiet hours, full-screen apps, the Speak switch, waiting for a gap, and batching are its etiquette (`AnnounceSettings`). An announcement never turns the mic on (V8): turning it on within a minute of one said in full opens its thread first (`heardAnnouncement` / `replyTarget` in `voiceState.ts`). |
 | `speakable.ts` | Spoken replies' words (V2): `Sentences` cuts a stream into whole sentences, `toSpoken` makes one sayable, `langOf` picks Kokoro (English) or Silero (Russian), and a Russian sentence with digits or Latin letters gets the `speakable_ru` Haiku rewrite or `russianFallback`. |
@@ -83,8 +84,9 @@ change X" at the end, then the module rows it points to.
 | `tools/summaries.ts` | The W3 tools, over `ctx.summaries`: `summarize_session` and `summarize_activity` ("since I was away"). |
 | `tools/tasks.ts` | The D1 tools, over `ctx.tasks`: `run_task` (reversible; posts the `task` notice that the thread shows as a live card), `task_status`, `task_followup`, `task_close`, `list_tasks`, and D2's `task_rerun` (deferred). `findTask` and `view` are shared with `tools/improve.ts`. |
 | `tools/improve.ts` | L3: `improve_duck(request, scope, effort?)` (reversible): scope `config` returns the prompt files for Duck to draft from; scope `code` starts a `self` code task, tier serious (Opus, `medium` unless named), in a worktree of the Workbench repo, with `improveBrief`. `propose_config_change(file, edits, why)` (consequential, `asks`: always a card): `prepare` makes the edits on the file as it is and checks the result, the card shows the diff (`review`), `run` writes it over the text it was read as and commits it; new threads get it. `merge_duck_change(task, safetyConfirmed)` (consequential, `asks`; deferred): `prepare` reads the branch fresh and refuses an unfinished task, an empty branch or uncommitted files; a branch in the safety layer takes two cards, the second only after the first was confirmed (`firstConfirms`, in memory); then `port.mergeWorktree` and the task closes. `rebuild_duck(build)` (consequential; deferred): `npm run tauri:dev` or `tauri:build` in a new shell in the repo. |
+| `tools/skills.ts` | S2: `load_skill(name)` (read: the body; a skill with `tools:` narrows the rest of the turn through `ctx.narrow`), `draft_skill(name, text, why)` (consequential, deferred, `asks`: the whole `SKILL.md`, checked by `parseSkill` in `prepare`; the card's diff is the file before and after; written over what was read and committed). `splitDraft` reads a draft's frontmatter as `skills.rs` does. |
 | `tools/threads.ts` | Duck's own threads (A5, A7): `start_thread` (the user's own words, cut from their message, go in as its first message; with `go`, the surface moves there), `list_threads`, `go_to_thread` (the surface moves once this reply is over), consequential `delete_thread`, and S1's `switch_mode` (`start_thread` with `go` into a new thread of another mode). |
-| `routines.ts` | Routines (L4): `Schedule` (every hour; a day, a weekday or a date of the month at a time, local; `idle`: after the first idle hour from then on), `Action` (a message to Duck in the routine's thread, a worker task from a brief, or a built-in `job`: `backup`, `housekeeping`, `docs`), `nextSlot`, `isDue` (an idle slot whose day has gone by runs at once), `scheduleText`. `createRoutines({backend, run, idleMs})`: `load` adds the missing `BUILT_IN` routines (hourly backup, Sunday housekeeping, monthly docs; pausable, not deletable), `tick` runs what's due (one run per routine; a missed slot runs once, then the next slot is counted from now), `runNow` (its slot stays), `memo` (a job's state on its record). Records in `routines`. |
+| `routines.ts` | Routines (L4): `Schedule` (every hour; a day, a weekday or a date of the month at a time, local; `idle`: after the first idle hour from then on), `Action` (a message to Duck in the routine's thread, a skill to run (S2), a worker task from a brief, or a built-in `job`: `backup`, `housekeeping`, `docs`), `nextSlot`, `isDue` (an idle slot whose day has gone by runs at once), `scheduleText`. `createRoutines({backend, run, idleMs})`: `load` adds the missing `BUILT_IN` routines (hourly backup, Sunday housekeeping, monthly docs; pausable, not deletable), `tick` runs what's due (one run per routine; a missed slot runs once, then the next slot is counted from now), `runNow` (its slot stays), `memo` (a job's state on its record). Records in `routines`. |
 | `housekeeping.ts` | What routines do (L4): `createHousekeeping(deps).run(r)`. A message routine tells its thread (a `<workbench_event>`), a task routine runs a task there; the built-in ones report to one "Housekeeping" thread, made when first needed. **Backup**: `git.status`, then a push only when there's something to push; offline or auth failures are told once as info and as needs-you after a day; rejected or a lock starts a `quiet` standard code task in the Duck project with `repairBrief` (fetch and merge on its branch, never push or force), which Duck merges (`port.mergeWorktree`) and pushes after, telling you only if it's blocked; no remote: a weekly reminder offering `set_up_backup`. **Housekeeping**: `idleThreads` (idle past the setting, not kept, nothing reporting to it, not `busy`, read by the nightly tidy since), deleted through `engine.deleteThread`; `git.housekeep` (the mechanical part); then a `quiet` standard code task with `housekeepingBrief` tidies `memory/` on its branch. Its branch is merged when every file is under `memory/` or `skills/`, all committed, and every entry `git.review` finds dropped is in its `result.json` `removed` with a reason and a source; otherwise the thread gets it for your OK (`merge`). **Docs**: a `self` code task with `DOCS_REQUEST` through `improveBrief`, merged as any change to Duck. `check()` follows the routines' tasks (on every task change). |
 | `tools/routines.ts` | L4, all deferred: `schedule_routine` (reversible: a message or task routine reporting to this thread), `list_routines` (read, with the backup's state), `pause_routine` (pause / resume / delete), `git_push` (consequential: Duck's data repo to `origin` now; no arguments but the fixed repo and remote; trust facts claim the `duck-data-push` floor exception, specifier `duck-data origin`), `set_up_backup(name)` (consequential, `asks`: `gh repo create --private`), `merge_housekeeping(task)` (consequential). `RoutinesHost` is `ctx.routines`. |
 | `tools/autopilot.ts` | The P1/P2 tools over `../autopilot.ts`, all reversible: `start_autopilot`, `autopilot_status`, `pause_autopilot`, `resume_autopilot`, `stop_autopilot`. |
@@ -140,6 +142,7 @@ prompt's safety rules cover them.
 | `mcp_client.rs` | `assistant_mcp_request(url, token_env, method, params)`: JSON-RPC to an MCP server over Streamable HTTP (X1). One session per URL (`initialize` + `notifications/initialized` on first use, `mcp-session-id` kept, a 404 retried once on a new session); JSON or SSE replies. In Rust because a local server sends no CORS headers, and so a bearer token is read from the environment variable `token_env` names and never reaches the webview. |
 | `google.rs` | The morning routine's Google access: the installed-app OAuth flow (a loopback redirect, PKCE) for the user's own Desktop client and only `drive.readonly` + `drive.file`, so the token can't write to the original sheet. The refresh token is in Credential Manager (`duck/google-sheets-token`, `duck-dev/…` in debug), the client's secret, if any, in `duck/google-oauth-secret` (by `cmdkey`); access tokens stay in memory. `invalid_grant` forgets the token and fails with `google_expired: …`. Commands: `assistant_google_status`, `_connect(client_id)`, `_disconnect` (revokes). |
 | `sheets.rs` | Google Sheets. Reads: `assistant_sheet_search` (sheets by name), `assistant_sheet_read` (a tab's non-empty cells, shown and as formulas, 150 rows by 26 columns, and its tabs), `assistant_sheet_cells` (given cells, up to 20) and `assistant_sheet_export` (the cells, plus the tab as CSV, the file as xlsx and a JSON sidecar in `<workspace>/data/invoices/`). Only Google Sheets files. The draft: `assistant_sheet_draft` refuses a second draft of a sheet for a month while the first is in Drive, re-reads the original against what the card showed, refuses a formula cell (in the original and the copy), makes the drafts folder once, copies with Drive's `files.copy` and falls back to uploading the xlsx export as a new Sheet, records the file, then sets the cells (`USER_ENTERED`, plain values only) and reads them back. `assistant_sheet_drafts` lists a month's drafts still in Drive. |
+| `skills.rs` | Duck's skills (S2): `skills/<name>/SKILL.md` in the workspace. `list` (cached; a `notify` watcher on `skills/` marks it stale, so an edit is read on the next request), each file's frontmatter fields (`crate::skills::frontmatter`, the skill manager's parser made general), body, text and problems (a folder name that isn't kebab-case, no frontmatter, a `name:` that isn't the folder's, no description, over 64 KB); `write` (over the text it was read as, else "stale:"; the caller commits). Commands `assistant_skills_list`, `assistant_skill_write`. |
 | `config.rs` | Duck's prompt files (L3): `read` (`config/system.md` and `config/voice.md` only, with each one's seed from `meta` `config_seed:<file>`), `write` (over the text it was read as, else "stale:"; records a seed when given; the caller commits), `pin` / `pinned` (a thread's prompts as JSON under their hash; a pinned thread keeps its pin). Commands `assistant_config_read`, `_write`, `_pin`, `_pinned`. |
 | `db.rs` | `duck.db` / `duck.dev.db` and its append-only migrations; `assistant_google_files` records every Drive file Duck made (the drafts folder, each draft with its source sheet and month). |
 
@@ -154,7 +157,8 @@ prompt's safety rules cover them.
 | `Drawer.tsx` | The drawer: header (thread list, new, memory, the trust pill that is the kill switch, settings, close), thread view (markdown replies, tool chips, queued bubbles), confirmation cards, spend line, composer (Enter / Shift+Enter / Esc, "think hard" = effort `high` for one message). A task card for a change to Duck (L3, `SelfChange`) adds its branch, the safety badge, and "open diff" / "ask for changes" (fills the composer, `fillComposer`) / "merge…". Always mounted and only hidden, so the thread and scroll survive closing. |
 | `RoutinesSettings.tsx` | The "routines" settings tab (L4): where Duck's data is backed up (or a name field and "back up to a private GitHub repo…", which asks once more), "Delete threads idle for", and every routine with its schedule, next and last run, and run now / pause / resume / delete. |
 | `DrawerSettings.tsx` | Queue-or-interrupt, and "start at login, minimized to the tray" (`@tauri-apps/plugin-autostart`; disabled in dev builds); the workers' settings, with "Edit core.md" (W4) and which brain Duck answers on (M3). |
-| `openCore.ts` | `openCoreMemory(workspace)` (W4): prepares the workspace, makes `core.md` with its empty sections if missing, and opens it in the "Duck" project's editor. |
+| `SkillsSettings.tsx` | The "skills" settings tab (S2), Duck's capabilities in one place: each skill and mode with its description, its problems, on/off (`disabledSkills`) and "edit" (the file in the "Duck" project's editor); the MCP servers (X1, moved here from the sessions tab). |
+| `openCore.ts` | `openCoreMemory(workspace)` (W4): prepares the workspace, makes `core.md` with its empty sections if missing, and opens it in the "Duck" project's editor. `openDuckFile(workspace, path)` (S2) opens any file of the workspace there. |
 | `MemoryView.tsx` | The Memory view (L1): the long-term memory by topic, a search over it and the notes, per entry "edit" (the file in the "Duck" project's editor) and "forget", and "don't remember this conversation" for the open thread (a `thread.memory` request, which posts a `memoryOff` notice). L2: the last tidy with what it changed, "tidy now" (`tidyMemory` from `index.ts`), and the past 14 days' recall numbers (`assistant_recall_stats`). |
 | `TasksView.tsx` | The Tasks view (D2): worker tasks newest first, with headline, cost for an API worker, and ways on (open `result.md`, save to notes, open the console, go to the thread). |
 | `OverviewView.tsx` | Every thread at a glance (A5): what each does, its news since you looked, its autopilots and tasks; no model call. |
@@ -255,7 +259,8 @@ prompt's safety rules cover them.
   JSON)`, one row per automatic recall (not in a `memoryOff` thread), pruned after 90
   days. The consolidation's state is in `meta` under `memory_state:consolidation` (the
   last run: its local date, the window's end, the report), `memory_state:questions`
-  (contradictions, asked or not) and `memory_state:skill_offers`. The journal is a file,
+  (contradictions, asked or not) and `memory_state:skill_offers` (S2 marks one `offered`
+  when it's handed out). The journal is a file,
   `memory/journal/<YYYY-MM>.md`, indexed like the rest.
 - Step L3: `config_snapshots (hash, json)`, one per distinct set of prompts a thread
   started with, and `config_pins (thread_id, hash)`; `meta` `config_seed:<file>` (the
@@ -424,8 +429,36 @@ tools never change midway and its cached prefix holds.
 - **The voice**: while conversation mode runs, `voiceState.ts` sends the open thread's
   pauses (`voice_conversation_patience` → `Cmd::Patience` → `Machine::set_policy`) when
   the run starts listening and when you move threads. A phone keeps its own setting.
-- **The drawer**: a mode picker on a new thread (`DuckState.newMode`, `setNewMode`) and a
-  badge on each thread that isn't the assistant's (`ModeBadge`).
+- **The drawer**: a mode picker on a new thread (`DuckState.newMode`, `setNewMode`, the
+  `skills` event's `modes`) and a badge on each thread that isn't the assistant's
+  (`ModeBadge`).
+
+## Skills (step S2)
+
+A skill is `skills/<name>/SKILL.md` in Duck's workspace: frontmatter, then instructions.
+You write one by hand, or Duck drafts it (`draft_skill`, a card with the file's diff).
+
+- **Reading**: `skills.rs` lists them (cached, watched); `skills.ts` says what they mean.
+  The engine reads the list for every request (`skillsOf`), so a new or edited skill
+  works from the next request, with no restart.
+- **The `<skills>` block**: a second system block after the system prompt, with its own
+  1-hour breakpoint, so a changed skill rewrites the cache only from there. It lists the
+  usable skills (on, no problems) by name and the modes they add. A mode without
+  `load_skill` (one of yours with its own `tools:`) gets no block.
+- **`load_skill`** returns the body. A skill's `tools:` narrows the rest of that turn
+  (`narrowed`, cleared by the next message, kept through a confirmation): a call outside
+  them fails at once with the reason. It can't add a tool the mode doesn't have.
+- **`mode:`**: the skill is a mode instead, registered with `setUserModes` when the list
+  is read (and before a new thread in it is made). Its prompt is the body inside the
+  basics every mode has and the safety rules. A thread whose mode's skill is gone or off
+  runs as the assistant (its badge says so). Editing the file changes the threads in it
+  from their next request (unlike the assistant's pinned config).
+- **Routines**: an action `{kind: "skill", skill}` tells its thread to run the skill.
+- **Offers**: the nightly tidy's `skill_offers` (L2) seen three times or more are handed
+  out one a week at most, in the recall note (`<skill_suggestion>`), never beside a
+  change to Duck suggested the same turn.
+- **The surfaces**: a `skills` event (on `sync` and after every change) with the skills
+  and every mode; the skills settings tab turns them on or off through `settings.set`.
 
 ## Adding a tool
 
@@ -445,7 +478,7 @@ tools never change midway and its cached prefix holds.
    needs async work (what a command will really run, a file's current text), do it in
    `prepare` and read the result in `describe`, `review`, `trust` and `ctx.prepared`.
 4. Add it to `TOOLS` in `toolset.ts`. A chat or duck thread offers it only if its mode
-   lists it (`modes.ts`).
+   lists it (`modes.ts`); a skill can name it in `tools:`.
 
    Adding or changing a tool changes the cached prefix, so the next request in every
    thread re-writes the cache once.
@@ -543,8 +576,10 @@ through the Rust chain.
   `DEFAULT_TIERS`), editable in the drawer's settings.
 - **A new tool**: "Adding a tool" above; register it in `toolset.ts` (`TOOLS`, and
   `DEFERRED` if rarely used), and in `modes.ts` for a mode that should offer it.
-- **A mode's prompt, tools, effort or pauses**: `modes.ts`; a new mode is a `MODES`
-  entry (S2 brings modes as files).
+- **A mode's prompt, tools, effort or pauses**: `modes.ts` for the built-in ones. A new
+  mode with no code is a skill with `mode:` (`skills/<name>/SKILL.md`, "Skills" above).
+- **A new behavior for a kind of request**: a skill (no build), by hand or with
+  `draft_skill`.
 - **Something Duck does in the app** (sessions, notes, git, panels, shells): a
   `WorkbenchPort` member in `port.ts`, implemented in `port.local.ts` (the only file that
   may touch the stores), faked in `fakePort.test-util.ts`.
@@ -612,8 +647,11 @@ Both rules are in `prompt.ts`.
   real thread, and the `clear_at` system message not yet sent to the real API. The
   consolidation (L2) is tested with a scripted answer; its Haiku call hasn't run against
   the API, and the hit rate needs two weeks of use before the embeddings decision.
-- Skill offers: the consolidation queues them (`memory_state:skill_offers`); nothing
-  offers them until S2.
+- Skills in the app (S2): built and tested with fakes (the parsing, the block, a drafted
+  mode used in the next request, the narrowing), not yet tried live: the morning
+  briefing on "доброе утро", a draft allowed on the card, `mode: interviewer` in the
+  picker, the watcher noticing a hand edit on Windows. Not built: skills on the phone
+  (it gets the event and ignores it), sharing, and code in skills.
 - Self-development in the app (L3): built and tested with fakes (the config files and
   pins, the diff card, the brief, the branch read, the two-card merge, the rebuild
   command), not yet run for real: no Opus worker has made a branch to Duck through it,

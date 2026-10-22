@@ -4000,6 +4000,83 @@ up ("change this", with a circle around it).
   - A skill declaring `mode: interviewer` shows up in the mode picker.
 - **Out of scope:** sharing or a marketplace; executable code in skills (code goes through
   MCP servers or Opus sessions).
+- **As built (2026-10-22):**
+  - **Where they live:** `skills/<name>/SKILL.md` in Duck's workspace (`~/repos/Duck`,
+    `Duck.dev` for a debug build), not `<appdata>/assistant/skills/`. That's where
+    §Design puts them, in the same git repo as the memory and the config, so a skill is
+    versioned and committed with them, and housekeeping already allows `skills/`.
+  - **Reading** (`src-tauri/src/assistant/skills.rs`):
+    - It lists the folders and returns each file's frontmatter fields, body, text and
+      problems. The skill manager's parser (`src-tauri/src/skills/mod.rs`) is now a
+      general `frontmatter()`, and the skill manager uses it too.
+    - The list is cached; a `notify` watcher on `skills/` marks it stale.
+    - What the fields mean is the engine's (`src/assistant/skills.ts`), so it's tested
+      with the rest of the engine.
+  - **The engine:**
+    - **The block:** every request carries the usable skills (turned on, no problems)
+      as a `<skills>` block, sorted by name. It's a second system block after the
+      system prompt, with its own 1-hour breakpoint, so a changed skill rewrites the
+      cache only from there.
+    - **Read for every request,** not pinned like the config. A drafted skill works on
+      the very next request, even in the same turn.
+    - **`load_skill(name)`** returns the body. It's in every mode's common tools.
+    - **Narrowing:** a skill's `tools:` narrows the rest of the turn it's loaded in. A
+      call outside them fails at once with the reason. The next message ends it; a
+      confirmation doesn't. A name that isn't one of Duck's tools is a problem, so the
+      skill isn't used.
+    - **`mode:`** registers a mode in S1's registry (`setUserModes`), read before any
+      thread of it runs:
+      - **Prompt:** the body inside the basics every mode has and the safety rules.
+      - **Tools:** `tools:` (or the common tools), plus `switch_mode`, so it can always
+        be left.
+      - **Also:** `effort:`, `pauses:`, `title:`. Its id can't be a built-in mode.
+      - **Gone or off:** a thread whose skill is gone or turned off runs as the
+        assistant, and its badge says so.
+      - **Edited:** editing the file reaches that mode's threads at their next request.
+    - **`switch_mode`** takes your modes too. The block lists them, so the tool's
+      description stays fixed.
+  - **`draft_skill(name, text, why)`:** the plan's `(name, purpose)` became the whole
+    file in `text`.
+    - The model writes the draft itself, and the card shows exactly what will be
+      written, as a diff over the file before.
+    - Consequential, and always asks (`asks`).
+    - `prepare` checks the draft as the engine will read it, so a draft with a problem
+      fails before any card.
+    - It writes over the text it read, and commits.
+    - Deferred: the system prompt has a new line on when to use it.
+  - **The settings' "skills" tab:** each skill and mode, with its description, problems,
+    on/off (`disabledSkills` in Duck's settings) and "edit" (the file in the "Duck"
+    project's editor). The MCP servers (X1) moved there from the sessions tab. B2 isn't
+    built, so its opt-in list is X1's.
+  - **The mode picker** lists your modes after the built-in ones, in italics. They come
+    from a new `skills` protocol event, sent on sync and on every change.
+  - **Built for the earlier steps:**
+    - L4's routine action `skill`: Duck is told in the routine's thread to run the
+      skill.
+    - L2's skill offers: a request the nightly tidy saw three times or more is offered
+      once, one a week at most. The offer goes in the recall note, and never in the
+      same turn as a change to Duck.
+  - **Not built:** skills and your modes on the phone (it gets the event and ignores
+    it), sharing, code in skills.
+  - **Tests:**
+    - **The engine:**
+      - The block after the system prompt; "доброе утро" loading the morning briefing.
+      - The narrowed turn refusing `send_prompt`, and the next message not narrowed.
+      - A drafted `mode: interviewer` in the next request after Allow, and a thread in
+        it running on its prompt, tools and effort.
+    - **The parsing:** the list spellings, the frontmatter, unknown tools, a mode's
+      fields and its problems, the sorted block, the host registering modes and
+      telling of a change once.
+    - **Elsewhere:** the skill offer, the routine's action, and Rust's list, write and
+      stale write.
+    - **Results:** vitest 743 (9 new) and cargo 318 (2 new). tsc, eslint and clippy show
+      only the existing warnings.
+  - **Not tried in the app** (yours): the three done-when checks.
+    - A morning-briefing skill to start from:
+      `---` / `name: morning-briefing` /
+      `description: The morning briefing, when the user says good morning ("доброе утро", "buenos días")` /
+      `---`, then the steps.
+    - The watcher noticing an edit made by hand on Windows.
 
 #### Step V5 — Proactive announcements
 
@@ -6929,7 +7006,7 @@ T2 goes live after the replay check in its done-when (the past week's prompts th
 | L3 | Self-development through Opus sessions | ☑ (not tried in the app; no real Opus branch yet) |
 | L4 | Routines, backup and housekeeping | ☑ (not tried in the app; the backup remote waits for your OK) |
 | S1 | Modes: chat and rubber duck | ☑ |
-| S2 | Skills and user-defined modes | ☐ |
+| S2 | Skills and user-defined modes | ☑ (not tried in the app) |
 | R1 | Assistant endpoints on the remote server | ☑ |
 | R2 | PWA Assistant tab with mic | ☑ (a real phone not tried yet) |
 | R3 | The PWA as an app: shortcuts, share target, Duck start view | ☐ |

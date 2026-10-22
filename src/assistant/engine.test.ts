@@ -1,5 +1,5 @@
 import Anthropic from "@anthropic-ai/sdk";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import { z } from "zod";
 
 import type { StoredMessage, ThreadRow } from "../ipc/assistant";
@@ -19,7 +19,10 @@ import {
 } from "./engine";
 import { fakePort } from "./fakePort.test-util";
 import type { DuckEvent } from "./protocol";
-import { DUCK_PROMPT } from "./modes";
+import { DUCK_PROMPT, findMode, setUserModes } from "./modes";
+import { SAFETY_RULES } from "./config";
+import { createSkills, type SkillStore } from "./skills";
+import { draftSkill, loadSkill, splitDraft } from "./tools/skills";
 import { SYSTEM_PROMPT, VOICE_NOTE } from "./prompt";
 import { createThreadStore, type ThreadBackend } from "./threads";
 import { getTime } from "./tools/getTime";
@@ -1227,5 +1230,110 @@ describe("modes (S1)", () => {
     expect(firstText(store.loaded(b!.threadId)[0])).toContain(words);
     expect(systemText(calls[2].params)).toBe(DUCK_PROMPT);
     expect(store.thread(a)?.mode).toBe("assistant");
+  });
+});
+
+describe("skills (S2)", () => {
+  afterEach(() => setUserModes([]));
+  const blocks = (p: Params) => (p.system as Anthropic.Beta.BetaTextBlockParam[]).map((b) => b.text);
+  const resultOf = (m: StoredMessage) => (m.content as Anthropic.Beta.BetaToolResultBlockParam[])[0];
+  const BRIEFING = [
+    "---",
+    "name: morning-briefing",
+    'description: The morning briefing, when the user says good morning ("доброе утро")',
+    "tools: [get_time]",
+    "---",
+    "Say the time, then the day's plan.",
+  ].join("\n");
+  const INTERVIEWER = [
+    "---",
+    "name: interviewer",
+    "description: A mock job interview",
+    "mode: interviewer",
+    "title: interviewer",
+    "effort: high",
+    "tools: [get_time]",
+    "---",
+    "Ask one interview question at a time.",
+  ].join("\n");
+
+  async function setupSkills(steps: Step[], tools: ToolDef[], files: Record<string, string>) {
+    const store: SkillStore = {
+      list: async () =>
+        Object.keys(files)
+          .sort()
+          .map((name) => {
+            const { frontmatter, body } = splitDraft(files[name]);
+            return { name, path: `/ws/skills/${name}/SKILL.md`, rel: `skills/${name}/SKILL.md`, fields: frontmatter, body, text: files[name], problems: [] };
+          }),
+      write: async (name, text, expected) => {
+        if ((files[name] ?? null) !== expected) throw new Error("stale");
+        files[name] = text;
+      },
+    };
+    const skills = createSkills({ store, tools: () => new Set(tools.map((t) => t.name)), disabled: () => [] });
+    const threads = createThreadStore(memoryBackend());
+    await threads.load();
+    const sc = scripted(steps);
+    const engine = createEngine({ stream: sc.stream, registry: createRegistry(tools), port, store: threads, skills });
+    const events: DuckEvent[] = [];
+    engine.onEvent((e) => events.push(e));
+    return { engine, store: threads, events, calls: sc.calls, files };
+  }
+
+  it("lists a skill after the system prompt, loads it on доброе утро, and keeps the turn to its tools", async () => {
+    const { engine, store, calls } = await setupSkills(
+      [
+        message([toolUse("l", "load_skill", { name: "morning-briefing" })], "tool_use"),
+        message([toolUse("s", "send_prompt", { session: "api", text: "go" })], "tool_use"),
+        message([text("It's 8:30. Today: the sync bug.")], "end_turn"),
+        message([toolUse("s2", "send_prompt", { session: "api", text: "go" })], "tool_use"),
+      ],
+      [getTime, sendPrompt, loadSkill],
+      { "morning-briefing": BRIEFING },
+    );
+    const id = await turn(engine, "доброе утро");
+    const [system, skills] = blocks(calls[0].params);
+    expect(system).toBe(SYSTEM_PROMPT);
+    expect(skills).toContain('- morning-briefing: The morning briefing, when the user says good morning ("доброе утро")');
+    const ms = store.loaded(id);
+    expect(resultOf(ms[2]).content).toContain("Say the time, then the day's plan.");
+    expect(resultOf(ms[4]).is_error).toBe(true);
+    expect(resultOf(ms[4]).content).toContain("The skill morning-briefing limits this turn to get_time");
+    // The next message is a new turn: no longer narrowed (the send asks, as usual).
+    await turn(engine, "now tell api to go", id);
+    expect(engine.state(id)).toBe("waiting");
+  });
+
+  it("a drafted mode is in the next request after Allow, and a thread in it runs on its prompt", async () => {
+    const { engine, store, calls, files } = await setupSkills(
+      [
+        message([toolUse("d", "draft_skill", { name: "interviewer", text: INTERVIEWER, why: "mock interviews" })], "tool_use"),
+        message([text("Your interviewer mode is ready.")], "end_turn"),
+        message([text("Tell me about yourself.")], "end_turn"),
+      ],
+      [getTime, loadSkill, draftSkill, switchMode],
+      {},
+    );
+    const id = await turn(engine, "make me an interviewer mode");
+    expect(engine.state(id)).toBe("waiting");
+    expect(blocks(calls[0].params)).toHaveLength(1);
+    await engine.confirm(id, "d", true);
+    await engine.settled(id);
+    expect(files.interviewer).toBe(INTERVIEWER);
+    expect(blocks(calls[1].params)[1]).toContain("- interviewer: A mock job interview");
+    expect(findMode("interviewer")?.title).toBe("interviewer");
+
+    const iv = await engine.send({ threadId: null, text: "ready", source: "desktop", mode: "interviewer" });
+    await engine.settled(iv);
+    expect(store.thread(iv)?.mode).toBe("interviewer");
+    const p = calls[2].params;
+    expect(blocks(p)[0]).toContain("Ask one interview question at a time.");
+    expect(blocks(p)[0]).toContain(SAFETY_RULES);
+    // Its tools, and switch_mode to leave; no load_skill, so no skills block.
+    expect(p.tools?.map((t) => (t as { name: string }).name)).toEqual(["get_time", "switch_mode"]);
+    expect(blocks(p)).toHaveLength(1);
+    const sys = p.messages.find((m) => m.role === "system") as { output_config?: { effort: string } };
+    expect(sys.output_config).toEqual({ effort: "high" });
   });
 });

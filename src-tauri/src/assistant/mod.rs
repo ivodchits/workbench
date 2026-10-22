@@ -11,6 +11,7 @@
 //! that serves it Duck's tools ([`mcp_server`]). Step L1: long-term memory, its
 //! index and its commits ([`memory`]); step L2 its consolidation and recall log.
 //! Step L3: Duck's prompts as files, and each thread's pin on them ([`config`]).
+//! Step S2: Duck's skills, `skills/*/SKILL.md` in its workspace ([`skills`]).
 //! The morning routine: Google access ([`google`]) and the invoice sheet ([`sheets`]).
 //!
 //! The webview never holds the key. It asks [`assistant_proxy_info`] for the proxy's
@@ -31,6 +32,7 @@ mod mcp_server;
 pub mod memory;
 mod proxy;
 mod routines;
+pub mod skills;
 mod summaries;
 pub mod replay;
 pub mod sheets;
@@ -614,6 +616,31 @@ pub fn assistant_config_write(
 ) -> Result<(), String> {
     let ws = workspace::resolve(workspace.as_deref())?;
     let path = config::write(&lock(&ctx), &ws, &file, &text, expected.as_deref(), seed.as_deref())?;
+    memory::commit(&ws, vec![path], message);
+    Ok(())
+}
+
+// ── Duck's skills (step S2) ──
+
+/// Duck's skills (`skills/*/SKILL.md`), read again only after a change.
+#[tauri::command]
+pub fn assistant_skills_list(workspace: Option<String>) -> Result<Vec<skills::SkillFile>, String> {
+    let ws = workspace::resolve(workspace.as_deref())?;
+    skills::list(&ws)
+}
+
+/// Write a skill's `SKILL.md` over the text it was read as, and commit it with
+/// `message`.
+#[tauri::command]
+pub fn assistant_skill_write(
+    workspace: Option<String>,
+    name: String,
+    text: String,
+    expected: Option<String>,
+    message: String,
+) -> Result<(), String> {
+    let ws = workspace::resolve(workspace.as_deref())?;
+    let path = skills::write(&ws, &name, &text, expected.as_deref())?;
     memory::commit(&ws, vec![path], message);
     Ok(())
 }

@@ -225,6 +225,8 @@ pub fn run() {
             assistant::assistant_recall_stats,
             assistant::assistant_config_read,
             assistant::assistant_config_write,
+            assistant::assistant_skills_list,
+            assistant::assistant_skill_write,
             assistant::assistant_config_pin,
             assistant::assistant_backup_status,
             assistant::assistant_backup_push,

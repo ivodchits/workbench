@@ -10,7 +10,8 @@
 // - Actions: a message Duck gets in the routine's thread (a Workbench event: "the
 //   morning briefing"), a worker task from a brief, or one of Duck's own jobs
 //   (`job`: the backup push, housekeeping, the docs clean-up), which are the
-//   built-in routines and can be paused but not deleted. Skills (S2) aren't built.
+//   built-in routines and can be paused but not deleted, or a skill (S2): Duck is
+//   told to run it, and loads it as for a request.
 // - `tick` (every minute) runs what's due, one run per routine at a time; a run that
 //   throws records the error and waits for its next slot.
 
@@ -50,10 +51,17 @@ const TaskAction = z.object({
   tier: z.enum(["standard", "involved", "serious"]),
 });
 
-/** What a routine you make does (Duck's own jobs are built in). */
-export const UserAction = z.discriminatedUnion("kind", [MessageAction, TaskAction]);
+const SkillAction = z.object({ kind: z.literal("skill"), skill: z.string().trim().min(1).max(64) });
 
-export const Action = z.discriminatedUnion("kind", [MessageAction, TaskAction, z.object({ kind: z.literal("job"), job: z.enum(JOBS) })]);
+/** What a routine you make does (Duck's own jobs are built in). */
+export const UserAction = z.discriminatedUnion("kind", [MessageAction, TaskAction, SkillAction]);
+
+export const Action = z.discriminatedUnion("kind", [
+  MessageAction,
+  TaskAction,
+  SkillAction,
+  z.object({ kind: z.literal("job"), job: z.enum(JOBS) }),
+]);
 export type Action = z.infer<typeof Action>;
 
 export const Routine = z.object({

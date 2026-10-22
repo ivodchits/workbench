@@ -51,7 +51,8 @@ import { COMPACT_REQUEST, compactedText } from "./prompt";
 import { DEFAULT_PROMPTS, type ConfigHost, type Prompts } from "./config";
 import type { RoutinesHost } from "./tools/routines";
 import { MODELS, route, type Brain } from "./routing";
-import { modeOf, systemFor as modeSystem, type Mode } from "./modes";
+import { findMode, modeOf, systemFor as modeSystem, type Mode } from "./modes";
+import { skillsBlock, type SkillsHost } from "./skills";
 import { quotedFromLatest } from "./trust/mandate";
 import {
   USER_SOURCES,
@@ -216,6 +217,9 @@ export interface EngineDeps {
   config?: ConfigHost;
   /** Routines and the backup (step L4), for their tools. */
   routines?: RoutinesHost;
+  /** Duck's skills (step S2): listed after the system prompt, and the modes they
+   *  declare. None when absent. */
+  skills?: SkillsHost;
   /** Whether the API budget is past its soft limit (step M2): turns then run on
    *  Haiku. Not degraded when absent or when it fails. */
   degraded?: () => Promise<boolean>;
@@ -475,6 +479,7 @@ export function buildParams(
   brain: Brain = "sonnet",
   system: string = DEFAULT_PROMPTS.system,
   tools: Anthropic.Beta.BetaToolUnion[] = registry.apiTools,
+  skills: string | null = null,
 ): Params {
   return {
     model: MODELS[brain],
@@ -490,8 +495,13 @@ export function buildParams(
     ...(brain === "sonnet" && { fallbacks: "default" as const }),
     // tools → system is the frozen prefix: one explicit 1-hour breakpoint at its
     // end; automatic caching (also 1 hour: longer TTLs must come first) for the tail.
+    // The skills (step S2) come after it with a breakpoint of their own, so a
+    // changed skill rewrites only from there.
     tools,
-    system: [{ type: "text", text: system, cache_control: CACHE_1H }],
+    system: [
+      { type: "text", text: system, cache_control: CACHE_1H },
+      ...(skills ? [{ type: "text" as const, text: skills, cache_control: CACHE_1H }] : []),
+    ],
     cache_control: CACHE_1H,
     context_management: CONTEXT_EDITS,
     messages,
@@ -718,6 +728,22 @@ export function createEngine(deps: EngineDeps): Engine {
   const systemOf = async (threadId: string): Promise<string> =>
     modeSystem(modeFor(threadId), (await promptsFor(threadId)).system);
   const toolsOf = (threadId: string) => registry.toolsFor(modeFor(threadId).tools);
+  /** The skills block a thread's requests carry (step S2), read now: a skill
+   *  written or edited works from the next request. None in a mode without
+   *  load_skill. Reading them also registers the modes they declare. */
+  const skillsOf = async (threadId: string): Promise<string | null> => {
+    if (!deps.skills) return null;
+    try {
+      const skills = await deps.skills.list();
+      const tools = modeFor(threadId).tools;
+      return !tools || tools.includes("load_skill") ? skillsBlock(skills) : null;
+    } catch (e) {
+      console.warn("duck: the skills couldn't be read", e);
+      return null;
+    }
+  };
+  /** A loaded skill's tools (step S2), by thread, until the next message. */
+  const narrowed = new Map<string, { skill: string; tools: readonly string[] }>();
   /** The subscription brains running, and the turns listening to them. */
   const live = new Map<string, LiveBrain>();
   const brainRuns = new Map<string, BrainRun>();
@@ -799,8 +825,11 @@ export function createEngine(deps: EngineDeps): Engine {
   async function start(threadId: string, input: SendInput) {
     const turn: Turn = { ctl: new AbortController(), state: "thinking", brain: "sonnet", backend: "api" };
     turns.set(threadId, turn);
+    narrowed.delete(threadId);
     setState(threadId, "thinking");
     try {
+      // The skills first: a thread in a mode one of them declares needs it known.
+      await skillsOf(threadId);
       const history = await store.messages(threadId);
       const first = history.length === 0;
       const prompts = await promptsFor(threadId);
@@ -1008,7 +1037,8 @@ export function createEngine(deps: EngineDeps): Engine {
       }
       const system = await systemOf(threadId);
       const messages = compactionMessages(history.slice(0, cut));
-      const stream = await deps.stream(buildParams(registry, messages, turn.brain, system, toolsOf(threadId)), {
+      const skills = await skillsOf(threadId);
+      const stream = await deps.stream(buildParams(registry, messages, turn.brain, system, toolsOf(threadId), skills), {
         signal: turn.ctl.signal,
         ...purpose(COMPACT_PURPOSE),
       });
@@ -1097,10 +1127,11 @@ export function createEngine(deps: EngineDeps): Engine {
       setState(threadId, "thinking");
       const messages = toApiMessages(await requestHistory(threadId, turn));
       const system = await systemOf(threadId);
+      const skills = await skillsOf(threadId);
       let text = "";
       let msg: Anthropic.Beta.BetaMessage;
       try {
-        const stream = await deps.stream(buildParams(registry, messages, turn.brain, system, toolsOf(threadId)), {
+        const stream = await deps.stream(buildParams(registry, messages, turn.brain, system, toolsOf(threadId), skills), {
           signal,
           ...purpose(THREAD_PURPOSE),
         });
@@ -1241,6 +1272,15 @@ export function createEngine(deps: EngineDeps): Engine {
       );
       return call;
     }
+    // A loaded skill's tools (step S2): the rest of the turn stays inside them.
+    const narrow = narrowed.get(threadId);
+    if (narrow && u.name !== "load_skill" && !narrow.tools.includes(u.name)) {
+      call.result = errorResult(
+        u.id,
+        `The skill ${narrow.skill} limits this turn to ${narrow.tools.join(", ")}; ${u.name} isn't one of them. Do the skill's work with those, or tell the user what else it would need.`,
+      );
+      return call;
+    }
     // What the card shows is worked out first; a call that can't be (no such
     // action, a file with problems) fails before any card, with the reason.
     if (tool.prepare) {
@@ -1251,6 +1291,7 @@ export function createEngine(deps: EngineDeps): Engine {
           memory: deps.memory ?? null,
           tasks: deps.tasks ?? null,
           config: deps.config ?? null,
+          skills: deps.skills ?? null,
         };
         call.prepared = await withTimeout(registry.prepare(u.name, u.input, port, env), tool.timeoutMs);
       } catch (e) {
@@ -1320,7 +1361,9 @@ export function createEngine(deps: EngineDeps): Engine {
     let b = live.get(threadId);
     if (!b) {
       await makeRoom();
-      const { resumed } = await host.spawn(threadId, mcpTools(toolsOf(threadId)), await systemOf(threadId));
+      const skills = await skillsOf(threadId);
+      const system = await systemOf(threadId);
+      const { resumed } = await host.spawn(threadId, mcpTools(toolsOf(threadId)), skills ? `${system}\n\n${skills}` : system);
       b = { fresh: !resumed, last: Date.now() };
       live.set(threadId, b);
     }
@@ -1530,6 +1573,8 @@ export function createEngine(deps: EngineDeps): Engine {
           memory: deps.memory ?? null,
           config: deps.config ?? null,
           routines: deps.routines ?? null,
+          skills: deps.skills ?? null,
+          narrow: (skill, tools) => narrowed.set(threadId, { skill, tools }),
           memoryOff: memoryOff(store.loaded(threadId)),
           request: lastUserText(store.loaded(threadId)),
           startThread: (words, opts) => split(threadId, words, opts),
@@ -1603,6 +1648,8 @@ export function createEngine(deps: EngineDeps): Engine {
       if (!store.thread(threadId)) throw new Error(`no thread ${threadId}`);
       return threadId;
     }
+    // A mode from a skill not read yet (step S2).
+    if (mode && !findMode(mode)) await deps.skills?.list().catch(() => []);
     const t = await store.create(modeOf(mode).id);
     emit({ type: "thread", thread: t });
     return t.id;

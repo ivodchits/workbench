@@ -34,7 +34,7 @@ import "../../theme/markdown.css";
 import "../../theme/assistant.css";
 import { memoryRestore } from "../../ipc/memory";
 import { coreWorkspace, EMPTY_CORE } from "../../assistant/core";
-import { MODE_IDS, MODES, modeOf } from "../../assistant/modes";
+import type { ModeView } from "../../assistant/protocol";
 import { coreWrite } from "../../ipc/assistant";
 import type {
   ConfirmRequest,
@@ -498,7 +498,7 @@ function Header({
         >
           {title}
         </span>
-        <ModeBadge mode={currentMode(duck)} />
+        <ModeBadge mode={currentMode(duck)} modes={duck.modes} />
         <span style={{ color: "var(--wb-textFaint)" }}>▾</span>
       </button>
       <button
@@ -713,7 +713,7 @@ function ThreadListRow({
         >
           {title}
         </span>
-        <ModeBadge mode={t.mode} />
+        <ModeBadge mode={t.mode} modes={duck.modes} />
         {duck.asks.some((a) => a.threadId === t.id) && (
           <span style={{ color: "var(--wb-needs)" }}>●</span>
         )}
@@ -835,7 +835,7 @@ function ThreadBody({ duck }: { duck: DuckState }) {
       }}
       style={{ flex: 1, minHeight: 0, overflowY: "auto", padding: "10px 0" }}
     >
-      {!id && <NewThreadModes mode={duck.newMode} />}
+      {!id && <NewThreadModes mode={duck.newMode} modes={duck.modes} />}
       {items.map((it) => (
         <ItemView key={it.key} item={it} active={state !== "idle"} />
       ))}
@@ -853,10 +853,11 @@ function ThreadBody({ duck }: { duck: DuckState }) {
   );
 }
 
-/** A thread's mode (step S1), unless it's the assistant's. */
-function ModeBadge({ mode }: { mode: string }) {
-  const m = modeOf(mode);
-  if (m.id === "assistant") return null;
+/** A thread's mode (step S1), unless it's the assistant's. A mode whose skill is
+ *  gone (S2) runs as the assistant, and says so. */
+function ModeBadge({ mode, modes }: { mode: string; modes: ModeView[] }) {
+  if (mode === "assistant") return null;
+  const m = modes.find((x) => x.id === mode) ?? { id: mode, title: mode, about: "its skill is gone or off, so it runs as the assistant" };
   return (
     <span
       title={`a ${m.title} thread: ${m.about}`}
@@ -875,29 +876,32 @@ function ModeBadge({ mode }: { mode: string }) {
 }
 
 /** A new thread: what it will be (step S1). The mode is the thread's for life. */
-function NewThreadModes({ mode }: { mode: DuckState["newMode"] }) {
+function NewThreadModes({ mode, modes }: { mode: DuckState["newMode"]; modes: ModeView[] }) {
+  const own = modes.find((m) => m.id === mode && m.own);
   return (
     <div style={{ padding: "18px 16px", color: "var(--wb-textFaint)" }}>
-      <div style={{ display: "flex", gap: 6, marginBottom: 8 }}>
-        {MODE_IDS.map((m) => (
+      <div style={{ display: "flex", gap: 6, marginBottom: 8, flexWrap: "wrap" }}>
+        {modes.map((m) => (
           <button
-            key={m}
+            key={m.id}
             type="button"
-            aria-pressed={m === mode}
-            title={MODES[m].about}
-            onClick={() => setNewMode(m)}
+            aria-pressed={m.id === mode}
+            title={m.own ? `${m.about} (your mode, from a skill)` : m.about}
+            onClick={() => setNewMode(m.id)}
             style={{
               ...btn,
-              ...(m === mode && { color: "var(--wb-accent)", borderColor: "var(--wb-accent)" }),
+              ...(m.own && { fontStyle: "italic" }),
+              ...(m.id === mode && { color: "var(--wb-accent)", borderColor: "var(--wb-accent)" }),
             }}
           >
-            {MODES[m].title}
+            {m.title}
           </button>
         ))}
       </div>
       {mode === "assistant" && "A new thread. Ask Duck anything about your sessions."}
       {mode === "chat" && "A new chat: talk about anything. Duck doesn't touch the app here."}
       {mode === "duck" && "A rubber duck: think a problem through out loud. Duck asks questions and doesn't solve unless you ask; say \"let's wrap up\" for a note."}
+      {own && `${own.title}: ${own.about || "your own mode"}.`}
     </div>
   );
 }

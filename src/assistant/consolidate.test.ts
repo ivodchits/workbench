@@ -214,6 +214,27 @@ describe("the plan", () => {
     expect(offers).toHaveLength(1);
     expect(offers[0]).toMatchObject({ request: idea.request, times: 4 });
   });
+
+  it("offers a request seen three times as a skill (S2), once, and not beside a change to Duck", async () => {
+    const idea = { request: "Pull, run the tests and open the failing file", steps: ["git pull", "npm test"], times: 3 };
+    const t = setup({ answers: [answer({ skill_ideas: [idea, { ...idea, request: "twice", times: 2 }] })] });
+    await t.c.run();
+    expect(await t.c.skillOffer()).toBe("Pull, run the tests and open the failing file (asked about 3 times; the steps: git pull; npm test)");
+    t.setNow(NIGHT + 8 * DAY);
+    // Seen twice isn't enough, and the first is offered already.
+    expect(await t.c.skillOffer()).toBeNull();
+    const base = { search: async () => [], write: async () => { throw new Error(); }, matching: async () => [], forget: async () => [] };
+    const note = (await recallFor({ ...base, skillOffer: async () => "Pull and test" }, "morning")).note!;
+    expect(note).toContain("<skill_suggestion>");
+    expect(note).toContain("Write it with draft_skill only if the user says yes.");
+    let asked = false;
+    const both = await recallFor(
+      { ...base, suggestion: async () => "Pick backend-api", skillOffer: async () => ((asked = true), "Pull and test") },
+      "morning",
+    );
+    expect(both.note).not.toContain("<skill_suggestion>");
+    expect(asked).toBe(false);
+  });
 });
 
 describe("when it runs", () => {

@@ -349,6 +349,9 @@ export type DuckEvent =
   | { type: "routines"; routines: RoutineView[]; backup: BackupView | null }
   /** The replay's progress (`report` null, judged so far), then its report. */
   | { type: "replay"; done: number; of: number; report: ReplayReport | null }
+  /** Duck's skills and the modes (built in, and from skills) (step S2), on `sync`
+   *  and after every change. */
+  | { type: "skills"; skills: SkillView[]; modes: ModeView[] }
   /** What's being read aloud (step V3), on `sync` and after every change; null
    *  when nothing is. */
   | { type: "reader"; reader: ReaderView | null }
@@ -376,6 +379,30 @@ export interface RoutineView {
   next: number;
   last: number | null;
   lastResult: string | null;
+}
+
+/** One of Duck's skills (step S2), for the settings. */
+export interface SkillView {
+  name: string;
+  description: string;
+  /** The `SKILL.md`'s absolute path, for the editor. */
+  path: string;
+  /** The mode it declares, if it's a mode. */
+  mode: string | null;
+  /** The tools it narrows a turn to. */
+  tools: string[] | null;
+  /** Why it isn't used; empty when it can be. */
+  problems: string[];
+  enabled: boolean;
+}
+
+/** A mode a new thread can start in (step S1; S2 adds yours), for the picker. */
+export interface ModeView {
+  id: string;
+  title: string;
+  about: string;
+  /** From a skill (step S2), not built in. */
+  own: boolean;
 }
 
 /** Where Duck's data is backed up (step L4). */

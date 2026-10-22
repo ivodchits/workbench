@@ -62,6 +62,8 @@ export interface SkillOffer {
   steps: string[];
   times: number;
   at: number;
+  /** When it was offered (step S2); absent or null: not yet. */
+  offered?: number | null;
 }
 
 /** A change to Duck the tidy found a pattern for (step L3). */
@@ -104,6 +106,9 @@ export interface Consolidator {
   question(): Promise<string | null>;
   /** A change to Duck to suggest, marked offered: one a week at most. */
   suggestion(): Promise<string | null>;
+  /** A request repeated about three times or more, to offer as a skill (step
+   *  S2), marked offered: one a week at most. */
+  skillOffer(): Promise<string | null>;
   last(): Promise<RunRecord | null>;
 }
 
@@ -463,6 +468,17 @@ export function createConsolidator(deps: ConsolidateDeps): Consolidator {
       o.offered = n;
       await deps.state.set("improve_offers", JSON.stringify(offers));
       return o.why ? `${o.request} (${o.why.replace(/\.$/, "")})` : o.request;
+    },
+    async skillOffer() {
+      const offers = parse<SkillOffer[]>(await deps.state.get("skill_offers"), []);
+      const n = now();
+      if (offers.some((o) => o.offered && n - o.offered < SUGGEST_EVERY_MS)) return null;
+      const o = offers.find((x) => !x.offered && x.times >= 3 && n - x.at < SUGGESTION_KEPT_MS);
+      if (!o) return null;
+      o.offered = n;
+      await deps.state.set("skill_offers", JSON.stringify(offers));
+      const steps = o.steps.length ? `; the steps: ${o.steps.join("; ")}` : "";
+      return `${o.request} (asked about ${o.times} times${steps})`;
     },
   };
 }

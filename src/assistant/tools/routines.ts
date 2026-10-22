@@ -45,9 +45,11 @@ export function routineView(r: Routine) {
     does:
       r.action.kind === "message"
         ? `tells you: ${r.action.text}`
-        : r.action.kind === "task"
-          ? `a ${r.action.tier} ${r.action.taskKind} task`
-          : `Duck's ${r.action.job} job`,
+        : r.action.kind === "skill"
+          ? `runs the skill ${r.action.skill}`
+          : r.action.kind === "task"
+            ? `a ${r.action.tier} ${r.action.taskKind} task`
+            : `Duck's ${r.action.job} job`,
     on: r.enabled,
     builtIn: r.builtIn,
     next: r.enabled ? when(r.nextRun) : null,
@@ -73,7 +75,7 @@ export const scheduleRoutine = defineTool({
   name: "schedule_routine",
   description: [
     'Set up a routine: something Duck does on a schedule while Workbench runs ("every weekday at 8:30, my morning briefing", "every Sunday evening, research new Rust releases"). A routine missed while the app was closed runs once at the next start.',
-    "The action is either a message you get in this thread when it's due (then you do what it says, as if the user asked: use it for anything your tools do), or a worker task from a brief (for heavy research or writing).",
+    "The action is a message you get in this thread when it's due (then you do what it says, as if the user asked: use it for anything your tools do), one of your skills to run (by its name in <skills>), or a worker task from a brief (for heavy research or writing).",
     "schedule: every hour; every day at a time; a weekday (0 Sunday … 6 Saturday) at a time; or a date of the month (1–28). `idle`: wait until the user has been away an hour from that time on (for things that shouldn't interrupt). Times are 24-hour HH:MM, local.",
     "There's one routine per call; a weekday-only routine is five weekly ones. Say back when it first runs.",
   ].join(" "),

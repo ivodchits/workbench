@@ -18,6 +18,7 @@ import { ROUTINE_TOOLS } from "./tools/routines";
 import { SCREEN_TOOLS } from "./tools/screen";
 import { SCREENSHOT_TOOLS } from "./tools/screenshot";
 import { SHEET_TOOLS } from "./tools/sheets";
+import { SKILL_TOOLS } from "./tools/skills";
 import { SUMMARY_TOOLS } from "./tools/summaries";
 import { TASK_TOOLS } from "./tools/tasks";
 import { testAnnounce, testConfirm } from "./tools/testConfirm";
@@ -46,6 +47,7 @@ export const TOOLS = [
   ...MEMORY_TOOLS,
   ...IMPROVE_TOOLS,
   ...ROUTINE_TOOLS,
+  ...SKILL_TOOLS,
   ...(import.meta.env.DEV ? [testConfirm, testAnnounce] : []),
 ];
 
@@ -69,5 +71,6 @@ export const DEFERRED = new Set([
   "prep_ahead",
   "merge_duck_change",
   "rebuild_duck",
+  "draft_skill",
   ...ROUTINE_TOOLS.map((t) => t.name),
 ]);
