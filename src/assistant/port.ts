@@ -285,6 +285,20 @@ export interface WorkbenchPort {
   /** Whether the session's next launches are headless (step D4). */
   setHeadless(instanceId: string, on: boolean): void;
 
+  // ── Duck's own changes (L3) ──
+
+  /** What a session's worktree changed against the project's current branch:
+   *  its branch, that base, and the files (committed or not). Throws for a session
+   *  without a worktree. */
+  worktreeChanges(instanceId: string): Promise<WorktreeChanges>;
+  /** The rail's "merge and remove the worktree": its branch is merged into the
+   *  project's current branch, the worktree and branch go, and the session works
+   *  in the project root again. Throws git's message on a conflict or a dirty
+   *  tree, leaving everything as it was. Returns the branch merged into. */
+  mergeWorktree(instanceId: string): Promise<string>;
+  /** A new shell in the project's root, running `command` once it's up. */
+  runInShell(projectId: string, command: string, label: string): Promise<void>;
+
   // ── plan autopilot (P1) ──
 
   /** Run `/compact` (with a focus line) in a session between turns, and resolve when
@@ -308,6 +322,19 @@ export interface WorkbenchPort {
   /** Give the app's done alerts a body maker (the turn's summary headline; null keeps
    *  the last line), or take it back with null. */
   setDoneSummary(fn: ((instanceId: string, reply: string) => Promise<string | null>) | null): void;
+}
+
+/** A worktree's changes (L3). */
+export interface WorktreeChanges {
+  branch: string;
+  /** The branch it's compared with (the project's current one). */
+  base: string;
+  /** Paths relative to the repo, forward-slashed. */
+  files: string[];
+  /** Files with changes not committed on the branch. */
+  uncommitted: string[];
+  insertions: number;
+  deletions: number;
 }
 
 /** A session's autopilot as its card shows it. */

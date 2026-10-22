@@ -113,7 +113,7 @@ export interface MemoryApplied {
 export const memoryApply = (workspace: string | null, plan: MemoryPlan, message: string): Promise<MemoryApplied> =>
   invoke("assistant_memory_apply", { workspace, plan, message });
 
-export type MemoryStateKey = "consolidation" | "questions" | "skill_offers";
+export type MemoryStateKey = "consolidation" | "questions" | "skill_offers" | "improve_offers";
 
 export const memoryStateGet = (key: MemoryStateKey): Promise<string | null> =>
   invoke("assistant_memory_state_get", { key });

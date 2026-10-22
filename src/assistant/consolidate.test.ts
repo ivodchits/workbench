@@ -36,6 +36,7 @@ const answer = (over: Partial<Consolidation> = {}): Consolidation => ({
   contradictions: [],
   journal: "",
   skill_ideas: [],
+  improvements: [],
   ...over,
 });
 
@@ -235,5 +236,56 @@ describe("when it runs", () => {
     expect(t.inputs).toHaveLength(1);
     expect(await t.c.tick()).toBeNull();
     expect(t.inputs).toHaveLength(1);
+  });
+});
+
+describe("changes to Duck it may suggest (step L3)", () => {
+  const toolMsg = (seq: number, ts: number, content: unknown[]): StoredMessage => ({ threadId: "a", seq, ts, role: seq % 2 ? "assistant" : "user", content, source: "duck" });
+
+  it("reads the tool calls that kept failing, not the ones you declined", async () => {
+    const t = setup({ answers: [answer()] });
+    const at = NIGHT - 3_600_000;
+    t.messages.a.push(
+      toolMsg(5, at, [{ type: "tool_use", id: "u1", name: "send_prompt", input: {} }]),
+      toolMsg(6, at, [{ type: "tool_result", tool_use_id: "u1", is_error: true, content: "no session called backend" }]),
+      toolMsg(7, at, [{ type: "tool_use", id: "u2", name: "send_prompt", input: {} }]),
+      toolMsg(8, at, [{ type: "tool_result", tool_use_id: "u2", is_error: true, content: "no session called the backend" }]),
+      toolMsg(9, at, [{ type: "tool_use", id: "u3", name: "kill_session", input: {} }]),
+      toolMsg(10, at, [{ type: "tool_result", tool_use_id: "u3", is_error: true, content: "The user declined this action." }]),
+      toolMsg(11, at, [{ type: "tool_use", id: "u4", name: "kill_session", input: {} }]),
+      toolMsg(12, at, [{ type: "tool_result", tool_use_id: "u4", is_error: true, content: "The user declined this action." }]),
+    );
+    await t.c.run();
+    expect(t.inputs[0]).toContain("<tool_errors>\n- send_prompt, 2 times: no session called backend\n</tool_errors>");
+  });
+
+  it("suggests one change a week at most, each once", async () => {
+    const t = setup({
+      answers: [
+        answer({
+          improvements: [
+            { request: "When the user says 'the backend', pick the session titled backend-api", why: "corrected three times this week." },
+            { request: "Ask before reading a long note aloud", why: "stopped twice" },
+          ],
+        }),
+      ],
+    });
+    const r = await t.c.run();
+    expect(r.log).toContain("to suggest: When the user says 'the backend', pick the session titled backend-api");
+    expect(await t.c.suggestion()).toBe("When the user says 'the backend', pick the session titled backend-api (corrected three times this week)");
+    expect(await t.c.suggestion()).toBeNull();
+    t.setNow(NIGHT + 7 * DAY);
+    expect(await t.c.suggestion()).toBe("Ask before reading a long note aloud (stopped twice)");
+    const host = { search: async () => [], write: async () => { throw new Error(); }, matching: async () => [], forget: async () => [], suggestion: () => t.c.suggestion() };
+    t.setNow(NIGHT + 14 * DAY);
+    expect((await recallFor(host, "morning")).note).toBeNull();
+  });
+
+  it("carries a suggestion in the recall note, to offer and not to start", async () => {
+    const host = { search: async () => [], write: async () => { throw new Error(); }, matching: async () => [], forget: async () => [], suggestion: async () => "Pick backend-api for 'the backend'" };
+    const note = (await recallFor(host, "morning")).note!;
+    expect(note).toContain("<duck_suggestion>");
+    expect(note).toContain("Pick backend-api for 'the backend'");
+    expect(note).toContain("Start it only if the user says yes.");
   });
 });

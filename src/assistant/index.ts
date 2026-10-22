@@ -72,7 +72,9 @@ import { MORNING_TOOLS } from "./tools/morning";
 import { SHEET_TOOLS } from "./tools/sheets";
 import { PREP_TOOLS } from "./tools/prep";
 import { MEMORY_TOOLS } from "./tools/memory";
+import { IMPROVE_TOOLS } from "./tools/improve";
 import { createCoreHost } from "./core";
+import { createConfig, ipcConfigStore } from "./config";
 import { createMemoryHost, type TidyReport } from "./memory";
 import { Consolidation, createConsolidator, type Consolidator } from "./consolidate";
 import { memoryApply, memoryList, memoryStateGet, memoryStateSet } from "../ipc/memory";
@@ -124,6 +126,7 @@ const TOOLS = [
   ...SHEET_TOOLS,
   ...PREP_TOOLS,
   ...MEMORY_TOOLS,
+  ...IMPROVE_TOOLS,
   ...(import.meta.env.DEV ? [testConfirm, testAnnounce] : []),
 ];
 
@@ -145,6 +148,8 @@ const DEFERRED = new Set([
   "read_sheet",
   "create_sheet_draft",
   "prep_ahead",
+  "merge_duck_change",
+  "rebuild_duck",
 ]);
 
 /** Where the spend comes from: the ledger commands in the app, fakes in tests. */
@@ -245,6 +250,8 @@ export function taskView(t: Task): TaskView {
     why: t.why,
     costUsd: t.costUsd,
     answers: t.answers.map(({ question, answer, reason }) => ({ question, answer, reason })),
+    self: t.self,
+    changes: t.changes && { branch: t.changes.branch, files: t.changes.files, uncommitted: t.changes.uncommitted, safety: t.changes.safety },
   };
 }
 
@@ -407,6 +414,12 @@ export function endpoint(
         if (!tasks) throw new Error("Worker tasks aren't available here.");
         await tasks.rerun(msg.taskId);
         return;
+      case "task.diff": {
+        const t = tasks?.get(msg.taskId);
+        if (!t?.projectId || !t.instanceId) throw new Error("That task has no session to show the diff of.");
+        localPort.openPanel(t.projectId, "diff", t.instanceId);
+        return;
+      }
       case "autopilot": {
         if (!autopilot) throw new Error("Autopilot isn't available here.");
         if (msg.action === "pause") autopilot.pause(msg.instanceId);
@@ -594,6 +607,7 @@ export function initAssistant(): Promise<void> {
       idleMs: () => getPresence().then((p) => p.idleMs),
     });
     memory.question = () => tidier.question();
+    memory.suggestion = () => tidier.suggestion();
     memory.tidy = () => tidier.run();
     consolidator = tidier;
     setInterval(
@@ -612,6 +626,7 @@ export function initAssistant(): Promise<void> {
       google: createGoogleHost({ workspacePrepare, sheetExport, sheetCells, sheetDraft, sheetDrafts, sheetSearch, sheetRead }),
       core: createCoreHost(() => settings.get().workspace),
       memory,
+      config: createConfig(ipcConfigStore(() => settings.get().workspace)),
       eventLevel: (threadId, level) => levels.set(threadId, level),
       store: s,
       registry: createRegistry(TOOLS, { deferred: DEFERRED }),

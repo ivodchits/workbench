@@ -46,6 +46,9 @@ export interface MemoryHost {
   question?(): Promise<string | null>;
   /** Step L2: tidy the memory now ("tidy your memory"). */
   tidy?(): Promise<TidyReport>;
+  /** Step L3: a change to Duck to suggest (at most one a week), marked offered;
+   *  null for none. */
+  suggestion?(): Promise<string | null>;
 }
 
 /** What a tidy did (step L2). */
@@ -120,10 +123,21 @@ export function questionLine(q: string): string {
   return `<memory_question>\nWhile tidying your memory you found entries that disagree. Ask the user this once, briefly, in your reply (after answering their message, if it asks something): ${q}\nWhen they answer, forget the entry that no longer holds and remember the one that does, if it isn't there already.\n</memory_question>`;
 }
 
+/** A change to Duck the tidy found a pattern for (step L3), to suggest once. */
+export function suggestionLine(s: string): string {
+  return `<duck_suggestion>\nWhile tidying your memory you noticed something you keep getting wrong, which a change to yourself could fix: ${s}\nMention it once, briefly, at a natural point in your reply, and offer to do it with improve_duck. Start it only if the user says yes.\n</duck_suggestion>`;
+}
+
 /** The turn-scoped note for a message: what was recalled, for a correction the
- *  lesson line, and a contradiction to ask about. Null when there's none. */
-export function recallNote(hits: readonly MemoryHit[], correction: boolean, question: string | null = null): string | null {
-  if (!hits.length && !correction && !question) return null;
+ *  lesson line, a contradiction to ask about, and a change to Duck to suggest.
+ *  Null when there's none. */
+export function recallNote(
+  hits: readonly MemoryHit[],
+  correction: boolean,
+  question: string | null = null,
+  suggestion: string | null = null,
+): string | null {
+  if (!hits.length && !correction && !question && !suggestion) return null;
   const parts: string[] = [];
   if (hits.length)
     parts.push(
@@ -131,6 +145,7 @@ export function recallNote(hits: readonly MemoryHit[], correction: boolean, ques
     );
   if (correction) parts.push(LESSON_LINE);
   if (question) parts.push(questionLine(question));
+  if (suggestion) parts.push(suggestionLine(suggestion));
   return parts.join("\n\n");
 }
 
@@ -159,12 +174,13 @@ export async function recallFor(host: MemoryHost | undefined, text: string): Pro
     console.warn(`duck: ${what} failed`, e);
     return null;
   };
-  const [found, question] = await Promise.all([
+  const [found, question, suggestion] = await Promise.all([
     inTime(host.search(query, RECALL_K * 3).catch(warn("recall")), null),
     host.question ? inTime(host.question().catch(warn("the memory question")), null) : null,
+    host.suggestion ? inTime(host.suggestion().catch(warn("the suggestion")), null) : null,
   ]);
   const hits = worthRecalling(found ?? []);
-  return { note: recallNote(hits, correction, question), query, candidates: found?.length ?? 0, hits };
+  return { note: recallNote(hits, correction, question, suggestion), query, candidates: found?.length ?? 0, hits };
 }
 
 // ── the recall log (step L2) ──

@@ -34,6 +34,10 @@
 //     the rail, except one with a worktree, which would be left on disk. Its folder,
 //     result and transcript stay, and the tasks view still lists it.
 //   - A task that is blocked or needs a decision is left alone: it's waiting on you.
+// - A change to Duck (step L3, `self`): a code task in a worktree of the Workbench
+//   repo. When it finishes, its branch's files are read (`worktreeChanges`) and
+//   checked against the safety layer before the thread is told, so the report and
+//   the card say what it touched.
 
 import { z } from "zod";
 
@@ -47,6 +51,7 @@ import {
   type TaskResultFiles,
 } from "../ipc/assistant";
 import { runApiWorker, type ApiWorkerOutcome } from "./apiWorker";
+import { safetyFiles } from "./selfdev";
 import { choiceLine } from "./tools/read";
 import type { Mandate, PromptDelivery, SessionPhase, WorkbenchPort } from "./port";
 import type { DuckSettings, Tier } from "./settings";
@@ -121,6 +126,23 @@ export const Task = z.object({
   /** Prep made ahead (the morning routine): over the limits it waits for room
    *  rather than running on Duck's API credits. */
   prep: z.boolean().default(false),
+  // Step L3.
+  /** A change to Duck itself: its card offers the diff and the merge. */
+  self: z.boolean().default(false),
+  /** Its branch once it finished: the files, those not committed yet, and those in
+   *  the safety layer. */
+  changes: z
+    .object({
+      branch: z.string(),
+      base: z.string(),
+      files: z.array(z.string()),
+      uncommitted: z.array(z.string()),
+      safety: z.array(z.string()),
+      insertions: z.number(),
+      deletions: z.number(),
+    })
+    .nullable()
+    .default(null),
 });
 export type Task = z.infer<typeof Task>;
 
@@ -183,6 +205,8 @@ export interface RunRequest {
   mandate?: Mandate;
   /** Prep ahead of the day: waits over the limits instead of using the API. */
   prep?: boolean;
+  /** A change to Duck itself (step L3). */
+  self?: boolean;
 }
 
 /** How often finished tasks are checked for tidying up. */
@@ -480,15 +504,49 @@ export function createTaskManager(deps: TaskDeps): TaskManager {
   /** Record an outcome, tell the thread, and start the next task. */
   function finish(id: string, patch: Partial<Task> & { state: TaskState }): void {
     const t = update(id, { finished: now(), ...patch });
-    if (t.state !== "closed")
-      deps.tell(t.threadId, report(t), t.state === "needs_decision" || t.state === "blocked" ? "needs_you" : "report");
+    if (t.state !== "closed") {
+      const level = t.state === "needs_decision" || t.state === "blocked" ? "needs_you" : "report";
+      if (t.self && t.instanceId && t.state !== "failed")
+        void withChanges(t).then((c) => deps.tell(c.threadId, report(c), level));
+      else deps.tell(t.threadId, report(t), level);
+    }
     void pump();
+  }
+
+  /** A change to Duck with its branch's files read (L3); as it was when they
+   *  can't be. */
+  async function withChanges(t: Task): Promise<Task> {
+    try {
+      const c = await port.worktreeChanges(t.instanceId!);
+      return update(t.id, { changes: { ...c, safety: safetyFiles(c.files) } });
+    } catch (e) {
+      console.warn(`duck: task ${t.id}'s branch couldn't be read`, e);
+      return tasks.get(t.id) ?? t;
+    }
+  }
+
+  /** What the report adds for a change to Duck. */
+  function selfText(t: Task): string {
+    const c = t.changes;
+    if (!c) return " It's a change to Duck, but its branch couldn't be read: the user can look at it in its session's diff.";
+    const shown = c.files.slice(0, 8).join(", ") + (c.files.length > 8 ? `, and ${c.files.length - 8} more` : "");
+    return [
+      ` It's a change to Duck on branch ${c.branch}: ${c.files.length ? `${c.files.length} files (${shown}), +${c.insertions} −${c.deletions}` : "no files changed"}.`,
+      c.uncommitted.length
+        ? ` ${c.uncommitted.length} of them aren't committed on the branch yet: have the worker commit them (task_followup) before it can be merged.`
+        : "",
+      c.safety.length
+        ? ` It touches the safety layer (${c.safety.join(", ")}): tell the user plainly; its merge needs two confirmations.`
+        : "",
+      " The user reviews it from its card (\"open diff\"); changes they want go to the worker with task_followup; merge_duck_change merges it, only when the user asks.",
+    ].join("");
   }
 
   function report(t: Task): string {
     const where = `${t.folder}\\result.md`;
     const api = t.runner === "api" ? ` It ran on the API (${t.why ?? "over subscription limit"}), costing $${(t.costUsd ?? 0).toFixed(2)}.` : "";
-    return reportText(t, where) + api;
+    const self = t.self && t.state !== "failed" ? selfText(t) : "";
+    return reportText(t, where) + api + self;
   }
 
   function reportText(t: Task, where: string): string {
@@ -700,6 +758,8 @@ export function createTaskManager(deps: TaskDeps): TaskManager {
         headless: false,
         answers: [],
         prep: req.prep === true,
+        self: req.self === true,
+        changes: null,
       });
       void pump();
       await starting.get(t.id);
@@ -769,6 +829,7 @@ export function createTaskManager(deps: TaskDeps): TaskManager {
         projectId: t.projectId ?? undefined,
         mandate: t.mandate ? { text: t.mandate, threadId: t.threadId } : undefined,
         prep: t.prep,
+        self: t.self,
       });
       if (t.state !== "closed") await this.close(id);
       return next;

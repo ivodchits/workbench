@@ -42,6 +42,7 @@ import type {
   Notice,
   PluginsEdit,
   ReviewItem,
+  TaskView,
   TurnState,
 } from "../../assistant/protocol";
 import { projectMonth } from "../../assistant/spend";
@@ -73,9 +74,11 @@ import {
   connectDuck,
   compactThread,
   deleteThread,
+  fillComposer,
   getDuckState,
   isBusy,
   isRunning,
+  openTaskDiff,
   openThread,
   sendMessage,
   setDrawerOpen,
@@ -933,6 +936,50 @@ function elapsed(from: number | null, to: number | null): string {
   return s < 60 ? `${s}s` : s < 3600 ? `${Math.floor(s / 60)}m ${s % 60}s` : `${Math.floor(s / 3600)}h ${Math.floor((s % 3600) / 60)}m`;
 }
 
+/** A change to Duck's lines on its card (L3): the branch, the safety badge, and
+ *  the review buttons. Merging goes through Duck, whose card asks you (twice when
+ *  the safety layer is touched). */
+function SelfChange({ task }: { task: TaskView }) {
+  const c = task.changes;
+  const finished = task.state !== "queued" && task.state !== "running";
+  return (
+    <>
+      {c && (
+        <div style={{ marginTop: 2, color: "var(--wb-textFaint)" }} title={c.files.join("\n")}>
+          {c.branch}: {c.files.length} files
+          {c.uncommitted.length > 0 && `, ${c.uncommitted.length} not committed`}
+        </div>
+      )}
+      {c && c.safety.length > 0 && (
+        <div
+          style={{ marginTop: 3, padding: "0 6px", display: "inline-block", color: "var(--wb-delText)", border: "1px solid var(--wb-delText)", fontWeight: 600 }}
+          title={c.safety.join("\n")}
+        >
+          touches the safety layer
+        </div>
+      )}
+      {finished && task.state !== "closed" && task.instanceId && (
+        <div style={{ marginTop: 3, display: "flex", gap: 10 }}>
+          <button type="button" style={linkBtn} onClick={() => openTaskDiff(task.id)}>
+            open diff
+          </button>
+          <button type="button" style={linkBtn} onClick={() => fillComposer(`Changes for "${task.title}" (task ${task.id}): `)}>
+            ask for changes
+          </button>
+          <button
+            type="button"
+            style={linkBtn}
+            title="Duck asks you to confirm on a card"
+            onClick={() => sendMessage(`Merge Duck's change "${task.title}" (task ${task.id}).`)}
+          >
+            merge…
+          </button>
+        </div>
+      )}
+    </>
+  );
+}
+
 /** A worker task's card (D1): its state, worker, time, and a way to its console. */
 function TaskCard({ taskId, text }: { taskId: string; text: string }) {
   const task = useDuckState().tasks.find((t) => t.id === taskId);
@@ -980,6 +1027,7 @@ function TaskCard({ taskId, text }: { taskId: string; text: string }) {
       {task.headline && (
         <div style={{ marginTop: 3, color: "var(--wb-textDim2)", whiteSpace: "pre-wrap" }}>{task.headline}</div>
       )}
+      {task.self && <SelfChange task={task} />}
       <div style={{ marginTop: 3, display: "flex", gap: 10 }}>
         {open && (
           <button
@@ -1436,6 +1484,17 @@ function Composer({
   const [draft, setDraft] = useState("");
   const [hard, setHard] = useState(false);
   const voice = useVoiceState();
+
+  // A card's text for the box (L3's "ask for changes"), for the user to finish.
+  const fillSeq = duck.fill?.seq;
+  useEffect(() => {
+    const text = duck.fill?.text;
+    if (!text) return;
+    setDraft(text);
+    inputRef.current?.focus();
+    // Only a new fill, not a re-render, puts its text in.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fillSeq, inputRef]);
 
   // A transcript for review (V1, "send at once" off) lands in the box.
   const dictatedSeq = voice.dictated?.seq;

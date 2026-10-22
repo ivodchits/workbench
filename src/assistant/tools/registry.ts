@@ -38,6 +38,7 @@ import type { McpHost } from "../mcp";
 import type { GoogleHost } from "../google";
 import type { CoreHost } from "../core";
 import type { MemoryHost } from "../memory";
+import type { ConfigHost } from "../config";
 
 export type Tier = "read" | "reversible" | "consequential";
 
@@ -77,6 +78,8 @@ export interface ToolContext {
   core?: CoreHost | null;
   /** Duck's long-term memory (step L1); absent where there is none. */
   memory?: MemoryHost | null;
+  /** Duck's prompt files (step L3); absent where there are none. */
+  config?: ConfigHost | null;
   /** You asked Duck not to remember this thread (L1): `remember` refuses. */
   memoryOff?: boolean;
   /** Start a new Duck thread on `words`, which must be the user's own words from
@@ -89,7 +92,7 @@ export interface ToolContext {
 }
 
 /** What `prepare` gets besides the port. */
-export type PrepareEnv = Pick<ToolContext, "settings" | "google" | "memory">;
+export type PrepareEnv = Pick<ToolContext, "settings" | "google" | "memory"> & Partial<Pick<ToolContext, "tasks" | "config">>;
 
 /** A tool may return text, API content blocks (e.g. an image), or any JSON value. */
 export type ToolOutput =

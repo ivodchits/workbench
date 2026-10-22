@@ -251,4 +251,16 @@ const MIGRATIONS: &[&str] = &[
     );
     CREATE INDEX idx_recall_log_at ON recall_log(at);
     "#,
+    // Step L3: the prompts each thread started with (`config.rs`): one snapshot per
+    // distinct set of prompts, by its hash, and each thread's hash.
+    r#"
+    CREATE TABLE config_snapshots (
+        hash  TEXT PRIMARY KEY,
+        json  TEXT NOT NULL
+    );
+    CREATE TABLE config_pins (
+        thread_id  TEXT PRIMARY KEY,
+        hash       TEXT NOT NULL
+    );
+    "#,
 ];

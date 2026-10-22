@@ -43,7 +43,8 @@ import { capMessage, errorMessage, purpose, THREAD_PURPOSE } from "./client";
 import type { WorkbenchPort } from "./port";
 import { CORE_OPEN, coreText, type CoreHost } from "./core";
 import { memoryOff, recallFor, recallRow, type MemoryHost, type Recall } from "./memory";
-import { COMPACT_REQUEST, compactedText, SYSTEM_PROMPT, VOICE_NOTE } from "./prompt";
+import { COMPACT_REQUEST, compactedText } from "./prompt";
+import { DEFAULT_PROMPTS, type ConfigHost, type Prompts } from "./config";
 import { MODELS, route, type Brain } from "./routing";
 import { quotedFromLatest } from "./trust/mandate";
 import {
@@ -204,6 +205,9 @@ export interface EngineDeps {
   nameThread?: (text: string) => Promise<string>;
   /** Duck's settings as they are now (the policy and some tools read them). */
   settings?: () => DuckSettings;
+  /** Duck's prompts as files (step L3): the system prompt and the voice note each
+   *  thread was pinned on. The built-in ones when absent. */
+  config?: ConfigHost;
   /** Whether the API budget is past its soft limit (step M2): turns then run on
    *  Haiku. Not degraded when absent or when it fails. */
   degraded?: () => Promise<boolean>;
@@ -456,6 +460,7 @@ export function buildParams(
   registry: Registry,
   messages: ApiMessage[],
   brain: Brain = "sonnet",
+  system: string = DEFAULT_PROMPTS.system,
 ): Params {
   return {
     model: MODELS[brain],
@@ -472,7 +477,7 @@ export function buildParams(
     // tools → system is the frozen prefix: one explicit 1-hour breakpoint at its
     // end; automatic caching (also 1 hour: longer TTLs must come first) for the tail.
     tools: registry.apiTools,
-    system: [{ type: "text", text: SYSTEM_PROMPT, cache_control: CACHE_1H }],
+    system: [{ type: "text", text: system, cache_control: CACHE_1H }],
     cache_control: CACHE_1H,
     context_management: CONTEXT_EDITS,
     messages,
@@ -683,6 +688,16 @@ export function createEngine(deps: EngineDeps): Engine {
   const backends = new Map<string, Backend>();
   /** The month the API last said the credit balance is too low. */
   let creditsOut: string | null = null;
+
+  /** The prompts the thread was pinned on (step L3); the built-in ones when the
+   *  config can't be read. */
+  const promptsFor = (threadId: string): Promise<Prompts> =>
+    deps.config
+      ? deps.config.forThread(threadId).catch((e: unknown) => {
+          console.warn("duck: the config couldn't be read; using the built-in prompts", e);
+          return DEFAULT_PROMPTS;
+        })
+      : Promise.resolve(DEFAULT_PROMPTS);
   /** The subscription brains running, and the turns listening to them. */
   const live = new Map<string, LiveBrain>();
   const brainRuns = new Map<string, BrainRun>();
@@ -768,6 +783,7 @@ export function createEngine(deps: EngineDeps): Engine {
     try {
       const history = await store.messages(threadId);
       const first = history.length === 0;
+      const prompts = await promptsFor(threadId);
       const degraded = await isDegraded();
       const { brain, effort: want } = route({
         text: input.text,
@@ -803,7 +819,7 @@ export function createEngine(deps: EngineDeps): Engine {
           content: {
             content: [
               ...(core ? [{ type: "text", text: core }] : []),
-              ...(spoken ? [{ type: "text", text: VOICE_NOTE }] : []),
+              ...(spoken ? [{ type: "text", text: prompts.voice }] : []),
               ...(input.brief ? [{ type: "text", text: input.brief }] : []),
             ],
             ...(effortChanged && { output_config: { effort: want } }),
@@ -970,7 +986,8 @@ export function createEngine(deps: EngineDeps): Engine {
         if (asked) await notice(threadId, { kind: "compacted", text: NOTHING_TO_COMPACT });
         return;
       }
-      const stream = await deps.stream(buildParams(registry, compactionMessages(history.slice(0, cut)), turn.brain), {
+      const { system } = await promptsFor(threadId);
+      const stream = await deps.stream(buildParams(registry, compactionMessages(history.slice(0, cut)), turn.brain, system), {
         signal: turn.ctl.signal,
         ...purpose(COMPACT_PURPOSE),
       });
@@ -1058,10 +1075,11 @@ export function createEngine(deps: EngineDeps): Engine {
       }
       setState(threadId, "thinking");
       const messages = toApiMessages(await requestHistory(threadId, turn));
+      const { system } = await promptsFor(threadId);
       let text = "";
       let msg: Anthropic.Beta.BetaMessage;
       try {
-        const stream = await deps.stream(buildParams(registry, messages, turn.brain), {
+        const stream = await deps.stream(buildParams(registry, messages, turn.brain, system), {
           signal,
           ...purpose(THREAD_PURPOSE),
         });
@@ -1197,7 +1215,13 @@ export function createEngine(deps: EngineDeps): Engine {
     // action, a file with problems) fails before any card, with the reason.
     if (tool.prepare) {
       try {
-        const env = { settings: settings(), google: deps.google ?? null, memory: deps.memory ?? null };
+        const env = {
+          settings: settings(),
+          google: deps.google ?? null,
+          memory: deps.memory ?? null,
+          tasks: deps.tasks ?? null,
+          config: deps.config ?? null,
+        };
         call.prepared = await withTimeout(registry.prepare(u.name, u.input, port, env), tool.timeoutMs);
       } catch (e) {
         call.result = errorResult(u.id, `${u.name} failed: ${errorMessage(e)}`);
@@ -1266,7 +1290,7 @@ export function createEngine(deps: EngineDeps): Engine {
     let b = live.get(threadId);
     if (!b) {
       await makeRoom();
-      const { resumed } = await host.spawn(threadId, mcpTools(registry.apiTools));
+      const { resumed } = await host.spawn(threadId, mcpTools(registry.apiTools), (await promptsFor(threadId)).system);
       b = { fresh: !resumed, last: Date.now() };
       live.set(threadId, b);
     }
@@ -1474,6 +1498,7 @@ export function createEngine(deps: EngineDeps): Engine {
           google: deps.google ?? null,
           core: deps.core ?? null,
           memory: deps.memory ?? null,
+          config: deps.config ?? null,
           memoryOff: memoryOff(store.loaded(threadId)),
           request: lastUserText(store.loaded(threadId)),
           startThread: (words, opts) => split(threadId, words, opts),

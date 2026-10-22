@@ -5066,6 +5066,104 @@ up ("change this", with a circle around it).
   - A change touching `trust/` shows the badge and asks twice.
 - **Out of scope:** Duck merging or deploying anything on its own; changing Workbench code
   outside Duck's modules unless the request says so (the brief names the allowed paths).
+- **As built (2026-10-22):**
+  - **Built before S2.** L3 depends on S2, which isn't built. That only matters for the
+    cheapest kind of improvement, a skill or mode file, which stays S2's. Config and
+    code changes don't need it.
+  - **Prompts as data** (`src/assistant/config.ts`, `src-tauri/src/assistant/config.rs`):
+    - The files are `config/system.md` (the system prompt, which holds the routing rules
+      and examples) and `config/voice.md` (the spoken-message note), in Duck's workspace.
+    - The tier table stays in Duck's settings (`tiers`), which were already data and
+      editable in the drawer. A second copy in `config/` would have been two sources for
+      one thing.
+    - **Seeding:** a missing file is written with the built-in default, and the default's
+      hash is recorded. A file nobody has changed since then follows a new build's
+      default, so the prompt changes later steps make in `prompt.ts` still arrive. An
+      edited file is kept; Duck then notes that the default moved.
+    - **Fallback:** a file that is too short or too long, or that drops the "Safety rules
+      that always hold" section, is ignored. The default is used, and Duck says why.
+    - **Pinning:** each thread is pinned on the prompts it started with (`config_pins` and
+      `config_snapshots`, by hash). Its system prompt stays byte-identical for the
+      thread's life, through restarts, compaction and the subscription brain. A change
+      reaches new threads. A thread from before L3 is pinned at its next turn.
+  - **`propose_config_change(file, edits, why)`** takes `{find, replace}` edits rather
+    than a model-written diff:
+    - Each `find` must match the current text exactly once, so the change lands where the
+      model meant or not at all.
+    - `prepare` makes the edits and checks the result. The card shows the real diff
+      (`review`), and is on the floor (`asks`), so no rule can approve it without you.
+    - The write goes over the text it was read as, and is committed in the workspace's
+      repo.
+  - **`improve_duck(request, scope, effort?)`:**
+    - `config` returns the files for Duck to draft from.
+    - `code` starts a `self` code task: tier serious (Opus, `medium` unless you name
+      one), in a worktree of the project whose folder or name is "workbench" (or the one
+      named).
+    - The branch is the existing worktree path's `agent/<slug>`, not the plan's
+      `duck/<slug>`. A different prefix would have meant a second provisioning path for
+      no gain.
+    - The brief (`improveBrief`) has the request, up to 8 related `lessons` entries, and
+      pointers to the architecture doc and the plan. It says which paths are allowed, and
+      `wide` when the request reaches further. It also has the safety layer, the test
+      commands, "commit on this branch; don't merge, don't push", and what `result.md`
+      holds.
+    - The guardrails are pointed to, not pasted: the worker reads the plan's Guardrails
+      section itself in the worktree, so the brief can't drift from it.
+  - **Safety layer** (`selfdev.ts` `SAFETY_PATHS`):
+    - It covers `src/assistant/trust/` (the floor data is `trust/floor.ts`),
+      `proxy.rs`, `budget.rs`, `key.rs` and `trust.rs`.
+    - It also covers this step's own guards: `selfdev.ts`, `config.ts` and
+      `tools/improve.ts`.
+    - When a change task finishes, its branch is read (`port.worktreeChanges`: the files
+      against the repo's current branch, and the ones not committed yet) before the
+      thread is told. The report and the card name the files, and a red "touches the
+      safety layer" badge shows when any of them is in the layer.
+  - **Review and merge:**
+    - The card has "open diff" (the Diff/Review panel on the worktree), "ask for
+      changes" (it fills the message box, and Duck passes it on with `task_followup`) and
+      "merge…".
+    - "merge…" sends Duck a message. Duck calls `merge_duck_change`, which is on the
+      floor: one card, or two when the safety layer is touched.
+    - The second card is shown only after the first was confirmed. That is enforced in
+      code, not left to the model: a first call claiming `safetyConfirmed` still gets the
+      first card.
+    - The merge is refused while the worker runs, with nothing on the branch, or with
+      files not committed on it.
+    - It merges into the repo's current branch and removes the worktree, the rail's own
+      teardown (`port.mergeWorktree`), then closes the task.
+  - **Activation:** `rebuild_duck(dev|release)` types `npm run tauri:dev` or
+    `npm run tauri:build` into a new shell in the repo (`port.runInShell`). It's
+    consequential, so a card offers it. After a release build you restart Workbench
+    yourself; nothing hot-patches.
+  - **Proposals:**
+    - The nightly tidy (L2) now also reads the tool calls that failed more than once in
+      its window (`<tool_errors>`; calls you declined or stopped are left out). It may
+      return `improvements`: changes to Duck that a pattern calls for.
+    - These wait in `memory_state:improve_offers`. At most one a week rides in the next
+      recall note as a `<duck_suggestion>`: mention it once, offer `improve_duck`, start
+      it only on a yes.
+    - This replaces a separate weekly job.
+  - **`duck-architecture.md`:**
+    - Audited against the code: the protocol list was missing `thread.memory`, and the
+      tool rows were missing `task_rerun` and `test_announce`.
+    - New sections: "Changing Duck itself" and "Where to change X".
+    - The rows for the new modules are added, and a fresh session is told where to start.
+  - **Done when:**
+    - "When I say 'the backend' always pick the session titled backend-api" as a config
+      change: tested through the tools with the real prompt text. `improve_duck` reads the
+      file, `propose_config_change` puts a rule beside the session-picking rule, the
+      card's diff and the floor hold, and the next thread's system prompt has it while
+      the old thread's doesn't (`improve.test.ts`; the engine's pin in `engine.test.ts`).
+      Whether the live model picks config over `remember_core` for those words is
+      untested; the system prompt names that form.
+    - "Add a tool that lists my git stashes across projects" producing an Opus branch,
+      reviewed, merged and working after a restart: **not run.** The brief, the worker's
+      worktree and model, the branch read, the merge and the rebuild command are tested
+      with fakes. A real run costs an Opus session, and merging needs your review.
+    - A change touching `trust/` shows the badge and asks twice: tested
+      (`improve.test.ts`). The badge was not seen in the app.
+  - **Verified:** vitest 696 (17 new), tsc and eslint clean, cargo tests 296 (2 new),
+    clippy shows only the existing `badge.rs` warning. Not tried in the app.
 
 #### Step L4 — Routines, backup and housekeeping
 
@@ -6460,7 +6558,7 @@ T2 goes live after the replay check in its done-when (the past week's prompts th
 | V6 | Wake word on the PC (experimental) | ☐ |
 | L1 | Long-term memory: files, index, recall | ☑ (not tried in the app yet) |
 | L2 | Consolidation, journal, and recall quality | ☑ (not tried in the app; hit-rate review 2026-11-05) |
-| L3 | Self-development through Opus sessions | ☐ |
+| L3 | Self-development through Opus sessions | ☑ (not tried in the app; no real Opus branch yet) |
 | L4 | Routines, backup and housekeeping | ☐ |
 | S1 | Modes: chat and rubber duck | ☐ |
 | S2 | Skills and user-defined modes | ☐ |

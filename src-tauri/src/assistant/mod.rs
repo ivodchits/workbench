@@ -10,6 +10,7 @@
 //! Step M3: the subscription brain ([`subscription_brain`]) and the MCP server
 //! that serves it Duck's tools ([`mcp_server`]). Step L1: long-term memory, its
 //! index and its commits ([`memory`]); step L2 its consolidation and recall log.
+//! Step L3: Duck's prompts as files, and each thread's pin on them ([`config`]).
 //! The morning routine: Google access ([`google`]) and the invoice sheet ([`sheets`]).
 //!
 //! The webview never holds the key. It asks [`assistant_proxy_info`] for the proxy's
@@ -19,6 +20,7 @@
 
 mod autopilot;
 mod budget;
+pub mod config;
 mod db;
 pub mod google;
 pub mod headless;
@@ -540,8 +542,9 @@ pub async fn assistant_memory_apply(
 }
 
 /// The consolidation's own state (step L2), as JSON in `meta`: its last run, the
-/// contradictions waiting to be asked, the skill ideas. `None` removes it.
-const MEMORY_STATE_KEYS: [&str; 3] = ["consolidation", "questions", "skill_offers"];
+/// contradictions waiting to be asked, the skill ideas, and (step L3) the changes
+/// to Duck it may suggest. `None` removes it.
+const MEMORY_STATE_KEYS: [&str; 4] = ["consolidation", "questions", "skill_offers", "improve_offers"];
 const MEMORY_STATE_MAX: usize = 256 * 1024;
 
 fn memory_state_key(key: &str) -> Result<String, String> {
@@ -578,6 +581,45 @@ pub fn assistant_recall_log(ctx: Db<'_>, row: memory::RecallRow) -> Result<(), S
 #[tauri::command]
 pub fn assistant_recall_stats(ctx: Db<'_>, since: i64) -> Result<memory::RecallStats, String> {
     memory::recall_stats(&lock(&ctx), since)
+}
+
+// ── Duck's prompts as data (step L3) ──
+
+/// Duck's config files (`config/system.md`, `config/voice.md`) as they are on disk.
+#[tauri::command]
+pub fn assistant_config_read(ctx: Db<'_>, workspace: Option<String>) -> Result<Vec<config::ConfigFile>, String> {
+    let ws = workspace::resolve(workspace.as_deref())?;
+    config::read(&lock(&ctx), &ws)
+}
+
+/// Write a config file over the text it was read as, and commit it with `message`.
+/// `seed`: the hash of the built-in default being written.
+#[tauri::command]
+pub fn assistant_config_write(
+    ctx: Db<'_>,
+    workspace: Option<String>,
+    file: String,
+    text: String,
+    expected: Option<String>,
+    seed: Option<String>,
+    message: String,
+) -> Result<(), String> {
+    let ws = workspace::resolve(workspace.as_deref())?;
+    let path = config::write(&lock(&ctx), &ws, &file, &text, expected.as_deref(), seed.as_deref())?;
+    memory::commit(&ws, vec![path], message);
+    Ok(())
+}
+
+/// Pin a thread on the prompts it starts with (a pinned thread keeps its pin).
+#[tauri::command]
+pub fn assistant_config_pin(ctx: Db<'_>, thread_id: String, hash: String, json: String) -> Result<(), String> {
+    config::pin(&lock(&ctx), &thread_id, &hash, &json)
+}
+
+/// The prompts a thread is pinned on, as JSON.
+#[tauri::command]
+pub fn assistant_config_pinned(ctx: Db<'_>, thread_id: String) -> Result<Option<String>, String> {
+    config::pinned(&lock(&ctx), &thread_id)
 }
 
 /// Every long-term memory entry, for the drawer's Memory view.

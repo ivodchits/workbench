@@ -179,6 +179,10 @@ export interface TaskView {
   costUsd: number | null;
   /** The worker's questions Duck answered. */
   answers: { question: string; answer: string; reason: string }[];
+  /** A change to Duck (step L3): its card offers the diff and the merge. */
+  self: boolean;
+  /** Its branch once it finished; `safety` lists the files in the safety layer. */
+  changes: { branch: string; files: string[]; uncommitted: string[]; safety: string[] } | null;
 }
 
 /** A session's plan autopilot as a surface shows it (step P1). */
@@ -255,6 +259,8 @@ export type ClientMessage =
   | { type: "task.close"; taskId: string }
   /** Run a worker task again one tier up (step D2), as a new task. */
   | { type: "task.rerun"; taskId: string }
+  /** Open a change to Duck's branch in the Diff/Review panel (step L3). */
+  | { type: "task.diff"; taskId: string }
   /** A session autopilot's buttons on its card (step P1). */
   | { type: "autopilot"; instanceId: string; action: "pause" | "resume" | "stop" }
   /** The reader bar's buttons (step V3). */

@@ -216,6 +216,9 @@ pub fn delete(conn: &mut Connection, id: &str) -> Result<(), String> {
         .map_err(|e| e.to_string())?;
     tx.execute("DELETE FROM assistant_messages WHERE thread_id = ?1", [id])
         .map_err(|e| e.to_string())?;
+    // Its pin on the prompts it started with (step L3); the snapshot may be shared.
+    tx.execute("DELETE FROM config_pins WHERE thread_id = ?1", [id])
+        .map_err(|e| e.to_string())?;
     let n = tx
         .execute("DELETE FROM assistant_threads WHERE id = ?1", [id])
         .map_err(|e| e.to_string())?;

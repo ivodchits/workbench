@@ -1136,3 +1136,36 @@ describe("routing (M2)", () => {
     expect(calls[0].params.model).toBe("claude-sonnet-5-5");
   });
 });
+
+describe("prompts as data (step L3)", () => {
+  it("runs each thread on the prompts it was pinned on, the voice note too", async () => {
+    const store = createThreadStore(memoryBackend());
+    await store.load();
+    const s = scripted([message([text("one")], "end_turn"), message([text("two")], "end_turn"), message([text("three")], "end_turn")]);
+    let now = { system: "System A", voice: "Voice A" };
+    const pins = new Map<string, { system: string; voice: string }>();
+    const engine = createEngine({
+      stream: s.stream,
+      registry: createRegistry([getTime]),
+      port,
+      store,
+      config: {
+        forThread: async (id) => {
+          if (!pins.has(id)) pins.set(id, now);
+          return pins.get(id)!;
+        },
+        current: () => Promise.reject(new Error("unused")),
+        write: () => Promise.reject(new Error("unused")),
+      },
+    });
+    const first = await turn(engine, "hello");
+    now = { system: "System B", voice: "Voice B" };
+    await turn(engine, "again", first);
+    const second = await engine.send({ threadId: null, text: "hi", source: "voice" });
+    await engine.settled(second);
+    const systems = s.calls.map((c) => (c.params.system as { text: string }[])[0].text);
+    expect(systems).toEqual(["System A", "System A", "System B"]);
+    const sys = store.loaded(second).find((m) => m.role === "system")!;
+    expect((sys.content as { content: { text: string }[] }).content[0].text).toBe("Voice B");
+  });
+});

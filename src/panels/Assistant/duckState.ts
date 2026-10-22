@@ -86,6 +86,8 @@ export interface DuckState {
   unread: Record<string, number>;
   /** Each thread's latest reply, its first line. */
   news: Record<string, string>;
+  /** Text a card put in the message box (L3's "ask for changes"), by a counter. */
+  fill: { text: string; seq: number } | null;
 }
 
 export const DEFAULT_DRAWER: AssistantDrawerPrefs = {
@@ -121,6 +123,7 @@ let state: DuckState = {
   reader: null,
   unread: {},
   news: {},
+  fill: null,
 };
 const listeners = new Set<() => void>();
 /** A send with no thread is waiting for the engine to name the new one. */
@@ -623,6 +626,16 @@ export function loadDecisions(before: number | null): void {
 /** Close a worker task (D1): its console closes, its files stay. */
 export function closeTask(taskId: string): void {
   post({ type: "task.close", taskId });
+}
+
+/** Open a change to Duck's branch in the Diff/Review panel (L3). */
+export function openTaskDiff(taskId: string): void {
+  post({ type: "task.diff", taskId });
+}
+
+/** Start a message in the box with `text`, for the user to finish (L3). */
+export function fillComposer(text: string): void {
+  set({ fill: { text, seq: (state.fill?.seq ?? 0) + 1 } });
 }
 
 /** Run a worker task again one tier up, as a new task (D2). */

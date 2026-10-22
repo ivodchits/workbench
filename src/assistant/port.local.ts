@@ -10,6 +10,8 @@ import {
   gitLog,
   gitRepoState,
   gitStatusEntries,
+  instanceDiff,
+  worktreeTeardownInfo,
 } from "../ipc/git";
 import {
   notesCreateWith,
@@ -42,6 +44,8 @@ import { setAutopilotBadge } from "../state/autopilotBadges";
 import { alertAbout } from "../state/notifications";
 import { atRest } from "../state/queue";
 import { setActiveProject } from "../state/activeProject";
+import { newShell, whenShellRunning } from "../state/shells";
+import { teardownWorktree } from "../state/worktree";
 import {
   closeConsole,
   getOpenConsoles,
@@ -394,6 +398,40 @@ export const localPort: WorkbenchPort = {
     // The rail's kill path: close the panel, then end the process.
     closeConsole(id);
     release(id);
+  },
+  async worktreeChanges(id) {
+    const i = instance(id);
+    const project = getRegistry().projects.find((p) => p.id === i.projectId);
+    if (!project) throw new Error(`no project with id ${i.projectId}`);
+    if (!i.worktreeOn || !i.branch) throw new Error(`"${i.title}" doesn't work in a worktree.`);
+    const d = await instanceDiff(project.rootPath, i.workingDir);
+    const status = await gitStatusEntries(i.workingDir).catch(() => []);
+    return {
+      branch: i.branch,
+      base: d.base,
+      files: d.files.map((f) => f.path),
+      uncommitted: status.map((s) => s.path),
+      insertions: d.insertions,
+      deletions: d.deletions,
+    };
+  },
+  async mergeWorktree(id) {
+    const i = instance(id);
+    const project = getRegistry().projects.find((p) => p.id === i.projectId);
+    if (!project) throw new Error(`no project with id ${i.projectId}`);
+    if (!i.worktreeOn || !i.branch) throw new Error(`"${i.title}" doesn't work in a worktree.`);
+    const { targetBranch } = await worktreeTeardownInfo(project.rootPath, i.workingDir);
+    if (!targetBranch) throw new Error(`${project.name} is on a detached HEAD: check out a branch to merge into first.`);
+    await teardownWorktree(i, project, { integrate: "merge", targetBranch, force: false });
+    return targetBranch;
+  },
+  async runInShell(projectId, command, label) {
+    const project = getRegistry().projects.find((p) => p.id === projectId);
+    if (!project) throw new Error(`no project with id ${projectId}`);
+    if (project.remoteSshDest) throw new Error(`${project.name} is a remote project.`);
+    const shellId = newShell({ projectId, cwd: project.rootPath, label });
+    await whenShellRunning(shellId);
+    await ptyWrite(shellId, new TextEncoder().encode(`${command}\r`));
   },
   async killSession(id) {
     const i = instance(id);

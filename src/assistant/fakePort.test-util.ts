@@ -21,6 +21,7 @@ import type {
   TaskEnd,
   TaskRun,
   WorkbenchPort,
+  WorktreeChanges,
 } from "./port";
 import type { Notice } from "./protocol";
 import { DEFAULT_SETTINGS, type DuckSettings } from "./settings";
@@ -67,6 +68,10 @@ export interface FakePortData {
   compactError?: string;
   /** What `contextUsed` answers, per session id. */
   contextUsed?: Record<string, number>;
+  /** What `worktreeChanges` answers, per session id (L3); none: no worktree. */
+  changes?: Record<string, WorktreeChanges>;
+  /** `mergeWorktree` fails with this. */
+  mergeError?: string;
 }
 
 export interface FakePlugins {
@@ -477,6 +482,19 @@ export function fakePort(data: FakePortData = {}): FakePort {
     },
     setHeadless(id, on) {
       record("setHeadless", id, on);
+    },
+    async worktreeChanges(id) {
+      const c = data.changes?.[id];
+      if (!c) throw new Error(`"${sessionOf(id).title}" doesn't work in a worktree.`);
+      return c;
+    },
+    async mergeWorktree(id) {
+      record("mergeWorktree", id);
+      if (data.mergeError) throw new Error(data.mergeError);
+      return "main";
+    },
+    async runInShell(projectId, command, label) {
+      record("runInShell", projectId, command, label);
     },
     compactSession(id, focus) {
       record("compactSession", id, focus);

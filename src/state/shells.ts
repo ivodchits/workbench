@@ -118,10 +118,36 @@ export function openShell(target: ShellTarget): void {
  * a project can hold several, e.g. one busy running a debug build while another
  * stays free for git. The caller is responsible for a distinguishing `label`.
  */
-export function newShell(target: ShellTarget): void {
+export function newShell(target: ShellTarget): string {
   const shellId = `shell:${crypto.randomUUID()}`;
   const session: ShellSession = { shellId, ...target, status: "spawning", error: null };
   emit({ open: [...state.open, session], activeId: shellId });
+  return shellId;
+}
+
+/** Resolve once the shell's PTY is running (step L3: Duck types a build command
+ *  into a new shell); reject when it fails, closes, or isn't up within `ms`. */
+export function whenShellRunning(shellId: string, ms = 20_000): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const check = (): boolean => {
+      const s = state.open.find((x) => x.shellId === shellId);
+      if (s?.status === "running") resolve();
+      else if (!s) reject(new Error("the shell was closed before it started"));
+      else if (s.status === "error") reject(new Error(`the shell didn't start: ${s.error ?? "unknown error"}`));
+      else return false;
+      return true;
+    };
+    if (check()) return;
+    const timer = setTimeout(() => {
+      off();
+      reject(new Error("the shell didn't start in time"));
+    }, ms);
+    const off = subscribe(() => {
+      if (!check()) return;
+      clearTimeout(timer);
+      off();
+    });
+  });
 }
 
 /** A persisted shell: its target/label plus the minted id, so a restored panel

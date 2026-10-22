@@ -9,7 +9,10 @@
 // and the run's record); the whole run is one commit (`memory.rs`'s `apply`). A
 // contradiction becomes one question, asked the next time you talk: the recall
 // note carries it (`memory.ts`'s `questionLine`). Skill ideas wait in duck.db for
-// S2 to offer.
+// S2 to offer. Step L3: the call also reads the tool calls that kept failing, and
+// may name a change to Duck that would fix a pattern (the same correction twice,
+// the same error again and again); one is suggested a week at most, through the
+// recall note (`suggestion`), and nothing starts unless you say yes.
 //
 // When: the first hour you're away after midnight (`tick`, every few minutes), or
 // sooner when a run is overdue; or on demand ("tidy your memory", the Memory
@@ -37,6 +40,7 @@ export const Consolidation = z.object({
   contradictions: z.array(z.object({ ids: z.array(z.string()), question: z.string() })),
   journal: z.string(),
   skill_ideas: z.array(z.object({ request: z.string(), steps: z.array(z.string()), times: z.number() })),
+  improvements: z.array(z.object({ request: z.string(), why: z.string() })),
 });
 export type Consolidation = z.infer<typeof Consolidation>;
 
@@ -58,6 +62,15 @@ export interface SkillOffer {
   steps: string[];
   times: number;
   at: number;
+}
+
+/** A change to Duck the tidy found a pattern for (step L3). */
+export interface ImproveOffer {
+  request: string;
+  why: string;
+  at: number;
+  /** When it was suggested to you; null until then. */
+  offered: number | null;
 }
 
 /** The last run, as stored. */
@@ -89,6 +102,8 @@ export interface Consolidator {
   tick(): Promise<TidyReport | null>;
   /** The next contradiction to ask about, marked asked. */
   question(): Promise<string | null>;
+  /** A change to Duck to suggest, marked offered: one a week at most. */
+  suggestion(): Promise<string | null>;
   last(): Promise<RunRecord | null>;
 }
 
@@ -107,9 +122,16 @@ const QUESTIONS_KEPT_MS = 30 * 86_400_000;
 /** A nightly run that failed isn't tried again for this long. */
 const RETRY_MS = 60 * 60_000;
 const SKILL_OFFERS_MAX = 30;
+const IMPROVE_OFFERS_MAX = 20;
+/** At most one change to Duck is suggested this often. */
+export const SUGGEST_EVERY_MS = 7 * 86_400_000;
+/** A suggestion not taken up in this long is dropped. */
+const SUGGESTION_KEPT_MS = 30 * 86_400_000;
+/** How many tool errors the call reads. */
+const TOOL_ERRORS_MAX = 15;
 
 /** Text placed between the tags can't open or close one of them. */
-const fence = (s: string) => s.replace(/<\/?\s*(?:memory|activity|thread|tasks)\b/gi, (m) => m.replace("<", "‹"));
+const fence = (s: string) => s.replace(/<\/?\s*(?:memory|activity|thread|tasks|tool_errors)\b/gi, (m) => m.replace("<", "‹"));
 
 const clip = (s: string, n: number) => (s.length > n ? `${s.slice(0, n)} …[cut]` : s);
 
@@ -126,6 +148,35 @@ function clock(ms: number): string {
   const d = new Date(ms);
   const p = (n: number) => String(n).padStart(2, "0");
   return `${today(d)} ${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+
+/** Results that aren't the tool failing: the user said no, or stopped the turn. */
+const NOT_FAILURES = /^The user (?:declined|stopped)/;
+
+/** The tool calls that failed more than once in the window (step L3), by tool:
+ *  how often, and the first error. */
+export function toolErrors(threads: readonly { messages: readonly StoredMessage[] }[], from: number): string[] {
+  const names = new Map<string, string>();
+  const errors = new Map<string, { n: number; first: string }>();
+  for (const t of threads)
+    for (const m of t.messages) {
+      if (!Array.isArray(m.content)) continue;
+      for (const b of m.content as { type?: string; id?: string; name?: string; tool_use_id?: string; is_error?: boolean; content?: unknown }[]) {
+        if (b.type === "tool_use" && b.id && b.name) names.set(b.id, b.name);
+        if (b.type !== "tool_result" || !b.is_error || m.ts <= from) continue;
+        const text = textOf(b.content).trim();
+        if (NOT_FAILURES.test(text)) continue;
+        const name = names.get(b.tool_use_id ?? "") ?? "a tool";
+        const e = errors.get(name);
+        if (e) e.n++;
+        else errors.set(name, { n: 1, first: text });
+      }
+    }
+  return [...errors]
+    .filter(([, e]) => e.n >= 2)
+    .sort((a, b) => b[1].n - a[1].n)
+    .slice(0, TOOL_ERRORS_MAX)
+    .map(([name, e]) => `- ${name}, ${e.n} times: ${clip(e.first.replace(/\s+/g, " "), 200)}`);
 }
 
 /** An entry as the call reads it. */
@@ -176,6 +227,7 @@ export function consolidationInput(r: {
     threads.push(`<thread title="${fence(t.title).replace(/"/g, "'")}">\n${fence(body)}\n</thread>`);
   }
   const tasks = r.tasks.map((t) => `- ${t.state} · ${t.title}${t.headline ? `: ${clip(t.headline, 400)}` : ""}`);
+  const failed = toolErrors(r.threads, r.from);
   items += tasks.length;
   r.tasks.forEach((t) => t.finished !== null && seen(t.finished));
   const text = [
@@ -189,6 +241,9 @@ export function consolidationInput(r: {
     "",
     "Worker tasks that finished:",
     `<tasks>\n${fence(tasks.join("\n")) || "(none)"}\n</tasks>`,
+    "",
+    "Your tool calls that failed more than once:",
+    `<tool_errors>\n${fence(failed.join("\n")) || "(none)"}\n</tool_errors>`,
   ].join("\n");
   return { text, ids, items, newest };
 }
@@ -339,6 +394,20 @@ export function createConsolidator(deps: ConsolidateDeps): Consolidator {
       }
       await deps.state.set("skill_offers", JSON.stringify(offers.slice(-SKILL_OFFERS_MAX)));
     }
+    const better = answer.improvements.filter((x) => x.request.trim());
+    if (better.length) {
+      const key = (s: string) => s.trim().toLowerCase();
+      const offers = parse<ImproveOffer[]>(await deps.state.get("improve_offers"), []).filter(
+        (o) => o.offered !== null || end - o.at < SUGGESTION_KEPT_MS,
+      );
+      for (const x of better) {
+        const had = offers.find((o) => key(o.request) === key(x.request));
+        if (had) Object.assign(had, { why: x.why.trim(), at: end });
+        else offers.push({ request: x.request.trim(), why: x.why.trim(), at: end, offered: null });
+        log.push(`to suggest: ${x.request.trim()}`);
+      }
+      await deps.state.set("improve_offers", JSON.stringify(offers.slice(-IMPROVE_OFFERS_MAX)));
+    }
     const report: TidyReport = {
       ran: true,
       added,
@@ -384,6 +453,16 @@ export function createConsolidator(deps: ConsolidateDeps): Consolidator {
       q.asked = true;
       await deps.state.set("questions", JSON.stringify(qs));
       return q.question;
+    },
+    async suggestion() {
+      const offers = parse<ImproveOffer[]>(await deps.state.get("improve_offers"), []);
+      const n = now();
+      if (offers.some((o) => o.offered !== null && n - o.offered < SUGGEST_EVERY_MS)) return null;
+      const o = offers.find((x) => x.offered === null && n - x.at < SUGGESTION_KEPT_MS);
+      if (!o) return null;
+      o.offered = n;
+      await deps.state.set("improve_offers", JSON.stringify(offers));
+      return o.why ? `${o.request} (${o.why.replace(/\.$/, "")})` : o.request;
     },
   };
 }

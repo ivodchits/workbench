@@ -24,7 +24,7 @@ export function manager(ctx: ToolContext): TaskManager {
 
 const taskArg = z.string().trim().min(1).describe("The task's id from run_task or list_tasks (or its exact title).");
 
-function findTask(tasks: TaskManager, ref: string): Task {
+export function findTask(tasks: TaskManager, ref: string): Task {
   const byId = tasks.get(ref);
   if (byId) return byId;
   const named = tasks.list().filter((t) => t.title.toLowerCase() === ref.toLowerCase());

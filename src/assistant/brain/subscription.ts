@@ -47,18 +47,22 @@ export const BRAIN_MAX = 3;
 export const HANDOFF_TURNS = 20;
 export const HANDOFF_CHARS = 40_000;
 
-/** Duck's prompt, and what's different about running inside Claude Code. */
-export const BRAIN_PROMPT = `${SYSTEM_PROMPT}
+/** Duck's prompt (the thread's, step L3), and what's different about running
+ *  inside Claude Code. */
+export const brainPrompt = (system: string) => `${system}
 
 [Running on the subscription brain]
 You are answering inside Claude Code, headless, on the user's Claude subscription: Duck's API credits are low or spent, so this thread runs here until they're back. You are still Duck, with the same tools, named mcp__duck__<name> (this prompt names them without the prefix). They are all loaded: there is no tool search, so skip that step. Claude Code's own tools are off.
 A call that needs the user's OK comes back at once saying a card is waiting for them: it has not run. Don't call it again; tell the user it's waiting for their OK and end your turn. Its result arrives later as a Workbench event.`;
 
+export const BRAIN_PROMPT = brainPrompt(SYSTEM_PROMPT);
+
 /** What a call parked on a confirmation returns to the brain. */
 export const ASKED = "Waiting for the user: a card asks them to allow this call. It has NOT run. Don't call it again; tell them it's waiting for their OK, and end your turn. Its result comes as a Workbench event once they answer.";
 
 export interface BrainHost {
-  spawn(threadId: string, tools: McpTool[]): Promise<{ resumed: boolean }>;
+  /** `system`: the thread's system prompt (step L3), the built-in one when absent. */
+  spawn(threadId: string, tools: McpTool[], system?: string): Promise<{ resumed: boolean }>;
   send(threadId: string, text: string): Promise<void>;
   interrupt(threadId: string): Promise<void>;
   kill(threadId: string): Promise<void>;
@@ -79,7 +83,8 @@ export type BrainMessage =
 /** The host over the backend, in Duck's workspace. */
 export function createBrainHost(workspace: () => Promise<string>): BrainHost {
   return {
-    spawn: async (threadId, tools) => brainSpawn(threadId, await workspace(), BRAIN_PROMPT, tools, BRAIN_EFFORT),
+    spawn: async (threadId, tools, system) =>
+      brainSpawn(threadId, await workspace(), system ? brainPrompt(system) : BRAIN_PROMPT, tools, BRAIN_EFFORT),
     send: brainSend,
     interrupt: brainInterrupt,
     kill: brainKill,
