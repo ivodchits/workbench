@@ -5,7 +5,8 @@
 // the entry, the draft folder, and the cells a draft changes with each one's rule.
 // The invoice form is saved with its button, since a half-typed cell would
 // otherwise be dropped by the settings' check; "test sheet" reads the saved cells
-// so a wrong address shows up now rather than on the morning it's due.
+// so a wrong address shows up now rather than on the morning it's due, and says what
+// a draft made today would set (amounts Duck asks for count as 0 here).
 
 import { useEffect, useState } from "react";
 import {
@@ -26,6 +27,7 @@ import {
   type InvoiceSettings,
 } from "../../assistant/settings";
 import { googleErrorText } from "../../assistant/google";
+import { askedFields, cellsToRead, changeLine, planDraft } from "../../assistant/invoice";
 import { setDuckSettings } from "./duckState";
 
 const RULE_LABELS: Record<string, string> = {
@@ -166,7 +168,7 @@ export default function MorningSettings({ settings }: { settings: DuckSettings }
     setTest(null);
     setTesting(true);
     try {
-      setTest(await sheetCells(morning.googleClientId, inv.sheetId, inv.tab, inv.fields.map((f) => f.address)));
+      setTest(await sheetCells(morning.googleClientId, inv.sheetId, inv.tab, cellsToRead(inv)));
     } catch (e) {
       setError(googleErrorText(e));
       setStatus(await googleStatus().catch(() => status));
@@ -338,18 +340,35 @@ export default function MorningSettings({ settings }: { settings: DuckSettings }
           <span style={hint}>{test.name}, as it is now:</span>
           {test.cells.map((c) => {
             const f = morning.invoice?.fields.find((x) => x.address === c.address);
+            if (!f) return null;
             return (
               <span key={c.address}>
-                {f?.label ?? c.address} <span style={hint}>{c.address}</span> {c.value || <span style={hint}>(empty)</span>}
+                {f.label} <span style={hint}>{c.address}</span> {c.value || <span style={hint}>(empty)</span>}
                 {c.formula && <span style={{ color: "var(--wb-needs)" }}> formula {c.formula}: a draft won't change it</span>}
               </span>
             );
           })}
+          {morning.invoice && <span style={hint}>{draftPreview(morning.invoice, test)}</span>}
         </div>
       )}
       {error && <div style={{ color: "var(--wb-needs)" }}>{error}</div>}
     </>
   );
+}
+
+/** What a draft made today would set, in a line. */
+function draftPreview(inv: InvoiceSettings, sheet: SheetCells): string {
+  const answers = Object.fromEntries(askedFields(inv).map((f) => [f.label, 0]));
+  try {
+    const d = new Date();
+    const today = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+    const plan = planDraft(inv, sheet.name, sheet.cells, today, answers);
+    return plan.changes.length
+      ? `A draft made today would set: ${plan.changes.map(changeLine).join("; ")}.`
+      : "A draft made today would change nothing.";
+  } catch (e) {
+    return `A draft can't be planned: ${e instanceof Error ? e.message : String(e)}.`;
+  }
 }
 
 const input: React.CSSProperties = {
