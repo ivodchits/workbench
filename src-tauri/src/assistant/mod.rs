@@ -368,6 +368,20 @@ pub fn assistant_task_write_result(workspace: String, folder: String, md: String
     workspace::write_result(&workspace::resolve(Some(&workspace))?, &folder, &md, &json)
 }
 
+/// Duck's core memory (step W4): `memory/core.md`'s path in the workspace and its
+/// text (`None`: no file yet).
+#[tauri::command]
+pub fn assistant_core_read(workspace: Option<String>) -> Result<(String, Option<String>), String> {
+    let d = workspace::resolve(workspace.as_deref())?;
+    Ok((workspace::core_path(&d).to_string_lossy().into_owned(), workspace::read_core(&d)?))
+}
+
+/// Write the core memory over the text it was read as (`expected`).
+#[tauri::command]
+pub fn assistant_core_write(workspace: Option<String>, text: String, expected: Option<String>) -> Result<(), String> {
+    workspace::write_core(&workspace::resolve(workspace.as_deref())?, &text, expected.as_deref())
+}
+
 /// Register a new instance as a worker, before its first launch.
 #[tauri::command]
 pub fn assistant_worker_register(

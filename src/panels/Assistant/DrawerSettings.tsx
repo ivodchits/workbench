@@ -22,6 +22,7 @@ import VoiceSettings from "./VoiceSettings";
 import SpeechSettings from "./SpeechSettings";
 import AnnounceSettings from "./AnnounceSettings";
 import GoogleSettings from "./GoogleSettings";
+import { openCoreMemory } from "./openCore";
 
 /** The settings' categories, in tab order. */
 const TABS = ["drawer", "sessions", "workers", "voice", "announcements", "google auth"] as const;
@@ -356,6 +357,27 @@ function McpServers({ settings }: { settings: DuckSettings }) {
   );
 }
 
+/** The core memory (W4): what every thread starts with, opened in the editor. */
+function CoreMemoryRow({ workspace }: { workspace: string | null }) {
+  const [error, setError] = useState<string | null>(null);
+  return (
+    <div style={{ ...row, alignItems: "center" }}>
+      <span>Core memory</span>
+      <button
+        type="button"
+        style={select}
+        onClick={() => {
+          setError(null);
+          openCoreMemory(workspace).catch((e: unknown) => setError(String(e)));
+        }}
+      >
+        Edit core.md
+      </button>
+      <span style={hint}>{error ?? "(what every thread starts with)"}</span>
+    </div>
+  );
+}
+
 /** Duck's worker sessions (D1): how many at once, where, and each tier's worker. */
 function Workers({ settings }: { settings: DuckSettings }) {
   const [workspace, setWorkspace] = useState(settings.workspace ?? "");
@@ -432,6 +454,7 @@ function Workers({ settings }: { settings: DuckSettings }) {
           style={{ ...select, flex: 1, minWidth: 0, padding: "1px 4px" }}
         />
       </label>
+      <CoreMemoryRow workspace={settings.workspace} />
       {TIERS.map((tier) => (
         <label key={tier} style={{ ...row, alignItems: "center" }}>
           <span style={{ width: 64 }}>{tier}</span>

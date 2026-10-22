@@ -140,6 +140,13 @@ describe("action items (W2)", () => {
     expect(items[0]).toMatchObject({ text: "Session x is done." });
     expect(items[1]).toMatchObject({ text: "Duck edited plan", edit });
   });
+
+  it("shows a core memory edit as a chip with its diff (W4)", () => {
+    seq = 0;
+    const memory = { path: "C:\\Duck\\memory\\core.md", before: null, after: "## About you\n- x\n" };
+    const items = toItems([msg("notice", { kind: "memory", text: "Duck remembered: x", memory }, "duck")]);
+    expect(items).toMatchObject([{ kind: "memory", text: "Duck remembered: x", edit: memory }]);
+  });
 });
 
 describe("readableInput", () => {

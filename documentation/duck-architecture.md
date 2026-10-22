@@ -5,8 +5,8 @@ behind each decision are in `assistant-plan.md`. This file describes the code, a
 Duck step updates it as part of its Done when. Duck's self-development sessions (L3)
 read it first.
 
-Last updated: step A6 and the morning routine (2026-10-22). Since W5 it also covers W6,
-D2, D4, P1, P2, M2, A5, A7, R1, R2, V1 to V5 and X1.
+Last updated: step W4 (2026-10-22). Since W5 it also covers W6,
+D2, D4, P1, P2, M2, A5, A6, A7, R1, R2, V1 to V5, X1 and the morning routine.
 
 ## The shape
 
@@ -34,7 +34,7 @@ D2, D4, P1, P2, M2, A5, A7, R1, R2, V1 to V5 and X1.
 | File | What it is |
 |---|---|
 | `index.ts` | `initAssistant()` (called from `App.tsx` with the other engines) builds the store, the trust store, the registry and the engine; `getDuck()` returns the in-process transport. `endpoint()` maps protocol messages onto the engine and adds the spend (from a `SpendSource`: the ledger commands and `assistant-usage` events) and the trust messages (`trustView()` adds the floor's labels). |
-| `protocol.ts` | The Duck Protocol, version 1: `ClientMessage` (send, stop, confirm, thread.new, thread.delete, thread.compact, sync, thread.open, settings.set, trust.pause, trust.rule.add, trust.rule.remove, trust.mode, trust.floor, trust.decisions, trust.replay, task.close, task.rerun, autopilot, reader, dnd, and V4's turn.commit / turn.withdraw for a `provisional` send) and `DuckEvent` (threads, history, thread, threadDeleted, message, delta, provisional, withdrawn, goThread, tool, confirm, confirmed, turnState, routing, spend, settings, trust, decisions, decision, tasks, autopilots, replay, reader, error). A `ConfirmRequest` carries the tool's `summary` and, for a file edit, `review` (each file's before and after, shown as diffs); a `note` notice carries a `NoteEdit` (before, after, revision) and a `plugins` notice a `PluginsEdit` (the plugin file and its scripts, before and after, and the new revision) for the drawer's chips. Source `event` marks a follow-up from Workbench, not the user. `createLocalTransport` stamps `v`. |
+| `protocol.ts` | The Duck Protocol, version 1: `ClientMessage` (send, stop, confirm, thread.new, thread.delete, thread.compact, sync, thread.open, settings.set, trust.pause, trust.rule.add, trust.rule.remove, trust.mode, trust.floor, trust.decisions, trust.replay, task.close, task.rerun, autopilot, reader, dnd, and V4's turn.commit / turn.withdraw for a `provisional` send) and `DuckEvent` (threads, history, thread, threadDeleted, message, delta, provisional, withdrawn, goThread, tool, confirm, confirmed, turnState, routing, spend, settings, trust, decisions, decision, tasks, autopilots, replay, reader, error). A `ConfirmRequest` carries the tool's `summary` and, for a file edit, `review` (each file's before and after, shown as diffs); a `note` notice carries a `NoteEdit` (before, after, revision) and a `plugins` notice a `PluginsEdit` (the plugin file and its scripts, before and after, and the new revision) and a `memory` notice a `MemoryEdit` (`core.md`'s path, before and after, W4) for the drawer's chips. Source `event` marks a follow-up from Workbench, not the user. `createLocalTransport` stamps `v`. |
 | `settings.ts` | Duck's settings (pref `assistant`): `confirmPrompts` (ask before every prompt sent to a session), `codingModel` (what `create_session` uses for coding work) `answerSessionPrompts` (T2: off by default, which keeps the trust watcher in shadow mode for every project), `codingPermissionMode` (M4), the workers' `maxWorkers`, `headlessWorkers` (D4), `workspace`, `tiers` (D1: each tier's model and effort), `workerIdleStopMinutes` and `closeFinishedHours`, `summaryOnDone` (W3), `announce` and `dndUntil` (V5), `mcpServers` (X1), `compactAt` (A6: compact a thread past this many input tokens; 0 never), and `google` (the Desktop OAuth client id for Drive and Sheets; the first build's `morning.googleClientId` is taken over). Loaded at start, changed only through `settings.set`. |
 | `policy.ts` | `createPolicy({settings, trust, messages})`: the gate, an adapter over the trust engine. It builds a `TrustRequest`, runs `decide`, applies the rate guard and logs the decision. A `deny` becomes the call's error, and a rate-guard trip a `trust` notice. Without a trust store it is W2's: consequential calls ask, and prompts too when `confirmPrompts` is on. |
 | `trust/rules.ts` | Rules in Claude Code's syntax (`assistant:write_note`, `assistant:answer_choice(question)`, `Bash(npm test:*)`, `Edit(src/**)`, `WebFetch(domain:x)`): `parseRule`, `matches`, `evaluate` (deny > ask > allow, global plus the call's project). |
@@ -77,6 +77,8 @@ D2, D4, P1, P2, M2, A5, A7, R1, R2, V1 to V5 and X1.
 | `tools/screenshot.ts` | V3: `screenshot` (downscaled PNG as image blocks, with the monitor list) and `save_screenshot`. |
 | `tools/readAloud.ts` | V3: `read_aloud` resolves a source (a session's reply, a note, a summary, text) and hands it to the reader in `verbatim`, `narrate` or `summary` mode. |
 | `tools/quiet.ts` | V5: `set_quiet`, Do Not Disturb and the Speak switch by voice or text. |
+| `core.ts` | Core memory (W4): `memory/core.md` in the workspace, four sections (`CORE_SECTIONS`: About you, Preferences, Standing instructions, Names & nicknames) of one-line bullets. `addFact` / `removeFact` (the fact named, else the one fact containing the words; several is ambiguous and removes nothing), `coreText` (the `<core_memory>` block, null without facts; it says a standing instruction never counts as `grantedBy`), `createCoreHost` over `assistant_core_read` / `assistant_core_write`. Capped at `CORE_MAX_CHARS` (8000, ~2k tokens). |
+| `tools/memory.ts` | W4: `remember_core(section, fact)` and `forget(fact)`, both reversible and loaded (not deferred). Each edit is made on the file as read and written over that text; a save of yours in between makes it read again and redo the edit once. Each leaves a `memory` chip with the diff and an undo. |
 | `tools/testConfirm.ts` | `test_confirm`, a consequential tool that does nothing, for trying the confirmation card. Registered in dev builds only. |
 | `mcp.ts` / `tools/mcp.ts` | External MCP servers (X1), from the settings' `mcpServers` (default: Quest Log at `http://127.0.0.1:7437/mcp`, no token). `createMcpHost(mcpRequest)` caches a server's `tools/list` for 5 minutes and turns a `tools/call` result into text. The tools are fixed, so a server that's down or changes never touches the cached prefix: `mcp_tools` (read: the servers, or one server's tools with their schemas and `readOnly`), `mcp_read` (read: only the tools named in the server's `readTools`), `mcp_call` (consequential: everything else; card summary `server: tool {args}`, specifier `server:tool` so a rule like `assistant:mcp_call(quest_log:create_entry)` can allow one tool, and `grantedBy`). Results come back in `<mcp_result … untrusted>`. The drawer's settings have an on/off and the URL per server. |
 | `google.ts` | Duck's `GoogleHost`: `search`, `read`, `cells`, `exportSheet` (prepares the workspace first), `draft` (into the `DRAFT_FOLDER`, "Duck drafts") and `drafts` (a month's), over the `assistant_sheet_*` commands. `isGoogleExpired` / `googleErrorText` read the backend's `google_expired:` errors. |
@@ -105,7 +107,7 @@ prompt's safety rules cover them.
 | `budget.rs` | Limits, month-to-date spend, and the cap rule (at the cap only Haiku with a purpose other than `thread` passes). |
 | `threads.rs` | Threads, append-only messages and parked batches in `duck.db`; `delete` removes a thread with its messages and batches in one transaction. |
 | `summaries.rs` | The last summary per session (W3), JSON in `meta` under `assistant_summary:<instance>`. |
-| `workspace.rs` | Duck's workspace (`prepare`, its `CLAUDE.md`, a `.gitignore` line for `data/`), task folders (`new_task`, `result`, both only under `tasks/`), the workers' registration (`register`: a settings file with the allow list in app data, and a `worker_sessions` row in the main DB) and `launch_args` for `pty_spawn`; the `assistant_tasks` records. |
+| `workspace.rs` | Duck's workspace (`prepare`, its `CLAUDE.md`, a `.gitignore` line for `data/`), task folders (`new_task`, `result`, both only under `tasks/`), the workers' registration (`register`: a settings file with the allow list in app data, and a `worker_sessions` row in the main DB) and `launch_args` for `pty_spawn`; the `assistant_tasks` records; the core memory (W4: `read_core`, and `write_core`, which refuses with "stale:" unless the file is still the text it was read as). |
 | `headless.rs` | Headless workers (D4): a worker session as `claude -p` over stream-json both ways. Prompts and interrupts are messages, permission requests are answered as data (racing the `PermissionRequest` hook, the first answer winning); otherwise it is an ordinary session to the status engine, summaries, the trust watcher and the transcript view. |
 | `autopilot.rs` | Autopilot records (P1): one JSON row per session in `assistant_autopilots`, with its capped step log. |
 | `replay.rs` | `scan(dir, days, max)`: the tool calls in the transcripts touched in the window, each with its outcome (`ran`, `rejected`, `denied`, `error`, `none`), the conversation's first prompt and the latest one before it, and the permission mode. Behind `assistant_replay_calls`, on a worker thread. |
@@ -120,11 +122,12 @@ prompt's safety rules cover them.
 | File | What it is |
 |---|---|
 | `duckState.ts` | The desktop's one subscription to the protocol, an external store shared by the button and the drawer: threads, the open thread, loaded messages, streaming text, turn states, locally queued messages, confirmations, spend. Actions (`sendMessage`, `stopTurn`, `answer`, `openThread`, …) only send protocol messages. Persists `assistantDrawer` prefs (width, open thread, interrupt). |
-| `view.ts` | `toItems(messages)`: stored messages → display items (user text, reply text, a tool chip with its result attached, notices; thinking and system messages hidden). `sessionLink()` reads `#session/<id>` links. |
+| `view.ts` | `toItems(messages)`: stored messages → display items (user text, reply text, a tool chip with its result attached, edit chips for notes, the toolbar and the core memory, notices; thinking and system messages hidden). `sessionLink()` reads `#session/<id>` links. |
 | `DuckButton.tsx` | The title-bar button ("D.U.C.K.", the icon beside it): toggles the drawer, the acronym tooltip, a confirmation-count badge, an amber/red tint past the soft limit/cap, ⏸ while trust is paused. |
 | `TrustViews.tsx` | `TrustPanel` (kill switch, rules, project modes, the floor with a typed confirmation) and `DecisionsPanel` (the log with make-a-rule / always-ask, the rule from `suggestRule`; and the replay of the past week with its report). Opened from the settings popover; they take the thread's place. |
 | `Drawer.tsx` | The drawer: header (thread list, new, the trust pill that is the kill switch, settings, close), thread view (markdown replies, tool chips, queued bubbles), confirmation cards, spend line, composer (Enter / Shift+Enter / Esc, "think hard" = effort `high` for one message). Always mounted and only hidden, so the thread and scroll survive closing. |
-| `DrawerSettings.tsx` | Queue-or-interrupt, and "start at login, minimized to the tray" (`@tauri-apps/plugin-autostart`; disabled in dev builds). |
+| `DrawerSettings.tsx` | Queue-or-interrupt, and "start at login, minimized to the tray" (`@tauri-apps/plugin-autostart`; disabled in dev builds); the workers' settings, with "Edit core.md" (W4). |
+| `openCore.ts` | `openCoreMemory(workspace)` (W4): prepares the workspace, makes `core.md` with its empty sections if missing, and opens it in the "Duck" project's editor. |
 | `TasksView.tsx` | The Tasks view (D2): worker tasks newest first, with headline, cost for an API worker, and ways on (open `result.md`, save to notes, open the console, go to the thread). |
 | `OverviewView.tsx` | Every thread at a glance (A5): what each does, its news since you looked, its autopilots and tasks; no model call. |
 | `AnnounceSettings.tsx` / `SpeechSettings.tsx` / `VoiceSettings.tsx` | Settings tabs for announcements (V5), spoken replies (V2: engine, voices, rate, Chirp fallback, downloads) and voice input (V1, V4: the key, microphone, speech-to-text, conversation mode, talking over Duck). |
@@ -201,6 +204,9 @@ prompt's safety rules cover them.
 - `meta` `assistant_summary:<instance>`: a session's last summary (W3).
 - A thread's compactions (A6) are `notice` rows in `assistant_messages`, so there is no
   table for them.
+- The core memory (W4) isn't in `duck.db`: it's `memory/core.md` in Duck's workspace, a
+  file you edit, and each thread keeps the copy it started with in its first system
+  message.
 
 The main `workbench.db` holds `worker_sessions (instance_id, effort, permission_mode,
 strict_mcp, add_dir)`, which `pty_spawn` reads at each launch.
@@ -267,6 +273,15 @@ every message up to `through` and puts the summary (`compactedText`, in
 `<thread_summary>`) in front of the first kept one. The stored messages stay; the
 drawer draws the line at the cut. A parked turn compacts once answered; a stop
 drops it; a failure is an error notice.
+
+**Core memory** (step W4): a new thread's first message reads `core.md` (`deps.core`)
+and, when it has facts, puts `coreText` first in the system message that goes with that
+message (with the voice note, the brief, the effort). The system prompt stays the same,
+and the thread's prefix keeps that copy for its life: a fact saved mid-thread reaches
+the threads started after it, and this one through the tool's result. A read that fails
+leaves the block out. After a compaction, `toApiMessages` puts the dropped block back
+in front of the summary (`droppedCore`). In the drawer, settings → "Edit core.md" opens
+the file in the workspace's "Duck" project editor (`openCore.ts`), making it first.
 
 **Deleting a thread** (`deleteThread`): refused while a reply runs (stop it first). A
 parked thread is deleted with its batch, so its confirmations vanish; its queue is

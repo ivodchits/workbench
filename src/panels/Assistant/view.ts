@@ -3,16 +3,17 @@
 // the tool results (which travel in the next user message) are attached to their
 // chips; thinking and the mid-conversation system messages are not shown. A
 // Workbench event (W2) is a line of its own, not a bubble of yours, and a note or
-// a toolbar (W5) Duck changed is a chip with its diff.
+// a toolbar (W5) or the core memory (W4) Duck changed is a chip with its diff.
 
 import type { StoredMessage } from "../../ipc/assistant";
-import type { NoteEdit, Notice, PluginsEdit } from "../../assistant/protocol";
+import type { MemoryEdit, NoteEdit, Notice, PluginsEdit } from "../../assistant/protocol";
 
 export type Item =
   | { kind: "user"; key: string; text: string; source: string }
   | { kind: "event"; key: string; text: string }
   | { kind: "note"; key: string; text: string; edit: NoteEdit }
   | { kind: "plugins"; key: string; text: string; edit: PluginsEdit }
+  | { kind: "memory"; key: string; text: string; edit: MemoryEdit }
   /** A worker task started here (D1): its card shows the task's live state. */
   | { kind: "task"; key: string; text: string; taskId: string }
   | { kind: "reply"; key: string; text: string }
@@ -93,6 +94,8 @@ export function toItems(messages: readonly StoredMessage[]): Item[] {
         items.push({ kind: "note", key, text: n.text, edit: n.note });
       else if (n.kind === "plugins" && n.plugins)
         items.push({ kind: "plugins", key, text: n.text, edit: n.plugins });
+      else if (n.kind === "memory" && n.memory)
+        items.push({ kind: "memory", key, text: n.text, edit: n.memory });
       else if (n.kind === "task" && n.task)
         items.push({ kind: "task", key, text: n.text, taskId: n.task.id });
       else items.push({ kind: "notice", key, notice: n });

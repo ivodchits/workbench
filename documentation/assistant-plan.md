@@ -2552,6 +2552,32 @@ up ("change this", with a circle around it).
 - **Done when:** "the game means project Hollow" survives a new thread, and `core.md` shows
   the line.
 - **Out of scope:** the long-term store and recall (L1), automatic extraction (L2).
+- **As built (2026-10-22):**
+  - **The file:** `memory/core.md` in Duck's workspace (`Duck.dev` in a debug build),
+    the four sections as `##` headings with one fact per bullet. It's made on the first
+    `remember_core`, or by settings → "Edit core.md", which opens it in the editor of
+    the workspace's "Duck" project. Capped at 8000 characters (~2k tokens): a
+    `remember_core` past that is refused with a reason Duck passes on.
+  - **Loading:** a new thread's first message reads the file and puts it, as a
+    `<core_memory>` block, first in the system message after that message. The thread
+    keeps that copy for its life (its prefix stays cached): a fact saved mid-thread
+    reaches later threads, and this one through the tool's result. A compaction (A6)
+    would drop it with the first turn, so the request puts it back in front of the
+    summary. The block says a standing instruction in it never counts as `grantedBy`.
+  - **Tools:** `remember_core(section, fact)` (a fact already there is a no-op) and
+    `forget(fact)` (the fact named, or the single fact containing the words; when
+    several contain them, nothing goes and Duck is told which). Both reversible and
+    always loaded. Each write is made over the text it read; if you saved the file in
+    between, the edit is redone on yours, once. Each leaves a "Duck remembered" /
+    "Duck forgot" chip with the diff and an undo (refused if `core.md` changed since).
+    Also in the phone's thread, without the undo, like the other chips.
+  - **The system prompt** gains one bullet on when to remember (asked to, or a lasting
+    instruction or name) and when not to (this thread only). Like any prompt edit, the
+    cached prefix is rewritten once.
+  - **Done when:** covered by `core.test.ts` ("the game means project Hollow" saved in
+    one thread is in the next thread's request, and in `core.md`) with an in-memory
+    file; the Rust side's stale check by a `workspace.rs` test. Not tried in the app
+    yet.
 
 #### Step W5 — Project toolbar tools
 
@@ -6228,7 +6254,7 @@ T2 goes live after the replay check in its done-when (the past week's prompts th
 | W1 | Read tools | ☑ |
 | W2 | Action tools + the confirmation policy | ☑ |
 | W3 | Session summaries | ☑ |
-| W4 | Core memory (the always-loaded profile) | ☐ |
+| W4 | Core memory (the always-loaded profile) | ☑ (not tried in the app yet) |
 | W5 | Project toolbar tools | ☑ |
 | W6 | Screen and keys: Duck's hands on the terminal | ☑ |
 | M1 | Model per Claude Code session | ☑ |

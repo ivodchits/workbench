@@ -70,6 +70,8 @@ import { MCP_TOOLS } from "./tools/mcp";
 import { MORNING_TOOLS } from "./tools/morning";
 import { SHEET_TOOLS } from "./tools/sheets";
 import { PREP_TOOLS } from "./tools/prep";
+import { MEMORY_TOOLS } from "./tools/memory";
+import { createCoreHost } from "./core";
 import { createMcpHost } from "./mcp";
 import { createGoogleHost } from "./google";
 import { SUMMARY_TOOLS } from "./tools/summaries";
@@ -117,6 +119,7 @@ const TOOLS = [
   ...MORNING_TOOLS,
   ...SHEET_TOOLS,
   ...PREP_TOOLS,
+  ...MEMORY_TOOLS,
   ...(import.meta.env.DEV ? [testConfirm, testAnnounce] : []),
 ];
 
@@ -573,6 +576,7 @@ export function initAssistant(): Promise<void> {
       haiku: (input, signal) => oneShot("haiku_task", input, { signal }),
       mcp: createMcpHost(mcpRequest),
       google: createGoogleHost({ workspacePrepare, sheetExport, sheetCells, sheetDraft, sheetDrafts, sheetSearch, sheetRead }),
+      core: createCoreHost(() => settings.get().workspace),
       eventLevel: (threadId, level) => levels.set(threadId, level),
       store: s,
       registry: createRegistry(TOOLS, { deferred: DEFERRED }),

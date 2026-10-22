@@ -92,6 +92,15 @@ export interface NoteEdit {
   revision: string | null;
 }
 
+/** Duck's edit of its core memory (step W4), for the thread's chip: the diff of
+ *  `memory/core.md`, and an undo over the text Duck left. */
+export interface MemoryEdit {
+  path: string;
+  /** null: the edit made the file. */
+  before: string | null;
+  after: string;
+}
+
 /** The payload of a `notice` message: something the thread shows but the model
  *  never sees (a stopped turn, the budget cap, a refusal, an error). */
 export interface Notice {
@@ -121,12 +130,16 @@ export interface Notice {
     /** The thread moved to Haiku past the budget's soft limit (M2). */
     | "budget"
     /** The older turns were summarized for the model (A6). */
-    | "compacted";
+    | "compacted"
+    /** Duck edited its core memory (W4). */
+    | "memory";
   text: string;
   /** `note` only. */
   note?: NoteEdit;
   /** `plugins` only. */
   plugins?: PluginsEdit;
+  /** `memory` only. */
+  memory?: MemoryEdit;
   /** `task` only. */
   task?: { id: string };
   /** `compacted` only: Duck's summary, which the requests send in place of every

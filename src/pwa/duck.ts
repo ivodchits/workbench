@@ -824,6 +824,8 @@ function itemView(it: Item, active: boolean): HTMLElement {
         { label: "plugins.json", before: it.edit.before ?? "", after: it.edit.after },
         ...it.edit.scripts.map((s) => ({ label: `scripts/${s.name}`, before: s.before ?? "", after: s.after })),
       ]);
+    case "memory":
+      return editChip(it.text, "core memory", [{ label: "core.md", before: it.edit.before ?? "", after: it.edit.after }]);
     case "task":
       return taskCard(it.taskId, it.text);
     case "notice":

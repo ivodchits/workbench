@@ -32,8 +32,11 @@ import { formatAgo } from "../../util/format";
 import { renderMarkdown } from "../Editor/markdown";
 import "../../theme/markdown.css";
 import "../../theme/assistant.css";
+import { coreWorkspace, EMPTY_CORE } from "../../assistant/core";
+import { coreWrite } from "../../ipc/assistant";
 import type {
   ConfirmRequest,
+  MemoryEdit,
   NoteEdit,
   Notice,
   PluginsEdit,
@@ -859,6 +862,16 @@ function ItemView({ item, active }: { item: Item; active: boolean }) {
           staleText="can't undo: the plugin file changed since"
         />
       );
+    case "memory":
+      return (
+        <EditChip
+          text={item.text}
+          project="core memory"
+          files={[{ label: "core.md", before: item.edit.before ?? "", after: item.edit.after }]}
+          undo={() => undoMemoryEdit(item.edit)}
+          staleText="can't undo: core.md changed since"
+        />
+      );
     case "task":
       return <TaskCard taskId={item.taskId} text={item.text} />;
     case "notice":
@@ -1119,6 +1132,13 @@ async function undoNoteEdit(e: NoteEdit): Promise<string> {
     return "removed";
   }
   await notesWrite(e.projectId, e.name, e.before, e.revision);
+  return "undone";
+}
+
+/** Put the core memory back as it was before Duck's edit (W4), if nobody changed
+ *  it since. */
+async function undoMemoryEdit(e: MemoryEdit): Promise<string> {
+  await coreWrite(coreWorkspace(e.path), e.before ?? EMPTY_CORE, e.after);
   return "undone";
 }
 

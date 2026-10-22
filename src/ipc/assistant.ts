@@ -213,6 +213,17 @@ export const taskResult = (workspace: string, folder: string): Promise<TaskResul
 export const taskWriteResult = (workspace: string, folder: string, md: string, json: string): Promise<void> =>
   invoke("assistant_task_write_result", { workspace, folder, md, json });
 
+// ── core memory (step W4) ──
+
+/** `memory/core.md` in the workspace (`dir`, else the default): its path, and its
+ *  text (null: no file yet). */
+export const coreRead = (dir: string | null): Promise<[string, string | null]> =>
+  invoke("assistant_core_read", { workspace: dir });
+/** Write the core memory, only over the text it was read as (`expected`); a write
+ *  over a newer edit fails with "stale: …". */
+export const coreWrite = (dir: string | null, text: string, expected: string | null): Promise<void> =>
+  invoke("assistant_core_write", { workspace: dir, text, expected });
+
 /** How a worker launches: its task folder, effort, and kind (`browser` keeps your
  *  MCP servers, `code` works in a project in its own mode). */
 export interface WorkerSpec {

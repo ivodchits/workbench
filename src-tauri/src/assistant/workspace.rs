@@ -15,6 +15,8 @@
 //!   rewrite its own permissions) and, unless it's a browser or code task,
 //!   `--strict-mcp-config` with no servers (each one would start its own Firefox
 //!   bridge, ~140 MB).
+//! - **Core memory (W4).** `memory/core.md`, Duck's profile of you: [`read_core`], and
+//!   [`write_core`], which writes only over the text the engine read.
 //!
 //! The task records themselves (`assistant_tasks`) live in `duck.db`, as JSON the
 //! engine writes; this module only stores and lists them.
@@ -242,6 +244,46 @@ pub fn write_result(dir: &Path, folder: &str, md: &str, json: &str) -> Result<()
     std::fs::write(f.join(RESULT_JSON), json).map_err(|e| format!("cannot write {RESULT_JSON}: {e}"))
 }
 
+// ── core memory (step W4) ──
+
+/// Duck's always-loaded profile: `memory/core.md` in the workspace. The engine
+/// edits it with `remember_core` and `forget`; you edit it in the editor.
+const MEMORY: &str = "memory";
+const CORE: &str = "core.md";
+/// Far above the profile's ~2k tokens: a cap on what one read or write moves.
+const MAX_CORE_BYTES: usize = 64 * 1024;
+
+pub fn core_path(dir: &Path) -> PathBuf {
+    dir.join(MEMORY).join(CORE)
+}
+
+/// `core.md`'s text, or `None` when there is none yet.
+pub fn read_core(dir: &Path) -> Result<Option<String>, String> {
+    let path = core_path(dir);
+    match std::fs::read(&path) {
+        Ok(bytes) if bytes.len() > MAX_CORE_BYTES => Err(format!("{} is larger than 64 KB", path.display())),
+        Ok(bytes) => Ok(Some(String::from_utf8_lossy(&bytes).into_owned())),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(format!("cannot read {}: {e}", path.display())),
+    }
+}
+
+/// Write `core.md`, but only over the text it was read as (`expected`, `None`:
+/// there was no file), so an edit you saved since is never overwritten.
+pub fn write_core(dir: &Path, text: &str, expected: Option<&str>) -> Result<(), String> {
+    if text.len() > MAX_CORE_BYTES {
+        return Err("core memory is larger than 64 KB".into());
+    }
+    if read_core(dir)?.as_deref() != expected {
+        return Err("stale: core.md changed since it was read".into());
+    }
+    let path = core_path(dir);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| format!("cannot create {}: {e}", parent.display()))?;
+    }
+    std::fs::write(&path, text).map_err(|e| format!("cannot write {}: {e}", path.display()))
+}
+
 // ── the worker's launch ──
 
 /// What a worker is, as Duck registers it.
@@ -466,6 +508,25 @@ mod tests {
         let r = result(&ws, &t.to_string_lossy()).unwrap();
         assert_eq!((r.md.as_deref(), r.json.as_deref()), (Some("# done"), Some(r#"{"status":"done"}"#)));
         assert!(write_result(&ws, &ws.join(TASKS).to_string_lossy(), "x", "{}").is_err());
+        std::fs::remove_dir_all(ws).unwrap();
+    }
+
+    #[test]
+    fn core_memory_is_written_only_over_what_was_read() {
+        let ws = scratch("core");
+        assert_eq!(read_core(&ws).unwrap(), None);
+        write_core(&ws, "# Core
+", None).unwrap();
+        assert_eq!(read_core(&ws).unwrap().as_deref(), Some("# Core
+"));
+        assert!(write_core(&ws, "x", None).unwrap_err().starts_with("stale"));
+        assert!(write_core(&ws, "x", Some("# Old
+")).unwrap_err().starts_with("stale"));
+        write_core(&ws, "# Core
+- a
+", Some("# Core
+")).unwrap();
+        assert!(core_path(&ws).ends_with("memory/core.md"));
         std::fs::remove_dir_all(ws).unwrap();
     }
 

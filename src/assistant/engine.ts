@@ -33,6 +33,7 @@ import Anthropic from "@anthropic-ai/sdk";
 import type { StoredMessage, ThreadRow } from "../ipc/assistant";
 import { capMessage, errorMessage, purpose, THREAD_PURPOSE } from "./client";
 import type { WorkbenchPort } from "./port";
+import { CORE_OPEN, coreText, type CoreHost } from "./core";
 import { COMPACT_REQUEST, compactedText, SYSTEM_PROMPT, VOICE_NOTE } from "./prompt";
 import { MODELS, route, type Brain } from "./routing";
 import { quotedFromLatest } from "./trust/mandate";
@@ -157,6 +158,9 @@ export interface EngineDeps {
   mcp?: McpHost;
   /** The morning routine's Google sheet, for `morning_briefing`. */
   google?: GoogleHost;
+  /** Duck's core memory (step W4): read into each new thread, edited by
+   *  `remember_core` and `forget`. */
+  core?: CoreHost;
   /** A tool's follow-up event (`later`) is about to be posted, at this level of
    *  news (V5). */
   eventLevel?: (threadId: string, level: Level) => void;
@@ -172,6 +176,16 @@ export interface EngineDeps {
   /** Whether the API budget is past its soft limit (step M2): turns then run on
    *  Haiku. Not degraded when absent or when it fails. */
   degraded?: () => Promise<boolean>;
+}
+
+/** The core memory's block for a new thread, or null (none, or unreadable). */
+async function readCore(core: CoreHost): Promise<string | null> {
+  try {
+    return coreText((await core.read()).text);
+  } catch (e) {
+    console.warn("duck: the core memory couldn't be read", e);
+    return null;
+  }
 }
 
 /** A follow-up a tool posts (`ToolContext.later`): marked as Workbench's, so the
@@ -247,6 +261,19 @@ function hasText(m: StoredMessage): boolean {
   return typeof m.content === "string" || asBlocks(m.content).some((b) => b.type === "text");
 }
 
+/** The latest core memory block (step W4) in a system message at or before
+ *  `through`: what a compaction cut away. */
+function droppedCore(history: readonly StoredMessage[], through: number): string | null {
+  let found: string | null = null;
+  for (const m of history) {
+    if (m.seq > through) break;
+    if (m.role !== "system") continue;
+    for (const b of asBlocks((m.content as SystemContent).content))
+      if (b.type === "text" && b.text.startsWith(CORE_OPEN)) found = b.text;
+  }
+  return found;
+}
+
 /**
  * The API's view of a thread: notices dropped, and a mid-conversation system
  * message dropped when what follows it would make the request invalid (it must be
@@ -291,10 +318,15 @@ export function toApiMessages(history: readonly StoredMessage[]): ApiMessage[] {
   });
   if (c) {
     // The cut is always at the start of a turn, so what follows is your message:
-    // the summary goes in front of it, in the same user turn.
-    const head = { type: "text" as const, text: compactedText(c.summary) };
-    if (out[0]?.role === "user") out[0] = { ...out[0], content: [head, ...asBlocks(out[0].content)] };
-    else out.unshift({ role: "user", content: [head] });
+    // the summary goes in front of it, in the same user turn, after the core
+    // memory the thread started with (step W4), which the cut would drop.
+    const core = droppedCore(history, c.through);
+    const head = [
+      ...(core ? [{ type: "text" as const, text: core }] : []),
+      { type: "text" as const, text: compactedText(c.summary) },
+    ];
+    if (out[0]?.role === "user") out[0] = { ...out[0], content: [...head, ...asBlocks(out[0].content)] };
+    else out.unshift({ role: "user", content: head });
   }
   return out;
 }
@@ -652,11 +684,15 @@ export function createEngine(deps: EngineDeps): Engine {
       // A spoken message gets a spoken-style answer (step V2). One system message
       // carries both, since one must be followed by the reply.
       const spoken = input.source === "voice" || input.source === "phone-voice";
-      if (effortChanged || spoken || input.brief) {
+      // A new thread starts with the core memory (step W4); a read that fails
+      // leaves it out rather than holding the turn.
+      const core = first && deps.core ? await readCore(deps.core) : null;
+      if (effortChanged || spoken || input.brief || core) {
         opening.push({
           role: "system",
           content: {
             content: [
+              ...(core ? [{ type: "text", text: core }] : []),
               ...(spoken ? [{ type: "text", text: VOICE_NOTE }] : []),
               ...(input.brief ? [{ type: "text", text: input.brief }] : []),
             ],
@@ -1055,6 +1091,7 @@ export function createEngine(deps: EngineDeps): Engine {
           haiku: deps.haiku ?? null,
           mcp: deps.mcp ?? null,
           google: deps.google ?? null,
+          core: deps.core ?? null,
           request: lastUserText(store.loaded(threadId)),
           startThread: (words, opts) => split(threadId, words, opts),
           threads: threadMoves(threadId),
