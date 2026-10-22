@@ -380,7 +380,16 @@ pub fn voice_configure(app: AppHandle, state: State<'_, VoiceState>, config: Voi
                 ShortcutState::Pressed => key_down(app),
                 ShortcutState::Released => key_up(app),
             })
-            .map_err(|e| format!("{k} can't be used as the push-to-talk key: {e}"))?;
+            .map_err(|e| {
+                let e = e.to_string();
+                // The OS gives a key to one process: most often the other Workbench
+                // build (dev or installed) has it.
+                if e.starts_with("HotKey already registered") {
+                    format!("{k} is taken by another app (another Workbench build?); pick another push-to-talk key")
+                } else {
+                    format!("{k} can't be used as the push-to-talk key: {e}")
+                }
+            })?;
         *current = Some(k);
     }
     Ok(())

@@ -231,7 +231,11 @@ pub fn install(app: &AppHandle, port: u16) -> Result<(), String> {
             let _ = db.meta_set(CHAINED_KEY, cmd);
         }
     }
-    let chained = db.meta_get(CHAINED_KEY).ok().flatten();
+    // A dev build chains the release's script rather than its foreign command, so
+    // the installed release keeps getting every POST (its usage meter, Duck's context
+    // fill) while `tauri dev` holds the key, and still does if dev is killed before
+    // `uninstall` runs. The release's script chains the foreign command itself.
+    let chained = release_command()?.or_else(|| db.meta_get(CHAINED_KEY).ok().flatten());
 
     // Write the managed script (always overwritten — its content is deterministic for
     // a given port + chained command).
@@ -270,12 +274,7 @@ pub fn uninstall(app: &AppHandle) -> Result<(), String> {
         return Ok(());
     }
 
-    let release = script_path()?.with_file_name("workbench-statusline.mjs");
-    let command = if cfg!(debug_assertions) && release.exists() {
-        Some(format!("node \"{}\"", release.display()))
-    } else {
-        app.state::<Db>().meta_get(CHAINED_KEY).ok().flatten()
-    };
+    let command = release_command()?.or_else(|| app.state::<Db>().meta_get(CHAINED_KEY).ok().flatten());
     let root = settings
         .as_object_mut()
         .ok_or("settings root is not an object")?;
@@ -304,6 +303,16 @@ fn render_script(url: &str, chained: Option<&str>) -> String {
 /// release script names), so we never chain our own command into itself.
 fn is_ours(command: &str) -> bool {
     command.contains("workbench-statusline")
+}
+
+/// In a dev build, the command that runs the installed release's script, when there
+/// is one; always `None` in a release.
+fn release_command() -> Result<Option<String>, String> {
+    if !cfg!(debug_assertions) {
+        return Ok(None);
+    }
+    let release = script_path()?.with_file_name("workbench-statusline.mjs");
+    Ok(release.exists().then(|| format!("node \"{}\"", release.display())))
 }
 
 /// `~/.claude/<script>`.
