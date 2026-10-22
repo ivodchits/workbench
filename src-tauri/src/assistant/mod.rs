@@ -6,7 +6,7 @@
 //! kill switch and decision log ([`trust`]). Step D1: the worker sessions' workspace,
 //! task folders, launch flags and task records ([`workspace`]). Step D4: headless
 //! workers over stream-json ([`headless`]). Step P1: plan autopilot records
-//! ([`autopilot`]).
+//! ([`autopilot`]). Step X1: a client for external MCP servers ([`mcp_client`]).
 //!
 //! The webview never holds the key. It asks [`assistant_proxy_info`] for the proxy's
 //! base URL and a per-launch token, and calls the API through the hook server with
@@ -18,6 +18,7 @@ mod budget;
 mod db;
 pub mod headless;
 mod key;
+pub mod mcp_client;
 mod proxy;
 mod summaries;
 pub mod replay;
@@ -62,6 +63,7 @@ pub fn init(app: &AppHandle, data_dir: &std::path::Path) -> Result<(), String> {
         .connect_timeout(Duration::from_secs(10))
         .build()
         .map_err(|e| format!("building the HTTP client: {e}"))?;
+    app.manage(mcp_client::McpSessions::default());
     app.manage(Arc::new(Assistant {
         app: app.clone(),
         db,

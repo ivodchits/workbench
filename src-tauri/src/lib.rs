@@ -211,6 +211,7 @@ pub fn run() {
             assistant::assistant_autopilot_put,
             assistant::assistant_autopilot_list,
             assistant::assistant_autopilot_delete,
+            assistant::mcp_client::assistant_mcp_request,
             statusline::session_context,
             voice::voice_status,
             voice::voice_prepare,

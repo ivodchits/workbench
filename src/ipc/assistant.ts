@@ -278,3 +278,15 @@ export async function testCall(): Promise<
     return { ok: false, error: String(e) };
   }
 }
+
+/** One JSON-RPC request to an external MCP server (step X1), made by the backend:
+ *  its `result`, or a rejection with the error's text. `tokenEnv` names the
+ *  environment variable that holds the server's bearer token, if it needs one. */
+export const mcpRequest = (
+  url: string,
+  tokenEnv: string | null,
+  method: string,
+  params: Record<string, unknown>,
+  timeoutMs?: number,
+): Promise<unknown> =>
+  invoke("assistant_mcp_request", { url, tokenEnv, method, params, timeoutMs });

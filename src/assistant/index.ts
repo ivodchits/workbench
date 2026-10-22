@@ -16,6 +16,7 @@ import { homeDir } from "@tauri-apps/api/path";
 
 import {
   getSpend,
+  mcpRequest,
   onUsage,
   replayCalls,
   type Spend,
@@ -58,6 +59,8 @@ import { SCREEN_TOOLS } from "./tools/screen";
 import { READ_ALOUD_TOOLS, type ReaderHost } from "./tools/readAloud";
 import { SCREENSHOT_TOOLS, type ScreenHost } from "./tools/screenshot";
 import { QUIET_TOOLS, type QuietHost } from "./tools/quiet";
+import { MCP_TOOLS } from "./tools/mcp";
+import { createMcpHost } from "./mcp";
 import { SUMMARY_TOOLS } from "./tools/summaries";
 import { createRegistry } from "./tools/registry";
 import { TASK_TOOLS } from "./tools/tasks";
@@ -99,6 +102,7 @@ const TOOLS = [
   ...AUTOPILOT_TOOLS,
   ...THREAD_TOOLS,
   ...HAIKU_TOOLS,
+  ...MCP_TOOLS,
   ...(import.meta.env.DEV ? [testConfirm, testAnnounce] : []),
 ];
 
@@ -545,6 +549,7 @@ export function initAssistant(): Promise<void> {
       screen: screenHost,
       quiet: quietHost,
       haiku: (input, signal) => oneShot("haiku_task", input, { signal }),
+      mcp: createMcpHost(mcpRequest),
       eventLevel: (threadId, level) => levels.set(threadId, level),
       store: s,
       registry: createRegistry(TOOLS, { deferred: DEFERRED }),

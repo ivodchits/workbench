@@ -56,6 +56,7 @@ import type { AutopilotManager } from "./autopilot";
 import type { ReaderHost } from "./tools/readAloud";
 import type { ScreenHost } from "./tools/screenshot";
 import type { QuietHost } from "./tools/quiet";
+import type { McpHost } from "./mcp";
 import type { ThreadMoves } from "./tools/threads";
 import type { HaikuCall } from "./tools/haikuTask";
 import type { Level } from "./announce";
@@ -144,6 +145,8 @@ export interface EngineDeps {
   quiet?: QuietHost;
   /** One Haiku call, for `haiku_task` (step M2). */
   haiku?: HaikuCall;
+  /** External MCP servers (step X1), for the `mcp_*` tools. */
+  mcp?: McpHost;
   /** A tool's follow-up event (`later`) is about to be posted, at this level of
    *  news (V5). */
   eventLevel?: (threadId: string, level: Level) => void;
@@ -896,6 +899,7 @@ export function createEngine(deps: EngineDeps): Engine {
           screen: deps.screen ?? null,
           quiet: deps.quiet ?? null,
           haiku: deps.haiku ?? null,
+          mcp: deps.mcp ?? null,
           request: lastUserText(store.loaded(threadId)),
           startThread: (words, opts) => split(threadId, words, opts),
           threads: threadMoves(threadId),

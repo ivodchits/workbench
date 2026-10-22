@@ -16,6 +16,45 @@ export interface TierSpec {
   effort: (typeof EFFORTS)[number];
 }
 
+/** An external MCP server Duck may use (step X1), over Streamable HTTP. */
+export interface McpServerSpec {
+  /** What Duck calls it in `mcp_*` calls: lowercase, digits, `_` and `-`. */
+  name: string;
+  url: string;
+  enabled: boolean;
+  /** The environment variable holding its bearer token; null when it needs none.
+   *  The token itself is never stored here. */
+  tokenEnv: string | null;
+  /** The tools that only read, which `mcp_read` runs without asking. Every other
+   *  tool goes through `mcp_call`, a consequential call. */
+  readTools: string[];
+}
+
+/** The user's Quest Log desktop app (calendar, agenda, notes): its embedded server
+ *  on loopback, no token, up while the app is open and signed in. */
+export const QUEST_LOG: McpServerSpec = {
+  name: "quest_log",
+  url: "http://127.0.0.1:7437/mcp",
+  enabled: true,
+  tokenEnv: null,
+  readTools: [
+    "get_agenda",
+    "get_calendar_occurrences",
+    "list_entries",
+    "get_entry",
+    "search",
+    "list_notes",
+    "get_note",
+    "list_projects",
+    "get_project_overview",
+    "list_folders",
+    "list_chains",
+    "get_chain",
+    "get_stats",
+    "whoami",
+  ],
+};
+
 export interface DuckSettings {
   /** Ask before every prompt Duck sends to a session. Off = only consequential
    *  actions ask. */
@@ -54,6 +93,8 @@ export interface DuckSettings {
   /** Duck's Do Not Disturb (V5): nothing is spoken until this moment (epoch ms);
    *  null is off. Set from the phone too (`dnd`). */
   dndUntil: number | null;
+  /** External MCP servers (step X1). */
+  mcpServers: McpServerSpec[];
 }
 
 export const DEFAULT_TIERS: Record<Tier, TierSpec> = {
@@ -76,6 +117,7 @@ export const DEFAULT_SETTINGS: DuckSettings = {
   closeFinishedHours: 24,
   announce: DEFAULT_ANNOUNCE,
   dndUntil: null,
+  mcpServers: [QUEST_LOG],
 };
 
 /** Do Not Disturb "until I turn it off". */
@@ -113,6 +155,7 @@ export function cleanSettings(raw: unknown): Partial<DuckSettings> {
   if (r.announce && typeof r.announce === "object") out.announce = cleanAnnounce(r.announce as Record<string, unknown>);
   if (r.workspace === null) out.workspace = null;
   else if (typeof r.workspace === "string") out.workspace = r.workspace.trim() || null;
+  if (Array.isArray(r.mcpServers)) out.mcpServers = cleanMcpServers(r.mcpServers);
   if (r.tiers && typeof r.tiers === "object") {
     const t = r.tiers as Record<string, Partial<TierSpec> | undefined>;
     out.tiers = Object.fromEntries(
@@ -128,6 +171,34 @@ export function cleanSettings(raw: unknown): Partial<DuckSettings> {
         ];
       }),
     ) as Record<Tier, TierSpec>;
+  }
+  return out;
+}
+
+const MCP_NAME = /^[a-z][a-z0-9_-]{0,31}$/;
+const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]{0,63}$/;
+const TOOL_NAME = /^[A-Za-z0-9_.-]{1,128}$/;
+
+/** Servers with a valid name (unique) and an http(s) URL; the rest are dropped. */
+export function cleanMcpServers(raw: unknown[]): McpServerSpec[] {
+  const out: McpServerSpec[] = [];
+  for (const v of raw) {
+    if (!v || typeof v !== "object") continue;
+    const r = v as Record<string, unknown>;
+    const name = typeof r.name === "string" ? r.name.trim() : "";
+    const url = typeof r.url === "string" ? r.url.trim() : "";
+    if (!MCP_NAME.test(name) || out.some((s) => s.name === name)) continue;
+    if (!/^https?:\/\/[^\s]+$/i.test(url)) continue;
+    const env = typeof r.tokenEnv === "string" ? r.tokenEnv.trim() : "";
+    out.push({
+      name,
+      url,
+      enabled: r.enabled !== false,
+      tokenEnv: ENV_NAME.test(env) ? env : null,
+      readTools: Array.isArray(r.readTools)
+        ? [...new Set(r.readTools.filter((t): t is string => typeof t === "string" && TOOL_NAME.test(t)))]
+        : [],
+    });
   }
   return out;
 }
