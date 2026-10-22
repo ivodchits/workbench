@@ -117,11 +117,19 @@ fn on_menu_event(app: &AppHandle, event: tauri::menu::MenuEvent) {
                 eprintln!("[tray] trust: {e}");
             }
         }
-        // Quits the whole app, hidden windows too; `RunEvent::Exit` in `lib.rs`
-        // does the cleanup, as for any other quit.
-        MENU_EXIT => app.exit(0),
+        // Quits the whole app, hidden windows too, in order (`shutdown`).
+        MENU_EXIT => crate::shutdown::exit(app),
         _ => {}
     }
+}
+
+/// Take the icon out of the notification area as the app quits. A process that just
+/// exits leaves it there until the mouse passes over it. Main thread.
+pub(crate) fn remove_tray(app: &AppHandle) {
+    let Some(state) = app.try_state::<Mutex<TrayState>>() else { return };
+    let Some(icon) = state.lock().ok().and_then(|mut t| t.icon.take()) else { return };
+    let _ = icon.set_visible(false);
+    drop(app.remove_tray_by_id(icon.id()));
 }
 
 /// Tick or clear the tray's kill-switch item (the menu toggles it on its own click;
