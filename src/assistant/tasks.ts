@@ -20,7 +20,8 @@
 //   (`apiWorker.ts`): the same brief and result files, on Duck's credits, its cost on
 //   the card. Code tasks still take a session (an API worker has no files to work
 //   on), with a word to the thread. Past Duck's own API soft limit too, the task
-//   waits until the window that's over resets.
+//   waits until the window that's over resets. Prep made ahead of the day (the
+//   morning routine's `prep_ahead`) never moves to the API: it waits for room.
 // - Headless (step D4, on by default): a session's worker is `claude -p` over
 //   stream-json, with no terminal. Everything above works on it as on a terminal
 //   session: the port routes its prompts, answers and interrupts over the protocol.
@@ -117,6 +118,9 @@ export const Task = z.object({
   answers: z
     .array(z.object({ question: z.string(), answer: z.string(), reason: z.string(), at: z.number() }))
     .default([]),
+  /** Prep made ahead (the morning routine): over the limits it waits for room
+   *  rather than running on Duck's API credits. */
+  prep: z.boolean().default(false),
 });
 export type Task = z.infer<typeof Task>;
 
@@ -177,6 +181,8 @@ export interface RunRequest {
   /** The project a code task works in. */
   projectId?: string;
   mandate?: Mandate;
+  /** Prep ahead of the day: waits over the limits instead of using the API. */
+  prep?: boolean;
 }
 
 /** How often finished tasks are checked for tidying up. */
@@ -385,13 +391,13 @@ export function createTaskManager(deps: TaskDeps): TaskManager {
     }
     if (over.length === 0) return { runner: "session", why: null };
     const why = over.join(" and ");
+    // The latest reset of the windows that are over, but read again within a while.
+    const until = () => Math.max(Math.min(Math.max(...resets), now() + LIMIT_RECHECK_MS), now() + 60_000);
+    if (t.prep) return { until: until(), why: `${why}, and prep waits for room rather than using Duck's API credits` };
     if (t.kind === "code") return { runner: "session", why };
     const spend = await port.spend().catch(() => null);
-    if (spend?.softReached || spend?.capReached) {
-      // The latest reset of the windows that are over, but read again within a while.
-      const until = Math.min(Math.max(...resets), now() + LIMIT_RECHECK_MS);
-      return { until: Math.max(until, now() + 60_000), why: `${why}, and Duck's API budget is past its soft limit` };
-    }
+    if (spend?.softReached || spend?.capReached)
+      return { until: until(), why: `${why}, and Duck's API budget is past its soft limit` };
     return { runner: "api", why };
   }
 
@@ -693,6 +699,7 @@ export function createTaskManager(deps: TaskDeps): TaskManager {
         notBefore: null,
         headless: false,
         answers: [],
+        prep: req.prep === true,
       });
       void pump();
       await starting.get(t.id);
@@ -761,6 +768,7 @@ export function createTaskManager(deps: TaskDeps): TaskManager {
         tier: up,
         projectId: t.projectId ?? undefined,
         mandate: t.mandate ? { text: t.mandate, threadId: t.threadId } : undefined,
+        prep: t.prep,
       });
       if (t.state !== "closed") await this.close(id);
       return next;

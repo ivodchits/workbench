@@ -149,6 +149,16 @@ describe("subscription limits (D2)", () => {
     tasks.dispose();
   });
 
+  it("keeps prep waiting over the limits rather than on the API, even with budget left", async () => {
+    const port = fakePort({ projects: [project({ id: "app" })], limits: limits(20, 85), spend: spend(false) });
+    const { tasks, told } = setup({ port, apiWorker: () => Promise.reject(new Error("not this")) });
+    const t = await tasks.run(req({ kind: "writing", prep: true }));
+    expect(t).toMatchObject({ state: "queued", prep: true, why: expect.stringContaining("prep waits for room") });
+    expect(port.calls.some((c) => c.name === "createSession")).toBe(false);
+    expect(told[0].text).toMatch(/is waiting: the weekly limit is at 85%/);
+    tasks.dispose();
+  });
+
   it("re-runs an API task's follow-up with its previous result", async () => {
     const briefs: string[] = [];
     const port = fakePort({ projects: [project({ id: "app" })], limits: limits(20, 85), spend: spend(false) });
