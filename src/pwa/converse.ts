@@ -3,7 +3,8 @@
 // `voice/conversation.rs`) and answers with `conv.*` frames.
 //
 // - The browser's echo cancellation is on, so you can talk over Duck's voice
-//   playing here.
+//   playing here. On the `shared` echo path (V7) the mic opens in the context
+//   Duck's voice plays in (`stream`'s `shared`), which is kept when it stops.
 // - Audio goes up as binary frames on Duck's socket: 16 kHz int16 while there's
 //   sound (`AUDIO_PCM`), and only a sample count for silence (`AUDIO_GAP`), so a
 //   quiet room costs a few bytes a second rather than 32 KB. The desktop fills a
@@ -100,26 +101,36 @@ export interface Streaming {
   stop(): void;
 }
 
-/** Open the mic and stream it through `send` until stopped. Throws when the mic
- *  is refused or missing. */
-export async function stream(send: (frame: ArrayBuffer) => void): Promise<Streaming> {
+/** The contexts the tap's module is in (it can be added once). */
+const tapped = new WeakSet<BaseAudioContext>();
+
+/** Open the mic and stream it through `send` until stopped, in a context of its
+ *  own or in `shared` (kept open after). Throws when the mic is refused or
+ *  missing. */
+export async function stream(send: (frame: ArrayBuffer) => void, shared?: AudioContext): Promise<Streaming> {
   const media = await navigator.mediaDevices.getUserMedia({
     audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true },
   });
-  const ctx = new AudioContext();
+  const ctx = shared ?? new AudioContext();
+  let nodes: AudioNode[] = [];
   const release = () => {
     media.getTracks().forEach((t) => t.stop());
-    void ctx.close().catch(() => {});
+    for (const n of nodes) n.disconnect();
+    if (!shared) void ctx.close().catch(() => {});
   };
   try {
-    const url = URL.createObjectURL(new Blob([TAP], { type: "text/javascript" }));
-    try {
-      await ctx.audioWorklet.addModule(url);
-    } finally {
-      URL.revokeObjectURL(url);
+    if (!tapped.has(ctx)) {
+      const url = URL.createObjectURL(new Blob([TAP], { type: "text/javascript" }));
+      try {
+        await ctx.audioWorklet.addModule(url);
+        tapped.add(ctx);
+      } finally {
+        URL.revokeObjectURL(url);
+      }
     }
     const source = ctx.createMediaStreamSource(media);
     const tap = new AudioWorkletNode(ctx, "wb-converse");
+    nodes = [source, tap];
     const down = new StreamDownsampler(ctx.sampleRate, TARGET_RATE);
     const framer = new Framer();
     let pending = new Float32Array(0);

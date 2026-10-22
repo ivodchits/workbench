@@ -4194,6 +4194,80 @@ up ("change this", with a circle around it).
     a regression test.
 - **Out of scope:** listening with the screen off (R4); echo on the desktop, which V4
   part 2 handles.
+- **As built (2026-10-22), before the phone measurement:**
+  - **Measuring first, on what there was.** The phone's numbers need you and the phone, so
+    the measurement kit came first:
+    - **The recorder:** the voice setting "Save the phone's conversation audio"
+      (`voice.recordPhone`, off by default) saves each phone run to
+      `~/repos/Duck/voice-eval/recordings/phone/<when>/` (`voice/phone_record.rs`). It
+      keeps the stream as the desktop heard it, each desktop-voice sentence the phone
+      played, and every event at its sample (playing, said, cut, turn, echo dropped,
+      barge-in checks, the feed's delay). The folder gets a `.gitignore` of `*` if it has
+      none, so recordings never reach Duck's data repo.
+    - **The scorer:** `tools/voice-eval/score_phone.py` scores the runs chain by chain.
+      Its docstring has the two runs to make per echo path (quiet, and 10
+      interruptions).
+    - **A worst-case stand-in:** `phone_from_x0.py` turns X0's laptop-speaker recording
+      into two phone recordings: the mic with no echo cancellation at all, each clip a
+      `said` event where it started.
+  - **What the stand-in showed** (laptop speakers, no echo cancellation, about 2.5 min of
+    Duck playing per run):
+
+    | chain | quiet: false cuts | quiet: echo turns | interruptions: caught | interruptions: false |
+    |---|---|---|---|---|
+    | before V7 | 98 | 32 | 10/10 | 61 |
+    | words only (the plan's gate on words) | 60 | 1 | 8/10 | 37 |
+    | the desktop's AEC3 fed the phone's sentences | 0 | 0 | 8/10 | 2 |
+    | + the gate (built) | 0 | 0 | 8/10 | 1 (you, talking again outside the cue window) |
+
+    X0's desktop chain on the same audio: 0 false, 8/10. The self-voice check alone
+    fixes the echo turns. But checking a barge-in's words alone can't stop the false
+    cuts: short windows of raw echo come out as fragments that don't match Duck's text
+    ("Thirty." for "14:30", "Yeah.", misheard words). On laptop speakers your
+    interruptions are no louder than the echo's peaks (−20 to −28 dBFS both), so a
+    loudness gate can't separate them without cancelling first.
+  - **So the fix differs from the plan's list.** The desktop cancels the phone's echo
+    itself, which the plan didn't foresee:
+    - **The page says what it starts playing:** `conv.said`, with the sentence's words
+      and the desktop voice's audio id.
+    - **The reference** (`aec::Feed`): the `Phone` surface places that audio at the
+      sample of the stream it had when `conv.said` came, in the stream's own clock.
+    - **The lag:** the feed measures it every 2 s of playback by correlating loudness
+      (0–0.8 s; 420–430 ms on the stand-in) and plays the reference 60 ms ahead of its
+      echo. AEC3 then reports 48–60 ms.
+    - **The rest is the desktop's own chain:** `aec::Canceller::for_feed`, the same
+      `Gate`, the same barge-in rule.
+    - **Conversation mode on the phone now always speaks in the desktop's voice**, so
+      every sentence has a reference. The phone's own voice (`speechSynthesis`) is
+      outside the page's audio, and nothing can cancel it.
+  - **Built as the plan said:**
+    - `Phone::said_lately` (the phone's sentences of the last 30 s, and the one playing).
+    - The self-voice check wherever Duck can echo (speakers and phones, not headphones).
+    - The barge-in check on words (`BargeCheck`): at 9 frames, then every 8, the last
+      1.2 s against what was said in the last 10 s. It's now only the fallback for a
+      sentence with no reference.
+    - The echo paths (`separate` / `shared` / `element`) are a setting on the phone, so
+      you can measure which one the browser's own echo cancellation helps with. The
+      desktop's canceller doesn't need any of them.
+  - **Not built:** the last resort, half-duplex per device with auto / full / half. The
+    stand-in doesn't need it; whether the phone does is what its measurement says.
+  - **Tests:**
+    - The feed's placing, mixing, cutting and letting go; the lag; a phone echo 350 ms
+      late cancelled by more than 20 dB with the lag found; the barge-in check's timing
+      and its words; `said_lately`; the recorder's files.
+    - Rust replay of the stand-in through the real chain (`barge_in_on_a_phone_recording`,
+      ignored, `WB_MODELS` and `WB_PHONE_REC`): quiet, 0 false and 30 dB removed;
+      interruptions, 8/10 caught.
+    - cargo 314 (9 new); vitest 722 (1 new); tsc and eslint clean (the existing
+      warnings).
+  - **Not done:** the Done-when numbers on your phone. To get them:
+    - **On the desktop:** turn on Duck's voice settings → "Save the phone's
+      conversation audio".
+    - **On the phone:** make a quiet run and an interruption run for each echo path
+      (Duck settings → echo path), on the speaker at normal volume. Then the same with
+      headphones.
+    - **Score them:** run `uv run score_phone.py` in `tools/voice-eval`.
+    - **Name each run:** the folder name ends in `-quiet` or `-interrupt`.
 
 #### Step V8 — Announcements don't turn the mic on (small fix, added 2026-10-22)
 
@@ -6766,7 +6840,7 @@ T2 goes live after the replay check in its done-when (the past week's prompts th
 | V4 | Hands-free conversation mode | ☑ (live: talking over Duck on speakers, and the phone, not tried yet) |
 | V5 | Proactive announcements | ☑ (the reply window built with V4) |
 | V6 | Wake word on the PC (experimental) | ☐ |
-| V7 | Duck stops hearing itself on the phone (high priority) | ☐ |
+| V7 | Duck stops hearing itself on the phone (high priority) | ☐ (built 2026-10-22; done when measured on your phone) |
 | V8 | Announcements don't turn the mic on (small fix) | ☐ |
 | L1 | Long-term memory: files, index, recall | ☑ (not tried in the app yet) |
 | L2 | Consolidation, journal, and recall quality | ☑ (not tried in the app; hit-rate review 2026-11-05) |

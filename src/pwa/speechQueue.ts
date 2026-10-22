@@ -9,6 +9,8 @@ export interface Part {
   audio: Promise<AudioBuffer | null>;
   text: string;
   lang: Lang;
+  /** The desktop's id for its audio. */
+  id?: string;
 }
 
 export interface Out {
@@ -30,6 +32,8 @@ export class SpeechQueue {
   constructor(
     private readonly out: Out,
     private readonly changed: () => void = () => {},
+    /** A part starts playing: as the audio given, or said with the phone's voice. */
+    private readonly started: (part: Part, how: "audio" | "voice") => void = () => {},
   ) {}
 
   /** Something is queued or playing. */
@@ -46,8 +50,13 @@ export class SpeechQueue {
         if (gen !== this.gen) return;
         const buffer = await part.audio.catch(() => null);
         if (gen !== this.gen) return;
-        if (buffer) await this.out.play(buffer);
-        else if (part.text.trim()) await this.out.say(part.text, part.lang);
+        if (buffer) {
+          this.started(part, "audio");
+          await this.out.play(buffer);
+        } else if (part.text.trim()) {
+          this.started(part, "voice");
+          await this.out.say(part.text, part.lang);
+        }
       } catch {
         // a sentence that can't be said is skipped
       } finally {

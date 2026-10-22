@@ -25,6 +25,11 @@
 //   desktop's `conv.cut`), so the page says when that voice is playing. Off by
 //   "talk" again, by "that's all for now", after the desktop's quiet minutes, or
 //   when the page goes away (the screen off): the socket closes then.
+// - V7: each sentence that starts playing is told to the desktop (`conv.said`): it
+//   cancels that sentence's echo (its audio is the reference) and doesn't take its
+//   words for yours. So conversation mode speaks in the desktop's voice. "echo
+//   path" picks how the voice leaves the page (`duckSpeech.ts`), for measuring
+//   which one the browser's own echo cancellation helps with.
 
 import { langOf, Sentences } from "../assistant/speakable";
 import {
@@ -40,11 +45,11 @@ import type { DuckMode } from "../panels/Assistant/duck3d";
 import { startDuckCanvas, type DuckLook } from "../panels/Assistant/duckCanvas";
 import { lineDiff, oneLine, readableInput, sessionLink, toItems, type Item } from "../panels/Assistant/view";
 import { renderMarkdown } from "../panels/Editor/markdown";
-import type { RemoteConvFrame, RemoteConvMessage, RemoteDuckFrame, RemoteDuckMessage } from "../remote/protocol";
+import type { EchoPath, RemoteConvFrame, RemoteConvMessage, RemoteDuckFrame, RemoteDuckMessage } from "../remote/protocol";
 import { formatAgo } from "../util/format";
 import { $, el } from "./dom";
 import { apply, emptyView, userText, type DuckView } from "./duckStore";
-import { browserOut, fetchPart, playbackLevel, unlock } from "./duckSpeech";
+import { audioContext, browserOut, fetchPart, playbackLevel, setEchoPath, unlock } from "./duckSpeech";
 import { chime, stream, type Streaming } from "./converse";
 import { SpeechQueue } from "./speechQueue";
 import { micAvailable, record, type Recording } from "./mic";
@@ -66,9 +71,11 @@ interface Prefs {
   sendNow: boolean;
   /** Show the duck. */
   duck: boolean;
+  /** How Duck's voice leaves the page (V7). */
+  echoPath: EchoPath;
 }
 
-const DEFAULT_PREFS: Prefs = { speak: "voice", voice: "desktop", sendNow: true, duck: true };
+const DEFAULT_PREFS: Prefs = { speak: "voice", voice: "desktop", sendNow: true, duck: true, echoPath: "separate" };
 const LOOK: DuckLook = { ink: "color", chars: "classic", cols: 56, fps: 20 };
 
 const STATE_LABEL: Record<Exclude<TurnState, "idle">, string> = {
@@ -122,6 +129,7 @@ function store(key: string, value: string | null): void {
 }
 
 let prefs = loadPrefs();
+setEchoPath(prefs.echoPath);
 let view: DuckView = emptyView();
 let adopting = false;
 let shown = false;
@@ -135,12 +143,18 @@ let stuck = true;
 let deps: { console: (instanceId: string) => void; refused: () => void } = { console: () => {}, refused: () => {} };
 
 // Speech: the queue, and the phone's own voice's reply.
-const queue = new SpeechQueue(browserOut, () => paintVoice());
+const queue = new SpeechQueue(
+  browserOut,
+  () => paintVoice(),
+  (part, how) => {
+    if (talk) post({ type: "conv.said", text: part.text, ...(how === "audio" && part.id && { id: part.id }), voice: how === "audio" ? "desktop" : "phone" });
+  },
+);
 /** Hushed: nothing more is spoken until the next send. */
 let hushed = false;
 /** Messages sent for the phone's own voice, waiting to be seen stored. */
 const nativeWanted: string[] = [];
-let native: { threadId: string; cut: Sentences; provisional?: boolean } | null = null;
+let native: { threadId: string; cut: Sentences } | null = null;
 
 // The mic.
 let recording: Recording | null = null;
@@ -165,8 +179,6 @@ let talkEnded = 0;
 const talkSent = new Map<number, string>();
 /** What the desktop was last told about Duck's voice here. */
 let playingSaid = false;
-/** The thread whose provisional turn the phone's own voice will answer. */
-let nativeProvisional: string | null = null;
 /** The thread whose reply the phone's own voice spoke last, and the thread Duck
  *  moved the conversation into from it (A7), whose next reply it speaks too. */
 let nativeLast: string | null = null;
@@ -233,7 +245,7 @@ function onFrame(f: RemoteDuckFrame): void {
   if (f.type === "tts") {
     // Duck's news (V5) plays only where this phone's speaking isn't off.
     const news = f.reply.startsWith("news");
-    if (!hushed && !(news && prefs.speak === "off")) queue.add({ audio: fetchPart(f.id), text: f.text, lang: langOf(f.text) });
+    if (!hushed && !(news && prefs.speak === "off")) queue.add({ audio: fetchPart(f.id), text: f.text, lang: langOf(f.text), id: f.id });
     return;
   }
   if (f.type === "ttsEnd") return;
@@ -276,18 +288,7 @@ function onFrame(f: RemoteDuckFrame): void {
 
 /** The phone's own voice: cut the reply to a message sent for it into sentences. */
 function speakNative(f: RemoteDuckFrame): void {
-  if (f.type === "provisional" && f.threadId === nativeProvisional) {
-    // A turn of conversation mode: its reply is said as it streams.
-    nativeProvisional = null;
-    nativeLast = f.threadId;
-    native = { threadId: f.threadId, cut: new Sentences(), provisional: true };
-  } else if (f.type === "withdrawn" && native?.threadId === f.threadId && native.provisional) {
-    native = null;
-    queue.stop();
-  } else if (f.type === "message" && f.message.role === "user" && native?.provisional && native.threadId === f.message.threadId) {
-    // The provisional turn stood: its reply carries on.
-    native.provisional = false;
-  } else if (f.type === "message" && f.message.role === "user" && USER_SOURCES.has(f.message.source)) {
+  if (f.type === "message" && f.message.role === "user" && USER_SOURCES.has(f.message.source)) {
     if (native?.threadId === f.message.threadId) native = null;
     const phone = f.message.source.startsWith("phone");
     const i = phone ? nativeWanted.indexOf(userText(f.message).trim()) : -1;
@@ -337,17 +338,17 @@ function send(text: string, voice: boolean, talked: { provisional: boolean } | n
   hush();
   hushed = false;
   const speak = !!talked || prefs.speak === "always" || (prefs.speak === "voice" && voice);
-  if (speak && prefs.voice === "phone") {
-    if (talked?.provisional) nativeProvisional = view.current;
-    else nativeWanted.push(body);
-  }
+  // Conversation mode speaks in the desktop's voice: its audio is what the desktop
+  // cancels the echo of (V7); the phone's own voice it can't.
+  const phoneVoice = prefs.voice === "phone" && !talked;
+  if (speak && phoneVoice) nativeWanted.push(body);
   if (view.current === null) adopting = true;
   post({
     type: "send",
     threadId: view.current,
     text: body,
     ...(voice && { voice: true }),
-    ...(speak && prefs.voice === "desktop" && { speak: true }),
+    ...(speak && !phoneVoice && { speak: true }),
     ...(talked?.provisional && { provisional: true }),
   });
   stuck = true;
@@ -386,11 +387,14 @@ async function startTalk(): Promise<void> {
   voiceNote = "";
   paintVoice();
   // The desktop loads its models while the browser asks for the mic.
-  post({ type: "conv.start" });
+  post({ type: "conv.start", path: prefs.echoPath, voice: "desktop" });
   try {
-    const s = await stream((frame) => {
-      if (ws?.readyState === WebSocket.OPEN) ws.send(frame);
-    });
+    const s = await stream(
+      (frame) => {
+        if (ws?.readyState === WebSocket.OPEN) ws.send(frame);
+      },
+      prefs.echoPath === "shared" ? audioContext() : undefined,
+    );
     if (talkStarting) talk = s;
     else s.stop();
   } catch (e) {
@@ -633,7 +637,7 @@ function startAvatar(): void {
       ? () => recording?.level() ?? 0
       : talk && talkState === "hearing"
         ? () => talk?.level() ?? 0
-        : queue.speaking && prefs.voice === "desktop"
+        : queue.speaking && (prefs.voice === "desktop" || talk)
           ? playbackLevel
           : undefined,
   }));
@@ -1092,6 +1096,7 @@ function paintSettings(): void {
 function setPrefs(patch: Partial<Prefs>): void {
   prefs = { ...prefs, ...patch };
   store(PREFS_KEY, JSON.stringify(prefs));
+  setEchoPath(prefs.echoPath);
   if (patch.duck === false) stopAvatar();
   startAvatar();
   paint("prefs");

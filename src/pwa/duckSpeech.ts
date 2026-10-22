@@ -10,8 +10,15 @@
 //
 // The order is `speechQueue.ts`'s; this is the browser's side. Playback needs a
 // tap first on phones: `unlock()` from a tap handler.
+//
+// How the audio leaves the page is the phone's echo path (`EchoPath`, V7), for the
+// browser's echo cancellation to see it as what's playing: straight out of this
+// context (`separate`, as before V7, and `shared`, where conversation mode's mic
+// opens in this same context: `audioContext()`), or through an `<audio>` element
+// fed from it (`element`).
 
 import type { Lang } from "../assistant/speakable";
+import type { EchoPath } from "../remote/protocol";
 import { authHeader } from "./net";
 import type { Out } from "./speechQueue";
 
@@ -20,21 +27,55 @@ let analyser: AnalyserNode | null = null;
 let playing: AudioBufferSourceNode | null = null;
 let endPlaying: (() => void) | null = null;
 const samples = new Float32Array(1024);
+let path: EchoPath = "separate";
+let element: HTMLAudioElement | null = null;
+let feed: MediaStreamAudioDestinationNode | null = null;
 
 function context(): AudioContext {
   if (!ctx) {
     ctx = new AudioContext();
     analyser = ctx.createAnalyser();
     analyser.fftSize = samples.length;
-    analyser.connect(ctx.destination);
+    wire();
   }
   return ctx;
+}
+
+/** Where the analyser's output goes, for the path. */
+function wire(): void {
+  if (!ctx || !analyser) return;
+  analyser.disconnect();
+  if (path !== "element") {
+    analyser.connect(ctx.destination);
+    if (element) element.pause();
+    return;
+  }
+  feed ??= ctx.createMediaStreamDestination();
+  analyser.connect(feed);
+  if (!element) {
+    element = new Audio();
+    element.srcObject = feed.stream;
+  }
+  void element.play().catch(() => {});
+}
+
+/** How Duck's voice leaves the page (V7). */
+export function setEchoPath(p: EchoPath): void {
+  if (p === path) return;
+  path = p;
+  wire();
+}
+
+/** The context Duck's voice plays in: the mic opens in it on the `shared` path. */
+export function audioContext(): AudioContext {
+  return context();
 }
 
 /** Allow playback: call from a tap. */
 export function unlock(): void {
   try {
     void context().resume().catch(() => {});
+    if (element && path === "element") void element.play().catch(() => {});
     // iOS also wants its speech voice woken from a tap.
     if ("speechSynthesis" in window && !speechSynthesis.speaking) speechSynthesis.cancel();
   } catch {

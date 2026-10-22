@@ -15,6 +15,7 @@ folder in PowerShell:
 | `uv run score_turns.py` | Silero VAD + Smart Turn under each end-of-turn policy (fp32 on ONNX Runtime 1.24.2, as the app runs it since V4; `--model int8` for X0's) |
 | `uv run record_echo.py` | Play Duck's voice while recording the mic; quiet phase, then 10 interruptions. `--speaker BlackShark --name headphones` |
 | `uv run score_echo.py` | Raw mic vs AEC3 vs AEC3 + barge-in gate + self-voice check |
+| `uv run score_phone.py` | The phone's conversation recordings (V7, saved by the app: Duck's voice settings, "Save the phone's conversation audio"): echo level, false cuts, caught interruptions and echo turns, before V7 and with each of its chains. The runs to make are in its docstring |
 
 ## Data
 
@@ -22,6 +23,7 @@ Recordings are your voice, so they stay out of this repo. Everything the scripts
 write lives in `~/repos/Duck/voice-eval` (override with `VOICE_EVAL_DATA`):
 
 - `recordings/{stt,monologues,echo/<name>}`: the X0 recordings, and new ones.
+- `recordings/phone/<when>/`: the phone's conversation runs the app saved (V7).
 - `tts/`: the Kokoro + Silero clips the echo test plays.
 - `models/`: Parakeet and the turn models, downloaded on first use.
 - `results/`: the scorers' output.

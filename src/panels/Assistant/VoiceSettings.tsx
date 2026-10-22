@@ -184,6 +184,17 @@ export default function VoiceSettings() {
           <span style={hint}> (8 seconds; &quot;yes, read it&quot;)</span>
         </span>
       </label>
+      <label style={row}>
+        <input
+          type="checkbox"
+          checked={prefs.recordPhone ?? false}
+          onChange={(e) => setVoicePrefs({ recordPhone: e.target.checked })}
+        />
+        <span>
+          Save the phone&apos;s conversation audio
+          <span style={hint}> (for measuring its echo: ~/repos/Duck/voice-eval/recordings/phone, kept out of git)</span>
+        </span>
+      </label>
       <label style={{ ...row, alignItems: "center" }}>
         <span style={{ flex: "0 0 auto" }}>Microphone</span>
         <select

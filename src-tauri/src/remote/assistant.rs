@@ -15,6 +15,13 @@
 //! pipeline (`voice/conversation.rs`) here, and its `conv.*` frames go back to
 //! that socket. The phone then sends the turns to Duck as any message.
 //!
+//! Its echo (step V7): the phone tells what it starts saying (`conv.said`), so the
+//! pipeline knows Duck's own words when it hears them ([`Phone::said_lately`]),
+//! and the desktop voice's audio for it, placed where it started in the phone's
+//! stream, is the echo canceller's reference ([`Feed`]).
+//! With the voice setting "save the phone's conversation audio" on, a run is
+//! recorded for measuring that echo ([`crate::voice::phone_record`]).
+//!
 //! Like the dashboard, Duck runs in the webview, so this is a bridge (the
 //! `remote-action` and snapshot patterns):
 //! - Up: each socket is numbered; its opening, its frames and its closing go to the
@@ -24,9 +31,10 @@
 //!   either to every socket or to the one that asked.
 
 use std::net::SocketAddr;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{mpsc, Arc};
-use std::time::Duration;
+use std::collections::VecDeque;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{mpsc, Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use axum::body::Bytes;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
@@ -41,8 +49,10 @@ use tokio::sync::{broadcast, mpsc as tmpsc};
 
 use super::server::{authed, bearer, client_addr, ws_authed, SUBPROTOCOL};
 use super::{device_valid, RemoteState};
+use crate::voice::aec::Feed;
 use crate::voice::conversation::{self, Patience, StateEvent, Surface, TurnEvent};
 use crate::voice::endpoint::Output;
+use crate::voice::phone_record::{self, Recording};
 use crate::voice::tts::TtsState;
 use crate::voice::VoiceState;
 
@@ -115,12 +125,54 @@ fn audio_block(b: &[u8]) -> Option<Vec<f32>> {
     }
 }
 
-/// A phone as conversation mode's surface: its socket, and what it says it's
-/// playing. Its browser cancels its own echo.
+/// What a phone said lately, sentence by sentence, kept this long.
+const SAID_KEEP: Duration = Duration::from_secs(60);
+
+/// The sentences a phone started saying, with when.
+#[derive(Default)]
+struct Said(VecDeque<(Instant, String)>);
+
+impl Said {
+    fn push(&mut self, at: Instant, text: &str) {
+        self.0.retain(|(t, _)| at.duration_since(*t) < SAID_KEEP);
+        self.0.push_back((at, text.to_string()));
+    }
+
+    /// The sentences started within `within` of `now`, and the one playing then.
+    fn lately(&self, now: Instant, within: Duration) -> String {
+        let last = self.0.len().saturating_sub(1);
+        let texts: Vec<&str> = self
+            .0
+            .iter()
+            .enumerate()
+            .filter(|(i, (t, _))| *i == last || now.saturating_duration_since(*t) <= within)
+            .map(|(_, (_, s))| s.as_str())
+            .collect();
+        texts.join(" ")
+    }
+}
+
+/// A run's recording, while the setting is on.
+type Rec = Arc<Mutex<Option<Recording>>>;
+
+fn record(rec: &Rec, kind: &str, detail: Value) {
+    if let Some(r) = rec.lock().unwrap().as_mut() {
+        r.event(kind, detail);
+    }
+}
+
+/// A phone as conversation mode's surface: its socket, what it says it's
+/// playing and saying, and the recording. Its browser cancels its own echo, as
+/// far as it can.
 struct Phone {
     app: AppHandle,
     out: tmpsc::UnboundedSender<String>,
     playing: Arc<AtomicBool>,
+    said: Arc<Mutex<Said>>,
+    rec: Rec,
+    feed: Arc<Feed>,
+    /// The stream's samples so far.
+    received: Arc<AtomicUsize>,
 }
 
 impl Phone {
@@ -135,6 +187,7 @@ impl Surface for Phone {
     }
 
     fn turn(&self, ev: &TurnEvent) {
+        record(&self.rec, "turn", json!({ "text": ev.text, "phase": ev.phase }));
         self.send(json!({ "type": "conv.turn", "run": ev.run, "id": ev.id, "text": ev.text, "phase": ev.phase }));
     }
 
@@ -151,6 +204,8 @@ impl Surface for Phone {
     }
 
     fn cut(&self) {
+        record(&self.rec, "cut", Value::Null);
+        self.feed.stop(self.received.load(Ordering::Relaxed));
         self.playing.store(false, Ordering::Relaxed);
         self.send(json!({ "type": "conv.cut" }));
     }
@@ -159,8 +214,8 @@ impl Surface for Phone {
         self.send(json!({ "type": "conv.cue" }));
     }
 
-    fn said_lately(&self, _: Duration) -> String {
-        String::new()
+    fn said_lately(&self, within: Duration) -> String {
+        self.said.lock().unwrap().lately(Instant::now(), within)
     }
 
     fn output(&self) -> Option<(Output, Option<String>)> {
@@ -170,18 +225,50 @@ impl Surface for Phone {
     fn hold_output(&self, _: bool) {}
 
     fn finish(&self) {}
+
+    fn note(&self, kind: &str, detail: Value) {
+        record(&self.rec, kind, detail);
+    }
+
+    fn reference(&self) -> Option<Arc<Feed>> {
+        Some(Arc::clone(&self.feed))
+    }
 }
+
 
 /// A socket's conversation run.
 struct PhoneRun {
     cmds: mpsc::Sender<conversation::Cmd>,
     audio: mpsc::Sender<Vec<f32>>,
     playing: Arc<AtomicBool>,
+    said: Arc<Mutex<Said>>,
+    rec: Rec,
+    feed: Arc<Feed>,
+    received: Arc<AtomicUsize>,
+}
+
+impl PhoneRun {
+    /// Audio from the phone, for the run (and the recording).
+    fn heard(&self, block: Vec<f32>) {
+        self.received.fetch_add(block.len(), Ordering::Relaxed);
+        if let Some(r) = self.rec.lock().unwrap().as_mut() {
+            r.audio(&block);
+        }
+        let _ = self.audio.send(block);
+    }
 }
 
 impl Drop for PhoneRun {
     fn drop(&mut self) {
         let _ = self.cmds.send(conversation::Cmd::Stop);
+        if let Some(mut r) = self.rec.lock().unwrap().take() {
+            r.event("feed", json!({ "delay_ms": self.feed.delay_ms() }));
+            std::thread::spawn(move || match r.finish() {
+                Ok(Some(dir)) => eprintln!("[voice] the phone's conversation was saved to {}", dir.display()),
+                Ok(None) => {}
+                Err(e) => eprintln!("[voice] the phone's conversation wasn't saved: {e}"),
+            });
+        }
     }
 }
 
@@ -193,9 +280,25 @@ fn conv_message(app: &AppHandle, run: &mut Option<PhoneRun>, out: &tmpsc::Unboun
             let patience = serde_json::from_value::<Patience>(msg["patience"].clone()).ok();
             let (audio, heard) = mpsc::channel();
             let playing = Arc::new(AtomicBool::new(false));
-            let io = Phone { app: app.clone(), out: out.clone(), playing: Arc::clone(&playing) };
+            let said = Arc::new(Mutex::new(Said::default()));
+            let rec: Rec = Arc::new(Mutex::new(
+                crate::voice::recording_phone(app)
+                    .then(phone_record::data_dir)
+                    .flatten()
+                    .map(|root| Recording::new(root, json!({ "path": msg["path"], "voice": msg["voice"], "patience": msg["patience"] }))),
+            ));
+            let (feed, received) = (Arc::new(Feed::default()), Arc::new(AtomicUsize::new(0)));
+            let io = Phone {
+                app: app.clone(),
+                out: out.clone(),
+                playing: Arc::clone(&playing),
+                said: Arc::clone(&said),
+                rec: Arc::clone(&rec),
+                feed: Arc::clone(&feed),
+                received: Arc::clone(&received),
+            };
             match crate::voice::start_phone_conversation(app, Box::new(io), heard, patience) {
-                Some(cmds) => *run = Some(PhoneRun { cmds, audio, playing }),
+                Some(cmds) => *run = Some(PhoneRun { cmds, audio, playing, said, rec, feed, received }),
                 None => {
                     let _ = out.send(
                         json!({ "type": "conv.state", "run": 0, "state": "error", "held": false, "message": "Voice isn't available on the desktop." })
@@ -207,7 +310,23 @@ fn conv_message(app: &AppHandle, run: &mut Option<PhoneRun>, out: &tmpsc::Unboun
         Some("conv.stop") => *run = None,
         Some("conv.playing") => {
             if let Some(r) = run {
-                r.playing.store(msg["on"].as_bool().unwrap_or(false), Ordering::Relaxed);
+                let on = msg["on"].as_bool().unwrap_or(false);
+                r.playing.store(on, Ordering::Relaxed);
+                if !on {
+                    r.feed.stop(r.received.load(Ordering::Relaxed));
+                }
+                record(&r.rec, "playing", json!({ "on": on }));
+            }
+        }
+        Some("conv.said") => {
+            if let Some(r) = run {
+                let text = msg["text"].as_str().unwrap_or_default();
+                r.said.lock().unwrap().push(Instant::now(), text);
+                let wav = msg["id"].as_str().and_then(|id| app.state::<TtsState>().rendered(id));
+                r.feed.place(r.received.load(Ordering::Relaxed), wav.as_deref().and_then(|w| crate::voice::wav_at_16k(w)));
+                if let Some(rec) = r.rec.lock().unwrap().as_mut() {
+                    rec.said(text, msg["voice"].as_str().unwrap_or("desktop"), wav);
+                }
             }
         }
         _ => {}
@@ -255,7 +374,7 @@ async fn handle(mut socket: WebSocket, state: Arc<RemoteState>, device: String) 
             incoming = socket.recv() => match incoming {
                 Some(Ok(Message::Binary(b))) => {
                     if let (Some(r), Some(block)) = (&conv, audio_block(&b)) {
-                        let _ = r.audio.send(block);
+                        r.heard(block);
                     }
                 }
                 Some(Ok(Message::Text(t))) => match serde_json::from_str::<Value>(t.as_str()) {
@@ -372,6 +491,21 @@ mod tests {
         assert!(audio_block(&gap).is_none(), "too long a gap");
         assert!(audio_block(&[7, 1, 2]).is_none());
         assert!(audio_block(&[]).is_none());
+    }
+
+    #[test]
+    fn what_the_phone_said_lately_is_its_recent_sentences_and_the_one_playing() {
+        let t0 = Instant::now();
+        let mut s = Said::default();
+        assert_eq!(s.lately(t0, Duration::from_secs(10)), "");
+        s.push(t0, "First one.");
+        s.push(t0 + Duration::from_secs(5), "Second one.");
+        s.push(t0 + Duration::from_secs(12), "Third one.");
+        assert_eq!(s.lately(t0 + Duration::from_secs(14), Duration::from_secs(10)), "Second one. Third one.");
+        // A long sentence still playing is what's being said, however long ago it began.
+        assert_eq!(s.lately(t0 + Duration::from_secs(40), Duration::from_secs(10)), "Third one.");
+        s.push(t0 + Duration::from_secs(100), "Later.");
+        assert_eq!(s.0.len(), 1, "a minute's worth is kept");
     }
 
     #[test]

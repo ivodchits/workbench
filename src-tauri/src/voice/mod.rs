@@ -47,6 +47,7 @@ pub mod endpoint;
 pub mod engine;
 pub mod overlay;
 pub mod parakeet;
+pub mod phone_record;
 pub mod playback;
 pub mod presence;
 pub mod screen;
@@ -100,6 +101,10 @@ pub struct VoiceConfig {
     /// A soft cue when a turn goes to Duck.
     #[serde(default)]
     pub cue: bool,
+    /// Save each conversation run on a phone for measuring its echo (step V7,
+    /// [`phone_record`]).
+    #[serde(default)]
+    pub record_phone: bool,
 }
 
 fn five() -> u32 {
@@ -257,6 +262,11 @@ fn run_conversation(app: &AppHandle, kind: Option<conversation::Kind>) {
 /// audio its page streams, speaking through `io` (its socket), with the phone's
 /// pauses setting or the desktop's. Its runs are its socket's, apart from the
 /// desktop's.
+/// Whether a phone's conversation runs are saved (the debug setting, V7).
+pub fn recording_phone(app: &AppHandle) -> bool {
+    app.try_state::<VoiceState>().and_then(|s| s.config.lock().ok().map(|c| c.record_phone)).unwrap_or(false)
+}
+
 pub fn start_phone_conversation(
     app: &AppHandle,
     io: Box<dyn conversation::Surface>,
@@ -580,6 +590,13 @@ pub fn voice_unload(state: State<'_, VoiceState>) {
 }
 
 /// A 16 kHz WAV as mono f32 samples.
+/// A WAV at any rate as 16 kHz samples (a sentence of the desktop voice, for a
+/// phone's echo reference).
+pub fn wav_at_16k(b: &[u8]) -> Option<Vec<f32>> {
+    let (pcm, rate) = parse_wav_at(b).ok()?;
+    Some(capture::StreamResampler::new(rate, 16_000).push(&pcm))
+}
+
 pub fn read_wav(path: &Path) -> Result<Vec<f32>, String> {
     let bytes = std::fs::read(path).map_err(|e| format!("reading {}: {e}", path.display()))?;
     parse_wav(&bytes)

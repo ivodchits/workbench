@@ -5,9 +5,9 @@ behind each decision are in `assistant-plan.md`. This file describes the code, a
 Duck step updates it as part of its Done when. Duck's self-development sessions (L3)
 read it first.
 
-Last updated: step L4 (2026-10-22). L3 audited it against the code. Since W5 it also
-covers W6, D2, D4, P1, P2, M2, M3, A5, A6, A7, W4, L1, L2, L3, R1, R2, V1 to V5, X1 and
-the morning routine. A fresh session changing Duck: read "The shape", then "Where to
+Last updated: step V7 (2026-10-22). L3 audited it against the code. Since W5 it also
+covers W6, D2, D4, P1, P2, M2, M3, A5, A6, A7, W4, L1, L2, L3, L4, R1, R2, V1 to V5, X1
+and the morning routine. A fresh session changing Duck: read "The shape", then "Where to
 change X" at the end, then the module rows it points to.
 
 ## The shape
@@ -200,11 +200,17 @@ prompt's safety rules cover them.
   VAD), the global push-to-talk key and capture, conversation mode with echo
   cancellation (`aec.rs`, `conversation.rs`, `turn.rs`), text to speech (`tts.rs`:
   Kokoro, Silero, Chirp), presence for announcements, screen capture and the listening
-  overlay window. Models download on first use.
+  overlay window. Models download on first use. V7: a phone's conversation runs through
+  the same canceller (see "The phone's echo" below), and `phone_record.rs` saves its
+  runs for measuring that echo.
 - `src-tauri/src/remote/assistant.rs` (R1): the remote server's `/api/assistant`
   WebSocket carrying the Duck Protocol, `/api/assistant/audio` (a phone's speech,
   transcribed with V1's model) and `/api/assistant/tts/{id}` (a sentence the desktop
-  made for the phone). The phone's PWA (R2) is in `src-tauri/src/remote/pwa/`.
+  made for the phone). The phone's PWA (R2) is `src/pwa/`, built into
+  `src-tauri/src/remote/pwa/` (`duck.ts`; conversation mode's mic in `converse.ts`, Duck's
+  voice in `duckSpeech.ts` and `speechQueue.ts`). The `Phone` surface in `assistant.rs`
+  is a phone's conversation run: its socket, what it's playing and saying
+  (`conv.playing`, `conv.said`), its echo reference and its recording.
 - The dock's root has `isolation: isolate`, so dockview's layers (floating groups at
   z-index 999) stay under the drawer (z-index 60) while modals (100) stay above it.
 - Start at login: `tauri-plugin-autostart` (pinned `~2.5.1`; later versions need Tauri
@@ -462,6 +468,43 @@ Cheapest first, and always yours to approve:
   12 hours), running or parked on a card, watching a session, reported to by a task not
   closed, an autopilot or a routine, or talked in since the nightly tidy last read.
 
+## The phone's echo (step V7)
+
+Conversation mode on a phone runs on the desktop (`voice/conversation.rs`, fed the
+phone's mic over Duck's socket). Before V7 the phone's echo was left to its browser, and
+Duck cut itself off hearing its own voice. Now:
+
+1. **The phone says what it starts playing**: each sentence, as it starts, goes up as
+   `conv.said` (its words, and the desktop voice's audio id). Conversation mode on the
+   phone always speaks in the desktop's voice, so there's audio for every sentence.
+2. **The reference** (`aec::Feed`): the `Phone` surface places that sentence's audio
+   (the TTS render, at 16 kHz) at the sample of the phone's stream it had received when
+   `conv.said` came, so it's in the stream's own clock. The echo comes some 100-500 ms
+   later (the phone's audio buffers, the page's framer holding quiet frames, the room).
+   The feed measures that lag every 2 s of playback (the reference's and the mic's
+   loudness per 10 ms, correlated over 0-0.8 s, used when the correlation is ≥ 0.5) and
+   plays the reference 60 ms ahead of its echo, inside AEC3's window. A cut or playing
+   off truncates what's placed.
+3. **The canceller and the gate** (`aec::Canceller::for_feed`, `aec::Gate`): as on the
+   desktop's speakers. The run's `Surface::reference` hands the feed over; the run then
+   cancels from its start.
+4. **The self-voice check** runs wherever Duck's voice can echo: speakers and phones.
+5. **Without a reference** (a sentence in the phone's own voice: the feed is `unheard`),
+   a barge-in must be words of yours (`BargeCheck`): at 9 frames of speech, then every
+   8, the last 1.2 s is transcribed and cuts only when its words aren't mostly what Duck
+   said in the last 10 s.
+6. **The echo path** (the phone's settings): Duck's voice plays from its own audio
+   context (`separate`, as before V7), from the mic's (`shared`), or through an `<audio>`
+   element (`element`). It's for measuring which one the browser's own echo
+   cancellation helps with; the desktop's canceller doesn't depend on it.
+
+**Measuring it**: the voice setting "Save the phone's conversation audio"
+(`voice.recordPhone`, `VoiceConfig.record_phone`) writes each phone run to
+`~/repos/Duck/voice-eval/recordings/phone/<when>/` (`phone_record.rs`: the stream, the
+sentences played, every event at its sample). `tools/voice-eval/score_phone.py` scores
+them chain by chain, and the ignored test `barge_in_on_a_phone_recording` replays one
+through the Rust chain.
+
 ## Where to change X
 
 - **What Duck says, its routing rules and examples, the tool tiers' wording**: the files
@@ -492,7 +535,9 @@ Cheapest first, and always yours to approve:
 - **Memory**: files and index in `memory.rs`; recall in `memory.ts`; the nightly tidy in
   `consolidate.ts` and its prompt in `PRIMITIVES.consolidate`; core memory in `core.ts`.
 - **Voice**: `src-tauri/src/voice/` (speech in and out), `speakable.ts`, `replySpeech.ts`,
-  `voiceState.ts`; announcements in `announce.ts`.
+  `voiceState.ts`; announcements in `announce.ts`. A phone's echo: `aec.rs` (`Feed`),
+  `conversation.rs` (`Surface::reference`, `BargeCheck`), the `Phone` surface in
+  `remote/assistant.rs`, and the page's `conv.said` in `src/pwa/duck.ts`.
 - **Storage**: a table is a migration appended to `db.rs`'s list, never an edit of one.
 - **Tests**: `npm run lint`, `npm test`, and `cargo test --lib` in `src-tauri` (with
   `CARGO_TARGET_DIR=target-test` while a dev build runs).
@@ -516,6 +561,9 @@ Both rules are in `prompt.ts`.
 
 - Duck answering Claude Code questions and plans, and promoting rules into Claude Code's
   own settings (T3).
+- The phone's echo fix (V7) on a real phone: built, and tested on X0's laptop-speaker
+  recording turned into a phone recording, not yet measured on the phone. The
+  half-duplex fallback (tap or say "stop" to interrupt) waits for what that shows.
 - Git writes from Duck to your projects (left out of W2 on purpose). Duck commits only its
   own memory files, in its workspace (L1), and pushes only its data repo to its own
   backup remote (L4).

@@ -17,10 +17,18 @@
 //!   echo is removed, for the settings.
 //! - **The self-voice check** ([`self_voice`]): words heard while Duck spoke that
 //!   are mostly its own words are its echo, not you.
+//! - **A phone's echo** (step V7): the phone plays the desktop voice's audio, and
+//!   says where in its microphone's stream each sentence started (`conv.said`).
+//!   That audio, placed there, is the reference ([`Feed`]), in the stream's own
+//!   clock. The echo comes some time after (the phone's buffers, its framer, the
+//!   room), so the feed measures how long ([`Feed::heard`]: the playback's and the
+//!   microphone's loudness, correlated) and plays the reference just ahead of it.
+//!   On X0's speaker recording, placed so: the same as the desktop's own chain (no
+//!   false barge-ins, 8 of 10 caught).
 
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use sonora::config::{Config, EchoCanceller, HighPassFilter};
@@ -70,8 +78,6 @@ pub fn tap(rate: u32, samples: &[f32]) {
     }
 }
 
-// ── the canceller ───────────────────────────────────────────────────────────
-
 /// The output handed nothing over for this long: it's closed, and the reference
 /// is silence.
 const CLOSED: Duration = Duration::from_millis(100);
@@ -80,8 +86,151 @@ const PLAYED_KEEP: usize = 100;
 /// The delay assumed until AEC3 has estimated one (X0: ~165 ms).
 const DELAY_MS: i32 = 160;
 
+// ── a phone's reference ─────────────────────────────────────────────────────
+
+/// Loudness kept per 10 ms chunk, for the lag: 6 s.
+const ENV_KEEP: usize = 600;
+/// The longest lag looked for: 0.8 s.
+const LAG_MAX: usize = 80;
+/// The reference plays this far ahead of its echo (6 chunks, 60 ms): inside AEC3's
+/// window, whatever the lag.
+const LEAD: usize = 6;
+/// The lag is measured every 2 s of playback...
+const LAG_EVERY: usize = 200;
+/// ...when the echo clearly follows the playback (normalised correlation).
+const LAG_SURE: f32 = 0.5;
+
+/// Duck's sentences on a phone, placed where in its stream each started, as the
+/// canceller's reference.
+#[derive(Default)]
+pub struct Feed(Mutex<FeedInner>);
+
+#[derive(Default)]
+struct FeedInner {
+    /// Sentences by their first sample in the stream, in order.
+    parts: VecDeque<(usize, Vec<f32>)>,
+    /// The latest sentence said had no audio here (the phone's own voice).
+    unheard: bool,
+    /// The reference is played this many samples after it was placed.
+    delay: usize,
+    /// The reference's and the microphone's loudness per chunk (log), newest last.
+    played: VecDeque<f32>,
+    mic: VecDeque<f32>,
+    since: usize,
+}
+
+impl Feed {
+    /// A sentence the phone started at sample `at` of its stream: its audio at
+    /// 16 kHz, or None for one said in the phone's own voice.
+    pub fn place(&self, at: usize, samples: Option<Vec<f32>>) {
+        let Ok(mut f) = self.0.lock() else { return };
+        f.unheard = samples.is_none();
+        if let Some(s) = samples {
+            f.parts.push_back((at, s));
+        }
+    }
+
+    /// Duck's voice stopped at sample `at` (cut, or hushed): the rest isn't played.
+    pub fn stop(&self, at: usize) {
+        let Ok(mut f) = self.0.lock() else { return };
+        f.parts.retain_mut(|(start, s)| {
+            s.truncate(at.saturating_sub(*start));
+            !s.is_empty()
+        });
+    }
+
+    /// The latest sentence has no reference: its echo can't be cancelled.
+    pub fn unheard(&self) -> bool {
+        self.0.lock().map(|f| f.unheard).unwrap_or(false)
+    }
+
+    /// The reference for stream samples `[from, from + n)`, and what's done with is
+    /// let go.
+    fn take(&self, from: usize, n: usize) -> Vec<f32> {
+        let mut out = vec![0f32; n];
+        let Ok(mut f) = self.0.lock() else { return out };
+        let from = from.saturating_sub(f.delay);
+        for (start, s) in &f.parts {
+            for (i, o) in out.iter_mut().enumerate() {
+                if let Some(x) = (from + i).checked_sub(*start).and_then(|j| s.get(j)) {
+                    *o += x;
+                }
+            }
+        }
+        // Sentences that ended a second before what's taken now.
+        while f.parts.front().is_some_and(|(start, s)| start + s.len() + RATE as usize <= from) {
+            f.parts.pop_front();
+        }
+        out
+    }
+
+    /// The placed reference's and the microphone's energy for a chunk, both as
+    /// placed (no delay): every 2 s of playback, the lag is measured again.
+    fn heard(&self, placed: f32, mic: f32) {
+        let Ok(mut f) = self.0.lock() else { return };
+        let log = |e: f32| 10.0 * e.max(1e-10).log10();
+        f.played.push_back(log(placed));
+        f.mic.push_back(log(mic));
+        if f.played.len() > ENV_KEEP {
+            f.played.pop_front();
+            f.mic.pop_front();
+        }
+        if placed > 1e-7 {
+            f.since += 1;
+        }
+        if f.since >= LAG_EVERY && f.played.len() >= ENV_KEEP / 2 {
+            f.since = 0;
+            if let Some(lag) = lag(&f.played, &f.mic) {
+                let delay = lag.saturating_sub(LEAD) * CHUNK;
+                // Small changes aren't worth AEC3 re-adapting.
+                if delay.abs_diff(f.delay) > 3 * CHUNK {
+                    f.delay = delay;
+                }
+            }
+        }
+    }
+
+    /// The reference's delay now, ms.
+    pub fn delay_ms(&self) -> u32 {
+        self.0.lock().map(|f| (f.delay * 1000 / RATE as usize) as u32).unwrap_or(0)
+    }
+}
+
+/// How many chunks the microphone's loudness follows the playback's by, if it
+/// clearly does.
+fn lag(played: &VecDeque<f32>, mic: &VecDeque<f32>) -> Option<usize> {
+    let n = played.len().min(mic.len());
+    let (p, m): (Vec<f32>, Vec<f32>) = (played.iter().copied().take(n).collect(), mic.iter().copied().take(n).collect());
+    let norm = |x: &[f32]| {
+        let mean = x.iter().sum::<f32>() / x.len().max(1) as f32;
+        x.iter().map(|v| v - mean).collect::<Vec<_>>()
+    };
+    let mut best = (0usize, 0f32);
+    for k in 0..=LAG_MAX.min(n / 2) {
+        let (a, b) = (norm(&p[..n - k]), norm(&m[k..]));
+        let dot: f32 = a.iter().zip(&b).map(|(x, y)| x * y).sum();
+        let (ea, eb): (f32, f32) = (a.iter().map(|x| x * x).sum(), b.iter().map(|x| x * x).sum());
+        let r = dot / (ea * eb).sqrt().max(1e-9);
+        if r > best.1 {
+            best = (k, r);
+        }
+    }
+    (best.1 >= LAG_SURE).then_some(best.0)
+}
+
+// ── the canceller ───────────────────────────────────────────────────────────
+
+/// Where the reference comes from: the speakers' output callback, or a phone's
+/// sentences.
+enum Reference {
+    Tap,
+    /// The feed, and the stream's sample the next chunk of microphone is.
+    Feed(Arc<Feed>, usize),
+}
+
 pub struct Canceller {
     apm: AudioProcessing,
+    reference: Reference,
     resampler: Option<(u32, StreamResampler)>,
     /// The reference at 16 kHz, not yet given to AEC3.
     render: VecDeque<f32>,
@@ -95,6 +244,20 @@ pub struct Canceller {
 impl Canceller {
     /// Starts taking the reference; dropping it stops.
     pub fn new() -> Self {
+        if let Ok(mut t) = TAP.lock() {
+            t.samples.clear();
+        }
+        TAPPING.store(true, Ordering::Relaxed);
+        Self::with(Reference::Tap)
+    }
+
+    /// A canceller for a phone's stream, `at` samples into it, its reference
+    /// `feed`.
+    pub fn for_feed(feed: Arc<Feed>, at: usize) -> Self {
+        Self::with(Reference::Feed(feed, at))
+    }
+
+    fn with(reference: Reference) -> Self {
         let config = Config {
             echo_canceller: Some(EchoCanceller::default()),
             high_pass_filter: Some(HighPassFilter::default()),
@@ -102,12 +265,9 @@ impl Canceller {
         };
         let stream = StreamConfig::new(RATE, 1);
         let apm = AudioProcessing::builder().config(config).capture_config(stream).render_config(stream).build();
-        if let Ok(mut t) = TAP.lock() {
-            t.samples.clear();
-        }
-        TAPPING.store(true, Ordering::Relaxed);
         Self {
             apm,
+            reference,
             resampler: None,
             render: VecDeque::new(),
             mic: Vec::new(),
@@ -140,7 +300,21 @@ impl Canceller {
         let mut out = Vec::with_capacity(self.mic.len());
         let mut at = 0;
         while self.mic.len() - at >= CHUNK {
-            let closed = self.pull();
+            let input = &self.mic[at..at + CHUNK];
+            let closed = match &mut self.reference {
+                Reference::Tap => self.pull(),
+                Reference::Feed(feed, pos) => {
+                    let e = |x: &[f32]| x.iter().map(|v| v * v).sum::<f32>() / CHUNK as f32;
+                    let delay = feed.0.lock().map(|f| f.delay).unwrap_or(0);
+                    // As placed, for the lag; then as played, for AEC3.
+                    let placed = if delay == 0 { None } else { Some(feed.take(*pos + delay, CHUNK)) };
+                    let chunk = feed.take(*pos, CHUNK);
+                    feed.heard(e(placed.as_deref().unwrap_or(&chunk)), e(input));
+                    *pos += CHUNK;
+                    self.render.extend(chunk);
+                    false
+                }
+            };
             let (mut energy, mut fed) = (0f32, 0usize);
             while self.render.len() >= CHUNK {
                 let chunk: Vec<f32> = self.render.drain(..CHUNK).collect();
@@ -189,6 +363,9 @@ impl Canceller {
 
 impl Drop for Canceller {
     fn drop(&mut self) {
+        if !matches!(self.reference, Reference::Tap) {
+            return;
+        }
         TAPPING.store(false, Ordering::Relaxed);
         if let Ok(mut t) = TAP.lock() {
             t.samples.clear();
@@ -341,6 +518,68 @@ mod tests {
         let (a, b) = (16_000 * 3, out.len());
         let erle = 10.0 * (energy(&mic[a..b]) / energy(&out[a..b]).max(1e-12)).log10();
         assert!(erle > 30.0, "{erle:.1} dB removed");
+    }
+
+    /// A phone: the sentence placed where the phone said it started; the
+    /// microphone hears it 350 ms later (its buffers and the room), quieter and
+    /// smeared. The feed finds the lag and the canceller removes the echo.
+    #[test]
+    fn cancels_a_phone_s_echo_from_where_it_said_it_started() {
+        let at = 16_000;
+        let said = voice(16_000 * 10, RATE, 11);
+        let lag = 16 * 350;
+        let mut mic = vec![0f32; at + said.len() + lag + 2];
+        for (i, x) in said.iter().enumerate() {
+            mic[at + lag + i] += 0.3 * x;
+            mic[at + lag + i + 2] += 0.1 * x;
+        }
+        let feed = Arc::new(Feed::default());
+        let mut c = Canceller::for_feed(Arc::clone(&feed), 0);
+        let mut out = Vec::new();
+        for (k, block) in mic.chunks(512).enumerate() {
+            if k * 512 <= at && at < (k + 1) * 512 {
+                feed.place(at, Some(said.clone()));
+            }
+            out.extend(c.process(block));
+        }
+        let d = feed.delay_ms();
+        assert!((250..=300).contains(&d), "the reference plays ~60 ms ahead of the echo: delayed {d} ms");
+        let (a, b) = (at + lag + 16_000 * 5, out.len());
+        let erle = 10.0 * (energy(&mic[a..b]) / energy(&out[a..b]).max(1e-12)).log10();
+        assert!(erle > 20.0, "{erle:.1} dB removed");
+    }
+
+    #[test]
+    fn a_feed_mixes_its_sentences_lets_cut_ones_go_and_knows_an_unheard_one() {
+        let f = Feed::default();
+        f.place(100, Some(vec![1.0; 50]));
+        f.place(120, Some(vec![0.5; 10]));
+        let r = f.take(95, 40);
+        assert_eq!(r[..5], [0.0; 5]);
+        assert_eq!(r[5], 1.0);
+        assert_eq!(r[25], 1.5);
+        assert_eq!(r[35], 1.0);
+        f.stop(110);
+        assert_eq!(f.take(105, 10), [1.0, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0]);
+        assert!(!f.unheard());
+        f.place(300, None);
+        assert!(f.unheard(), "said in the phone's own voice");
+        f.take(100_000, 1);
+        assert!(f.0.lock().unwrap().parts.is_empty(), "done with");
+    }
+
+    #[test]
+    fn the_lag_is_where_the_mic_follows_the_playback() {
+        let mut x = 7u32;
+        let mut rnd = move || {
+            x = x.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            (x >> 8) as f32 / (1u32 << 24) as f32
+        };
+        let p: VecDeque<f32> = (0..400).map(|_| -60.0 + 40.0 * rnd()).collect();
+        let m: VecDeque<f32> = (0..400).map(|i| if i >= 23 { p[i - 23] - 12.0 + 2.0 * rnd() } else { -70.0 }).collect();
+        assert_eq!(lag(&p, &m), Some(23));
+        let noise: VecDeque<f32> = (0..400).map(|_| -60.0 + 40.0 * rnd()).collect();
+        assert_eq!(lag(&p, &noise), None, "an echo that isn't there");
     }
 
     #[test]

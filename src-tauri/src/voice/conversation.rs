@@ -21,9 +21,16 @@
 //!   With headphones ([`endpoint`]) the microphone doesn't hear it. On speakers
 //!   (or an output of unknown kind) the microphone goes through the echo canceller
 //!   ([`aec`], V4 part 2) fed what's playing. While Duck speaks there, speech must
-//!   also pass the barge-in gate ([`aec::Gate`]), and words heard that are mostly
-//!   Duck's own are dropped ([`aec::self_voice`]). The "never" setting keeps part
+//!   also pass the barge-in gate ([`aec::Gate`]). The "never" setting keeps part
 //!   1's half-duplex: Duck doesn't listen while it speaks, nor for a moment after.
+//! - **A phone** (V7): its stream goes through the same canceller and gate, the
+//!   reference being the desktop voice's sentences placed where the phone said each
+//!   started ([`aec::Feed`], the surface's [`Surface::reference`]). A sentence in
+//!   the phone's own voice has no reference: over it, talking over Duck must also
+//!   be words of yours, the speech so far transcribed before the cut, and words
+//!   mostly Duck's own don't cut it ([`BargeCheck`]).
+//! - **Duck's own words** heard while it spoke are dropped ([`aec::self_voice`]),
+//!   on speakers and on a phone.
 //! - **The listening sign** ([`overlay`]) shows exactly while the microphone is
 //!   being listened to.
 //! - **Off** by the key or the drawer, by "that's all for now", or after minutes
@@ -44,9 +51,10 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter, Manager};
 
-use super::aec::{self, Canceller, Gate};
+use super::aec::{self, Canceller, Feed, Gate};
 use super::endpoint::{self, Output};
 use super::engine::{self, Engine, GpuPref};
 use super::turn::{self, SmartTurn};
@@ -191,6 +199,11 @@ impl Machine {
     /// Speech has gone on this many frames.
     pub fn speech_frames(&self) -> usize {
         self.run
+    }
+
+    /// The sample the speech going on now started at.
+    pub fn speech_start(&self) -> usize {
+        (self.frame - self.run.min(self.frame)) * FRAME
     }
 
     pub fn held(&self) -> bool {
@@ -491,6 +504,47 @@ const LEVEL_EVERY: Duration = Duration::from_millis(100);
 const OUTPUT_EVERY: Duration = Duration::from_secs(3);
 /// What Duck said this recently is compared with what's heard over it.
 const SAID_WITHIN: Duration = Duration::from_secs(30);
+/// A barge-in's words are compared with what Duck said this recently: the
+/// sentence playing and the one before (V7).
+const SAID_NOW: Duration = Duration::from_secs(10);
+/// A barge-in that wasn't yours yet is checked again after this many more frames
+/// of speech (~0.26 s)...
+const RECHECK_FRAMES: usize = 8;
+/// ...on the last this-many seconds of it, so your words aren't outnumbered by the
+/// echo heard before them.
+const BARGE_WINDOW: usize = RATE * 6 / 5;
+
+/// Talking over Duck where its echo isn't cancelled here (a phone, V7): the
+/// speech must be words of yours, not mostly Duck's. When a stretch of speech
+/// reaches [`BARGE_FRAMES`] it's checked, and again every [`RECHECK_FRAMES`]
+/// while it goes on and wasn't yours.
+#[derive(Default)]
+struct BargeCheck {
+    /// The stretch's length at its last check.
+    checked: Option<usize>,
+}
+
+impl BargeCheck {
+    /// Whether to check now, the speech having gone on `run` frames.
+    fn due(&mut self, run: usize) -> bool {
+        if run < BARGE_FRAMES {
+            self.checked = None;
+            return false;
+        }
+        match self.checked {
+            Some(at) if run >= at && run < at + RECHECK_FRAMES => false,
+            _ => {
+                self.checked = Some(run);
+                true
+            }
+        }
+    }
+}
+
+/// Words heard over Duck are yours: some, and not mostly what it's saying.
+fn yours(heard: &str, said: &str) -> bool {
+    !heard.trim().is_empty() && !aec::self_voice(heard, said)
+}
 
 /// Where a run hears and speaks: the desktop, or a phone (V4 part 3).
 pub trait Surface: Send {
@@ -517,6 +571,13 @@ pub trait Surface: Send {
     fn hold_output(&self, on: bool);
     /// The run is over and was still the current one.
     fn finish(&self);
+    /// What the pipeline decided about Duck's echo (V7), for a recording.
+    fn note(&self, _kind: &str, _detail: Value) {}
+    /// Where the output isn't the run's (a phone): the reference for its echo, if
+    /// there's one.
+    fn reference(&self) -> Option<Arc<Feed>> {
+        None
+    }
 }
 
 /// The desktop: its microphone and speakers, the webview's events, the
@@ -793,7 +854,11 @@ fn run(
     // while it runs, for its reference.
     let mut canceller: Option<(Canceller, Option<String>)> = None;
     let mut gate = Gate::default();
+    let mut barge = BargeCheck::default();
     let mut held_output = HeldOutput { io, on: false };
+    let feed = io.reference();
+    // The stream's samples so far (a phone's feed is placed in its clock).
+    let mut received = 0usize;
 
     loop {
         match cmds.try_recv() {
@@ -802,6 +867,7 @@ fn run(
         }
         match blocks.recv_timeout(Duration::from_millis(100)) {
             Ok(b) => {
+                received += b.len();
                 match &mut canceller {
                     Some((c, _)) => pending.extend(c.process(&b)),
                     None => pending.extend_from_slice(&b),
@@ -816,11 +882,20 @@ fn run(
             output_at = Instant::now();
         }
         let output_name = output.as_ref().and_then(|o| o.1.clone());
-        // Where the output isn't ours (a phone), you can always talk over Duck.
-        let (duplex, cancel) = output.as_ref().map_or((true, false), |o| s.echo.chain(o.0));
+        // Where the output isn't ours (a phone), you can always talk over Duck: its
+        // echo is cancelled when there's a reference, and what you say over it is
+        // checked when there isn't.
+        let (duplex, cancel) = output.as_ref().map_or((true, feed.is_some()), |o| s.echo.chain(o.0));
+        let confirm = output.is_none() && feed.as_ref().is_none_or(|f| f.unheard());
         // Started, stopped, or another output (another room's echo): a fresh one.
         if cancel != canceller.is_some() || canceller.as_ref().is_some_and(|(_, on)| *on != output_name) {
-            canceller = cancel.then(|| (Canceller::new(), output_name.clone()));
+            canceller = cancel.then(|| {
+                let c = match &feed {
+                    Some(f) => Canceller::for_feed(Arc::clone(f), received),
+                    None => Canceller::new(),
+                };
+                (c, output_name.clone())
+            });
             gate = Gate::default();
             held_output.set(cancel);
             pending_raw = pending.clone();
@@ -851,8 +926,23 @@ fn run(
             }
             let events = machine.frame(p, deaf, &mut |from, to| detector.complete(&audio.slice(from, to)).unwrap_or(0.0));
             // Talking over Duck: your speech stops its voice.
-            if duplex && speaking && machine.speech_frames() >= BARGE_FRAMES {
-                io.cut();
+            if duplex && speaking {
+                let run_frames = machine.speech_frames();
+                let cut = if !confirm {
+                    run_frames >= BARGE_FRAMES
+                } else if barge.due(run_frames) {
+                    let to = audio.start + audio.buf.len();
+                    let from = machine.speech_start().max(to.saturating_sub(BARGE_WINDOW));
+                    let heard = engine.transcribe(&audio.slice(from, to), s.gpu)?.text;
+                    let mine = yours(&heard, &io.said_lately(SAID_NOW));
+                    io.note("barge", json!({ "heard": heard.trim(), "cut": mine }));
+                    mine
+                } else {
+                    false
+                };
+                if cut {
+                    io.cut();
+                }
             }
             let mut queue: VecDeque<Event> = events.into();
             while let Some(ev) = queue.pop_front() {
@@ -867,12 +957,14 @@ fn run(
                         if text.is_empty() {
                             continue;
                         }
-                        // Heard while Duck spoke on speakers, and mostly its own words:
-                        // its echo got through.
-                        if canceller.is_some()
+                        // Heard while Duck spoke where it can echo, and mostly its own
+                        // words: its echo got through (the canceller's leftover, or a
+                        // phone's). Headphones don't echo.
+                        if (canceller.is_some() || confirm)
                             && voice_at.is_some_and(|at| at >= from)
                             && aec::self_voice(&text, &io.said_lately(SAID_WITHIN))
                         {
+                            io.note("echo", json!({ "heard": text }));
                             continue;
                         }
                         use control::Control;
@@ -1182,6 +1274,42 @@ mod tests {
     }
 
     #[test]
+    fn a_barge_in_over_a_phone_is_checked_at_its_start_then_every_quarter_second() {
+        let mut b = BargeCheck::default();
+        let checks: Vec<usize> = (0..40).filter(|&run| b.due(run)).collect();
+        assert_eq!(checks, [BARGE_FRAMES, BARGE_FRAMES + RECHECK_FRAMES, BARGE_FRAMES + 2 * RECHECK_FRAMES, BARGE_FRAMES + 3 * RECHECK_FRAMES]);
+        // Speech stopped and started again: a new stretch, checked at its start.
+        assert!(!b.due(0));
+        assert!(!b.due(BARGE_FRAMES - 1));
+        assert!(b.due(BARGE_FRAMES));
+    }
+
+    #[test]
+    fn a_barge_in_is_yours_unless_its_words_are_mostly_ducks() {
+        let said = "Here are the three options for the release. The first is to ship on Friday.";
+        assert!(!yours("the three options", said), "its echo");
+        assert!(!yours("ship on friday", said));
+        assert!(!yours("  ", said), "nothing heard yet");
+        assert!(yours("stop", said));
+        assert!(yours("wait, which one is cheapest?", said));
+        assert!(yours("hold on", ""), "nothing said: anything heard is you");
+    }
+
+    #[test]
+    fn the_speech_going_on_starts_where_its_frames_began() {
+        let mut m = Machine::new(Patience::Quick.policy());
+        let mut never = |_: usize, _: usize| 0.0;
+        for _ in 0..5 {
+            m.frame(0.0, false, &mut never);
+        }
+        for _ in 0..12 {
+            m.frame(0.9, false, &mut never);
+        }
+        assert_eq!(m.speech_frames(), 12);
+        assert_eq!(m.speech_start(), 5 * FRAME);
+    }
+
+    #[test]
     fn controls_are_the_last_phrase_only() {
         assert_eq!(classify("That's it."), Control::End(String::new()));
         assert_eq!(classify("Restart the backend. That's it!"), Control::End("Restart the backend.".into()));
@@ -1340,5 +1468,87 @@ mod tests {
         );
         assert!(false1.is_empty());
         assert!(caught >= 8);
+    }
+
+    /// A phone's recording (V7, `voice/phone_record.rs`) through the phone's chain:
+    /// the feed placed from its `said` events, the canceller, the gate, the VAD and
+    /// the barge-in rule while Duck played. A `-quiet` run has no barge-in at all;
+    /// one with `cues` in its meta (the synthetic ones from X0's) catches 8 of 10
+    /// (`cargo test --release barge_in_on_a_phone -- --ignored --nocapture`;
+    /// `WB_MODELS`, `WB_PHONE_REC` the recording's folder).
+    #[test]
+    #[ignore]
+    fn barge_in_on_a_phone_recording() {
+        let env = |k: &str| std::env::var(k).unwrap_or_else(|_| panic!("{k}"));
+        let models = std::path::PathBuf::from(env("WB_MODELS"));
+        engine::init_runtime(&models).unwrap();
+        let mut vad = Vad::load(&models.join(vad::MODEL), &engine::tiny_session).unwrap();
+        let dir = std::path::PathBuf::from(env("WB_PHONE_REC"));
+        let mic = super::super::read_wav(&dir.join("mic.wav")).unwrap();
+        let read = |f: &str| serde_json::from_slice::<serde_json::Value>(&std::fs::read(dir.join(f)).unwrap()).unwrap();
+        let (events, meta) = (read("events.json"), read("meta.json"));
+        let events = events.as_array().unwrap();
+        let cues: Vec<f32> = meta["cues"].as_array().map(|c| c.iter().map(|v| v.as_f64().unwrap() as f32 / 16_000.0).collect()).unwrap_or_default();
+
+        let feed = Arc::new(Feed::default());
+        let (mut c, mut gate) = (Canceller::for_feed(Arc::clone(&feed), 0), Gate::default());
+        let (mut clean, mut raw) = (Vec::new(), Vec::new());
+        let (mut on, mut run, mut frames, mut playing) = (false, 0usize, 0usize, false);
+        let mut last_barge = f32::MIN;
+        let mut barges = Vec::new();
+        let mut next = events.iter().peekable();
+        let energy = |x: &[f32]| x.iter().map(|v| v * v).sum::<f32>() / x.len().max(1) as f32;
+        for (k, b) in mic.chunks(FRAME).enumerate() {
+            while let Some(e) = next.next_if(|e| e["at"].as_u64().unwrap() as usize <= k * FRAME) {
+                let at = e["at"].as_u64().unwrap() as usize;
+                match e["kind"].as_str().unwrap() {
+                    "said" => {
+                        let wav = e["wav"].as_str().and_then(|w| super::super::wav_at_16k(&std::fs::read(dir.join(w)).unwrap()));
+                        feed.place(at, wav);
+                    }
+                    "playing" => {
+                        playing = e["on"].as_bool().unwrap();
+                        if !playing {
+                            feed.stop(at);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            clean.extend(c.process(b));
+            raw.extend_from_slice(b);
+            while clean.len() >= FRAME && raw.len() >= FRAME {
+                frames += 1;
+                let t = secs(frames);
+                let mut p = vad.step(&clean[..FRAME]).unwrap();
+                if !gate.frame(energy(&raw[..FRAME]), energy(&clean[..FRAME]), c.played(), p) {
+                    p = 0.0;
+                }
+                on = if on { p >= vad::OFF } else { p >= vad::ON };
+                run = if on { run + 1 } else { 0 };
+                if playing && run >= BARGE_FRAMES && t - last_barge > 1.5 {
+                    barges.push(t);
+                    last_barge = t;
+                }
+                clean.drain(..FRAME);
+                raw.drain(..FRAME);
+            }
+        }
+        let caught = cues.iter().filter(|&&q| barges.iter().any(|&t| t >= q && t <= q + 5.0)).count();
+        let false_: Vec<f32> = barges.iter().copied().filter(|&t| !cues.iter().any(|&q| t >= q && t <= q + 8.0)).collect();
+        println!(
+            "echo removed {:?} dB, reference delayed {} ms, AEC3's delay {:?} ms; false barge-ins {} {false_:?}; caught {caught}/{}",
+            gate.suppression_db(),
+            feed.delay_ms(),
+            c.delay_ms(),
+            false_.len(),
+            cues.len()
+        );
+        if dir.to_string_lossy().ends_with("-quiet") {
+            assert!(barges.is_empty());
+        }
+        if !cues.is_empty() {
+            assert!(caught >= 8);
+        }
     }
 }

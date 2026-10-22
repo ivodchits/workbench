@@ -68,4 +68,19 @@ describe("SpeechQueue", () => {
     q.add({ audio: buf("c"), text: "", lang: "en" });
     await vi.waitFor(() => expect(said).toEqual(["play:a", "play:c"]));
   });
+
+  it("tells when each part starts, and how (V7: the desktop hears what's said)", async () => {
+    const { o, next } = out();
+    const started: string[] = [];
+    const q = new SpeechQueue(o, () => {}, (p, how) => started.push(`${how}:${p.id ?? "-"}:${p.text}`));
+    q.add({ audio: buf("a"), text: "One.", lang: "en", id: "t1" });
+    q.add({ audio: Promise.resolve(null), text: "Two.", lang: "en" });
+    q.add({ audio: Promise.resolve(null), text: " ", lang: "en" });
+    await vi.waitFor(() => expect(started).toEqual(["audio:t1:One."]));
+    next();
+    await vi.waitFor(() => expect(started).toEqual(["audio:t1:One.", "voice:-:Two."]));
+    next();
+    await vi.waitFor(() => expect(q.speaking).toBe(false));
+    expect(started).toHaveLength(2);
+  });
 });

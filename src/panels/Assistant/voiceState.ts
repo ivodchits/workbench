@@ -66,6 +66,7 @@ export const DEFAULT_VOICE: VoicePrefs = {
   autoOffMin: 5,
   cue: true,
   replyWindow: true,
+  recordPhone: false,
 };
 
 /** How long the reply window after an announcement listens, seconds. */
@@ -158,6 +159,7 @@ function configure(prefs: VoicePrefs): void {
     echo: prefs.echo,
     autoOffMin: prefs.autoOffMin,
     cue: prefs.cue,
+    recordPhone: prefs.recordPhone ?? false,
   })
     .then(() => set({ keyProblem: null }))
     .catch((e: unknown) => set({ keyProblem: String(e) }));

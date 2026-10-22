@@ -74,6 +74,8 @@ export interface VoiceConfig {
   autoOffMin: number;
   /** A soft cue when a turn goes to Duck. */
   cue: boolean;
+  /** Save the phone's conversation runs for measuring its echo (V7). */
+  recordPhone: boolean;
 }
 
 export type Press = "conversation" | "dictation";

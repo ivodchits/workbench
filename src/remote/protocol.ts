@@ -248,12 +248,22 @@ export const AUDIO_PCM = 0; // 16 kHz mono int16 little-endian samples
 export const AUDIO_GAP = 1; // a u32 (LE): that many samples of silence
 
 /** What the phone tells the desktop about conversation mode. */
+/** How the phone plays Duck's voice in conversation mode (V7): its own audio
+ *  context (as before V7), the mic's, or an `<audio>` element fed from it. Which
+ *  one the browser's echo cancellation removes is what V7's measurement finds. */
+export type EchoPath = "separate" | "shared" | "element";
+
 export type RemoteConvMessage =
-  /** Start it, with these pauses (or the desktop's setting). */
-  | { type: "conv.start"; patience?: "quick" | "patient" | "thinking" }
+  /** Start it, with these pauses (or the desktop's setting); `path` and `voice`
+   *  say how Duck's voice plays here, for a recording (V7). */
+  | { type: "conv.start"; patience?: "quick" | "patient" | "thinking"; path?: EchoPath; voice?: "desktop" | "phone" }
   | { type: "conv.stop" }
   /** Duck's voice is playing on the phone (you may talk over it). */
-  | { type: "conv.playing"; on: boolean };
+  | { type: "conv.playing"; on: boolean }
+  /** A sentence of Duck's started playing here: its words, and the desktop's audio
+   *  id when it's the desktop's voice (V7: what Duck is saying, so its echo isn't
+   *  taken for you). */
+  | { type: "conv.said"; text: string; id?: string; voice: "desktop" | "phone" };
 
 /** What the desktop's pipeline tells the phone. */
 export type RemoteConvFrame =
