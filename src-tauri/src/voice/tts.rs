@@ -295,6 +295,13 @@ impl TtsState {
         }
     }
 
+    /// Stop speaking and the sidecar, as the app quits.
+    pub fn shutdown(&self) {
+        self.epoch.fetch_add(1, Ordering::SeqCst);
+        self.player.stop();
+        self.sidecar.stop();
+    }
+
     /// Cut everything: what's playing and what's queued.
     pub fn stop(&self, app: &AppHandle) {
         self.epoch.fetch_add(1, Ordering::SeqCst);

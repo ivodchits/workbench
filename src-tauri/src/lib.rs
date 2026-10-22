@@ -19,6 +19,7 @@ mod plugins;
 mod pty;
 mod registry;
 mod remote;
+mod shutdown;
 mod skills;
 mod statusline;
 mod sys;
@@ -30,6 +31,7 @@ use tauri::Manager;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    shutdown::keep_stdio_to_self();
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_store::Builder::default().build())
@@ -399,8 +401,7 @@ pub fn run() {
         .expect("error while building tauri application")
         .run(|app, event| {
             if let tauri::RunEvent::Exit = event {
-                hooks::uninstall_dev(app);
-                assistant::headless::kill_all(app);
+                shutdown::on_exit(app);
             }
         });
 }
