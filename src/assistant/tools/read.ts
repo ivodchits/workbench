@@ -11,6 +11,7 @@
 import { z } from "zod";
 import { readPlainText } from "../../transcript/plainText";
 import type { ChoiceRef, ProjectRef, SessionRef, WorkbenchPort } from "../port";
+import { projectMonth } from "../spend";
 import { defineTool } from "./registry";
 
 // ── helpers ─────────────────────────────────────────────────────────────────
@@ -403,15 +404,17 @@ export const readNote = defineTool({
 export const duckSpend = defineTool({
   name: "duck_spend",
   description:
-    "Your own API spend (Duck's, not the coding sessions'): today, this month, the monthly cap and soft limit, and the split by purpose. Use it when the user asks what Duck costs.",
+    "Your own API spend (Duck's, not the coding sessions'): today, this month, where the month is on track to end, the monthly cap and soft limit (past it, you run on Haiku unless the user says \"think hard\"), and the split by purpose. Use it when the user asks what Duck costs.",
   schema: z.object({}),
   tier: "read",
   async run(_input, { port }) {
     const s = await port.spend();
     const usd = (n: number) => `$${n.toFixed(n < 1 ? 4 : 2)}`;
+    const projected = projectMonth(s.monthUsd);
     return compact({
       today: usd(s.todayUsd),
       month: usd(s.monthUsd),
+      onTrackFor: projected === null ? null : usd(projected),
       cap: usd(s.limits.hardCapUsd),
       softLimit: usd(s.limits.hardCapUsd * s.limits.softRatio),
       softReached: s.softReached,

@@ -39,3 +39,13 @@ export function createTurnMeter(): TurnMeter {
     turns: () => Object.fromEntries(costs),
   };
 }
+
+/** The month's spend so far extrapolated to the month's end (step M2), or null in
+ *  its first two days, when the rate says little. */
+export function projectMonth(monthUsd: number, now = new Date()): number | null {
+  const start = new Date(now.getFullYear(), now.getMonth(), 1).getTime();
+  const end = new Date(now.getFullYear(), now.getMonth() + 1, 1).getTime();
+  const gone = now.getTime() - start;
+  if (gone < 2 * 86_400_000) return null;
+  return (monthUsd * (end - start)) / gone;
+}

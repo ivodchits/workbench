@@ -405,7 +405,9 @@ describe("read tools", () => {
     expect(long.cut).toBe("5000 more characters");
   });
 
-  it("duck_spend formats the month against the cap", async () => {
+  it("duck_spend formats the month against the cap, and where it's heading", async () => {
+    // A third of a 30-day month gone: $1.50 so far is on track for $4.50.
+    vi.useFakeTimers({ now: new Date(2026, 8, 11) });
     const spend = {
       todayUsd: 0.0123,
       monthUsd: 1.5,
@@ -421,9 +423,11 @@ describe("read tools", () => {
     expect((await run(duckSpend, {}, { spend })).out).toEqual({
       today: "$0.0123",
       month: "$1.50",
+      onTrackFor: "$4.50",
       cap: "$20.00",
       softLimit: "$16.00",
       byPurpose: ["thread: $1.40 (12 calls)", "title: $0.0001 (3 calls)"],
     });
+    vi.useRealTimers();
   });
 });

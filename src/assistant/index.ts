@@ -63,6 +63,7 @@ import { createRegistry } from "./tools/registry";
 import { TASK_TOOLS } from "./tools/tasks";
 import { AUTOPILOT_TOOLS } from "./tools/autopilot";
 import { THREAD_TOOLS } from "./tools/threads";
+import { HAIKU_TOOLS } from "./tools/haikuTask";
 import { createTaskManager, ipcTaskBackend, type Task, type TaskManager } from "./tasks";
 import { voiceMessage } from "./voiceNames";
 import { testAnnounce, testConfirm } from "./tools/testConfirm";
@@ -97,8 +98,24 @@ const TOOLS = [
   ...QUIET_TOOLS,
   ...AUTOPILOT_TOOLS,
   ...THREAD_TOOLS,
+  ...HAIKU_TOOLS,
   ...(import.meta.env.DEV ? [testConfirm, testAnnounce] : []),
 ];
+
+/** Tools the model finds with the tool search when it needs them (step M2):
+ *  the rarely used, and the large ones that are rarely used. The rest load up
+ *  front, so most turns need no search. */
+const DEFERRED = new Set([
+  ...PLUGIN_TOOLS.map((t) => t.name),
+  ...AUTOPILOT_TOOLS.map((t) => t.name),
+  ...SCREEN_TOOLS.map((t) => t.name),
+  "delete_thread",
+  "delete_note",
+  "task_rerun",
+  "save_screenshot",
+  "set_quiet",
+  "duck_spend",
+]);
 
 /** Where the spend comes from: the ledger commands in the app, fakes in tests. */
 export interface SpendSource {
@@ -527,12 +544,14 @@ export function initAssistant(): Promise<void> {
       reader: readerHost,
       screen: screenHost,
       quiet: quietHost,
+      haiku: (input, signal) => oneShot("haiku_task", input, { signal }),
       eventLevel: (threadId, level) => levels.set(threadId, level),
       store: s,
-      registry: createRegistry(TOOLS),
+      registry: createRegistry(TOOLS, { deferred: DEFERRED }),
       port: localPort,
       gate: createPolicy({ settings: settings.get, trust, messages: s.loaded }),
       settings: settings.get,
+      degraded: () => localPort.spend().then((x) => x.softReached),
       stream: async (params, opts) =>
         (await getClient()).beta.messages.stream(params, opts),
       nameThread: (text) => oneShot("title", text.slice(0, 2000)),

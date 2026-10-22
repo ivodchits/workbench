@@ -7,6 +7,7 @@ import {
   briefNote,
   buildParams,
   createEngine,
+  HAIKU_CARD,
   effectiveEffort,
   eventText,
   toApiMessages,
@@ -163,6 +164,7 @@ async function setup(
   tools: ToolDef[] = [getTime, sendPrompt],
   backend = memoryBackend(),
   gate?: Gate,
+  degraded?: () => Promise<boolean>,
 ) {
   const store = createThreadStore(backend);
   await store.load();
@@ -173,6 +175,7 @@ async function setup(
     port,
     store,
     gate,
+    degraded,
   });
   const events: DuckEvent[] = [];
   engine.onEvent((e) => events.push(e));
@@ -1057,5 +1060,79 @@ describe("moving the conversation", () => {
     engine.stop(a);
     await engine.settled(a);
     expect(events.some((e) => e.type === "goThread")).toBe(false);
+  });
+});
+
+describe("routing (M2)", () => {
+  const lastEffort = (p: Params) => {
+    const m = p.messages[p.messages.length - 1];
+    return m.role === "system" ? m.output_config?.effort : undefined;
+  };
+
+  it("raises the effort for involved work and keeps it at medium otherwise", async () => {
+    const { engine, events, calls } = await setup([
+      message([text("On it.")], "end_turn"),
+      message([text("Idle.")], "end_turn"),
+    ]);
+    const id = await turn(engine, "compare these three libraries for state and write it up in a note");
+    await turn(engine, "what's the backend agent doing", id);
+    expect(lastEffort(calls[0].params)).toBe("high");
+    // Back to medium: a system message carries the change.
+    expect(lastEffort(calls[1].params)).toBe("medium");
+    expect(events.filter((e) => e.type === "routing")).toEqual([
+      { type: "routing", threadId: id, brain: "sonnet", effort: "high" },
+      { type: "routing", threadId: id, brain: "sonnet", effort: "medium" },
+    ]);
+  });
+
+  it("drops thinking blocks bound to an old prompt instead of failing", async () => {
+    const { engine, calls } = await setup([message([text("Hi.")], "end_turn")]);
+    await turn(engine, "hi");
+    expect(calls[0].params.thinking).toEqual({
+      type: "adaptive",
+      block_binding: { prefix_mismatch_behavior: "drop_block" },
+    });
+    expect(calls[0].params.betas).toContain("thinking-binding-controls-2026-08-01");
+  });
+
+  it("runs on Haiku past the soft limit, says so once, and takes Sonnet for \"think hard\"", async () => {
+    const { engine, store, calls } = await setup(
+      [
+        message([text("Haiku here.")], "end_turn"),
+        message([text("Still Haiku.")], "end_turn"),
+        message([text("Sonnet, thinking.")], "end_turn"),
+      ],
+      undefined,
+      undefined,
+      undefined,
+      async () => true,
+    );
+    const id = await turn(engine, "what's up");
+    await turn(engine, "and the tests?", id);
+    await turn(engine, "think hard: should we split the repo?", id);
+    expect(calls.map((c) => c.params.model)).toEqual(["claude-haiku-5-5", "claude-haiku-5-5", "claude-sonnet-5-5"]);
+    // Haiku has no server-side fallback; Sonnet keeps it.
+    expect(calls[0].params.fallbacks).toBeUndefined();
+    expect(calls[2].params.fallbacks).toBe("default");
+    expect(lastEffort(calls[2].params)).toBe("high");
+    const cards = store.loaded(id).filter((m) => m.role === "notice");
+    expect(cards.map((m) => m.content)).toEqual([{ kind: "budget", text: HAIKU_CARD }]);
+    // The card is never sent.
+    expect(JSON.stringify(calls[1].params.messages)).not.toContain("soft limit");
+  });
+
+  it("sends one message on the model the surface names", async () => {
+    const { engine, calls } = await setup([message([text("Sonnet.")], "end_turn")], undefined, undefined, undefined, async () => true);
+    const id = await engine.send({ threadId: null, text: "hi", source: "desktop", brain: "sonnet" });
+    await engine.settled(id);
+    expect(calls[0].params.model).toBe("claude-sonnet-5-5");
+  });
+
+  it("counts a budget it can't read as not degraded", async () => {
+    const { engine, calls } = await setup([message([text("Hi.")], "end_turn")], undefined, undefined, undefined, () =>
+      Promise.reject(new Error("ledger down")),
+    );
+    await turn(engine, "hi");
+    expect(calls[0].params.model).toBe("claude-sonnet-5-5");
   });
 });

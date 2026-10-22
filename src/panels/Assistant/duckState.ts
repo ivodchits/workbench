@@ -39,6 +39,7 @@ import type { Mode } from "../../assistant/trust/decide";
 import type { ReplayReport } from "../../assistant/trust/replay";
 import type { Effect } from "../../assistant/trust/rules";
 import type { DecisionRow, Spend, StoredMessage, ThreadRow } from "../../ipc/assistant";
+import type { Route } from "../../assistant/routing";
 import { getPref, setPref, type AssistantDrawerPrefs } from "../../ipc/prefs";
 import { onReplyDelta, onToolStart, onTurnEnded, onUserMessage, stopSpeaking } from "./replySpeech";
 
@@ -62,6 +63,8 @@ export interface DuckState {
   spend: Spend | null;
   /** Each thread's latest turn cost, USD. */
   turns: Record<string, number>;
+  /** The model and effort of each thread's latest turn (step M2). */
+  routing: Record<string, Route>;
   error: string | null;
   prefs: AssistantDrawerPrefs;
   /** Duck's own settings (step W2), as the engine has them; null until synced. */
@@ -105,6 +108,7 @@ let state: DuckState = {
   asks: [],
   spend: null,
   turns: {},
+  routing: {},
   error: null,
   prefs: DEFAULT_DRAWER,
   settings: null,
@@ -374,6 +378,9 @@ function onEvent(e: DuckEvent): void {
       break;
     case "spend":
       set({ spend: e.spend, turns: e.turns });
+      break;
+    case "routing":
+      set({ routing: { ...state.routing, [e.threadId]: { brain: e.brain, effort: e.effort } } });
       break;
     case "settings":
       set({ settings: e.settings });

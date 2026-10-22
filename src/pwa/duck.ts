@@ -940,7 +940,7 @@ function taskCard(taskId: string, text: string): HTMLElement {
   return card;
 }
 
-const NOTICE_GLYPH: Partial<Record<Notice["kind"], string>> = { keys: "⌨", autopilot: "⟳", screen: "▣", reader: "♪" };
+const NOTICE_GLYPH: Partial<Record<Notice["kind"], string>> = { keys: "⌨", autopilot: "⟳", screen: "▣", reader: "♪", budget: "$" };
 
 function noticeLine(n: Notice): HTMLElement {
   const quiet = n.kind === "stopped" || n.kind === "keys" || n.kind === "autopilot" || n.kind === "screen" || n.kind === "reader";

@@ -40,6 +40,7 @@ import type {
   ReviewItem,
   TurnState,
 } from "../../assistant/protocol";
+import { projectMonth } from "../../assistant/spend";
 import DuckAvatar from "./DuckAvatar";
 import type { DuckMode } from "./duck3d";
 import DuckIcon from "./DuckIcon";
@@ -834,7 +835,9 @@ function ItemView({ item, active }: { item: Item; active: boolean }) {
               item.notice.kind === "screen" ||
               item.notice.kind === "reader"
                 ? "var(--wb-textFaint)"
-                : "var(--wb-needs)",
+                : item.notice.kind === "budget"
+                  ? "var(--wb-working)"
+                  : "var(--wb-needs)",
           }}
         >
           {NOTICE_GLYPH[item.notice.kind] ?? "!"} {item.notice.text}
@@ -843,7 +846,7 @@ function ItemView({ item, active }: { item: Item; active: boolean }) {
   }
 }
 
-const NOTICE_GLYPH: Partial<Record<Notice["kind"], string>> = { keys: "⌨", autopilot: "⟳", screen: "▣", reader: "♪" };
+const NOTICE_GLYPH: Partial<Record<Notice["kind"], string>> = { keys: "⌨", autopilot: "⟳", screen: "▣", reader: "♪", budget: "$" };
 
 const TASK_STATE: Record<string, string> = {
   queued: "waiting for a free worker",
@@ -1298,6 +1301,8 @@ function SpendLine({ duck }: { duck: DuckState }) {
   const s = duck.spend;
   if (!s) return null;
   const turn = duck.current ? duck.turns[duck.current] : undefined;
+  const route = duck.current ? duck.routing[duck.current] : undefined;
+  const projected = projectMonth(s.monthUsd);
   const tone = s.capReached
     ? "var(--wb-needs)"
     : s.softReached
@@ -1317,8 +1322,15 @@ function SpendLine({ duck }: { duck: DuckState }) {
       }}
     >
       {turn !== undefined && <span>this turn {usd(turn)}</span>}
+      {route?.brain === "haiku" && (
+        <span title="past the budget's soft limit: Haiku, unless you ask to think hard" style={{ color: "var(--wb-working)" }}>
+          haiku
+        </span>
+      )}
+      {route && route.effort !== "medium" && <span title="the latest turn's effort">effort: {route.effort}</span>}
       <span style={{ marginLeft: "auto", color: tone }}>
         month {usd(s.monthUsd)} / {usd(s.limits.hardCapUsd)}
+        {projected !== null && ` · on track for ${usd(projected)}`}
       </span>
     </div>
   );
@@ -1410,7 +1422,11 @@ function Composer({
         <button
           type="button"
           aria-pressed={hard}
-          title="Think harder about the next message (higher effort; slower and costs more)"
+          title={
+            duck.spend?.softReached
+              ? "Send the next message on Sonnet at high effort (past the budget's soft limit Duck runs on Haiku)"
+              : "Think harder about the next message (higher effort; slower and costs more)"
+          }
           onClick={() => setHard(!hard)}
           style={{
             ...btn,
@@ -1418,7 +1434,7 @@ function Composer({
             color: hard ? "var(--wb-accent)" : "var(--wb-textDim2)",
           }}
         >
-          {hard ? "◆" : "◇"} think hard
+          {hard ? "◆" : "◇"} think hard{duck.spend?.softReached ? " · sonnet" : ""}
         </button>
         <span style={{ flex: 1 }} />
         {busy && (

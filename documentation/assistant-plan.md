@@ -2746,6 +2746,57 @@ up ("change this", with a circle around it).
     20-minute gap (the 1-hour TTL).
   - Forcing month-to-date to 81% switches new messages to Haiku with a card.
 - **Out of scope:** a separate classifier call to pick the model.
+- **As built (2026-10-21):**
+  - **Routing** (`routing.ts`, no model call): `pickEffort` raises a message to `high` for a
+    rubber-duck thread (mode `duck`), "think hard" and its forms («подумай как следует»,
+    "piénsalo bien", "think it through"), and words for research, comparisons, analysis,
+    plans, write-ups and browser chores in English, Russian and Spanish. Workbench events
+    stay `medium` whatever they quote. The engine routes every turn first and emits a
+    `routing` event (model, effort); the drawer's spend line shows "effort: high" and
+    "haiku" chips for the open thread's latest turn.
+  - **`haiku_task(instruction, sources[])`** (`tools/haikuTask.ts`): sources are session
+    transcripts (worker tasks included, by their session) and notes, read by the tool
+    (100k characters a source, 380k in all, under Haiku's long-prompt price step), wrapped
+    as untrusted `<source>` data, sent through a new frozen primitive `haiku_task`
+    (thinking on, low effort, 4k tokens out). Only the answer and the list of sources read
+    come back. No web pages yet: Duck has no fetch of its own until B1. The system prompt
+    sends "more than a screenful" to it, with "summarize all sessions in backend" as the
+    example.
+  - **Tool search:** 19 rarely used tools are deferred (plugins, autopilot, the
+    terminal's screen and keys, delete thread/note, task rerun, save screenshot, set
+    quiet, duck spend) behind `tool_search_tool_regex_20251119`, listed in `index.ts`
+    (`DEFERRED`; the registry refuses a name that isn't a tool). The system prompt names
+    the search words for each group. The loaded prefix went from ~52.7k to ~36.7k
+    characters (tools + system), about 9–10k tokens. Context editing was already in
+    (A2).
+  - **Budget degrade, in place rather than in a new thread** (changed from the Build):
+    past the soft limit (`port.spend().softReached`, read per turn; unreadable counts as
+    not degraded) a turn runs on Haiku in the same thread. Re-reading a thread once on
+    Haiku costs well under a cent, and the thread keeps its context, so a new thread and
+    a handoff weren't worth it; M3's switch to another *process* still needs one. The
+    first Haiku turn in a thread shows a "$" card (a `budget` notice, never sent).
+    "Think hard" (said, or the drawer's toggle, which reads "think hard · sonnet" past the
+    soft limit) sends that message on Sonnet at `high`; its cost shows as "this turn"
+    as before. `SendInput.brain` / the protocol's `send.brain` names a model outright.
+    Haiku turns send no `fallbacks` (it has no server-side fallback). At the cap the proxy
+    refuses `thread` calls as before, so only primitives run.
+  - **Projection:** `projectMonth` extrapolates month-to-date from the third day on; the
+    spend line shows "· on track for $X", and `duck_spend` returns `onTrackFor`.
+  - **Found on the way, fixed:** thinking blocks are bound to the `system` prompt and
+    `tools` they were made under, and accounts created after 2026-08-31 (Duck's Console
+    org, linked 2026-10-18) get a 400 when an old block is replayed under a changed
+    prefix. Every step that edits Duck's prompt or tools did that to existing threads, and
+    this one changes both. Requests now set `thinking.block_binding.
+    prefix_mismatch_behavior: "drop_block"` (beta `thinking-binding-controls-2026-08-01`):
+    an old thread loses its earlier thinking after an update instead of failing.
+  - **Verified:** vitest 591 (28 new: routing rules in three languages, the engine's
+    routing, Haiku past the soft limit with one card and Sonnet on "think hard", no
+    fallbacks on Haiku, `drop_block`, `haiku_task`'s reading, wrapping and empty
+    sources, deferred tools, the projection), tsc and eslint clean.
+  - **Not verified live yet:** the request shape against the real API (tool search with
+    deferred tools, `block_binding`, a Haiku turn with the mid-conversation effort
+    message), the done-when's context growth under 2k for "summarize all sessions",
+    `cache_read_input_tokens` after a 20-minute gap, and forcing 81% in the app.
 
 #### Step M3 — Subscription brain: headless Claude Code as the fallback main thread
 
@@ -6129,7 +6180,7 @@ T2 goes live after the replay check in its done-when (the past week's prompts th
 | W5 | Project toolbar tools | ☑ |
 | W6 | Screen and keys: Duck's hands on the terminal | ☑ |
 | M1 | Model per Claude Code session | ☑ |
-| M2 | Effort routing, Haiku workers, budget-aware degrade | ☐ |
+| M2 | Effort routing, Haiku workers, budget-aware degrade | ☑ (not tried live yet) |
 | M3 | Subscription brain: headless Claude Code as the fallback main thread | ☐ |
 | M4 | Permission mode at launch | ☑ |
 | D1 | Worker sessions: workspace, brief, result contract | ☑ |

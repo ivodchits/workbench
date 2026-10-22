@@ -4,6 +4,10 @@
 // request to request (the prompt cache is a prefix match), and tells the engine each
 // tool's tier and time budget.
 //
+// Rarely used tools are deferred (step M2): sent with `defer_loading`, so they stay
+// out of the prompt until the model finds them with the regex tool search, which
+// keeps the fixed prefix small. A found tool is appended, so the cache holds.
+//
 // Tiers (design → Tools): `read` and `reversible` run without asking; a
 // `consequential` call waits for a confirmation unless the trust policy (T1) says
 // otherwise. A tool's `trust` tells that policy what a call is about.
@@ -26,6 +30,7 @@ import type { ReaderHost } from "./readAloud";
 import type { ScreenHost } from "./screenshot";
 import type { QuietHost } from "./quiet";
 import type { ThreadMoves } from "./threads";
+import type { HaikuCall } from "./haikuTask";
 import type { Level } from "../announce";
 
 export type Tier = "read" | "reversible" | "consequential";
@@ -56,6 +61,8 @@ export interface ToolContext {
   screen: ScreenHost | null;
   /** Do Not Disturb and Speak (step V5); null where there are none (some tests). */
   quiet: QuietHost | null;
+  /** One Haiku call for `haiku_task` (step M2); absent where there is none. */
+  haiku?: HaikuCall | null;
   /** Start a new Duck thread on `words`, which must be the user's own words from
    *  their latest message here (it throws otherwise). The new thread's turn runs on
    *  its own; resolves to its id. With `go` (step A7), the conversation moves into
@@ -137,7 +144,16 @@ function inputSchema(schema: z.ZodType): Anthropic.Beta.BetaTool.InputSchema {
   return json as Anthropic.Beta.BetaTool.InputSchema;
 }
 
-export function createRegistry(tools: readonly ToolDef[]): Registry {
+/** The server-side search the model finds deferred tools with. */
+export const TOOL_SEARCH = {
+  type: "tool_search_tool_regex_20251119",
+  name: "tool_search_tool_regex",
+} as const;
+
+export function createRegistry(
+  tools: readonly ToolDef[],
+  opts: { deferred?: ReadonlySet<string> } = {},
+): Registry {
   const byName = new Map<string, ToolDef>();
   for (const t of tools) {
     if (byName.has(t.name)) throw new Error(`duplicate tool: ${t.name}`);
@@ -149,11 +165,17 @@ export function createRegistry(tools: readonly ToolDef[]): Registry {
   // Built once: the same objects, serialized the same way, on every request.
   // Inputs are small, so they aren't streamed eagerly (the server validates them
   // against the schema before the call reaches us; the engine validates again).
-  const apiTools: Anthropic.Beta.BetaTool[] = sorted.map((t) => ({
-    name: t.name,
-    description: t.description,
-    input_schema: inputSchema(t.schema),
-  }));
+  const deferred = opts.deferred ?? new Set<string>();
+  for (const n of deferred) if (!byName.has(n)) throw new Error(`deferred tool not found: ${n}`);
+  const apiTools: Anthropic.Beta.BetaToolUnion[] = [
+    ...(deferred.size ? [TOOL_SEARCH] : []),
+    ...sorted.map((t) => ({
+      name: t.name,
+      description: t.description,
+      input_schema: inputSchema(t.schema),
+      ...(deferred.has(t.name) && { defer_loading: true }),
+    })),
+  ];
   return {
     apiTools,
     get: (name) => byName.get(name),

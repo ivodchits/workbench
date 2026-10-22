@@ -8,6 +8,7 @@
 
 import type { DecisionRow, Spend, StoredMessage, ThreadRow } from "../ipc/assistant";
 import type { ReaderView } from "./reader";
+import type { Brain } from "./routing";
 import type { DuckSettings } from "./settings";
 import type { Mode, TrustConfig } from "./trust/decide";
 import type { ReplayReport } from "./trust/replay";
@@ -116,7 +117,9 @@ export interface Notice {
     /** Duck took a screenshot (V3). */
     | "screen"
     /** A read aloud stopped before its end (V3). */
-    | "reader";
+    | "reader"
+    /** The thread moved to Haiku past the budget's soft limit (M2). */
+    | "budget";
   text: string;
   /** `note` only. */
   note?: NoteEdit;
@@ -173,6 +176,8 @@ export type ClientMessage =
       text: string;
       source: Source;
       effort?: Effort;
+      /** The model for this one message (step M2): Sonnet past the soft limit. */
+      brain?: Brain;
       /** Conversation mode (step V4): start now, keep only on `turn.commit`. */
       provisional?: boolean;
     }
@@ -269,6 +274,8 @@ export type DuckEvent =
   /** A confirmation was answered (here or on another surface). */
   | { type: "confirmed"; threadId: string; toolUseId: string; allow: boolean }
   | { type: "turnState"; threadId: string; state: TurnState; queued: number }
+  /** The model and effort a turn runs at (step M2), as it starts. */
+  | { type: "routing"; threadId: string; brain: Brain; effort: Effort }
   /** The month's API spend, after every metered call and on `sync`. `turns` holds
    *  each thread's latest turn cost (since the app started), in USD. */
   | { type: "spend"; spend: Spend; turns: Record<string, number> }

@@ -3,6 +3,8 @@
 // and pick up again later, possibly after a restart.
 //
 // One turn, per thread:
+//   0. Route it (step M2, `routing.ts`): the model (Sonnet; Haiku past the
+//      budget's soft limit) and the effort.
 //   1. Append the user's message (and, when the effort changes or the message was
 //      spoken, a mid-conversation system message carrying the effort or the voice
 //      note, which keeps the cache).
@@ -24,7 +26,8 @@ import Anthropic from "@anthropic-ai/sdk";
 import type { StoredMessage, ThreadRow } from "../ipc/assistant";
 import { capMessage, errorMessage, purpose, THREAD_PURPOSE } from "./client";
 import type { WorkbenchPort } from "./port";
-import { MAIN_MODEL, SYSTEM_PROMPT, VOICE_NOTE } from "./prompt";
+import { SYSTEM_PROMPT, VOICE_NOTE } from "./prompt";
+import { MODELS, route, type Brain } from "./routing";
 import { quotedFromLatest } from "./trust/mandate";
 import {
   USER_SOURCES,
@@ -54,6 +57,7 @@ import type { ReaderHost } from "./tools/readAloud";
 import type { ScreenHost } from "./tools/screenshot";
 import type { QuietHost } from "./tools/quiet";
 import type { ThreadMoves } from "./tools/threads";
+import type { HaikuCall } from "./tools/haikuTask";
 import type { Level } from "./announce";
 
 type Params = Anthropic.Beta.Messages.MessageCreateParamsStreaming;
@@ -70,6 +74,7 @@ const BETAS = [
   "context-management-2025-06-27",
   "mid-conversation-output-config-2026-07-01",
   "server-side-fallback-2026-07-01",
+  "thinking-binding-controls-2026-08-01",
 ];
 const CACHE_1H = { type: "ephemeral", ttl: "1h" } as const;
 /** Old tool results are cleared server-side once the prompt grows past this. */
@@ -137,6 +142,8 @@ export interface EngineDeps {
   screen?: ScreenHost;
   /** Do Not Disturb and Speak (step V5), for `set_quiet`. */
   quiet?: QuietHost;
+  /** One Haiku call, for `haiku_task` (step M2). */
+  haiku?: HaikuCall;
   /** A tool's follow-up event (`later`) is about to be posted, at this level of
    *  news (V5). */
   eventLevel?: (threadId: string, level: Level) => void;
@@ -149,6 +156,9 @@ export interface EngineDeps {
   nameThread?: (text: string) => Promise<string>;
   /** Duck's settings as they are now (the policy and some tools read them). */
   settings?: () => DuckSettings;
+  /** Whether the API budget is past its soft limit (step M2): turns then run on
+   *  Haiku. Not degraded when absent or when it fails. */
+  degraded?: () => Promise<boolean>;
 }
 
 /** A follow-up a tool posts (`ToolContext.later`): marked as Workbench's, so the
@@ -164,6 +174,8 @@ export interface SendInput {
   text: string;
   source: Source;
   effort?: Effort;
+  /** This one message on this model (step M2); routed when absent. */
+  brain?: Brain;
   /** Conversation mode's turn that may yet be withdrawn (step V4): the request
    *  starts now, but nothing is kept until `commit`; `withdraw` drops it. */
   provisional?: boolean;
@@ -274,15 +286,20 @@ export function effectiveEffort(messages: readonly ApiMessage[]): Effort {
 export function buildParams(
   registry: Registry,
   messages: ApiMessage[],
+  brain: Brain = "sonnet",
 ): Params {
   return {
-    model: MAIN_MODEL,
+    model: MODELS[brain],
     max_tokens: MAX_TOKENS,
     stream: true,
     betas: BETAS,
-    thinking: { type: "adaptive" },
+    // A thinking block is bound to the prompt it was made under, so after the
+    // system prompt or the tools change (a new build), an old thread's blocks are
+    // dropped rather than the request refused.
+    thinking: { type: "adaptive", block_binding: { prefix_mismatch_behavior: "drop_block" } },
     output_config: { effort: DEFAULT_EFFORT },
-    fallbacks: "default",
+    // Haiku has no server-side fallback.
+    ...(brain === "sonnet" && { fallbacks: "default" as const }),
     // tools → system is the frozen prefix: one explicit 1-hour breakpoint at its
     // end; automatic caching (also 1 hour: longer TTLs must come first) for the tail.
     tools: registry.apiTools,
@@ -396,6 +413,10 @@ interface Held {
   kept(): void;
 }
 
+/** The card on a thread's first turn on Haiku (step M2). */
+export const HAIKU_CARD =
+  "Duck's API budget is past its soft limit: switching to Haiku for the rest of the month. Sonnet stays available per message (\"think hard\").";
+
 /** A provisional turn nobody decided on is kept after this long. */
 export const PROVISIONAL_MAX_MS = 15_000;
 
@@ -431,6 +452,7 @@ export function surfaceOf(messages: readonly StoredMessage[]): Surface {
 interface Turn {
   ctl: AbortController;
   state: TurnState;
+  brain: Brain;
   held?: Held;
   withdrawn?: boolean;
 }
@@ -447,6 +469,8 @@ export function createEngine(deps: EngineDeps): Engine {
   /** Moves asked for, by the thread they were asked in. */
   const moves = new Map<string, Move>();
   const trails = new Map<Surface, string[]>();
+  /** The model each thread's latest turn ran on (for the budget card). */
+  const brains = new Map<string, Brain>();
 
   const emit = (e: DuckEvent) => {
     for (const l of listeners) {
@@ -457,6 +481,8 @@ export function createEngine(deps: EngineDeps): Engine {
       }
     }
   };
+
+  const isDegraded = () => (deps.degraded?.() ?? Promise.resolve(false)).catch(() => false);
 
   const busy = (threadId: string) =>
     turns.has(threadId) || store.pending().some((b) => b.threadId === threadId);
@@ -501,16 +527,26 @@ export function createEngine(deps: EngineDeps): Engine {
   }
 
   async function start(threadId: string, input: SendInput) {
-    const turn: Turn = { ctl: new AbortController(), state: "thinking" };
+    const turn: Turn = { ctl: new AbortController(), state: "thinking", brain: "sonnet" };
     turns.set(threadId, turn);
     setState(threadId, "thinking");
     try {
       const history = await store.messages(threadId);
       const first = history.length === 0;
+      const degraded = await isDegraded();
+      const { brain, effort: want } = route({
+        text: input.text,
+        source: input.source,
+        mode: store.thread(threadId)?.mode,
+        effort: input.effort,
+        brain: input.brain,
+        degraded,
+      });
+      turn.brain = brain;
+      emit({ type: "routing", threadId, brain, effort: want });
       const opening: Opening[] = [
         { role: "user", content: [{ type: "text", text: input.text }], source: input.source },
       ];
-      const want = input.effort ?? DEFAULT_EFFORT;
       const effortChanged = want !== effectiveEffort(toApiMessages(history));
       // A spoken message gets a spoken-style answer (step V2). One system message
       // carries both, since one must be followed by the reply.
@@ -528,6 +564,9 @@ export function createEngine(deps: EngineDeps): Engine {
           source: "duck",
         });
       }
+      // The first Haiku turn in a thread says so (shown, never sent).
+      if (brain === "haiku" && brains.get(threadId) !== "haiku")
+        opening.push({ role: "notice", content: { kind: "budget", text: HAIKU_CARD }, source: "duck" });
       const named = () => {
         if (!first || !deps.nameThread) return;
         // Fire and forget: a thread without a title is still a thread.
@@ -553,6 +592,7 @@ export function createEngine(deps: EngineDeps): Engine {
         for (const m of opening) await append(threadId, m.role, m.content, m.source);
         named();
       }
+      brains.set(threadId, brain);
       await loop(threadId, turn);
     } catch (e) {
       if (await kept(threadId, turn))
@@ -678,7 +718,7 @@ export function createEngine(deps: EngineDeps): Engine {
       let text = "";
       let msg: Anthropic.Beta.BetaMessage;
       try {
-        const stream = await deps.stream(buildParams(registry, messages), {
+        const stream = await deps.stream(buildParams(registry, messages, turn.brain), {
           signal,
           ...purpose(THREAD_PURPOSE),
         });
@@ -855,6 +895,7 @@ export function createEngine(deps: EngineDeps): Engine {
           reader: deps.reader ?? null,
           screen: deps.screen ?? null,
           quiet: deps.quiet ?? null,
+          haiku: deps.haiku ?? null,
           request: lastUserText(store.loaded(threadId)),
           startThread: (words, opts) => split(threadId, words, opts),
           threads: threadMoves(threadId),
@@ -884,9 +925,11 @@ export function createEngine(deps: EngineDeps): Engine {
    *  back in one message, and carry on with the turn. */
   async function resume(batch: PendingBatch, stopped: boolean) {
     const { threadId } = batch;
-    const turn: Turn = { ctl: new AbortController(), state: "tool" };
+    const turn: Turn = { ctl: new AbortController(), state: "tool", brain: brains.get(threadId) ?? "sonnet" };
     turns.set(threadId, turn);
     try {
+      // Parked before a restart: the model the budget calls for now.
+      if (!brains.has(threadId) && (await isDegraded())) turn.brain = "haiku";
       if (!stopped) setState(threadId, "tool");
       const results = await Promise.all(
         batch.calls.map(async (c) => {
