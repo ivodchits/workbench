@@ -4133,6 +4133,68 @@ up ("change this", with a circle around it).
 - **Out of scope:** the phone (not wanted, 2026-10-20); speaker identification; other
   wake phrases.
 
+#### Step V7 — Duck stops hearing itself on the phone (high priority, added 2026-10-22)
+
+- **Goal:** on the phone, Duck doesn't hear its own voice. Today it often cuts itself off
+  mid-reply because the mic picks up its speech from the phone's speaker (reported
+  2026-10-22).
+- **Why it happens:**
+  - V4 part 3 left the phone with **no echo handling of its own.** It relies on the
+    browser's echo cancellation (`getUserMedia({echoCancellation: true})`).
+  - The desktop's `Phone` surface (`remote/assistant.rs`) runs no gate:
+    - `said_lately` returns nothing, so the self-voice check never runs;
+    - there's no canceller, so the gate is skipped;
+    - while `conv.playing` is on, any 9 frames (~0.3 s) of VAD speech send `conv.cut`.
+  - The design (§Talking over it) called for layers 4–5 (the barge-in gate and the
+    self-voice check) on the desktop side for the phone, and they weren't built.
+  - The browser's echo cancellation likely doesn't see Duck's voice as a reference:
+    - The page plays it through a separate WebAudio `AudioContext` (`duckSpeech.ts`)
+      or through `speechSynthesis`, which is the system's TTS, not the tab's audio.
+    - On Android, Chrome's echo cancellation is the platform's, and it often leaves out
+      media-stream playback.
+  - Echo that isn't cut short can also come back as a turn: Duck's own words get sent to
+    it as your message.
+  - X0's phone echo run waited for R2 and was never done.
+- **Depends on:** V4 (part 3). Nothing else, so it goes right after the step in progress.
+- **Build:**
+  - **First, measure on the phone.** Play a fixed reply through each of the page's paths
+    with conversation mode on, and log what the desktop hears. A debug pref saves the
+    phone's stream for `tools/voice-eval/score_echo.py`. Record the echo level, false cuts,
+    and echo turns per path. The fixes below are ordered by what that shows.
+  - **The self-voice check for the phone:**
+    - `Phone::said_lately` returns the text sent to that socket to speak in the last 30 s.
+    - The check runs whenever Duck spoke during the segment, not only when a canceller
+      runs. Echo turns are dropped.
+  - **A gate for the phone's barge-in:**
+    - While `conv.playing` is on, a cut needs speech over a level learned from the
+      playback (the mic's level on frames of Duck alone, as the desktop's `Gate`) for
+      ≥ 300 ms.
+    - It also needs the first stretch's words not to match what's being said. The cut
+      waits for that transcription, about 100 ms on the GPU.
+  - **Give the browser the reference:**
+    - In conversation mode, play Duck's voice through the same `AudioContext` as the
+      mic, or through an `<audio>` element fed from a `MediaStreamAudioDestinationNode`,
+      whichever the measurement shows the phone's echo cancellation removes.
+    - Prefer the desktop's TTS audio to `speechSynthesis` while conversation mode is on.
+  - **Last resort, per device:**
+    - If the echo is still there after the above, the phone goes half-duplex while
+      Duck speaks: tap the duck or say "stop" to interrupt, as the desktop's
+      "force half-duplex".
+    - The page says why, and a setting has auto / full / half.
+    - Headphones on the phone (the browser reports the output when it can) stay full.
+- **Key files:** `src-tauri/src/remote/assistant.rs` (`Phone`),
+  `src-tauri/src/voice/conversation.rs` (the gate and the check for a surface with no
+  canceller), `src/pwa/duckSpeech.ts`, `src/pwa/converse.ts`, `src/pwa/duck.ts`.
+- **Done when** (on the phone's speaker, normal volume, measured; results in As built):
+  - A 3-minute spoken reply plays through without cutting itself off: 0 false cuts.
+  - None of Duck's words come back as a turn.
+  - Talking over Duck still stops it within ~0.5 s in at least 9 in 10 tries.
+  - The same holds with headphones.
+  - The numbers are measured on your phone. The replay of the recorded phone stream is
+    a regression test.
+- **Out of scope:** listening with the screen off (R4); echo on the desktop, which V4
+  part 2 handles.
+
 ### Track R — Remote
 
 #### Step R1 — Assistant endpoints on the remote server
@@ -6360,7 +6422,7 @@ X0 ─┬─▶ A1 ─▶ A2 ─┬─▶ A3 ─┬─▶ W2 ─┬─▶ T1 ─
     ├─▶ M1 ─▶ M4 (permission mode at launch)
     └─▶ V1 (after A3) ─▶ V2 (after X0's listening test) ─┬─▶ V3 (needs W3)
                                                           └─▶ V4
-    V1 ─▶ V6 (experimental; better after V2, V4)
+    V1 ─▶ V6 (experimental; better after V2, V4) ;  V4 ─▶ V7 (high priority)
     M2 + W4 ─▶ S1 ─▶ S2 ;  M2 + D2 ─▶ M3
     W4 + D1 ─▶ L1 ─▶ L2 ;  D2 + S2 + L1 + T1 ─▶ L3 ;  L1 + D2 + S2 ─▶ L4
     V2 + V4 + D1 ─▶ V5 ;  W2 + W3 + T2 + D2 ─▶ P1 (V5 for spoken stops) ─▶ P2
@@ -6387,7 +6449,9 @@ X0 ─┬─▶ A1 ─▶ A2 ─┬─▶ A3 ─┬─▶ W2 ─┬─▶ T1 ─
    screenshots, proactive spoken updates, and unattended autopilot runs.*
 4. M2, **M3**, W4, L1, S1, V4. *Conversation milestone: chat and rubber duck, hands-free, with
    long-term memory.*
-5. L2, S2, **L3** (self-development: from here Duck can help build the rest), **L4**, R3, then B1,
+5. L2, S2, **L3** (self-development: from here Duck can help build the rest), **L4**,
+   **V7** (high priority, added 2026-10-22: Duck on the phone cuts itself off hearing its
+   own voice; right after the step in progress), R3, then B1,
    T3, D3; B2 only if quick browser actions turn out to need it; **R4** once
    R3 shows you really use Duck from the phone.
 
@@ -6556,6 +6620,7 @@ T2 goes live after the replay check in its done-when (the past week's prompts th
 | V4 | Hands-free conversation mode | ☑ (live: talking over Duck on speakers, and the phone, not tried yet) |
 | V5 | Proactive announcements | ☑ (the reply window built with V4) |
 | V6 | Wake word on the PC (experimental) | ☐ |
+| V7 | Duck stops hearing itself on the phone (high priority) | ☐ |
 | L1 | Long-term memory: files, index, recall | ☑ (not tried in the app yet) |
 | L2 | Consolidation, journal, and recall quality | ☑ (not tried in the app; hit-rate review 2026-11-05) |
 | L3 | Self-development through Opus sessions | ☑ (not tried in the app; no real Opus branch yet) |
