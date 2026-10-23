@@ -85,6 +85,7 @@ import type { McpHost } from "./mcp";
 import type { HostedCaller } from "./tools/mcpHost";
 import type { GoogleHost } from "./google";
 import type { HostCaller } from "./hosts";
+import type { MusicProvider } from "./music/provider";
 import type { ThreadMoves } from "./tools/threads";
 import type { HaikuCall } from "./tools/haikuTask";
 import type { Level } from "./announce";
@@ -199,6 +200,8 @@ export interface EngineDeps {
   hosted?: HostedCaller;
   /** The connected hosts (step H1), for the `pc` and `phone` tools. */
   hosts?: HostCaller;
+  /** Music and video search and play (step H3), for `play_music` and the rest. */
+  music?: MusicProvider;
   /** The morning routine's Google sheet, for `morning_briefing`. */
   google?: GoogleHost;
   /** Duck's core memory (step W4): read into each new thread, edited by
@@ -1601,6 +1604,8 @@ export function createEngine(deps: EngineDeps): Engine {
           mcp: deps.mcp ?? null,
           hosted: deps.hosted ?? null,
           hosts: deps.hosts ?? null,
+          music: deps.music ?? null,
+          surface: surfaceOf(store.loaded(threadId)),
           google: deps.google ?? null,
           core: deps.core ?? null,
           memory: deps.memory ?? null,

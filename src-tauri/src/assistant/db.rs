@@ -297,6 +297,17 @@ const MIGRATIONS: &[&str] = &[
         at     INTEGER NOT NULL
     );
     "#,
+    // Step H3: the free quotas Duck's searches use (`youtube.rs`): one row per
+    // call, in the service's own units, for the spend line's "today".
+    r#"
+    CREATE TABLE assistant_quota (
+        id       INTEGER PRIMARY KEY,
+        ts       INTEGER NOT NULL,
+        service  TEXT NOT NULL,
+        units    INTEGER NOT NULL
+    );
+    CREATE INDEX idx_assistant_quota_ts ON assistant_quota(ts);
+    "#,
 ];
 
 #[cfg(test)]
@@ -306,7 +317,7 @@ mod tests {
     #[test]
     fn s1_threads_from_before_modes_are_the_assistants() {
         let conn = Connection::open_in_memory().unwrap();
-        crate::db::run_migrations(&conn, &MIGRATIONS[..MIGRATIONS.len() - 3]).unwrap();
+        crate::db::run_migrations(&conn, &MIGRATIONS[..MIGRATIONS.len() - 4]).unwrap();
         conn.execute("INSERT INTO assistant_threads (id, mode, created, updated) VALUES ('old', 'chat', 1, 1)", []).unwrap();
         crate::db::run_migrations(&conn, MIGRATIONS).unwrap();
         let mode: String = conn.query_row("SELECT mode FROM assistant_threads WHERE id = 'old'", [], |r| r.get(0)).unwrap();

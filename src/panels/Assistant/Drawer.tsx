@@ -1522,7 +1522,7 @@ function SpendLine({ duck }: { duck: DuckState }) {
       : "var(--wb-textFaint)";
   return (
     <div
-      title={`today ${usd(s.todayUsd)}`}
+      title={`today ${usd(s.todayUsd)}${s.youtubeUnitsToday ? ` · YouTube search ${s.youtubeUnitsToday.toLocaleString("en-US")} of 10,000 free units` : ""}`}
       style={{
         flex: "0 0 auto",
         display: "flex",

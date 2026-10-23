@@ -57,6 +57,8 @@ import type { CoreHost } from "../core";
 import type { MemoryHost } from "../memory";
 import type { ConfigHost } from "../config";
 import type { SkillsHost } from "../skills";
+import type { MusicProvider } from "../music/provider";
+import type { Surface } from "../protocol";
 import { isRemoteHost, type Host, type HostCaller } from "../hosts";
 
 export type Tier = "read" | "reversible" | "consequential";
@@ -121,6 +123,11 @@ export interface ToolContext {
   /** The connected hosts (step H1), for a `pc` or `phone` tool; absent where
    *  there are none. */
   hosts?: HostCaller | null;
+  /** Music and video search and play (step H3); absent where there is none. */
+  music?: MusicProvider | null;
+  /** Where the user's latest message in this thread was typed or said (step H3:
+   *  music plays there unless they name a device); absent in some tests. */
+  surface?: Surface;
 }
 
 /** What `prepare` gets besides the port. */

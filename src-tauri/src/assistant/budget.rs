@@ -116,6 +116,27 @@ pub struct Spend {
     /// This month's turns on the subscription brain (step M3), priced as the API
     /// would have: credits spared, not spent.
     pub saved_usd: f64,
+    /// The YouTube Data API units today's searches used (step H3), of the 10,000
+    /// free a day.
+    pub youtube_units_today: i64,
+}
+
+/// Record `units` of a free quota used now by `service` (step H3).
+pub fn record_quota(conn: &Connection, ts: i64, service: &str, units: i64) -> rusqlite::Result<()> {
+    conn.execute(
+        "INSERT INTO assistant_quota (ts, service, units) VALUES (?1, ?2, ?3)",
+        rusqlite::params![ts, service, units],
+    )?;
+    Ok(())
+}
+
+/// The units of `service`'s quota used since the start of today (local time).
+pub fn quota_today(conn: &Connection, service: &str) -> rusqlite::Result<i64> {
+    conn.query_row(
+        &format!("SELECT COALESCE(SUM(units), 0) FROM assistant_quota WHERE service = ?1 AND ts >= {DAY_START}"),
+        [service],
+        |r| r.get(0),
+    )
 }
 
 /// Record one subscription-brain turn (step M3) at its API price.
@@ -155,6 +176,7 @@ pub fn spend(conn: &Connection, limits: Limits) -> rusqlite::Result<Spend> {
     )?;
     Ok(Spend {
         saved_usd,
+        youtube_units_today: quota_today(conn, "youtube")?,
         today_usd,
         month_usd,
         by_model: buckets("model")?,
@@ -230,6 +252,20 @@ mod tests {
         assert!((s.saved_usd - 0.75).abs() < 1e-9);
         assert_eq!(s.month_usd, 0.0);
         assert!(!s.soft_reached);
+    }
+
+    #[test]
+    fn todays_youtube_units_are_counted_apart_from_the_spend() {
+        let db = DuckDb::open_in_memory().unwrap();
+        let conn = db.conn.lock().unwrap();
+        let now = now_ms();
+        record_quota(&conn, now, "youtube", 101).unwrap();
+        record_quota(&conn, now, "youtube", 101).unwrap();
+        record_quota(&conn, now, "other", 7).unwrap();
+        record_quota(&conn, now - 2 * 86_400_000, "youtube", 5_000).unwrap();
+        let s = spend(&conn, Limits::default()).unwrap();
+        assert_eq!(s.youtube_units_today, 202);
+        assert_eq!(s.today_usd, 0.0);
     }
 
     #[test]

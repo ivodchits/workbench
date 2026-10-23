@@ -7,6 +7,7 @@ import { getTime } from "./tools/getTime";
 import { HAIKU_TOOLS } from "./tools/haikuTask";
 import { IMPROVE_TOOLS } from "./tools/improve";
 import { MCP_TOOLS } from "./tools/mcp";
+import { MEDIA_TOOLS } from "./tools/media";
 import { BROWSER_TOOLS } from "./tools/mcpHost";
 import { MEMORY_TOOLS } from "./tools/memory";
 import { MORNING_TOOLS } from "./tools/morning";
@@ -55,6 +56,7 @@ export const TOOLS = [
   ...SKILL_TOOLS,
   ...PC_TOOLS,
   weather,
+  ...MEDIA_TOOLS,
   ...(import.meta.env.DEV ? [testConfirm, testAnnounce] : []),
 ];
 
@@ -87,6 +89,9 @@ export const DEFERRED = new Set([
   "draft_skill",
   // The PC's tools (H2) are deferred by the registry, as every host tool is.
   "weather",
+  "play_music",
+  "find_video",
+  "play_video",
   ...BROWSER_TOOLS.map((t) => t.name),
   ...ROUTINE_TOOLS.map((t) => t.name),
 ]);

@@ -79,6 +79,8 @@ import { createGoogleHost } from "./google";
 import { createRegistry, toolsOn } from "./tools/registry";
 import { connectLocal, createHosts } from "./hosts";
 import { pcHandlers } from "./tools/pc";
+import { youtubeMusic } from "./music/youtube";
+import { youtubeSearch } from "../ipc/music";
 import { mediaControl, mediaNowPlaying, pcOpen, steamActivity, steamLibrary, steamStoreSearch } from "../ipc/pc";
 import { createBrowserHost } from "./browser";
 import { createHostedSync, type HostedSync } from "./hosted";
@@ -837,6 +839,7 @@ export function initAssistant(): Promise<void> {
       mcp: createMcpHost(mcpRequest),
       hosted: { call: mcpHostCall, browser },
       hosts,
+      music: youtubeMusic({ search: youtubeSearch }),
       google: createGoogleHost({ workspacePrepare, sheetExport, sheetCells, sheetDraft, sheetDrafts, sheetSearch, sheetRead }),
       core: createCoreHost(() => settings.get().workspace),
       memory,

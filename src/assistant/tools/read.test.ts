@@ -420,6 +420,7 @@ describe("read tools", () => {
       softReached: false,
       capReached: false,
       savedUsd: 0.25,
+      youtubeUnitsToday: 303,
     };
     expect((await run(duckSpend, {}, { spend })).out).toEqual({
       today: "$0.0123",
@@ -428,6 +429,7 @@ describe("read tools", () => {
       cap: "$20.00",
       softLimit: "$16.00",
       savedOnSubscription: "$0.2500",
+      youtubeToday: "303 of 10,000 free units",
       byPurpose: ["thread: $1.40 (12 calls)", "title: $0.0001 (3 calls)"],
     });
     vi.useRealTimers();

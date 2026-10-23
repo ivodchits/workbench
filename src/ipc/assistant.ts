@@ -44,6 +44,9 @@ export interface Spend {
   /** This month's subscription-brain turns at their API price (step M3): spared,
    *  not spent. */
   savedUsd: number;
+  /** The YouTube Data API units today's searches used (step H3), of the 10,000
+   *  free a day. */
+  youtubeUnitsToday: number;
 }
 
 export interface UsageRecord {

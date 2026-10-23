@@ -404,7 +404,7 @@ export const readNote = defineTool({
 export const duckSpend = defineTool({
   name: "duck_spend",
   description:
-    "Your own API spend (Duck's, not the coding sessions'): today, this month, where the month is on track to end, the monthly cap and soft limit (past it, you run on Haiku unless the user says \"think hard\"), and the split by purpose, and what the turns on the user's subscription spared of the credits this month (savedOnSubscription). Use it when the user asks what Duck costs.",
+    "Your own API spend (Duck's, not the coding sessions'): today, this month, where the month is on track to end, the monthly cap and soft limit (past it, you run on Haiku unless the user says \"think hard\"), and the split by purpose, what the turns on the user's subscription spared of the credits this month (savedOnSubscription), and the YouTube search quota used today (youtubeToday). Use it when the user asks what Duck costs.",
   schema: z.object({}),
   tier: "read",
   async run(_input, { port }) {
@@ -420,6 +420,7 @@ export const duckSpend = defineTool({
       softReached: s.softReached,
       capReached: s.capReached,
       savedOnSubscription: s.savedUsd > 0 ? usd(s.savedUsd) : null,
+      youtubeToday: s.youtubeUnitsToday > 0 ? `${s.youtubeUnitsToday} of 10,000 free units` : null,
       byPurpose: s.byPurpose.map(
         (b) => `${b.key}: ${usd(b.costUsd)} (${b.calls} calls)`,
       ),

@@ -268,6 +268,7 @@ pub fn run() {
             assistant::steam::assistant_pc_open,
             assistant::media::assistant_media_now_playing,
             assistant::media::assistant_media_control,
+            assistant::youtube::assistant_youtube_search,
             statusline::session_context,
             voice::voice_status,
             voice::voice_prepare,

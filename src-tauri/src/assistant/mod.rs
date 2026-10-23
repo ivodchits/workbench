@@ -15,6 +15,7 @@
 //! Step B2: a host for stdio MCP servers from your Claude Code config, your Firefox
 //! bridge first ([`mcp_host`]).
 //! Step H2: the PC's tools, Steam ([`steam`]) and the media sessions ([`media`]).
+//! Step H3: YouTube search for music and video ([`youtube`]).
 //! The morning routine: Google access ([`google`]) and the invoice sheet ([`sheets`]).
 //!
 //! The webview never holds the key. It asks [`assistant_proxy_info`] for the proxy's
@@ -48,6 +49,7 @@ mod timings;
 mod trust;
 mod usage;
 pub mod workspace;
+pub mod youtube;
 
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};

@@ -6960,6 +6960,40 @@ checked in the scratch PTY first.
   phone; a video plays on the named device; the day's quota use is in the spend line's
   details.
 - **Out of scope:** your YouTube Music library and playlists (no official API).
+- **As built (2026-10-23):**
+  - **`music/provider.ts`**: the `MusicProvider` interface is `search(query, kind)`
+    and `play(item, device, open)`. `open` opens a link on a device, so YouTube Music
+    plays by opening a link; Spotify would ignore it and play through its own API.
+    `pickItem` takes the first result, in YouTube's order, that names at least 60%
+    of the query's words (filler like "play some" is left out; "lo-fi" finds
+    "lofi"). A weaker match returns up to five choices with their ids.
+  - **`music/youtube.ts`** (the provider) keeps a search for an hour, so "play that
+    again" costs no quota. It opens `music.youtube.com/watch?v=<id>` for a song and
+    `www.youtube.com/watch?v=<id>` for a video, and only for an 11-character id.
+  - **Search** (`youtube.rs`) runs in Rust, so `duck/youtube-api-key` never reaches
+    the webview: `search.list` (100 units, the Music category for songs) for the ids,
+    then `videos.list` (1 unit) for plain titles, the channel ("Queen - Topic" →
+    "Queen") and the length. A used-up quota is said as such.
+  - **Quota:** every search records 101 units in a new `assistant_quota` table.
+    `Spend.youtubeUnitsToday` puts the day's use in the spend line's tooltip ("today
+    $… · YouTube search 202 of 10,000 free units") and in `duck_spend`. The day is
+    local; YouTube's resets at midnight Pacific.
+  - **Tools** (`tools/media.ts`, deferred):
+    - `play_music {query, id?, on?}` (reversible): the extra `id` plays one of the
+      choices.
+    - `find_video {query}` (read).
+    - `play_video {id, on?}` (reversible).
+
+    They run in the engine and play through the device's own host tool over
+    `ctx.hosts`: `open_on_pc` (H2), or `open_on_phone`. `open_on_phone` is declared
+    here as a `phone` tool, and the phone serves it from H5; until then a phone
+    request says "the phone isn't connected".
+  - **Where it plays:** `on` when the user names a device, else where their latest
+    message came from. That is the new `ctx.surface`, from `surfaceOf`.
+  - **Not tried yet:** no YouTube key is stored on this PC, so no real search has
+    run; the tests use a fake search and fake hosts. The done-when's trials (a song
+    on the PC and on the phone, a video on the named device, the quota in the tooltip)
+    wait for the key, the user, and H5 for the phone.
 
 #### Step H8 — Reminders: project and general, with a widget
 
@@ -7652,7 +7686,7 @@ T2 goes live after the replay check in its done-when (the past week's prompts th
 | P2 | Unattended runs: limits, windows, stalls, checklists, several sessions | ☑ (the overnight run not tried yet) |
 | H1 | Host-bound tools | ☑ |
 | H2 | PC tools: Steam, media keys, weather | ☑ |
-| H3 | Music and video | ☐ |
+| H3 | Music and video | ☑ |
 | H4 | Duck's reminders and timers | ☐ |
 | H8 | Reminders: project and general, with a widget | ☐ |
 | H5 | The phone as a host (with R4) | ☐ |
