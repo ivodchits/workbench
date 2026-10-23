@@ -46,7 +46,15 @@ async fn handle(State(app): State<AppHandle>, method: Method, headers: HeaderMap
     let Some(mgr) = app.try_state::<BrainManager>() else {
         return StatusCode::SERVICE_UNAVAILABLE.into_response();
     };
-    let Some((thread_id, tools)) = bearer(&headers).and_then(|t| mgr.by_token(t)) else {
+    let token = bearer(&headers).unwrap_or("");
+    // A drawing worker (step G4): `render` is its only tool.
+    if let Some(instance_id) = mgr.worker_by_token(token) {
+        if method != Method::POST {
+            return StatusCode::METHOD_NOT_ALLOWED.into_response();
+        }
+        return worker(&app, &mgr, instance_id, &body).await;
+    }
+    let Some((thread_id, tools)) = mgr.by_token(token) else {
         return StatusCode::UNAUTHORIZED.into_response();
     };
     if method != Method::POST {
@@ -74,6 +82,46 @@ async fn handle(State(app): State<AppHandle>, method: Method, headers: HeaderMap
                 Ok(tool_error(&format!("There is no tool named {name}.")))
             }
         }
+        m => answer(m, &params, &tools),
+    };
+    let reply = match answer {
+        Ok(result) => json!({ "jsonrpc": "2.0", "id": id, "result": result }),
+        Err((code, message)) => json!({ "jsonrpc": "2.0", "id": id, "error": { "code": code, "message": message } }),
+    };
+    ([(header::CONTENT_TYPE, "application/json")], reply.to_string()).into_response()
+}
+
+/// The tool a drawing worker gets (step G4): its drawing as a picture.
+pub fn render_tool() -> Value {
+    json!({
+        "name": "render",
+        "description": "Render a version of your drawing as Duck's canvas shows it, and get the picture back (or the renderer's error, such as a Mermaid parse error). Look at it before you finish.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "file": { "type": "string", "description": "The version's full path: drawings/<id>/v<n>.<ext> in your task folder." },
+                "width": { "type": "number", "description": "The picture's width in px (default 800). 400 shows how it reads on a phone." }
+            },
+            "required": ["file"]
+        }
+    })
+}
+
+async fn worker(app: &AppHandle, mgr: &BrainManager, instance_id: String, body: &Bytes) -> Response {
+    let Ok(msg) = serde_json::from_slice::<Value>(body) else {
+        return (StatusCode::BAD_REQUEST, "not JSON").into_response();
+    };
+    let Some(id) = msg.get("id").cloned() else {
+        return StatusCode::ACCEPTED.into_response();
+    };
+    let params = msg.get("params").cloned().unwrap_or(Value::Null);
+    let tools = [render_tool()];
+    let answer = match msg.get("method").and_then(Value::as_str).unwrap_or("") {
+        "tools/call" if params.get("name").and_then(Value::as_str) == Some("render") => {
+            let input = params.get("arguments").cloned().unwrap_or_else(|| json!({}));
+            Ok(mgr.render(app, instance_id, input).await)
+        }
+        "tools/call" => Ok(tool_error("Your only tool here is render.")),
         m => answer(m, &params, &tools),
     };
     let reply = match answer {

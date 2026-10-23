@@ -203,6 +203,35 @@ describe("drawings (G3)", () => {
     expect(s.drawings.get(r.drawing.id)!.versions).toHaveLength(1);
   });
 
+  it("renders a version for its worker, counts the looks, and says so on the card (G4)", async () => {
+    let broken = true;
+    const s = setup({ render: () => (broken ? Promise.reject(new Error("Parse error on line 3")) : Promise.resolve('<svg viewBox="0 0 10 10"/>')) });
+    const r = await s.drawings.draw(ask);
+    const inst = r.task.instanceId!;
+    const file = `${r.task.folder}\\drawings\\${r.drawing.id}\\v1.mmd`;
+    const text = (res: Awaited<ReturnType<typeof s.drawings.renderFor>>) => res.content.map((c) => (c.type === "text" ? c.text : `[${c.type}]`)).join(" ");
+
+    expect(text(await s.drawings.renderFor("someone-else", { file }))).toContain("for Duck's drawing workers");
+    expect(text(await s.drawings.renderFor(inst, { file: "C:\\elsewhere\\drawings\\abc\\v1.mmd" }))).toContain("in your task folder");
+    expect(text(await s.drawings.renderFor(inst, { file: `${r.task.folder}\\notes.txt` }))).toContain("full path");
+    expect(text(await s.drawings.renderFor(inst, { file }))).toContain("write it first");
+
+    s.worker(r.task, r.drawing, 1, "flowchart LR\n  a-->");
+    const bad = await s.drawings.renderFor(inst, { file });
+    expect(bad).toMatchObject({ isError: true });
+    expect(text(bad)).toContain("It doesn't render: Parse error on line 3");
+    broken = false;
+    const good = await s.drawings.renderFor(inst, { file, width: 400 });
+    expect(good.isError).toBeFalsy();
+    expect(good.content[0]).toMatchObject({ type: "image", mimeType: "image/png", data: expect.any(String) });
+    expect(text(good)).toContain("400 px wide");
+    expect(s.drawings.get(r.drawing.id)!.pending).toMatchObject({ renders: 2 });
+
+    await s.turnEnds(r.task);
+    expect(s.drawings.get(r.drawing.id)!.versions[0]).toMatchObject({ checks: 2, ms: expect.any(Number) });
+    expect(s.notices[0].text).toBe("Phone to session · v1 · checked ×2");
+  });
+
   it("keeps the thread's drawing worker warm while a canvas shows one of its drawings", async () => {
     const s = setup();
     const r = await s.drawings.draw(ask);

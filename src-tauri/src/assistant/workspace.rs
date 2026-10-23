@@ -332,6 +332,9 @@ pub fn allow_rules(spec: &WorkerSpec, workspace: &Path, folder: &Path) -> Vec<St
     if spec.kind == "browser" {
         rules.extend(FIREFOX_TOOLS.iter().map(|t| format!("mcp__firefox__{t}")));
     }
+    if spec.kind == "drawing" {
+        rules.push("mcp__duck__render".into());
+    }
     rules
 }
 
@@ -351,6 +354,13 @@ pub fn register(app: &AppHandle, conn: &Connection, instance_id: &str, spec: &Wo
     let json = serde_json::json!({ "permissions": { "allow": allow_rules(spec, &workspace, &folder) } });
     std::fs::write(&settings, json.to_string()).map_err(|e| format!("cannot write the worker's settings: {e}"))?;
     let strict = spec.kind != "browser" && !code;
+    // A drawing worker (step G4) gets Duck's server, with `render` only: its token
+    // is kept beside its settings, and its config is made at each launch.
+    if spec.kind == "drawing" {
+        let token = dir.join(format!("{instance_id}.render"));
+        std::fs::write(&token, super::subscription_brain::random_token())
+            .map_err(|e| format!("cannot write the worker's render token: {e}"))?;
+    }
     if strict {
         let none = dir.join("no-mcp.json");
         if !none.is_file() {
@@ -397,16 +407,27 @@ pub fn launch_args(app: &AppHandle, conn: &Connection, instance_id: &str) -> Vec
         args.extend(["--settings".into(), settings.to_string_lossy().into_owned()]);
     }
     if strict {
+        let render = render_config(app, &dir, instance_id);
         args.extend([
             "--strict-mcp-config".into(),
             "--mcp-config".into(),
-            dir.join("no-mcp.json").to_string_lossy().into_owned(),
+            render.unwrap_or_else(|| dir.join("no-mcp.json").to_string_lossy().into_owned()),
         ]);
     }
     if let Some(d) = add_dir {
         args.extend(["--add-dir".into(), d]);
     }
     args
+}
+
+/// A drawing worker's `--mcp-config` (step G4): Duck's server at today's port with
+/// its token, which is registered for `render`. None for any other worker.
+fn render_config(app: &AppHandle, dir: &Path, instance_id: &str) -> Option<String> {
+    let token = std::fs::read_to_string(dir.join(format!("{instance_id}.render"))).ok()?;
+    let token = token.trim();
+    let port = crate::hooks::port(app)?;
+    app.try_state::<super::subscription_brain::BrainManager>()?.register_worker(token, instance_id);
+    Some(super::subscription_brain::mcp_config(port, token))
 }
 
 // ── task records (duck.db) ──
@@ -560,6 +581,10 @@ mod tests {
             ]
         );
         assert!(allow_rules(&spec("browser"), &ws, &folder).contains(&"mcp__firefox__tabs_list".to_string()));
+        // A drawing worker may render (G4), and nothing else of Duck's.
+        let drawing = allow_rules(&spec("drawing"), &ws, &folder);
+        assert_eq!(drawing.last().map(String::as_str), Some("mcp__duck__render"));
+        assert!(!research.iter().any(|r| r.starts_with("mcp__duck")));
         let code = allow_rules(&spec("code"), &ws, &folder);
         assert_eq!(code.len(), 3);
         assert!(code[1].starts_with("Edit(//c/Users/me/repos/Duck/tasks/2026-10-20-x/"));

@@ -119,6 +119,7 @@ import { firefoxStartProfile, mcpHostCall, mcpHostRunning, mcpHostServers, mcpHo
 import { DEFERRED, SERVER_TOOLS, TOOL_NAMES, TOOLS } from "./toolset";
 import { createTaskManager, ipcTaskBackend, type Task, type TaskManager } from "./tasks";
 import { createDrawings, ipcDrawingBackend, type Drawings } from "./drawings";
+import { brainToolResult, onWorkerRender, type McpResult } from "../ipc/brain";
 import { renderSvg, toPng } from "../drawing/render";
 import { voiceMessage } from "./voiceNames";
 import { createSkills, type Skill, type SkillsHost } from "./skills";
@@ -694,6 +695,14 @@ export function initAssistant(): Promise<void> {
         void engineRef?.notice(threadId, n).catch((e: unknown) => console.warn("duck: a drawing's card was dropped", e)),
     });
     drawingsRef = drawings;
+    // A drawing worker looks at its drawing (G4): its `render` calls come from
+    // Duck's MCP server and are answered with the canvas's renderer.
+    void onWorkerRender((call) =>
+      void drawings
+        .renderFor(call.instanceId, call.input)
+        .catch((e: unknown): McpResult => ({ content: [{ type: "text", text: `The render failed: ${errorMessage(e)}` }], isError: true }))
+        .then((result) => brainToolResult(call.callId, result)),
+    );
     // Plan autopilots (P1) report the same way; their step log is notices.
     const autopilot = createAutopilot({
       port: localPort,

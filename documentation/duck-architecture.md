@@ -5,9 +5,9 @@ behind each decision are in `assistant-plan.md`. This file describes the code, a
 Duck step updates it as part of its Done when. Duck's self-development sessions (L3)
 read it first.
 
-Last updated: step G3 (2026-10-23). L3 audited it against the code. Since W5 it also
+Last updated: step G4 (2026-10-23). L3 audited it against the code. Since W5 it also
 covers W6, D2, D4, P1, P2, M2, M3, A5, A6, A7, W4, L1, L2, L3, L4, R1, R2, R3, B1, B2, T3, D3, V1 to V7,
-V8, S1, S2, X1, H1 to H5, H7, H8, R4, G1 to G3 and the morning routine. A fresh session changing Duck: read "The shape", then "Where to
+V8, S1, S2, X1, H1 to H5, H7, H8, R4, G1 to G4 and the morning routine. A fresh session changing Duck: read "The shape", then "Where to
 change X" at the end, then the module rows it points to.
 
 ## The shape
@@ -157,7 +157,7 @@ prompt's safety rules cover them.
 | `workspace.rs` | Duck's workspace (`prepare`, its `CLAUDE.md`, a `.gitignore` line for `data/`), task folders (`new_task`, `result`, both only under `tasks/`), the workers' registration (`register`: a settings file with the allow list in app data, and a `worker_sessions` row in the main DB) and `launch_args` for `pty_spawn`; the `assistant_tasks` records; the core memory (W4: `read_core`, and `write_core`, which refuses with "stale:" unless the file is still the text it was read as). |
 | `headless.rs` | Headless workers (D4): a worker session as `claude -p` over stream-json both ways. Prompts and interrupts are messages, permission requests are answered as data (racing the `PermissionRequest` hook, the first answer winning); otherwise it is an ordinary session to the status engine, summaries, the trust watcher and the transcript view. |
 | `subscription_brain.rs` | The subscription brain (M3): `brain_spawn` starts thread `t`'s `claude -p` (stream-json both ways, `--include-partial-messages`, `--model sonnet --effort medium` (D3: `opus`, and the mode's effort, for a mode that thinks there), `--tools ""`, `--strict-mcp-config` with only Duck's server and a per-process bearer token, `--permission-mode dontAsk --allowedTools mcp__duck`, `--setting-sources ""`, Duck's prompt by `--system-prompt-file`) in `<workspace>/brain`, with no `ANTHROPIC_*` or `WORKBENCH_INSTANCE_ID`, no CLAUDE.md, no auto-memory and no deferred tools. Session id = thread id, kept on disk, so a later spawn `--resume`s it. Emits `brain-event` (text deltas, `assistant` / `user` messages, `result`, init) and `brain-exited`; `rate_limit_event` goes to the usage meter (`statusline::ingest_rate_limit_info`), each `result` into the subscription ledger at its API price. `brain_send`, `brain_interrupt`, `brain_kill`, `brain_tool_result`; `kill_all` on exit. |
-| `mcp_server.rs` | Duck's MCP server (M3) at `/duck/mcp` on the hook server, JSON-RPC by hand: `initialize`, `ping`, `tools/list` (the tools the brain was started with), `tools/call` (a `brain-tool-call` event to the webview, awaited up to 10 min). The bearer token picks the thread; anything else is 401, and a GET (the optional event stream) is 405. |
+| `mcp_server.rs` | Duck's MCP server (M3) at `/duck/mcp` on the hook server, JSON-RPC by hand: `initialize`, `ping`, `tools/list` (the tools the brain was started with), `tools/call` (a `brain-tool-call` event to the webview, awaited up to 10 min). The bearer token picks the thread; anything else is 401, and a GET (the optional event stream) is 405. G4: a drawing worker's token (`BrainManager.register_worker`) lists only `render` (`render_tool`), answered by the webview through `worker-render-call`. |
 | `autopilot.rs` | Autopilot records (P1): one JSON row per session in `assistant_autopilots`, with its capped step log. |
 | `replay.rs` | `scan(dir, days, max)`: the tool calls in the transcripts touched in the window, each with its outcome (`ran`, `rejected`, `denied`, `error`, `none`), the conversation's first prompt and the latest one before it, and the permission mode. Behind `assistant_replay_calls`, on a worker thread. |
 | `trust.rs` | Rules, project modes, floor-off, the seeded flag, the kill switch (`meta` `assistant_trust_paused`), sessions' mandates (`meta` `assistant_mandate:<instance>`) and the decision log. `set_trust_paused` in `mod.rs` writes the flag, ticks the tray item (`attention::set_trust_check`) and emits `assistant-trust-paused`. |
@@ -963,6 +963,11 @@ When the app can't reach Workbench, the loader runs Duck's own engine on the pho
   rendered, stored as attachments, posted as a `drawing` notice (the card), and sent
   as a `drawing` event with `open` set to the surface that asked. Duck gets a short
   report instead of the usual one.
+- **The worker looks (G4):** a drawing worker's `--mcp-config` points at Duck's
+  MCP server with its own token (`workspace.rs` `render_config`), where `render` is
+  its only tool (`mcp_server.rs` `worker`). The call reaches the webview as
+  `worker-render-call` and `drawings.renderFor` answers with the canvas's renderer:
+  the PNG, or the error. The rubric is in `KIND_RULES`; the card counts the looks.
 - **Seeing it:** the drawer's canvas (`Canvas.tsx`; `duckState` `canvas`, `drawings`,
   `svgs`), a dock tab, or the phone's viewer (`src/pwa/drawingView.ts`, the PNG from
   `GET /api/assistant/image/{id}/{name}`). A surface showing a drawing sends `canvas`,
@@ -1031,7 +1036,8 @@ When the app can't reach Workbench, the loader runs Duck's own engine on the pho
   `launchDuck` in `src/pwa/duck.ts`, and `takeShare` in `src/pwa/sw.js`. How a phone
   proves its key: `remote/auth.rs` (the rules), `remote/mod.rs` (`start_session`,
   `check_token`), and `src/pwa/deviceKey.ts` and `net.ts`.
-- **Drawings (G3)**: the rules a worker gets, `drawings.ts` `KIND_RULES`; when Duck
+- **Drawings (G3, G4)**: the rules and the rubric a worker gets, `drawings.ts`
+  `KIND_RULES`; a worker's `render`, `drawings.ts` `renderFor` and `mcp_server.rs`; when Duck
   draws, `tools/draw.ts` and the prompt's "Pictures" line; rendering,
   `src/drawing/render.ts`; the canvas, `Canvas.tsx`; the phone's viewer,
   `src/pwa/drawingView.ts`.

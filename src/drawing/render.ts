@@ -145,9 +145,9 @@ export async function renderSvg(kind: DrawingKind, source: string): Promise<stri
   return sized(r.svg);
 }
 
-/** The SVG drawn on white as a PNG, up to `PNG_MAX_SIDE`; null when the browser
- *  won't (a tainted canvas). */
-export async function toPng(svg: string): Promise<Blob | null> {
+/** The SVG drawn on white as a PNG, `width` px wide (else twice its size), up to
+ *  `PNG_MAX_SIDE`; null when the browser won't (a tainted canvas). */
+export async function toPng(svg: string, width?: number): Promise<Blob | null> {
   const size = svgSize(svg);
   if (!size) return null;
   const img = new Image();
@@ -157,7 +157,7 @@ export async function toPng(svg: string): Promise<Blob | null> {
   } catch {
     return null;
   }
-  const scale = Math.min(PNG_SCALE, PNG_MAX_SIDE / Math.max(size.width, size.height));
+  const scale = Math.min(width ? width / size.width : PNG_SCALE, PNG_MAX_SIDE / Math.max(size.width, size.height));
   const canvas = document.createElement("canvas");
   canvas.width = Math.max(1, Math.round(size.width * scale));
   canvas.height = Math.max(1, Math.round(size.height * scale));

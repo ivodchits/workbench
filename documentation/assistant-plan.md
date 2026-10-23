@@ -7916,7 +7916,68 @@ checked in the scratch PTY first.
   none has overlapping labels or broken Mermaid, and the rounds and time per drawing are
   written in As built.
 - **Out of scope:** pixel comparisons against a reference.
+- **As built (2026-10-23):**
+  - **No hidden webview, no `resvg`:** the render service is the canvas's own
+    (`src/drawing/render.ts`, G3's sandboxed iframe in the main window), so a worker
+    sees exactly what you'll see.
+    - **Check first:** it renders with the main window minimized. All ten drawings
+      below ran with the dev window minimized.
+    - Its limits are G3's: no network in the sandbox, 15 s a render, and the PNG at
+      most 2400 px.
+  - **`render(file, width?)`** on Duck's MCP server (`mcp_server.rs`):
+    - A drawing worker gets a token at registration (`<instance>.render` beside its
+      settings). Each launch makes its `--mcp-config` for Duck's server at today's
+      port (`workspace.rs` `render_config`) and registers the token.
+    - `render` is the only tool that token lists, and `mcp__duck__render` is on the
+      worker's allow list.
+    - A call goes to the webview as `worker-render-call` and is answered by
+      `drawings.renderFor`. It accepts only a version file
+      (`drawings/<id>/v<n>.<ext>`) in that worker's own task folder, and returns the
+      PNG as image content (800 px wide unless `width`), or the renderer's error
+      ("It doesn't render: Parse error on line 3").
+  - **The rubric** is in `KIND_RULES`, so in every drawing brief:
+    - render, and once more at 400 px for a phone;
+    - check overlaps, clipped or tiny text, arrows into nothing, crossings a layout
+      change removes, and contrast;
+    - at most two fix rounds, then deliver with what's left in the headline.
+    - The API worker has no render tool and skips it.
+  - **The card** says how often the worker looked ("checked ×3"). The version
+    records `checks` and `ms` (request to picture).
+  - **Ten varied requests on the dev app** (as the phone, window minimized). Looks
+    count the 800 px and 400 px renders, so ×2 means no fix was needed:
 
+    | Request | Kind | Time | Looks |
+    |---|---|---|---|
+    | CI pipeline with failure paths | Mermaid flowchart | 38 s | ×3 |
+    | OAuth login with token refresh | Mermaid sequence | 29 s | ×3 |
+    | Shop schema, 22 entities with keys | Mermaid ER | 32 s | ×2 |
+    | Worker task states | Mermaid state | 20 s | ×3 |
+    | Settings page wireframe | SVG | 25 s | ×2 |
+    | Revenue vs costs, 12 months | Vega-Lite | 19 s | ×2 |
+    | Workbench architecture | SVG | 99 s | ×3 |
+    | 6-week release plan | Mermaid gantt | 24 s | ×3 |
+    | Moving-house mind map | SVG (third try) | 95 s | ×2 |
+    | Voice request, hand-drawn | Mermaid flowchart | 28 s | ×4 |
+
+    None has broken Mermaid, and none has overlapping labels in the end. Two rule
+    fixes came out of it:
+    - **Mermaid's mindmap** overlapped leaves and put the root's label off its box
+      (×4, the worker couldn't fix it). The rules now say to draw a mind map as a
+      flowchart or an SVG.
+    - **A flowchart's edges came out as thick bands** (×5): the worker had named a
+      classDef `root`, which styles Mermaid's own `g.root` group. The rules now ask
+      for prefixed class names.
+
+    Large diagrams (the ER, the gantt's date axis) still say in the headline that
+    their text is small at 400 px; that's the honest outcome of the rubric, not a
+    defect.
+  - **Tested:** `renderFor` (only a drawing worker, only its own version files, a
+    missing file, the renderer's error, the picture at a width, the count on the card).
+    In Rust, `render` on the drawing worker's allow list.
+  - **Not tried yet:** the class-name rule live (the edit landed after the last run;
+    the mind map came back as an SVG).
+
+#### Step G5
 #### Step G5 — Sketch pad on the PC and the phone
 
 - **Goal:** You draw, Duck sees it; Duck draws, you mark it up. Like a whiteboard in a
@@ -8240,6 +8301,6 @@ T2 goes live after the replay check in its done-when (the past week's prompts th
 | G1 | Attachments: paste, drop and pick files into Duck | ☑ (desktop by hand and the phone's camera not tried; workers can't make .xlsx without a shell) |
 | G2 | Talking about what you drop | ☑ (by hand with the key, the mic and a phone share not tried yet) |
 | G3 | Drawing workers and the canvas | ☑ (the drawer's canvas and the phone's viewer not tried by hand yet) |
-| G4 | The worker sees its drawing | ☐ |
+| G4 | The worker sees its drawing | ☑ |
 | G5 | Sketch pad on the PC and the phone | ☐ |
 | G6 | Concept images through your Gemini subscription | ☐ |

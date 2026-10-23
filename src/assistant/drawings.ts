@@ -17,12 +17,17 @@
 //   the source in `result.md` as a fenced block, which is written as the version.
 // - While a thread's canvas is open on a surface (`viewing`), its drawing worker
 //   isn't stopped for being idle (`keepWarm`).
+// - The worker sees its drawing (step G4): its one tool on Duck's MCP server is
+//   `render`, answered here (`renderFor`) with the same renderer as the canvas, so
+//   it looks at what you'll see and fixes it (at most two rounds, by the rubric in
+//   `KIND_RULES`). The card says how many times it looked ("checked ×2").
 
 import { z } from "zod";
 
 import { DRAWING_KINDS, EXT, fencedSource, kindOf, type DrawingKind } from "../drawing/kinds";
 import { attachBytes, drawingList, drawingPut, drawingSource, drawingWrite, taskResult } from "../ipc/assistant";
 import type { AttachmentRef } from "./attachments";
+import type { McpResult } from "../ipc/brain";
 import type { DrawingView, Notice, Surface } from "./protocol";
 import type { Tier } from "./settings";
 import type { Task, TaskManager } from "./tasks";
@@ -41,6 +46,11 @@ export const Version = z.object({
   at: z.number(),
   png: Ref.nullable(),
   svg: Ref.nullable(),
+  // Step G4.
+  /** How many times the worker rendered it to look at it. */
+  checks: z.number().default(0),
+  /** From the request to the picture, ms. */
+  ms: z.number().nullable().default(null),
 });
 export type Version = z.infer<typeof Version>;
 
@@ -53,7 +63,9 @@ export const Drawing = z.object({
   versions: z.array(Version),
   /** The version being drawn, by which task; `fixed` once it went back with a
    *  render error. */
-  pending: z.object({ taskId: z.string(), n: z.number(), at: z.number(), fixed: z.boolean() }).nullable(),
+  pending: z
+    .object({ taskId: z.string(), n: z.number(), at: z.number(), fixed: z.boolean(), renders: z.number().default(0) })
+    .nullable(),
   /** Where the latest request came from: the canvas opens there. */
   surface: z.enum(["desktop", "phone"]).nullable(),
   created: z.number(),
@@ -79,7 +91,8 @@ export interface DrawingBackend {
 
 export interface DrawingRenderer {
   svg(kind: DrawingKind, source: string): Promise<string>;
-  png(svg: string): Promise<Blob | null>;
+  /** `width` px wide; twice the SVG's size when absent. */
+  png(svg: string, width?: number): Promise<Blob | null>;
 }
 
 export interface DrawRequest {
@@ -101,6 +114,8 @@ export interface Drawings {
   draw(req: DrawRequest): Promise<{ drawing: Drawing; task: Task; how: "started" | "followup" }>;
   /** The task manager's `report` hook. */
   report(t: Task): Promise<string | false | null>;
+  /** A drawing worker's `render` call (step G4): the picture, or why there's none. */
+  renderFor(instanceId: string, input: unknown): Promise<McpResult>;
   /** The task manager's `keepWarm` hook. */
   keepWarm(t: Task): boolean;
   /** The drawing a surface's canvas shows now (null: closed). */
@@ -128,10 +143,12 @@ export interface DrawingDeps {
 
 /** What each kind must be, for the brief. */
 export const KIND_RULES = `Kinds (pick one when the brief doesn't):
-- mermaid (\`.mmd\`): flowchart, sequence, state, class, ER, gantt, timeline or mindmap, in Mermaid syntax that Mermaid 12 renders. No HTML in labels; keep labels short. For a hand-drawn look (a sketch), draw a flowchart or a state diagram (Mermaid's hand-drawn look covers only those) and start the file with front matter: \`---\\nconfig:\\n  look: handDrawn\\n---\`.
+- mermaid (\`.mmd\`): flowchart, sequence, state, class, ER, gantt or timeline, in Mermaid syntax that Mermaid 12 renders. Not Mermaid's mindmap: its layout overlaps labels and puts the root's off its box; draw a mind map as a flowchart LR or an SVG. Name your classDefs with a prefix (\`c-root\`, \`c-api\`): Mermaid's SVG has its own classes (\`root\`, \`node\`, \`edgePath\`, \`cluster\`, \`label\`), and a classDef with one of their names styles the whole diagram (a \`root\` fill turns every edge into a thick band). No HTML in labels; keep labels short. For a hand-drawn look (a sketch), draw a flowchart or a state diagram (Mermaid's hand-drawn look covers only those) and start the file with front matter: \`---\\nconfig:\\n  look: handDrawn\\n---\`.
 - svg (\`.svg\`): one standalone SVG for wireframes, schemas and illustrations, with a \`viewBox\`. No <script>, no event attributes (onload…), no <foreignObject>, no external references (fonts, images, stylesheets, links). Use system fonts (Segoe UI, Arial, sans-serif). A sketchy look: slightly wobbly paths, as hand-drawn.
 - vega (\`.json\`): a Vega-Lite spec (or Vega) for charts, with its data inline in \`values\`, never a \`url\`.
-Readable at 400 px wide: few words per box, text at least 12 px at that width. Colours that work on white and on a dark page: mid-tone fills, dark text on light fills. It's shown on white.`;
+Readable at 400 px wide: few words per box, text at least 12 px at that width. Colours that work on white and on a dark page: mid-tone fills, dark text on light fills. It's shown on white.
+
+Look at it before you finish: call the render tool (mcp__duck__render) with the version's full path, and once more with width 400 for a phone. Check for overlapping boxes or labels, clipped or tiny text, arrows that end in nothing, crossings a different layout would remove, and weak contrast. Fix what you see and render again: at most two fix rounds. Then deliver; if something is still off, say so in the headline. (No render tool, as on the API: skip this.)`;
 
 /** The drawing part of a brief or follow-up. */
 export function drawingSection(id: string, n: number, kind: DrawingKind | null, prev: Version | null): string {
@@ -160,6 +177,15 @@ const errorText = (e: unknown) => (e instanceof Error ? e.message : String(e));
 /** A ref as kept in a record: no thumbnail (the card's notice has it). */
 const plain = (r: AttachmentRef | null): z.infer<typeof Ref> | null =>
   r && { id: r.id, name: r.name, mime: r.mime, size: r.size, ...(r.path && { path: r.path }) };
+
+/** The card's "checked" note (G4): how many times the worker looked at it. */
+export const checkedText = (checks: number) => (checks <= 0 ? "" : checks === 1 ? " · checked" : ` · checked ×${checks}`);
+
+/** A worker's `render` arguments. */
+const RenderInput = z.object({ file: z.string().min(1).max(1000), width: z.number().min(100).max(2400).optional() });
+const VERSION_FILE = /drawings[\\/]([A-Za-z0-9]{1,32})[\\/]v(\d{1,4})\.(mmd|svg|json)$/;
+const RENDER_WIDTH = 800;
+const slashes = (p: string) => p.replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
 
 const live = (t: Task | undefined) => t?.state === "queued" || t?.state === "running";
 
@@ -290,7 +316,7 @@ export function createDrawings(deps: DrawingDeps): Drawings {
           mandate: req.mandate ? { text: req.mandate, threadId: req.threadId } : undefined,
         });
       }
-      const next = save({ ...d, pending: { taskId: task.id, n, at: now(), fixed: false }, surface: req.surface ?? d.surface });
+      const next = save({ ...d, pending: { taskId: task.id, n, at: now(), fixed: false, renders: 0 }, surface: req.surface ?? d.surface });
       return { drawing: next, task, how };
     },
 
@@ -342,16 +368,51 @@ export function createDrawings(deps: DrawingDeps): Drawings {
         at: now(),
         png: plain(png),
         svg: plain(svgRef),
+        checks: d.pending.renders,
+        ms: now() - d.pending.at,
       };
       const done = save({ ...d, kind, versions: [...d.versions, version], pending: null }, d.surface ?? undefined);
       deps.notice(d.threadId, {
         kind: "drawing",
-        text: `${d.title} · v${n}`,
+        text: `${d.title} · v${n}${checkedText(version.checks)}`,
         drawing: { id: d.id, n, title: d.title, png },
       });
       const where = done.surface === "phone" ? ", open on the user's phone" : "";
       const headline = (t.headline ?? "").trim().replace(/\.$/, "");
       return `${label}, version ${n}, is drawn${headline ? `: ${headline}` : ""}. It's on the canvas${where}. Tell the user in a few words where it is ("It's on the canvas"); describe it only if they ask. Changes go to draw with drawing "${d.id}".`;
+    },
+
+    async renderFor(instanceId, input) {
+      const fail = (text: string): McpResult => ({ content: [{ type: "text", text }], isError: true });
+      const t = tasks.byInstance(instanceId);
+      if (!t || t.kind !== "drawing") return fail("render is for Duck's drawing workers.");
+      const args = RenderInput.safeParse(input);
+      if (!args.success) return fail("Give `file`, the version's full path, and optionally `width` (100 to 2400 px).");
+      const m = VERSION_FILE.exec(args.data.file);
+      const inFolder = slashes(args.data.file).startsWith(`${slashes(t.folder)}/`);
+      if (!m || !inFolder) return fail(`Give the version's full path: drawings/<id>/v<n>.<ext> in your task folder, ${t.folder}.`);
+      const [, id, nText, ext] = m;
+      const n = Number(nText);
+      const src = await backend.source(t.workspace, t.folder, id, n).catch(() => null);
+      if (!src || src.ext !== ext) return fail(`There's no ${args.data.file} yet: write it first.`);
+      // Each look counts, a failed one too: the card says how often it checked.
+      const d = drawings.get(id);
+      if (d?.pending?.taskId === t.id && d.pending.n === n) save({ ...d, pending: { ...d.pending, renders: d.pending.renders + 1 } });
+      let svg: string;
+      try {
+        svg = await render.svg(kindOf(src.ext) ?? "svg", src.text);
+      } catch (e) {
+        return fail(`It doesn't render: ${errorText(e)}`);
+      }
+      const width = args.data.width ?? RENDER_WIDTH;
+      const png = await render.png(svg, width).catch(() => null);
+      if (!png) return fail("It renders, but can't be made into a picture (a <foreignObject>, or no size).");
+      return {
+        content: [
+          { type: "image", data: await base64(png), mimeType: "image/png" },
+          { type: "text", text: `Version ${n} as the canvas shows it, ${width} px wide, on white.` },
+        ],
+      };
     },
 
     keepWarm(t) {

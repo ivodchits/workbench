@@ -56,3 +56,13 @@ export const onBrainExited = (cb: (threadId: string, code: number | null, stderr
 
 export const onBrainToolCall = (cb: (call: BrainToolCall) => void): Promise<UnlistenFn> =>
   listen<BrainToolCall>("brain-tool-call", (e) => cb(e.payload));
+
+/** A drawing worker's `render` call (step G4), answered with `brainToolResult`. */
+export interface WorkerRenderCall {
+  callId: string;
+  instanceId: string;
+  input: unknown;
+}
+
+export const onWorkerRender = (cb: (call: WorkerRenderCall) => void): Promise<UnlistenFn> =>
+  listen<WorkerRenderCall>("worker-render-call", (e) => cb(e.payload));

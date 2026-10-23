@@ -89,6 +89,9 @@ struct Proc {
 pub struct BrainManager {
     procs: Mutex<HashMap<String, Proc>>,
     calls: Mutex<HashMap<String, oneshot::Sender<Value>>>,
+    /// Drawing workers' tokens (step G4), to their instance ids: their only tool
+    /// on Duck's server is `render`.
+    workers: Mutex<HashMap<String, String>>,
 }
 
 static NEXT_GEN: AtomicU64 = AtomicU64::new(1);
@@ -109,6 +112,15 @@ struct BrainExited {
     thread_id: String,
     code: Option<i32>,
     stderr: String,
+}
+
+/// Emitted as `worker-render-call` (step G4): a drawing worker asked for a render.
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RenderCall {
+    call_id: String,
+    instance_id: String,
+    input: Value,
 }
 
 /// Emitted as `brain-tool-call`: the brain called one of Duck's tools.
@@ -156,6 +168,19 @@ impl BrainManager {
             .map(|(id, p)| (id.clone(), p.tools.clone()))
     }
 
+    /// A drawing worker's token (step G4), kept for as long as the app runs.
+    pub(crate) fn register_worker(&self, token: &str, instance_id: &str) {
+        self.workers.lock().unwrap().insert(token.to_string(), instance_id.to_string());
+    }
+
+    /// The drawing worker holding `token`.
+    pub(crate) fn worker_by_token(&self, token: &str) -> Option<String> {
+        if token.is_empty() {
+            return None;
+        }
+        self.workers.lock().unwrap().get(token).cloned()
+    }
+
     /// Hand a tool call to the webview and wait for its MCP `CallToolResult`.
     pub(crate) async fn call(
         &self,
@@ -165,13 +190,21 @@ impl BrainManager {
         input: Value,
         tool_use_id: Option<String>,
     ) -> Value {
+        self.answered(app, "brain-tool-call", |call_id| ToolCall { call_id, thread_id, name, input, tool_use_id }).await
+    }
+
+    /// A drawing worker's `render` (step G4), answered by the webview's renderer.
+    pub(crate) async fn render(&self, app: &AppHandle, instance_id: String, input: Value) -> Value {
+        self.answered(app, "worker-render-call", |call_id| RenderCall { call_id, instance_id, input }).await
+    }
+
+    /// Emit `event` with a fresh call id and wait for the webview's answer
+    /// (`brain_tool_result`).
+    async fn answered<P: Serialize + Clone>(&self, app: &AppHandle, event: &str, payload: impl FnOnce(String) -> P) -> Value {
         let call_id = format!("bc-{}", NEXT_CALL.fetch_add(1, Ordering::Relaxed));
         let (tx, rx) = oneshot::channel();
         self.calls.lock().unwrap().insert(call_id.clone(), tx);
-        let sent = app.emit(
-            "brain-tool-call",
-            ToolCall { call_id: call_id.clone(), thread_id, name, input, tool_use_id },
-        );
+        let sent = app.emit(event, payload(call_id.clone()));
         let out = match sent {
             Err(e) => Err(format!("Duck couldn't take the call: {e}")),
             Ok(()) => match tokio::time::timeout(CALL_TIMEOUT, rx).await {
@@ -190,14 +223,15 @@ pub(crate) fn tool_error(text: &str) -> Value {
     json!({ "content": [{ "type": "text", "text": text }], "isError": true })
 }
 
-fn random_token() -> String {
+pub(crate) fn random_token() -> String {
     let mut bytes = [0u8; 32];
     OsRng.fill_bytes(&mut bytes);
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
-/// The `--mcp-config` that points the brain at Duck's server with `token`.
-fn mcp_config(port: u16, token: &str) -> String {
+/// The `--mcp-config` that points the brain (or a drawing worker) at Duck's server
+/// with `token`.
+pub(crate) fn mcp_config(port: u16, token: &str) -> String {
     json!({
         "mcpServers": {
             "duck": {
