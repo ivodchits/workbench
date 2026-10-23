@@ -35,6 +35,10 @@
 // - Duck moving a phone's conversation (step A7, `goThread`): when the reply that
 //   moved it was spoken for a phone, the reply to the words it brought over is
 //   spoken for that phone too.
+// - A socket can also be a host (step H1, `hosts.ts`): its `hello` and
+//   `device.result` frames go to the hosts, not to Duck, and the calls come down
+//   to it as `device.call` / `device.cancel`. Over this socket only the phone can
+//   be a host: the PC's tools are the desktop's own.
 
 import { z } from "zod";
 import type { StoredMessage } from "../ipc/assistant";
@@ -49,6 +53,7 @@ import { PROTOCOL_VERSION, USER_SOURCES, type ClientMessage, type DuckEndpoint, 
 import { sentencesOf, type Spoken as Ready, type Voice } from "./reader";
 import { langOf, Sentences, type Lang } from "./speakable";
 import { withoutImages } from "./threads";
+import { isHostUp, type HostConn, type Hosts } from "./hosts";
 
 /** The longest message a phone may send. */
 const TEXT_MAX = 20_000;
@@ -78,6 +83,16 @@ const Message = z.discriminatedUnion("type", [
   z.object({ type: z.literal("autopilot"), instanceId: id, action: z.enum(["pause", "resume", "stop"]) }),
   z.object({ type: z.literal("reader"), action: z.enum(["pause", "resume", "next", "prev", "stop"]) }),
   z.object({ type: z.literal("dnd"), until: z.number().int().positive().nullable() }),
+]);
+
+const HostFrame = z.discriminatedUnion("type", [
+  z.object({
+    type: z.literal("hello"),
+    host: z.literal("phone"),
+    tools: z.array(z.string().max(64)).max(200),
+    version: z.number().int(),
+  }),
+  z.object({ type: z.literal("device.result"), id, ok: z.boolean(), output: z.unknown() }),
 ]);
 
 /** A phone's frame as a Duck Protocol message, or why it's refused. */
@@ -133,6 +148,8 @@ export interface BridgeDeps {
   render(text: string, lang: Lang): Promise<{ id: string; seconds: number }>;
   /** Start the voice engine (with Russian too) if it isn't running. */
   warm(ru: boolean): void;
+  /** Where a socket that says `hello` connects as a host (step H1). */
+  hosts?: Hosts;
 }
 
 /** A reply being spoken for a phone. */
@@ -199,6 +216,8 @@ export function startRemoteBridge(d: BridgeDeps): RemoteBridge {
   /** Each thread's last reply spoken for a phone, until all of it is sent. */
   const tails = new Map<string, Promise<void>>();
   let nextReply = 0;
+  /** Sockets that are hosts (H1). */
+  const hostConns = new Map<number, HostConn>();
 
   const toPhone = (conn: number, e: DuckEvent) => d.link.emit(stamp(e), conn);
   const live = (s: Spoken) => !s.stopped && conns.has(s.conn);
@@ -337,9 +356,13 @@ export function startRemoteBridge(d: BridgeDeps): RemoteBridge {
     if (i.kind === "open") conns.add(i.conn);
     else if (i.kind === "close") {
       conns.delete(i.conn);
+      hostConns.get(i.conn)?.close();
+      hostConns.delete(i.conn);
       d.duck.handle({ type: "thread.view", surface: `phone:${i.conn}`, threadId: null });
       for (let k = wanted.length - 1; k >= 0; k--) if (wanted[k].conn === i.conn) wanted.splice(k, 1);
       for (let k = sent.length - 1; k >= 0; k--) if (sent[k].conn === i.conn) sent.splice(k, 1);
+    } else if (isHostUp(i.msg)) {
+      host(i.conn, i.msg);
     } else {
       const msg = parseRemote(i.msg, d.fixVoice);
       if (typeof msg === "string") return toPhone(i.conn, { type: "error", message: msg });
@@ -359,6 +382,26 @@ export function startRemoteBridge(d: BridgeDeps): RemoteBridge {
       d.duck.handle(msg, (e) => toPhone(i.conn, e));
     }
   });
+
+  /** A host's frame from socket `conn` (H1). */
+  function host(conn: number, raw: unknown): void {
+    const refuse = (message: string) => toPhone(conn, { type: "error", message });
+    if (!d.hosts) return refuse("Duck takes no hosts here");
+    const r = HostFrame.safeParse(raw);
+    if (!r.success) return refuse("not a host message, or not the phone's");
+    const m = r.data;
+    if (m.type === "device.result") {
+      const c = hostConns.get(conn);
+      return c ? c.receive(m) : refuse("say hello first");
+    }
+    hostConns.get(conn)?.close();
+    hostConns.delete(conn);
+    try {
+      hostConns.set(conn, d.hosts.connect(m, (down) => d.link.emit({ ...down, v: PROTOCOL_VERSION }, conn)));
+    } catch (e) {
+      refuse(e instanceof Error ? e.message : String(e));
+    }
+  }
 
   /** A read's sections as `tts` parts to `conn`. */
   function phoneVoice(conn: number, threadId: string): Voice {

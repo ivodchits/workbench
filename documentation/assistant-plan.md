@@ -6856,6 +6856,29 @@ checked in the scratch PTY first.
   answers; a stop cancels a running call; a call while the host is away fails cleanly; the
   request's tool list is byte-identical with and without the host connected.
 - **Out of scope:** the real phone host (H5), waking the PC (H6).
+- **As built (2026-10-23):**
+  - **`src/assistant/hosts.ts`** holds the connected hosts. `call` sends `device.call`,
+    settles on `device.result`, and sends `device.cancel` when the turn's signal aborts.
+    That covers a stop and the tool's own timeout, because `runTool` already aborts on
+    both. A missing host or tool fails at once ("the phone isn't connected", "the phone
+    doesn't offer X"). A host that closes fails its open calls ("the phone
+    disconnected"), and so does one that reconnects. `serveHost` is the host's side:
+    it refuses a tool it didn't announce, and doesn't start a call cancelled before it
+    began.
+  - **A host tool has no `run` in the engine.** `defineTool` with `host: "pc" | "phone"`
+    supplies one that goes through `ctx.hosts`, and refuses a `run` given anyway. The
+    registry defers every such tool on its own, so `DEFERRED` doesn't list them.
+  - **Of what a host announces, only the engine's tools for that host count.** A host
+    can't add a tool, and can't take one that's declared for the other host.
+  - **The phone's socket only takes `phone` as a host.** The bridge routes `hello` and
+    `device.result` before the phone-message check. A `hello` claiming `pc` is refused,
+    so a paired phone can't take over the desktop's tools. `pc` is the desktop's own, in
+    process (`connectLocal` in `index.ts`), with no tools until H2. No Rust change was
+    needed: the server already relays every frame that isn't `conv.*`.
+  - **The scripted host is the bridge with a fake link.** The engine tests check four
+    things: a call while the phone is away fails, a call after `hello` runs and
+    answers, a stop sends `device.cancel`, and closing the socket fails the open call.
+    Every request's `tools` serializes the same whether the host is connected or not.
 
 #### Step H2 — PC tools: Steam, media keys, weather
 
@@ -7597,7 +7620,7 @@ T2 goes live after the replay check in its done-when (the past week's prompts th
 | T4 | Permission answers through the `PermissionRequest` hook | ☑ |
 | P1 | Autopilot loop for one session | ☑ |
 | P2 | Unattended runs: limits, windows, stalls, checklists, several sessions | ☑ (the overnight run not tried yet) |
-| H1 | Host-bound tools | ☐ |
+| H1 | Host-bound tools | ☑ |
 | H2 | PC tools: Steam, media keys, weather | ☐ |
 | H3 | Music and video | ☐ |
 | H4 | Duck's reminders and timers | ☐ |

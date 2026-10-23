@@ -27,7 +27,11 @@ import { SYSTEM_PROMPT, VOICE_NOTE } from "./prompt";
 import { createThreadStore, type ThreadBackend } from "./threads";
 import { getTime } from "./tools/getTime";
 import { goToThread, listThreads, startThread, switchMode } from "./tools/threads";
-import { createRegistry, defineTool, type ToolDef } from "./tools/registry";
+import { createRegistry, defineTool, toolsOn, type ToolDef } from "./tools/registry";
+import { createHosts } from "./hosts";
+import { PROTOCOL_VERSION } from "./protocol";
+import { startRemoteBridge } from "./remoteBridge";
+import type { AssistantRemoteInput } from "../ipc/remote";
 
 type Msg = Anthropic.Beta.BetaMessage;
 type Block = Msg["content"][number];
@@ -1442,5 +1446,105 @@ describe("a card with choices, and a hosted server's tools (B2)", () => {
     expect(tools[2]).toMatchObject({ defer_loading: true, input_schema: { properties: { window_id: { type: "integer" } } } });
     expect(resultText(store.loaded(id)[4])).toBe("tab 1, tab 2");
     expect(registry.tierOf("get_time")).toBe("read");
+  });
+});
+
+describe("host-bound tools (H1)", () => {
+  const torch = defineTool({
+    name: "phone_torch",
+    description: "Turn the phone's flashlight on or off.",
+    schema: z.object({ on: z.boolean() }),
+    tier: "reversible",
+    host: "phone",
+  });
+
+  /** The engine, and a phone over a scripted socket that's a host when it says
+   *  hello. `answer` is how it answers a call (null: never). */
+  async function setupHost(steps: Step[]) {
+    const store = createThreadStore(memoryBackend());
+    await store.load();
+    const s = scripted(steps);
+    const tools = [getTime, torch];
+    const hosts = createHosts((h) => toolsOn(tools, h));
+    const engine = createEngine({ stream: s.stream, registry: createRegistry(tools), port, store, hosts });
+    let input: (i: AssistantRemoteInput) => void = () => {};
+    const down: unknown[] = [];
+    let answer: ((input: unknown) => unknown) | null = (i) => `torch ${(i as { on: boolean }).on ? "on" : "off"}`;
+    startRemoteBridge({
+      duck: { handle: () => {}, onEvent: () => () => {} },
+      link: {
+        onInput: (cb) => ((input = cb), () => {}),
+        emit: (frame) => {
+          down.push(frame);
+          const f = frame as { type: string; id: string; input: unknown };
+          if (f.type === "device.call" && answer)
+            queueMicrotask(() => phone({ type: "device.result", id: f.id, ok: true, output: answer!(f.input) }));
+        },
+        push: () => {},
+      },
+      watching: () => false,
+      fixVoice: (t) => t,
+      prepare: async () => null,
+      render: async () => ({ id: "a", seconds: 1 }),
+      warm: () => {},
+      hosts,
+    });
+    const phone = (msg: unknown) => input({ conn: 1, device: "d", kind: "message", msg });
+    input({ conn: 1, device: "d", kind: "open", msg: null });
+    return {
+      engine,
+      store,
+      calls: s.calls,
+      down,
+      phone,
+      hello: () => phone({ type: "hello", host: "phone", tools: ["phone_torch"], version: PROTOCOL_VERSION }),
+      leave: () => input({ conn: 1, device: "d", kind: "close", msg: null }),
+      silent: () => void (answer = null),
+    };
+  }
+
+  const result = (m: StoredMessage) => (m.content as { content: string; is_error?: boolean }[])[0];
+
+  it("runs a call on the host that offers it, and sends the same tools whether it's connected or not", async () => {
+    const h = await setupHost([
+      message([toolUse("a", "phone_torch", { on: true })], "tool_use"),
+      message([text("The phone isn't here.")], "end_turn"),
+      message([toolUse("b", "phone_torch", { on: true })], "tool_use"),
+      message([text("It's on.")], "end_turn"),
+    ]);
+    // Away: the call fails at once, with the reason.
+    const id = await turn(h.engine, "torch on");
+    expect(result(h.store.loaded(id)[2])).toMatchObject({ is_error: true, content: expect.stringContaining("the phone isn't connected") });
+    h.hello();
+    await turn(h.engine, "now?", id);
+    expect(result(h.store.loaded(id)[6])).toEqual({ type: "tool_result", tool_use_id: "b", content: "torch on" });
+    expect(h.down).toContainEqual(expect.objectContaining({ type: "device.call", tool: "phone_torch", input: { on: true } }));
+    // The host tool is deferred, and the list is byte-identical either way.
+    const lists = h.calls.map((c) => JSON.stringify(c.params.tools));
+    expect(new Set(lists).size).toBe(1);
+    expect(h.calls[0].params.tools).toContainEqual(expect.objectContaining({ name: "phone_torch", defer_loading: true }));
+  });
+
+  it("cancels a running call on a stop, and fails one whose host goes away", async () => {
+    const h = await setupHost([
+      message([toolUse("a", "phone_torch", { on: true })], "tool_use"),
+      message([toolUse("b", "phone_torch", { on: false })], "tool_use"),
+      message([text("It went away.")], "end_turn"),
+    ]);
+    h.hello();
+    h.silent();
+    const id = await h.engine.send({ threadId: null, text: "torch on", source: "desktop" });
+    await new Promise((r) => setTimeout(r, 10));
+    expect(h.engine.state(id)).toBe("tool");
+    h.engine.stop(id);
+    await h.engine.settled(id);
+    const call = h.down.find((f) => (f as { type: string }).type === "device.call") as { id: string };
+    expect(h.down).toContainEqual({ type: "device.cancel", id: call.id, v: PROTOCOL_VERSION });
+
+    const id2 = await h.engine.send({ threadId: null, text: "torch off", source: "desktop" });
+    await new Promise((r) => setTimeout(r, 10));
+    h.leave();
+    await h.engine.settled(id2);
+    expect(result(h.store.loaded(id2)[2])).toMatchObject({ is_error: true, content: expect.stringContaining("the phone disconnected") });
   });
 });

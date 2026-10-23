@@ -76,7 +76,8 @@ import { Consolidation, createConsolidator, type Consolidator } from "./consolid
 import { memoryApply, memoryList, memoryStateGet, memoryStateSet } from "../ipc/memory";
 import { createMcpHost } from "./mcp";
 import { createGoogleHost } from "./google";
-import { createRegistry } from "./tools/registry";
+import { createRegistry, toolsOn } from "./tools/registry";
+import { connectLocal, createHosts } from "./hosts";
 import { createBrowserHost } from "./browser";
 import { createHostedSync, type HostedSync } from "./hosted";
 import { firefoxStartProfile, mcpHostCall, mcpHostRunning, mcpHostServers, mcpHostTools } from "../ipc/mcpHost";
@@ -808,6 +809,10 @@ export function initAssistant(): Promise<void> {
       refLine: browser.refLine,
     });
     void hosted.sync().catch((e: unknown) => console.warn("duck: the hosted MCP servers didn't load", e));
+    // Tools that run where they act (H1): the PC's here, in process (H2's tools
+    // add their handlers); the phone's over its socket.
+    const hosts = createHosts((host) => toolsOn(TOOLS, host));
+    connectLocal(hosts, "pc", {});
     const engine = createEngine({
       tasks,
       autopilot,
@@ -818,6 +823,7 @@ export function initAssistant(): Promise<void> {
       haiku: (input, signal) => oneShot("haiku_task", input, { signal }),
       mcp: createMcpHost(mcpRequest),
       hosted: { call: mcpHostCall, browser },
+      hosts,
       google: createGoogleHost({ workspacePrepare, sheetExport, sheetCells, sheetDraft, sheetDrafts, sheetSearch, sheetRead }),
       core: createCoreHost(() => settings.get().workspace),
       memory,
@@ -989,6 +995,7 @@ export function initAssistant(): Promise<void> {
         return { id, seconds: await ttsRender(id, text, lang) };
       },
       warm: (ru) => void ttsWarm(ru).catch(() => {}),
+      hosts,
     });
   })().catch((e: unknown) => {
     started = null;

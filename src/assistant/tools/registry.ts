@@ -27,6 +27,12 @@
 // handed to `describe`, `review`, `trust` and `run`, so the card shows what runs.
 // `prepare` also gets the settings and the Google host (`PrepareEnv`), for a card
 // that shows what a file outside the app holds now (the invoice's cells).
+//
+// A tool's host (step H1, `hosts.ts`) says where it runs: `workbench` (the
+// default) and `any` here; `pc` and `phone` on a host that connects. A host
+// tool is declared here without `run`: its schema, tier and `trust` stay with
+// the engine, its call goes to the host. Host tools are always deferred, so the
+// list doesn't change with what's connected.
 
 import { z } from "zod";
 import type Anthropic from "@anthropic-ai/sdk";
@@ -51,6 +57,7 @@ import type { CoreHost } from "../core";
 import type { MemoryHost } from "../memory";
 import type { ConfigHost } from "../config";
 import type { SkillsHost } from "../skills";
+import { isRemoteHost, type Host, type HostCaller } from "../hosts";
 
 export type Tier = "read" | "reversible" | "consequential";
 
@@ -111,6 +118,9 @@ export interface ToolContext {
   startThread(words: string, opts?: { go?: boolean; brief?: string; mode?: string }): Promise<string>;
   /** Duck's threads, and moving the conversation between them (step A7). */
   threads: ThreadMoves;
+  /** The connected hosts (step H1), for a `pc` or `phone` tool; absent where
+   *  there are none. */
+  hosts?: HostCaller | null;
 }
 
 /** What `prepare` gets besides the port. */
@@ -131,6 +141,8 @@ export interface ToolDef<S extends z.ZodType = z.ZodType, P = unknown> {
    *  MCP server's own JSON Schema; `schema` then only checks it's an object). */
   inputSchema?: Record<string, unknown>;
   tier: Tier;
+  /** Where it runs (step H1); `workbench` when absent. */
+  host?: Host;
   /** A tier that depends on the input or the app's state (resuming a session that
    *  is running ends its process); `tier` when absent or when it throws. */
   tierFor?(input: z.infer<S>, port: WorkbenchPort, prepared?: P): Tier;
@@ -163,10 +175,29 @@ export const DEFAULT_TIMEOUT_MS = 10_000;
 const NAME = /^[a-z][a-z0-9_]{0,63}$/;
 
 export function defineTool<S extends z.ZodType, P = undefined>(
-  def: Omit<ToolDef<S, P>, "timeoutMs"> & { timeoutMs?: number },
+  def: Omit<ToolDef<S, P>, "timeoutMs" | "run"> & { timeoutMs?: number; run?: ToolDef<S, P>["run"] },
 ): ToolDef<S, P> {
   if (!NAME.test(def.name)) throw new Error(`bad tool name: ${def.name}`);
-  return { ...def, timeoutMs: def.timeoutMs ?? DEFAULT_TIMEOUT_MS };
+  const { host } = def;
+  if (isRemoteHost(host)) {
+    if (def.run) throw new Error(`${def.name} runs on ${host}, not here`);
+    const name = def.name;
+    return {
+      ...def,
+      timeoutMs: def.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+      run: async (input, ctx) => {
+        if (!ctx.hosts) throw new Error("no host can run it here");
+        return (await ctx.hosts.call(host, name, input, ctx.signal)) as ToolOutput;
+      },
+    };
+  }
+  if (!def.run) throw new Error(`${def.name} has no run`);
+  return { ...def, run: def.run, timeoutMs: def.timeoutMs ?? DEFAULT_TIMEOUT_MS };
+}
+
+/** The names of `tools` that run on `host`. */
+export function toolsOn(tools: readonly ToolDef[], host: Host): Set<string> {
+  return new Set(tools.filter((t) => (t.host ?? "workbench") === host).map((t) => t.name));
 }
 
 export interface Registry {
@@ -225,8 +256,9 @@ export function createRegistry(
   // Built once: the same objects, serialized the same way, on every request.
   // Inputs are small, so they aren't streamed eagerly (the server validates them
   // against the schema before the call reaches us; the engine validates again).
-  const deferred = opts.deferred ?? new Set<string>();
-  for (const n of deferred) if (!byName.has(n)) throw new Error(`deferred tool not found: ${n}`);
+  for (const n of opts.deferred ?? []) if (!byName.has(n)) throw new Error(`deferred tool not found: ${n}`);
+  // A host's tools are always deferred (H1).
+  const deferred = new Set([...(opts.deferred ?? []), ...sorted.filter((t) => isRemoteHost(t.host)).map((t) => t.name)]);
   const own: Anthropic.Beta.BetaToolUnion[] = [
     ...(deferred.size ? [TOOL_SEARCH] : []),
     ...(opts.server ?? []),

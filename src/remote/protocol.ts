@@ -7,6 +7,7 @@
 // nothing here may import a value.
 
 import type { DuckEvent, Effort, Stamped } from "../assistant/protocol";
+import type { HostDown } from "../assistant/hosts";
 import type { InstanceStatus } from "../ipc/registry";
 import type { RateLimits } from "../ipc/usageLimits";
 import type { ChoiceKind, ChoiceOption, ChoiceQuestion } from "../state/pendingChoice";
@@ -185,7 +186,9 @@ export interface TranscriptBack {
 // ── Duck (step R1): the socket at `/api/assistant` ──────────────────────────────
 // The Duck Protocol (`src/assistant/protocol.ts`), less what a phone may not do.
 
-/** A frame the phone sends to Duck. Anything else is refused with an `error`. */
+/** A frame the phone sends to Duck. Anything else is refused with an `error`.
+ *  A socket can also be a host (step H1): it sends `HostUp` frames (`hello`,
+ *  `device.result`), which go to the hosts, not to Duck. */
 export type RemoteDuckMessage =
   /** The thread list, open confirmations, settings, trust, tasks and the spend. */
   | { type: "sync" }
@@ -237,6 +240,9 @@ export type RemoteDuckFrame =
   | { type: "ttsCut"; threadId: string; v: number }
   /** Frames were dropped (a slow link): ask for the open thread again. */
   | { type: "lagged" }
+  /** To a socket that's a host (step H1, `src/assistant/hosts.ts`): run a tool,
+   *  or stop running one. */
+  | (HostDown & { v: number })
   | RemoteConvFrame;
 
 // Conversation mode on the phone (step V4 part 3). The page streams its mic to the
