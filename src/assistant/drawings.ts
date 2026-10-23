@@ -36,7 +36,8 @@ const Ref = z.object({ id: z.string(), name: z.string(), mime: z.string(), size:
 
 export const Version = z.object({
   n: z.number(),
-  ext: z.enum(["mmd", "svg", "json"]),
+  /** `png`: an image from the image model (G6), its picture in `png`. */
+  ext: z.enum(["mmd", "svg", "json", "png"]),
   /** The source file. */
   path: z.string(),
   workspace: z.string(),
@@ -58,8 +59,9 @@ export const Drawing = z.object({
   id: z.string(),
   threadId: z.string(),
   title: z.string(),
-  /** Null until the worker picks one (its first version). */
-  kind: z.enum(DRAWING_KINDS).nullable(),
+  /** Null until the worker picks one (its first version); `image` from the image
+   *  model (G6). */
+  kind: z.enum([...DRAWING_KINDS, "image"]).nullable(),
   versions: z.array(Version),
   /** The version being drawn, by which task; `fixed` once it went back with a
    *  render error. */
@@ -93,6 +95,20 @@ export interface DrawingRenderer {
   svg(kind: DrawingKind, source: string): Promise<string>;
   /** `width` px wide; twice the SVG's size when absent. */
   png(svg: string, width?: number): Promise<Blob | null>;
+  /** An image (G6) as an SVG for the canvas. */
+  image(file: AttachmentRef): Promise<string>;
+}
+
+/** A picture from the image model (step G6), as a new drawing or the next
+ *  version of one. */
+export interface ImageVersion {
+  threadId: string;
+  title: string;
+  drawing?: string;
+  image: AttachmentRef;
+  /** The prompt it was made from: the version's headline. */
+  prompt: string;
+  surface?: Surface;
 }
 
 export interface DrawRequest {
@@ -114,6 +130,8 @@ export interface Drawings {
   draw(req: DrawRequest): Promise<{ drawing: Drawing; task: Task; how: "started" | "followup" }>;
   /** The task manager's `report` hook. */
   report(t: Task): Promise<string | false | null>;
+  /** Add an image (G6): a card in the thread, the canvas where it was asked for. */
+  addImage(v: ImageVersion): Drawing;
   /** A drawing worker's `render` call (step G4): the picture, or why there's none. */
   renderFor(instanceId: string, input: unknown): Promise<McpResult>;
   /** The task manager's `keepWarm` hook. */
@@ -258,7 +276,7 @@ export function createDrawings(deps: DrawingDeps): Drawings {
   async function fromResult(t: Task, d: Drawing, n: number): Promise<DrawingSourceFile | null> {
     const md = await backend.resultMd(t.workspace, t.folder).catch(() => null);
     if (!md) return null;
-    for (const kind of d.kind ? [d.kind] : DRAWING_KINDS) {
+    for (const kind of d.kind && d.kind !== "image" ? [d.kind] : DRAWING_KINDS) {
       const text = fencedSource(md, kind);
       if (!text) continue;
       const path = await backend.write(t.workspace, t.folder, d.id, n, EXT[kind], text);
@@ -278,6 +296,8 @@ export function createDrawings(deps: DrawingDeps): Drawings {
     async draw(req) {
       const old = req.drawing ? find(req.drawing) : null;
       if (old && old.threadId !== req.threadId) throw new Error(`Drawing ${old.id} belongs to another thread.`);
+      if (old?.kind === "image")
+        throw new Error(`Drawing ${old.id} is an image: change it with generate_image, giving it in refs.`);
       if (old?.pending && live(tasks.get(old.pending.taskId)))
         throw new Error(`Drawing ${old.id} is being drawn already (version ${old.pending.n}): wait for it, then ask for the change.`);
       const d: Drawing = old ?? {
@@ -292,7 +312,8 @@ export function createDrawings(deps: DrawingDeps): Drawings {
       };
       const prev = d.versions[d.versions.length - 1] ?? null;
       const n = (prev?.n ?? 0) + 1;
-      const kind = req.kind ?? d.kind;
+      // An image is refused above, so its kind isn't one here.
+      const kind = req.kind ?? (d.kind === "image" ? null : d.kind);
       let task: Task | undefined = req.files?.length ? undefined : warm(req.threadId);
       let how: "started" | "followup" = "followup";
       if (task) {
@@ -382,6 +403,40 @@ export function createDrawings(deps: DrawingDeps): Drawings {
       return `${label}, version ${n}, is drawn${headline ? `: ${headline}` : ""}. It's on the canvas${where}. Tell the user in a few words where it is ("It's on the canvas"); describe it only if they ask. Changes go to draw with drawing "${d.id}".`;
     },
 
+    addImage(v) {
+      const old = v.drawing ? find(v.drawing) : null;
+      if (old && old.threadId !== v.threadId) throw new Error(`Drawing ${old.id} belongs to another thread.`);
+      const d: Drawing = old ?? {
+        id: newId().slice(0, 8),
+        threadId: v.threadId,
+        title: v.title.trim(),
+        kind: "image",
+        versions: [],
+        pending: null,
+        surface: null,
+        created: now(),
+      };
+      const n = (d.versions[d.versions.length - 1]?.n ?? 0) + 1;
+      const version: Version = {
+        n,
+        ext: "png",
+        path: v.image.path ?? "",
+        workspace: "",
+        folder: "",
+        taskId: "",
+        headline: v.prompt.slice(0, 300),
+        at: now(),
+        png: plain(v.image),
+        svg: null,
+        checks: 0,
+        ms: null,
+      };
+      const surface = v.surface ?? d.surface;
+      const done = save({ ...d, kind: d.kind ?? "image", versions: [...d.versions, version], surface }, surface ?? undefined);
+      deps.notice(d.threadId, { kind: "drawing", text: `${d.title} · v${n}`, drawing: { id: d.id, n, title: d.title, png: v.image } });
+      return done;
+    },
+
     async renderFor(instanceId, input) {
       const fail = (text: string): McpResult => ({ content: [{ type: "text", text }], isError: true });
       const t = tasks.byInstance(instanceId);
@@ -437,6 +492,12 @@ export function createDrawings(deps: DrawingDeps): Drawings {
       const d = drawings.get(id);
       const v = d?.versions.find((x) => x.n === n);
       if (!d || !v) throw new Error(`There is no version ${n} of drawing ${id}.`);
+      if (v.ext === "png") {
+        if (!v.png) throw new Error(`Version ${n}'s picture is gone.`);
+        const svg = await render.image(v.png);
+        svgs.set(key, svg);
+        return svg;
+      }
       const src = await backend.source(v.workspace, v.folder, id, n);
       if (!src) throw new Error(`Version ${n}'s source is gone (${v.path}).`);
       const svg = await render.svg(kindOf(src.ext) ?? "svg", src.text);

@@ -27,6 +27,8 @@ import {
   taskResult,
   attachBytes,
   attachData,
+  imageGenerate,
+  imageKey,
   attachPrepare,
   attachPrune,
   onUsage,
@@ -120,7 +122,7 @@ import { DEFERRED, SERVER_TOOLS, TOOL_NAMES, TOOLS } from "./toolset";
 import { createTaskManager, ipcTaskBackend, type Task, type TaskManager } from "./tasks";
 import { createDrawings, ipcDrawingBackend, type Drawings } from "./drawings";
 import { brainToolResult, onWorkerRender, type McpResult } from "../ipc/brain";
-import { renderSvg, toPng } from "../drawing/render";
+import { imageAsSvg, renderSvg, toPng } from "../drawing/render";
 import { voiceMessage } from "./voiceNames";
 import { createSkills, type Skill, type SkillsHost } from "./skills";
 import { allModes, isModeId, modeOf, thinksOnSession } from "./modes";
@@ -690,7 +692,15 @@ export function initAssistant(): Promise<void> {
     const drawings = createDrawings({
       tasks,
       backend: ipcDrawingBackend,
-      render: { svg: renderSvg, png: toPng },
+      render: {
+        svg: renderSvg,
+        png: toPng,
+        // An image (G6): its picture as the engine sends it (at most 1568 px).
+        image: async (f) => {
+          const p = await attachPrepare(f.id, f.name);
+          return imageAsSvg(`data:${p.mediaType ?? f.mime};base64,${await attachData(f.id, f.name, "image")}`);
+        },
+      },
       notice: (threadId, n) =>
         void engineRef?.notice(threadId, n).catch((e: unknown) => console.warn("duck: a drawing's card was dropped", e)),
     });
@@ -954,6 +964,7 @@ export function initAssistant(): Promise<void> {
       attachments: { prepare: attachPrepare, data: attachData },
       tasks,
       drawings,
+      images: { key: imageKey, generate: imageGenerate },
       autopilot,
       summaries,
       reader: readerHost,

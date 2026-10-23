@@ -6,11 +6,13 @@
 // - Speech: whether the Google key for Chirp voices is stored, and this month's use.
 //   The key itself is only ever stored with `cmdkey`; which voice Duck uses is in the
 //   voice tab.
+// - Images (step G6): whether the Gemini API key is stored (again only by `cmdkey`),
+//   the image model, and the month's cap past which each request asks.
 
 import { useEffect, useState } from "react";
-import { googleConnect, googleDisconnect, googleStatus, type GoogleStatus } from "../../ipc/assistant";
+import { googleConnect, googleDisconnect, googleStatus, imageKey, type GoogleStatus } from "../../ipc/assistant";
 import { ttsStatus, type TtsStatus } from "../../ipc/tts";
-import type { DuckSettings } from "../../assistant/settings";
+import { IMAGE_MODELS, type DuckSettings } from "../../assistant/settings";
 import { googleErrorText } from "../../assistant/google";
 import { setDuckSettings } from "./duckState";
 
@@ -20,6 +22,8 @@ export default function GoogleSettings({ settings }: { settings: DuckSettings })
   const [status, setStatus] = useState<GoogleStatus | null>(null);
   const [tts, setTts] = useState<TtsStatus | null>(null);
   const [connecting, setConnecting] = useState(false);
+  const [gemini, setGemini] = useState<boolean | null>(null);
+  const [cap, setCap] = useState(String(settings.imageCapUsd));
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => setClientId(saved), [saved]);
@@ -30,7 +34,16 @@ export default function GoogleSettings({ settings }: { settings: DuckSettings })
     void ttsStatus()
       .then(setTts)
       .catch(() => setTts(null));
+    void imageKey()
+      .then(setGemini)
+      .catch(() => setGemini(false));
   }, []);
+  useEffect(() => setCap(String(settings.imageCapUsd)), [settings.imageCapUsd]);
+  const saveCap = () => {
+    const n = Number(cap);
+    if (Number.isFinite(n) && n >= 0 && n <= 1000 && n !== settings.imageCapUsd) setDuckSettings({ imageCapUsd: n });
+    else setCap(String(settings.imageCapUsd));
+  };
 
   const saveClientId = () => {
     const id = clientId.trim();
@@ -113,6 +126,41 @@ export default function GoogleSettings({ settings }: { settings: DuckSettings })
           </>
         )}
       </div>
+
+      <div style={heading}>Images (Gemini)</div>
+      <div style={hint}>
+        {gemini === null ? (
+          "…"
+        ) : gemini ? (
+          "The Gemini API key is stored."
+        ) : (
+          <>
+            No Gemini API key is stored. Make one in Google AI Studio and store it in your own terminal:{" "}
+            <code>cmdkey /generic:duck/gemini-api-key /user:duck /pass:&lt;key&gt;</code>
+          </>
+        )}{" "}
+        Images are billed to the key&apos;s Google Cloud project (a Google AI subscription&apos;s developer credits
+        may cover them: check in your Google account); the API has no free images.
+      </div>
+      <label style={{ ...row, alignItems: "center" }}>
+        <span>model</span>
+        <select
+          value={settings.imageModel}
+          onChange={(e) => setDuckSettings({ imageModel: e.target.value as DuckSettings["imageModel"] })}
+          style={input}
+        >
+          {IMAGE_MODELS.map((m) => (
+            <option key={m} value={m}>
+              {m}
+            </option>
+          ))}
+        </select>
+      </label>
+      <label style={{ ...row, alignItems: "center" }}>
+        <span>ask past</span>
+        <input value={cap} onChange={(e) => setCap(e.target.value)} onBlur={saveCap} style={{ ...input, width: 60 }} />
+        <span style={hint}>USD of images a month (list price); below it, Duck makes them unasked</span>
+      </label>
     </>
   );
 }

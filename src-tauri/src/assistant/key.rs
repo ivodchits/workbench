@@ -46,6 +46,13 @@ pub fn youtube_api() -> Option<String> {
     imp::read("duck/youtube-api-key").filter(|k| !k.is_empty())
 }
 
+/// Step G6: the Gemini API key for images, `duck/gemini-api-key` (one credential for
+/// both builds), stored with `cmdkey /generic:duck/gemini-api-key /user:duck
+/// /pass:<key>`. Billed to its Google Cloud project; never in the webview.
+pub fn gemini_api() -> Option<String> {
+    imp::read("duck/gemini-api-key").filter(|k| !k.is_empty())
+}
+
 /// The morning routine's Google refresh token (`duck-dev/…` for a debug build),
 /// written by the OAuth flow in [`super::google`], never by hand.
 pub const GOOGLE_TOKEN: &str = if cfg!(debug_assertions) {

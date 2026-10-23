@@ -253,6 +253,8 @@ pub fn run() {
             assistant::assistant_task_put,
             assistant::assistant_task_list,
             assistant::assistant_drawing_source,
+            assistant::assistant_image_key,
+            assistant::assistant_image_generate,
             assistant::assistant_drawing_write,
             assistant::assistant_drawing_put,
             assistant::assistant_drawing_list,

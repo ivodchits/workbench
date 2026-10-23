@@ -31,6 +31,7 @@ mod budget;
 pub mod config;
 mod db;
 pub mod drawings;
+pub mod imagegen;
 pub mod gitlane;
 pub mod google;
 pub mod headless;
@@ -735,6 +736,51 @@ pub fn assistant_task_put(ctx: Db<'_>, id: String, data: String) -> Result<(), S
 #[tauri::command]
 pub fn assistant_task_list(ctx: Db<'_>, limit: u32) -> Result<Vec<String>, String> {
     workspace::list_tasks(&lock(&ctx), limit.clamp(1, 500))
+}
+
+// ── images (step G6) ──
+
+/// Whether the Gemini API key is stored.
+#[tauri::command]
+pub fn assistant_image_key() -> bool {
+    key::gemini_api().is_some()
+}
+
+/// Make images with the image model: the prompt, reference attachments (id, name),
+/// and the format. Each image is stored as an attachment and its price recorded.
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+pub async fn assistant_image_generate(
+    app: AppHandle,
+    ctx: State<'_, Arc<Assistant>>,
+    prompt: String,
+    refs: Vec<(String, String)>,
+    aspect: Option<String>,
+    size: Option<String>,
+    model: Option<String>,
+    name: String,
+) -> Result<imagegen::Generated, String> {
+    let key = key::gemini_api().ok_or("No Gemini API key: store one with cmdkey /generic:duck/gemini-api-key /user:duck /pass:<key>")?;
+    let model = model.unwrap_or_else(|| imagegen::MODELS[0].to_string());
+    if !imagegen::MODELS.contains(&model.as_str()) {
+        return Err(format!("not an image model Duck uses: {model}"));
+    }
+    let size = size.unwrap_or_else(|| "1K".into());
+    let aspect = aspect.unwrap_or_else(|| "1:1".into());
+    if !imagegen::SIZES.contains(&size.as_str()) || !imagegen::ASPECTS.contains(&aspect.as_str()) {
+        return Err(format!("not a size and aspect the model takes: {size}, {aspect}"));
+    }
+    if refs.len() > imagegen::MAX_REFS {
+        return Err(format!("at most {} reference images", imagegen::MAX_REFS));
+    }
+    let root = attachments_root(&app)?;
+    let read = refs.iter().map(|(id, n)| imagegen::reference(&root, id, n)).collect::<Result<Vec<_>, _>>()?;
+    let made = imagegen::generate(&key, &root, &model, &prompt, &read, &aspect, &size, &name).await?;
+    if !made.images.is_empty() {
+        let conn = ctx.db.conn.lock().expect("duck db lock poisoned");
+        imagegen::record(&conn, now_ms(), &made.model, made.images.len() as i64, made.usd).map_err(|e| e.to_string())?;
+    }
+    Ok(made)
 }
 
 // ── drawings (step G3) ──

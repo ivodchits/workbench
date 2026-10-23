@@ -8105,6 +8105,51 @@ checked in the scratch PTY first.
   into a render, and the month's image spend shows next to the API spend.
 - **Out of scope:** video and animation; an on-device diffusion model (too slow and
   rough on the 4060 for the quality wanted; revisit if that changes).
+- **As built (2026-10-23), route 1:**
+  - **Check first, from Google's docs (2026-10-23):**
+    - **Models:** `gemini-nano-banana-2.1` (recommended), `gemini-3.1-flash-image`,
+      `gemini-3.1-flash-lite-image` (1K only) and `gemini-3-pro-image`.
+    - **The API:** the Interactions endpoint (`POST /v1beta/interactions`). Reference
+      images go as `image` input blocks (up to 14); `response_format` sets the aspect
+      and the size (`1K`, `2K`, `4K`).
+    - **Price:** image generation is paid-tier only, with no free images on the API.
+      Nano Banana 2.1 is $0.0336 at 1K, $0.0504 at 2K, $0.113 at 4K; 3 Pro Image is
+      $0.134 at 1K or 2K.
+    - **Not checked (yours):** whether your subscription's developer credits pay for
+      them; that's in your Google account.
+    - **Not tried:** route 2 (Gemini CLI on the subscription).
+  - **Rust** (`imagegen.rs`):
+    - The key is `duck/gemini-api-key` in Credential Manager, stored with `cmdkey`
+      (as the other keys); it never reaches the webview. The settings show whether
+      it's stored.
+    - `assistant_image_generate` sends the prompt and the references, read from the
+      attachment store. Each image that comes back is stored as an attachment and
+      recorded in `assistant_image_spend` at list price.
+    - It skips interim "thought" images, and passes a refusal's text back.
+  - **`generate_image(title, prompt, count?, refs?, drawing?, aspect?, size?)`**
+    (`tools/image.ts`, deferred, in every mode):
+    - Duck writes the prompt itself. A prompt written by the drawing worker, which
+      would also judge the image, isn't built.
+    - It's a background job: each image lands as an `image` drawing (a card, the
+      canvas where it was asked for, the phone's viewer, mark-up), and Duck hears
+      once all are in.
+    - `refs` are attachments (a sketch, a photo) or drawing ids (that drawing's
+      newest picture). `drawing` makes the result that image's next version
+      ("the second one, but flatter").
+  - **Spend:**
+    - The settings set the model and a monthly cap (default $10). Within the cap a
+      request runs unasked (`reversible`); past it each request asks
+      (`consequential`), with the estimate on the card.
+    - The spend line shows "images $x (n)" next to the API month. It isn't counted
+      in the API budget, since Google bills it.
+  - **The prompt** says what's `draw` and what's `generate_image`.
+  - **Tested:** the request body, the response parsing (thoughts skipped, the
+    `output_image` fallback, a refusal), prices, the month's sum, the tool (cards
+    and the report for three images, references from a sketch and from an image, the
+    next version, no key, failures and refusals, the cap), and image drawings.
+  - **Not tried yet (yours):** a real request. No Gemini API key is stored on this
+    machine. With one: "show me three moods for Duck's app icon", "the second one,
+    but flatter", a sketch turned into a render, and the month's line.
 
 ---
 
@@ -8354,4 +8399,4 @@ T2 goes live after the replay check in its done-when (the past week's prompts th
 | G3 | Drawing workers and the canvas | ☑ (the drawer's canvas and the phone's viewer not tried by hand yet) |
 | G4 | The worker sees its drawing | ☑ |
 | G5 | Sketch pad on the PC and the phone | ☐ (built and checked through the engine; drawing on the pad by hand is yours to try) |
-| G6 | Concept images through your Gemini subscription | ☐ |
+| G6 | Concept images through your Gemini subscription | ☐ (built, route 1; done when tried with your Gemini API key) |

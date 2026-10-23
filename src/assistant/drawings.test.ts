@@ -83,6 +83,7 @@ function setup(opts: { render?: (kind: string, source: string) => Promise<string
         return opts.render ? opts.render(kind, source) : Promise.resolve(`<svg viewBox="0 0 10 10"><!--${source}--></svg>`);
       },
       png: () => Promise.resolve(new Blob(["png"])),
+      image: (f) => Promise.resolve(`<svg><!--image ${f.name}--></svg>`),
     },
     notice: (_threadId, n) => notices.push(n),
     now: () => clock,
@@ -230,6 +231,21 @@ describe("drawings (G3)", () => {
     await s.turnEnds(r.task);
     expect(s.drawings.get(r.drawing.id)!.versions[0]).toMatchObject({ checks: 2, ms: expect.any(Number) });
     expect(s.notices[0].text).toBe("Phone to session · v1 · checked ×2");
+  });
+
+  it("keeps images from the image model as drawings with versions (G6)", async () => {
+    const s = setup();
+    const img = { id: "a1", name: "mood-1.png", mime: "image/png", size: 9, path: "C:\\x\\mood-1.png", thumb: "data:image/jpeg;base64,AA" };
+    const d = s.drawings.addImage({ threadId: "th1", title: "Mood 1", image: img, prompt: "teal duck", surface: "desktop" });
+    expect(d).toMatchObject({ kind: "image", versions: [{ n: 1, ext: "png", headline: "teal duck", png: { id: "a1" } }] });
+    expect(d.versions[0].png).not.toHaveProperty("thumb");
+    expect(s.notices[0]).toMatchObject({ kind: "drawing", text: "Mood 1 · v1", drawing: { id: d.id, n: 1, png: { thumb: "data:image/jpeg;base64,AA" } } });
+    expect(last(s.events)).toMatchObject({ open: "desktop", d: { kind: "image" } });
+    const v2 = s.drawings.addImage({ threadId: "th1", title: "Mood 1", drawing: d.id, image: { ...img, id: "a2" }, prompt: "flatter" });
+    expect(v2.versions.map((v) => v.n)).toEqual([1, 2]);
+    expect(await s.drawings.svg(d.id, 2)).toBe("<svg><!--image mood-1.png--></svg>");
+    await expect(s.drawings.draw({ ...ask, drawing: d.id })).rejects.toThrow("is an image: change it with generate_image");
+    expect(() => s.drawings.addImage({ threadId: "other", title: "x", drawing: d.id, image: img, prompt: "p" })).toThrow("another thread");
   });
 
   it("keeps the thread's drawing worker warm while a canvas shows one of its drawings", async () => {

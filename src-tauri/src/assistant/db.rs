@@ -316,6 +316,17 @@ const MIGRATIONS: &[&str] = &[
         updated_at  INTEGER NOT NULL
     );
     "#,
+    // Step G6: images from an image model (`imagegen.rs`), at their list price.
+    r#"
+    CREATE TABLE assistant_image_spend (
+        id      INTEGER PRIMARY KEY,
+        ts      INTEGER NOT NULL,
+        model   TEXT NOT NULL,
+        images  INTEGER NOT NULL,
+        usd     REAL NOT NULL
+    );
+    CREATE INDEX idx_assistant_image_spend_ts ON assistant_image_spend(ts);
+    "#,
 ];
 
 #[cfg(test)]
@@ -325,7 +336,7 @@ mod tests {
     #[test]
     fn s1_threads_from_before_modes_are_the_assistants() {
         let conn = Connection::open_in_memory().unwrap();
-        crate::db::run_migrations(&conn, &MIGRATIONS[..MIGRATIONS.len() - 5]).unwrap();
+        crate::db::run_migrations(&conn, &MIGRATIONS[..MIGRATIONS.len() - 6]).unwrap();
         conn.execute("INSERT INTO assistant_threads (id, mode, created, updated) VALUES ('old', 'chat', 1, 1)", []).unwrap();
         crate::db::run_migrations(&conn, MIGRATIONS).unwrap();
         let mode: String = conn.query_row("SELECT mode FROM assistant_threads WHERE id = 'old'", [], |r| r.get(0)).unwrap();

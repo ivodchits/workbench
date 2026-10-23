@@ -3,6 +3,7 @@
 
 import { ACT_TOOLS } from "./tools/act";
 import { DRAW_TOOLS } from "./tools/draw";
+import { IMAGE_TOOLS } from "./tools/image";
 import { AUTOPILOT_TOOLS } from "./tools/autopilot";
 import { getTime } from "./tools/getTime";
 import { HAIKU_TOOLS } from "./tools/haikuTask";
@@ -41,6 +42,7 @@ export const TOOLS = [
   ...PLUGIN_TOOLS,
   ...TASK_TOOLS,
   ...DRAW_TOOLS,
+  ...IMAGE_TOOLS,
   ...SUMMARY_TOOLS,
   ...SCREEN_TOOLS,
   ...READ_ALOUD_TOOLS,
@@ -92,6 +94,8 @@ export const DEFERRED = new Set([
   "prep_ahead",
   "merge_duck_change",
   "rebuild_duck",
+  // Images (G6): found when asked for.
+  "generate_image",
   "draft_skill",
   // The PC's tools (H2) are deferred by the registry, as every host tool is.
   "weather",

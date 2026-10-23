@@ -9,7 +9,7 @@
 //   URL, which runs no script and loads nothing; the PNG is that image drawn on a
 //   canvas. An SVG that taints the canvas (a `foreignObject`) gets no PNG.
 
-import { isVegaLite, sized, svgSize, svgUrl, type DrawingKind } from "./kinds";
+import { imageSvg, isVegaLite, sized, svgSize, svgUrl, type DrawingKind } from "./kinds";
 
 /** How long one render may take. */
 const RENDER_MS = 15_000;
@@ -171,4 +171,12 @@ export async function toPng(svg: string, width?: number): Promise<Blob | null> {
   } catch {
     return null;
   }
+}
+
+/** An image (G6) from its data URL as an SVG at its own size. */
+export async function imageAsSvg(dataUrl: string): Promise<string> {
+  const img = new Image();
+  img.src = dataUrl;
+  await img.decode();
+  return imageSvg(dataUrl, img.naturalWidth, img.naturalHeight);
 }

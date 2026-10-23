@@ -145,7 +145,15 @@ export interface DuckSettings {
   /** Duck reads a message's attachments itself up to about this many tokens (step
    *  G1); the rest are referenced, for a worker. */
   attachmentTokens: number;
+  /** The image model `generate_image` uses (step G6). */
+  imageModel: (typeof IMAGE_MODELS)[number];
+  /** Images this month up to this many USD at list price run unasked; past it,
+   *  each request asks (step G6). */
+  imageCapUsd: number;
 }
+
+/** The Gemini image models Duck offers (step G6), the default first. */
+export const IMAGE_MODELS = ["gemini-nano-banana-2.1", "gemini-3.1-flash-image", "gemini-3-pro-image"] as const;
 
 export const DEFAULT_TIERS: Record<Tier, TierSpec> = {
   standard: { model: "sonnet", effort: "medium" },
@@ -182,6 +190,8 @@ export const DEFAULT_SETTINGS: DuckSettings = {
   home: null,
   reminderSpellMinutes: 30,
   attachmentTokens: 20_000,
+  imageModel: "gemini-nano-banana-2.1",
+  imageCapUsd: 10,
 };
 
 /** Do Not Disturb "until I turn it off". */
@@ -248,6 +258,9 @@ export function cleanSettings(raw: unknown): Partial<DuckSettings> {
   if (spell !== undefined) out.reminderSpellMinutes = Math.max(5, spell);
   const reads = whole(r.attachmentTokens, 150_000);
   if (reads !== undefined) out.attachmentTokens = reads;
+  if (IMAGE_MODELS.includes(r.imageModel as DuckSettings["imageModel"])) out.imageModel = r.imageModel as DuckSettings["imageModel"];
+  if (typeof r.imageCapUsd === "number" && Number.isFinite(r.imageCapUsd) && r.imageCapUsd >= 0 && r.imageCapUsd <= 1000)
+    out.imageCapUsd = r.imageCapUsd;
   if (r.home === null) out.home = null;
   else if (typeof r.home === "string") out.home = r.home.trim().slice(0, 100) || null;
   if (r.google && typeof r.google === "object") out.google = cleanGoogle(r.google as Record<string, unknown>);

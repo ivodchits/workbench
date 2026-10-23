@@ -5,9 +5,9 @@ behind each decision are in `assistant-plan.md`. This file describes the code, a
 Duck step updates it as part of its Done when. Duck's self-development sessions (L3)
 read it first.
 
-Last updated: step G5 (2026-10-23). L3 audited it against the code. Since W5 it also
+Last updated: step G6 (2026-10-23). L3 audited it against the code. Since W5 it also
 covers W6, D2, D4, P1, P2, M2, M3, A5, A6, A7, W4, L1, L2, L3, L4, R1, R2, R3, B1, B2, T3, D3, V1 to V7,
-V8, S1, S2, X1, H1 to H5, H7, H8, R4, G1 to G5 and the morning routine. A fresh session changing Duck: read "The shape", then "Where to
+V8, S1, S2, X1, H1 to H5, H7, H8, R4, G1 to G6 and the morning routine. A fresh session changing Duck: read "The shape", then "Where to
 change X" at the end, then the module rows it points to.
 
 ## The shape
@@ -92,6 +92,7 @@ change X" at the end, then the module rows it points to.
 | `summarize.ts` | Session summaries (W3): `createSummarizer({port, backend, call})` reads a session's transcript since its last summary (or a given time) with `readPlainText`'s `since`, makes one Haiku `summary` call, and keeps the last summary per session in duck.db `meta`. `newest` checks a transcript for activity without a call; `withReply` adds a turn's final reply the transcript doesn't have yet. |
 | `tools/summaries.ts` | The W3 tools, over `ctx.summaries`: `summarize_session` and `summarize_activity` ("since I was away"). |
 | `tools/draw.ts` | G3: `draw(title, brief, kind?, drawing?, tier?, files?, allowApi?)`, reversible, in every mode: a new drawing or the next version of one, over `ctx.drawings`. |
+| `tools/image.ts` | G6: `generate_image` (deferred; reversible within the month's image cap, else consequential): a background job over `ctx.images` (`ImageHost`: the key, `generate`) whose images land as `image` drawings (`drawings.addImage`), then a Workbench event. `imagePrice` mirrors Rust's. |
 | `tools/tasks.ts` | The D1 tools, over `ctx.tasks`: `run_task` (reversible; posts the `task` notice that the thread shows as a live card), `task_status`, `task_followup`, `task_close`, `list_tasks`, and D2's `task_rerun` (deferred). `findTask` and `view` are shared with `tools/improve.ts`. |
 | `tools/improve.ts` | L3: `improve_duck(request, scope, effort?)` (reversible): scope `config` returns the prompt files for Duck to draft from; scope `code` starts a `self` code task, tier serious (Opus, `medium` unless named), in a worktree of the Workbench repo, with `improveBrief`. `propose_config_change(file, edits, why)` (consequential, `asks`: always a card): `prepare` makes the edits on the file as it is and checks the result, the card shows the diff (`review`), `run` writes it over the text it was read as and commits it; new threads get it. `merge_duck_change(task, safetyConfirmed)` (consequential, `asks`; deferred): `prepare` reads the branch fresh and refuses an unfinished task, an empty branch or uncommitted files; a branch in the safety layer takes two cards, the second only after the first was confirmed (`firstConfirms`, in memory); then `port.mergeWorktree` and the task closes. `rebuild_duck(build)` (consequential; deferred): `npm run tauri:dev` or `tauri:build` in a new shell in the repo. |
 | `tools/skills.ts` | S2: `load_skill(name)` (read: the body; a skill with `tools:` narrows the rest of the turn through `ctx.narrow`), `draft_skill(name, text, why)` (consequential, deferred, `asks`: the whole `SKILL.md`, checked by `parseSkill` in `prepare`; the card's diff is the file before and after; written over what was read and committed). `splitDraft` reads a draft's frontmatter as `skills.rs` does. |
@@ -153,6 +154,7 @@ prompt's safety rules cover them.
 | `gitlane.rs` | Duck's background git lanes for its data repo (L4). `push` queues `push_now` on the git queue behind the memory commits and waits: `git push --porcelain origin HEAD:refs/heads/<branch>` (checked by `refuse_force`), classified as `pushed`, `nothing`, `no_remote`, `no_repo`, `offline`, `auth`, `rejected`, `lock`, `detached` or `failed`. `status` (remote, branch, commits ahead of `origin`). `create` writes a README saying the repo is private, commits it, and runs `gh repo create <name> --private --source <ws> --remote origin --push`. `review_branch` lists a branch's files against its merge base and the memory bullets it drops whose fact isn't in what it adds. `housekeep(cutoff)` on the git queue: task folders dated before the cutoff keep only `brief.md`, `result.md` and `result.json` and get a line in `tasks/INDEX.md`; uncommitted `memory/` and `config/` files, `reminders.json` (H8), and the indexed tasks' results are committed; `git gc --auto`. Commands `assistant_backup_status`, `_push`, `_create`, `assistant_branch_review`, `assistant_housekeep`. |
 | `summaries.rs` | The last summary per session (W3), JSON in `meta` under `assistant_summary:<instance>`. |
 | `memory.rs` | Long-term memory (L1). The files: `memory/<topic>.md` (`decisions`, `preferences`, `people`, `goals`, `lessons`, `projects/<name>`; `journal/` is L2's), one bullet per entry, `- 2026-10-22 — fact. Why: … (src: thread:…, conf: high, tags: …)`; `parse_file` reads any bullet, with or without the date and the parenthesis. `write` (secrets refused by `secret_in`: key and token patterns, a password after `:`/`=` or in quotes, long random-looking strings; the same text already in the file isn't written again), `forget` (exact bullets), `restore` (an undo, over the expected text), `list`. The index: `ensure` rescans what changed (by size and time) in `memory/` and, read-only, the notes root, each marked dirty by a `notify` watcher (or rescanned on every search without one); `search` splits the query into `terms` (stop words and numbers dropped, a long word cut by a letter or two so inflections match), ORs them in FTS5 (trigram), and ranks by words matched, then rank; a note hit is labelled `note: <project> / <name>`. `matching` is the AND for `forget`. Git: `commit` queues `commit_now` on the git queue: `git init` on the first change, then a commit of just the files changed, as Duck, none when nothing changed. L2: `apply` makes a consolidation's `Apply` (removals, then additions through `write`, then the day's bullet in `journal/<YYYY-MM>.md`, `- 2026-10-21 — paragraph (src: tidy)`) and returns one edit per file from before the run to after it, plus what it skipped (a secret, too long, not a topic); `assistant_memory_apply` commits it once. `log_recall` and `recall_stats` keep and count `recall_log`. |
+| `imagegen.rs` | G6: the Gemini API's Interactions endpoint. `generate` (prompt, reference images from the attachment store, aspect, size) stores each image as an attachment; `price`, `record` and `month` keep `assistant_image_spend`. The key is `key::gemini_api` (`duck/gemini-api-key`, by `cmdkey`). |
 | `drawings.rs` | G3: a drawing's version in a task folder (`read_source`, and `write_source` for the API worker's), only under `tasks/`; the `assistant_drawings` records. |
 | `workspace.rs` | Duck's workspace (`prepare`, its `CLAUDE.md`, a `.gitignore` line for `data/`), task folders (`new_task`, `result`, both only under `tasks/`), the workers' registration (`register`: a settings file with the allow list in app data, and a `worker_sessions` row in the main DB) and `launch_args` for `pty_spawn`; the `assistant_tasks` records; the core memory (W4: `read_core`, and `write_core`, which refuses with "stale:" unless the file is still the text it was read as). |
 | `headless.rs` | Headless workers (D4): a worker session as `claude -p` over stream-json both ways. Prompts and interrupts are messages, permission requests are answered as data (racing the `PermissionRequest` hook, the first answer winning); otherwise it is an ordinary session to the status engine, summaries, the trust watcher and the transcript view. |
@@ -280,6 +282,8 @@ prompt's safety rules cover them.
 - `assistant_trust_modes (project_id, mode)`: only projects that aren't `live`.
 - `assistant_tasks (id, data JSON, updated_at)`: worker tasks (D1).
 - `assistant_drawings (id, data JSON, updated_at)`: drawings and their versions (G3).
+- `assistant_image_spend (ts, model, images, usd)`: images from the image model at
+  list price (G6), for the spend line's "images".
 - `assistant_autopilots`: one autopilot record per session (P1).
 - `meta` `assistant_summary:<instance>`: a session's last summary (W3).
 - `meta` `reminder_seen:<id>`: a timed reminder announced, for which time (H8).
@@ -1046,6 +1050,9 @@ When the app can't reach Workbench, the loader runs Duck's own engine on the pho
   `launchDuck` in `src/pwa/duck.ts`, and `takeShare` in `src/pwa/sw.js`. How a phone
   proves its key: `remote/auth.rs` (the rules), `remote/mod.rs` (`start_session`,
   `check_token`), and `src/pwa/deviceKey.ts` and `net.ts`.
+- **Images (G6)**: the model's API, `imagegen.rs`; the tool and its cap,
+  `tools/image.ts`; the model and the cap, `settings.ts` (`imageModel`,
+  `imageCapUsd`) and the "google auth" tab.
 - **The sketch pad (G5)**: tools and history, `src/sketch/model.ts`; strokes,
   `src/sketch/render.ts`; the desktop's toolbar and sending, `SketchView.tsx` and
   `sketchState.ts`; the phone's, `src/pwa/sketch.ts`.
@@ -1120,6 +1127,8 @@ Both rules are in `prompt.ts`.
   and a text, the widget on a home screen. Not built: switching to the tailnet's own
   address (MagicDNS covers it), the screenshot with the gesture (G1), Glyph lights,
   the widget polling by itself.
+
+- Images (G6): no real request yet (no Gemini API key on this machine).
 
 - The sketch pad (G5): drawing on it by hand (desktop and phone), "live", and the
   screenshot and photo backgrounds haven't been tried; the sketch and mark-up flows

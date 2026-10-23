@@ -119,6 +119,10 @@ pub struct Spend {
     /// The YouTube Data API units today's searches used (step H3), of the 10,000
     /// free a day.
     pub youtube_units_today: i64,
+    /// This month's images from the image model (step G6) and their list price:
+    /// billed by Google, not part of `month_usd`.
+    pub images_month: i64,
+    pub image_month_usd: f64,
 }
 
 /// Record `units` of a free quota used now by `service` (step H3).
@@ -174,7 +178,10 @@ pub fn spend(conn: &Connection, limits: Limits) -> rusqlite::Result<Spend> {
         [],
         |r| r.get(0),
     )?;
+    let (images_month, image_month_usd) = super::imagegen::month(conn)?;
     Ok(Spend {
+        images_month,
+        image_month_usd,
         saved_usd,
         youtube_units_today: quota_today(conn, "youtube")?,
         today_usd,

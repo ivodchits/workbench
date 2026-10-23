@@ -6,6 +6,9 @@
 /** A drawing's kind, as Duck and the worker name it. */
 export const DRAWING_KINDS = ["mermaid", "svg", "vega"] as const;
 export type DrawingKind = (typeof DRAWING_KINDS)[number];
+/** A drawing's kind, or `image` (step G6): a picture from the image model, with no
+ *  source to render. */
+export type AnyKind = DrawingKind | "image";
 
 /** The source file's extension for each kind. */
 export const EXT: Record<DrawingKind, "mmd" | "svg" | "json"> = { mermaid: "mmd", svg: "svg", vega: "json" };
@@ -61,6 +64,10 @@ function parseSvg(svg: string): Element | null {
   const root = doc.documentElement;
   return root && root.nodeName.toLowerCase() === "svg" && !doc.querySelector("parsererror") ? root : null;
 }
+
+/** An image (G6) as an SVG the canvas shows like any drawing: the picture, inline. */
+export const imageSvg = (dataUrl: string, width: number, height: number) =>
+  `<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}"><image width="${width}" height="${height}" href="${dataUrl}" xlink:href="${dataUrl}"/></svg>`;
 
 /** An SVG as an `<img>` source. Shown that way it runs no script and loads nothing. */
 export const svgUrl = (svg: string) => `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;

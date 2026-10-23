@@ -113,8 +113,9 @@ export const COMMON_TOOLS = [
   "compact_thread",
   "switch_mode",
   "load_skill",
-  // Drawing (G3) is for any conversation.
+  // Drawing (G3) and images (G6) are for any conversation.
   "draw",
+  "generate_image",
 ];
 
 export const MODES: Record<ModeId, Mode> = {

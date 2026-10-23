@@ -222,7 +222,7 @@ export interface DrawingView {
   id: string;
   threadId: string;
   title: string;
-  kind: "mermaid" | "svg" | "vega" | null;
+  kind: "mermaid" | "svg" | "vega" | "image" | null;
   versions: {
     n: number;
     ext: string;

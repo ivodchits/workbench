@@ -420,7 +420,7 @@ describe("read tools", () => {
       softReached: false,
       capReached: false,
       savedUsd: 0.25,
-      youtubeUnitsToday: 303,
+      youtubeUnitsToday: 303, imagesMonth: 0, imageMonthUsd: 0,
     };
     expect((await run(duckSpend, {}, { spend })).out).toEqual({
       today: "$0.0123",

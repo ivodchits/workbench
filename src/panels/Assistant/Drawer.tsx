@@ -1673,6 +1673,7 @@ function SpendLine({ duck }: { duck: DuckState }) {
         month {usd(s.monthUsd)} / {usd(s.limits.hardCapUsd)}
         {projected !== null && ` · on track for ${usd(projected)}`}
         {s.savedUsd > 0.005 && ` · saved ${usd(s.savedUsd)} on your subscription`}
+        {s.imagesMonth > 0 && ` · images ${usd(s.imageMonthUsd)} (${s.imagesMonth})`}
       </span>
     </div>
   );

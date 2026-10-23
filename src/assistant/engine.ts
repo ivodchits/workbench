@@ -102,6 +102,7 @@ import type { HostCaller } from "./hosts";
 import type { MusicProvider } from "./music/provider";
 import type { RemindersHost } from "./reminders";
 import type { Drawings } from "./drawings";
+import type { ImageHost } from "./tools/image";
 import type { ThreadMoves } from "./tools/threads";
 import type { HaikuCall } from "./tools/haikuTask";
 import type { Level } from "./announce";
@@ -223,6 +224,8 @@ export interface EngineDeps {
   reminders?: RemindersHost;
   /** Drawings and the canvas (step G3), for `draw`. */
   drawings?: Drawings;
+  /** The image model (step G6), for `generate_image`. */
+  images?: ImageHost;
   /** The morning routine's Google sheet, for `morning_briefing`. */
   google?: GoogleHost;
   /** Duck's core memory (step W4): read into each new thread, edited by
@@ -1685,6 +1688,7 @@ export function createEngine(deps: EngineDeps): Engine {
           music: deps.music ?? null,
           reminders: deps.reminders ?? null,
           drawings: deps.drawings ?? null,
+          images: deps.images ?? null,
           surface: surfaceOf(store.loaded(threadId)),
           google: deps.google ?? null,
           core: deps.core ?? null,

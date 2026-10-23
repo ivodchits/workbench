@@ -47,6 +47,10 @@ export interface Spend {
   /** The YouTube Data API units today's searches used (step H3), of the 10,000
    *  free a day. */
   youtubeUnitsToday: number;
+  /** This month's images from the image model (step G6) and their list price:
+   *  billed by Google, not in `monthUsd`. */
+  imagesMonth: number;
+  imageMonthUsd: number;
 }
 
 export interface UsageRecord {
@@ -298,6 +302,26 @@ export const workerRegister = (instanceId: string, spec: WorkerSpec): Promise<vo
   invoke("assistant_worker_register", { instanceId, spec });
 export const taskPut = (id: string, data: string): Promise<void> => invoke("assistant_task_put", { id, data });
 export const taskList = (limit: number): Promise<string[]> => invoke("assistant_task_list", { limit });
+
+// Images (step G6): the Gemini API, its key in Credential Manager only.
+/** What an image request made: the images, stored as attachments, and their price. */
+export interface GeneratedImages {
+  images: StoredFile[];
+  model: string;
+  usd: number;
+  /** What the model said with them (a refusal, say). */
+  text: string;
+}
+export const imageKey = (): Promise<boolean> => invoke("assistant_image_key");
+export const imageGenerate = (r: {
+  prompt: string;
+  refs: [string, string][];
+  aspect?: string;
+  size?: string;
+  model?: string;
+  name: string;
+}): Promise<GeneratedImages> =>
+  invoke("assistant_image_generate", { prompt: r.prompt, refs: r.refs, aspect: r.aspect ?? null, size: r.size ?? null, model: r.model ?? null, name: r.name });
 
 // Drawings (step G3).
 /** Version `n` of a drawing as its worker wrote it (`drawings/<id>/v<n>.<ext>` in
