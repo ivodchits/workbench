@@ -30,6 +30,13 @@ export interface McpServerSpec {
   /** The tools that only read, which `mcp_read` runs without asking. Every other
    *  tool goes through `mcp_call`, a consequential call. */
   readTools: string[];
+  /** One line on what it's for: the `<mcp_servers>` block's line for it, the only
+   *  thing about a server every request carries (its tools are fetched by
+   *  `mcp_tools` when a request needs them). Empty when there's none. */
+  description: string;
+  /** The server's tools this entry offers, when it's one part of a bigger server
+   *  (Gmail of a Google Workspace server); null for all of them. */
+  tools: string[] | null;
 }
 
 /** The user's Quest Log desktop app (calendar, agenda, notes): its embedded server
@@ -39,6 +46,8 @@ export const QUEST_LOG: McpServerSpec = {
   url: "http://127.0.0.1:7437/mcp",
   enabled: true,
   tokenEnv: null,
+  description: "Quest Log: the user's calendar and agenda, tasks/quests (completing one awards XP/gold), notes and projects.",
+  tools: null,
   readTools: [
     "get_agenda",
     "get_calendar_occurrences",
@@ -56,6 +65,127 @@ export const QUEST_LOG: McpServerSpec = {
     "whoami",
   ],
 };
+
+/** Gmail, Drive and Docs, over one Google Workspace MCP server the user runs
+ *  (`workspace-mcp`, github.com/taylorwilsdon/google_workspace_mcp) with their
+ *  own OAuth client. The server does the Google sign-in, in the user's browser,
+ *  and keeps the tokens: Duck never sees a credential. One entry per service, so
+ *  each is turned on or off by itself; off until the user has the server running. */
+export const GOOGLE_MCP_URL = "http://localhost:8000/mcp";
+export const GOOGLE_MCP_COMMAND = "uvx workspace-mcp --transport streamable-http --tools gmail drive docs";
+
+const google = (name: string, description: string, tools: string[], readTools: string[]): McpServerSpec => ({
+  name,
+  url: GOOGLE_MCP_URL,
+  enabled: false,
+  tokenEnv: null,
+  description,
+  tools,
+  readTools,
+});
+
+export const GMAIL = google(
+  "gmail",
+  "The user's Gmail: search and read mail and threads, labels; draft and send.",
+  [
+    "search_gmail_messages",
+    "get_gmail_message_content",
+    "get_gmail_messages_content_batch",
+    "get_gmail_attachment_content",
+    "get_gmail_thread_content",
+    "get_gmail_threads_content_batch",
+    "list_gmail_labels",
+    "list_gmail_filters",
+    "send_gmail_message",
+    "draft_gmail_message",
+    "modify_gmail_message_labels",
+    "batch_modify_gmail_message_labels",
+    "manage_gmail_label",
+    "manage_gmail_filter",
+    "start_google_auth",
+  ],
+  [
+    "search_gmail_messages",
+    "get_gmail_message_content",
+    "get_gmail_messages_content_batch",
+    "get_gmail_attachment_content",
+    "get_gmail_thread_content",
+    "get_gmail_threads_content_batch",
+    "list_gmail_labels",
+    "list_gmail_filters",
+  ],
+);
+
+export const GOOGLE_DRIVE = google(
+  "google_drive",
+  "The user's Google Drive: find, list and read files; create, copy, update and share them.",
+  [
+    "search_drive_files",
+    "get_drive_file_content",
+    "get_drive_file_download_url",
+    "list_drive_items",
+    "get_drive_file_permissions",
+    "check_drive_file_public_access",
+    "get_drive_shareable_link",
+    "create_drive_file",
+    "create_drive_folder",
+    "import_to_google_doc",
+    "import_to_google_slides",
+    "import_to_google_sheets",
+    "copy_drive_file",
+    "update_drive_file",
+    "manage_drive_access",
+    "set_drive_file_permissions",
+  ],
+  [
+    "search_drive_files",
+    "get_drive_file_content",
+    "get_drive_file_download_url",
+    "list_drive_items",
+    "get_drive_file_permissions",
+    "check_drive_file_public_access",
+  ],
+);
+
+export const GOOGLE_DOCS = google(
+  "google_docs",
+  "The user's Google Docs: find and read docs and their comments; create and edit them.",
+  [
+    "search_docs",
+    "get_doc_content",
+    "get_doc_as_markdown",
+    "list_docs_in_folder",
+    "list_document_comments",
+    "inspect_doc_structure",
+    "debug_table_structure",
+    "create_doc",
+    "modify_doc_text",
+    "find_and_replace_doc",
+    "insert_doc_elements",
+    "insert_doc_image",
+    "update_paragraph_style",
+    "update_doc_headers_footers",
+    "batch_update_doc",
+    "create_table_with_data",
+    "manage_doc_tab",
+    "manage_document_comment",
+    "export_doc_to_pdf",
+  ],
+  [
+    "search_docs",
+    "get_doc_content",
+    "get_doc_as_markdown",
+    "list_docs_in_folder",
+    "list_document_comments",
+    "inspect_doc_structure",
+    "debug_table_structure",
+  ],
+);
+
+export const GOOGLE_MCP_SERVERS = [GMAIL, GOOGLE_DRIVE, GOOGLE_DOCS];
+/** The servers Duck knows: a saved one by these names without a description gets
+ *  the known one's. */
+const KNOWN_SERVERS = [QUEST_LOG, ...GOOGLE_MCP_SERVERS];
 
 /** Duck's Google access (Drive and Sheets: the morning routine's invoice). The OAuth
  *  client's secret, if it has one, and the refresh token live in Credential
@@ -178,7 +308,7 @@ export const DEFAULT_SETTINGS: DuckSettings = {
   deleteIdleThreadsDays: 7,
   announce: DEFAULT_ANNOUNCE,
   dndUntil: null,
-  mcpServers: [QUEST_LOG],
+  mcpServers: [QUEST_LOG, ...GOOGLE_MCP_SERVERS],
   mcpHost: [],
   firefox: DEFAULT_FIREFOX,
   disabledSkills: [],
@@ -289,6 +419,8 @@ export function cleanSettings(raw: unknown): Partial<DuckSettings> {
 const MCP_NAME = /^[a-z][a-z0-9_-]{0,31}$/;
 const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]{0,63}$/;
 const TOOL_NAME = /^[A-Za-z0-9_.-]{1,128}$/;
+/** A server's line in the `<mcp_servers>` block stays one short line. */
+const MCP_DESCRIPTION_MAX = 160;
 
 /** Servers with a valid name (unique) and an http(s) URL; the rest are dropped. */
 export function cleanMcpServers(raw: unknown[]): McpServerSpec[] {
@@ -301,14 +433,20 @@ export function cleanMcpServers(raw: unknown[]): McpServerSpec[] {
     if (!MCP_NAME.test(name) || out.some((s) => s.name === name)) continue;
     if (!/^https?:\/\/[^\s]+$/i.test(url)) continue;
     const env = typeof r.tokenEnv === "string" ? r.tokenEnv.trim() : "";
+    const known = KNOWN_SERVERS.find((s) => s.name === name);
+    const names = (v: unknown) =>
+      Array.isArray(v) ? [...new Set(v.filter((t): t is string => typeof t === "string" && TOOL_NAME.test(t)))] : [];
     out.push({
       name,
       url,
       enabled: r.enabled !== false,
       tokenEnv: ENV_NAME.test(env) ? env : null,
-      readTools: Array.isArray(r.readTools)
-        ? [...new Set(r.readTools.filter((t): t is string => typeof t === "string" && TOOL_NAME.test(t)))]
-        : [],
+      readTools: names(r.readTools),
+      description:
+        typeof r.description === "string"
+          ? r.description.replace(/\s+/g, " ").trim().slice(0, MCP_DESCRIPTION_MAX)
+          : (known?.description ?? ""),
+      tools: r.tools === null ? null : Array.isArray(r.tools) ? names(r.tools) : (known?.tools ?? null),
     });
   }
   return out;

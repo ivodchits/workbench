@@ -1,6 +1,8 @@
 # Rust / Tauri
 /target/
 src-tauri/target/
+# Separate target dirs, e.g. CARGO_TARGET_DIR=target-test for tests beside a dev build
+src-tauri/target-*/
 **/*.rs.bk
 *.pdb
 

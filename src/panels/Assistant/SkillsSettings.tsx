@@ -9,7 +9,7 @@
 
 import { useEffect, useState } from "react";
 
-import type { DuckSettings } from "../../assistant/settings";
+import { GOOGLE_MCP_COMMAND, GOOGLE_MCP_SERVERS, type DuckSettings } from "../../assistant/settings";
 import { loadHosted, setDuckSettings, type DuckState } from "./duckState";
 import { openDuckFile } from "./openCore";
 
@@ -63,34 +63,79 @@ function Skills({ duck, settings }: { duck: DuckState; settings: DuckSettings })
   );
 }
 
-/** External MCP servers Duck may use (X1): each on or off, and its address. A
+/** External MCP servers Duck may use (X1): each on or off, its address and what
+ *  it's for, and remove; add one by name and address, or the Google ones (Gmail,
+ *  Drive, Docs) over a Workspace server you run and sign in to yourself. A
  *  server's token, if it needs one, is an environment variable named in the
  *  prefs (`tokenEnv`), never typed here. */
 function McpServers({ settings }: { settings: DuckSettings }) {
   const servers = settings.mcpServers;
   const [urls, setUrls] = useState(() => servers.map((s) => s.url));
   useEffect(() => setUrls(servers.map((s) => s.url)), [servers]);
+  const [name, setName] = useState("");
+  const [url, setUrl] = useState("");
+  const set = (next: DuckSettings["mcpServers"]) => setDuckSettings({ mcpServers: next });
   const patch = (i: number, p: Partial<DuckSettings["mcpServers"][number]>) =>
-    setDuckSettings({ mcpServers: servers.map((s, j) => (j === i ? { ...s, ...p } : s)) });
+    set(servers.map((s, j) => (j === i ? { ...s, ...p } : s)));
+  const missingGoogle = GOOGLE_MCP_SERVERS.filter((g) => !servers.some((s) => s.name === g.name));
+  const isGoogle = (n: string) => GOOGLE_MCP_SERVERS.some((g) => g.name === n);
+  const newName = name.trim().toLowerCase();
+  const canAdd =
+    /^[a-z][a-z0-9_-]{0,31}$/.test(newName) && /^https?:\/\/\S+$/i.test(url.trim()) && !servers.some((s) => s.name === newName);
   return (
     <>
       {servers.map((s, i) => (
-        <label key={s.name} style={{ ...row, alignItems: "center" }}>
-          <input type="checkbox" checked={s.enabled} onChange={(e) => patch(i, { enabled: e.target.checked })} />
-          <span>Use {s.name}</span>
-          <input
-            value={urls[i] ?? s.url}
-            onChange={(e) => setUrls(urls.map((u, j) => (j === i ? e.target.value : u)))}
-            onBlur={() => {
-              const url = (urls[i] ?? "").trim();
-              if (url && url !== s.url) patch(i, { url });
-              else setUrls(servers.map((x) => x.url));
-            }}
-            style={{ ...select, flex: 1, minWidth: 0 }}
-          />
-          <span style={hint}>(MCP; its app must be open)</span>
-        </label>
+        <div key={s.name} style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+          <label style={{ ...row, alignItems: "center" }}>
+            <input type="checkbox" checked={s.enabled} onChange={(e) => patch(i, { enabled: e.target.checked })} />
+            <span>Use {s.name}</span>
+            <input
+              value={urls[i] ?? s.url}
+              onChange={(e) => setUrls(urls.map((u, j) => (j === i ? e.target.value : u)))}
+              onBlur={() => {
+                const url = (urls[i] ?? "").trim();
+                if (url && url !== s.url) patch(i, { url });
+                else setUrls(servers.map((x) => x.url));
+              }}
+              style={{ ...select, flex: 1, minWidth: 0 }}
+            />
+            <button type="button" style={btn} aria-label={`remove ${s.name}`} onClick={() => set(servers.filter((_, j) => j !== i))}>
+              remove
+            </button>
+          </label>
+          <div style={{ ...hint, paddingLeft: 22 }}>
+            {s.description || "(MCP; its app must be open)"}
+            {isGoogle(s.name) && (
+              <>
+                {" "}
+                Run <code>{GOOGLE_MCP_COMMAND}</code> with your own Google OAuth client (GOOGLE_OAUTH_CLIENT_ID and
+                GOOGLE_OAUTH_CLIENT_SECRET in its environment); you sign in to Google in your browser from the link it gives.
+              </>
+            )}
+          </div>
+        </div>
       ))}
+      <div style={{ ...row, alignItems: "center" }}>
+        <input placeholder="name" value={name} onChange={(e) => setName(e.target.value)} style={{ ...select, width: 110 }} />
+        <input placeholder="http://…/mcp" value={url} onChange={(e) => setUrl(e.target.value)} style={{ ...select, flex: 1, minWidth: 0 }} />
+        <button
+          type="button"
+          style={btn}
+          disabled={!canAdd}
+          onClick={() => {
+            set([...servers, { name: newName, url: url.trim(), enabled: true, tokenEnv: null, readTools: [], description: "", tools: null }]);
+            setName("");
+            setUrl("");
+          }}
+        >
+          add
+        </button>
+        {missingGoogle.length > 0 && (
+          <button type="button" style={btn} onClick={() => set([...servers, ...missingGoogle])}>
+            add Google (Gmail, Drive, Docs)
+          </button>
+        )}
+      </div>
     </>
   );
 }

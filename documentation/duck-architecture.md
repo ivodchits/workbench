@@ -121,7 +121,7 @@ change X" at the end, then the module rows it points to.
 | `consolidate.ts` | Memory consolidation (L2): `createConsolidator({threads, messages, tasks, list, apply, state, call, idleMs})`. `run` reads the window since the last run (`consolidationInput`: the memory with `[eN]` ids, your conversations newest first up to 60k characters, without events or threads with `memoryOff`, and the tasks that finished), makes one Haiku `consolidate` call (structured: `Consolidation`), and `planFrom` turns the answer into one `MemoryPlan` (contradictions first, whose entries are then kept out; merges of two or more real ids; retirements; new entries; ids made up or used twice dropped), applied as one commit whose message lists every change. Contradictions wait in the `questions` state for `question`; repeated requests go to `skill_offers` for S2. L3: the input also has `<tool_errors>` (`toolErrors`: tool calls that failed more than once in the window, by tool, not the ones you declined or stopped), and the answer's `improvements` (changes to Duck a pattern calls for) wait in `improve_offers`; `suggestion` hands out one a week at most, each once. No activity, no call. `tick` (every 5 minutes, from `index.ts`) runs it once per local date when you've been away `IDLE_MS` (an hour), or 10 minutes when the last run is over 36 h old; a failure waits an hour. |
 | `tools/memory.ts` | W4: `remember_core(section, fact)` and `forget_core(fact)`, both reversible. Each edit is made on the file as read and written over that text; a save of yours in between makes it read again and redo the edit once; the commit message names the fact. L1: `remember(topic, fact, why, conf, tags)` (reversible; refused in a thread you asked it not to remember), `recall(query)` (read; memory and notes), `forget(query)` (consequential: `prepare` finds the entries holding every word, the card lists them, `run` removes them). L2: `tidy_memory` (reversible) runs the consolidation now. All loaded, none deferred. Every write leaves a `memory` chip with the diff and an undo. |
 | `tools/testConfirm.ts` | `test_confirm`, a consequential tool that does nothing, for trying the confirmation card, and `test_announce`, for trying an announcement. Registered in dev builds only. |
-| `mcp.ts` / `tools/mcp.ts` | External MCP servers (X1), from the settings' `mcpServers` (default: Quest Log at `http://127.0.0.1:7437/mcp`, no token). `createMcpHost(mcpRequest)` caches a server's `tools/list` for 5 minutes and turns a `tools/call` result into text. The tools are fixed, so a server that's down or changes never touches the cached prefix: `mcp_tools` (read: the servers, or one server's tools with their schemas and `readOnly`), `mcp_read` (read: only the tools named in the server's `readTools`), `mcp_call` (consequential: everything else; card summary `server: tool {args}`, specifier `server:tool` so a rule like `assistant:mcp_call(quest_log:create_entry)` can allow one tool, and `grantedBy`). Results come back in `<mcp_result … untrusted>`. The drawer's settings have an on/off and the URL per server. |
+| `mcp.ts` / `tools/mcp.ts` | External MCP servers (X1), from the settings' `mcpServers` (default: Quest Log at `http://127.0.0.1:7437/mcp`, no token, and Gmail, Google Drive and Google Docs, off; see "MCP servers, lazily"). `createMcpHost(mcpRequest)` caches a server's `tools/list` for 5 minutes and turns a `tools/call` result into text. The tools are fixed, so a server that's down or changes never touches the cached prefix: `mcp_tools` (read: the servers, or one server's tools with their schemas and `readOnly`), `mcp_read` (read: only the tools named in the server's `readTools`), `mcp_call` (consequential: everything else; card summary `server: tool {args}`, specifier `server:tool` so a rule like `assistant:mcp_call(quest_log:create_entry)` can allow one tool, and `grantedBy`). An entry with `tools` offers only those (`offers`). `mcpServersBlock`: the `<mcp_servers>` block, a line per server that is on. Results come back in `<mcp_result … untrusted>`. |
 | `tools/mcpHost.ts` / `hosted.ts` | The hosted stdio servers' tools (B2): `hostedTools(server, tools, {isBrowser, refLine})` turns a server's list into `<server>__<tool>` tools with its own JSON Schema (`ToolDef.inputSchema`), wrapped results (`hostedOutput`: `<mcp_result … profile untrusted>`, images kept). The Firefox bridge's tiers (`classifyBrowserCall`): read (lists, page text, snapshot, screenshot), in-app = reversible (navigate, tabs, click, type, keys), consequential (upload, script, bookmarks, history, your clipboard, unknown tools); a click, submit or Enter on what reads as submit / pay / log in / send is consequential, and log in, pay, send also put `browser <kind>: …` in the floor's texts; typing into a password, card or code field is refused in `prepare`. `browsers_select` isn't offered. Another server: read with `readOnlyHint`, else consequential. Fixed tools: `use_personal_browser(reason, site?)` (consequential, `asTool: assistant:firefox`, specifier `profile:personal[@site]`; a site on `firefox.personalSites` is reversible via `tierFor`'s `prepared`), `use_agent_browser`, `browser_login(url, why)` (always asks; `choices` agent / personal, `denyLabel` "Skip"). `createHostedSync` rebuilds the registry's hosted tools (`setExternal`) at start and after a settings change, and gives the settings' `hosted` view. |
 | `browser.ts` | B2: the thread's Firefox profile. `createBrowserHost({call, startProfile})`: `profileOf` / `setProfile` (default agent), `run(thread, fx, tool, args)` one call at a time, selecting the thread's browser first (`browsers_list` → `findBrowser` → `browsers_select`, trusted 20 s); no agent: 8 s for a new bridge's add-on to reconnect, then `firefox_start_profile` and 25 s more; `connected(fx, profile)`; `refLine(tab, ref)` from the tab's last snapshot. `parseBrowsers`, `findBrowser` (agent: the named one, else the one named like the profile, else the only one not yours), `siteOf`, `personalAllowed`. `FirefoxSettings` / `DEFAULT_FIREFOX`. |
 | `google.ts` | Duck's `GoogleHost`: `search`, `read`, `cells`, `exportSheet` (prepares the workspace first), `draft` (into the `DRAFT_FOLDER`, "Duck drafts") and `drafts` (a month's), over the `assistant_sheet_*` commands. `isGoogleExpired` / `googleErrorText` read the backend's `google_expired:` errors. |
@@ -189,7 +189,7 @@ prompt's safety rules cover them.
 | `RemindersBadge.tsx` | H8: the reminders widget, a red dot with the open count ("!" for a broken file) in the duck's upper-left corner, or the chat's with the duck hidden; a click lists titles only (`widgetOrder`), Escape closes it; it pulses when one comes up (`remindersPulse`). From the `reminders` event. |
 | `RoutinesSettings.tsx` | The "routines" settings tab (L4): where Duck's data is backed up (or a name field and "back up to a private GitHub repo…", which asks once more), "Delete threads idle for", and every routine with its schedule, next and last run, and run now / pause / resume / delete. |
 | `DrawerSettings.tsx` | Queue-or-interrupt, and "start at login, minimized to the tray" (`@tauri-apps/plugin-autostart`; disabled in dev builds); the workers' settings, with "Edit core.md" (W4) and which brain Duck answers on (M3). |
-| `SkillsSettings.tsx` | The "skills" settings tab (S2), Duck's capabilities in one place: each skill and mode with its description, its problems, on/off (`disabledSkills`) and "edit" (the file in the "Duck" project's editor); the MCP servers (X1, moved here from the sessions tab). |
+| `SkillsSettings.tsx` | The "skills" settings tab (S2), Duck's capabilities in one place: each skill and mode with its description, its problems, on/off (`disabledSkills`) and "edit" (the file in the "Duck" project's editor); the MCP servers (X1, moved here from the sessions tab): on/off, the URL, its description, remove, add by name and URL, and "add Google (Gmail, Drive, Docs)" with the command to run the Workspace server. |
 | `openCore.ts` | `openCoreMemory(workspace)` (W4): prepares the workspace, makes `core.md` with its empty sections if missing, and opens it in the "Duck" project's editor. `openDuckFile(workspace, path)` (S2) opens any file of the workspace there. |
 | `MemoryView.tsx` | The Memory view (L1): the long-term memory by topic, a search over it and the notes, per entry "edit" (the file in the "Duck" project's editor) and "forget", and "don't remember this conversation" for the open thread (a `thread.memory` request, which posts a `memoryOff` notice). L2: the last tidy with what it changed, "tidy now" (`tidyMemory` from `index.ts`), and the past 14 days' recall numbers (`assistant_recall_stats`). |
 | `Canvas.tsx` | G3: the canvas. `CanvasView` (pan, wheel zoom, fit, the version strip, copy as PNG, save as…, open source, ⇱ pop out), `DrawerCanvas` (above the thread when `duck.canvas` is set) and `DrawingPanel` (the dockview `drawing` tab). The SVG comes from the engine (`drawing.svg`) and is shown as an `<img>`. |
@@ -510,6 +510,48 @@ You write one by hand, or Duck drafts it (`draft_skill`, a card with the file's 
   change to Duck suggested the same turn.
 - **The surfaces**: a `skills` event (on `sync` and after every change) with the skills
   and every mode; the skills settings tab turns them on or off through `settings.set`.
+
+## MCP servers, lazily (step X1; Gmail, Drive, Docs)
+
+An http MCP server is an entry in the settings' `mcpServers`: `name`, `url`, `enabled`,
+`tokenEnv` (the name of an environment variable, never the token), `readTools`,
+`description` and `tools`. None of a server's tools are API tools, so a server is cheap:
+
+- **What every request carries**: the `<mcp_servers>` block (`mcpServersBlock` in
+  `mcp.ts`), one line per server that's on (`- gmail: The user's Gmail: …`), sorted,
+  appended to the `<skills>` block after the system prompt (`skillsOf` in the engine),
+  under the same 1-hour breakpoint, so adding or turning off a server costs a line and
+  rewrites the cache only from there. A thread whose tools have no `mcp_tools` gets no
+  lines. Nothing else: no tool names, no schemas.
+- **When a request needs one**: `mcp_tools(server)` fetches that server's catalog
+  (cached 5 minutes, by URL) and returns its tools with their schemas, as a tool result:
+  the schemas reach the model only in the conversation that asked. Then `mcp_read` for
+  the entry's `readTools` (runs at once) and `mcp_call` for the rest (consequential: a
+  card, a trust rule `assistant:mcp_call(gmail:send_gmail_message)` or `grantedBy`).
+- **No server is special**: Quest Log is one entry like the rest. The `mcp_*` tools'
+  fixed descriptions name no server and no server's tools (a test holds this); the
+  system prompt's routing examples say "the server in `<mcp_servers>` whose line fits".
+  Only `morning_briefing` knows Quest Log, in code: its fixed reads go through
+  `ctx.mcp` without any schema reaching the model, and its result says to look
+  quest_log's tools up with `mcp_tools` before changing an item.
+- **One part of a bigger server**: `tools` (null for all) is the tools an entry offers;
+  `mcp_tools` lists only those and `mcp_read` / `mcp_call` refuse any other before
+  calling. A saved entry by a known name without `description` / `tools` gets the known
+  ones (`cleanMcpServers`).
+- **Google** (`GMAIL`, `GOOGLE_DRIVE`, `GOOGLE_DOCS` in `settings.ts`): three entries on
+  one Google Workspace MCP server the user runs, `GOOGLE_MCP_COMMAND` (`uvx workspace-mcp
+  --transport streamable-http --tools gmail drive docs`,
+  github.com/taylorwilsdon/google_workspace_mcp) at `http://localhost:8000/mcp`, with
+  their own OAuth client in its environment. Off by default. The server does the Google
+  sign-in: a call made before it returns a link, which Duck gives the user to open in
+  their browser (`mcp_tools`' description says never to sign in for them); the tokens
+  stay with the server. Duck holds no Google credential for these (the morning routine's
+  Sheets sign-in, `google.rs`, is separate). Reads (search, read mail and threads, list
+  and read files, read docs and comments) are `readTools`; sending, drafting, labels,
+  creating, sharing, editing and exporting go through `mcp_call`.
+- **Adding or turning off one**: the skills tab's MCP servers (on/off, the URL, remove,
+  add by name and URL, "add Google (Gmail, Drive, Docs)" for prefs saved before these
+  existed), or the prefs' `mcpServers` by hand (a `description` and `readTools` there).
 
 ## The web (step B1)
 
@@ -999,7 +1041,7 @@ When the app can't reach Workbench, the loader runs Duck's own engine on the pho
   `DEFAULT_TIERS`), editable in the drawer's settings.
 - **A new tool**: "Adding a tool" above; register it in `toolset.ts` (`TOOLS`, and
   `DEFERRED` if rarely used), and in `modes.ts` for a mode that should offer it.
-- **Tools from another MCP server**: an http server is X1's (`mcpServers`); a stdio one
+- **Tools from another MCP server**: an http server is X1's (`mcpServers`, with a `description` for its `<mcp_servers>` line and `tools` for one part of a bigger server; "MCP servers, lazily"); a stdio one
   in your Claude Code config is turned on in the settings (B2, `mcpHost`). Its tiers
   are `hostedTools` in `tools/mcpHost.ts`; the browser's profiles are `browser.ts`.
 - **A tool that runs on the PC or the phone**: `host` on its `defineTool`, its
