@@ -5,9 +5,9 @@ behind each decision are in `assistant-plan.md`. This file describes the code, a
 Duck step updates it as part of its Done when. Duck's self-development sessions (L3)
 read it first.
 
-Last updated: step V6 (2026-10-22). L3 audited it against the code. Since W5 it also
+Last updated: step H4 (2026-10-23). L3 audited it against the code. Since W5 it also
 covers W6, D2, D4, P1, P2, M2, M3, A5, A6, A7, W4, L1, L2, L3, L4, R1, R2, R3, B1, B2, T3, D3, V1 to V7,
-V8, S1, S2, X1 and the morning routine. A fresh session changing Duck: read "The shape", then "Where to
+V8, S1, S2, X1, H1 to H4, H8 and the morning routine. A fresh session changing Duck: read "The shape", then "Where to
 change X" at the end, then the module rows it points to.
 
 ## The shape
@@ -102,8 +102,8 @@ change X" at the end, then the module rows it points to.
 | `tools/media.ts` | H3, all deferred but `open_on_phone` (a `phone` host tool, deferred as every host tool is, served by the phone from H5): `play_music(query, id?, on?)` (reversible; the provider's search in its music category, the first result that names at least 60% of the query's words (`pickItem`), else up to five choices to call again with `id`), `find_video(query)` (read; up to eight, with id, channel and length), `play_video(id, on?)` (reversible). Playing opens the link on the device through its host tool (`open_on_pc` / `open_on_phone`); the device is `on`, else where the user's latest message came from (`ctx.surface`). |
 | `music/provider.ts` | H3: the `MusicProvider` interface (`search(query, kind)`, `play(item, device, open)`), `MediaItem`, `coverage` / `pickItem` (the query's words, without filler like "play some", found in the title and artist), `length`. |
 | `music/youtube.ts` | H3: `youtubeMusic`, the first provider, over `ipc/music.ts`: a search kept for an hour (each costs 101 of the 10,000 free daily units); play opens `music.youtube.com/watch?v=<id>` for a song, `www.youtube.com/watch?v=<id>` for a video (`youtubeUrl`, only for an 11-character id). |
-| `reminders.ts` | H8: the reminders host over `ipc/reminders.ts` (`createReminders`: the latest read of `reminders.json`, `put` over a record's `before`, `forProject`, `opening(first)` (the general reminders' turn-scoped note on a new thread or after `reminderSpellMinutes` without a message), `pulse`), the clock (`createReminderClock`: one timer for the next due, each announced once for its due, late when it came due before the app started; bookkeeping in `meta`), the time rules (`dueAt`, a day being 09:00; `dueText`; `isActive`: open, and due if it has a time), `findReminder` (id, title, or every word), `projectLine`, `view` / `widgetOrder`. See "Reminders" below. |
-| `tools/reminders.ts` | H8: `list_reminders(project?, state?)` (read; timed, by project, general), `add_reminder(title, details?, project?, due?)`, `complete_reminder` / `dismiss_reminder(reminder)`, `edit_reminder(reminder, …)` (all reversible; the last two deferred). Each change leaves a `reminder` chip with the record's diff and an undo, and a stale write is redone once over a fresh read. `remindersFor(ctx, projectId)`: the project's titles for `create_session` and a code `run_task`. |
+| `reminders.ts` | H8: the reminders host over `ipc/reminders.ts` (`createReminders`: the latest read of `reminders.json`, `put` over a record's `before`, `forProject`, `opening(first)` (the general reminders' turn-scoped note on a new thread or after `reminderSpellMinutes` without a message), `pulse`), the clock (`createReminderClock`: one timer for the next due, each announced once for its due, late when it came due before the app started; bookkeeping in `meta`), the time rules (`dueAt`, a day being 09:00; `dueText`; `isActive`: open, and due if it has a time), `findReminder` (id, title, or every word), `projectLine`, `view` / `widgetOrder`. H4: `comesUpAt` (the snooze, else the due, else a repeat's latest occurrence come; a later occurrence wins over an old snooze), `nextOccurrence` (daily, weekdays, weekly, monthly kept to the due's day), `completed` (a repeat moves on, else done), `snoozed`, `parseDuration` / `durationText`, `SNOOZE_MINUTES` (10); the host's timers (`timers`, `loadTimers`, `addTimer`, `dropTimer`, rows in `meta`); the clock announces each reminder once per time it comes up (`announce(r, late, at)`) and rings each timer once (`ring`), dropping it. See "Reminders" below. |
+| `tools/reminders.ts` | H8: `list_reminders(project?, state?)` (read; timed, by project, general), `add_reminder(title, details?, project?, due?)`, `complete_reminder` / `dismiss_reminder(reminder)`, `edit_reminder(reminder, …, repeat?)` (all reversible; the last two deferred). H4: `add_reminder` takes `repeat` (needs a due); `complete_reminder` moves a repeat to its next time; `snooze_reminder(reminder, for? | until?)` (deferred); `set_timer(duration, label?)` and `cancel_timer(timer?)` (deferred), timers in `duck.db`, no commit; `list_reminders` also gives the running timers. All `host: "any"`. Each change leaves a `reminder` chip with the record's diff and an undo, and a stale write is redone once over a fresh read (`change`, exported for the push's buttons with `closing` and `snoozing`). `remindersFor(ctx, projectId)`: the project's titles for `create_session` and a code `run_task`. |
 | `tools/weather.ts` | H2: `weather(place?, days?)` (read, `any` host, deferred): Open-Meteo's geocoding (`"Portland, Oregon"` picks by region or country) and forecast, no key, in °C / km/h / mm: now, the next 12 hours' rain chance, the days. Without `place`, the `home` setting (the drawer tab's Home). |
 | `tools/readAloud.ts` | V3: `read_aloud` resolves a source (a session's reply, a note, a summary, text) and hands it to the reader in `verbatim`, `narrate` or `summary` mode. |
 | `tools/quiet.ts` | V5: `set_quiet`, Do Not Disturb and the Speak switch by voice or text. |
@@ -159,7 +159,7 @@ prompt's safety rules cover them.
 | `google.rs` | The morning routine's Google access: the installed-app OAuth flow (a loopback redirect, PKCE) for the user's own Desktop client and only `drive.readonly` + `drive.file`, so the token can't write to the original sheet. The refresh token is in Credential Manager (`duck/google-sheets-token`, `duck-dev/…` in debug), the client's secret, if any, in `duck/google-oauth-secret` (by `cmdkey`); access tokens stay in memory. `invalid_grant` forgets the token and fails with `google_expired: …`. Commands: `assistant_google_status`, `_connect(client_id)`, `_disconnect` (revokes). |
 | `steam.rs` | H2: Steam on this PC. `parse` reads Valve's KeyValues (`.vdf`, `.acf`); `steam_root` (the registry's `SteamPath`), `libraries` (`libraryfolders.vdf`), `installed` (every `appmanifest_*.acf`, without the redistributables, the last played first). Commands: `assistant_steam_library`, `assistant_steam_store_search` (the store's search, no key), `assistant_steam_activity(appid?)` (the Web API with `duck/steam-api-key`, the account from `config/loginusers.vdf`; the key never reaches an error, `without_url`), `assistant_pc_open` (`may_open`: http(s), or `steam://rungameid|install|store/<digits>`; nothing else). |
 | `youtube.rs` | H3: `assistant_youtube_search(query, kind)`: the YouTube Data API with `duck/youtube-api-key` (never in an error, `without_url`), `search.list` for ids (the Music category for `music`) then `videos.list` for plain titles, channels (" - Topic" dropped) and lengths. Records 101 units in `assistant_quota` per search; a used-up quota is said plainly. |
-| `reminders.rs` | H8: `reminders.json` at the root of Duck's repo, `{"reminders": [...]}`. `read` (a file that doesn't parse, or a bad record, is a `problem`, never written over), `put(id, before, after, message)` (one record replaced, made or removed over what it was, else `stale:`; checked; fields it doesn't know kept; commits just the file through `memory::commit`). A `notify` watcher on the workspace folder emits `duck-reminders-changed`. Delivery bookkeeping in `meta` `reminder_seen:<id>`. Commands `assistant_reminders_read`, `_put`, `_watch`, `_seen`, `assistant_reminder_seen_set`. |
+| `reminders.rs` | H8: `reminders.json` at the root of Duck's repo, `{"reminders": [...]}`. `read` (a file that doesn't parse, or a bad record, is a `problem`, never written over), `put(id, before, after, message)` (one record replaced, made or removed over what it was, else `stale:`; checked; fields it doesn't know kept; commits just the file through `memory::commit`). A `notify` watcher on the workspace folder emits `duck-reminders-changed`. Delivery bookkeeping in `meta` `reminder_seen:<id>`. H4: the record's `repeat` (daily, weekdays, weekly, monthly; needs a due) and `snoozedUntil` (a local time); timers in `meta` `duck_timer:<id>`; a push's one-use button token in `meta` `reminder_action:<token>` (a day; `issue_action`, `take_action`), and `act`, which the remote's `POST /api/reminders/action` calls and which emits `duck-reminder-action {id, action}`. Commands `assistant_reminders_read`, `_put`, `_watch`, `_seen`, `assistant_reminder_seen_set`, `assistant_timers`, `assistant_timer_set`, `assistant_reminder_push` (the push, with the token when it has buttons). |
 | `media.rs` | H2: Windows' media sessions (`GlobalSystemMediaTransportControlsSessionManager`, the `Media_Control` feature), on a blocking thread in the MTA. `assistant_media_now_playing` (each app's title, artist, album, status, and which is current; `app_name` names a browser by its AppUserModelID) and `assistant_media_control(action)` (`target`: the session that plays, else the current one). |
 | `sheets.rs` | Google Sheets. Reads: `assistant_sheet_search` (sheets by name), `assistant_sheet_read` (a tab's non-empty cells, shown and as formulas, 150 rows by 26 columns, and its tabs), `assistant_sheet_cells` (given cells, up to 20) and `assistant_sheet_export` (the cells, plus the tab as CSV, the file as xlsx and a JSON sidecar in `<workspace>/data/invoices/`). Only Google Sheets files. The draft: `assistant_sheet_draft` refuses a second draft of a sheet for a month while the first is in Drive, re-reads the original against what the card showed, refuses a formula cell (in the original and the copy), makes the drafts folder once, copies with Drive's `files.copy` and falls back to uploading the xlsx export as a new Sheet, records the file, then sets the cells (`USER_ENTERED`, plain values only) and reads them back. `assistant_sheet_drafts` lists a month's drafts still in Drive. |
 | `skills.rs` | Duck's skills (S2): `skills/<name>/SKILL.md` in the workspace. `list` (cached; a `notify` watcher on `skills/` marks it stale, so an edit is read on the next request), each file's frontmatter fields (`crate::skills::frontmatter`, the skill manager's parser made general), body, text and problems (a folder name that isn't kebab-case, no frontmatter, a `name:` that isn't the folder's, no description, over 64 KB); `write` (over the text it was read as, else "stale:"; the caller commits). Commands `assistant_skills_list`, `assistant_skill_write`. |
@@ -270,7 +270,9 @@ prompt's safety rules cover them.
 - `assistant_tasks (id, data JSON, updated_at)`: worker tasks (D1).
 - `assistant_autopilots`: one autopilot record per session (P1).
 - `meta` `assistant_summary:<instance>`: a session's last summary (W3).
-- `meta` `reminder_seen:<id>`: a timed reminder announced, for which due (H8).
+- `meta` `reminder_seen:<id>`: a timed reminder announced, for which time (H8).
+- `meta` `duck_timer:<id>`: a running timer, `{label, ends, length, threadId}` (H4).
+- `meta` `reminder_action:<token>`: a push's Done and Snooze, `{id, exp}` (H4).
 - A thread's compactions (A6) are `notice` rows in `assistant_messages`, so there is no
   table for them.
 - The core memory (W4) isn't in `duck.db`: it's `memory/core.md` in Duck's workspace, a
@@ -641,6 +643,19 @@ timed one was announced is bookkeeping, in `duck.db` `meta`.
   - Timed ones once due, through the announcer (`report`), with a notice; late
     when they came due while the app was closed.
   - A reminder with a time comes up the first two ways only once it's due.
+- **Every channel at once** (H4, `index.ts`): an announced reminder is a notice, the
+  announcer's line (spoken with Speak on), the widget's pulse and a Web Push to the
+  phones (`assistant_reminder_push`), with Done and Snooze buttons. The service worker
+  (`sw.js`) can't sign in, so the push carries a one-use token, good for a day, that
+  the buttons post to `POST /api/reminders/action`; Rust emits
+  `duck-reminder-action`, and `index.ts` makes the same change the tools would
+  (`change` with `closing` or `snoozing`, 10 minutes), with its chip in the thread.
+- **Repeats** (H4) keep one record, whose `due` is the occurrence not yet done: done
+  moves it on; left undone, each later occurrence is still announced, without a
+  write. **Snooze** sets `snoozedUntil`, when it comes up instead; a new due or done
+  clears it.
+- **Timers** (H4) are `duck.db` rows, never the file: the clock rings each once and
+  drops it, late when it ran out while the app was closed. They aren't in the widget.
 - **The widget** follows the `reminders` event (on `sync` and every change; `pulse`
   when one comes up).
 
@@ -817,8 +832,10 @@ Duck is one tap from its icon.
 - **A tool that runs on the PC or the phone**: `host` on its `defineTool`, its
   handler on the host ("Tools that run elsewhere" above, `hosts.ts`); a PC tool's
   handler goes in `pcHandlers` (`tools/pc.ts`), its Rust beside `steam.rs` / `media.rs`.
-- **When a reminder comes up** (the spell, a day's hour, what counts as due): `reminders.ts`;
-  its record and checks: `reminders.rs` (and `ipc/reminders.ts`).
+- **When a reminder comes up** (the spell, a day's hour, what counts as due, a repeat's
+  next time): `reminders.ts`; its record and checks: `reminders.rs` (and
+  `ipc/reminders.ts`); how it reaches the phone and what its buttons do: the clock's
+  `announce` and `onReminderAction` in `index.ts`, and `sw.js`.
 - **Another music service**: a `MusicProvider` (`music/provider.ts`) passed as
   `music` to the engine in `index.ts`; the tools don't change.
 - **A mode's prompt, tools, effort or pauses**: `modes.ts` for the built-in ones. A new
@@ -890,7 +907,12 @@ Both rules are in `prompt.ts`.
   app: a reminder added and closed through Duck, a project's on new sessions from the
   rail and through Duck, one announced two minutes out (and one missed while closed),
   the widget, a hand-broken file. The phone shows the chips but has no widget yet.
-  Repeats, snooze, timers and phone push are H4's.
+
+- Repeats, snooze, timers and phone push (H4) live: tested over a fake file, fake
+  timers and the Rust token store. Not yet tried: a reminder set from the drawer
+  arriving on the phone as a push on time, one due while the app was closed arriving
+  at the next start marked late, Snooze and Done from the notification, a timer by
+  voice. Phone alarms that fire offline are H5's; a calendar mirror isn't built.
 
 - The wake word (V6) live: built and measured on recordings (no spots in 6.3 h of
   speech without the phrase; 81 of 84 synthetic English and 9 of 15 Russian caught),

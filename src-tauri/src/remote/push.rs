@@ -13,6 +13,9 @@
 //!   encrypted for each device (RFC 8291, `aes128gcm`) and POSTed to its push
 //!   service on a short-lived thread, so nothing waits on the network.
 //!
+//! A reminder's push (step H4) has Done and Snooze buttons; they come back to
+//! `POST /api/reminders/action` with the push's one-use token.
+//!
 //! Only paired, approved devices are served or pushed to. The phone can only
 //! subscribe from a secure page — over Funnel (R3) — which is a browser rule.
 
@@ -369,6 +372,22 @@ pub(super) async fn mute(
         (req.muted as i64, &id),
     );
     StatusCode::OK.into_response()
+}
+
+#[derive(Deserialize)]
+pub(super) struct ReminderActionReq {
+    token: String,
+    action: String,
+}
+
+/// `POST /api/reminders/action {token, action}` — a reminder push's Done or Snooze
+/// (step H4), from the service worker, which can't sign in. The push's one-use
+/// token stands in for the device: it opens nothing but that reminder's two buttons.
+pub(super) async fn reminder_action(State(state): State<Arc<RemoteState>>, Json(req): Json<ReminderActionReq>) -> Response {
+    match crate::assistant::reminders::act(&state.app, &req.token, &req.action) {
+        Ok(()) => StatusCode::OK.into_response(),
+        Err(e) => (StatusCode::GONE, Json(json!({ "error": e }))).into_response(),
+    }
 }
 
 #[cfg(test)]

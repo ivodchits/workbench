@@ -4,8 +4,9 @@
 //!
 //! - **The file.** `{"reminders": [...]}`, one record each: id, title, details,
 //!   project, due (a local `2026-10-24T10:00`, or a date), state (open, done,
-//!   dismissed), created, closed, createdIn. Fields this version doesn't know are
-//!   kept as they are, so a later step's (H4's repeat) survive an older write.
+//!   dismissed), created, closed, createdIn, and (step H4) repeat and snoozedUntil.
+//!   Fields this version doesn't know are kept as they are, so a later step's
+//!   survive an older write.
 //! - **Writes** go through [`put`]: one record replaced, made or removed, over what
 //!   the writer saw it as (`before`), refused with `stale:` when it changed since
 //!   (a hand edit, the phone). Each write commits just this file, as Duck.
@@ -15,6 +16,12 @@
 //! - **Delivery bookkeeping** (whether a timed reminder was announced) is in
 //!   `duck.db`'s `meta` as `reminder_seen:<id>`: it changes often, means nothing in
 //!   a backup, and would otherwise make a commit each time.
+//! - **Timers** (step H4) are short and matter only for minutes: `duck.db` only,
+//!   `duck_timer:<id>`, never the file.
+//! - **A push's buttons** (step H4): a reminder pushed to the phone carries a
+//!   one-use token (`reminder_action:<token>`, a day long) that its Done and Snooze
+//!   buttons send back. The service worker can't sign in, and the token can only
+//!   close or snooze that one reminder.
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -37,6 +44,12 @@ const MAX_FILE_BYTES: usize = 1024 * 1024;
 const TITLE_MAX: usize = 200;
 const DETAILS_MAX: usize = 4000;
 const SEEN: &str = "reminder_seen:";
+const TIMER: &str = "duck_timer:";
+const ACTION: &str = "reminder_action:";
+/// How long a push's buttons work.
+const ACTION_TTL_MS: i64 = 24 * 3600 * 1000;
+/// The event a push's button emits: `{id, action}`.
+pub const ACTION_EVENT: &str = "duck-reminder-action";
 /// A burst of events (one save is several) is told once, after this.
 const SETTLE: Duration = Duration::from_millis(400);
 
@@ -46,6 +59,16 @@ pub enum ReminderState {
     Open,
     Done,
     Dismissed,
+}
+
+/// How a reminder comes back once it's done (step H4).
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum Repeat {
+    Daily,
+    Weekdays,
+    Weekly,
+    Monthly,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -74,6 +97,12 @@ pub struct Reminder {
     /// The thread it was asked for in.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub created_in: Option<String>,
+    /// Comes back at the next time after it's done; needs a due.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repeat: Option<Repeat>,
+    /// Put off until this local time (`YYYY-MM-DDTHH:MM`): it comes up then, not before.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub snoozed_until: Option<String>,
     /// What a later version added, kept.
     #[serde(flatten)]
     pub extra: Map<String, Value>,
@@ -123,6 +152,14 @@ fn check_one(r: &Reminder) -> Result<(), String> {
     if let Some(due) = &r.due {
         if !due_re().is_match(due) {
             return Err(format!("{name}: due \"{due}\" isn't YYYY-MM-DD or YYYY-MM-DDTHH:MM"));
+        }
+    }
+    if r.repeat.is_some() && r.due.is_none() {
+        return Err(format!("{name}: a repeating reminder needs a due time"));
+    }
+    if let Some(until) = &r.snoozed_until {
+        if !due_re().is_match(until) || !until.contains('T') {
+            return Err(format!("{name}: snoozedUntil \"{until}\" isn't YYYY-MM-DDTHH:MM"));
         }
     }
     if r.project.as_ref().is_some_and(|p| p.id.is_empty()) {
@@ -235,27 +272,84 @@ fn replace(path: &Path, bytes: &[u8]) -> Result<(), String> {
 
 // ── delivery bookkeeping ──
 
-/// Every `reminder_seen:<id>` value, by id.
-pub fn seen(conn: &Connection) -> Result<Vec<(String, String)>, String> {
+/// Every `<prefix><id>` value in `meta`, by id.
+fn rows(conn: &Connection, prefix: &str) -> Result<Vec<(String, String)>, String> {
     let mut st = conn
         .prepare("SELECT substr(key, ?1), value FROM meta WHERE key LIKE ?2")
         .map_err(|e| e.to_string())?;
     let rows = st
-        .query_map((SEEN.len() as i64 + 1, format!("{SEEN}%")), |r| Ok((r.get(0)?, r.get(1)?)))
+        .query_map((prefix.len() as i64 + 1, format!("{prefix}%")), |r| Ok((r.get(0)?, r.get(1)?)))
         .map_err(|e| e.to_string())?;
     rows.collect::<Result<_, _>>().map_err(|e| e.to_string())
 }
 
-pub fn set_seen(conn: &Connection, id: &str, value: Option<&str>) -> Result<(), String> {
+fn set_row(conn: &Connection, prefix: &str, id: &str, value: Option<&str>) -> Result<(), String> {
     if !id_re().is_match(id) {
-        return Err(format!("bad reminder id {id}"));
+        return Err(format!("bad id {id}"));
     }
-    let key = format!("{SEEN}{id}");
+    let key = format!("{prefix}{id}");
     match value {
-        Some(v) if v.len() > 1024 => Err("the bookkeeping value is too large".into()),
+        Some(v) if v.len() > 1024 => Err("the value is too large".into()),
         Some(v) => super::trust::set_meta(conn, &key, v),
         None => conn.execute("DELETE FROM meta WHERE key = ?1", [&key]).map(|_| ()).map_err(|e| e.to_string()),
     }
+}
+
+/// Every `reminder_seen:<id>` value, by id.
+pub fn seen(conn: &Connection) -> Result<Vec<(String, String)>, String> {
+    rows(conn, SEEN)
+}
+
+pub fn set_seen(conn: &Connection, id: &str, value: Option<&str>) -> Result<(), String> {
+    set_row(conn, SEEN, id, value)
+}
+
+/// Every running timer, `[id, json]` (step H4).
+pub fn timers(conn: &Connection) -> Result<Vec<(String, String)>, String> {
+    rows(conn, TIMER)
+}
+
+pub fn set_timer(conn: &Connection, id: &str, value: Option<&str>) -> Result<(), String> {
+    set_row(conn, TIMER, id, value)
+}
+
+fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis() as i64)
+}
+
+/// A one-use token for a push's buttons on reminder `id`, good for a day. Old
+/// ones are dropped as new ones are made.
+pub fn issue_action(conn: &Connection, id: &str, now: i64) -> Result<String, String> {
+    use base64::Engine;
+    use rand_core::RngCore;
+    for (token, v) in rows(conn, ACTION)? {
+        let exp = serde_json::from_str::<Value>(&v).ok().and_then(|v| v["exp"].as_i64()).unwrap_or(0);
+        if exp <= now {
+            set_row(conn, ACTION, &token, None)?;
+        }
+    }
+    let mut bytes = [0u8; 16];
+    rand_core::OsRng.fill_bytes(&mut bytes);
+    let token = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes);
+    set_row(conn, ACTION, &token, Some(&serde_json::json!({ "id": id, "exp": now + ACTION_TTL_MS }).to_string()))?;
+    Ok(token)
+}
+
+/// The reminder a push's token is for, used up; None when it's unknown or old.
+pub fn take_action(conn: &Connection, token: &str, now: i64) -> Option<String> {
+    if !id_re().is_match(token) {
+        return None;
+    }
+    let key = format!("{ACTION}{token}");
+    let v: String = conn.query_row("SELECT value FROM meta WHERE key = ?1", [&key], |r| r.get(0)).ok()?;
+    let _ = conn.execute("DELETE FROM meta WHERE key = ?1", [&key]);
+    let v: Value = serde_json::from_str(&v).ok()?;
+    if v["exp"].as_i64()? <= now {
+        return None;
+    }
+    v["id"].as_str().map(str::to_string)
 }
 
 // ── the watcher ──
@@ -342,6 +436,54 @@ pub fn assistant_reminder_seen_set(ctx: State<'_, Arc<Assistant>>, id: String, v
     set_seen(&lock(&ctx), &id, value.as_deref())
 }
 
+#[tauri::command]
+pub fn assistant_timers(ctx: State<'_, Arc<Assistant>>) -> Result<Vec<(String, String)>, String> {
+    timers(&lock(&ctx))
+}
+
+#[tauri::command]
+pub fn assistant_timer_set(ctx: State<'_, Arc<Assistant>>, id: String, value: Option<String>) -> Result<(), String> {
+    set_timer(&lock(&ctx), &id, value.as_deref())
+}
+
+/// Push a reminder (or a timer) to the phones: with `actions`, its Done and Snooze
+/// buttons, which come back through `POST /api/reminders/action`. Tapping it opens
+/// Duck on `thread_id`.
+#[tauri::command]
+pub fn assistant_reminder_push(
+    app: AppHandle,
+    ctx: State<'_, Arc<Assistant>>,
+    id: String,
+    thread_id: String,
+    title: String,
+    body: String,
+    actions: bool,
+) -> Result<(), String> {
+    let token = if actions { Some(issue_action(&lock(&ctx), &id, now_ms())?) } else { None };
+    crate::remote::push::send_all(
+        &app,
+        serde_json::json!({
+            "title": title,
+            "body": body,
+            "threadId": thread_id,
+            "tag": format!("reminder-{id}"),
+            "reminder": token.map(|t| serde_json::json!({ "id": id, "token": t })),
+        }),
+    );
+    Ok(())
+}
+
+/// A push's button: the reminder its token is for, and what to do, to the engine.
+pub fn act(app: &AppHandle, token: &str, action: &str) -> Result<(), &'static str> {
+    use tauri::Manager;
+    if action != "done" && action != "snooze" {
+        return Err("unknown action");
+    }
+    let ctx = app.try_state::<Arc<Assistant>>().ok_or("Duck isn't running")?;
+    let id = take_action(&lock(&ctx), token, now_ms()).ok_or("this notification's buttons have expired")?;
+    app.emit(ACTION_EVENT, serde_json::json!({ "id": id, "action": action })).map_err(|_| "Duck isn't running")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -365,6 +507,8 @@ mod tests {
             created: "2026-10-23T12:00".into(),
             closed: None,
             created_in: None,
+            repeat: None,
+            snoozed_until: None,
             extra: Map::new(),
         }
     }
@@ -393,16 +537,17 @@ mod tests {
         let ws = temp("hand");
         std::fs::write(
             path(&ws),
-            r#"{"reminders":[{"id":"r1","title":"water the plants","state":"open","created":"2026-10-23","repeat":"weekly"}],"note":"mine"}"#,
+            r#"{"reminders":[{"id":"r1","title":"water the plants","state":"open","created":"2026-10-23","due":"2026-10-24","repeat":"weekly","colour":"red"}],"note":"mine"}"#,
         )
         .unwrap();
         let v = read(&ws);
         assert_eq!(v.problem, None);
         let r = v.reminders[0].clone();
-        assert_eq!(r.extra.get("repeat"), Some(&Value::from("weekly")));
+        assert_eq!(r.repeat, Some(Repeat::Weekly));
+        assert_eq!(r.extra.get("colour"), Some(&Value::from("red")));
         put(&ws, "r2", None, Some(rem("r2", "b")), "x").unwrap();
         let text = std::fs::read_to_string(path(&ws)).unwrap();
-        assert!(text.contains("\"repeat\": \"weekly\"") && text.contains("\"note\": \"mine\""), "{text}");
+        assert!(text.contains("\"repeat\": \"weekly\"") && text.contains("\"colour\": \"red\"") && text.contains("\"note\": \"mine\""), "{text}");
 
         let broken = "{\"reminders\": [ {\"id\": \"r1\", ";
         std::fs::write(path(&ws), broken).unwrap();
@@ -422,6 +567,9 @@ mod tests {
         assert!(put(&ws, "r1", None, Some(bad), "x").is_err());
         assert!(put(&ws, "r1", None, Some(rem("r1", "")), "x").is_err());
         assert!(put(&ws, "r2", None, Some(rem("r1", "x")), "x").is_err());
+        assert!(put(&ws, "r1", None, Some(Reminder { repeat: Some(Repeat::Daily), ..rem("r1", "x") }), "x").is_err(), "a repeat needs a due");
+        let snoozed = Reminder { snoozed_until: Some("2026-10-24".into()), ..rem("r1", "x") };
+        assert!(put(&ws, "r1", None, Some(snoozed), "x").is_err(), "a snooze needs a time");
         let ok = Reminder { due: Some("2026-10-24T10:00".into()), ..rem("r1", "send the invoice") };
         assert!(put(&ws, "r1", None, Some(ok), "x").is_ok());
     }
@@ -435,5 +583,23 @@ mod tests {
         set_seen(&conn, "r2", None).unwrap();
         assert_eq!(seen(&conn).unwrap(), vec![("r1".to_string(), r#"{"announced":1}"#.to_string())]);
         assert!(set_seen(&conn, "../x", Some("1")).is_err());
+        set_timer(&conn, "t1", Some("{}")).unwrap();
+        assert_eq!(timers(&conn).unwrap().len(), 1);
+        assert_eq!(seen(&conn).unwrap().len(), 1, "timers aren't bookkeeping");
+    }
+
+    #[test]
+    fn a_push_token_works_once_and_for_a_day() {
+        let db = DuckDb::open_in_memory().unwrap();
+        let conn = db.conn.lock().unwrap();
+        let t = issue_action(&conn, "r1", 1_000).unwrap();
+        assert_eq!(take_action(&conn, &t, 2_000).as_deref(), Some("r1"));
+        assert_eq!(take_action(&conn, &t, 2_000), None, "used up");
+        let old = issue_action(&conn, "r2", 1_000).unwrap();
+        assert_eq!(take_action(&conn, &old, 1_000 + ACTION_TTL_MS), None, "expired");
+        let stale = issue_action(&conn, "r3", 1_000).unwrap();
+        issue_action(&conn, "r4", 1_000 + ACTION_TTL_MS).unwrap();
+        assert_eq!(take_action(&conn, &stale, 0), None, "dropped as a new one was made");
+        assert_eq!(take_action(&conn, "nope/..", 0), None);
     }
 }

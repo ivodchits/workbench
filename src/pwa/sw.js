@@ -88,6 +88,8 @@ async function takeShare(req) {
 // The desktop pushes on needs-you and escalation: { title, body, instanceId, tag }.
 // A tag per instance makes a newer push about the same card replace the older one.
 // Duck pushes when it waits for a yes or no (step R1): { title, body, threadId, tag }.
+// A reminder (step H4) adds `reminder: { id, token }`: Done and Snooze buttons,
+// which post the token back (the worker can't sign in; the token is the key).
 self.addEventListener("push", (event) => {
   let data = {};
   try {
@@ -102,7 +104,14 @@ self.addEventListener("push", (event) => {
       renotify: true,
       icon: "/icon-192.png",
       badge: "/icon-192.png",
-      data: { instanceId: data.instanceId || null, threadId: data.threadId || null },
+      ...(data.reminder && {
+        actions: [
+          { action: "done", title: "Done" },
+          { action: "snooze", title: "Snooze 10 min" },
+        ],
+        requireInteraction: true,
+      }),
+      data: { instanceId: data.instanceId || null, threadId: data.threadId || null, reminder: data.reminder || null },
     }),
   );
 });
@@ -112,6 +121,10 @@ self.addEventListener("push", (event) => {
 self.addEventListener("notificationclick", (event) => {
   event.notification.close();
   const data = event.notification.data || {};
+  if (data.reminder && (event.action === "done" || event.action === "snooze")) {
+    event.waitUntil(reminderAction(data.reminder, event.action));
+    return;
+  }
   const id = data.instanceId;
   const thread = data.threadId;
   const target = thread
@@ -130,3 +143,26 @@ self.addEventListener("notificationclick", (event) => {
     }),
   );
 });
+
+/** A reminder's Done or Snooze, to the desktop. When it doesn't get there, a
+ *  notification says so, so the tap isn't lost silently. */
+async function reminderAction(reminder, action) {
+  let error = "";
+  try {
+    const res = await fetch("/api/reminders/action", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ token: reminder.token, action }),
+    });
+    if (!res.ok) error = ((await res.json().catch(() => ({}))).error) || `the desktop said ${res.status}`;
+  } catch {
+    error = "the desktop isn't reachable";
+  }
+  if (error)
+    await self.registration.showNotification(action === "done" ? "Not marked done" : "Not snoozed", {
+      body: `${error}. Tell Duck instead.`,
+      tag: `reminder-${reminder.id}`,
+      icon: "/icon-192.png",
+      badge: "/icon-192.png",
+    });
+}

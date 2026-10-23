@@ -1,5 +1,6 @@
 // Reminders (step H8): when they come up, the clock for timed ones, the tools, and
-// the general reminders' note on a conversation's first message.
+// the general reminders' note on a conversation's first message. Step H4: repeats,
+// snooze and timers.
 
 import Anthropic from "@anthropic-ai/sdk";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -9,9 +10,14 @@ import { createEngine, type StreamFn, type StreamLike } from "./engine";
 import { fakePort } from "./fakePort.test-util";
 import type { Notice } from "./protocol";
 import {
+  comesUpAt,
+  completed,
   createReminderClock,
   createReminders,
   dueAt,
+  durationText,
+  nextOccurrence,
+  parseDuration,
   dueText,
   findReminder,
   isActive,
@@ -24,7 +30,17 @@ import {
 import { DEFAULT_SETTINGS } from "./settings";
 import { createThreadStore, type ThreadBackend } from "./threads";
 import { createRegistry, type ToolContext, type ToolDef } from "./tools/registry";
-import { REMINDER_TOOLS, addReminder, completeReminder, editReminder, listReminders, remindersFor } from "./tools/reminders";
+import {
+  REMINDER_TOOLS,
+  addReminder,
+  cancelTimer,
+  completeReminder,
+  editReminder,
+  listReminders,
+  remindersFor,
+  setTimer,
+  snoozeReminder,
+} from "./tools/reminders";
 
 const rec = (id: string, title: string, more: Partial<ReminderRecord> = {}): ReminderRecord => ({
   id,
@@ -40,6 +56,7 @@ const WB = { id: "p1", name: "Workbench" };
 function fakeBackend(start: ReminderRecord[] = [], problem: string | null = null) {
   let list = structuredClone(start);
   const seen = new Map<string, string>();
+  const timers = new Map<string, string>();
   const commits: string[] = [];
   const file = (): RemindersFile => ({ path: "C:\\Duck\\reminders.json", reminders: structuredClone(list), problem });
   const backend: RemindersBackend = {
@@ -53,11 +70,14 @@ function fakeBackend(start: ReminderRecord[] = [], problem: string | null = null
     },
     seen: async () => [...seen.entries()],
     setSeen: async (id, v) => void (v === null ? seen.delete(id) : seen.set(id, v)),
+    timers: async () => [...timers.entries()],
+    setTimer: async (id, v) => void (v === null ? timers.delete(id) : timers.set(id, v)),
   };
   return {
     backend,
     commits,
     seen,
+    timers,
     list: () => list,
     /** A hand edit (or the phone) behind Duck's back. */
     edit: (f: (l: ReminderRecord[]) => ReminderRecord[]) => (list = f(list)),
@@ -341,5 +361,136 @@ describe("the general reminders in a conversation", () => {
     await engine.send({ threadId: id, text: "what's the time?", source: "desktop" });
     await engine.settled(id);
     expect(calls[1].messages.map((m) => m.role)).toEqual(["user", "system", "assistant", "user"]);
+  });
+});
+
+// ── step H4 ──
+
+describe("repeats, snooze and timers", () => {
+  it("finds a repeat's next time: a day, a weekday, a week, a month (kept to its day)", () => {
+    const after = (s: string) => dueAt(s);
+    expect(nextOccurrence("2026-10-23T09:00", "daily", after("2026-10-23T09:30"))).toBe("2026-10-24T09:00");
+    // Friday 23 Oct → Monday 26 Oct.
+    expect(nextOccurrence("2026-10-23T09:00", "weekdays", after("2026-10-23T09:30"))).toBe("2026-10-26T09:00");
+    expect(nextOccurrence("2026-10-23", "weekly", after("2026-11-02T12:00"))).toBe("2026-11-06");
+    expect(nextOccurrence("2026-01-31T08:00", "monthly", after("2026-02-01T00:00"))).toBe("2026-02-28T08:00");
+    expect(nextOccurrence("2026-01-31T08:00", "monthly", after("2026-03-01T00:00"))).toBe("2026-03-31T08:00");
+    // Not come yet: the due itself.
+    expect(nextOccurrence("2026-10-30T09:00", "daily", after("2026-10-23T09:30"))).toBe("2026-10-30T09:00");
+  });
+
+  it("reads a length the way it's said", () => {
+    expect(parseDuration("10m")).toBe(600_000);
+    expect(parseDuration("1h30m")).toBe(5_400_000);
+    expect(parseDuration("90s")).toBe(90_000);
+    expect(parseDuration("8 minutes")).toBe(480_000);
+    expect(parseDuration("1.5 hours")).toBe(5_400_000);
+    expect(parseDuration("10")).toBe(600_000);
+    expect(parseDuration("soon")).toBeNaN();
+    expect(parseDuration("10m later")).toBeNaN();
+    expect(durationText(5_400_000)).toBe("1 h 30 min");
+    expect(durationText(45_000)).toBe("45 s");
+  });
+
+  it("comes up at its snooze, or its latest occurrence; done moves a repeat on", () => {
+    const now = dueAt("2026-10-25T12:00");
+    const daily = rec("d", "Take the pills", { due: "2026-10-23T09:00", repeat: "daily" });
+    expect(comesUpAt(daily, now)).toBe("2026-10-25T09:00");
+    expect(comesUpAt({ ...daily, snoozedUntil: "2026-10-25T12:10" }, now)).toBe("2026-10-25T12:10");
+    expect(isActive({ ...daily, snoozedUntil: "2026-10-25T12:10" }, now)).toBe(false);
+    // Snoozed yesterday and never done: today's time comes up anyway.
+    expect(comesUpAt({ ...daily, snoozedUntil: "2026-10-24T09:30" }, now)).toBe("2026-10-25T09:00");
+    expect(completed({ ...daily, snoozedUntil: "2026-10-25T12:10" }, new Date(now))).toEqual({ ...daily, due: "2026-10-26T09:00" });
+    expect(completed(rec("p", "Call the bank"), new Date(now))).toMatchObject({ state: "done", closed: "2026-10-25T12:00" });
+  });
+
+  describe("on the clock", () => {
+    beforeEach(() => vi.useFakeTimers());
+    afterEach(() => vi.useRealTimers());
+
+    it("announces a repeat at each time until it's done, a snooze at its end, and rings a timer once", async () => {
+      const start = dueAt("2026-10-23T10:00");
+      vi.setSystemTime(start);
+      const f = fakeBackend([
+        rec("d", "Take the pills", { due: "2026-10-23T09:00", repeat: "daily" }),
+        rec("s", "Call the bank", { snoozedUntil: "2026-10-23T10:10" }),
+      ]);
+      f.timers.set("t-old", JSON.stringify({ ends: start - 60_000, length: "5 min" }));
+      const r = createReminders({ backend: f.backend, spellMinutes: () => 30 });
+      await r.load();
+      await r.loadTimers();
+      const said: string[] = [];
+      const clock = await createReminderClock({
+        reminders: r,
+        backend: f.backend,
+        startedAt: start,
+        announce: (x, late, at) => said.push(`${x.id} ${at}${late ? " late" : ""}`),
+        ring: (t, late) => said.push(`${t.id}${late ? " late" : ""}`),
+      });
+      r.subscribe((pulse) => pulse || clock.arm());
+      clock.arm();
+      expect(said).toEqual(["d 2026-10-23T09:00 late", "t-old late"]);
+      await r.addTimer({ id: "t-tea", label: "tea", ends: Date.now() + 4 * 60_000, length: "4 min" });
+      await vi.advanceTimersByTimeAsync(4 * 60_000);
+      expect(said.slice(2)).toEqual(["t-tea"]);
+      expect(f.timers.size).toBe(0);
+      expect(r.timers()).toEqual([]);
+      await vi.advanceTimersByTimeAsync(6 * 60_000);
+      expect(said.slice(3)).toEqual(["s 2026-10-23T10:10"]);
+      // Not done: tomorrow's comes up anyway, with no write.
+      await vi.advanceTimersByTimeAsync(dueAt("2026-10-24T09:00") - Date.now());
+      expect(said.slice(4)).toEqual(["d 2026-10-24T09:00"]);
+      expect(f.commits).toEqual([]);
+      clock.stop();
+    });
+  });
+
+  describe("through Duck's tools", () => {
+    beforeEach(() => vi.useFakeTimers({ toFake: ["Date"] }));
+    afterEach(() => vi.useRealTimers());
+
+    it("adds a repeat, moves it on when done, and snoozes one", async () => {
+      vi.setSystemTime(dueAt("2026-10-23T15:00"));
+      const f = fakeBackend([rec("r1", "Call the bank")]);
+      const r = createReminders({ backend: f.backend, spellMinutes: () => 30 });
+      await r.load();
+      const t = toolCtx(r);
+      await expect(t.run(addReminder, { title: "Stand-up notes", repeat: "weekdays" })).rejects.toThrow(/needs a due time/);
+      const a = (await t.run(addReminder, { title: "Stand-up notes", due: "2026-10-23T15:30", repeat: "weekdays" })) as Record<string, unknown>;
+      expect(a).toMatchObject({ due: "Friday 23 Oct, 15:30", repeats: "every weekday" });
+      vi.setSystemTime(dueAt("2026-10-23T15:45"));
+      expect(await t.run(completeReminder, { reminder: "stand-up" })).toEqual({ done: "Stand-up notes", next: "Monday 26 Oct, 15:30" });
+      expect(f.list()[1]).toMatchObject({ state: "open", due: "2026-10-26T15:30", repeat: "weekdays" });
+      expect(f.commits[1]).toBe('reminders: done "Stand-up notes", next Monday 26 Oct, 15:30');
+
+      expect(await t.run(snoozeReminder, { reminder: "bank", for: "1h" })).toEqual({ snoozed: "Call the bank", until: "Friday 23 Oct, 16:45" });
+      expect(f.list()[0].snoozedUntil).toBe("2026-10-23T16:45");
+      expect(isActive(f.list()[0], Date.now())).toBe(false);
+      expect(t.notices[t.notices.length - 1]).toMatchObject({ text: "Reminder snoozed: Call the bank, until Friday 23 Oct, 16:45" });
+      // A new due replaces the snooze; and the repeat can be stopped.
+      await t.run(editReminder, { reminder: "bank", due: "2026-10-24T10:00" });
+      expect(f.list()[0].snoozedUntil).toBeUndefined();
+      await t.run(editReminder, { reminder: "stand-up", repeat: null });
+      expect(f.list()[1].repeat).toBeUndefined();
+    });
+
+    it("sets a timer, lists it, and cancels it", async () => {
+      vi.setSystemTime(dueAt("2026-10-23T15:00"));
+      const f = fakeBackend();
+      const r = createReminders({ backend: f.backend, spellMinutes: () => 30 });
+      await r.load();
+      const t = toolCtx(r);
+      expect(await t.run(setTimer, { duration: "8 minutes", label: "pasta" })).toMatchObject({ label: "pasta", length: "8 min", ends: "15:08" });
+      await expect(t.run(setTimer, { duration: "two days" })).rejects.toThrow(/isn't a length/);
+      expect(JSON.parse([...f.timers.values()][0])).toMatchObject({ label: "pasta", threadId: "t1" });
+      expect(await t.run(listReminders, {})).toEqual({
+        reminders: "No open reminders.",
+        timers: [expect.objectContaining({ label: "pasta", left: "8 min" })],
+      });
+      expect(await t.run(cancelTimer, {})).toEqual({ cancelled: "pasta" });
+      expect(f.timers.size).toBe(0);
+      expect(await t.run(cancelTimer, {})).toBe("No timer is running.");
+      expect(f.commits).toEqual([]);
+    });
   });
 });

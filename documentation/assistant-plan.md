@@ -7197,6 +7197,49 @@ checked in the scratch PTY first.
   the notification moves it.
 - **Out of scope:** location reminders (need the phone app's geofencing; a follow-up to
   H5).
+- **As built (2026-10-23):**
+  - **The record** (`reminders.rs`) gains `repeat` (daily, weekdays, weekly, monthly)
+    and `snoozedUntil` (a local time). A repeat needs a due; a snooze needs a time.
+  - **Repeats:** one record, whose `due` is the occurrence not yet done. Done moves
+    `due` to the next occurrence after now (commit: `reminders: done "…", next
+    Monday 26 Oct, 15:30`); dismissed ends it. Monthly keeps the due's day, clamped
+    to a short month (31 Jan, 28 Feb, then 28th onwards once done in February).
+    - **A change from the plan:** "the scheduler re-arms it when it's done" became
+      "each later occurrence is announced whether or not it was done". A daily
+      reminder you never tap Done on still comes up each day, and the clock never
+      writes the file, so there's no commit a day.
+  - **Snooze** sets `snoozedUntil`, when it comes up and is announced instead. A new
+    due, or done, clears it. A repeat's later occurrence wins over an old snooze.
+  - **Tools:** `add_reminder` and `edit_reminder` take `repeat` (null stops it).
+    `snooze_reminder(reminder, for? | until?)` defaults to 10 minutes. `set_timer
+    (duration, label?)` takes "10m", "1h30m", "90s" or "8 minutes", up to a day.
+    `cancel_timer(timer?)` is also there, since a timer you can't stop is a nuisance.
+    `list_reminders` also lists the running timers with what's left. The new tools,
+    and the H8 ones, are `host: "any"`. `snooze_reminder` and `cancel_timer` are
+    deferred.
+  - **Timers** are `duck.db` `meta` rows (`duck_timer:<id>`), not committed. The
+    clock rings each once and drops it. One that ran out while the app was closed
+    rings at the next start, marked late. Its line goes to the thread it was set in.
+  - **Delivery, every channel at once:** a notice, the announcer (spoken with Speak
+    on), the widget's pulse, and a Web Push to the phones (`⏰ title`; the body says
+    late, the details and the repeat).
+    - **The buttons:** the service worker can't sign in (the token is in the page's
+      storage, and with a device key a token alone opens nothing). So the push
+      carries a one-use token (`meta` `reminder_action:<token>`, good for a day)
+      that Done and Snooze post to `POST /api/reminders/action`. It can only close
+      or snooze that one reminder.
+    - The desktop then makes the same change Duck's tools make, with a chip and an
+      undo in the thread. Snooze from the notification is 10 minutes. When the post
+      fails, the phone shows "Not marked done" (or "Not snoozed") with why.
+    - A timer's push has no buttons.
+  - **Not built:** phone alarms that fire with the server unreachable (H5), the
+    calendar mirror, and timers in the widget.
+  - **Not tried yet:** the trials in "Done when" (a push on time, a late one at the
+    next start, Snooze from the notification) wait for you. The tests cover:
+    - the next-occurrence rules and durations;
+    - the clock with a repeat left undone, a snooze and timers (one late);
+    - the tools;
+    - the push token: one use, a day, unknown ones refused.
 
 #### Step H5 — The phone as a host (with R4)
 
@@ -7757,7 +7800,7 @@ T2 goes live after the replay check in its done-when (the past week's prompts th
 | H1 | Host-bound tools | ☑ |
 | H2 | PC tools: Steam, media keys, weather | ☑ |
 | H3 | Music and video | ☑ |
-| H4 | Duck's reminders and timers | ☐ |
+| H4 | Duck's reminders and timers | ☑ |
 | H8 | Reminders: project and general, with a widget | ☑ |
 | H5 | The phone as a host (with R4) | ☐ |
 | H6 | Duck on the home server (gate: the server) | ☐ |

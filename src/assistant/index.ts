@@ -81,8 +81,31 @@ import { connectLocal, createHosts } from "./hosts";
 import { pcHandlers } from "./tools/pc";
 import { youtubeMusic } from "./music/youtube";
 import { youtubeSearch } from "../ipc/music";
-import { onRemindersChanged, reminderSeenSet, remindersPut, remindersRead, remindersSeen, remindersWatch } from "../ipc/reminders";
-import { createReminderClock, createReminders, dueText, projectLine, view as reminderView, type RemindersBackend, type RemindersHost } from "./reminders";
+import {
+  onReminderAction,
+  onRemindersChanged,
+  reminderPush,
+  reminderSeenSet,
+  remindersPut,
+  remindersRead,
+  remindersSeen,
+  remindersWatch,
+  timerSet,
+  timersList,
+} from "../ipc/reminders";
+import {
+  createReminderClock,
+  createReminders,
+  dueText,
+  localStamp,
+  projectLine,
+  repeatText,
+  SNOOZE_MINUTES,
+  view as reminderView,
+  type RemindersBackend,
+  type RemindersHost,
+} from "./reminders";
+import { change as changeReminder, closing, snoozing } from "./tools/reminders";
 import { mediaControl, mediaNowPlaying, pcOpen, steamActivity, steamLibrary, steamStoreSearch } from "../ipc/pc";
 import { createBrowserHost } from "./browser";
 import { createHostedSync, type HostedSync } from "./hosted";
@@ -741,6 +764,8 @@ export function initAssistant(): Promise<void> {
       put: (id, before, after, message) => remindersPut(ws(), id, before, after, message),
       seen: remindersSeen,
       setSeen: reminderSeenSet,
+      timers: timersList,
+      setTimer: timerSet,
     };
     const reminders = createReminders({ backend: remindersBackend, spellMinutes: () => settings.get().reminderSpellMinutes });
     const warnReminders = (e: unknown) => console.warn("duck: reminders", e);
@@ -749,6 +774,7 @@ export function initAssistant(): Promise<void> {
       void reminders.load().catch(warnReminders);
     };
     watchReminders();
+    void reminders.loadTimers().catch(warnReminders);
     onRemindersChanged(() => void reminders.load().catch(warnReminders));
     const git: GitLane = {
       status: () => backupStatus(ws()),
@@ -996,13 +1022,27 @@ export function initAssistant(): Promise<void> {
       reminders,
       backend: remindersBackend,
       startedAt,
-      announce: (r, late) =>
+      // Every channel at once (H4): the thread, the announcer (spoken with Speak
+      // on), the widget's pulse, and a push to the phone with Done and Snooze.
+      announce: (r, late, at) =>
         void (async () => {
           const threadId = await activeThread();
-          const text = late && r.due ? `Reminder, late (it was due ${dueText(r.due)}): ${r.title}` : `Reminder: ${r.title}`;
+          const text = late ? `Reminder, late (it was due ${dueText(at)}): ${r.title}` : `Reminder: ${r.title}`;
           await engine.notice(threadId, { kind: "reminder", text });
           announcer.add({ level: "report", text, threadId, key: `reminder:${r.id}` });
           reminders.pulse();
+          const body = [late && `Late: it was due ${dueText(at)}`, r.details, r.repeat && repeatText(r.repeat)].filter(Boolean).join(" · ");
+          await reminderPush(r.id, threadId, `⏰ ${r.title}`, body, true);
+        })().catch(warnReminders),
+      ring: (t, late) =>
+        void (async () => {
+          const threadId = t.threadId && s.thread(t.threadId) ? t.threadId : await activeThread();
+          const what = t.label ? `${t.label} (${t.length})` : t.length;
+          const text = late ? `Timer done while the app was closed: ${what}` : `Timer done: ${what}`;
+          await engine.notice(threadId, { kind: "reminder", text });
+          announcer.add({ level: "report", text, threadId, key: `timer:${t.id}` });
+          reminders.pulse();
+          await reminderPush(t.id, threadId, `⏲ ${t.label ?? "Timer"}`, `${t.length} timer done`, false);
         })().catch(warnReminders),
     })
       .then((clock) => {
@@ -1010,6 +1050,18 @@ export function initAssistant(): Promise<void> {
         clock.arm();
       })
       .catch(warnReminders);
+    // A push's Done or Snooze, tapped on the phone (H4): the same change Duck's
+    // tools make, with its chip in the thread.
+    onReminderAction(({ id, action }) =>
+      void (async () => {
+        const threadId = await activeThread();
+        const until = localStamp(new Date(Date.now() + SNOOZE_MINUTES * 60_000));
+        await changeReminder({ reminders, notice: (n) => engine.notice(threadId, n) }, id, (now) => {
+          if (!now || now.state !== "open") throw new Error("it's no longer open");
+          return action === "done" ? closing(now, "done", new Date()) : snoozing(now, until);
+        });
+      })().catch(warnReminders),
+    );
     // A session you start: its project's reminders, one line (no model turn).
     localPort.onSessionYouStarted((_id, projectId) => {
       const list = reminders.forProject(projectId);

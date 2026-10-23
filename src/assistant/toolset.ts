@@ -97,6 +97,8 @@ export const DEFERRED = new Set([
   // Reminders (H8): adding, listing and "that's done" load up front.
   "dismiss_reminder",
   "edit_reminder",
+  "snooze_reminder",
+  "cancel_timer",
   ...BROWSER_TOOLS.map((t) => t.name),
   ...ROUTINE_TOOLS.map((t) => t.name),
 ]);
