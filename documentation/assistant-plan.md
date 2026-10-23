@@ -8012,7 +8012,58 @@ checked in the scratch PTY first.
     gives the next version with that change.
   - A sketch drawn with a finger on the phone reaches Duck the same way.
 - **Out of scope:** handwriting recognition beyond what the model reads from the image.
+- **As built (2026-10-23):**
+  - **The core** (`src/sketch/`), shared by the desktop and the phone:
+    - `model.ts`: marks (pen, highlighter, arrow, text) over a background (blank,
+      grid, or a picture), an eraser that removes whole marks, undo and redo (200
+      steps), clear, a `dirty` flag for "live", and JSON.
+    - `render.ts`: `perfect-freehand` 1.2.3 strokes on a 2D canvas.
+    - `pad.ts`: pointer events from a pen (with pressure), touch or the mouse, with
+      coalesced points.
+  - **Desktop** (`SketchView.tsx`, `sketchState.ts`):
+    - ✏ beside 📎 opens the pad in the drawer, where the canvas goes, with the
+      thread below. ⇱ pops it out as a dock tab (`sketch`).
+    - The toolbar: the tools, six colours, three sizes, undo, redo, clear, and the
+      background (blank, grid, a screenshot of the main monitor through V3's capture,
+      or a photo).
+    - "open ▾" lists the last 12 sketches sent; their strokes are kept in the
+      webview's storage, so they open again and can be edited. A picture background
+      isn't kept with them, so it opens on white.
+  - **Sending:** the pad is flattened to a PNG and staged like a dropped file
+    (`staging.stageMade`): while you talk it goes with what you say (G2), else it
+    waits in the composer for your words. With "live" on, it goes with each voice
+    turn when it changed since it last went.
+  - **Mark up:** "mark up" on the canvas, or on the phone's viewer, opens the pad on
+    that version's picture. The sketch is sent as "mark-up of drawing <id> v<n>
+    <title> …", and the prompt tells Duck that such a file means a change to that
+    drawing (`draw` with `drawing` and the mark-up in `files`). A plain "sketch …" with
+    "make this a proper diagram" is a new `draw` with the sketch in `files`.
+  - **Phone** (`src/pwa/sketch.ts`):
+    - ✏ beside 📎 opens the pad full screen (landscape where the phone allows it).
+    - Its 📎 and mic are the page's own, forwarded.
+    - "send" stages the PNG like a 📎 pick.
+    - No "live" here yet.
+  - **Duck's answer as the pad's background:** a drawing made from a sketch lands on
+    the canvas as any drawing; "mark up" there puts it under the pad. It doesn't open
+    as the background by itself.
+  - **Shared pad (stretch):** not built.
+  - **Tested:** the model (marks, the eraser, undo and redo, dirty, JSON, the names a
+    sketch is sent under).
+  - **Checked live on the dev app,** acting as the phone over its Duck socket (a
+    throwaway device row, removed after):
+    - **A boxes-and-arrows sketch** (phone → gateway → auth + billing, orders; made
+      the way the pad sends one) with "make this a proper diagram": Duck called
+      `draw` with the sketch in `files` (it was in the worker's `inputs/`). A
+      Mermaid flowchart with the same boxes and labels arrived in 39 s (checked ×4).
+    - **"auth + billing" circled in red** on that drawing, sent as "mark-up of
+      drawing 8dd1a7e8 v1 …" with "split this into two services": `draw` with
+      `drawing: 8dd1a7e8` and the mark-up. Version 2 has separate "auth" and
+      "billing" boxes, each with its own arrow from the gateway (23 s).
+  - **Not tried yet (yours):** drawing on the pad by hand on the desktop (mouse, pen
+    or touch) and on the phone with a finger; "live" while talking; the screenshot
+    and photo backgrounds; the dock tab.
 
+#### Step G6
 #### Step G6 — Concept images through your Gemini subscription
 
 - **Goal:** For moods, concepts and anything photoreal, Duck gets a real image model,
@@ -8302,5 +8353,5 @@ T2 goes live after the replay check in its done-when (the past week's prompts th
 | G2 | Talking about what you drop | ☑ (by hand with the key, the mic and a phone share not tried yet) |
 | G3 | Drawing workers and the canvas | ☑ (the drawer's canvas and the phone's viewer not tried by hand yet) |
 | G4 | The worker sees its drawing | ☑ |
-| G5 | Sketch pad on the PC and the phone | ☐ |
+| G5 | Sketch pad on the PC and the phone | ☐ (built and checked through the engine; drawing on the pad by hand is yours to try) |
 | G6 | Concept images through your Gemini subscription | ☐ |

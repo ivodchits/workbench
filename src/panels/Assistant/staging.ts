@@ -133,6 +133,17 @@ export async function stageBlobs(files: readonly File[]): Promise<void> {
   to(stored, files.length, failed);
 }
 
+/** Stage one made file by its name (a sketch, G5): the voice turn takes it as a
+ *  drop while you talk, else the composer does. Resolves once it's stored. */
+export async function stageMade(name: string, blob: Blob): Promise<void> {
+  const to = claim(1);
+  try {
+    to([asRef(await attachBytes(name, await base64(blob)))], 1, []);
+  } catch (e) {
+    to([], 1, [`${name}: ${e instanceof Error ? e.message : String(e)}`]);
+  }
+}
+
 /** Where `n` files being stored go once they are: the voice turn when it claims
  *  them as they're dropped (its pill counts them meanwhile), else the composer. */
 function claim(n: number): (stored: AttachmentRef[], settled: number, failed: string[]) => void {

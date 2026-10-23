@@ -42,8 +42,13 @@ export function closeDrawing(): void {
 }
 
 /** Show version `n` of `d` (its newest when null), full screen. `close` runs when
- *  the viewer closes. */
-export function showDrawing(d: DrawingView, n: number | null, close: () => void): void {
+ *  the viewer closes; `markUp` (G5) opens the sketch pad on the picture. */
+export function showDrawing(
+  d: DrawingView,
+  n: number | null,
+  close: () => void,
+  markUp?: (url: string, size: { width: number; height: number }, name: string) => void,
+): void {
   const version = d.versions.find((v) => v.n === n) ?? d.versions[d.versions.length - 1];
   if (!version) return;
   overlay?.remove();
@@ -61,6 +66,10 @@ export function showDrawing(d: DrawingView, n: number | null, close: () => void)
     bar.append(b);
   }
   if (d.pending) bar.append(el("span", "pending", d.pending.waiting ? `v${d.pending.n} waits` : `drawing v${d.pending.n}…`));
+  const mark = el("button", "", "mark up");
+  mark.type = "button";
+  mark.disabled = true;
+  if (markUp) bar.append(mark);
   const x = el("button", "close", "×");
   x.type = "button";
   x.setAttribute("aria-label", "close");
@@ -84,6 +93,11 @@ export function showDrawing(d: DrawingView, n: number | null, close: () => void)
         img.onload = () => {
           note.remove();
           fit();
+          mark.disabled = false;
+          mark.onclick = () => {
+            closeDrawing();
+            markUp?.(u, { width: img.naturalWidth, height: img.naturalHeight }, `drawing ${d.id} v${version.n} ${d.title}`);
+          };
         };
         img.src = u;
       },

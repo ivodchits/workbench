@@ -71,6 +71,8 @@ import type { AttachmentRef } from "../../assistant/attachments";
 import { pillText } from "../../assistant/voiceFiles";
 import { MemoryPanel } from "./MemoryView";
 import { DrawerCanvas } from "./Canvas";
+import { SketchView } from "./SketchView";
+import { closeSketch, openSketch, useSketchState } from "./sketchState";
 import { OverviewPanel } from "./OverviewView";
 import { DecisionsPanel, TrustPanel } from "./TrustViews";
 import type { ThreadRow } from "../../ipc/assistant";
@@ -241,6 +243,7 @@ export default function AssistantDrawer() {
   // The whole drawer takes files (G1); while you talk, they go with what you say (G2).
   const drop = useFileDrop();
   const voice = useVoiceState();
+  const sketchOpen = useSketchState().open;
 
   return (
     <div
@@ -316,13 +319,14 @@ export default function AssistantDrawer() {
         </div>
       )}
       {view === "thread" && <Elsewhere duck={duck} onOpen={showThread} />}
-      {view === "thread" && duck.canvas && (
-        // The canvas (G3) takes the duck's place, and more: the thread stays below.
+      {view === "thread" && (sketchOpen || duck.canvas) && (
+        // The sketch pad (G5) or the canvas (G3) takes the duck's place, and more:
+        // the thread stays below.
         <div style={{ flex: "0 0 auto", height: "55%", minHeight: 160, borderBottom: "1px solid var(--wb-border)" }}>
-          <DrawerCanvas />
+          {sketchOpen ? <SketchView /> : <DrawerCanvas />}
         </div>
       )}
-      {view === "thread" && !duck.canvas && duck.prefs.avatar.show && (
+      {view === "thread" && !duck.canvas && !sketchOpen && duck.prefs.avatar.show && (
         <div
           style={{
             position: "relative",
@@ -340,7 +344,7 @@ export default function AssistantDrawer() {
           />
         </div>
       )}
-      {view === "thread" && (duck.canvas || !duck.prefs.avatar.show) && (
+      {view === "thread" && (duck.canvas || sketchOpen || !duck.prefs.avatar.show) && (
         // The widget over the chat's corner when the duck is hidden (H8).
         <div style={{ position: "relative", height: 0 }}>
           <RemindersBadge reminders={duck.reminders} problem={duck.remindersProblem} pulse={duck.remindersPulse} />
@@ -1037,6 +1041,23 @@ function ItemView({ item, active }: { item: Item; active: boolean }) {
         </div>
       );
   }
+}
+
+/** Opens and closes the sketch pad (G5). */
+function SketchButton() {
+  const open = useSketchState().open;
+  return (
+    <button
+      type="button"
+      aria-pressed={open}
+      title={open ? "close the sketch pad" : "sketch: draw something for Duck"}
+      aria-label="sketch pad"
+      onClick={() => (open ? closeSketch() : openSketch())}
+      style={{ ...btn, ...(open && { color: "var(--wb-accent)", borderColor: "var(--wb-accent)" }) }}
+    >
+      ✏
+    </button>
+  );
 }
 
 /** A drawing's version in the thread (G3): its thumbnail; a click opens the canvas. */
@@ -1768,6 +1789,7 @@ function Composer({
         >
           📎
         </button>
+        <SketchButton />
         <button
           type="button"
           aria-pressed={hard}

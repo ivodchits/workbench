@@ -11,7 +11,7 @@ import type { IDockviewPanelProps } from "dockview";
 import { save } from "@tauri-apps/plugin-dialog";
 
 import type { DrawingView } from "../../assistant/protocol";
-import { svgUrl } from "../../drawing/kinds";
+import { svgSize, svgUrl } from "../../drawing/kinds";
 import { toPng } from "../../drawing/render";
 import { attachSave } from "../../ipc/assistant";
 import { getActiveProject, setActiveProject } from "../../state/activeProject";
@@ -20,6 +20,7 @@ import { openProjectFile } from "../../state/editors";
 import { getRegistry } from "../../state/registry";
 import { flash } from "../../util/flash";
 import { closeCanvas, connectDuck, loadSvg, openCanvas, requestDrawing, useDuckState } from "./duckState";
+import { openSketch } from "./sketchState";
 
 const same = (a: string, b: string) =>
   a.replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase() === b.replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
@@ -115,6 +116,20 @@ export function CanvasView({ drawing, n, onClose, onPick, docked }: {
       flash(String(e));
     }
   };
+  // Mark it up (G5): the pad opens with this version under it, and what you send
+  // is named after the drawing, so Duck changes that one.
+  const markUp = async () => {
+    const png = ready ? await toPng(ready) : null;
+    const size = ready ? svgSize(ready) : null;
+    if (!png || !size || !version) return flash("it can't be marked up");
+    const k = Math.min(1, 1800 / Math.max(size.width, size.height));
+    openSketch({
+      background: { kind: "image", name: `drawing ${drawing.id} v${version.n} ${drawing.title}` },
+      image: URL.createObjectURL(png),
+      size: { width: size.width * k * 2, height: size.height * k * 2 },
+    });
+    onClose?.();
+  };
   const popOut = () => {
     openPanelBeside(null, {
       id: `drawing:${drawing.id}`,
@@ -157,6 +172,9 @@ export function CanvasView({ drawing, n, onClose, onPick, docked }: {
         </button>
         <button type="button" style={chip} disabled={!version} onClick={() => version && openSource(version.path)} title={version?.path}>
           source
+        </button>
+        <button type="button" style={chip} disabled={!ready} onClick={() => void markUp()} title="mark it up on the sketch pad">
+          mark up
         </button>
         {!docked && (
           <button type="button" style={chip} onClick={popOut} title="open in a tab">

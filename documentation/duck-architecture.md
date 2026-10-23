@@ -5,9 +5,9 @@ behind each decision are in `assistant-plan.md`. This file describes the code, a
 Duck step updates it as part of its Done when. Duck's self-development sessions (L3)
 read it first.
 
-Last updated: step G4 (2026-10-23). L3 audited it against the code. Since W5 it also
+Last updated: step G5 (2026-10-23). L3 audited it against the code. Since W5 it also
 covers W6, D2, D4, P1, P2, M2, M3, A5, A6, A7, W4, L1, L2, L3, L4, R1, R2, R3, B1, B2, T3, D3, V1 to V7,
-V8, S1, S2, X1, H1 to H5, H7, H8, R4, G1 to G4 and the morning routine. A fresh session changing Duck: read "The shape", then "Where to
+V8, S1, S2, X1, H1 to H5, H7, H8, R4, G1 to G5 and the morning routine. A fresh session changing Duck: read "The shape", then "Where to
 change X" at the end, then the module rows it points to.
 
 ## The shape
@@ -191,6 +191,7 @@ prompt's safety rules cover them.
 | `openCore.ts` | `openCoreMemory(workspace)` (W4): prepares the workspace, makes `core.md` with its empty sections if missing, and opens it in the "Duck" project's editor. `openDuckFile(workspace, path)` (S2) opens any file of the workspace there. |
 | `MemoryView.tsx` | The Memory view (L1): the long-term memory by topic, a search over it and the notes, per entry "edit" (the file in the "Duck" project's editor) and "forget", and "don't remember this conversation" for the open thread (a `thread.memory` request, which posts a `memoryOff` notice). L2: the last tidy with what it changed, "tidy now" (`tidyMemory` from `index.ts`), and the past 14 days' recall numbers (`assistant_recall_stats`). |
 | `Canvas.tsx` | G3: the canvas. `CanvasView` (pan, wheel zoom, fit, the version strip, copy as PNG, save as…, open source, ⇱ pop out), `DrawerCanvas` (above the thread when `duck.canvas` is set) and `DrawingPanel` (the dockview `drawing` tab). The SVG comes from the engine (`drawing.svg`) and is shown as an `<img>`. |
+| `SketchView.tsx`, `sketchState.ts` | G5: the sketch pad in the drawer (✏ beside 📎) or a dock tab (`sketch`): the toolbar over `src/sketch/`'s `Pad`, backgrounds (blank, grid, a screenshot, a photo, a drawing to mark up), "send to Duck" (`staging.stageMade`, so it goes with a voice turn while you talk), "live", and the last sketches' strokes kept to open again. |
 | `TasksView.tsx` | The Tasks view (D2): worker tasks newest first, with headline, cost for an API worker, and ways on (open `result.md`, save to notes, open the console, go to the thread). |
 | `OverviewView.tsx` | Every thread at a glance (A5): what each does, its news since you looked, its autopilots and tasks; no model call. |
 | `AnnounceSettings.tsx` / `SpeechSettings.tsx` / `VoiceSettings.tsx` | Settings tabs for announcements (V5), spoken replies (V2: engine, voices, rate, Chirp fallback, downloads) and voice input (V1, V4: the key, microphone, speech-to-text, conversation mode, talking over Duck; V6: the wake word's switch, sensitivity slider, when it stays deaf, and what it's doing, `wakeLine`). |
@@ -973,6 +974,15 @@ When the app can't reach Workbench, the loader runs Duck's own engine on the pho
   `GET /api/assistant/image/{id}/{name}`). A surface showing a drawing sends `canvas`,
   which keeps the thread's drawing worker warm (`keepWarm`).
 
+## The sketch pad (step G5)
+
+- **Core:** `src/sketch/` (`model.ts` the marks and history, `render.ts` the strokes
+  through `perfect-freehand`, `pad.ts` the pointer events), used by the drawer's
+  `SketchView.tsx` and the phone's `src/pwa/sketch.ts`.
+- **Sending:** a PNG staged like a dropped file, so G2 decides whether it goes with
+  a voice turn or the next message. A mark-up's name carries its drawing's id
+  (`sketchName`), which the prompt's "Pictures" line tells Duck to use with `draw`.
+
 ## Where to change X
 
 - **What Duck says, its routing rules and examples, the tool tiers' wording**: the files
@@ -1036,6 +1046,9 @@ When the app can't reach Workbench, the loader runs Duck's own engine on the pho
   `launchDuck` in `src/pwa/duck.ts`, and `takeShare` in `src/pwa/sw.js`. How a phone
   proves its key: `remote/auth.rs` (the rules), `remote/mod.rs` (`start_session`,
   `check_token`), and `src/pwa/deviceKey.ts` and `net.ts`.
+- **The sketch pad (G5)**: tools and history, `src/sketch/model.ts`; strokes,
+  `src/sketch/render.ts`; the desktop's toolbar and sending, `SketchView.tsx` and
+  `sketchState.ts`; the phone's, `src/pwa/sketch.ts`.
 - **Drawings (G3, G4)**: the rules and the rubric a worker gets, `drawings.ts`
   `KIND_RULES`; a worker's `render`, `drawings.ts` `renderFor` and `mcp_server.rs`; when Duck
   draws, `tools/draw.ts` and the prompt's "Pictures" line; rendering,
@@ -1107,6 +1120,10 @@ Both rules are in `prompt.ts`.
   and a text, the widget on a home screen. Not built: switching to the tailnet's own
   address (MagicDNS covers it), the screenshot with the gesture (G1), Glyph lights,
   the widget polling by itself.
+
+- The sketch pad (G5): drawing on it by hand (desktop and phone), "live", and the
+  screenshot and photo backgrounds haven't been tried; the sketch and mark-up flows
+  were checked through the engine.
 
 - Drawings (G3): the drawer's canvas and the phone's viewer haven't been used by hand
   (the live check drove the engine as the phone), and a drawing over the limits hasn't

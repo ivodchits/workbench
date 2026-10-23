@@ -453,3 +453,15 @@ body .wb-tx-open-plan { display: none; }
 .duck-drawing .stage { position: relative; flex: 1; overflow: hidden; touch-action: none; }
 .duck-drawing .stage img { position: absolute; left: 0; top: 0; transform-origin: 0 0; background: #fff; max-width: none; user-select: none; }
 .duck-drawing .stage .note { padding: 16px; color: var(--dim); }
+
+/* The sketch pad (step G5): full screen, its toolbar over the pad. */
+.duck-sketch { position: fixed; inset: 0; z-index: 1001; display: flex; flex-direction: column; background: var(--bg); }
+.duck-sketch .bar { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; padding: 6px 8px; padding-top: max(6px, env(safe-area-inset-top)); border-bottom: 1px solid var(--line); }
+.duck-sketch .bar button { min-width: 34px; min-height: 34px; background: none; border: 1px solid var(--line); color: inherit; font: inherit; border-radius: 6px; }
+.duck-sketch .bar button.on { border-color: var(--accent); color: var(--accent); }
+.duck-sketch .bar button.swatch { min-width: 26px; min-height: 26px; padding: 0; }
+.duck-sketch .bar button.swatch.on { outline: 2px solid var(--accent); outline-offset: 1px; }
+.duck-sketch .bar button.send { border-color: var(--accent); color: var(--accent); }
+.duck-sketch .bar button.close { border: none; font-size: 22px; }
+.duck-sketch .bar .gap { flex: 1; }
+.duck-sketch canvas { flex: 1; min-height: 0; width: 100%; touch-action: none; }

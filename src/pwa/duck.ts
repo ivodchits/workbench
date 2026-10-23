@@ -83,6 +83,7 @@ import { api, ApiError, checkAccess, openSocket } from "./net";
 import { SHARE_ASKS, shareBody, shareLines, shareMessage, STATUS_ASK, takeShare, TASK_LEAD, type Launch } from "./launch";
 import { createUploader } from "./uploads";
 import { showDrawing, shownDrawing } from "./drawingView";
+import { openSketch } from "./sketch";
 import { sizeText, type AttachmentRef } from "../assistant/attachments";
 import { AFTER_MS, BEFORE_MS, createVoiceFiles, pillText, type Sent } from "../assistant/voiceFiles";
 
@@ -485,7 +486,15 @@ function openDrawing(id: string, n: number | null): void {
     return;
   }
   post({ type: "canvas", drawingId: id });
-  showDrawing(d, n, () => post({ type: "canvas", drawingId: null }));
+  showDrawing(d, n, () => post({ type: "canvas", drawingId: null }), markUp);
+}
+
+/** The sketch pad's hooks into this page (G5): staging, 📎 and the mic. */
+const sketchHooks = () => ({ stage: stageFiles, attach: $("duck-attach"), mic: $("duck-mic") });
+
+/** Mark up a drawing (G5): the pad opens on its picture, named after it. */
+function markUp(url: string, size: { width: number; height: number }, name: string): void {
+  openSketch(sketchHooks(), { background: { kind: "image", name }, image: url, size });
 }
 
 function onDrawing(d: DrawingView, open: boolean): void {
@@ -496,7 +505,7 @@ function onDrawing(d: DrawingView, open: boolean): void {
     const n = wantDrawing.n;
     wantDrawing = null;
     openDrawing(d.id, n);
-  } else if (shown?.id === d.id) showDrawing(d, shown.n, () => post({ type: "canvas", drawingId: null }));
+  } else if (shown?.id === d.id) showDrawing(d, shown.n, () => post({ type: "canvas", drawingId: null }), markUp);
 }
 
 /** A drawing's card in the thread: its thumbnail; a tap shows it. */
@@ -1808,6 +1817,8 @@ export function initDuck(d: typeof deps): void {
   // G1: 📎, and pasted files.
   const picker = $<HTMLInputElement>("duck-file");
   $("duck-attach").onclick = () => picker.click();
+  // G5: the sketch pad.
+  $("duck-sketch").onclick = () => openSketch(sketchHooks());
   picker.onchange = () => {
     stageFiles(Array.from(picker.files ?? []).map((f) => ({ blob: f, name: f.name || "photo.jpg" })));
     picker.value = "";
