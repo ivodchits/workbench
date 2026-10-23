@@ -6903,18 +6903,126 @@ checked in the scratch PTY first.
   details.
 - **Out of scope:** your YouTube Music library and playlists (no official API).
 
+#### Step H8 — Reminders: project and general, with a widget
+
+- **Goal:** "Remind me to rotate the signing key next time I work on Workbench", "remind
+  me to call the bank", "remind me on Friday at 10 to send the invoice". A project's
+  reminders come up each time you start a new task in that project, and general ones each
+  time you start talking to Duck, until you say they're done or dismiss them. Reminders
+  with a time are announced when they're due. None of it fills the chat: a small widget
+  shows that reminders exist, and Duck can recite them when asked. Asked for on
+  2026-10-23.
+- **Depends on:** W2 (tools, chips), L1 (Duck's repo and its commits through `gitqueue`),
+  V5 (announcements), A5 (which thread a notice goes to).
+- **Decided: where reminders live.** In **Duck's repo**, as `reminders.json` at its root
+  (`Duck.dev` in a debug build), not in `duck.db`.
+  - A reminder is something you asked Duck to remember about your intentions, which is
+    the same kind of thing as its memory (L1). It belongs where the memory is: in plain
+    files you can read, versioned (one commit per change, so a reminder dismissed by
+    mistake comes back from history), backed up by L4's private remote, and carried along
+    when Duck moves to the home server (H6) with the repo.
+  - `duck.db` is the app's working store. It can be rebuilt or reset, and it isn't backed
+    up or synced. A reminder is the one thing you'd least want to lose there.
+  - Not in `memory/`: recall (L1's index) and consolidation (L2) would treat reminders
+    as facts, merge them and age them. Reminders have a lifecycle (open, done,
+    dismissed) that facts don't have.
+  - **Only the reminder's facts are committed.** Delivery bookkeeping (when each was last
+    mentioned or announced, so it isn't repeated) is in `duck.db` `meta`
+    (`reminder_seen:<id>`). It changes often, means nothing in a backup, and would
+    otherwise make a commit every time Duck mentions something.
+  - JSON rather than Markdown: Duck writes it only through its tools, which keep it valid
+    and make the commit. A file edited by hand is re-read and checked on change, like
+    `plugins.json`; a broken one is reported and left as it is, never overwritten.
+- **Build:**
+  - **The record:** `{id, title, details?, project? (id and name), due? (local date-time,
+    or a date for "on Friday"), state: open | done | dismissed, created, closed?,
+    createdIn? (thread id)}`. The `title` is the short header the widget shows, at most
+    about 60 characters; Duck writes it from your words, and the full wording goes in
+    `details`. Done and dismissed reminders stay in the file, so you can see what was
+    finished; L4's housekeeping can archive old ones.
+  - **The store** (`src-tauri/src/assistant/reminders.rs`): read, add, update state,
+    with a revision so a stale write is refused (as `plugins_write`). Each change
+    commits only `reminders.json`, as `Duck <duck@workbench.local>`, with messages like
+    `reminders: added "rotate the signing key" (Workbench)` and `reminders: done "call
+    the bank"`. A `notify` watcher reloads a hand edit.
+  - **Tools** (`src/assistant/tools/reminders.ts`):
+    - `list_reminders(project?, state?)` (read): open ones by default, grouped as due,
+      project and general, so "what are my reminders?" and "anything for Backend?" are
+      answered from it.
+    - `add_reminder(title, details?, project?, due?)` (reversible, with a chip and an
+      undo): `due` is parsed by the model into an absolute local time and read back in
+      the reply ("Friday 24 Oct, 10:00").
+    - `complete_reminder(reminder)` and `dismiss_reminder(reminder)` (reversible, chip
+      and undo). A reminder is named by id or by its title.
+    - `edit_reminder(reminder, title?, details?, project?, due?)` for "move it to Monday".
+  - **Project reminders on a new task:** when a session starts in a project (yours from
+    the rail, or Duck's through `create_session` / `run_task`), its open reminders come up:
+    - Duck's own start: the tool's result carries the project's open reminder titles, and
+      Duck mentions them in its reply in a sentence.
+    - Your start from the rail: one notice line in Duck's active thread ("Workbench · 2
+      reminders: rotate the signing key; update the changelog"), and the widget blinks.
+      There's no model turn for it, so no API cost, and the line goes in once per new
+      session, not on every resume or restart.
+    - It keeps coming up on every new task until the reminder is done or dismissed.
+  - **General reminders when you start talking:** your first message in a new thread, or
+    after a quiet spell (no message from you for 30 minutes, a setting), gets the open
+    general reminders' titles as a mid-conversation system message (so the cached prefix
+    is untouched). Duck mentions them briefly before or after its answer, in one line. The
+    system prompt gets one line on how: titles only, at most once per conversation spell,
+    and never instead of answering.
+  - **Timed reminders:** a scheduler in the engine's host keeps a timer for the next
+    due reminder. When one is due, it goes through V5's announcement queue (`level:
+    report`): a notice in the active thread, spoken when Speak is on and you're present,
+    and the widget's dot pulses. A reminder that came due while the app was closed is
+    announced at the next start, marked late. It stays open until done or dismissed,
+    and is then treated like a general (or project) one. It's announced once, not
+    repeated (repeats and snooze are H4's).
+  - **The widget** (`src/panels/Assistant/RemindersBadge.tsx`):
+    - A red dot with the count of open reminders, in the upper-left corner of the ASCII
+      duck section of the drawer. With the duck hidden, it moves to the upper-left corner
+      of the chat. It shows nothing when there are none.
+    - Clicking it expands a small list of every open reminder's **title only**: due ones
+      first (with the time), then the shown project's, then general. A second click or
+      Escape closes it. The full text stays with Duck (`list_reminders`). Done and dismiss
+      happen through Duck in this step.
+    - It updates live from the store (a `reminders` event in the protocol), so a reminder
+      added from the phone or by hand shows at once.
+- **Key files:** `src-tauri/src/assistant/reminders.rs`, `src/assistant/reminders.ts` (the
+  scheduler and the resurfacing rules), `src/assistant/tools/reminders.ts`,
+  `src/panels/Assistant/RemindersBadge.tsx`, `src/assistant/protocol.ts`.
+- **Done when:**
+  - "Remind me to rotate the signing key when I'm working on Workbench" adds a project
+    reminder: `reminders.json` has it and the Duck repo has its commit. Starting a new
+    session in Workbench, from the rail and through Duck, brings it up each time, until
+    "that's done" closes it.
+  - A general reminder is mentioned in one line on your first message of a new thread, and
+    again after a quiet spell, not on every message.
+  - A reminder due in two minutes is announced in the thread and spoken with Speak on.
+    One that came due while the app was closed is announced at the next start, marked
+    late.
+  - The widget shows the red dot and the right count in the duck's corner, and in the
+    chat's corner with the duck hidden. Expanding it lists the titles only, and it updates
+    when a reminder is added or closed.
+  - "What are my reminders?" gets the open ones from `list_reminders`.
+  - A dismissed reminder can be undone from its chip, and a hand-broken
+    `reminders.json` is reported, not overwritten.
+- **Out of scope:** timers, repeating reminders, snooze, and phone push with actions
+  (H4, on this store); location reminders (H5); a calendar mirror.
+
 #### Step H4 — Duck's reminders and timers
 
 - **Goal:** "Remind me to call the bank tomorrow at 10", "remind me when I get home" (later),
   "10-minute timer", with nothing lost when a device sleeps.
-- **Depends on:** W2. Web Push from the remote (exists). H5 adds phone delivery.
-- **Build:**
-  - `assistant_reminders (id, text, due, repeat, created_by_thread, state, delivered)` in
-    `duck.db`; the scheduler in the engine's host (the desktop now, the server after
-    H6), which catches up on missed ones at start and says they're late.
-  - Tools (`any`): `remind {text, when, repeat?}` (reversible; `when` parsed by the model
-    to an absolute time, read back in the reply), `list_reminders`, `cancel_reminder`,
-    `snooze_reminder`. A timer is a reminder with a duration.
+- **Depends on:** W2, H8 (the store, the tools, the scheduler and the widget). Web Push
+  from the remote (exists). H5 adds phone delivery.
+- **Build** (on H8's store, `reminders.json` in Duck's repo, not a `duck.db` table, as
+  first planned here; H8 already announces timed reminders on the desktop and catches up
+  on missed ones):
+  - The record gains `repeat` (daily, weekdays, weekly, monthly) and `snoozedUntil`; the
+    scheduler re-arms a repeating reminder when it's done.
+  - Tools (`any`): `snooze_reminder`, and `set_timer {duration, label?}` (a timer is a
+    short timed reminder, not committed to the repo: kept in `duck.db`, since it
+    matters only for minutes). `add_reminder` takes `repeat`.
   - Delivery, every channel at once: a thread notice, a Web Push to the phone (with Done
     and Snooze actions), and a spoken line when Speak is on (V5). With the phone app
     (H5) the reminder is also handed to the phone as an exact alarm, so it fires with
@@ -7299,8 +7407,10 @@ X0 ─┬─▶ A1 ─▶ A2 ─┬─▶ A3 ─┬─▶ W2 ─┬─▶ T1 ─
    T3, D3; B2 only if quick browser actions turn out to need it; **R4** once
    R3 shows you really use Duck from the phone.
 
-Track H (added 2026-10-20) runs alongside: H2 and H4 are small and need only W2, so they
-can slot in anywhere for an early taste; H1 with R1; H3 after H2; H5 with R4, whose gate
+Track H (added 2026-10-20) runs alongside. **H8** (reminders, added 2026-10-23) comes
+first of the track, right after the step in progress: it needs only steps that are built (W2, L1, V5, A5),
+and it's something you'd use every day. H4 follows it on the same store. H2 is small and
+needs only W2, so it can slot in anywhere for an early taste; H1 with R1; H3 after H2; H5 with R4, whose gate
 it widens (the phone as the default assistant counts as real use); H6 when the home
 server exists; H7 after H5. V6 is an experiment for any time after V1, best after V2 and
 V4.
@@ -7486,6 +7596,7 @@ T2 goes live after the replay check in its done-when (the past week's prompts th
 | H2 | PC tools: Steam, media keys, weather | ☐ |
 | H3 | Music and video | ☐ |
 | H4 | Duck's reminders and timers | ☐ |
+| H8 | Reminders: project and general, with a widget | ☐ |
 | H5 | The phone as a host (with R4) | ☐ |
 | H6 | Duck on the home server (gate: the server) | ☐ |
 | H7 | The phone's fallback brain | ☐ |
