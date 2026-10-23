@@ -6277,7 +6277,7 @@ up ("change this", with a circle around it).
       agent the answers, in the review's own prompt or added to your phrasing.
     - `finished` says whether the turn completed a step. Only finished steps count
       toward the step limit.
-    - Four turns without a finished step pause the run as going in circles.
+    - Twelve turns without a finished step pause the run as going in circles.
   - **A question the session asks mid-turn** (one question, one pick) is answered by a
     second Sonnet call (`autopilot-question`, `QUESTION_SYSTEM`) with `answerChoice`,
     unless it's serious, which pauses the run with the question.
