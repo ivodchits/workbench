@@ -4505,6 +4505,11 @@ up ("change this", with a circle around it).
       runs): **no spots at all**, so nothing to confirm.
     - **CPU:** the ear (VAD and spotter) costs 1.3–1.7% of a core on audio that's speech
       all the way through, its worst case. In a quiet room only the VAD runs.
+    - **The default sensitivity stays 0.5** (the sweep, 2026-10-23). At 0.8, confirmations
+      barely move (English 81 → 82 of 84, Russian 9 → 9 of 15), while spots on clips
+      without the phrase rise (English 42 → 44, Russian 1 → 4). The transcript catches
+      those, but each one costs a transcription. If Russian falls short in the room, the
+      next step is openWakeWord, not a lower threshold.
   - **Not done yet** (the done-when needs you):
     - The room test: TV, YouTube and call audio played into the room for hours, and
       everyday use, read from the trigger log.
@@ -7573,7 +7578,7 @@ T2 goes live after the replay check in its done-when (the past week's prompts th
 | V3 | Read-aloud and screen reading | ☑ (the desktop's speakers not tried live) |
 | V4 | Hands-free conversation mode | ☑ (live: talking over Duck on speakers, and the phone, not tried yet) |
 | V5 | Proactive announcements | ☑ (the reply window built with V4) |
-| V6 | Wake word on the PC (experimental) | ☐ (built 2026-10-22, off by default; done when measured in your room) |
+| V6 | Wake word on the PC (experimental) | ☐ (built 2026-10-22, off by default, sensitivity 0.5 from the sweep; done when measured in your room) |
 | V7 | Duck stops hearing itself on the phone (high priority) | ☐ (built 2026-10-22; done when measured on your phone) |
 | V8 | Announcements don't turn the mic on (small fix) | ☑ |
 | L1 | Long-term memory: files, index, recall | ☑ (not tried in the app yet) |
