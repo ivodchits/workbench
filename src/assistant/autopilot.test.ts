@@ -326,8 +326,7 @@ describe("autopilot", () => {
           decisions: [{ question: "Name the table?", decision: "cache_entries", why: "Matches the other tables." }],
         }),
         verdict({ finished: false, compact: false, nextPrompt: "the tracker isn't ticked: tick it, then proceed" }),
-        verdict({ finished: false, compact: false }),
-        verdict({ finished: false, compact: false }),
+        ...Array.from({ length: 10 }, () => verdict({ finished: false, compact: false })),
       ],
       data: { contextUsed: { w: 30 } },
     });
@@ -340,13 +339,13 @@ describe("autopilot", () => {
     t.turnEnds();
     await flush();
     expect(t.calls("sendPrompt")[1]).toEqual(["w", "the tracker isn't ticked: tick it, then proceed"]);
-    t.turnEnds();
-    await flush();
-    t.turnEnds();
-    await flush();
-    // Four turns without a finished step: it's going in circles.
-    expect(t.ap.get("w")).toMatchObject({ state: "paused", why: "4 turns went by without finishing a step" });
-    expect(t.calls("sendPrompt")).toHaveLength(3);
+    for (let i = 0; i < 10; i++) {
+      t.turnEnds();
+      await flush();
+    }
+    // Twelve turns without a finished step: it's going in circles.
+    expect(t.ap.get("w")).toMatchObject({ state: "paused", why: "12 turns went by without finishing a step" });
+    expect(t.calls("sendPrompt")).toHaveLength(11);
   });
 
   it("gives one summary of every run when the user comes back, what needs them first", async () => {

@@ -154,7 +154,7 @@ const LOG_MAX = 100;
 /** Decisions kept (the oldest reported ones go first). */
 const DECISIONS_MAX = 200;
 /** Turns without a finished step before the run pauses: it's going in circles. */
-const TURNS_PER_STEP_MAX = 4;
+const TURNS_PER_STEP_MAX = 12;
 
 export const LogEntry = z.object({
   at: z.number(),
