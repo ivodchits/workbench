@@ -98,6 +98,7 @@ import {
   createReminders,
   dueText,
   localStamp,
+  phoneAlarms,
   projectLine,
   repeatText,
   SNOOZE_MINUTES,
@@ -1052,7 +1053,8 @@ export function initAssistant(): Promise<void> {
       .catch(warnReminders);
     // A push's Done or Snooze, tapped on the phone (H4): the same change Duck's
     // tools make, with its chip in the thread.
-    onReminderAction(({ id, action }) =>
+    // Done or Snooze from a notification: the push's (H4), or the phone app's own (H5).
+    const actOnReminder = (id: string, action: "done" | "snooze") =>
       void (async () => {
         const threadId = await activeThread();
         const until = localStamp(new Date(Date.now() + SNOOZE_MINUTES * 60_000));
@@ -1060,8 +1062,8 @@ export function initAssistant(): Promise<void> {
           if (!now || now.state !== "open") throw new Error("it's no longer open");
           return action === "done" ? closing(now, "done", new Date()) : snoozing(now, until);
         });
-      })().catch(warnReminders),
-    );
+      })().catch(warnReminders);
+    onReminderAction(({ id, action }) => actOnReminder(id, action));
     // A session you start: its project's reminders, one line (no model turn).
     localPort.onSessionYouStarted((_id, projectId) => {
       const list = reminders.forProject(projectId);
@@ -1137,6 +1139,11 @@ export function initAssistant(): Promise<void> {
       },
       warm: (ru) => void ttsWarm(ru).catch(() => {}),
       hosts,
+      phoneReminders: {
+        alarms: () => phoneAlarms(reminders.list(), Date.now()),
+        subscribe: (cb) => reminders.subscribe((pulse) => pulse || cb()),
+        act: actOnReminder,
+      },
     });
   })().catch((e: unknown) => {
     started = null;

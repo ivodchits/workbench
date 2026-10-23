@@ -1,0 +1,3 @@
+# Built by `npm run build:duck-android` from web/.
+www/
+src-tauri/target/

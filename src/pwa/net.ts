@@ -9,14 +9,30 @@
 // place of the token: `checkAccess` signs a challenge for one, and it is kept in
 // this page's memory only. A refused session (the desktop restarted) is renewed the
 // same way.
+//
+// In Duck's Android app (R4) the token is the app's, sealed by the Keystore
+// (`native.ts`), not the page's storage: `loadToken` reads it before anything
+// asks whether the phone is paired.
 
 import type { RemoteAction, RemoteSnapshot } from "../remote/protocol";
-import { deviceKey, dropDeviceKey, makeDeviceKey, signChallenge } from "./deviceKey";
+import { deviceKey, dropDeviceKey, makeDeviceKey, type DeviceKey } from "./deviceKey";
+import * as app from "./native";
 
 const TOKEN_KEY = "wb-remote-token";
 const RECONNECT_MS = 2000;
 
-let token = localStorage.getItem(TOKEN_KEY);
+let token = app.inApp() ? null : localStorage.getItem(TOKEN_KEY);
+
+/** In the app: read the sealed token (before `isPaired`). */
+export async function loadToken(): Promise<void> {
+  if (app.inApp()) token = await app.savedToken().catch(() => null);
+}
+
+function keepToken(t: string | null): void {
+  if (app.inApp()) void app.saveToken(t).catch(() => {});
+  else if (t === null) localStorage.removeItem(TOKEN_KEY);
+  else localStorage.setItem(TOKEN_KEY, t);
+}
 /** What a device key's proof bought; in memory only. */
 let session: string | null = null;
 let ws: WebSocket | null = null;
@@ -32,7 +48,7 @@ export function isPaired(): boolean {
 
 /** Drop this device's token and key (the desktop's device list is not told). */
 export function forget(): void {
-  localStorage.removeItem(TOKEN_KEY);
+  keepToken(null);
   token = null;
   session = null;
   void dropDeviceKey();
@@ -56,7 +72,7 @@ export async function pair(code: string, name: string): Promise<{ ok: true } | {
   if (!body.bound) await dropDeviceKey();
   token = body.token;
   session = null;
-  localStorage.setItem(TOKEN_KEY, body.token);
+  keepToken(body.token);
   return { ok: true };
 }
 
@@ -83,7 +99,7 @@ export async function checkAccess(): Promise<Access> {
 }
 
 /** Prove the device key for a session. A used-up challenge is asked for again once. */
-async function startSession(key: CryptoKey): Promise<Access> {
+async function startSession(key: DeviceKey): Promise<Access> {
   session = null;
   try {
     for (let tries = 0; tries < 2; tries++) {
@@ -93,7 +109,7 @@ async function startSession(key: CryptoKey): Promise<Access> {
       const res = await fetch("/api/auth/session", {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: "Bearer " + (token ?? "") },
-        body: JSON.stringify({ challenge, signature: await signChallenge(key, challenge) }),
+        body: JSON.stringify({ challenge, signature: await key.sign(challenge) }),
         cache: "no-store",
       });
       if (res.ok) {

@@ -1,0 +1,1 @@
+{"default":{"identifier":"default","description":"The loader page and the desktop's page (its Funnel address) reach the duck plugin.","remote":{"urls":["https://*.ts.net/*","https://*.ts.net"]},"local":true,"windows":["main"],"permissions":["core:default","duck:default"]}}

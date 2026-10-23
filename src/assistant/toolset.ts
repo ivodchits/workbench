@@ -12,6 +12,7 @@ import { BROWSER_TOOLS } from "./tools/mcpHost";
 import { MEMORY_TOOLS } from "./tools/memory";
 import { MORNING_TOOLS } from "./tools/morning";
 import { PC_TOOLS } from "./tools/pc";
+import { PHONE_TOOLS } from "./tools/phone";
 import { PLUGIN_TOOLS } from "./tools/plugins";
 import { PREP_TOOLS } from "./tools/prep";
 import { QUIET_TOOLS } from "./tools/quiet";
@@ -56,6 +57,7 @@ export const TOOLS = [
   ...ROUTINE_TOOLS,
   ...SKILL_TOOLS,
   ...PC_TOOLS,
+  ...PHONE_TOOLS,
   weather,
   ...MEDIA_TOOLS,
   ...REMINDER_TOOLS,

@@ -7,7 +7,8 @@
 // nothing here may import a value.
 
 import type { DuckEvent, Effort, Stamped } from "../assistant/protocol";
-import type { HostDown } from "../assistant/hosts";
+import type { HostDown, HostUp } from "../assistant/hosts";
+import type { PhoneAlarm } from "../assistant/reminders";
 import type { InstanceStatus } from "../ipc/registry";
 import type { RateLimits } from "../ipc/usageLimits";
 import type { ChoiceKind, ChoiceOption, ChoiceQuestion } from "../state/pendingChoice";
@@ -225,6 +226,10 @@ export type RemoteDuckMessage =
   /** Duck's Do Not Disturb (step V5): until a moment (epoch ms), or off (null). */
   | { type: "dnd"; until: number | null };
 
+/** What a phone host sends besides Duck messages (steps H1, H5): its `hello` and
+ *  results, and Done or Snooze tapped on a reminder its app rang. */
+export type RemoteHostMessage = HostUp | { type: "reminder.action"; id: string; action: "done" | "snooze" };
+
 /** A frame Duck sends the phone: any Duck event, plus the phone's own. */
 export type RemoteDuckFrame =
   | Stamped<DuckEvent>
@@ -243,6 +248,9 @@ export type RemoteDuckFrame =
   /** To a socket that's a host (step H1, `src/assistant/hosts.ts`): run a tool,
    *  or stop running one. */
   | (HostDown & { v: number })
+  /** To a phone host (step H5): the open reminders' coming times, which its app
+   *  arms as exact alarms; sent on hello and on every change. */
+  | { type: "phone.reminders"; alarms: PhoneAlarm[]; v: number }
   | RemoteConvFrame;
 
 // Conversation mode on the phone (step V4 part 3). The page streams its mic to the

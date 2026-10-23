@@ -7,6 +7,12 @@
 //
 // WebCrypto exists only on a secure page: over the https (Funnel) address the
 // phone gets a key, over the tailnet's plain http it pairs without one, as before.
+//
+// In Duck's Android app (R4, `native.ts`) the key is the app's: a Keystore key
+// (StrongBox where the phone has one), made and used the same way, with the same
+// proof, on any page.
+
+import * as app from "./native";
 
 /** What the desktop expects signed before the challenge (`auth::PROOF_PREFIX`). */
 export const PROOF_PREFIX = "workbench-remote-session:";
@@ -17,9 +23,14 @@ const KEY_ID = "device";
 
 const ALGORITHM: EcKeyGenParams = { name: "ECDSA", namedCurve: "P-256" };
 
-/** Whether this page can have a device key. */
+/** Whether this page can have a device key (the browser's). */
 export function keysAvailable(): boolean {
   return typeof indexedDB !== "undefined" && typeof crypto !== "undefined" && !!crypto.subtle && isSecureContext;
+}
+
+/** A kept device key, as `net.ts` uses it: the proof for a challenge. */
+export interface DeviceKey {
+  sign(challenge: string): Promise<string>;
 }
 
 /** Bytes as base64url without padding, as the desktop reads them. */
@@ -74,6 +85,7 @@ let held: Promise<CryptoKey | null> | null = null;
 /** Make and keep a new key, in place of any before; resolves to its public half,
  *  or null where the page can't have one. */
 export async function makeDeviceKey(): Promise<string | null> {
+  if (app.inApp()) return app.keyCreate().catch(() => null);
   if (!keysAvailable()) return null;
   try {
     const pair = await newKeyPair();
@@ -85,17 +97,30 @@ export async function makeDeviceKey(): Promise<string | null> {
   }
 }
 
-/** The kept key's private half, or null when there is none. */
-export function deviceKey(): Promise<CryptoKey | null> {
-  if (!keysAvailable()) return Promise.resolve(null);
+/** The kept key, or null when there is none. */
+export async function deviceKey(): Promise<DeviceKey | null> {
+  if (app.inApp()) {
+    // The app says whether it has one by signing.
+    if ((await app.keySign("").catch(() => null)) === null) return null;
+    return {
+      async sign(challenge) {
+        const sig = await app.keySign(PROOF_PREFIX + challenge);
+        if (!sig) throw new Error("the app's device key is gone");
+        return sig;
+      },
+    };
+  }
+  if (!keysAvailable()) return null;
   held ??= inStore<CryptoKeyPair | undefined>("readonly", (s) => s.get(KEY_ID))
     .then((pair) => pair?.privateKey ?? null)
     .catch(() => null);
-  return held;
+  const key = await held;
+  return key && { sign: (challenge) => signChallenge(key, challenge) };
 }
 
 /** Forget the key (unpairing, or a desktop that didn't take it). */
 export async function dropDeviceKey(): Promise<void> {
+  if (app.inApp()) return app.keyDrop().catch(() => {});
   held = Promise.resolve(null);
   if (!keysAvailable()) return;
   await inStore("readwrite", (s) => s.delete(KEY_ID)).catch(() => {});

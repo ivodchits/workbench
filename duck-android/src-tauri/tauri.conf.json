@@ -1,0 +1,19 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Duck",
+  "version": "0.1.0",
+  "identifier": "com.workbench.duck",
+  "build": {
+    "beforeBuildCommand": "npm --prefix .. run build:duck-android",
+    "frontendDist": "../www"
+  },
+  "app": {
+    "windows": [{ "label": "main", "title": "Duck" }],
+    "security": { "csp": null }
+  },
+  "bundle": {
+    "active": true,
+    "icon": ["icons/32x32.png", "icons/128x128.png", "icons/128x128@2x.png", "icons/icon.ico"],
+    "android": { "minSdkVersion": 29 }
+  }
+}

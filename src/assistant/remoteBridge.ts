@@ -39,6 +39,10 @@
 //   `device.result` frames go to the hosts, not to Duck, and the calls come down
 //   to it as `device.call` / `device.cancel`. Over this socket only the phone can
 //   be a host: the PC's tools are the desktop's own.
+// - The phone's app as a host (step H5) gets the open reminders' coming times
+//   (`phone.reminders`, on hello and on every change) and arms them as exact
+//   alarms, which ring with the desktop unreachable. Its Done and Snooze come
+//   back as `reminder.action`, from a socket that said hello only.
 
 import { z } from "zod";
 import type { StoredMessage } from "../ipc/assistant";
@@ -54,6 +58,7 @@ import { sentencesOf, type Spoken as Ready, type Voice } from "./reader";
 import { langOf, Sentences, type Lang } from "./speakable";
 import { withoutImages } from "./threads";
 import { isHostUp, type HostConn, type Hosts } from "./hosts";
+import type { PhoneAlarm } from "./reminders";
 
 /** The longest message a phone may send. */
 const TEXT_MAX = 20_000;
@@ -93,6 +98,7 @@ const HostFrame = z.discriminatedUnion("type", [
     version: z.number().int(),
   }),
   z.object({ type: z.literal("device.result"), id, ok: z.boolean(), output: z.unknown() }),
+  z.object({ type: z.literal("reminder.action"), id, action: z.enum(["done", "snooze"]) }),
 ]);
 
 /** A phone's frame as a Duck Protocol message, or why it's refused. */
@@ -150,6 +156,18 @@ export interface BridgeDeps {
   warm(ru: boolean): void;
   /** Where a socket that says `hello` connects as a host (step H1). */
   hosts?: Hosts;
+  /** The reminders a phone host arms as alarms (step H5). */
+  phoneReminders?: PhoneReminders;
+}
+
+/** What a phone host gets of the reminders (step H5). */
+export interface PhoneReminders {
+  /** The open reminders' coming times. */
+  alarms(): PhoneAlarm[];
+  /** Hear every change. */
+  subscribe(cb: () => void): () => void;
+  /** The phone's Done or Snooze, tapped on its own notification. */
+  act(id: string, action: "done" | "snooze"): void;
 }
 
 /** A reply being spoken for a phone. */
@@ -361,7 +379,7 @@ export function startRemoteBridge(d: BridgeDeps): RemoteBridge {
       d.duck.handle({ type: "thread.view", surface: `phone:${i.conn}`, threadId: null });
       for (let k = wanted.length - 1; k >= 0; k--) if (wanted[k].conn === i.conn) wanted.splice(k, 1);
       for (let k = sent.length - 1; k >= 0; k--) if (sent[k].conn === i.conn) sent.splice(k, 1);
-    } else if (isHostUp(i.msg)) {
+    } else if (isHostUp(i.msg) || (i.msg as { type?: unknown } | null)?.type === "reminder.action") {
       host(i.conn, i.msg);
     } else {
       const msg = parseRemote(i.msg, d.fixVoice);
@@ -394,14 +412,28 @@ export function startRemoteBridge(d: BridgeDeps): RemoteBridge {
       const c = hostConns.get(conn);
       return c ? c.receive(m) : refuse("say hello first");
     }
+    if (m.type === "reminder.action") {
+      if (!hostConns.has(conn)) return refuse("say hello first");
+      if (!d.phoneReminders) return refuse("Duck has no reminders here");
+      return d.phoneReminders.act(m.id, m.action);
+    }
     hostConns.get(conn)?.close();
     hostConns.delete(conn);
     try {
       hostConns.set(conn, d.hosts.connect(m, (down) => d.link.emit({ ...down, v: PROTOCOL_VERSION }, conn)));
     } catch (e) {
-      refuse(e instanceof Error ? e.message : String(e));
+      return refuse(e instanceof Error ? e.message : String(e));
     }
+    sendAlarms(conn);
   }
+
+  /** The reminders' coming times, to a phone host (H5). */
+  function sendAlarms(conn: number): void {
+    if (d.phoneReminders) d.link.emit({ type: "phone.reminders", alarms: d.phoneReminders.alarms(), v: PROTOCOL_VERSION }, conn);
+  }
+  const offReminders = d.phoneReminders?.subscribe(() => {
+    for (const conn of hostConns.keys()) sendAlarms(conn);
+  });
 
   /** A read's sections as `tts` parts to `conn`. */
   function phoneVoice(conn: number, threadId: string): Voice {
@@ -440,6 +472,7 @@ export function startRemoteBridge(d: BridgeDeps): RemoteBridge {
     stop() {
       offEvents();
       offInput();
+      offReminders?.();
     },
     async quiet(threadId) {
       while (speaking.has(threadId)) await new Promise((r) => setTimeout(r, 100));

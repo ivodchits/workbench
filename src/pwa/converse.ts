@@ -13,8 +13,12 @@
 //   what's speech. It keeps 4 frames before a sound (a soft first consonant) and
 //   320 ms after it live, so the quick policy's 0.25 s check runs on real audio.
 //   Longer silence is sent a few frames late, in gaps of 4.
+// - In Duck's Android app (R4) the mic is the app's (`streamNative`): already
+//   16 kHz frames, from the voice-communication source (the phone's own echo
+//   cancellation), in a foreground service so it goes on with the screen off.
 
 import { AUDIO_GAP, AUDIO_PCM } from "../remote/protocol";
+import { micStart, micStop } from "./native";
 import { StreamDownsampler, TARGET_RATE } from "./wav";
 
 /** 32 ms at 16 kHz, the desktop VAD's frame. */
@@ -163,6 +167,33 @@ export async function stream(send: (frame: ArrayBuffer) => void, shared?: AudioC
     release();
     throw e;
   }
+}
+
+/** The loudness of a frame for the duck (0..1). */
+function levelOf(frame: Float32Array): number {
+  let sum = 0;
+  for (let i = 0; i < frame.length; i++) sum += frame[i] * frame[i];
+  return Math.min(1, Math.sqrt(sum / Math.max(1, frame.length)) * 6);
+}
+
+/** `stream` with the app's own mic (R4): its frames are the desktop VAD's size
+ *  already, and it keeps going with the screen off. */
+export async function streamNative(send: (frame: ArrayBuffer) => void): Promise<Streaming> {
+  const framer = new Framer();
+  let level = 0;
+  let live = true;
+  await micStart((frame) => {
+    if (!live) return;
+    level = levelOf(frame);
+    for (const o of framer.push(frame)) send(encode(o));
+  }, true);
+  return {
+    level: () => level,
+    stop() {
+      live = false;
+      void micStop().catch(() => {});
+    },
+  };
 }
 
 /** The soft "heard you" chime, two short notes, as the desktop's. */

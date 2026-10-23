@@ -172,6 +172,9 @@ export interface ToolDef<S extends z.ZodType = z.ZodType, P = unknown> {
   /** What the trust engine needs about the call: its project, a specifier for
    *  rules, text for the floor. `{projectId: null}` when absent or when it throws. */
   trust?(input: z.infer<S>, port: WorkbenchPort, prepared: P): TrustFacts;
+  /** A host tool's answer as the model gets it (step H5: a notification's text
+   *  wrapped as untrusted). Runs in the engine, not on the host. */
+  shape?(output: unknown): unknown;
   /** The longest the turn waits for `run`. Work that can take longer is written as
    *  start + notify: return a handle at once, report completion later as a new
    *  message in the thread. */
@@ -197,7 +200,8 @@ export function defineTool<S extends z.ZodType, P = undefined>(
       timeoutMs: def.timeoutMs ?? DEFAULT_TIMEOUT_MS,
       run: async (input, ctx) => {
         if (!ctx.hosts) throw new Error("no host can run it here");
-        return (await ctx.hosts.call(host, name, input, ctx.signal)) as ToolOutput;
+        const out = await ctx.hosts.call(host, name, input, ctx.signal);
+        return (def.shape ? def.shape(out) : out) as ToolOutput;
       },
     };
   }

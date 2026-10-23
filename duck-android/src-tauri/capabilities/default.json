@@ -1,0 +1,8 @@
+{
+  "$schema": "../gen/schemas/mobile-schema.json",
+  "identifier": "default",
+  "description": "The loader page and the desktop's page (its Funnel address) reach the duck plugin.",
+  "windows": ["main"],
+  "remote": { "urls": ["https://*.ts.net/*", "https://*.ts.net"] },
+  "permissions": ["core:default", "duck:default"]
+}

@@ -5,9 +5,9 @@ behind each decision are in `assistant-plan.md`. This file describes the code, a
 Duck step updates it as part of its Done when. Duck's self-development sessions (L3)
 read it first.
 
-Last updated: step H4 (2026-10-23). L3 audited it against the code. Since W5 it also
+Last updated: step H5 with R4 (2026-10-23). L3 audited it against the code. Since W5 it also
 covers W6, D2, D4, P1, P2, M2, M3, A5, A6, A7, W4, L1, L2, L3, L4, R1, R2, R3, B1, B2, T3, D3, V1 to V7,
-V8, S1, S2, X1, H1 to H4, H8 and the morning routine. A fresh session changing Duck: read "The shape", then "Where to
+V8, S1, S2, X1, H1 to H5, H8, R4 and the morning routine. A fresh session changing Duck: read "The shape", then "Where to
 change X" at the end, then the module rows it points to.
 
 ## The shape
@@ -68,7 +68,7 @@ change X" at the end, then the module rows it points to.
 | `speakable.ts` | Spoken replies' words (V2): `Sentences` cuts a stream into whole sentences, `toSpoken` makes one sayable, `langOf` picks Kokoro (English) or Silero (Russian), and a Russian sentence with digits or Latin letters gets the `speakable_ru` Haiku rewrite or `russianFallback`. |
 | `reader.ts` | Read-aloud (V3): a source in sections, each made when its turn comes (narrated by Haiku first in `narrate` mode), played on the desktop or the phone that asked, after the reply is over; pause / resume / next / previous / stop, and a position kept per source for "continue reading". |
 | `voiceNames.ts` | The name fixer (V1): project and session names and a term list, said in Russian and written in Cyrillic by Parakeet, put back in their own spelling with loose matching for longer names. |
-| `remoteBridge.ts` | Duck on the phone (R1): the webview's half of the remote server's `/api/assistant` socket. Frames are checked against what a phone may do (no settings, no loosening trust, no replay, no thread delete); messages are stored as `phone` / `phone-voice`; spoken replies, reads and announcements go down as `tts` parts a sentence at a time; screenshots never go to the phone. A socket that says `hello` is also a host (H1): its `hello` / `device.result` frames go to `hosts.ts`, and its calls come down as `device.call` / `device.cancel`; only `phone` can be a host over it. |
+| `remoteBridge.ts` | Duck on the phone (R1): the webview's half of the remote server's `/api/assistant` socket. Frames are checked against what a phone may do (no settings, no loosening trust, no replay, no thread delete); messages are stored as `phone` / `phone-voice`; spoken replies, reads and announcements go down as `tts` parts a sentence at a time; screenshots never go to the phone. A socket that says `hello` is also a host (H1): its `hello` / `device.result` frames go to `hosts.ts`, and its calls come down as `device.call` / `device.cancel`; only `phone` can be a host over it. H5: a phone host gets `phone.reminders` (the open reminders' coming times, `phoneAlarms` in `reminders.ts`: two weeks of a repeat's) on hello and on each change, and its `reminder.action` (Done / Snooze from the app's own notification) goes to `actOnReminder` in `index.ts`, from a socket that said hello only. |
 | `hosts.ts` | Host-bound tools (H1): `createHosts(declared)` holds each connected host (`pc`, `phone`) and the tools it offers (only the engine's own for that host count); `call(host, tool, input, signal)` sends `device.call` and settles on `device.result`, a stop or timeout sends `device.cancel`, a host that isn't there or didn't announce the tool fails at once ("the phone isn't connected"), and one that leaves or reconnects fails its open calls. `serveHost` is a host's side (hello with its handlers, refuses a tool it didn't announce, aborts on cancel); `connectLocal` joins the two in process, for the desktop's `pc` tools. |
 | `spend.ts` | `createTurnMeter()`: bills each metered `thread` call to the one turn that is calling (none if two are), giving each thread's latest turn cost for the `spend` event. |
 | `timings.ts` | D3: `createTurnClock` times each turn you start from the engine's events (start, `routing`'s mode and brain, the first delta, the first sentence, idle or parked), with an API turn's cost from the meter and the subscription's 5-hour window before and after; the endpoint keeps each in `turn_timings`. `timingStats` / `statLine`: the medians per mode, brain and model, $ an hour on the API and the window's % an hour on the subscription, over conversations of 5 minutes or more (protocol `timings.get`). |
@@ -99,6 +99,7 @@ change X" at the end, then the module rows it points to.
 | `tools/screen.ts` | W6: `read_screen` (a session's console as untrusted text, with a hash) and consequential `press_keys`, refused when the screen changed since that hash or when you've typed there lately; keys into an open prompt are judged as `answer_choice`. |
 | `tools/screenshot.ts` | V3: `screenshot` (downscaled PNG as image blocks, with the monitor list) and `save_screenshot`. |
 | `tools/pc.ts` | H2, the `pc` host's tools (deferred, as every host tool is): `steam_library` (read; installed games, the last played first, `query` filters), `steam_launch` and `steam_install` (reversible; the game named as people say it, `appid` to pick from a call's choices; install searches the store), `steam_activity` (read; the Web API key's playtime, recently played, friends online, a game's achievements), `media_now_playing` (read) and `media_control` (reversible: play, pause, toggle, next, previous), `open_on_pc` (reversible: a web link, or Steam's run / install / store link for a game). `pcHandlers(backend)` is the PC's side, served in process from `index.ts` over `ipc/pc.ts`; each handler checks its input against the tool's schema again. `rankGames` / `clearPick` / `matchScore`: a game by name (exact, the name's start with or without "the", every word, an acronym, inside the name, or one or two typos; roman numerals as digits); a pick is clear at 0.75 and 0.05 ahead of the next, otherwise the call returns up to five choices. |
+| `tools/phone.ts` | H5, the `phone` host's tools (deferred, as every host tool is), run by the Android app (`duck-android/`, R4): `phone_set_timer` / `phone_set_alarm` (reversible; the clock app's intents, without opening it), `phone_show_alarms` (read), `phone_media_now_playing` (read) / `phone_media_control` (reversible), `phone_notifications` (read; new since the last look, or `all`; its text wrapped as untrusted by `shape`, `notificationsOutput`), `phone_reply` (consequential; through the notification's own reply action), `phone_find_contact` (read), `phone_call` / `phone_send_sms` (consequential), `phone_flashlight`, `phone_do_not_disturb`, `phone_volume`, `phone_navigate`, `phone_open_app` (reversible). Calls, texts and replies always ask (`trust`'s `asks`). A host tool's optional `shape` (registry) turns the host's answer into what the model gets, in the engine. |
 | `tools/media.ts` | H3, all deferred but `open_on_phone` (a `phone` host tool, deferred as every host tool is, served by the phone from H5): `play_music(query, id?, on?)` (reversible; the provider's search in its music category, the first result that names at least 60% of the query's words (`pickItem`), else up to five choices to call again with `id`), `find_video(query)` (read; up to eight, with id, channel and length), `play_video(id, on?)` (reversible). Playing opens the link on the device through its host tool (`open_on_pc` / `open_on_phone`); the device is `on`, else where the user's latest message came from (`ctx.surface`). |
 | `music/provider.ts` | H3: the `MusicProvider` interface (`search(query, kind)`, `play(item, device, open)`), `MediaItem`, `coverage` / `pickItem` (the query's words, without filler like "play some", found in the title and artist), `length`. |
 | `music/youtube.ts` | H3: `youtubeMusic`, the first provider, over `ipc/music.ts`: a search kept for an hour (each costs 101 of the 10,000 free daily units); play opens `music.youtube.com/watch?v=<id>` for a song, `www.youtube.com/watch?v=<id>` for a video (`youtubeUrl`, only for an 11-character id). |
@@ -814,6 +815,55 @@ Duck is one tap from its icon.
 - **Pushes** were already deep links: a push names its thread, and tapping it opens Duck
   there (`#duck=<thread>`, or `open-duck` to an open page).
 
+## The phone's app (steps R4, H5)
+
+Duck's Android app, `duck-android/`: a Tauri 2 app whose webview opens the desktop's
+own phone page, with a Kotlin plugin for what a page can't do. Sideloaded; built with
+`node ../node_modules/@tauri-apps/cli/tauri.js android build` from `duck-android/` (the
+CLI's `beforeBuildCommand` runs `npm run build:duck-android`).
+
+- **The pages.** The APK carries one page, the loader (`duck-android/web/loader.ts`,
+  built into `www/`): it keeps Workbench's address (the Funnel one, `*.ts.net`; with
+  Tailscale on, MagicDNS sends the same name the short way) and opens the desktop's
+  page there. Unreachable, it stays, and the phone's own recognizer and the fast path
+  still run timers, alarms, the flashlight and media keys. The desktop's page is
+  `src/pwa/` as before; the capability (`src-tauri/capabilities/default.json`) lets
+  `https://*.ts.net` reach the plugin.
+- **The plugin** (`gen/android/app/src/main/java/com/workbench/duck/`, registered in
+  `src-tauri/src/lib.rs`; its commands listed for the ACL in `build.rs`). The page's
+  side is `src/pwa/native.ts` (`inApp()`), and `duckApp.ts` for what Duck does more
+  in the app:
+  - `DuckPlugin.kt`: the commands; `run` checks permissions (asked on first use) and,
+    over the lock screen with "require unlock" on, asks for an unlock first.
+  - `PhoneTools.kt`: the `phone` tools (`NAMES` is what `hello` announces; a test
+    checks it matches `tools/phone.ts`).
+  - `Store.kt` (the address, the token sealed with a Keystore AES key, settings,
+    Done / Snooze not yet sent), `DeviceKey.kt` (the device key in the Keystore,
+    StrongBox if any; the same proof as `deviceKey.ts`, so `remote/auth.rs` didn't
+    change).
+  - `Assist.kt`: the assistant role (voice interaction service, session, and a
+    recognition service that hands other apps' requests to the phone's recognizer);
+    the session opens the app's own activity (one webview) and sends the screen's
+    text as a `screen` launch.
+  - `Surfaces.kt`: the tile (conversation mode on / off) and the widget (talk button,
+    and the line the page last sent).
+  - `ConversationService.kt` and `Mic.kt`: conversation mode with the screen off (a
+    microphone + media-playback foreground service, a wake lock) and the native mic
+    (16 kHz, voice-communication source, 32 ms frames over a channel).
+  - `Notifications.kt` (the notification listener, also what lets the app see media
+    sessions) and `ReminderAlarms.kt` (exact alarms, their notification with Done and
+    Snooze, re-armed after a reboot).
+- **In the page** (`duckApp.ts`, wired from `duck.ts`):
+  - On connect it says `hello` as the phone and serves the calls (`serveHost`).
+  - It arms `phone.reminders` and sends the taps kept.
+  - A launch opens Duck: listening for one request from the gesture or the widget
+    (sent when you stop talking), conversation mode from the tile.
+  - The screen's text goes with the next message within two minutes, in `<shared>`.
+  - The fast path (`fastPath.ts`) runs before any model.
+  - In conversation mode the socket stays open with the screen off.
+  - The mic is native (`mic.ts`, `converse.ts`'s `streamNative`).
+  - The token and the device key are the app's (`net.ts` `loadToken`, `deviceKey.ts`).
+
 ## Where to change X
 
 - **What Duck says, its routing rules and examples, the tool tiers' wording**: the files
@@ -832,6 +882,11 @@ Duck is one tap from its icon.
 - **A tool that runs on the PC or the phone**: `host` on its `defineTool`, its
   handler on the host ("Tools that run elsewhere" above, `hosts.ts`); a PC tool's
   handler goes in `pcHandlers` (`tools/pc.ts`), its Rust beside `steam.rs` / `media.rs`.
+- **What the phone's app can do, or how it's opened**: the tool's declaration in
+  `tools/phone.ts`, its Kotlin in `PhoneTools.kt` (and its name in `NAMES`); a new
+  plugin command also goes in `build.rs`'s list and `native.ts`. What the page does
+  with a launch: `duckApp.ts` and `listenOnce` / `talkFromApp` in `duck.ts`; the fast
+  path's phrases: `fastPath.ts`.
 - **When a reminder comes up** (the spell, a day's hour, what counts as due, a repeat's
   next time): `reminders.ts`; its record and checks: `reminders.rs` (and
   `ipc/reminders.ts`); how it reaches the phone and what its buttons do: the clock's
@@ -913,6 +968,19 @@ Both rules are in `prompt.ts`.
   arriving on the phone as a push on time, one due while the app was closed arriving
   at the next start marked late, Snooze and Done from the notification, a timer by
   voice. Phone alarms that fire offline are H5's; a calendar mirror isn't built.
+
+- The phone's app (R4, H5) built and run on an Android 16 emulator, not yet on the
+  phone. Checked there: the loader and the desktop's Funnel page both reach the plugin;
+  the Keystore key's proof verifies; the sealed token; a timer and an alarm set in the
+  Clock app without it opening; volume, flashlight, media keys; notifications read; a
+  reminder ringing in airplane mode with Done / Snooze (Snooze re-armed, the tap kept);
+  the assist key opening Duck with the screen's text; the tile; the native mic in the
+  foreground service, still streaming with the screen off. Not yet tried: any of it on
+  the Nothing Phone (2a), pairing from the app, Nothing OS's assistant menus, a
+  10-minute walk-and-talk and a 30-minute screen-off session, a Telegram reply, a call
+  and a text, the widget on a home screen. Not built: switching to the tailnet's own
+  address (MagicDNS covers it), the screenshot with the gesture (G1), Glyph lights,
+  the widget polling by itself.
 
 - The wake word (V6) live: built and measured on recordings (no spots in 6.3 h of
   speech without the phrase; 81 of 84 synthetic English and 9 of 15 Russian caught),

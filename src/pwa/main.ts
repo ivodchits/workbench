@@ -16,7 +16,7 @@ import { initDashboard } from "./dashboard";
 import { $ } from "./dom";
 import { duckOnStart, initDuck, launchDuck, openDuck, takeLaunchThread } from "./duck";
 import { takeLaunch } from "./launch";
-import { checkAccess, connect, forget, isPaired, pair } from "./net";
+import { checkAccess, connect, forget, isPaired, loadToken, pair } from "./net";
 import { initNewSession, openNewSession } from "./newSession";
 import { initNotes } from "./notes";
 import { initPush, takeLaunchInstance } from "./push";
@@ -189,7 +189,10 @@ if ("serviceWorker" in navigator) {
   });
 }
 
-if (isPaired()) {
-  $("pair").classList.add("hidden"); // no flash of the pairing form while asking
-  void resume();
-} else show("pair");
+void (async () => {
+  // In Duck's app the token is the app's (R4): read it first.
+  $("pair").classList.add("hidden");
+  await loadToken();
+  if (isPaired()) void resume(); // no flash of the pairing form while asking
+  else show("pair");
+})();

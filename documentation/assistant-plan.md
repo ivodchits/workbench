@@ -5064,6 +5064,70 @@ up ("change this", with a circle around it).
   - A copied device token without the Keystore key is rejected.
 - **Out of scope:** iOS; Play Store publishing; native push via Firebase (PWA Web Push
   covers notifications).
+- **As built (2026-10-23), with H5:**
+  - **Built ahead of its gate, on request.** R3 hasn't seen real use on the phone yet.
+  - **The app** is `duck-android/`, a Tauri 2 Android app (`com.workbench.duck`).
+    - **The UI isn't bundled.** The webview opens the desktop's own phone page at its
+      Funnel address, so the app's UI updates with the desktop.
+    - **The APK carries one page, a loader** (`web/loader.ts`). It keeps that address,
+      opens the page when it answers, and otherwise runs the fast path itself.
+    - **The capability** lets `https://*.ts.net` reach the `duck` plugin. That's why
+      the address must be a `.ts.net` one.
+  - **The plugin is Kotlin** in the generated project (`gen/android/.../duck/`),
+    registered as an inline plugin in `lib.rs`; the page reaches it through
+    `src/pwa/native.ts`.
+    - **The assistant role:** a voice interaction service, a session, and a recognition
+      service that passes other apps' requests to the phone's recognizer, so being the
+      assistant doesn't break voice input elsewhere.
+      - The session opens the app's own activity, not `startAssistantActivity`'s. That
+        call made a second activity in an assistant task, and the app has only one
+        webview.
+      - With the screen-text setting on, the screen's text follows the open as a
+        `screen` launch.
+      - Over the lock screen, the activity shows when locked.
+      - "Require unlock for actions" (on by default) makes a phone tool ask for an
+        unlock before it runs.
+    - **The tile** turns conversation mode on or off. It opens the app through a
+      PendingIntent, as Android 14+ requires.
+    - **The widget:** a talk button, and the line the page last sent with its age.
+      - **A change from the plan:** "polled while visible" became "the line the page
+        last sent". The app can't reach the desktop without the page, and a second
+        signed-in client in Kotlin wasn't worth it.
+    - **Conversation mode with the screen off** runs in a microphone + media-playback
+      foreground service with a partial wake lock. Its notification has Stop.
+      - It's started only from something you did: the tile, the widget, the gesture,
+        or the talk button.
+      - The first time it runs, it asks once to be let off battery optimization.
+    - **The native mic:** 16 kHz frames from the voice-communication source (the
+      phone's echo cancellation), plus `AcousticEchoCanceler` and `NoiseSuppressor`.
+      - Frames are 32 ms and go over a channel to the page, which frames them as
+        before (`streamNative`).
+      - Push-to-talk records through it too, so the mic works on any page.
+    - **The device key and token:**
+      - The device key is a Keystore P-256 key (StrongBox if present, never
+        exportable), signing the same proof as the PWA's. `auth.rs` didn't change,
+        and a copied token alone still opens nothing.
+      - The token is sealed with a Keystore AES key.
+  - **Connectivity:**
+    - **A change from the plan:** there's no separate tailnet address to switch to.
+      With Tailscale on, MagicDNS resolves the Funnel name (`<pc>.<tailnet>.ts.net`) to
+      the tailnet address, so the same origin goes the short way, and the switch
+      happens at the socket's next connect.
+    - A tailnet `http://100.x` address would have lost the page's secure context and
+      its storage.
+  - **Checked on an Android 16 emulator** (a throwaway AVD, removed after):
+    - the loader and the desktop's Funnel page both reach the plugin;
+    - a Keystore signature verifies with WebCrypto;
+    - the token round-trips;
+    - the assist key opens one Duck activity, with Settings' text as the screen;
+    - the tile stops conversation mode and opens Duck for it;
+    - mic frames keep coming (31 a second) with the screen off.
+  - **Not tried yet:**
+    - **On the Nothing Phone (2a):** the power-button gesture, Nothing OS's menus, a
+      10-minute walk-and-talk, a 30-minute screen-off session, pairing in the app,
+      and the copied-token test.
+    - **Latency:** not measured over Funnel or Tailscale.
+    - **Glyph lights:** not built.
 
 ### Track D — Delegation to sessions
 
@@ -7270,6 +7334,61 @@ checked in the scratch PTY first.
   fires with the phone in airplane mode.
 - **Out of scope:** the accessibility service; Wi-Fi and Bluetooth toggles (not allowed);
   a wake word (not wanted on the phone, 2026-10-20).
+- **As built (2026-10-23), with R4:**
+  - **The tools** are `phone_*` (`tools/phone.ts`), not the plan's bare names:
+    - `set_timer` was already Duck's own timer (H4), so the phone's is
+      `phone_set_timer`.
+    - The rest follow that prefix: `phone_set_alarm`, `phone_show_alarms`,
+      `phone_media_now_playing`, `phone_media_control`, `phone_notifications`,
+      `phone_reply`, `phone_find_contact`, `phone_call`, `phone_send_sms`,
+      `phone_flashlight`, `phone_do_not_disturb`, `phone_volume`, `phone_navigate`
+      and `phone_open_app`.
+    - `open_url` is H3's `open_on_phone`, now served.
+  - **Calls, texts and replies** are consequential and always ask (`asks`, the
+    floor's way), whatever the rules.
+  - **A notification's text** comes back wrapped as untrusted, by a new optional
+    `shape` on a host tool, run in the engine.
+  - **The phone host** is the page in the app: on each connect it says `hello` with
+    the app's tools and runs each call through the plugin. A test checks that the
+    Kotlin's list matches the engine's.
+  - **Timers and alarms** go through the Clock app's intents with `EXTRA_SKIP_UI`.
+    - A second request while the Clock's handler is still open reached it as a new
+      intent, which it ignores. Clock requests now start in a fresh task.
+  - **Media:** controlling playback through the media sessions needs notification
+    access; without it, play / pause / skip go as media keys.
+  - **Special access:** notification access and Do Not Disturb access can't be asked
+    for in a dialog. The tool opens their settings page and says so. A sideloaded app
+    first needs "Allow restricted settings".
+  - **Reminders on the phone:**
+    - The desktop sends a phone host the open reminders' coming times
+      (`phone.reminders`), two weeks of a repeat's, on hello and on every change. The
+      app arms each as an exact alarm (`USE_EXACT_ALARM`) and re-arms them after a
+      reboot.
+    - Done and Snooze 10 min on the app's notification: Snooze re-arms at once. Both
+      are kept until the page next connects, then sent as `reminder.action` and
+      handled like the push's buttons (`actOnReminder`), from a socket that said
+      hello only.
+    - With the PWA's Web Push also on, a reminder can show twice.
+  - **Screen context:** the screen's text goes with the next message within two
+    minutes, in `<shared>` (data, not instructions).
+    - **Not built:** the screenshot. Images from the phone wait for G1.
+  - **The fast path** (`src/pwa/fastPath.ts`): timers, alarms, the flashlight and
+    play / pause / skip / back are parsed on the phone before any model, typed,
+    dictated or in conversation mode.
+    - It's English only, and only the whole utterance counts.
+    - With the desktop unreachable, the loader (or the page) hears through the
+      phone's own recognizer and runs only those.
+  - **Permissions** (contacts, calls, SMS, mic, notifications) are asked for when a
+    tool first needs one.
+  - **Checked on the emulator:**
+    - a timer and an alarm set without the Clock opening;
+    - volume, flashlight, media keys;
+    - notifications read, then nothing new on the second look;
+    - a reminder ringing in airplane mode, and Snooze tapped (re-armed, the tap kept);
+    - unknown tools and non-http links refused.
+  - **Not tried yet:** the "Done when" on the phone (by voice from the power button:
+    a timer, an alarm, "pause" in YouTube Music, "what did I miss?", a Telegram reply
+    after a card, a reminder in airplane mode), a call, a text.
 
 #### Step H6 — Duck on the home server
 
@@ -7790,7 +7909,7 @@ T2 goes live after the replay check in its done-when (the past week's prompts th
 | R1 | Assistant endpoints on the remote server | ☑ |
 | R2 | PWA Assistant tab with mic | ☑ (a real phone not tried yet) |
 | R3 | The PWA as an app: shortcuts, share target, Duck start view | ☑ (not tried on the phone) |
-| R4 | Android companion app (gate: R3 sees real use) | ☐ |
+| R4 | Android companion app (gate: R3 sees real use) | ☑ (built ahead of the gate; emulator only) |
 | T1 | Trust engine for the Assistant's own actions | ☑ |
 | T2 | Auto-answering Claude Code permission prompts | ☑ |
 | T3 | Learning loop: promote rules, questions and plans | ☑ (not tried in the app) |
@@ -7802,7 +7921,7 @@ T2 goes live after the replay check in its done-when (the past week's prompts th
 | H3 | Music and video | ☑ |
 | H4 | Duck's reminders and timers | ☑ |
 | H8 | Reminders: project and general, with a widget | ☑ |
-| H5 | The phone as a host (with R4) | ☐ |
+| H5 | The phone as a host (with R4) | ☑ (emulator only) |
 | H6 | Duck on the home server (gate: the server) | ☐ |
 | H7 | The phone's fallback brain | ☐ |
 | G1 | Attachments: paste, drop and pick files into Duck | ☐ |

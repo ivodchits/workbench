@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>Duck</title>
+    <link rel="stylesheet" href="./loader.css" />
+  </head>
+  <body>
+    <main>
+      <h1>Duck</h1>
+      <section id="setup" hidden>
+        <p>Workbench's address on your phone: the https one from the desktop's Remote Access menu (it ends in <code>.ts.net</code>).</p>
+        <input id="address" type="url" inputmode="url" autocomplete="off" placeholder="https://your-pc.your-tailnet.ts.net" />
+        <button id="save" type="button">Open</button>
+        <p id="setup-msg" class="msg"></p>
+      </section>
+      <section id="checking" hidden>
+        <p>Reaching Workbench…</p>
+      </section>
+      <section id="offline" hidden>
+        <p><strong>Workbench can't be reached.</strong> Timers, alarms, the flashlight and play / pause still work here.</p>
+        <button id="speak" class="big" type="button">🎤 Speak</button>
+        <div class="row">
+          <input id="say" type="text" autocomplete="off" placeholder="set a timer for 10 minutes" />
+          <button id="send" type="button">Go</button>
+        </div>
+        <p id="note" class="msg"></p>
+        <div class="row">
+          <button id="retry" type="button">Try again</button>
+          <button id="change" type="button" class="quiet">Change the address</button>
+        </div>
+      </section>
+    </main>
+    <script type="module" src="./loader.ts"></script>
+  </body>
+</html>

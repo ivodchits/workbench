@@ -4,7 +4,11 @@
 // here at the device's rate → brought down to 16 kHz and written as a WAV when the
 // recording stops. A browser gives the mic to a secure page only (the Funnel
 // address), so `micAvailable` says whether to offer it.
+//
+// In Duck's Android app (R4) the mic is the app's own (`native.ts`): 16 kHz
+// already, on any page.
 
+import { inApp, micStart, micStop } from "./native";
 import { concat, downsample, encodeWav, levelOf, TARGET_RATE } from "./wav";
 
 /** The desktop takes at most a minute; stop a little before it. */
@@ -24,6 +28,7 @@ registerProcessor("wb-tap", Tap);
 `;
 
 export function micAvailable(): boolean {
+  if (inApp()) return true;
   return isSecureContext && !!navigator.mediaDevices?.getUserMedia && typeof AudioWorkletNode !== "undefined";
 }
 
@@ -41,6 +46,7 @@ export interface Recording {
 /** Start recording. Throws when the mic is refused or missing. `onLimit` is called
  *  once the clip reaches `MAX_SECONDS`; the caller then stops it. */
 export async function record(onLimit: () => void): Promise<Recording> {
+  if (inApp()) return recordNative(onLimit);
   const stream = await navigator.mediaDevices.getUserMedia({
     audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true },
   });
@@ -93,4 +99,33 @@ export async function record(onLimit: () => void): Promise<Recording> {
     release();
     throw e;
   }
+}
+
+/** `record` with the app's mic: the frames come at 16 kHz already. */
+async function recordNative(onLimit: () => void): Promise<Recording> {
+  const chunks: Float32Array[] = [];
+  let count = 0;
+  let level = 0;
+  let live = true;
+  await micStart((frame) => {
+    if (!live) return;
+    chunks.push(frame);
+    count += frame.length;
+    level = levelOf(frame);
+    if (count >= MAX_SECONDS * TARGET_RATE && count - frame.length < MAX_SECONDS * TARGET_RATE) onLimit();
+  }, false);
+  const end = () => {
+    live = false;
+    void micStop().catch(() => {});
+  };
+  return {
+    level: () => level,
+    seconds: () => count / TARGET_RATE,
+    async stop() {
+      end();
+      const samples = concat(chunks);
+      return samples.length > TARGET_RATE / 4 ? encodeWav(samples.subarray(0, MAX_SECONDS * TARGET_RATE)) : null;
+    },
+    cancel: end,
+  };
 }

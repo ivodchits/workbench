@@ -1,0 +1,9 @@
+<resources>
+    <string name="app_name">Duck</string>
+    <string name="main_activity_title">Duck</string>
+    <string name="tile_label">Talk to Duck</string>
+    <string name="widget_description">Talk to Duck, and what needs you</string>
+    <string name="widget_idle">Tap to open Duck</string>
+    <string name="widget_talk">Talk</string>
+    <string name="notifications_label">Duck reads notifications</string>
+</resources>

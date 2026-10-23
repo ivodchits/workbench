@@ -36,6 +36,10 @@
 //   at once, and a share on a new thread with the shared item above the composer
 //   (one tap to summarize it, make a task of it or remember it). "the app opens
 //   on" makes Duck the start view, and the settings say how to install the app.
+// - R4, H5: inside Duck's Android app (`duckApp.ts`) the page is also the phone
+//   host, arms the reminders, opens listening from the assistant gesture and the
+//   widget (conversation mode from the tile), runs the fast path's commands
+//   itself, and keeps conversation mode going with the screen off.
 
 import { langOf, Sentences } from "../assistant/speakable";
 import {
@@ -51,12 +55,15 @@ import type { DuckMode } from "../panels/Assistant/duck3d";
 import { startDuckCanvas, type DuckLook } from "../panels/Assistant/duckCanvas";
 import { lineDiff, oneLine, readableInput, reminderFiles, sessionLink, toItems, type Item } from "../panels/Assistant/view";
 import { renderMarkdown } from "../panels/Editor/markdown";
-import type { EchoPath, RemoteConvFrame, RemoteConvMessage, RemoteDuckFrame, RemoteDuckMessage } from "../remote/protocol";
+import type { EchoPath, RemoteConvFrame, RemoteConvMessage, RemoteDuckFrame, RemoteDuckMessage, RemoteHostMessage } from "../remote/protocol";
 import { formatAgo } from "../util/format";
 import { $, el } from "./dom";
 import { apply, emptyView, userText, type DuckView } from "./duckStore";
 import { audioContext, browserOut, fetchPart, playbackLevel, setEchoPath, unlock } from "./duckSpeech";
-import { chime, stream, type Streaming } from "./converse";
+import { chime, stream, streamNative, type Streaming } from "./converse";
+import * as duckApp from "./duckApp";
+import { appSettings as getAppSettings, LOADER_URL, saveAddress, setAppSettings, type AppSettings } from "./native";
+import { fastPath } from "./fastPath";
 import { SpeechQueue } from "./speechQueue";
 import { micAvailable, record, type Recording } from "./mic";
 import { api, ApiError, checkAccess, openSocket } from "./net";
@@ -84,7 +91,15 @@ interface Prefs {
   openOn: "dashboard" | "duck";
 }
 
-const DEFAULT_PREFS: Prefs = { speak: "voice", voice: "desktop", sendNow: true, duck: true, echoPath: "separate", openOn: "dashboard" };
+const DEFAULT_PREFS: Prefs = {
+  speak: "voice",
+  voice: "desktop",
+  sendNow: true,
+  duck: true,
+  echoPath: "separate",
+  // Duck's own app opens on Duck.
+  openOn: duckApp.inApp() ? "duck" : "dashboard",
+};
 /** The "put Duck on your home screen" line was dismissed. */
 const INSTALL_HINT_KEY = "wb-duck-install-hint";
 const LOOK: DuckLook = { ink: "color", chars: "classic", cols: 56, fps: 20 };
@@ -206,12 +221,20 @@ let nativeFollow: string | null = null;
 
 // ── the socket ──────────────────────────────────────────────────────────────
 
-function post(msg: RemoteDuckMessage | RemoteConvMessage): void {
+function post(msg: RemoteDuckMessage | RemoteConvMessage | RemoteHostMessage): void {
   if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify(msg));
 }
 
+/** In the app, conversation mode goes on with the screen off (R4). */
+function talkAway(): boolean {
+  return duckApp.inApp() && !!(talk || talkStarting);
+}
+
+/** What the app asked for before the socket was open: done once it is. */
+let onLive: (() => void) | null = null;
+
 function connect(): void {
-  if (ws || !shown || document.hidden) return;
+  if (ws || !shown || (document.hidden && !talkAway())) return;
   const socket = openSocket("/api/assistant");
   ws = socket;
   let opened = false;
@@ -221,13 +244,17 @@ function connect(): void {
     paintConn("● live", "live");
     post({ type: "sync" });
     if (view.current) post({ type: "thread.open", threadId: view.current });
+    void duckApp.connected();
+    const then = onLive;
+    onLive = null;
+    then?.();
   };
   socket.onclose = () => {
     if (ws !== socket) return;
     ws = null;
     paintConn("○ offline", "off");
     if (talk || talkStarting) endTalk("The connection dropped, so conversation mode is off.");
-    if (!shown || document.hidden) return;
+    if (!shown || (document.hidden && !talkAway())) return;
     if (opened) {
       retry = setTimeout(connect, RECONNECT_MS);
       return;
@@ -258,6 +285,7 @@ function disconnect(): void {
 }
 
 function onFrame(f: RemoteDuckFrame): void {
+  if (duckApp.onAppFrame(f)) return;
   if (f.type.startsWith("conv.")) {
     onConv(f as RemoteConvFrame);
     return;
@@ -372,7 +400,8 @@ function send(text: string, voice: boolean, talked: { provisional: boolean } | n
   post({
     type: "send",
     threadId: view.current,
-    text: body,
+    // What was on screen when the assistant gesture opened the app (H5).
+    text: duckApp.withScreen(body),
     ...(voice && { voice: true }),
     ...(speak && !phoneVoice && { speak: true }),
     ...(talked?.provisional && { provisional: true }),
@@ -380,11 +409,27 @@ function send(text: string, voice: boolean, talked: { provisional: boolean } | n
   stuck = true;
 }
 
+/** Send, unless the phone runs it itself (the fast path, H5). */
+async function sendOrRun(text: string, voice: boolean): Promise<void> {
+  const said = await duckApp.runFast(text);
+  if (said) setVoiceNote(said);
+  else send(text, voice);
+}
+
 function sendComposer(): void {
   const text = $<HTMLTextAreaElement>("duck-text");
-  if ((!text.value.trim() && !shared) || ws?.readyState !== WebSocket.OPEN) return;
+  if (!text.value.trim() && !shared) return;
+  if (ws?.readyState !== WebSocket.OPEN) {
+    // Unreachable: the phone's own commands still run.
+    if (!shared && duckApp.inApp() && fastPath(text.value)) {
+      void sendOrRun(text.value, dictated);
+      text.value = "";
+      fitComposer();
+    }
+    return;
+  }
   if (shared) sendShare(text.value, dictated);
-  else send(text.value, dictated);
+  else void sendOrRun(text.value, dictated);
   text.value = "";
   dictated = false;
   fitComposer();
@@ -424,12 +469,11 @@ async function startTalk(): Promise<void> {
   // The desktop loads its models while the browser asks for the mic.
   post({ type: "conv.start", path: prefs.echoPath, voice: "desktop" });
   try {
-    const s = await stream(
-      (frame) => {
-        if (ws?.readyState === WebSocket.OPEN) ws.send(frame);
-      },
-      prefs.echoPath === "shared" ? audioContext() : undefined,
-    );
+    const up = (frame: ArrayBuffer) => {
+      if (ws?.readyState === WebSocket.OPEN) ws.send(frame);
+    };
+    // In the app the mic is native, and keeps going with the screen off (R4).
+    const s = duckApp.inApp() ? await streamNative(up) : await stream(up, prefs.echoPath === "shared" ? audioContext() : undefined);
     if (talkStarting) talk = s;
     else s.stop();
   } catch (e) {
@@ -499,6 +543,8 @@ function routeTalk(t: Extract<RemoteConvFrame, { type: "conv.turn" }>): void {
     case "provisional": {
       const id = view.current;
       if (!id || (view.states[id] ?? "idle") !== "idle") return;
+      // The phone's own command waits for the turn to stand (H5).
+      if (duckApp.inApp() && fastPath(t.text)) return;
       send(t.text, true, { provisional: true });
       talkSent.set(t.id, id);
       return;
@@ -513,6 +559,7 @@ function routeTalk(t: Extract<RemoteConvFrame, { type: "conv.turn" }>): void {
       const id = talkSent.get(t.id);
       talkSent.delete(t.id);
       if (id) post({ type: "turn.commit", threadId: id });
+      else if (duckApp.inApp() && fastPath(t.text)) void duckApp.runFast(t.text).then((said) => said && setVoiceNote(said));
       else send(t.text, true, { provisional: false });
     }
   }
@@ -585,7 +632,7 @@ async function finishRecording(): Promise<void> {
       return;
     }
     setVoiceNote("");
-    if (prefs.sendNow) send(text, true);
+    if (prefs.sendNow) void sendOrRun(text, true);
     else {
       const box = $<HTMLTextAreaElement>("duck-text");
       box.value = (box.value.trim() ? `${box.value.trimEnd()} ` : "") + text.trim();
@@ -600,6 +647,62 @@ async function finishRecording(): Promise<void> {
 function cancelRecording(): void {
   recording?.cancel();
   recording = null;
+}
+
+/** Listen for one request, sent once you stop talking (the assistant gesture and
+ *  the widget's button, R4). The desktop out of reach, the phone's own
+ *  recognizer hears it, for the fast path. */
+function listenOnce(): void {
+  openDuck();
+  panel = "chat";
+  paint("panel");
+  if (ws?.readyState !== WebSocket.OPEN) {
+    onLive = listenOnce;
+    setVoiceNote("connecting…");
+    setTimeout(() => {
+      if (onLive !== listenOnce) return;
+      onLive = null;
+      void duckApp.listenOffline(setVoiceNote);
+    }, 4000);
+    return;
+  }
+  if (recording || starting) return;
+  starting = startRecording().finally(() => (starting = null));
+  void starting.then(() => {
+    const r = recording;
+    if (!r) return;
+    setVoiceNote("listening…");
+    const began = Date.now();
+    let floor = 1;
+    let heard = 0;
+    let quiet = 0;
+    const tick = setInterval(() => {
+      if (recording !== r) return clearInterval(tick);
+      const l = r.level();
+      floor = Math.min(floor, Math.max(l, 0.01));
+      if (l > Math.max(0.06, floor * 3)) {
+        heard += 100;
+        quiet = 0;
+      } else quiet += 100;
+      if (heard >= 200 && quiet >= 1200) {
+        clearInterval(tick);
+        void finishRecording();
+      } else if (!heard && Date.now() - began > 7000) {
+        clearInterval(tick);
+        cancelRecording();
+        setVoiceNote("Didn't hear anything.");
+      }
+    }, 100);
+  });
+}
+
+/** Conversation mode from the app's tile (R4): no tap needed for the mic there. */
+function talkFromApp(): void {
+  openDuck();
+  panel = "chat";
+  paint("panel");
+  if (ws?.readyState === WebSocket.OPEN) void startTalk();
+  else onLive = () => void startTalk();
 }
 
 function wireMic(): void {
@@ -828,6 +931,16 @@ function paint(why: string, before?: DuckView): void {
     paintInstall();
   }
   paintVoice();
+  duckApp.widgetLine(widgetText());
+}
+
+/** The app's widget line (R4): what needs you, else what Duck's doing. */
+function widgetText(): string {
+  if (view.asks.length) return view.asks.length === 1 ? "Duck is waiting for a yes or no" : `${view.asks.length} cards wait for you`;
+  const busy = Object.values(view.states).find((st) => st !== "idle");
+  if (busy) return `Duck: ${STATE_LABEL[busy]}`;
+  if (talk) return "Talking with Duck";
+  return "Duck is here";
 }
 
 function paintTrust(): void {
@@ -1172,7 +1285,13 @@ function paintSettings(): void {
   }
   $("duck-home-note").textContent = homeNote();
   $("duck-home-install").classList.toggle("hidden", !installPrompt || installed());
+  $("duck-app-settings").classList.toggle("hidden", !duckApp.inApp());
+  for (const b of document.querySelectorAll<HTMLButtonElement>("#duck-unlock [data-unlock]"))
+    b.classList.toggle("on", b.dataset.unlock === String(appSettings?.requireUnlock ?? true));
 }
+
+/** The app's own settings (R4), as last read. */
+let appSettings: AppSettings | null = null;
 
 function setPrefs(patch: Partial<Prefs>): void {
   prefs = { ...prefs, ...patch };
@@ -1276,6 +1395,30 @@ export function takeLaunchThread(): string | null {
  *  task's card); `refused` is the device losing access. */
 export function initDuck(d: typeof deps): void {
   deps = d;
+  duckApp.initApp({
+    post,
+    live: () => ws?.readyState === WebSocket.OPEN,
+    listen: listenOnce,
+    talk: talkFromApp,
+    open: () => openDuck(),
+    talkStopped: (why) => {
+      if (talk || talkStarting) {
+        post({ type: "conv.stop" });
+        endTalk(`Conversation mode ${why}.`);
+      }
+    },
+    note: setVoiceNote,
+  });
+  if (duckApp.inApp()) {
+    void getAppSettings().then((s) => (appSettings = s)).catch(() => {});
+    $("duck-app-address").onclick = () => void saveAddress(null).then(() => location.replace(LOADER_URL));
+    for (const b of document.querySelectorAll<HTMLButtonElement>("#duck-unlock [data-unlock]"))
+      b.onclick = () =>
+        void setAppSettings({ requireUnlock: b.dataset.unlock === "true" }).then((s) => {
+          appSettings = s;
+          paint("prefs");
+        });
+  }
   $("duckBtn").onclick = () => openDuck();
   $("duck-close").onclick = closeDuck;
   $("duck-thread").onclick = () => {
@@ -1403,7 +1546,10 @@ export function initDuck(d: typeof deps): void {
 
   document.addEventListener("visibilitychange", () => {
     if (!shown) return;
-    if (document.hidden) {
+    if (document.hidden && talkAway()) {
+      // The app's conversation mode goes on with the screen off (R4).
+      stopAvatar();
+    } else if (document.hidden) {
       cancelRecording();
       if (talk || talkStarting) stopTalk();
       hush();

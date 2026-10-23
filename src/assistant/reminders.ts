@@ -188,6 +188,46 @@ export function view(r: ReminderRecord, now: number): ReminderView {
   };
 }
 
+// ── the phone's alarms (step H5) ──
+
+/** How far ahead the phone holds a repeat's times. */
+export const PHONE_DAYS = 14;
+
+/** A reminder as the phone's app arms it: exact alarms at its coming times
+ *  (epoch ms), which ring with the desktop unreachable. */
+export interface PhoneAlarm {
+  id: string;
+  title: string;
+  body: string;
+  at: number[];
+}
+
+/** The open reminders with a time still to come, and a repeat's times up to
+ *  `days` ahead: what the phone arms. */
+export function phoneAlarms(list: readonly ReminderRecord[], now: number, days = PHONE_DAYS): PhoneAlarm[] {
+  const end = now + days * 86_400_000;
+  const out: PhoneAlarm[] = [];
+  for (const r of list) {
+    if (r.state !== "open") continue;
+    const times = new Set<number>();
+    const first = comesUpAt(r, now);
+    if (first?.includes("T") && dueAt(first) > now) times.add(dueAt(first));
+    if (r.due?.includes("T") && r.repeat) {
+      // From the due itself, so a monthly one keeps its day.
+      walk(r.due, r.repeat, (stamp) => {
+        const t = dueAt(stamp);
+        if (t > end) return false;
+        if (t > now) times.add(t);
+        return true;
+      });
+    }
+    if (!times.size) continue;
+    const body = [r.details, r.repeat && repeatText(r.repeat)].filter(Boolean).join(" · ");
+    out.push({ id: r.id, title: r.title, body, at: [...times].sort((a, b) => a - b) });
+  }
+  return out;
+}
+
 // ── durations ──
 
 const UNIT: Record<string, number> = { h: 3_600_000, m: 60_000, s: 1000 };

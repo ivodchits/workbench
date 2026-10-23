@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Duck as the phone's digital assistant (R4): the gesture opens it listening,
+     over the lock screen too, with the screen's text. -->
+<voice-interaction-service xmlns:android="http://schemas.android.com/apk/res/android"
+    android:sessionService="com.workbench.duck.DuckSessionService"
+    android:recognitionService="com.workbench.duck.DuckRecognitionService"
+    android:supportsAssist="true"
+    android:supportsLaunchVoiceAssistFromKeyguard="true" />
