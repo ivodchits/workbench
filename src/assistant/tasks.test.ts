@@ -604,3 +604,73 @@ describe("tidying up finished tasks", () => {
   });
 });
 
+
+describe("the user's files (G1)", () => {
+  const file = (name: string) => ({ id: `${name[0]}`.repeat(32), name, mime: "text/csv", size: 10 });
+
+  function withFiles(limits?: unknown) {
+    const port = fakePort({
+      projects: [project({ id: "app" })],
+      ...(limits ? { limits: limits as never, spend: { softReached: false, capReached: false } as never } : {}),
+    });
+    const mem = memBackend();
+    const copied: { folder: string; names: string[] }[] = [];
+    let outputs: ReturnType<typeof file>[] = [];
+    mem.backend.inputs = async (_ws, folder, files) => {
+      copied.push({ folder, names: files.map((f) => f.name) });
+      return files.map((f) => f.name);
+    };
+    mem.backend.outputs = async () => outputs;
+    const told: string[] = [];
+    const posted: { threadId: string; names: string[]; title: string }[] = [];
+    let clock = 1_000_000;
+    const tasks = createTaskManager({
+      port,
+      backend: mem.backend,
+      settings: () => DEFAULT_SETTINGS,
+      tell: (_t, text) => told.push(text),
+      files: (threadId, files, title) => posted.push({ threadId, names: files.map((f) => f.name), title }),
+      now: () => clock,
+      today: () => "2026-10-20",
+      apiWorker: async () => {
+        throw new Error("files never go to the API worker");
+      },
+    });
+    const finishWith = (folder: string, made: ReturnType<typeof file>[]) => {
+      outputs = made;
+      clock += 1000;
+      mem.files.set(folder, { json: JSON.stringify({ status: "done", headline: "Merged.", question: null }), jsonModified: clock, md: "# Merged" });
+    };
+    return { port, tasks, mem, copied, told, posted, finishWith };
+  }
+
+  it("copies them into inputs/, lists them in the brief, and posts what the worker made", async () => {
+    const { port, tasks, mem, copied, told, posted, finishWith } = withFiles();
+    const t = await tasks.run(req({ title: "Merge", kind: "analysis", files: [file("a.csv"), file("b.csv"), { ...file("a.csv"), id: "z".repeat(32) }] }));
+    expect(copied).toEqual([{ folder: t.folder, names: ["a.csv", "b.csv", "a.csv"] }]);
+    expect(t.inputs).toEqual(["a.csv", "b.csv", "a (2).csv"]);
+    expect(mem.briefs[0].brief).toContain("In `inputs/` in this folder: `a.csv`, `b.csv`, `a (2).csv`.");
+    const create = port.calls.find((c) => c.name === "createSession")!.args[0] as { prompt: string };
+    expect(create.prompt).toContain(`${t.folder}\\outputs\\`);
+    finishWith(t.folder, [{ id: "m".repeat(32), name: "merged.xlsx", mime: "application/vnd.ms-excel", size: 99 }]);
+    port.phase("new-1", "done");
+    await settle();
+    expect(posted).toEqual([{ threadId: "th1", names: ["merged.xlsx"], title: "Merge" }]);
+    expect(tasks.get(t.id)?.outputs.map((f) => f.name)).toEqual(["merged.xlsx"]);
+    expect(told[told.length - 1]).toContain(`The files it made are in the thread for the user to open or drag out: attached: merged.xlsx (application/vnd.ms-excel, 99 B, id ${"m".repeat(32)})`);
+  });
+
+  it("runs in a session over the subscription's limits, since the API worker can't read them", async () => {
+    const limits = { fiveHour: { usedPercentage: 90, resetsAt: 2_000 }, sevenDay: { usedPercentage: 10, resetsAt: 9_000 }, receivedAt: 1 };
+    const { port, tasks, told } = withFiles(limits);
+    const t = await tasks.run(req({ files: [file("a.csv")] }));
+    expect(t.runner).toBe("session");
+    expect(port.calls.some((c) => c.name === "createSession")).toBe(true);
+    expect(told[0]).toContain("works on the user's files, so it runs in a session");
+  });
+
+  it("without a way to copy them, refuses", async () => {
+    const { tasks } = setup();
+    await expect(tasks.run(req({ files: [file("a.csv")] }))).rejects.toThrow("can't be given files");
+  });
+});

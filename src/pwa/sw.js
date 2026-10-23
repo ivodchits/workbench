@@ -63,22 +63,34 @@ self.addEventListener("fetch", (event) => {
   );
 });
 
-/** Keep a share (title, text, link) for the page and open Duck on it. Only one
- *  waits: a newer share replaces it. Files aren't taken until attachments (G1). */
+/** Keep a share (title, text, link, and since G1 images and PDFs) for the page
+ *  and open Duck on it. Only one waits: a newer share replaces it. Each file is
+ *  kept as its own entry, at most 10 of up to 25 MB. */
 async function takeShare(req) {
   const field = (form, name) => {
     const v = form.get(name);
     return typeof v === "string" ? v.slice(0, 20000) : "";
   };
   let share = null;
+  let files = [];
   try {
     const form = await req.formData();
-    share = { title: field(form, "title"), text: field(form, "text"), url: field(form, "url"), at: Date.now() };
+    share = { title: field(form, "title"), text: field(form, "text"), url: field(form, "url"), at: Date.now(), files: [] };
+    files = form
+      .getAll("files")
+      .filter((f) => typeof f !== "string" && f.size <= 25 * 1024 * 1024)
+      .slice(0, 10);
   } catch {
     // An unreadable post: the page says the share was lost.
   }
   if (share) {
     const cache = await caches.open(SHARE_CACHE);
+    for (const key of await cache.keys()) await cache.delete(key);
+    for (const [i, f] of files.entries()) {
+      const key = `/__share-file-${i}`;
+      await cache.put(key, new Response(f, { headers: { "Content-Type": f.type || "application/octet-stream" } }));
+      share.files.push({ name: f.name || `shared-${i + 1}`, key });
+    }
     await cache.put("/__share", new Response(JSON.stringify(share), { headers: { "Content-Type": "application/json" } }));
   }
   return Response.redirect(new URL(share ? "/?duck=share" : "/?duck=share-lost", self.location.origin).href, 303);

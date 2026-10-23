@@ -43,6 +43,19 @@
 
 import Anthropic from "@anthropic-ai/sdk";
 import type { StoredMessage, ThreadRow } from "../ipc/assistant";
+import {
+  attachmentsOf,
+  createFileCache,
+  expand,
+  findAttachment,
+  isAttachment,
+  MAX_ATTACHMENTS,
+  noFile,
+  toApiBlocks,
+  type AttachmentHost,
+  type AttachmentRef,
+  type FileData,
+} from "./attachments";
 import { capMessage, errorMessage, purpose, THREAD_PURPOSE } from "./client";
 import type { WorkbenchPort } from "./port";
 import { CORE_OPEN, coreText, type CoreHost } from "./core";
@@ -214,6 +227,9 @@ export interface EngineDeps {
   /** Duck's long-term memory (step L1): searched before each of your messages
    *  (automatic recall), and the `remember` / `recall` / `forget` tools. */
   memory?: MemoryHost;
+  /** Attachments (step G1): how each is sent, and an image's or PDF's bytes.
+   *  Without it, a message's files are referenced only. */
+  attachments?: AttachmentHost;
   /** A tool's follow-up event (`later`) is about to be posted, at this level of
    *  news (V5). */
   eventLevel?: (threadId: string, level: Level) => void;
@@ -276,6 +292,8 @@ export interface SendInput {
   brief?: string;
   /** The mode of the thread a `null` `threadId` starts (step S1). */
   mode?: string;
+  /** Files sent with the message (step G1), stored already. */
+  attachments?: AttachmentRef[];
 }
 
 export interface ImportedThread {
@@ -341,9 +359,16 @@ function asBlocks(content: unknown): Blocks {
   return typeof content === "string" ? [{ type: "text", text: content }] : (content as Blocks);
 }
 
-/** A message with words in it (the user's, or an event), not only tool results. */
+/** A message with words in it (the user's, or an event), not only tool results:
+ *  text, or files sent (step G1). */
 function hasText(m: StoredMessage): boolean {
-  return typeof m.content === "string" || asBlocks(m.content).some((b) => b.type === "text");
+  return typeof m.content === "string" || asBlocks(m.content).some((b) => b.type === "text" || isAttachment(b));
+}
+
+/** A message's content as sent: its attachments as the API's blocks (step G1). */
+function sentContent(content: unknown, files?: FileData): ApiMessage["content"] {
+  if (!Array.isArray(content) || !content.some(isAttachment)) return content as ApiMessage["content"];
+  return (content as unknown[]).flatMap((b) => (isAttachment(b) ? toApiBlocks(b, files) : [b])) as Blocks;
 }
 
 /** The latest core memory block (step W4) in a system message at or before
@@ -365,7 +390,7 @@ function droppedCore(history: readonly StoredMessage[], through: number): string
  * last or followed by an assistant turn, other system messages aside; a turn that
  * failed can leave one followed by the next user message).
  */
-export function toApiMessages(history: readonly StoredMessage[]): ApiMessage[] {
+export function toApiMessages(history: readonly StoredMessage[], files?: FileData): ApiMessage[] {
   // After a compaction (step A6), its summary stands in for what it covers.
   const c = lastCompaction(history);
   const kept = history.filter((m) => m.role !== "notice" && (!c || m.seq > c.through));
@@ -382,7 +407,7 @@ export function toApiMessages(history: readonly StoredMessage[]): ApiMessage[] {
   const out: ApiMessage[] = [];
   kept.forEach((m, i) => {
     if (unanswered.has(m)) {
-      out.push({ role: "user", content: [...asBlocks(m.content), { type: "text", text: STOPPED_UNANSWERED }] });
+      out.push({ role: "user", content: [...asBlocks(sentContent(m.content, files)), { type: "text", text: STOPPED_UNANSWERED }] });
       return;
     }
     if (m.role === "system") {
@@ -400,7 +425,7 @@ export function toApiMessages(history: readonly StoredMessage[]): ApiMessage[] {
     }
     out.push({
       role: m.role as "user" | "assistant",
-      content: m.content as ApiMessage["content"],
+      content: m.role === "user" ? sentContent(m.content, files) : (m.content as ApiMessage["content"]),
     });
   });
   if (c) {
@@ -740,6 +765,8 @@ export function createEngine(deps: EngineDeps): Engine {
   const backends = new Map<string, Backend>();
   /** The month the API last said the credit balance is too low. */
   let creditsOut: string | null = null;
+  /** Attachments' bytes for the requests (step G1). */
+  const loadFiles = createFileCache(deps.attachments ?? { prepare: noFile, data: noFile });
 
   /** The prompts the thread was pinned on (step L3); the built-in ones when the
    *  config can't be read. */
@@ -885,8 +912,12 @@ export function createEngine(deps: EngineDeps): Engine {
         effort: want,
         ...(choice.backend === "subscription" && { backend: "subscription" as const }),
       });
+      // Files go first, then your words (step G1).
+      const files = input.attachments?.length
+        ? await expand(input.attachments.slice(0, MAX_ATTACHMENTS), deps.attachments ?? { prepare: noFile, data: noFile }, settings().attachmentTokens)
+        : [];
       const opening: Opening[] = [
-        { role: "user", content: [{ type: "text", text: input.text }], source: input.source },
+        { role: "user", content: [...files, ...(input.text.trim() || !files.length ? [{ type: "text", text: input.text }] : [])], source: input.source },
       ];
       const effortChanged = want !== effectiveEffort(toApiMessages(history));
       // A spoken message gets a spoken-style answer (step V2). One system message
@@ -944,7 +975,7 @@ export function createEngine(deps: EngineDeps): Engine {
         if (!first || !deps.nameThread) return;
         // Fire and forget: a thread without a title is still a thread.
         void deps
-          .nameThread(input.text)
+          .nameThread(input.text.trim() || `Files: ${files.map((f) => f.name).join(", ")}`)
           .then((title) => store.setTitle(threadId, title))
           .then((t) => t && emit({ type: "thread", thread: t }))
           .catch((e) => console.warn("duck: naming the thread failed", e));
@@ -1167,7 +1198,8 @@ export function createEngine(deps: EngineDeps): Engine {
         return;
       }
       setState(threadId, "thinking");
-      const messages = toApiMessages(await requestHistory(threadId, turn));
+      const history = await requestHistory(threadId, turn);
+      const messages = toApiMessages(history, await loadFiles(history.flatMap((m) => (m.role === "user" ? attachmentsOf(m.content) : []))));
       const system = await systemOf(threadId);
       const skills = await skillsOf(threadId);
       let text = "";
@@ -1640,6 +1672,7 @@ export function createEngine(deps: EngineDeps): Engine {
           narrow: (skill, tools) => narrowed.set(threadId, { skill, tools }),
           memoryOff: memoryOff(store.loaded(threadId)),
           request: lastUserText(store.loaded(threadId)),
+          attachment: (id) => findAttachment(store.loaded(threadId), id),
           startThread: (words, opts) => split(threadId, words, opts),
           threads: threadMoves(threadId),
           prepared,

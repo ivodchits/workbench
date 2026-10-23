@@ -90,7 +90,8 @@ tar = { version = "0.4", default-features = false }
 tauri-plugin-global-shortcut = "~2.3"
 cpal = "0.16"
 xcap = "0.9.8"
-image = { version = "0.25", default-features = false, features = ["png"] }
+# Step G1 adds JPEG, GIF, WebP and BMP for attachments (downscaled, thumbnails).
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp"] }
 # Step V4: the turn detector's input is a Whisper log-mel spectrogram, whose
 # 400-point FFT runs 800 times per check.
 rustfft = "6"
@@ -105,6 +106,8 @@ sonora = "0.2"
 # to the versions Tauri 2 already resolves (Cargo.lock) so we share one compiled copy.
 [target.'cfg(windows)'.dependencies]
 webview2-com = "0.38"
+# Step G1: drag an attachment out of the window to Explorer (OLE).
+drag = "2.1.1"
 # Step A1 adds the Credential Manager API, where Duck's API key lives.
 windows = { version = "0.61", features = [
     "Win32_UI_Input_KeyboardAndMouse",

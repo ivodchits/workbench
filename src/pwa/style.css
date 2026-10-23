@@ -330,6 +330,16 @@ body .wb-tx-open-plan { display: none; }
 .duck-user { display: flex; justify-content: flex-end; padding: 4px 0 4px 36px; }
 .duck-user .bubble { white-space: pre-wrap; word-break: break-word; background: var(--wb-sel); border: 1px solid var(--line); border-radius: 8px; padding: 6px 10px; }
 .duck-user .src { margin-top: 3px; font-size: 11px; color: var(--wb-textFaint); }
+/* Files (G1): staged above the composer, in your messages, and a worker's. */
+.duck-files { display: flex; flex-wrap: wrap; gap: 4px; padding: 2px 0; }
+#duck-staged { padding: 4px 8px; }
+.duck-user .bubble .duck-files { margin-bottom: 4px; }
+.duck-file { display: inline-flex; align-items: center; gap: 6px; max-width: 220px; padding: 2px 6px; border: 1px solid var(--line); border-radius: 6px; background: var(--wb-bg); font-size: 12px; }
+.duck-file img { width: 28px; height: 28px; object-fit: cover; border-radius: 3px; }
+.duck-file .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.duck-file .size { color: var(--wb-textFaint); white-space: nowrap; }
+.duck-file button { background: none; border: none; color: var(--wb-textFaint); padding: 0 2px; }
+#duck-staged .error { width: 100%; color: var(--wb-needs, #e06c75); font-size: 12px; }
 .duck-reply { margin: 4px 2px; overflow-wrap: anywhere; }
 .duck-reply:empty { display: none; }
 .duck-event { margin: 4px 2px; padding-left: 8px; border-left: 2px solid var(--accent); color: var(--dim); white-space: pre-wrap; }

@@ -142,6 +142,9 @@ export interface DuckSettings {
   /** The general reminders come up on your first message after this many minutes
    *  without one (step H8), as well as in a new thread. */
   reminderSpellMinutes: number;
+  /** Duck reads a message's attachments itself up to about this many tokens (step
+   *  G1); the rest are referenced, for a worker. */
+  attachmentTokens: number;
 }
 
 export const DEFAULT_TIERS: Record<Tier, TierSpec> = {
@@ -178,6 +181,7 @@ export const DEFAULT_SETTINGS: DuckSettings = {
   sessionModel: "sonnet",
   home: null,
   reminderSpellMinutes: 30,
+  attachmentTokens: 20_000,
 };
 
 /** Do Not Disturb "until I turn it off". */
@@ -242,6 +246,8 @@ export function cleanSettings(raw: unknown): Partial<DuckSettings> {
   if (r.sessionModel === "sonnet" || r.sessionModel === "opus") out.sessionModel = r.sessionModel;
   const spell = whole(r.reminderSpellMinutes, 24 * 60);
   if (spell !== undefined) out.reminderSpellMinutes = Math.max(5, spell);
+  const reads = whole(r.attachmentTokens, 150_000);
+  if (reads !== undefined) out.attachmentTokens = reads;
   if (r.home === null) out.home = null;
   else if (typeof r.home === "string") out.home = r.home.trim().slice(0, 100) || null;
   if (r.google && typeof r.google === "object") out.google = cleanGoogle(r.google as Record<string, unknown>);

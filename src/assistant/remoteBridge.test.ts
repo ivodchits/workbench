@@ -5,6 +5,7 @@ import type { RemoteDuckFrame } from "../remote/protocol";
 import type { ClientMessage, DuckEndpoint, DuckEvent } from "./protocol";
 import { parseRemote, startRemoteBridge, type BridgeDeps } from "./remoteBridge";
 import type { Lang } from "./speakable";
+import { base64, createUploader, PART_BYTES } from "../pwa/uploads";
 
 const fix = (t: string) => t.replace("воркбенч", "Workbench");
 
@@ -336,5 +337,53 @@ describe("startRemoteBridge", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+const last = <T,>(a: readonly T[]): T | undefined => a[a.length - 1];
+
+describe("files from the phone (G1)", () => {
+  const stored = (name: string, data: string) => ({ id: "e".repeat(32), name, mime: "image/jpeg", size: (data.length * 3) / 4, path: `/att/${name}`, thumb: "data:image/jpeg;base64,t" });
+
+  it("go up in parts, are stored whole, and a message sends them by id", async () => {
+    const got: { name: string; data: string }[] = [];
+    const h = harness({ attach: async (name, data) => (got.push({ name, data }), stored(name, data)) });
+    h.open(1);
+    const up = createUploader((m) => h.phone(1, m), () => "u1");
+    const bytes = new Uint8Array(PART_BYTES * 2 + 10).map((_, i) => i % 251);
+    const done = up.upload(new Blob([bytes]), "photo.jpg");
+    // The bridge's answer, back to the page.
+    const answer = async () => {
+      for (let i = 0; i < 50 && !h.sent.some((s) => s.frame.type === "attached"); i++) await new Promise((r) => setTimeout(r, 0));
+      for (const s of h.sent) up.onFrame(s.frame);
+    };
+    const [file] = await Promise.all([done, answer()]);
+    expect(got).toEqual([{ name: "photo.jpg", data: base64(bytes) }]);
+    expect(file).toMatchObject({ id: "e".repeat(32), name: "photo.jpg", path: "/att/photo.jpg" });
+    expect(h.sent.find((s) => s.frame.type === "attached")?.conn).toBe(1);
+
+    h.phone(1, { type: "send", threadId: null, text: "", attachments: [file.id] });
+    expect(h.handled[0].msg).toMatchObject({ type: "send", text: "", source: "phone", attachments: [{ id: file.id, name: "photo.jpg", path: "/att/photo.jpg" }] });
+  });
+
+  it("refuses a file it wasn't sent, a part out of order, and an empty message", async () => {
+    const h = harness({ attach: async (name, data) => stored(name, data) });
+    h.open(1);
+    h.phone(1, { type: "send", threadId: null, text: "look", attachments: ["c".repeat(32)] });
+    expect(last(h.sent)?.frame).toMatchObject({ type: "error", message: expect.stringContaining("attach it again") });
+    h.phone(1, { type: "attach.chunk", upload: "u", name: "a.png", part: 1, data: "QUJD", last: true });
+    expect(last(h.sent)?.frame).toMatchObject({ type: "attached", upload: "u", error: expect.stringContaining("missing") });
+    h.phone(1, { type: "attach.chunk", upload: "u", name: "a.png", part: 0, data: "not base64!", last: true });
+    expect(last(h.sent)?.frame).toMatchObject({ type: "attached", error: "not a file part" });
+    h.phone(1, { type: "send", threadId: null, text: "  " });
+    expect(last(h.sent)?.frame).toMatchObject({ type: "error", message: "an empty message" });
+    expect(h.handled).toEqual([]);
+  });
+
+  it("without a store, says so", () => {
+    const h = harness();
+    h.open(1);
+    h.phone(1, { type: "attach.chunk", upload: "u", name: "a.png", part: 0, data: "QUJD", last: true });
+    expect(last(h.sent)?.frame).toMatchObject({ type: "attached", error: "Duck takes no files here" });
   });
 });

@@ -14,6 +14,7 @@ import { isFinished, TASK_KINDS, TASK_STATES, type Task, type TaskManager } from
 import { compact, findProject, projectArg } from "./read";
 import { defineTool, type ToolContext } from "./registry";
 import { remindersFor } from "./reminders";
+import { MAX_ATTACHMENTS } from "../attachments";
 
 /** How much of a running worker's last reply `task_status` shows. */
 const PROGRESS_CHARS = 1500;
@@ -68,6 +69,7 @@ export const runTask = defineTool({
     "Write `brief` as a complete brief for someone who hasn't seen this conversation: the goal, what to look at, constraints, and what a good answer contains.",
     "Tier: `standard` (the default: single-topic research, short write-ups, chores), `involved` (multi-source comparisons, longer documents, analysis over several inputs), `serious` (high-stakes decisions, architecture, code, anything the user calls important or deep). \"quick\" moves one tier down; \"thoroughly\" / «подробно» one up; \"this is serious\" / «это важно» means serious. Pass `model` / `effort` only when the user names them.",
     "`kind`: research, writing, analysis, browser (keeps the user's Firefox tools), or code (needs `project`). A few run at once; more wait for a free worker.",
+    "`files`: ids of the user's attachments (from <attachment id=…> in this thread, or files a worker made) to copy into the task folder's inputs/; the brief should say what to do with each. Files the worker makes come back to the user as attachments.",
   ].join(" "),
   schema: z.object({
     title: z.string().trim().min(1).max(80).describe("A short name for the task, shown on its card."),
@@ -77,20 +79,26 @@ export const runTask = defineTool({
     project: projectArg.optional().describe("The project a code task works in."),
     model: z.enum(SESSION_MODELS).optional(),
     effort: z.enum(EFFORTS).optional(),
+    files: z.array(z.string().trim().min(1)).max(MAX_ATTACHMENTS).optional().describe("Attachment ids for the worker's inputs/."),
   }),
   tier: "reversible",
   // Making the folder and starting the console; the work itself is reported later.
   timeoutMs: 30_000,
-  describe({ title, kind, tier }) {
-    return `Start a ${tier} ${kind} worker: ${title}`;
+  describe({ title, kind, tier, files }) {
+    return `Start a ${tier} ${kind} worker: ${title}${files?.length ? ` (with ${files.length} file${files.length === 1 ? "" : "s"})` : ""}`;
   },
   trust: (input, port) => ({
     projectId: input.kind === "code" && input.project ? findProject(port, input.project).id : null,
     texts: [input.title, input.brief],
   }),
-  async run({ title, brief, kind, tier, project, model, effort }, ctx) {
+  async run({ title, brief, kind, tier, project, model, effort, files }, ctx) {
     const tasks = manager(ctx);
     if (kind === "code" && !project) throw new Error("A code task needs `project`.");
+    const refs = [...new Set(files ?? [])].map((id) => {
+      const f = ctx.attachment?.(id);
+      if (!f) throw new Error(`There is no file ${id} in this thread: use the id from its <attachment> tag.`);
+      return f;
+    });
     const projectId = kind === "code" && project ? findProject(ctx.port, project).id : undefined;
     const t = await tasks.run({
       threadId: ctx.threadId,
@@ -102,6 +110,7 @@ export const runTask = defineTool({
       effort,
       projectId,
       mandate: ctx.request ? { text: ctx.request, threadId: ctx.threadId } : undefined,
+      ...(refs.length && { files: refs }),
     });
     await ctx.notice({ kind: "task", text: `Task: ${t.title}`, task: { id: t.id } });
     const running = tasks.list().filter((x) => x.state === "running").length;

@@ -40,6 +40,9 @@
 //   host, arms the reminders, opens listening from the assistant gesture and the
 //   widget (conversation mode from the tile), runs the fast path's commands
 //   itself, and keeps conversation mode going with the screen off.
+// - G1: files go with a message: 📎 (the camera offered for images), a paste, or
+//   a share from another app. Each is uploaded at once (`uploads.ts`) and shown as
+//   a chip above the composer; the next typed or dictated message takes them.
 
 import { langOf, Sentences } from "../assistant/speakable";
 import {
@@ -77,6 +80,8 @@ import { SpeechQueue } from "./speechQueue";
 import { micAvailable, record, type Recording } from "./mic";
 import { api, ApiError, checkAccess, openSocket } from "./net";
 import { SHARE_ASKS, shareBody, shareLines, shareMessage, STATUS_ASK, takeShare, TASK_LEAD, type Launch } from "./launch";
+import { createUploader } from "./uploads";
+import { sizeText, type AttachmentRef } from "../assistant/attachments";
 
 const RECONNECT_MS = 2000;
 const STICK_PX = 48;
@@ -234,6 +239,82 @@ function post(msg: RemoteDuckMessage | RemoteConvMessage | RemoteHostMessage): v
   if (ws?.readyState === WebSocket.OPEN) ws.send(JSON.stringify(msg));
 }
 
+// ── files (G1) ──────────────────────────────────────────────────────────────
+
+const uploader = createUploader((m) => post(m));
+/** Stored, waiting to go with the next message. */
+let staged: AttachmentRef[] = [];
+/** Picked or shared, waiting for the socket to go up. */
+const toUpload: { blob: Blob; name: string }[] = [];
+let uploading = 0;
+let filesError = "";
+
+function stageFiles(files: { blob: Blob; name: string }[]): void {
+  toUpload.push(...files);
+  filesError = "";
+  void pumpUploads();
+  paintFiles();
+}
+
+async function pumpUploads(): Promise<void> {
+  while (toUpload.length && ws?.readyState === WebSocket.OPEN) {
+    const f = toUpload.shift()!;
+    uploading++;
+    paintFiles();
+    try {
+      const file = await uploader.upload(f.blob, f.name);
+      if (!staged.some((s) => s.id === file.id && s.name === file.name)) staged = [...staged, file];
+    } catch (e) {
+      filesError = `${f.name}: ${e instanceof Error ? e.message : String(e)}`;
+    } finally {
+      uploading--;
+      paintFiles();
+    }
+  }
+}
+
+/** A file's chip: its thumbnail or a sign, its name and size; × when staged. */
+function fileChip(f: AttachmentRef, remove?: () => void): HTMLElement {
+  const chip = el("span", "duck-file");
+  if (f.thumb?.startsWith("data:image/jpeg;base64,")) {
+    const img = document.createElement("img");
+    img.src = f.thumb;
+    img.alt = "";
+    chip.append(img);
+  } else chip.append(el("span", "sign", f.mime.startsWith("image/") ? "🖼" : f.mime === "application/pdf" ? "📕" : "📄"));
+  chip.append(el("span", "name", f.name), el("span", "size", sizeText(f.size)));
+  if (remove) {
+    const x = el("button", "", "✕");
+    x.type = "button";
+    x.setAttribute("aria-label", `remove ${f.name}`);
+    x.onclick = remove;
+    chip.append(x);
+  }
+  return chip;
+}
+
+function fileRow(files: readonly AttachmentRef[]): HTMLElement {
+  const row = el("div", "duck-files");
+  for (const f of files) row.append(fileChip(f));
+  return row;
+}
+
+function paintFiles(): void {
+  const box = $("duck-staged");
+  box.replaceChildren();
+  for (const f of staged)
+    box.append(
+      fileChip(f, () => {
+        staged = staged.filter((s) => s !== f);
+        paintFiles();
+      }),
+    );
+  const waiting = uploading + toUpload.length;
+  if (waiting) box.append(el("span", "muted", `adding ${waiting}…`));
+  if (filesError) box.append(el("div", "error", filesError));
+  box.classList.toggle("hidden", !staged.length && !waiting && !filesError);
+}
+
 /** In the app, conversation mode goes on with the screen off (R4). */
 function talkAway(): boolean {
   return duckApp.inApp() && !!(talk || talkStarting);
@@ -254,6 +335,7 @@ function connect(): void {
     post({ type: "sync" });
     if (view.current) post({ type: "thread.open", threadId: view.current });
     void duckApp.connected();
+    void pumpUploads();
     const then = onLive;
     onLive = null;
     then?.();
@@ -261,6 +343,7 @@ function connect(): void {
   socket.onclose = () => {
     if (ws !== socket) return;
     ws = null;
+    uploader.drop();
     paintConn("○ offline", "off");
     if (talk || talkStarting) endTalk("The connection dropped, so conversation mode is off.");
     if (!shown || (document.hidden && !talkAway())) return;
@@ -294,7 +377,7 @@ function disconnect(): void {
 }
 
 function onFrame(f: RemoteDuckFrame): void {
-  if (duckApp.onAppFrame(f)) return;
+  if (duckApp.onAppFrame(f) || uploader.onFrame(f)) return;
   if (f.type.startsWith("conv.")) {
     onConv(f as RemoteConvFrame);
     return;
@@ -396,7 +479,13 @@ function hush(): void {
  *  be `provisional`. */
 function send(text: string, voice: boolean, talked: { provisional: boolean } | null = null): void {
   const body = text.trim();
-  if (!body) return;
+  // Files go with what you type or dictate, not with a conversation's turn (G2).
+  const files = talked ? [] : staged;
+  if (!body && !files.length) return;
+  if (files.length) {
+    staged = [];
+    paintFiles();
+  }
   unlock();
   hush();
   hushed = false;
@@ -414,20 +503,23 @@ function send(text: string, voice: boolean, talked: { provisional: boolean } | n
     ...(voice && { voice: true }),
     ...(speak && !phoneVoice && { speak: true }),
     ...(talked?.provisional && { provisional: true }),
+    ...(files.length && { attachments: files.map((f) => f.id) }),
   });
   stuck = true;
 }
 
 /** Send, unless the phone runs it itself (the fast path, H5). */
 async function sendOrRun(text: string, voice: boolean): Promise<void> {
-  const said = await duckApp.runFast(text);
+  const said = staged.length ? null : await duckApp.runFast(text);
   if (said) setVoiceNote(said);
   else send(text, voice);
 }
 
 function sendComposer(): void {
   const text = $<HTMLTextAreaElement>("duck-text");
-  if (!text.value.trim() && !shared) return;
+  if (!text.value.trim() && !shared && !staged.length) return;
+  // Files still going up go with this message once they're there.
+  if (uploading || toUpload.length) return;
   if (ws?.readyState !== WebSocket.OPEN) {
     // Unreachable: the phone's own commands still run.
     if (!shared && duckApp.inApp() && fastPath(text.value)) {
@@ -1002,9 +1094,15 @@ function autopilotCard(a: AutopilotView): HTMLElement {
 
 function itemView(it: Item, active: boolean): HTMLElement {
   switch (it.kind) {
+    case "files": {
+      const wrap = el("div", "duck-event", it.text);
+      wrap.append(fileRow(it.files));
+      return wrap;
+    }
     case "user": {
       const wrap = el("div", "duck-user");
       const bubble = el("div", "bubble", it.text);
+      if (it.files?.length) bubble.prepend(fileRow(it.files));
       const label = SOURCE_LABEL[it.source];
       if (label) bubble.append(el("div", "src", label));
       wrap.append(bubble);
@@ -1386,9 +1484,12 @@ export async function launchDuck(launch: Launch): Promise<void> {
     case "share": {
       const s = await takeShare();
       shared = s && shareBody(s) ? { body: shareBody(s), preview: shareLines(s).join("\n") } : null;
-      fresh = shared !== null;
+      // Files shared (G1) are staged like a 📎 pick.
+      const files = s?.files ?? [];
+      if (files.length) stageFiles(files);
+      fresh = shared !== null || files.length > 0;
       openDuck();
-      if (!shared) {
+      if (!shared && !files.length) {
         view = { ...view, error: "Nothing came with the share, or it was too old." };
         paint("share");
       }
@@ -1516,6 +1617,19 @@ export function initDuck(d: typeof deps): void {
       e.preventDefault();
       sendComposer();
     }
+  });
+  // G1: 📎, and pasted files.
+  const picker = $<HTMLInputElement>("duck-file");
+  $("duck-attach").onclick = () => picker.click();
+  picker.onchange = () => {
+    stageFiles(Array.from(picker.files ?? []).map((f) => ({ blob: f, name: f.name || "photo.jpg" })));
+    picker.value = "";
+  };
+  text.addEventListener("paste", (e) => {
+    const files = Array.from(e.clipboardData?.files ?? []);
+    if (!files.length) return;
+    e.preventDefault();
+    stageFiles(files.map((f) => ({ blob: f, name: f.name && f.name !== "image.png" ? f.name : `pasted-${Date.now()}.${f.type.split("/")[1] || "png"}` })));
   });
   const sendBtn = $("duck-send");
   // Tapping send must not close the on-screen keyboard.

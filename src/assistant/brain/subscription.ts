@@ -26,6 +26,7 @@ import {
   type McpResult,
   type McpTool,
 } from "../../ipc/brain";
+import { attachmentLine, isAttachment } from "../attachments";
 import { CORE_OPEN } from "../core";
 import type { Effort, Notice } from "../protocol";
 import { SYSTEM_PROMPT } from "../prompt";
@@ -193,6 +194,7 @@ function lines(m: StoredMessage): string[] {
   for (const b of blocksOf(m.content)) {
     if (b.type === "text" && String(b.text).trim())
       out.push(m.role === "assistant" ? `Duck: ${String(b.text).trim()}` : `${m.source === "event" ? "Workbench" : "User"}: ${String(b.text).trim()}`);
+    else if (isAttachment(b)) out.push(`  [${attachmentLine(b)}: not shown on this brain; a worker can read it (run_task files)]`);
     else if (b.type === "tool_use") out.push(`  [Duck called ${String(b.name)} ${clip(JSON.stringify(b.input ?? {}), 200)}]`);
     else if (b.type === "tool_result")
       out.push(`  [${b.is_error ? "failed" : "result"}: ${clip(resultText(b.content).replace(/\s+/g, " "), 300)}]`);

@@ -7557,6 +7557,89 @@ checked in the scratch PTY first.
     prefix is unchanged (the cache read is in `assistant_usage`).
 - **Out of scope:** voice and drops together (G2); video and audio files (sent as name and
   path only).
+- **As built (2026-10-23):**
+  - **The store** (`attachments.rs`): `<app data>/duck-attachments/<id>/<name>`
+    (`.dev` for the debug build). The id is the SHA-256's first 32 hex digits, so the
+    same bytes are kept once under each name they came with.
+    - Images get a JPEG thumbnail (a data URL) for the chips.
+    - What's sent is made once, beside the file in `.duck/`: an image downscaled to
+      1568 px (a JPEG stays one, anything else is a PNG), so a thread's later requests
+      send the same bytes.
+  - **How a file is sent** (`prepare`, then `expand` in `attachments.ts`), chosen when
+    you send and stored in your message as an `attachment` block, before your words:
+    - an image as an image;
+    - a PDF (up to 32 MB and 100 pages) as a `document`;
+    - UTF-8 text up to 50 KB as its text, wrapped `untrusted` (a closing tag inside it
+      can't end the wrapper);
+    - anything else, or anything past the thrift's budget, as a reference: name,
+      size, path, and "a worker can: run_task with files".
+  - **The thrift:** Duck reads a message's files itself up to `attachmentTokens`
+    (20k, a setting with no UI yet), in order. The system prompt says what Duck looks
+    at itself and what goes to a worker, with examples. The safety rules now call
+    what's inside an attachment data.
+  - **Desktop:**
+    - The whole drawer is a drop target: Explorer through `ipc/osDrop` (paths), and
+      the editor tree, Diff and Git lists through `state/fileDrag`.
+    - Paste: `clipboardData.files`, which in WebView2 carries the bytes (a
+      screenshot, and files copied in Explorer), stored by `assistant_attach_bytes`.
+    - 📎 opens the dialog plugin's picker.
+    - Chips sit above the composer; a message may be files only (its thread is named
+      "Files: …").
+    - A chip opens its file on a click and drags out to Explorer when pulled
+      (`assistant_attach_drag`, the `drag` crate's OLE drag on the window's thread).
+  - **Phone:**
+    - 📎 (`<input type=file multiple accept="image/*,*/*">`, so Android offers the
+      camera), and paste.
+    - The bytes go up over Duck's socket as `attach.chunk` parts (147,456 bytes each,
+      under the server's 256 KB frame), and `attached` answers with the stored file.
+    - A `send` names its files by id, and the bridge only takes files uploaded to it;
+      the name and path are the desktop's record, never the phone's word.
+    - Shares: the manifest's `share_target` takes `files` (images, PDFs); `sw.js`
+      keeps each one in the share cache, and `takeShare` stages them like a 📎 pick.
+  - **Engine:**
+    - `toApiMessages(history, files)` expands each block. The bytes of the history's
+      images and PDFs are read at request time (`createFileCache`, the latest 24
+      kept), always from the same file.
+    - The subscription brain gets a line per file; it can't see them.
+  - **Workers:**
+    - `run_task` takes `files` (ids found in the thread: your messages, or files a
+      worker made). They are copied into `inputs/` and listed in `brief.md`, as data.
+    - Such a task always runs in a session: the API worker can't read files.
+    - The contract asks for files for the user in `outputs/`. When the task ends they
+      are stored, posted in the thread as a `files` notice (chips that open and drag
+      out) and named in Duck's report.
+  - **Kept (question 33):** while a message or task names them, plus a week. The
+    weekly housekeeping prunes the rest (`assistant_attach_prune`).
+  - **Checked live on the dev app,** acting as the phone over its Duck socket (a
+    throwaway device row, removed after):
+    - A 2400 × 900 PNG went up, was stored and downscaled to 1568 × 588. Duck
+      answered 'The code is 7Q3K (the image reads "CODE 7Q3K"), and the circle is
+      red.'
+    - The follow-up in that thread read all 26,067 tokens of the first request from
+      the cache (`assistant_usage` `cache_r`), so the prefix with the image holds.
+    - Three CSVs with "convert these into one spreadsheet": Duck read them (small),
+      still sent the conversion to a worker with `files`, the worker had them in
+      `inputs/`, and its output came back as a chip with the report.
+    - The drawer renders with 📎 (a screenshot of the dev window).
+  - **The worker made a CSV, not the .xlsx:** a worker in Duck's workspace runs under
+    `dontAsk` with Read, Edit, Write and the web tools only, so it has no shell to
+    build an Excel file. It said so and wrote the merged CSV instead. Making
+    spreadsheets needs a shell for those workers (`Bash(python:*)` or broader in
+    `workspace.rs` `allow_rules`), which is a trust decision left to you.
+  - **Tested** (Rust and TypeScript):
+    - the store, names, the downscale, text / PDF / other, inputs and outputs, prune;
+    - the thrift and the blocks;
+    - a turn with an image sent the same twice;
+    - a phone upload in parts through the bridge, and its refusals;
+    - `run_task` `files`;
+    - a task's inputs, outputs and report, and the routing to a session;
+    - the chips in the view.
+  - **Not tried yet:**
+    - paste, drop from Explorer and from the editor tree, and the picker, by hand on
+      the desktop (no keys were scripted into your app);
+    - dragging a chip out to Explorer;
+    - a photo from the phone's camera and a share of an image (the phone side ran as
+      a script).
 
 #### Step G2 — Talking about what you drop
 
@@ -7932,7 +8015,7 @@ T2 goes live after the replay check in its done-when (the past week's prompts th
 | 30 | Which Google plan do you have (AI Pro or Ultra), and do its developer credits pay for Gemini image generation? Decides G6's route. | G6 |
 | 31 | Drawing over the subscription thresholds: **wait for the window** (proposed default, to keep API credits) or fall back to an API worker as other tasks do? | G3 |
 | 32 | A pen or touch screen on the PC? Changes how much the desktop sketch pad needs beyond the mouse. | G5 |
-| 33 | How long to keep attachments (default: as long as their thread)? | G1 |
+| 33 | ~~How long to keep attachments?~~ **As long as a message or task names them, plus a week** (G1, 2026-10-23). | ✔ |
 
 ---
 
@@ -7996,7 +8079,7 @@ T2 goes live after the replay check in its done-when (the past week's prompts th
 | H5 | The phone as a host (with R4) | ☑ (emulator only) |
 | H6 | Duck on the home server (gate: the server) | ☐ |
 | H7 | The phone's fallback brain | ☑ (before H6; emulator only, no real phone key yet) |
-| G1 | Attachments: paste, drop and pick files into Duck | ☐ |
+| G1 | Attachments: paste, drop and pick files into Duck | ☑ (desktop by hand and the phone's camera not tried; workers can't make .xlsx without a shell) |
 | G2 | Talking about what you drop | ☐ |
 | G3 | Drawing workers and the canvas | ☐ |
 | G4 | The worker sees its drawing | ☐ |

@@ -5,9 +5,9 @@ behind each decision are in `assistant-plan.md`. This file describes the code, a
 Duck step updates it as part of its Done when. Duck's self-development sessions (L3)
 read it first.
 
-Last updated: step H7 (2026-10-23). L3 audited it against the code. Since W5 it also
+Last updated: step G1 (2026-10-23). L3 audited it against the code. Since W5 it also
 covers W6, D2, D4, P1, P2, M2, M3, A5, A6, A7, W4, L1, L2, L3, L4, R1, R2, R3, B1, B2, T3, D3, V1 to V7,
-V8, S1, S2, X1, H1 to H5, H7, H8, R4 and the morning routine. A fresh session changing Duck: read "The shape", then "Where to
+V8, S1, S2, X1, H1 to H5, H7, H8, R4, G1 and the morning routine. A fresh session changing Duck: read "The shape", then "Where to
 change X" at the end, then the module rows it points to.
 
 ## The shape
@@ -74,6 +74,7 @@ change X" at the end, then the module rows it points to.
 | `timings.ts` | D3: `createTurnClock` times each turn you start from the engine's events (start, `routing`'s mode and brain, the first delta, the first sentence, idle or parked), with an API turn's cost from the meter and the subscription's 5-hour window before and after; the endpoint keeps each in `turn_timings`. `timingStats` / `statLine`: the medians per mode, brain and model, $ an hour on the API and the window's % an hour on the subscription, over conversations of 5 minutes or more (protocol `timings.get`). |
 | `engine.ts` | The loop. Pure helpers `toApiMessages`, `effectiveEffort`, `buildParams` and `eventText` are exported for tests. Each tool call gets a `ToolContext` with the settings, `notice()` (a thread item the model never sees) and `later(text)` (a follow-up sent into the thread as a `<workbench_event>` user message with source `event`, which runs its own turn). A tool with `prepare` has it run first (a throw fails the call before any card); what it returns is kept on the call (`BatchCall.prepared`, persisted with a parked batch) and handed to `describe`, `review`, `trust` and `run` (`ctx.prepared`). The gate is asked with the call's own tier (`registry.callTier`), the card's summary and the tool's trust facts (`registry.trustFacts`). It answers run, ask, or deny with a reason, and an optional notice. |
 | `threads.ts` | `createThreadStore(backend)`: threads, messages (loaded per thread on first use) and parked tool batches, in memory and persisted. Appends to one thread are serialized so each gets the next `seq`. `create(mode, id?)`: H7's imported threads keep the phone's id. |
+| `attachments.ts` | Attachments (G1): `AttachmentRef` (what a surface sends: id, name, mime, size, path, thumb), `AttachmentBlock` (the `attachment` block a user message stores, with `as`: `image`, `document`, `text` (and its text) or `ref` (and `why`)), `expand(refs, host, budget)` (how each is sent, read by Duck while the message stays within `attachmentTokens`, referenced past it), `toApiBlocks` (an `<attachment id … />` label and the image or PDF block; a text file wrapped `untrusted`, a closing tag inside defused; a `ref` names `run_task` `files`), `createFileCache` (the bytes a request needs, read by `AttachmentHost.data`, the latest 24 kept), `findAttachment` (a thread's file by id: a message of yours or a `files` notice), `attachmentLine`. |
 | `offline.ts` | The phone's fallback brain (H7), what both sides share: `OFFLINE_NOTE` (added to the system prompt on the phone), the `offline.sync` frame's schema, `transcript` (a thread as text: your words, Duck's replies, a line per tool used, ending with a reply), and the app's kept state (`parseState`, `threadsToSync`, `withoutThreads`). The engine's `importThread` makes a synced conversation a thread of its own, once. |
 | `client.ts` | `getClient()` (the SDK at the proxy, with the launch token as its key), `purpose()`, `capMessage()`, `errorMessage()`, `structured({model, system, input, schema?, purpose, …})` (one call, structured output parsed), and `oneShot(name, input, {schema?})` for Haiku primitives over it. |
 | `prompt.ts` | The system prompt and the voice note as built in (L3: the defaults; what a thread runs with comes from `config.ts`), `MAIN_MODEL` / `PRIMITIVE_MODEL`, and `PRIMITIVES` (one frozen prompt per Haiku job; the key is its `x-wb-purpose`). |
@@ -166,6 +167,7 @@ prompt's safety rules cover them.
 | `sheets.rs` | Google Sheets. Reads: `assistant_sheet_search` (sheets by name), `assistant_sheet_read` (a tab's non-empty cells, shown and as formulas, 150 rows by 26 columns, and its tabs), `assistant_sheet_cells` (given cells, up to 20) and `assistant_sheet_export` (the cells, plus the tab as CSV, the file as xlsx and a JSON sidecar in `<workspace>/data/invoices/`). Only Google Sheets files. The draft: `assistant_sheet_draft` refuses a second draft of a sheet for a month while the first is in Drive, re-reads the original against what the card showed, refuses a formula cell (in the original and the copy), makes the drafts folder once, copies with Drive's `files.copy` and falls back to uploading the xlsx export as a new Sheet, records the file, then sets the cells (`USER_ENTERED`, plain values only) and reads them back. `assistant_sheet_drafts` lists a month's drafts still in Drive. |
 | `skills.rs` | Duck's skills (S2): `skills/<name>/SKILL.md` in the workspace. `list` (cached; a `notify` watcher on `skills/` marks it stale, so an edit is read on the next request), each file's frontmatter fields (`crate::skills::frontmatter`, the skill manager's parser made general), body, text and problems (a folder name that isn't kebab-case, no frontmatter, a `name:` that isn't the folder's, no description, over 64 KB); `write` (over the text it was read as, else "stale:"; the caller commits). Commands `assistant_skills_list`, `assistant_skill_write`. |
 | `config.rs` | Duck's prompt files (L3): `read` (`config/system.md` and `config/voice.md` only, with each one's seed from `meta` `config_seed:<file>`), `write` (over the text it was read as, else "stale:"; records a seed when given; the caller commits), `pin` / `pinned` (a thread's prompts as JSON under their hash; a pinned thread keeps its pin). Commands `assistant_config_read`, `_write`, `_pin`, `_pinned`. |
+| `attachments.rs` | G1: files stored once, at `<app data>/duck-attachments/<id>/<name>` (`duck-attachments.dev` in debug; the id is SHA-256's first 32 hex digits; `clean_name` makes the name one safe path component). `store_bytes` / `store_path` (200 MB at most; a JPEG thumbnail as a data URL for images), `prepare` (how it's sent: an image downscaled once to 1568 px into `.duck/api.png` or `.jpg` (a JPEG stays one), a PDF up to 32 MB and 100 pages (counted from its page objects) as a `document`, UTF-8 text up to 50 KB as text, the rest a `ref`; with a token estimate), `data` (base64 of what's sent), `copy_into` (a task's `inputs/`, a repeated name gets " (2)"), `store_folder` (a task's `outputs/`, 20 files), `prune` (folders over a week old that no message or task names). Commands `assistant_attach_paths`, `_bytes`, `_prepare`, `_data`, `_inputs`, `_outputs`, `_prune` (looks the ids up in `assistant_messages` and `assistant_tasks`), and `_drag` (the `drag` crate's OLE drag of the file, on the window's thread). |
 | `db.rs` | `duck.db` / `duck.dev.db` and its append-only migrations; `assistant_google_files` records every Drive file Duck made (the drafts folder, each draft with its source sheet and month). |
 
 ### The desktop surface: `src/panels/Assistant/`
@@ -177,6 +179,7 @@ prompt's safety rules cover them.
 | `DuckButton.tsx` | The title-bar button ("D.U.C.K.", the icon beside it): toggles the drawer, the acronym tooltip, a confirmation-count badge, an amber/red tint past the soft limit/cap, ⏸ while trust is paused. |
 | `TrustViews.tsx` | `TrustPanel` (kill switch, rules, project modes, the floor with a typed confirmation) and `DecisionsPanel` (the log with make-a-rule / always-ask, the rule from `suggestRule`; and the replay of the past week with its report). Opened from the settings popover; they take the thread's place. |
 | `Drawer.tsx` | The drawer: header (thread list, new, memory, the trust pill that is the kill switch, settings, close), thread view (markdown replies, tool chips, queued bubbles), confirmation cards, spend line (its tooltip: today's cost and, H3, today's YouTube search units), composer (Enter / Shift+Enter / Esc, "think hard" = effort `high` for one message). A task card for a change to Duck (L3, `SelfChange`) adds its branch, the safety badge, and "open diff" / "ask for changes" (fills the composer, `fillComposer`) / "merge…". Always mounted and only hidden, so the thread and scroll survive closing. |
+| `staging.ts` / `Attachments.tsx` | G1: the files waiting for the next message (`stagePaths`, `stageBlobs` for a paste, `takeStaged` when it's sent), `pickFiles` (the dialog plugin), `pasteFiles`, `useFileDrop` (the whole drawer takes Explorer's files through `ipc/osDrop` and the app's own drags through `state/fileDrag`); `FileChip` (thumbnail or sign, name, size; a click opens the file, a pull drags it out with `attachDrag`), `FileList`, `StagedFiles`. |
 | `RemindersBadge.tsx` | H8: the reminders widget, a red dot with the open count ("!" for a broken file) in the duck's upper-left corner, or the chat's with the duck hidden; a click lists titles only (`widgetOrder`), Escape closes it; it pulses when one comes up (`remindersPulse`). From the `reminders` event. |
 | `RoutinesSettings.tsx` | The "routines" settings tab (L4): where Duck's data is backed up (or a name field and "back up to a private GitHub repo…", which asks once more), "Delete threads idle for", and every routine with its schedule, next and last run, and run now / pause / resume / delete. |
 | `DrawerSettings.tsx` | Queue-or-interrupt, and "start at login, minimized to the tray" (`@tauri-apps/plugin-autostart`; disabled in dev builds); the workers' settings, with "Edit core.md" (W4) and which brain Duck answers on (M3). |
@@ -892,6 +895,35 @@ When the app can't reach Workbench, the loader runs Duck's own engine on the pho
   `offline` dep in `index.ts` (reminders added by id with a chip; each conversation
   `importThread`ed as "Offline: …") → `offline.synced`, and the app drops what was taken.
 
+## Attachments (step G1)
+
+- **In:** the drawer stores a file the moment it's pasted, dropped or picked
+  (`staging.ts` → `assistant_attach_*`) and sends the refs with the message (`send`'s
+  `attachments`). The phone uploads it over Duck's socket in `attach.chunk` parts
+  (`src/pwa/uploads.ts`, 147,456 bytes a part under the server's 256 KB frame); the
+  bridge joins them, stores them through `attach` and answers `attached`; a phone's
+  `send` names files by id, and only ones uploaded on the bridge count. A share from
+  another app can carry images and PDFs (the manifest's `share_target` `files`, kept
+  by `sw.js`, staged by `launch.ts` `takeShare`).
+- **Stored with the message:** the engine's `start` runs `expand` on the refs and puts
+  the blocks before your words, so the choice (and a text file's text) is in
+  `assistant_messages` and the history stays append-only. A message may be files only;
+  its thread is then named "Files: …".
+- **Sent:** `loop` reads the bytes the history's images and PDFs need
+  (`createFileCache`) and `toApiMessages(history, files)` expands each block. The bytes
+  come from the same file every time, so the prefix and its cache hold. The
+  subscription brain gets a line per file (it can't see them).
+- **Thrift:** the system prompt says what Duck reads itself and what is a `run_task`
+  with `files`; `attachmentTokens` (20k) caps what one message is read at; the rest are
+  `ref`s. What's in a file is data, in the safety rules.
+- **Workers:** `run_task` `files` (ids, found in the thread by `ctx.attachment`) are
+  copied into `inputs/` and listed in `brief.md`; such a task never goes to the API
+  worker. The contract asks for files in `outputs/`; when the task finishes they are
+  stored, posted in the thread as a `files` notice (chips to open or drag out) and
+  named in the report.
+- **Kept:** as long as a message or task names them, plus a week: the weekly
+  housekeeping prunes the rest (`pruneFiles`).
+
 ## Where to change X
 
 - **What Duck says, its routing rules and examples, the tool tiers' wording**: the files
@@ -955,6 +987,10 @@ When the app can't reach Workbench, the loader runs Duck's own engine on the pho
   `launchDuck` in `src/pwa/duck.ts`, and `takeShare` in `src/pwa/sw.js`. How a phone
   proves its key: `remote/auth.rs` (the rules), `remote/mod.rs` (`start_session`,
   `check_token`), and `src/pwa/deviceKey.ts` and `net.ts`.
+- **Attachments (G1)**: how a file is sent and the thrift, `attachments.ts` and
+  `attachments.rs` `prepare`; the rule Duck follows, `prompt.ts`; the drawer's chips
+  and drop, `staging.ts` / `Attachments.tsx`; the phone's upload, `src/pwa/uploads.ts`
+  and `remoteBridge.ts`; workers' inputs and outputs, `tasks.ts`.
 - **The phone brain (H7)**: what it can do, `src/pwa/phoneBrain.ts`; its note,
   `OFFLINE_NOTE` in `src/assistant/offline.ts`; its cap and pricing, `PhoneBrain.kt`;
   the loader's chat, `duck-android/web/loader.ts`; the sync, `duckApp.ts` and the
@@ -1013,6 +1049,11 @@ Both rules are in `prompt.ts`.
   and a text, the widget on a home screen. Not built: switching to the tailnet's own
   address (MagicDNS covers it), the screenshot with the gesture (G1), Glyph lights,
   the widget polling by itself.
+
+- Attachments (G1): paste, drops and the picker on the desktop, the drag out, and the
+  phone's camera and shares haven't been tried by hand (the phone side ran as a script
+  over the socket). Workers in the workspace have no shell, so one can't build an
+  .xlsx from CSVs (it wrote a CSV instead).
 
 - The phone brain (H7), built before the home server (H6), on an emulator: no real
   phone key yet, so no successful turn on the phone. Checked there: the transport to

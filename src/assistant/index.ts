@@ -25,6 +25,10 @@ import {
   sheetExport,
   workspacePrepare,
   taskResult,
+  attachBytes,
+  attachData,
+  attachPrepare,
+  attachPrune,
   onUsage,
   replayCalls,
   type Spend,
@@ -641,6 +645,11 @@ export function initAssistant(): Promise<void> {
           ?.send({ threadId, text: eventText(text), source: "event" })
           .catch((e: unknown) => console.warn("duck: a task report was dropped", e));
       },
+      // What a worker made (G1): chips in its thread, before the report.
+      files: (threadId, files, title) =>
+        void engineRef
+          ?.notice(threadId, { kind: "files", text: `Files from ${title}`, files })
+          .catch((e: unknown) => console.warn("duck: a task's files weren't posted", e)),
     });
     // Plan autopilots (P1) report the same way; their step log is notices.
     const autopilot = createAutopilot({
@@ -824,6 +833,7 @@ export function initAssistant(): Promise<void> {
       piloted: () => new Set(autopilot.list().filter((a) => a.state !== "stopped").map((a) => a.threadId)),
       consolidatedTo: async () => (await tidier.last())?.at ?? null,
       resultJson: (t) => taskResult(t.workspace, t.folder).then((r) => r.json),
+      pruneFiles: attachPrune,
       tell: (threadId, text, level) => {
         levels.set(threadId, level);
         void engineRef
@@ -889,6 +899,7 @@ export function initAssistant(): Promise<void> {
       }),
     );
     const engine = createEngine({
+      attachments: { prepare: attachPrepare, data: attachData },
       tasks,
       autopilot,
       summaries,
@@ -1140,6 +1151,7 @@ export function initAssistant(): Promise<void> {
       },
       warm: (ru) => void ttsWarm(ru).catch(() => {}),
       hosts,
+      attach: attachBytes,
       phoneReminders: {
         alarms: () => phoneAlarms(reminders.list(), Date.now()),
         subscribe: (cb) => reminders.subscribe((pulse) => pulse || cb()),

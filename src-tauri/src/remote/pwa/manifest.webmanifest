@@ -20,5 +20,5 @@
     {"name": "New task", "short_name": "Task", "description": "Give Duck something to get done", "url": "/?duck=task", "icons": [{"src": "/icon-task-96.png", "sizes": "96x96", "type": "image/png"}]},
     {"name": "What needs me?", "short_name": "Needs me", "description": "What's waiting for you", "url": "/?duck=status", "icons": [{"src": "/icon-status-96.png", "sizes": "96x96", "type": "image/png"}]}
   ],
-  "share_target": {"action": "/share", "method": "POST", "enctype": "multipart/form-data", "params": {"title": "title", "text": "text", "url": "url"}}
+  "share_target": {"action": "/share", "method": "POST", "enctype": "multipart/form-data", "params": {"title": "title", "text": "text", "url": "url", "files": [{"name": "files", "accept": ["image/*", "application/pdf", ".pdf"]}]}}
 }

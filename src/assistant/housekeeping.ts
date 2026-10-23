@@ -74,6 +74,8 @@ export interface HousekeepingDeps {
   consolidatedTo(): Promise<number | null>;
   /** A task's `result.json`, as written. */
   resultJson(t: Task): Promise<string | null>;
+  /** Remove attachments nothing refers to any more (G1); how many went. */
+  pruneFiles?(): Promise<number>;
   tell(threadId: string, text: string, level: Level): void;
   now?: () => number;
 }
@@ -348,7 +350,9 @@ export function createHousekeeping(deps: HousekeepingDeps): Housekeeping {
     if (prev && !isFinished(prev.state)) return `the last run's worker is still going (task ${prev.id})`;
     const deleted = await cleanThreads();
     const mech = await git.housekeep(localDate(now() - TASK_KEEP_DAYS * DAY_MS));
+    const pruned = (await deps.pruneFiles?.().catch(() => 0)) ?? 0;
     const mechLine = [
+      pruned && `removed ${pruned} attached file${pruned === 1 ? "" : "s"} no thread refers to any more`,
       mech.indexed.length && `folded ${mech.indexed.length} old task folders into tasks/INDEX.md`,
       mech.removed && `removed ${mech.removed} of their intermediate files (${Math.round(mech.bytes / 1024)} KB)`,
       mech.committed.length && `committed ${mech.committed.length} files no commit had taken`,

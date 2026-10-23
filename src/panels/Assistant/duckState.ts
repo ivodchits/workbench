@@ -19,6 +19,7 @@
 
 import { useSyncExternalStore } from "react";
 import { getDuck, initAssistant } from "../../assistant";
+import type { AttachmentRef } from "../../assistant/attachments";
 import { notifyAlert } from "../../ipc/attention";
 import { getNotificationConfig } from "../../state/notifications";
 import type {
@@ -558,7 +559,7 @@ export const isRunning = (threadId: string): boolean => {
 export const isBusy = (threadId: string | null): boolean =>
   !!threadId && (state.states[threadId] ?? "idle") !== "idle";
 
-export function sendMessage(text: string, effort?: Effort, source: Source = "desktop"): void {
+export function sendMessage(text: string, effort?: Effort, source: Source = "desktop", attachments?: AttachmentRef[]): void {
   const threadId = state.current;
   set({ error: null });
   if (threadId && isBusy(threadId)) {
@@ -576,7 +577,15 @@ export function sendMessage(text: string, effort?: Effort, source: Source = "des
     });
   }
   if (!threadId) adopting = true;
-  post({ type: "send", threadId, text, source, effort, ...(!threadId && { mode: state.newMode }) });
+  post({
+    type: "send",
+    threadId,
+    text,
+    source,
+    effort,
+    ...(!threadId && { mode: state.newMode }),
+    ...(attachments?.length && { attachments }),
+  });
 }
 
 /** The mode the new thread on screen starts in (step S1). */

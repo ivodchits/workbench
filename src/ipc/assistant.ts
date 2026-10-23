@@ -224,6 +224,54 @@ export const taskResult = (workspace: string, folder: string): Promise<TaskResul
 export const taskWriteResult = (workspace: string, folder: string, md: string, json: string): Promise<void> =>
   invoke("assistant_task_write_result", { workspace, folder, md, json });
 
+// ── attachments (step G1) ──
+
+/** A stored attachment (`attachments.rs`): content-addressed, kept under its name. */
+export interface StoredFile {
+  id: string;
+  name: string;
+  mime: string;
+  size: number;
+  /** Where it's kept, for a worker's brief and the drag out. */
+  path: string;
+  /** An image's thumbnail, a `data:image/jpeg` URL. */
+  thumb?: string;
+}
+
+/** How the engine sends an attachment: an image block, a PDF `document`, its
+ *  text, or only a reference (name, size, path). */
+export interface PreparedFile {
+  as: "image" | "document" | "text" | "ref";
+  mediaType?: string;
+  /** About how many input tokens reading it costs. */
+  tokens: number;
+  text?: string;
+  /** Why a file of a kind Duck reads is only referenced (too big, not UTF-8). */
+  why?: string;
+}
+
+/** Store files by path: a drop, the picker. */
+export const attachPaths = (paths: string[]): Promise<{ stored: StoredFile[]; failed: string[] }> =>
+  invoke("assistant_attach_paths", { paths });
+/** Store bytes (base64): a paste, the phone. */
+export const attachBytes = (name: string, data: string): Promise<StoredFile> =>
+  invoke("assistant_attach_bytes", { name, data });
+export const attachPrepare = (id: string, name: string): Promise<PreparedFile> =>
+  invoke("assistant_attach_prepare", { id, name });
+/** An image's (downscaled) or a PDF's bytes as sent, base64. */
+export const attachData = (id: string, name: string, kind: "image" | "document"): Promise<string> =>
+  invoke("assistant_attach_data", { id, name, kind });
+/** Copy attachments into a task folder's `inputs/`; the names written. */
+export const attachInputs = (workspace: string, folder: string, files: [string, string][]): Promise<string[]> =>
+  invoke("assistant_attach_inputs", { workspace, folder, files });
+/** A task's `outputs/`, stored as attachments. */
+export const attachOutputs = (workspace: string, folder: string): Promise<StoredFile[]> =>
+  invoke("assistant_attach_outputs", { workspace, folder });
+/** Remove attachments nothing has referred to for a week; how many went. */
+export const attachPrune = (): Promise<number> => invoke("assistant_attach_prune");
+/** Drag a stored file out of the window. */
+export const attachDrag = (id: string, name: string): Promise<void> => invoke("assistant_attach_drag", { id, name });
+
 // ── core memory (step W4) ──
 
 /** `memory/core.md` in the workspace (`dir`, else the default): its path, and its

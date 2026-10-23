@@ -7,6 +7,7 @@
 // engine or the thread store directly.
 
 import type { DecisionRow, Spend, StoredMessage, ThreadRow } from "../ipc/assistant";
+import type { AttachmentRef } from "./attachments";
 import type { ReaderView } from "./reader";
 import type { ReminderRecord, ReminderView } from "./reminders";
 import type { Brain } from "./routing";
@@ -160,8 +161,12 @@ export interface Notice {
     | "memoryOff"
     /** A reminder: Duck's change to one (a chip with an undo), a project's when
      *  you start a session there, or one that's due (H8). */
-    | "reminder";
+    | "reminder"
+    /** Files a worker made, for the user (G1): chips to open or drag out. */
+    | "files";
   text: string;
+  /** `files` only. */
+  files?: AttachmentRef[];
   /** `note` only. */
   note?: NoteEdit;
   /** `plugins` only. */
@@ -252,6 +257,9 @@ export type ClientMessage =
       provisional?: boolean;
       /** The mode of the thread a `null` `threadId` starts (step S1). */
       mode?: string;
+      /** Files sent with it (step G1), stored already (`attachPaths` /
+       *  `attachBytes`, or the phone's `attach.*` frames). */
+      attachments?: AttachmentRef[];
     }
   | { type: "stop"; threadId: string }
   /** A provisional turn stands, or is dropped (you went on talking). */

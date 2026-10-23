@@ -17,6 +17,22 @@ const msg = (
 });
 
 describe("toItems", () => {
+  it("shows a message's files as chips, even with no words, and a worker's files (G1)", () => {
+    seq = 0;
+    const shot = { id: "a".repeat(32), name: "shot.png", mime: "image/png", size: 10, path: "C:\\x\\shot.png", thumb: "data:image/jpeg;base64,t" };
+    const made = { id: "b".repeat(32), name: "merged.xlsx", mime: "application/vnd.ms-excel", size: 99 };
+    const items = toItems([
+      msg("user", [{ type: "attachment", ...shot, as: "image", mediaType: "image/png" }]),
+      msg("user", [{ type: "attachment", ...shot, as: "image" }, { type: "text", text: "and this?" }], "phone"),
+      msg("notice", { kind: "files", text: "Files from Merge", files: [made] }, "duck"),
+    ]);
+    expect(items).toEqual([
+      { kind: "user", key: "t:0", text: "", source: "desktop", files: [shot] },
+      { kind: "user", key: "t:1", text: "and this?", source: "phone", files: [shot] },
+      { kind: "files", key: "t:2", text: "Files from Merge", files: [made] },
+    ]);
+  });
+
   it("shows a web search as a chip, and its citations as numbered links (B1)", () => {
     seq = 0;
     const page = (url: string, title: string) => ({ type: "web_search_result", url, title, encrypted_content: "e" });

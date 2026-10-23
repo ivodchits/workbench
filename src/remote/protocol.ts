@@ -10,6 +10,7 @@ import type { DuckEvent, Effort, Stamped } from "../assistant/protocol";
 import type { HostDown, HostUp } from "../assistant/hosts";
 import type { PhoneAlarm, ReminderRecord } from "../assistant/reminders";
 import type { OfflineThread } from "../assistant/offline";
+import type { AttachmentRef } from "../assistant/attachments";
 import type { InstanceStatus } from "../ipc/registry";
 import type { RateLimits } from "../ipc/usageLimits";
 import type { ChoiceKind, ChoiceOption, ChoiceQuestion } from "../state/pendingChoice";
@@ -210,7 +211,13 @@ export type RemoteDuckMessage =
       effort?: Effort;
       /** Conversation mode (step V4): start now, keep only on `turn.commit`. */
       provisional?: boolean;
+      /** Files uploaded first (step G1, `attach.chunk`), by the ids `attached`
+       *  gave; `text` may then be empty. */
+      attachments?: string[];
     }
+  /** A file going up (step G1), in parts of base64 (each but the last a whole
+   *  number of 3-byte groups), in order; `attached` answers the last. */
+  | { type: "attach.chunk"; upload: string; name: string; part: number; data: string; last: boolean }
   | { type: "stop"; threadId: string }
   /** A provisional turn stands, or is dropped (you went on talking). */
   | { type: "turn.commit"; threadId: string }
@@ -256,6 +263,9 @@ export type RemoteDuckFrame =
   /** To a phone host (step H5): the open reminders' coming times, which its app
    *  arms as exact alarms; sent on hello and on every change. */
   | { type: "phone.reminders"; alarms: PhoneAlarm[]; v: number }
+  /** A file the phone sent is stored (step G1): `file` to send with a message, or
+   *  why it wasn't. */
+  | { type: "attached"; upload: string; file?: AttachmentRef; error?: string; v: number }
   /** To a phone host (step H7): what the desktop took of an `offline.sync`, by id. */
   | { type: "offline.synced"; reminders: string[]; threads: string[]; v: number }
   | RemoteConvFrame;

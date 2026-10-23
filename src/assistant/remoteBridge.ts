@@ -46,9 +46,14 @@
 // - What the app's offline brain made (step H7, `offline.ts`) comes as
 //   `offline.sync`, from a socket that said hello only; `offline.synced` tells it
 //   what was taken.
+// - Files (step G1) go up as `attach.chunk` parts and are stored (`attach`);
+//   `attached` gives the phone the file to send. A `send` names its files by id,
+//   and only files uploaded here count: the rest of each (name, path) is the
+//   desktop's own record, never the phone's word.
 
 import { z } from "zod";
-import type { StoredMessage } from "../ipc/assistant";
+import type { StoredFile, StoredMessage } from "../ipc/assistant";
+import { MAX_ATTACHMENTS, type AttachmentRef } from "./attachments";
 import {
   assistantRemoteEmit,
   assistantRemotePush,
@@ -66,6 +71,12 @@ import { OfflineSync, type OfflineThread } from "./offline";
 
 /** The longest message a phone may send. */
 const TEXT_MAX = 20_000;
+/** The biggest file a phone may send, as base64 (about 25 MB). */
+const UPLOAD_MAX = 34_000_000;
+/** One part of an upload, as base64 (the server takes frames up to 256 KB). */
+const PART_MAX = 200 * 1024;
+/** Files uploaded, remembered for the messages that send them. */
+const UPLOADS_KEPT = 200;
 
 const id = z.string().min(1).max(200);
 const Message = z.discriminatedUnion("type", [
@@ -75,11 +86,12 @@ const Message = z.discriminatedUnion("type", [
   z.object({
     type: z.literal("send"),
     threadId: id.nullable(),
-    text: z.string().trim().min(1).max(TEXT_MAX),
+    text: z.string().trim().max(TEXT_MAX),
     voice: z.boolean().optional(),
     speak: z.boolean().optional(),
     effort: z.enum(["low", "medium", "high", "xhigh", "max"]).optional(),
     provisional: z.boolean().optional(),
+    attachments: z.array(id).max(MAX_ATTACHMENTS).optional(),
   }),
   z.object({ type: z.literal("stop"), threadId: id }),
   z.object({ type: z.literal("turn.commit"), threadId: id }),
@@ -109,14 +121,31 @@ const HostFrame = z.discriminatedUnion("type", [
   OfflineSync,
 ]);
 
-/** A phone's frame as a Duck Protocol message, or why it's refused. */
-export function parseRemote(raw: unknown, fixVoice: (text: string) => string): ClientMessage | string {
+const Chunk = z.object({
+  type: z.literal("attach.chunk"),
+  upload: id,
+  name: z.string().trim().min(1).max(200),
+  part: z.number().int().min(0),
+  data: z.string().max(PART_MAX).regex(/^[A-Za-z0-9+/]*={0,2}$/),
+  last: z.boolean(),
+});
+
+/** A phone's frame as a Duck Protocol message, or why it's refused. `file`
+ *  finds a file uploaded here (step G1). */
+export function parseRemote(
+  raw: unknown,
+  fixVoice: (text: string) => string,
+  file: (id: string) => AttachmentRef | undefined = () => undefined,
+): ClientMessage | string {
   const type = (raw as { type?: unknown } | null)?.type;
   const r = Message.safeParse(raw);
   if (!r.success) return typeof type === "string" ? `"${type}" can't be sent from the phone` : "not a Duck message";
   const m: RemoteDuckMessage = r.data;
   switch (m.type) {
-    case "send":
+    case "send": {
+      const files = (m.attachments ?? []).map(file);
+      if (!m.text && !files.length) return "an empty message";
+      if (files.some((f) => !f)) return "a file in this message wasn't uploaded here: attach it again";
       return {
         type: "send",
         threadId: m.threadId,
@@ -124,7 +153,9 @@ export function parseRemote(raw: unknown, fixVoice: (text: string) => string): C
         source: m.voice ? "phone-voice" : "phone",
         ...(m.effort && { effort: m.effort }),
         ...(m.provisional && { provisional: true }),
+        ...(files.length && { attachments: files as AttachmentRef[] }),
       };
+    }
     case "trust.pause":
       return { type: "trust.pause", paused: true };
     default:
@@ -168,6 +199,8 @@ export interface BridgeDeps {
   phoneReminders?: PhoneReminders;
   /** Takes what a phone's offline brain made (step H7): the ids taken. */
   offline?: (reminders: ReminderRecord[], threads: OfflineThread[]) => Promise<{ reminders: string[]; threads: string[] }>;
+  /** Stores a file a phone uploaded (step G1), given as base64. */
+  attach?: (name: string, data: string) => Promise<StoredFile>;
 }
 
 /** What a phone host gets of the reminders (step H5). */
@@ -380,10 +413,53 @@ export function startRemoteBridge(d: BridgeDeps): RemoteBridge {
     if (conns.size > 0) d.link.emit(stamp(e), null);
   });
 
+  /** Uploads under way, by socket and upload id: the parts so far. */
+  const uploads = new Map<string, { parts: string[]; size: number }>();
+  /** Files phones uploaded, by id (the latest `UPLOADS_KEPT`). */
+  const uploaded = new Map<string, AttachmentRef>();
+
+  /** A part of a file from `conn` (step G1); the last stores it. */
+  function chunk(conn: number, raw: unknown): void {
+    const r = Chunk.safeParse(raw);
+    const upload = (raw as { upload?: unknown } | null)?.upload;
+    const answer = (f: { file?: AttachmentRef; error?: string }) =>
+      d.link.emit({ type: "attached", upload: typeof upload === "string" ? upload : "", ...f, v: PROTOCOL_VERSION }, conn);
+    if (!r.success) return answer({ error: "not a file part" });
+    if (!d.attach) return answer({ error: "Duck takes no files here" });
+    const m = r.data;
+    const key = `${conn}:${m.upload}`;
+    const u = uploads.get(key) ?? { parts: [], size: 0 };
+    if (m.part !== u.parts.length) {
+      uploads.delete(key);
+      return answer({ error: "a part went missing: send the file again" });
+    }
+    u.parts.push(m.data);
+    u.size += m.data.length;
+    if (u.size > UPLOAD_MAX) {
+      uploads.delete(key);
+      return answer({ error: `over ${Math.round((UPLOAD_MAX * 3) / 4 / 1e6)} MB` });
+    }
+    if (!m.last) {
+      uploads.set(key, u);
+      return;
+    }
+    uploads.delete(key);
+    d.attach(m.name, u.parts.join(""))
+      .then((s) => {
+        const file: AttachmentRef = { id: s.id, name: s.name, mime: s.mime, size: s.size, path: s.path, ...(s.thumb && { thumb: s.thumb }) };
+        uploaded.delete(s.id);
+        uploaded.set(s.id, file);
+        while (uploaded.size > UPLOADS_KEPT) uploaded.delete(uploaded.keys().next().value!);
+        answer({ file });
+      })
+      .catch((e: unknown) => answer({ error: e instanceof Error ? e.message : String(e) }));
+  }
+
   const offInput = d.link.onInput((i) => {
     if (i.kind === "open") conns.add(i.conn);
     else if (i.kind === "close") {
       conns.delete(i.conn);
+      for (const k of uploads.keys()) if (k.startsWith(`${i.conn}:`)) uploads.delete(k);
       hostConns.get(i.conn)?.close();
       hostConns.delete(i.conn);
       d.duck.handle({ type: "thread.view", surface: `phone:${i.conn}`, threadId: null });
@@ -391,8 +467,10 @@ export function startRemoteBridge(d: BridgeDeps): RemoteBridge {
       for (let k = sent.length - 1; k >= 0; k--) if (sent[k].conn === i.conn) sent.splice(k, 1);
     } else if (isHostUp(i.msg) || HOST_ONLY.has((i.msg as { type?: unknown } | null)?.type)) {
       host(i.conn, i.msg);
+    } else if ((i.msg as { type?: unknown } | null)?.type === "attach.chunk") {
+      chunk(i.conn, i.msg);
     } else {
-      const msg = parseRemote(i.msg, d.fixVoice);
+      const msg = parseRemote(i.msg, d.fixVoice, (fid) => uploaded.get(fid));
       if (typeof msg === "string") return toPhone(i.conn, { type: "error", message: msg });
       const raw = i.msg as RemoteDuckMessage;
       if (msg.type === "send") sent.push({ conn: i.conn, text: msg.text });

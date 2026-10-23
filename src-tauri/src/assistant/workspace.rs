@@ -188,7 +188,7 @@ pub fn new_task(dir: &Path, date: &str, title: &str, brief: &str) -> Result<Path
 }
 
 /// `folder`, if it is a task folder of the workspace `dir`.
-fn task_folder(dir: &Path, folder: &str) -> Result<PathBuf, String> {
+pub fn task_folder(dir: &Path, folder: &str) -> Result<PathBuf, String> {
     let tasks = std::fs::canonicalize(dir.join(TASKS)).map_err(|e| format!("no tasks folder: {e}"))?;
     let f = std::fs::canonicalize(folder).map_err(|e| format!("no task folder {folder}: {e}"))?;
     if f.parent() != Some(tasks.as_path()) {

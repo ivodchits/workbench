@@ -65,6 +65,9 @@ import {
 } from "./voiceState";
 import { voicePtt, voiceToggle } from "../../ipc/voice";
 import { TasksPanel } from "./TasksView";
+import { FileList, StagedFiles } from "./Attachments";
+import { getStaging, pasteFiles, pickFiles, takeStaged, useFileDrop, useStaging } from "./staging";
+import type { AttachmentRef } from "../../assistant/attachments";
 import { MemoryPanel } from "./MemoryView";
 import { OverviewPanel } from "./OverviewView";
 import { DecisionsPanel, TrustPanel } from "./TrustViews";
@@ -232,11 +235,14 @@ export default function AssistantDrawer() {
   const current = duck.current;
   const thread = duck.threads.find((t) => t.id === current) ?? null;
   const busy = isBusy(current);
+  // The whole drawer takes files (G1).
+  const drop = useFileDrop();
 
   return (
     <div
       data-wb-duck
       aria-hidden={!duck.open}
+      {...drop.handlers}
       onKeyDown={(e) => {
         if (e.key !== "Escape" || e.defaultPrevented) return;
         e.preventDefault();
@@ -343,6 +349,7 @@ export default function AssistantDrawer() {
       <Asks duck={duck} />
       <SpendLine duck={duck} />
       <Composer duck={duck} busy={busy} inputRef={composerRef} />
+      {drop.over && <div className="wb-filedrop">drop to attach</div>}
       <div
         onPointerDown={startResize}
         title="drag to resize"
@@ -921,7 +928,14 @@ function NewThreadModes({ mode, modes }: { mode: DuckState["newMode"]; modes: Mo
 function ItemView({ item, active }: { item: Item; active: boolean }) {
   switch (item.kind) {
     case "user":
-      return <UserBubble text={item.text} source={item.source} />;
+      return <UserBubble text={item.text} source={item.source} files={item.files} />;
+    case "files":
+      return (
+        <div style={{ margin: "4px 16px", display: "flex", flexDirection: "column", gap: 4 }}>
+          <span style={{ color: "var(--wb-textDim2)" }}>{item.text}</span>
+          <FileList files={item.files} />
+        </div>
+      );
     case "reply":
       return <Reply text={item.text} />;
     case "tool":
@@ -1160,9 +1174,12 @@ function UserBubble({
   source,
   queued,
   pending,
+  files,
 }: {
   text: string;
   source?: string;
+  /** Sent with it (G1). */
+  files?: AttachmentRef[];
   queued?: boolean;
   /** Conversation mode's turn in its grace window: keep talking to add to it. */
   pending?: boolean;
@@ -1186,6 +1203,11 @@ function UserBubble({
           padding: "5px 9px",
         }}
       >
+        {files?.length ? (
+          <div style={{ marginBottom: text ? 4 : 0 }}>
+            <FileList files={files} />
+          </div>
+        ) : null}
         {text}
         {(dashed || (source && source !== "desktop")) && (
           <div
@@ -1627,10 +1649,12 @@ function Composer({
     el.style.height = `${Math.min(el.scrollHeight, 150)}px`;
   }, [draft, inputRef]);
 
+  const staging = useStaging();
   const send = () => {
     const text = draft.trim();
-    if (!text || !duck.ready) return;
-    sendMessage(text, hard ? "high" : undefined);
+    // Files still being stored go with the next message, not half of them now.
+    if ((!text && !getStaging().files.length) || getStaging().storing || !duck.ready) return;
+    sendMessage(text, hard ? "high" : undefined, "desktop", takeStaged());
     setDraft("");
     setHard(false);
   };
@@ -1646,10 +1670,15 @@ function Composer({
         gap: 6,
       }}
     >
+      <StagedFiles />
       <textarea
         ref={inputRef}
         value={draft}
         rows={1}
+        onPaste={(e) => {
+          // A screenshot or files copied in Explorer become chips (G1).
+          if (pasteFiles(e.clipboardData)) e.preventDefault();
+        }}
         placeholder={
           duck.ready
             ? "ask duck…  (Enter sends, Shift+Enter new line)"
@@ -1680,6 +1709,15 @@ function Composer({
       )}
       <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
         <MicButton voice={voice} />
+        <button
+          type="button"
+          title="attach files (or paste, or drop them on the drawer)"
+          aria-label="attach files"
+          onClick={() => void pickFiles().catch(() => {})}
+          style={btn}
+        >
+          📎
+        </button>
         <button
           type="button"
           aria-pressed={hard}
@@ -1715,7 +1753,7 @@ function Composer({
             color: "var(--wb-accent)",
             borderColor: "var(--wb-accent)",
           }}
-          disabled={!draft.trim() || !duck.ready}
+          disabled={(!draft.trim() && !staging.files.length) || staging.storing > 0 || !duck.ready}
           onClick={send}
         >
           {busy ? (duck.prefs.interrupt ? "interrupt" : "queue") : "send"}

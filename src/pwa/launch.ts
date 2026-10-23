@@ -15,6 +15,14 @@ export interface Share {
   url: string;
   /** When it was shared (epoch ms). */
   at: number;
+  /** Images and PDFs shared (step G1), staged like a 📎 pick. */
+  files?: { blob: Blob; name: string }[];
+}
+
+/** How the service worker keeps a shared file: its name and its cache key. */
+interface KeptFile {
+  name: string;
+  key: string;
 }
 
 /** A share older than this when the page reads it is dropped (left over). */
@@ -74,8 +82,15 @@ export async function takeShare(now = Date.now()): Promise<Share | null> {
     const hit = await cache.match("/__share");
     await cache.delete("/__share");
     if (!hit) return null;
-    const s = (await hit.json()) as Share;
-    return now - s.at <= SHARE_MAX_AGE_MS ? s : null;
+    const s = (await hit.json()) as Omit<Share, "files"> & { files?: KeptFile[] };
+    const files: { blob: Blob; name: string }[] = [];
+    for (const f of s.files ?? []) {
+      const r = await cache.match(f.key);
+      await cache.delete(f.key);
+      if (r) files.push({ blob: await r.blob(), name: f.name });
+    }
+    if (now - s.at > SHARE_MAX_AGE_MS) return null;
+    return { title: s.title, text: s.text, url: s.url, at: s.at, ...(files.length && { files }) };
   } catch {
     return null;
   }

@@ -7,6 +7,7 @@
 
 import type { StoredMessage } from "../../ipc/assistant";
 import type { MemoryEdit, NoteEdit, Notice, PluginsEdit, ReminderEdit } from "../../assistant/protocol";
+import { attachmentsOf, type AttachmentRef } from "../../assistant/attachments";
 
 /** A reminder chip's diff (H8): the record as JSON, before and after. */
 export function reminderFiles(e: ReminderEdit): { label: string; before: string; after: string }[] {
@@ -16,7 +17,10 @@ export function reminderFiles(e: ReminderEdit): { label: string; before: string;
 }
 
 export type Item =
-  | { kind: "user"; key: string; text: string; source: string }
+  /** `files`: what was sent with it (G1). */
+  | { kind: "user"; key: string; text: string; source: string; files?: AttachmentRef[] }
+  /** Files a worker made (G1): chips to open or drag out. */
+  | { kind: "files"; key: string; text: string; files: AttachmentRef[] }
   | { kind: "event"; key: string; text: string }
   | { kind: "note"; key: string; text: string; edit: NoteEdit }
   | { kind: "plugins"; key: string; text: string; edit: PluginsEdit }
@@ -152,6 +156,8 @@ export function toItems(messages: readonly StoredMessage[]): Item[] {
         items.push({ kind: "reminder", key, text: n.text, edit: n.reminder });
       else if (n.kind === "task" && n.task)
         items.push({ kind: "task", key, text: n.text, taskId: n.task.id });
+      else if (n.kind === "files" && n.files?.length)
+        items.push({ kind: "files", key, text: n.text, files: n.files });
       else items.push({ kind: "notice", key, notice: n });
       continue;
     }
@@ -161,10 +167,11 @@ export function toItems(messages: readonly StoredMessage[]): Item[] {
         .map((b) => b.text ?? "")
         .join("\n")
         .trim();
-      if (!text) continue;
+      const files = attachmentsOf(m.content).map(({ id, name, mime, size, path, thumb }) => ({ id, name, mime, size, path, thumb }));
+      if (!text && !files.length) continue;
       if (m.source === "event")
         items.push({ kind: "event", key, text: eventBody(text) });
-      else items.push({ kind: "user", key, text, source: m.source });
+      else items.push({ kind: "user", key, text, source: m.source, ...(files.length && { files }) });
       continue;
     }
     if (m.role !== "assistant") continue;

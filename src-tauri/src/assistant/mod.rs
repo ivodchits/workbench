@@ -17,6 +17,7 @@
 //! Step H2: the PC's tools, Steam ([`steam`]) and the media sessions ([`media`]).
 //! Step H3: YouTube search for music and video ([`youtube`]).
 //! Step H8: reminders, `reminders.json` in Duck's repo ([`reminders`]).
+//! Step G1: attachments, stored once and referenced ([`attachments`]).
 //! The morning routine: Google access ([`google`]) and the invoice sheet ([`sheets`]).
 //!
 //! The webview never holds the key. It asks [`assistant_proxy_info`] for the proxy's
@@ -24,6 +25,7 @@
 //! that token. See `documentation/assistant-plan.md`, "Calling the API without
 //! exposing the key".
 
+pub mod attachments;
 mod autopilot;
 mod budget;
 pub mod config;
@@ -797,4 +799,119 @@ pub fn assistant_decisions(
     limit: u32,
 ) -> Result<Vec<trust::Decision>, String> {
     trust::decisions(&lock(&ctx), before, limit)
+}
+
+// ── attachments (step G1) ──
+
+fn attachments_root(app: &AppHandle) -> Result<std::path::PathBuf, String> {
+    Ok(attachments::root(&app.path().app_data_dir().map_err(|e| e.to_string())?))
+}
+
+/// What a drop or the picker stored, and what it couldn't.
+#[derive(Serialize)]
+pub struct Attached {
+    pub stored: Vec<attachments::Stored>,
+    pub failed: Vec<String>,
+}
+
+/// Store files by path (a drop from Explorer or the editor, the picker).
+#[tauri::command]
+pub async fn assistant_attach_paths(app: AppHandle, paths: Vec<String>) -> Result<Attached, String> {
+    let root = attachments_root(&app)?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut out = Attached { stored: Vec::new(), failed: Vec::new() };
+        for p in paths {
+            match attachments::store_path(&root, std::path::Path::new(&p)) {
+                Ok(s) => out.stored.push(s),
+                Err(e) => out.failed.push(e),
+            }
+        }
+        out
+    })
+    .await
+    .map_err(|e| e.to_string())
+}
+
+/// Store bytes (a paste, the phone), given as base64.
+#[tauri::command]
+pub async fn assistant_attach_bytes(app: AppHandle, name: String, data: String) -> Result<attachments::Stored, String> {
+    use base64::Engine as _;
+    let root = attachments_root(&app)?;
+    let bytes = base64::engine::general_purpose::STANDARD.decode(data.as_bytes()).map_err(|e| format!("not base64: {e}"))?;
+    tauri::async_runtime::spawn_blocking(move || attachments::store_bytes(&root, &name, &bytes))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+/// How the engine sends an attachment (made once, then read from disk).
+#[tauri::command]
+pub async fn assistant_attach_prepare(app: AppHandle, id: String, name: String) -> Result<attachments::Prepared, String> {
+    let root = attachments_root(&app)?;
+    tauri::async_runtime::spawn_blocking(move || attachments::prepare(&root, &id, &name))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+/// An image's or PDF's bytes as sent, base64.
+#[tauri::command]
+pub async fn assistant_attach_data(app: AppHandle, id: String, name: String, kind: String) -> Result<String, String> {
+    let root = attachments_root(&app)?;
+    tauri::async_runtime::spawn_blocking(move || attachments::data(&root, &id, &name, &kind))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+/// Copy attachments into a task folder's `inputs/`; returns the names written.
+#[tauri::command]
+pub fn assistant_attach_inputs(app: AppHandle, workspace: String, folder: String, files: Vec<(String, String)>) -> Result<Vec<String>, String> {
+    let f = workspace::task_folder(&workspace::resolve(Some(&workspace))?, &folder)?;
+    attachments::copy_into(&attachments_root(&app)?, &files, &f.join("inputs"))
+}
+
+/// The files a worker left in its task folder's `outputs/`, stored as attachments.
+#[tauri::command]
+pub async fn assistant_attach_outputs(app: AppHandle, workspace: String, folder: String) -> Result<Vec<attachments::Stored>, String> {
+    let f = workspace::task_folder(&workspace::resolve(Some(&workspace))?, &folder)?;
+    let root = attachments_root(&app)?;
+    tauri::async_runtime::spawn_blocking(move || attachments::store_folder(&root, &f.join("outputs"), 20))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+/// Remove attachments no message or task has referred to for a week.
+#[tauri::command]
+pub fn assistant_attach_prune(app: AppHandle, ctx: Db<'_>) -> Result<usize, String> {
+    let root = attachments_root(&app)?;
+    let conn = lock(&ctx);
+    let referred = |id: &str| {
+        let q = |sql: &str| conn.query_row(sql, [id], |_| Ok(())).is_ok();
+        q("SELECT 1 FROM assistant_messages WHERE instr(content, ?1) > 0 LIMIT 1")
+            || q("SELECT 1 FROM assistant_tasks WHERE instr(data, ?1) > 0 LIMIT 1")
+    };
+    Ok(attachments::prune(&root, 7 * 24 * 3_600_000, referred))
+}
+
+/// Drag a stored file out of the window (to Explorer, the desktop, a mail).
+#[tauri::command]
+pub fn assistant_attach_drag(window: tauri::WebviewWindow, app: AppHandle, id: String, name: String) -> Result<(), String> {
+    let path = attachments::file_of(&attachments_root(&app)?, &id, &name)?;
+    #[cfg(windows)]
+    {
+        let w = window.clone();
+        // OLE's drag loop runs on the window's own thread.
+        window
+            .run_on_main_thread(move || {
+                // The file itself is the preview Windows draws (its shell icon).
+                let item = drag::DragItem::Files(vec![path.clone()]);
+                if let Err(e) = drag::start_drag(&w, item, drag::Image::Raw(Vec::new()), |_, _| {}, drag::Options::default()) {
+                    eprintln!("duck: dragging {} out failed: {e}", path.display());
+                }
+            })
+            .map_err(|e| e.to_string())
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (window, path);
+        Err("dragging out works on Windows only".into())
+    }
 }
