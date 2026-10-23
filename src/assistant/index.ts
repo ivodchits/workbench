@@ -107,6 +107,7 @@ import {
   type RemindersHost,
 } from "./reminders";
 import { change as changeReminder, closing, snoozing } from "./tools/reminders";
+import { OFFLINE_TITLE } from "./offline";
 import { mediaControl, mediaNowPlaying, pcOpen, steamActivity, steamLibrary, steamStoreSearch } from "../ipc/pc";
 import { createBrowserHost } from "./browser";
 import { createHostedSync, type HostedSync } from "./hosted";
@@ -1143,6 +1144,35 @@ export function initAssistant(): Promise<void> {
         alarms: () => phoneAlarms(reminders.list(), Date.now()),
         subscribe: (cb) => reminders.subscribe((pulse) => pulse || cb()),
         act: actOnReminder,
+      },
+      // What the phone's offline brain made (H7): reminders by id, each
+      // conversation a thread of its own.
+      offline: async (records, threads) => {
+        const took = { reminders: [] as string[], threads: [] as string[] };
+        for (const r of records) {
+          try {
+            if (!reminders.list().some((x) => x.id === r.id)) {
+              const threadId = await activeThread();
+              await changeReminder({ reminders, notice: (n) => engine.notice(threadId, n) }, null, () => ({
+                after: r,
+                message: `reminders: added "${r.title.slice(0, 60)}" on the phone, offline`,
+                chip: `Reminder added on the phone, offline: ${r.title}`,
+              }));
+            }
+            took.reminders.push(r.id);
+          } catch (e) {
+            warnReminders(e);
+          }
+        }
+        for (const t of threads) {
+          await engine.importThread({
+            id: t.id,
+            title: OFFLINE_TITLE(t.title),
+            messages: t.messages.map((m) => ({ role: m.role, text: m.text, source: m.voice ? "phone-voice" : "phone" })),
+          });
+          took.threads.push(t.id);
+        }
+        return took;
       },
     });
   })().catch((e: unknown) => {

@@ -82,7 +82,8 @@ export interface ThreadStore {
   messages(threadId: string): Promise<readonly StoredMessage[]>;
   /** Already-loaded messages (empty if not loaded). */
   loaded(threadId: string): readonly StoredMessage[];
-  create(mode?: string): Promise<ThreadRow>;
+  /** `id`: a thread made elsewhere (step H7), kept under its own id. */
+  create(mode?: string, id?: string): Promise<ThreadRow>;
   setTitle(threadId: string, title: string): Promise<ThreadRow | undefined>;
   /** Keep a thread from housekeeping's clean-up of idle threads (step L4). */
   setKeep(threadId: string, keep: boolean): Promise<ThreadRow | undefined>;
@@ -161,8 +162,8 @@ export function createThreadStore(
     thread: (id) => threads.find((t) => t.id === id),
     messages: ensure,
     loaded: (id) => messages.get(id) ?? [],
-    async create(mode = "assistant") {
-      const t = await backend.threadCreate(newId(), mode);
+    async create(mode = "assistant", id?: string) {
+      const t = await backend.threadCreate(id ?? newId(), mode);
       threads = [t, ...threads];
       messages.set(t.id, []);
       emit();

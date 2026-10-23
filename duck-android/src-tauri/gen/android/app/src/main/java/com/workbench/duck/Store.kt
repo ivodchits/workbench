@@ -1,7 +1,8 @@
-// What the app keeps (R4, H5): the desktop's address, the device token (sealed with
-// a Keystore AES key, so a copy of the app's files doesn't carry it), the app's
-// own settings, the widget's line, the armed reminders, and Done / Snooze taps
-// that haven't reached the desktop yet.
+// What the app keeps (R4, H5, H7): the desktop's address, the device token and
+// the phone brain's API key (each sealed with a Keystore AES key, so a copy of
+// the app's files doesn't carry them), the app's own settings, the widget's line,
+// the armed reminders, Done / Snooze taps that haven't reached the desktop yet,
+// and what the phone brain made offline (`offline:*`) until it's synced.
 
 package com.workbench.duck
 
@@ -30,7 +31,7 @@ object Store {
     prefs(ctx).edit().apply { if (value == null) remove(key) else putString(key, value) }.apply()
   }
 
-  // ── the device token, sealed ──
+  // ── secrets, sealed: the device token, the phone key ──
 
   private fun sealKey(): SecretKey {
     val ks = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
@@ -45,8 +46,8 @@ object Store {
     return gen.generateKey()
   }
 
-  fun token(ctx: Context): String? {
-    val sealed = get(ctx, "token") ?: return null
+  private fun unseal(ctx: Context, key: String): String? {
+    val sealed = get(ctx, key) ?: return null
     return try {
       val bytes = Base64.decode(sealed, Base64.NO_WRAP)
       val c = Cipher.getInstance("AES/GCM/NoPadding")
@@ -57,19 +58,33 @@ object Store {
     }
   }
 
-  fun setToken(ctx: Context, token: String?) {
-    if (token == null) return put(ctx, "token", null)
+  private fun seal(ctx: Context, key: String, value: String?) {
+    if (value == null) return put(ctx, key, null)
     val c = Cipher.getInstance("AES/GCM/NoPadding")
     c.init(Cipher.ENCRYPT_MODE, sealKey())
-    val out = c.iv + c.doFinal(token.toByteArray(Charsets.UTF_8))
-    put(ctx, "token", Base64.encodeToString(out, Base64.NO_WRAP))
+    val out = c.iv + c.doFinal(value.toByteArray(Charsets.UTF_8))
+    put(ctx, key, Base64.encodeToString(out, Base64.NO_WRAP))
   }
+
+  fun token(ctx: Context): String? = unseal(ctx, "token")
+
+  fun setToken(ctx: Context, token: String?) = seal(ctx, "token", token)
+
+  /** The phone brain's API key (H7): its own Console workspace's. */
+  fun phoneKey(ctx: Context): String? = unseal(ctx, "phoneKey")
+
+  fun setPhoneKey(ctx: Context, key: String?) = seal(ctx, "phoneKey", key)
 
   // ── settings ──
 
   /** The app's own settings: `requireUnlock` (phone tools wait for an unlock over
-   *  the lock screen). */
-  fun settings(ctx: Context): JSONObject = JSONObject(get(ctx, "settings") ?: "{\"requireUnlock\":true}")
+   *  the lock screen), `phoneCap` (the phone key's monthly cap, USD; H7). */
+  fun settings(ctx: Context): JSONObject {
+    val s = JSONObject(get(ctx, "settings") ?: "{}")
+    if (!s.has("requireUnlock")) s.put("requireUnlock", true)
+    if (!s.has("phoneCap")) s.put("phoneCap", PhoneBrain.DEFAULT_CAP)
+    return s
+  }
 
   fun setSettings(ctx: Context, s: JSONObject) = put(ctx, "settings", s.toString())
 

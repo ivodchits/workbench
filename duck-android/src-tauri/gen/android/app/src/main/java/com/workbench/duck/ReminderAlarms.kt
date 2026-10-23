@@ -5,6 +5,9 @@
 // once; both are kept until the page next reaches the desktop, which makes the
 // same change its own buttons would (`reminder.action`). A new list replaces the
 // armed one; a reboot arms it again.
+//
+// H7: the phone brain's own reminders, made offline, are a second list
+// (`source` "phone") armed with the desktop's until they're synced.
 
 package com.workbench.duck
 
@@ -44,6 +47,18 @@ object ReminderAlarms {
     val am = ctx.getSystemService(AlarmManager::class.java)
     if (canExact(am)) am.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, at, pi)
     else am.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, at, pi)
+  }
+
+  /** Replace one source's list (`desktop`, `phone`) and arm both. */
+  @Synchronized
+  fun setList(ctx: Context, source: String, alarms: JSONArray) {
+    Store.put(ctx, "alarms:$source", alarms.toString())
+    val all = JSONArray()
+    for (s in listOf("desktop", "phone")) {
+      val list = JSONArray(Store.get(ctx, "alarms:$s") ?: "[]")
+      for (k in 0 until list.length()) all.put(list.get(k))
+    }
+    arm(ctx, all)
   }
 
   /** Arm `alarms` (`[{id, title, body, at: [ms]}]`) in place of what was armed. */

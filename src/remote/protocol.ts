@@ -8,7 +8,8 @@
 
 import type { DuckEvent, Effort, Stamped } from "../assistant/protocol";
 import type { HostDown, HostUp } from "../assistant/hosts";
-import type { PhoneAlarm } from "../assistant/reminders";
+import type { PhoneAlarm, ReminderRecord } from "../assistant/reminders";
+import type { OfflineThread } from "../assistant/offline";
 import type { InstanceStatus } from "../ipc/registry";
 import type { RateLimits } from "../ipc/usageLimits";
 import type { ChoiceKind, ChoiceOption, ChoiceQuestion } from "../state/pendingChoice";
@@ -227,8 +228,12 @@ export type RemoteDuckMessage =
   | { type: "dnd"; until: number | null };
 
 /** What a phone host sends besides Duck messages (steps H1, H5): its `hello` and
- *  results, and Done or Snooze tapped on a reminder its app rang. */
-export type RemoteHostMessage = HostUp | { type: "reminder.action"; id: string; action: "done" | "snooze" };
+ *  results, and Done or Snooze tapped on a reminder its app rang; H7: what its
+ *  offline brain made (`src/assistant/offline.ts`). */
+export type RemoteHostMessage =
+  | HostUp
+  | { type: "reminder.action"; id: string; action: "done" | "snooze" }
+  | { type: "offline.sync"; reminders: ReminderRecord[]; threads: OfflineThread[] };
 
 /** A frame Duck sends the phone: any Duck event, plus the phone's own. */
 export type RemoteDuckFrame =
@@ -251,6 +256,8 @@ export type RemoteDuckFrame =
   /** To a phone host (step H5): the open reminders' coming times, which its app
    *  arms as exact alarms; sent on hello and on every change. */
   | { type: "phone.reminders"; alarms: PhoneAlarm[]; v: number }
+  /** To a phone host (step H7): what the desktop took of an `offline.sync`, by id. */
+  | { type: "offline.synced"; reminders: string[]; threads: string[]; v: number }
   | RemoteConvFrame;
 
 // Conversation mode on the phone (step V4 part 3). The page streams its mic to the

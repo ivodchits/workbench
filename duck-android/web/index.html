@@ -19,17 +19,36 @@
         <p>Reaching Workbench…</p>
       </section>
       <section id="offline" hidden>
-        <p><strong>Workbench can't be reached.</strong> Timers, alarms, the flashlight and play / pause still work here.</p>
+        <p id="brain-line" class="brain"><strong>Workbench can't be reached.</strong></p>
+        <div id="log" class="log" aria-live="polite"></div>
+        <p id="note" class="msg"></p>
         <button id="speak" class="big" type="button">🎤 Speak</button>
         <div class="row">
           <input id="say" type="text" autocomplete="off" placeholder="set a timer for 10 minutes" />
           <button id="send" type="button">Go</button>
         </div>
-        <p id="note" class="msg"></p>
         <div class="row">
-          <button id="retry" type="button">Try again</button>
-          <button id="change" type="button" class="quiet">Change the address</button>
+          <button id="retry" type="button">Try Workbench again</button>
+          <button id="fresh" type="button" class="quiet">New conversation</button>
         </div>
+        <details id="brain-settings">
+          <summary>The phone brain</summary>
+          <p class="msg">When Workbench can't be reached, Duck answers here with its own API key: make one in its own Console workspace, with a monthly limit there too. The key stays in the phone's Keystore.</p>
+          <p id="key-state" class="msg"></p>
+          <div class="row">
+            <input id="key" type="password" autocomplete="off" placeholder="sk-ant-…" />
+            <button id="key-save" type="button">Keep</button>
+          </div>
+          <div class="row">
+            <label for="cap">Monthly cap, $</label>
+            <input id="cap" type="number" min="0" step="1" inputmode="decimal" />
+            <button id="cap-save" type="button">Set</button>
+          </div>
+          <div class="row">
+            <button id="key-forget" type="button" class="quiet">Forget the key</button>
+            <button id="change" type="button" class="quiet">Change Workbench's address</button>
+          </div>
+        </details>
       </section>
     </main>
     <script type="module" src="./loader.ts"></script>

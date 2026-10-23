@@ -62,7 +62,16 @@ import { apply, emptyView, userText, type DuckView } from "./duckStore";
 import { audioContext, browserOut, fetchPart, playbackLevel, setEchoPath, unlock } from "./duckSpeech";
 import { chime, stream, streamNative, type Streaming } from "./converse";
 import * as duckApp from "./duckApp";
-import { appSettings as getAppSettings, LOADER_URL, saveAddress, setAppSettings, type AppSettings } from "./native";
+import {
+  appSettings as getAppSettings,
+  LOADER_URL,
+  phoneKey,
+  phoneSpend,
+  saveAddress,
+  setAppSettings,
+  setPhoneKey,
+  type AppSettings,
+} from "./native";
 import { fastPath } from "./fastPath";
 import { SpeechQueue } from "./speechQueue";
 import { micAvailable, record, type Recording } from "./mic";
@@ -1293,6 +1302,15 @@ function paintSettings(): void {
 /** The app's own settings (R4), as last read. */
 let appSettings: AppSettings | null = null;
 
+/** The phone brain's key and this month's spend (H7), in the app's settings. */
+async function phoneBrainLine(): Promise<void> {
+  const [key, spend] = await Promise.all([phoneKey(), phoneSpend()]).catch(() => [null, null] as const);
+  if (!key || !spend) return;
+  $("duck-phone-brain").textContent = key.set
+    ? `Key …${key.hint ?? ""}: $${spend.usd.toFixed(2)} of $${spend.cap.toFixed(2)} this month. An empty key forgets it.`
+    : "No key: offline, only timers, alarms, the flashlight and play / pause work.";
+}
+
 function setPrefs(patch: Partial<Prefs>): void {
   prefs = { ...prefs, ...patch };
   store(PREFS_KEY, JSON.stringify(prefs));
@@ -1418,6 +1436,16 @@ export function initDuck(d: typeof deps): void {
           appSettings = s;
           paint("prefs");
         });
+    void phoneBrainLine();
+    $("duck-phone-key-save").onclick = () => {
+      const box = $<HTMLInputElement>("duck-phone-key");
+      void setPhoneKey(box.value.trim() || null)
+        .then(() => {
+          box.value = "";
+          return phoneBrainLine();
+        })
+        .catch((e: unknown) => ($("duck-phone-brain").textContent = e instanceof Error ? e.message : String(e)));
+    };
   }
   $("duckBtn").onclick = () => openDuck();
   $("duck-close").onclick = closeDuck;

@@ -5,9 +5,9 @@ behind each decision are in `assistant-plan.md`. This file describes the code, a
 Duck step updates it as part of its Done when. Duck's self-development sessions (L3)
 read it first.
 
-Last updated: step H5 with R4 (2026-10-23). L3 audited it against the code. Since W5 it also
+Last updated: step H7 (2026-10-23). L3 audited it against the code. Since W5 it also
 covers W6, D2, D4, P1, P2, M2, M3, A5, A6, A7, W4, L1, L2, L3, L4, R1, R2, R3, B1, B2, T3, D3, V1 to V7,
-V8, S1, S2, X1, H1 to H5, H8, R4 and the morning routine. A fresh session changing Duck: read "The shape", then "Where to
+V8, S1, S2, X1, H1 to H5, H7, H8, R4 and the morning routine. A fresh session changing Duck: read "The shape", then "Where to
 change X" at the end, then the module rows it points to.
 
 ## The shape
@@ -68,12 +68,13 @@ change X" at the end, then the module rows it points to.
 | `speakable.ts` | Spoken replies' words (V2): `Sentences` cuts a stream into whole sentences, `toSpoken` makes one sayable, `langOf` picks Kokoro (English) or Silero (Russian), and a Russian sentence with digits or Latin letters gets the `speakable_ru` Haiku rewrite or `russianFallback`. |
 | `reader.ts` | Read-aloud (V3): a source in sections, each made when its turn comes (narrated by Haiku first in `narrate` mode), played on the desktop or the phone that asked, after the reply is over; pause / resume / next / previous / stop, and a position kept per source for "continue reading". |
 | `voiceNames.ts` | The name fixer (V1): project and session names and a term list, said in Russian and written in Cyrillic by Parakeet, put back in their own spelling with loose matching for longer names. |
-| `remoteBridge.ts` | Duck on the phone (R1): the webview's half of the remote server's `/api/assistant` socket. Frames are checked against what a phone may do (no settings, no loosening trust, no replay, no thread delete); messages are stored as `phone` / `phone-voice`; spoken replies, reads and announcements go down as `tts` parts a sentence at a time; screenshots never go to the phone. A socket that says `hello` is also a host (H1): its `hello` / `device.result` frames go to `hosts.ts`, and its calls come down as `device.call` / `device.cancel`; only `phone` can be a host over it. H5: a phone host gets `phone.reminders` (the open reminders' coming times, `phoneAlarms` in `reminders.ts`: two weeks of a repeat's) on hello and on each change, and its `reminder.action` (Done / Snooze from the app's own notification) goes to `actOnReminder` in `index.ts`, from a socket that said hello only. |
+| `remoteBridge.ts` | Duck on the phone (R1): the webview's half of the remote server's `/api/assistant` socket. Frames are checked against what a phone may do (no settings, no loosening trust, no replay, no thread delete); messages are stored as `phone` / `phone-voice`; spoken replies, reads and announcements go down as `tts` parts a sentence at a time; screenshots never go to the phone. A socket that says `hello` is also a host (H1): its `hello` / `device.result` frames go to `hosts.ts`, and its calls come down as `device.call` / `device.cancel`; only `phone` can be a host over it. H5: a phone host gets `phone.reminders` (the open reminders' coming times, `phoneAlarms` in `reminders.ts`: two weeks of a repeat's) on hello and on each change, and its `reminder.action` (Done / Snooze from the app's own notification) goes to `actOnReminder` in `index.ts`, from a socket that said hello only. H7: `offline.sync` (what the app's offline brain made, `offline.ts`) goes to the `offline` dep, from a hello'd socket only, and is answered `offline.synced` with the ids taken. |
 | `hosts.ts` | Host-bound tools (H1): `createHosts(declared)` holds each connected host (`pc`, `phone`) and the tools it offers (only the engine's own for that host count); `call(host, tool, input, signal)` sends `device.call` and settles on `device.result`, a stop or timeout sends `device.cancel`, a host that isn't there or didn't announce the tool fails at once ("the phone isn't connected"), and one that leaves or reconnects fails its open calls. `serveHost` is a host's side (hello with its handlers, refuses a tool it didn't announce, aborts on cancel); `connectLocal` joins the two in process, for the desktop's `pc` tools. |
 | `spend.ts` | `createTurnMeter()`: bills each metered `thread` call to the one turn that is calling (none if two are), giving each thread's latest turn cost for the `spend` event. |
 | `timings.ts` | D3: `createTurnClock` times each turn you start from the engine's events (start, `routing`'s mode and brain, the first delta, the first sentence, idle or parked), with an API turn's cost from the meter and the subscription's 5-hour window before and after; the endpoint keeps each in `turn_timings`. `timingStats` / `statLine`: the medians per mode, brain and model, $ an hour on the API and the window's % an hour on the subscription, over conversations of 5 minutes or more (protocol `timings.get`). |
 | `engine.ts` | The loop. Pure helpers `toApiMessages`, `effectiveEffort`, `buildParams` and `eventText` are exported for tests. Each tool call gets a `ToolContext` with the settings, `notice()` (a thread item the model never sees) and `later(text)` (a follow-up sent into the thread as a `<workbench_event>` user message with source `event`, which runs its own turn). A tool with `prepare` has it run first (a throw fails the call before any card); what it returns is kept on the call (`BatchCall.prepared`, persisted with a parked batch) and handed to `describe`, `review`, `trust` and `run` (`ctx.prepared`). The gate is asked with the call's own tier (`registry.callTier`), the card's summary and the tool's trust facts (`registry.trustFacts`). It answers run, ask, or deny with a reason, and an optional notice. |
-| `threads.ts` | `createThreadStore(backend)`: threads, messages (loaded per thread on first use) and parked tool batches, in memory and persisted. Appends to one thread are serialized so each gets the next `seq`. |
+| `threads.ts` | `createThreadStore(backend)`: threads, messages (loaded per thread on first use) and parked tool batches, in memory and persisted. Appends to one thread are serialized so each gets the next `seq`. `create(mode, id?)`: H7's imported threads keep the phone's id. |
+| `offline.ts` | The phone's fallback brain (H7), what both sides share: `OFFLINE_NOTE` (added to the system prompt on the phone), the `offline.sync` frame's schema, `transcript` (a thread as text: your words, Duck's replies, a line per tool used, ending with a reply), and the app's kept state (`parseState`, `threadsToSync`, `withoutThreads`). The engine's `importThread` makes a synced conversation a thread of its own, once. |
 | `client.ts` | `getClient()` (the SDK at the proxy, with the launch token as its key), `purpose()`, `capMessage()`, `errorMessage()`, `structured({model, system, input, schema?, purpose, …})` (one call, structured output parsed), and `oneShot(name, input, {schema?})` for Haiku primitives over it. |
 | `prompt.ts` | The system prompt and the voice note as built in (L3: the defaults; what a thread runs with comes from `config.ts`), `MAIN_MODEL` / `PRIMITIVE_MODEL`, and `PRIMITIVES` (one frozen prompt per Haiku job; the key is its `x-wb-purpose`). |
 | `config.ts` | Duck's prompts as data (L3): `config/system.md` and `config/voice.md` in the workspace (`CONFIG_FILES`). `createConfig(store)`: `current()` reads them, seeds a missing one with its default (recording the default's hash as the seed), lets a file untouched since its seed follow a new build's default, and falls back to the default for one `problemsWith` refuses (too short or long, or without `SAFETY_RULES` verbatim), saying why; `forThread(id)` returns the thread's pin, or pins it on the files now (`assistant_config_pin`), so a thread's system prompt never changes under its cache. `applyEdits` (each `find` exactly once), `hashOf`, `ipcConfigStore`. |
@@ -863,6 +864,33 @@ CLI's `beforeBuildCommand` runs `npm run build:duck-android`).
   - In conversation mode the socket stays open with the screen off.
   - The mic is native (`mic.ts`, `converse.ts`'s `streamNative`).
   - The token and the device key are the app's (`net.ts` `loadToken`, `deviceKey.ts`).
+  - On connect, before the kept taps, it sends what the phone brain made offline
+    (`offline.sync`) and drops what the desktop took.
+
+## The phone brain (step H7)
+
+When the app can't reach Workbench, the loader runs Duck's own engine on the phone
+(`src/pwa/phoneBrain.ts`, bundled into the APK's one page):
+
+- `createEngine` with the phone's tools (served in the page by `connectLocal`), the
+  reminder tools (Duck's timers left out) and `get_time`; a port that refuses every
+  call; the built-in prompt plus `OFFLINE_NOTE`; the tier gate (calls, texts and
+  replies ask on a card).
+- The thread store and the reminders are kept by the app (`offline_get` / `offline_put`,
+  `offline:*` in `Store.kt`). The phone's reminders are armed as their own alarm list
+  next to the desktop's (`reminders` with `source: "phone"`, `ReminderAlarms.setList`).
+- The API: the SDK's `fetch` is `native.ts` `apiFetch`. It hands each request to
+  `api_fetch` (`PhoneBrain.kt`), which adds the phone key (sealed in the Keystore;
+  the page sees only its last four characters), sends only `POST /v1/messages`, and
+  streams the answer back over a channel (`responseFrom` turns the frames into a
+  `Response`). It prices the stream's usage like `usage.rs` into a month's ledger,
+  refuses at the cap with the proxy's own 402, and the engine runs on Haiku past 80%.
+  A price change in `usage.rs` must be copied to `PhoneBrain.kt`.
+- Replies are said with the phone's own TTS (`speak`) when you spoke; the fast path
+  still runs first.
+- Sync on the next connect: `duckApp.ts` → `offline.sync` → `remoteBridge.ts` → the
+  `offline` dep in `index.ts` (reminders added by id with a chip; each conversation
+  `importThread`ed as "Offline: …") → `offline.synced`, and the app drops what was taken.
 
 ## Where to change X
 
@@ -927,6 +955,10 @@ CLI's `beforeBuildCommand` runs `npm run build:duck-android`).
   `launchDuck` in `src/pwa/duck.ts`, and `takeShare` in `src/pwa/sw.js`. How a phone
   proves its key: `remote/auth.rs` (the rules), `remote/mod.rs` (`start_session`,
   `check_token`), and `src/pwa/deviceKey.ts` and `net.ts`.
+- **The phone brain (H7)**: what it can do, `src/pwa/phoneBrain.ts`; its note,
+  `OFFLINE_NOTE` in `src/assistant/offline.ts`; its cap and pricing, `PhoneBrain.kt`;
+  the loader's chat, `duck-android/web/loader.ts`; the sync, `duckApp.ts` and the
+  `offline` dep in `index.ts`.
 - **Storage**: a table is a migration appended to `db.rs`'s list, never an edit of one.
 - **Tests**: `npm run lint`, `npm test`, and `cargo test --lib` in `src-tauri` (with
   `CARGO_TARGET_DIR=target-test` while a dev build runs).
@@ -981,6 +1013,13 @@ Both rules are in `prompt.ts`.
   and a text, the widget on a home screen. Not built: switching to the tailnet's own
   address (MagicDNS covers it), the screenshot with the gesture (G1), Glyph lights,
   the widget polling by itself.
+
+- The phone brain (H7), built before the home server (H6), on an emulator: no real
+  phone key yet, so no successful turn on the phone. Checked there: the transport to
+  the real API (a made-up key's 401 back in the chat), the cap's refusal, key hiding,
+  the conversation kept across a restart, both alarm lists armed. A whole turn, the
+  reminder, the transcript and the sync are tested over a scripted stream. Not yet
+  tried: the Done when on the phone, the spend after real turns, the phone's TTS heard.
 
 - The wake word (V6) live: built and measured on recordings (no spots in 6.3 h of
   speech without the phrase; 81 of 84 synthetic English and 9 of 15 Russian caught),

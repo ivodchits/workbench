@@ -72,3 +72,50 @@ button.quiet {
   color: var(--muted);
   min-height: 1.4em;
 }
+.brain {
+  margin-bottom: 4px;
+}
+.log {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 8px 0;
+}
+.log .user,
+.log .duck {
+  padding: 8px 12px;
+  border-radius: 12px;
+  max-width: 85%;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.log .user {
+  align-self: flex-end;
+  background: color-mix(in srgb, var(--accent) 30%, var(--field));
+}
+.log .duck {
+  align-self: flex-start;
+  background: var(--field);
+}
+.log .line {
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+.log .card {
+  border: 1px solid var(--accent);
+  border-radius: 12px;
+  padding: 8px 12px;
+}
+.log .card button {
+  margin-right: 8px;
+}
+details {
+  margin-top: 16px;
+}
+summary {
+  cursor: pointer;
+  color: var(--muted);
+}
+label {
+  white-space: nowrap;
+}

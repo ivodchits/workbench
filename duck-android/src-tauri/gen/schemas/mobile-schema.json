@@ -2217,16 +2217,28 @@
           "markdownDescription": "Denies the unminimize command without any pre-configured scope."
         },
         {
-          "description": "Default plugin permissions.\n#### This default permission set includes:\n\n- `allow-info`\n- `allow-run`\n- `allow-address`\n- `allow-set-address`\n- `allow-key-create`\n- `allow-key-sign`\n- `allow-key-drop`\n- `allow-token`\n- `allow-set-token`\n- `allow-launch`\n- `allow-reminders`\n- `allow-reminder-actions`\n- `allow-mic-start`\n- `allow-mic-stop`\n- `allow-widget-status`\n- `allow-recognize`\n- `allow-settings`\n- `allow-set-settings`\n- `allow-register-listener`\n- `allow-remove-listener`",
+          "description": "Default plugin permissions.\n#### This default permission set includes:\n\n- `allow-info`\n- `allow-run`\n- `allow-address`\n- `allow-set-address`\n- `allow-key-create`\n- `allow-key-sign`\n- `allow-key-drop`\n- `allow-token`\n- `allow-set-token`\n- `allow-launch`\n- `allow-reminders`\n- `allow-reminder-actions`\n- `allow-mic-start`\n- `allow-mic-stop`\n- `allow-widget-status`\n- `allow-recognize`\n- `allow-settings`\n- `allow-set-settings`\n- `allow-api-fetch`\n- `allow-api-abort`\n- `allow-phone-key`\n- `allow-set-phone-key`\n- `allow-phone-spend`\n- `allow-offline-get`\n- `allow-offline-put`\n- `allow-speak`\n- `allow-speak-stop`\n- `allow-register-listener`\n- `allow-remove-listener`",
           "type": "string",
           "const": "duck:default",
-          "markdownDescription": "Default plugin permissions.\n#### This default permission set includes:\n\n- `allow-info`\n- `allow-run`\n- `allow-address`\n- `allow-set-address`\n- `allow-key-create`\n- `allow-key-sign`\n- `allow-key-drop`\n- `allow-token`\n- `allow-set-token`\n- `allow-launch`\n- `allow-reminders`\n- `allow-reminder-actions`\n- `allow-mic-start`\n- `allow-mic-stop`\n- `allow-widget-status`\n- `allow-recognize`\n- `allow-settings`\n- `allow-set-settings`\n- `allow-register-listener`\n- `allow-remove-listener`"
+          "markdownDescription": "Default plugin permissions.\n#### This default permission set includes:\n\n- `allow-info`\n- `allow-run`\n- `allow-address`\n- `allow-set-address`\n- `allow-key-create`\n- `allow-key-sign`\n- `allow-key-drop`\n- `allow-token`\n- `allow-set-token`\n- `allow-launch`\n- `allow-reminders`\n- `allow-reminder-actions`\n- `allow-mic-start`\n- `allow-mic-stop`\n- `allow-widget-status`\n- `allow-recognize`\n- `allow-settings`\n- `allow-set-settings`\n- `allow-api-fetch`\n- `allow-api-abort`\n- `allow-phone-key`\n- `allow-set-phone-key`\n- `allow-phone-spend`\n- `allow-offline-get`\n- `allow-offline-put`\n- `allow-speak`\n- `allow-speak-stop`\n- `allow-register-listener`\n- `allow-remove-listener`"
         },
         {
           "description": "Enables the address command without any pre-configured scope.",
           "type": "string",
           "const": "duck:allow-address",
           "markdownDescription": "Enables the address command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the api_abort command without any pre-configured scope.",
+          "type": "string",
+          "const": "duck:allow-api-abort",
+          "markdownDescription": "Enables the api_abort command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the api_fetch command without any pre-configured scope.",
+          "type": "string",
+          "const": "duck:allow-api-fetch",
+          "markdownDescription": "Enables the api_fetch command without any pre-configured scope."
         },
         {
           "description": "Enables the info command without any pre-configured scope.",
@@ -2271,6 +2283,30 @@
           "markdownDescription": "Enables the mic_stop command without any pre-configured scope."
         },
         {
+          "description": "Enables the offline_get command without any pre-configured scope.",
+          "type": "string",
+          "const": "duck:allow-offline-get",
+          "markdownDescription": "Enables the offline_get command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the offline_put command without any pre-configured scope.",
+          "type": "string",
+          "const": "duck:allow-offline-put",
+          "markdownDescription": "Enables the offline_put command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the phone_key command without any pre-configured scope.",
+          "type": "string",
+          "const": "duck:allow-phone-key",
+          "markdownDescription": "Enables the phone_key command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the phone_spend command without any pre-configured scope.",
+          "type": "string",
+          "const": "duck:allow-phone-spend",
+          "markdownDescription": "Enables the phone_spend command without any pre-configured scope."
+        },
+        {
           "description": "Enables the recognize command without any pre-configured scope.",
           "type": "string",
           "const": "duck:allow-recognize",
@@ -2313,6 +2349,12 @@
           "markdownDescription": "Enables the set_address command without any pre-configured scope."
         },
         {
+          "description": "Enables the set_phone_key command without any pre-configured scope.",
+          "type": "string",
+          "const": "duck:allow-set-phone-key",
+          "markdownDescription": "Enables the set_phone_key command without any pre-configured scope."
+        },
+        {
           "description": "Enables the set_settings command without any pre-configured scope.",
           "type": "string",
           "const": "duck:allow-set-settings",
@@ -2331,6 +2373,18 @@
           "markdownDescription": "Enables the settings command without any pre-configured scope."
         },
         {
+          "description": "Enables the speak command without any pre-configured scope.",
+          "type": "string",
+          "const": "duck:allow-speak",
+          "markdownDescription": "Enables the speak command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the speak_stop command without any pre-configured scope.",
+          "type": "string",
+          "const": "duck:allow-speak-stop",
+          "markdownDescription": "Enables the speak_stop command without any pre-configured scope."
+        },
+        {
           "description": "Enables the token command without any pre-configured scope.",
           "type": "string",
           "const": "duck:allow-token",
@@ -2347,6 +2401,18 @@
           "type": "string",
           "const": "duck:deny-address",
           "markdownDescription": "Denies the address command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the api_abort command without any pre-configured scope.",
+          "type": "string",
+          "const": "duck:deny-api-abort",
+          "markdownDescription": "Denies the api_abort command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the api_fetch command without any pre-configured scope.",
+          "type": "string",
+          "const": "duck:deny-api-fetch",
+          "markdownDescription": "Denies the api_fetch command without any pre-configured scope."
         },
         {
           "description": "Denies the info command without any pre-configured scope.",
@@ -2391,6 +2457,30 @@
           "markdownDescription": "Denies the mic_stop command without any pre-configured scope."
         },
         {
+          "description": "Denies the offline_get command without any pre-configured scope.",
+          "type": "string",
+          "const": "duck:deny-offline-get",
+          "markdownDescription": "Denies the offline_get command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the offline_put command without any pre-configured scope.",
+          "type": "string",
+          "const": "duck:deny-offline-put",
+          "markdownDescription": "Denies the offline_put command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the phone_key command without any pre-configured scope.",
+          "type": "string",
+          "const": "duck:deny-phone-key",
+          "markdownDescription": "Denies the phone_key command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the phone_spend command without any pre-configured scope.",
+          "type": "string",
+          "const": "duck:deny-phone-spend",
+          "markdownDescription": "Denies the phone_spend command without any pre-configured scope."
+        },
+        {
           "description": "Denies the recognize command without any pre-configured scope.",
           "type": "string",
           "const": "duck:deny-recognize",
@@ -2433,6 +2523,12 @@
           "markdownDescription": "Denies the set_address command without any pre-configured scope."
         },
         {
+          "description": "Denies the set_phone_key command without any pre-configured scope.",
+          "type": "string",
+          "const": "duck:deny-set-phone-key",
+          "markdownDescription": "Denies the set_phone_key command without any pre-configured scope."
+        },
+        {
           "description": "Denies the set_settings command without any pre-configured scope.",
           "type": "string",
           "const": "duck:deny-set-settings",
@@ -2449,6 +2545,18 @@
           "type": "string",
           "const": "duck:deny-settings",
           "markdownDescription": "Denies the settings command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the speak command without any pre-configured scope.",
+          "type": "string",
+          "const": "duck:deny-speak",
+          "markdownDescription": "Denies the speak command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the speak_stop command without any pre-configured scope.",
+          "type": "string",
+          "const": "duck:deny-speak-stop",
+          "markdownDescription": "Denies the speak_stop command without any pre-configured scope."
         },
         {
           "description": "Denies the token command without any pre-configured scope.",

@@ -13,10 +13,15 @@
 // - The fast path (`fastPath.ts`): timers, alarms, the flashlight and media
 //   commands run here before any model, with the desktop reachable or not.
 // - The widget's line follows Duck's state.
+// - What the phone brain made offline (H7, `phoneBrain.ts`): on each connect,
+//   its reminders and conversations go to the desktop (`offline.sync`) before the
+//   kept taps, and what the desktop took (`offline.synced`) is dropped here.
 
 import { serveHost, type HostDown } from "../assistant/hosts";
 import type { RemoteDuckFrame, RemoteHostMessage } from "../remote/protocol";
 import { fastPath } from "./fastPath";
+import { parseState, threadsToSync, withoutThreads } from "../assistant/offline";
+import { phoneAlarms, type ReminderRecord } from "../assistant/reminders";
 import * as app from "./native";
 
 export interface AppHooks {
@@ -80,13 +85,56 @@ export async function connected(): Promise<void> {
   } catch (e) {
     console.warn("duck: the app's tools didn't load", e);
   }
+  await syncOffline().catch((e: unknown) => console.warn("duck: the offline brain's work wasn't synced", e));
   await flushActions();
+}
+
+/** The desktop's answer to an `offline.sync`, awaited. */
+let synced: ((took: { reminders: string[]; threads: string[] }) => void) | null = null;
+const SYNC_WAIT_MS = 15_000;
+
+/** Send what the phone brain made offline, and drop what the desktop took. */
+async function syncOffline(): Promise<void> {
+  if (!hooks?.live() || !host) return;
+  const state = parseState(await app.offlineGet("threads"));
+  let reminders: ReminderRecord[] = [];
+  try {
+    reminders = JSON.parse((await app.offlineGet("reminders")) ?? "[]") as ReminderRecord[];
+  } catch {
+    // unreadable: nothing to send
+  }
+  const threads = threadsToSync(state);
+  const empty = state.threads.map((t) => t.row.id).filter((id) => !threads.some((t) => t.id === id));
+  if (!threads.length && !reminders.length) {
+    if (empty.length) await app.offlinePut("threads", null);
+    return;
+  }
+  const took = await new Promise<{ reminders: string[]; threads: string[] } | null>((resolve) => {
+    const t = setTimeout(() => resolve(null), SYNC_WAIT_MS);
+    synced = (v) => {
+      clearTimeout(t);
+      resolve(v);
+    };
+    hooks?.post({ type: "offline.sync", reminders, threads });
+  });
+  synced = null;
+  if (!took) return;
+  const left = reminders.filter((r) => !took.reminders.includes(r.id));
+  await app.offlinePut("reminders", left.length ? JSON.stringify(left) : null);
+  // The desktop's list arms them from now on.
+  await app.armReminders(phoneAlarms(left, Date.now()), "phone");
+  const rest = withoutThreads(state, took.threads, empty);
+  await app.offlinePut("threads", rest.threads.length ? JSON.stringify(rest) : null);
 }
 
 /** A frame for the app (a host call, the reminders); true when it was one. */
 export function onAppFrame(f: RemoteDuckFrame): boolean {
   if (f.type === "device.call" || f.type === "device.cancel") {
     host?.receive(f as HostDown);
+    return true;
+  }
+  if (f.type === "offline.synced") {
+    synced?.({ reminders: f.reminders, threads: f.threads });
     return true;
   }
   if (f.type === "phone.reminders") {

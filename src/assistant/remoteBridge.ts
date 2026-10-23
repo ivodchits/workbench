@@ -43,6 +43,9 @@
 //   (`phone.reminders`, on hello and on every change) and arms them as exact
 //   alarms, which ring with the desktop unreachable. Its Done and Snooze come
 //   back as `reminder.action`, from a socket that said hello only.
+// - What the app's offline brain made (step H7, `offline.ts`) comes as
+//   `offline.sync`, from a socket that said hello only; `offline.synced` tells it
+//   what was taken.
 
 import { z } from "zod";
 import type { StoredMessage } from "../ipc/assistant";
@@ -58,7 +61,8 @@ import { sentencesOf, type Spoken as Ready, type Voice } from "./reader";
 import { langOf, Sentences, type Lang } from "./speakable";
 import { withoutImages } from "./threads";
 import { isHostUp, type HostConn, type Hosts } from "./hosts";
-import type { PhoneAlarm } from "./reminders";
+import type { PhoneAlarm, ReminderRecord } from "./reminders";
+import { OfflineSync, type OfflineThread } from "./offline";
 
 /** The longest message a phone may send. */
 const TEXT_MAX = 20_000;
@@ -90,6 +94,9 @@ const Message = z.discriminatedUnion("type", [
   z.object({ type: z.literal("dnd"), until: z.number().int().positive().nullable() }),
 ]);
 
+/** Frames only a host sends, besides `hello` and results. */
+const HOST_ONLY = new Set<unknown>(["reminder.action", "offline.sync"]);
+
 const HostFrame = z.discriminatedUnion("type", [
   z.object({
     type: z.literal("hello"),
@@ -99,6 +106,7 @@ const HostFrame = z.discriminatedUnion("type", [
   }),
   z.object({ type: z.literal("device.result"), id, ok: z.boolean(), output: z.unknown() }),
   z.object({ type: z.literal("reminder.action"), id, action: z.enum(["done", "snooze"]) }),
+  OfflineSync,
 ]);
 
 /** A phone's frame as a Duck Protocol message, or why it's refused. */
@@ -158,6 +166,8 @@ export interface BridgeDeps {
   hosts?: Hosts;
   /** The reminders a phone host arms as alarms (step H5). */
   phoneReminders?: PhoneReminders;
+  /** Takes what a phone's offline brain made (step H7): the ids taken. */
+  offline?: (reminders: ReminderRecord[], threads: OfflineThread[]) => Promise<{ reminders: string[]; threads: string[] }>;
 }
 
 /** What a phone host gets of the reminders (step H5). */
@@ -379,7 +389,7 @@ export function startRemoteBridge(d: BridgeDeps): RemoteBridge {
       d.duck.handle({ type: "thread.view", surface: `phone:${i.conn}`, threadId: null });
       for (let k = wanted.length - 1; k >= 0; k--) if (wanted[k].conn === i.conn) wanted.splice(k, 1);
       for (let k = sent.length - 1; k >= 0; k--) if (sent[k].conn === i.conn) sent.splice(k, 1);
-    } else if (isHostUp(i.msg) || (i.msg as { type?: unknown } | null)?.type === "reminder.action") {
+    } else if (isHostUp(i.msg) || HOST_ONLY.has((i.msg as { type?: unknown } | null)?.type)) {
       host(i.conn, i.msg);
     } else {
       const msg = parseRemote(i.msg, d.fixVoice);
@@ -416,6 +426,14 @@ export function startRemoteBridge(d: BridgeDeps): RemoteBridge {
       if (!hostConns.has(conn)) return refuse("say hello first");
       if (!d.phoneReminders) return refuse("Duck has no reminders here");
       return d.phoneReminders.act(m.id, m.action);
+    }
+    if (m.type === "offline.sync") {
+      if (!hostConns.has(conn)) return refuse("say hello first");
+      if (!d.offline) return refuse("Duck takes nothing from the phone's offline brain here");
+      d.offline(m.reminders as ReminderRecord[], m.threads)
+        .then((took) => d.link.emit({ type: "offline.synced", ...took, v: PROTOCOL_VERSION }, conn))
+        .catch((e: unknown) => refuse(`the offline sync failed: ${e instanceof Error ? e.message : String(e)}`));
+      return;
     }
     hostConns.get(conn)?.close();
     hostConns.delete(conn);

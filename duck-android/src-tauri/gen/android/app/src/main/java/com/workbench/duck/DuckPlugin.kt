@@ -12,6 +12,10 @@
 // - Reminders: `reminders` arms the desktop's list; `reminder_actions` hands over
 //   Done / Snooze taps (a `reminderActed` event says there are some).
 // - `widget_status`: the widget's line.
+// - The phone brain (H7, `PhoneBrain.kt`): `api_fetch` / `api_abort` (a request
+//   to the API with the phone key, which the page never sees), `phone_key` /
+//   `set_phone_key`, `phone_spend`; `offline_get` / `offline_put` (what it made
+//   offline, until the desktop's page syncs it); `speak` / `speak_stop`.
 
 package com.workbench.duck
 
@@ -50,6 +54,11 @@ import java.util.concurrent.Executors
 class MicArgs {
   lateinit var channel: Channel
   var foreground: Boolean = false
+}
+
+@InvokeArg
+class ApiArgs {
+  lateinit var channel: Channel
 }
 
 @TauriPlugin(
@@ -232,7 +241,8 @@ class DuckPlugin(private val activity: Activity) : Plugin(activity) {
 
   @Command
   fun reminders(invoke: Invoke) {
-    ReminderAlarms.arm(ctx, invoke.getArgs().optJSONArray("alarms") ?: JSONArray())
+    val args = invoke.getArgs()
+    ReminderAlarms.setList(ctx, if (args.optString("source") == "phone") "phone" else "desktop", args.optJSONArray("alarms") ?: JSONArray())
     // Showing one needs the notification permission (Android 13+): asked once here.
     if (Build.VERSION.SDK_INT >= 33 && getPermissionState("notify") != PermissionState.GRANTED && Store.get(ctx, "askedNotify") == null) {
       Store.put(ctx, "askedNotify", "1")
@@ -246,6 +256,64 @@ class DuckPlugin(private val activity: Activity) : Plugin(activity) {
 
   @Command
   fun reminderActions(invoke: Invoke) = invoke.resolve(JSObject().put("actions", Store.takeActions(ctx)))
+
+  // ── the phone brain (H7) ──
+
+  @Command
+  fun apiFetch(invoke: Invoke) {
+    val channel = invoke.parseArgs(ApiArgs::class.java).channel
+    val args = invoke.getArgs()
+    PhoneBrain.fetch(ctx, args.getString("id"), args.getString("path"), args.optJSONObject("headers") ?: JSONObject(), args.optString("body"), channel) { err ->
+      if (err == null) invoke.resolve() else invoke.reject(err)
+    }
+  }
+
+  @Command
+  fun apiAbort(invoke: Invoke) {
+    PhoneBrain.abort(invoke.getArgs().getString("id"))
+    invoke.resolve()
+  }
+
+  /** Whether there's a phone key, and its last four characters. */
+  @Command
+  fun phoneKey(invoke: Invoke) {
+    val k = Store.phoneKey(ctx)
+    invoke.resolve(JSObject().put("set", k != null).put("hint", k?.takeLast(4)))
+  }
+
+  @Command
+  fun setPhoneKey(invoke: Invoke) {
+    val args = invoke.getArgs()
+    val key = if (args.isNull("key")) null else args.optString("key").trim().ifEmpty { null }
+    if (key != null && !key.startsWith("sk-ant-")) return invoke.reject("that isn't an Anthropic API key (sk-ant-…)")
+    Store.setPhoneKey(ctx, key)
+    invoke.resolve()
+  }
+
+  @Command
+  fun phoneSpend(invoke: Invoke) = invoke.resolve(JSObject(PhoneBrain.spend(ctx).toString()))
+
+  @Command
+  fun offlineGet(invoke: Invoke) = invoke.resolve(JSObject().put("value", Store.get(ctx, "offline:" + invoke.getArgs().getString("name"))))
+
+  @Command
+  fun offlinePut(invoke: Invoke) {
+    val args = invoke.getArgs()
+    Store.put(ctx, "offline:" + args.getString("name"), if (args.isNull("value")) null else args.getString("value"))
+    invoke.resolve()
+  }
+
+  @Command
+  fun speak(invoke: Invoke) {
+    Speech.say(ctx, invoke.getArgs().getString("text"))
+    invoke.resolve()
+  }
+
+  @Command
+  fun speakStop(invoke: Invoke) {
+    Speech.stop()
+    invoke.resolve()
+  }
 
   // ── the mic ──
 

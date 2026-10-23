@@ -11,6 +11,8 @@
 //   conversation mode runs its foreground service.
 // - What opened the app (the assistant gesture, the tile, the widget) comes as
 //   launches; the reminders the desktop sends are armed as exact alarms.
+// - The phone brain (H7, `phoneBrain.ts`): `apiFetch` is a `fetch` for the SDK
+//   that the app sends with the phone's own key, which the page never holds.
 
 import { addPluginListener, Channel, invoke, isTauri } from "@tauri-apps/api/core";
 
@@ -99,6 +101,8 @@ export function keyDrop(): Promise<void> {
 export interface AppSettings {
   /** Over the lock screen, the phone's tools wait for an unlock. */
   requireUnlock: boolean;
+  /** The phone key's monthly cap, USD (H7). */
+  phoneCap: number;
 }
 
 export function appSettings(): Promise<AppSettings> {
@@ -140,8 +144,10 @@ export interface AppAlarm {
   at: number[];
 }
 
-export function armReminders(alarms: AppAlarm[]): Promise<void> {
-  return call("reminders", { alarms });
+/** Arm `alarms` in place of `source`'s: the desktop's, or the phone brain's own
+ *  made offline (H7). Both lists stay armed. */
+export function armReminders(alarms: AppAlarm[], source: "desktop" | "phone" = "desktop"): Promise<void> {
+  return call("reminders", { alarms, source });
 }
 
 /** Done / Snooze tapped on the app's own reminder notifications, not yet sent. */
@@ -186,3 +192,98 @@ export async function onMicError(cb: (why: string) => void): Promise<void> {
 export async function recognize(lang?: string): Promise<string> {
   return (await call<{ text: string }>("recognize", lang ? { lang } : {})).text;
 }
+
+// ── the phone brain (H7) ──
+
+/** Whether the app has a phone key, and its last four characters. */
+export function phoneKey(): Promise<{ set: boolean; hint: string | null }> {
+  return call("phone_key");
+}
+
+/** Keep the phone key (sealed by the Keystore), or forget it (null). */
+export function setPhoneKey(key: string | null): Promise<void> {
+  return call("set_phone_key", { key });
+}
+
+export interface PhoneSpend {
+  /** `2026-10`. */
+  month: string;
+  usd: number;
+  requests: number;
+  cap: number;
+}
+
+export function phoneSpend(): Promise<PhoneSpend> {
+  return call("phone_spend");
+}
+
+/** What the phone brain keeps of its own (`name`: `threads`, `reminders`), as
+ *  JSON, until it's synced. */
+export async function offlineGet(name: string): Promise<string | null> {
+  return (await call<{ value: string | null }>("offline_get", { name })).value ?? null;
+}
+
+export function offlinePut(name: string, value: string | null): Promise<void> {
+  return call("offline_put", { name, value });
+}
+
+/** Say `text` with the phone's own text-to-speech, after what's being said. */
+export function speak(text: string): Promise<void> {
+  return call("speak", { text });
+}
+
+export function speakStop(): Promise<void> {
+  return call("speak_stop");
+}
+
+/** What the app sends over a request's channel. */
+export type ApiFrame = { head: { status: number; headers: Record<string, string> } } | { chunk: string } | { end: true };
+
+/** A `Response` fed by a request's frames: resolves at the head, and its body
+ *  streams the chunks as they come. `start` begins the request; it rejects with
+ *  a reason before the head. Exported for tests. */
+export function responseFrom(
+  start: (onFrame: (f: ApiFrame) => void) => Promise<void>,
+): Promise<Response> {
+  return new Promise((resolve, reject) => {
+    const enc = new TextEncoder();
+    let ctl: ReadableStreamDefaultController<Uint8Array> | null = null;
+    let headed = false;
+    const body = new ReadableStream<Uint8Array>({ start: (c) => void (ctl = c) });
+    start((f) => {
+      if ("head" in f) {
+        headed = true;
+        resolve(new Response(body, { status: f.head.status, headers: f.head.headers }));
+      } else if ("chunk" in f) ctl?.enqueue(enc.encode(f.chunk));
+      else ctl?.close();
+    }).catch((e: unknown) => {
+      const err = new Error(reason(e));
+      if (!headed) reject(err);
+      else
+        try {
+          ctl?.error(err);
+        } catch {
+          // already closed
+        }
+    });
+  });
+}
+
+let nextRequest = 0;
+
+/** A `fetch` for the SDK (`new Anthropic({fetch})`): the request goes out from
+ *  the app, which adds the phone key and counts the spend. */
+export const apiFetch: typeof fetch = (input, init) => {
+  const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url);
+  const id = `r${++nextRequest}`;
+  const headers: Record<string, string> = {};
+  new Headers(init?.headers).forEach((v, k) => (headers[k] = v));
+  const signal = init?.signal;
+  if (signal?.aborted) return Promise.reject(new DOMException("aborted", "AbortError"));
+  signal?.addEventListener("abort", () => void call("api_abort", { id }).catch(() => {}), { once: true });
+  return responseFrom((onFrame) => {
+    const channel = new Channel<ApiFrame>();
+    channel.onmessage = onFrame;
+    return call("api_fetch", { id, path: url.pathname, headers, body: typeof init?.body === "string" ? init.body : "", channel });
+  });
+};

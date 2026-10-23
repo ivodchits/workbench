@@ -9,6 +9,9 @@ fn main() {
                     "info", "run", "address", "set_address", "key_create", "key_sign", "key_drop",
                     "token", "set_token", "launch", "reminders", "reminder_actions", "mic_start",
                     "mic_stop", "widget_status", "recognize", "settings", "set_settings",
+                    // The phone brain (H7).
+                    "api_fetch", "api_abort", "phone_key", "set_phone_key", "phone_spend",
+                    "offline_get", "offline_put", "speak", "speak_stop",
                     // `addPluginListener`'s, for the plugin's events.
                     "register_listener", "remove_listener",
                 ])

@@ -15,5 +15,8 @@ export default defineConfig({
   build: {
     outDir: here("./www"),
     emptyOutDir: true,
+    // The phone brain (H7) brings the engine and the SDK: one file in the APK,
+    // never fetched, so its size doesn't matter.
+    chunkSizeWarningLimit: 1000,
   },
 });

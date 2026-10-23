@@ -278,11 +278,22 @@ export interface SendInput {
   mode?: string;
 }
 
+export interface ImportedThread {
+  id: string;
+  title: string;
+  /** Alternating, from a user's: plain text each. */
+  messages: { role: "user" | "assistant"; text: string; source: Source }[];
+}
+
 export interface Engine {
   /** Send a message; resolves to the thread id once it's appended or queued. */
   send(input: SendInput): Promise<string>;
   /** A new thread; `title` names it at once (Duck's own threads, step L4). */
   newThread(mode?: string, title?: string): Promise<ThreadRow>;
+  /** A conversation held elsewhere, as a thread of its own (step H7: the phone's
+   *  offline brain's): its messages stored as they were, no turn run. False when
+   *  a thread `id` is already here. */
+  importThread(t: ImportedThread): Promise<boolean>;
   /** Delete a thread. Refused while a turn runs; a parked one is dropped with its
    *  confirmations and queue. */
   deleteThread(threadId: string): Promise<void>;
@@ -1784,6 +1795,16 @@ export function createEngine(deps: EngineDeps): Engine {
       const t = (title && (await store.setTitle(made.id, title))) || made;
       emit({ type: "thread", thread: t });
       return t;
+    },
+
+    async importThread(t) {
+      if (store.thread(t.id)) return false;
+      await store.create("assistant", t.id);
+      for (const m of t.messages)
+        await store.append(t.id, m.role, [{ type: "text", text: m.text }], m.role === "user" ? m.source : "duck");
+      const made = (await store.setTitle(t.id, t.title)) ?? store.thread(t.id);
+      if (made) emit({ type: "thread", thread: made });
+      return true;
     },
 
     deleteThread: removeThread,

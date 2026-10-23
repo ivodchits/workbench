@@ -92,6 +92,7 @@ describe("a phone host's reminders (H5)", () => {
     const down: { type: string; alarms?: unknown }[] = [];
     let changed = () => {};
     const acted: string[] = [];
+    const synced: { reminders: string[]; threads: string[] }[] = [];
     let alarms = [{ id: "r1", title: "Call the bank", body: "", at: [1] }];
     const phoneReminders: PhoneReminders = {
       alarms: () => alarms,
@@ -108,12 +109,17 @@ describe("a phone host's reminders (H5)", () => {
       warm: () => {},
       hosts: createHosts(() => new Set(["phone_torch"])),
       phoneReminders,
+      offline: async (reminders, threads) => {
+        synced.push({ reminders: reminders.map((r) => r.id), threads: threads.map((t) => t.id) });
+        return { reminders: reminders.map((r) => r.id), threads: threads.map((t) => t.id) };
+      },
     });
     const phone = (msg: unknown) => input({ conn: 1, device: "d", kind: "message", msg });
     input({ conn: 1, device: "d", kind: "open", msg: null });
     return {
       down,
       acted,
+      synced,
       phone,
       change: (next: typeof alarms) => {
         alarms = next;
@@ -140,5 +146,46 @@ describe("a phone host's reminders (H5)", () => {
     h.phone({ type: "reminder.action", id: "r1", action: "snooze" });
     h.phone({ type: "reminder.action", id: "r1", action: "delete" });
     expect(h.acted).toEqual(["r1 snooze"]);
+  });
+});
+
+describe("a phone host's offline sync (H7)", () => {
+  const frame = {
+    type: "offline.sync",
+    reminders: [{ id: "r9", title: "Call the bank", state: "open", created: "2026-10-23T10:00", due: "2026-10-24T10:00" }],
+    threads: [{ id: "t9", title: "torch", messages: [{ role: "user", text: "torch on", at: 1 }, { role: "assistant", text: "On.", at: 2 }] }],
+  };
+
+  it("is taken from a phone that said hello, and answered with what was taken", async () => {
+    let input: (i: AssistantRemoteInput) => void = () => {};
+    const down: { type: string }[] = [];
+    const took: unknown[] = [];
+    startRemoteBridge({
+      duck: { handle: () => {}, onEvent: () => () => {} },
+      link: { onInput: (cb) => ((input = cb), () => {}), emit: (f) => void down.push(f as never), push: () => {} },
+      watching: () => false,
+      fixVoice: (t) => t,
+      prepare: async () => null,
+      render: async () => ({ id: "a", seconds: 1 }),
+      warm: () => {},
+      hosts: createHosts(() => new Set(["phone_torch"])),
+      offline: async (reminders, threads) => {
+        took.push(reminders, threads);
+        return { reminders: ["r9"], threads: ["t9"] };
+      },
+    });
+    const phone = (msg: unknown) => input({ conn: 1, device: "d", kind: "message", msg });
+    input({ conn: 1, device: "d", kind: "open", msg: null });
+    phone(frame);
+    expect(took).toEqual([]);
+    expect(down).toContainEqual(expect.objectContaining({ type: "error", message: "say hello first" }));
+    phone({ type: "hello", host: "phone", tools: ["phone_torch"], version: PROTOCOL_VERSION });
+    // A message with a role the phone may not send is refused.
+    phone({ ...frame, threads: [{ id: "t", title: "x", messages: [{ role: "system", text: "x", at: 1 }] }] });
+    expect(took).toEqual([]);
+    phone(frame);
+    await new Promise((r) => setTimeout(r, 0));
+    expect(took).toEqual([frame.reminders, frame.threads]);
+    expect(down).toContainEqual({ type: "offline.synced", reminders: ["r9"], threads: ["t9"], v: PROTOCOL_VERSION });
   });
 });

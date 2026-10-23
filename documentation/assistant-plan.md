@@ -7429,6 +7429,78 @@ checked in the scratch PTY first.
   reminder shows up on the server after it's back; the phone key's spend shows in the
   app.
 - **Out of scope:** Workbench tools offline.
+- **As built (2026-10-23):**
+  - **Built before H6.** The home server doesn't exist yet, so "the server" is the
+    desktop: the phone brain answers whenever the app can't reach Workbench.
+  - **Where it runs:** the app's loader page (`duck-android/web/loader.ts`), which
+    already shows when Workbench is unreachable, now runs Duck's own engine
+    (`src/pwa/phoneBrain.ts`, `createEngine` from the shared TypeScript).
+    - Its tools: the `phone` ones (served in the same page through `connectLocal`),
+      the reminder tools and `get_time`. `set_timer` / `cancel_timer` are left out
+      (Duck's own timers ring on the desktop); `phone_set_timer` covers it.
+    - Its port to Workbench refuses every call; its system prompt is the built-in one
+      plus `OFFLINE_NOTE` (`src/assistant/offline.ts`).
+    - The gate is the tier one: consequential calls (call, text, reply) ask on a card
+      in the loader.
+    - One conversation carries on until it's been idle two hours, or "New
+      conversation".
+  - **The key never reaches the page.** The SDK's `fetch` is the app's
+    (`native.ts` `apiFetch` → Kotlin `api_fetch`, `PhoneBrain.kt`):
+    - Kotlin adds the key (sealed in the Keystore like the token) and sends only
+      `POST /v1/messages` to api.anthropic.com.
+    - It streams the answer back over a channel, an SSE event a frame.
+    - It reads the usage from the stream and prices it like `usage.rs`, into a
+      month's ledger.
+    - At the cap (the app's setting, $5 by default), it answers with the desktop
+      proxy's own 402 `budget_exceeded`, so the engine words it the same way.
+    - Past 80% of the cap, turns run on Haiku (the engine's `degraded`).
+  - **Replies:** text in the loader's chat, and said with the phone's own
+    text-to-speech (`Speech`) when you spoke. The fast path still runs first, with no
+    model.
+  - **Which brain answers:** the loader's line says Workbench can't be reached and Duck
+    is answering on the phone, with the month's spend against the cap.
+  - **Setting the key:** in the loader ("The phone brain"), or in the desktop's page
+    inside the app (Duck's settings). The key's last four characters and the spend show
+    in both.
+  - **Sync** (`offline.sync` / `offline.synced`, from a phone host that said hello):
+    - The app keeps the brain's threads and reminders (`offline:*` in its store).
+    - The phone's own reminders are armed as a second alarm list next to the
+      desktop's (`ReminderAlarms.setList`).
+    - On the next connect, the desktop's page sends them before the kept Done /
+      Snooze taps.
+    - The desktop adds each reminder it doesn't have (by id, with a chip), and makes
+      each conversation a thread of its own, titled "Offline: …" (`importThread`).
+      Your words and Duck's replies come as text, with a line for each tool used.
+    - It answers with the ids taken; the app drops those, and the desktop's list arms
+      the reminders from then on.
+  - **Limits:**
+    - A Done tapped on an offline reminder's notification while still offline reaches
+      the desktop after the sync, as any tap does, but the phone brain's own list
+      still shows it open until then.
+    - An acknowledgement lost between the desktop taking a sync and the app hearing
+      it is harmless: reminders and threads already there are skipped by id.
+    - Past 80% of the cap, the switch to Haiku shows the desktop's card, which speaks
+      of "Duck's API budget".
+  - **Checked on an Android 16 emulator** (a throwaway AVD, removed after):
+    - with an unreachable address, the loader answers;
+    - with no key, only the fast path works; a key that isn't `sk-ant-…` is refused;
+    - with a made-up key, a request went through Kotlin to the real API, and its
+      "invalid x-api-key" came back as a line in the chat;
+    - with the cap at $0, the cap refusal;
+    - the fast path (flashlight);
+    - the conversation kept across an app restart;
+    - the page never sees the key, only its last four characters;
+    - a new desktop list replaced the desktop's alarms and kept the phone's;
+    - the phone's TTS synthesized a reply.
+  - **Tested over a scripted API stream:** a voice request adding a reminder and
+    replying, the reminder kept and armed, the thread's transcript, Haiku near the cap,
+    the sync on reconnect, the bridge's checks, `importThread`.
+  - **Not tried yet:**
+    - a real phone key (a successful turn on the phone, its spend in the app);
+    - the Done when on the phone: with Workbench closed, a voice request sets a
+      reminder and replies; the reminder shows up on the desktop once it's back;
+    - whether the phone's TTS is heard (the emulator logged that the TTS service's
+      background playback "would be muted").
 
 ### Track G — Pictures and files
 
@@ -7923,7 +7995,7 @@ T2 goes live after the replay check in its done-when (the past week's prompts th
 | H8 | Reminders: project and general, with a widget | ☑ |
 | H5 | The phone as a host (with R4) | ☑ (emulator only) |
 | H6 | Duck on the home server (gate: the server) | ☐ |
-| H7 | The phone's fallback brain | ☐ |
+| H7 | The phone's fallback brain | ☑ (before H6; emulator only, no real phone key yet) |
 | G1 | Attachments: paste, drop and pick files into Duck | ☐ |
 | G2 | Talking about what you drop | ☐ |
 | G3 | Drawing workers and the canvas | ☐ |
