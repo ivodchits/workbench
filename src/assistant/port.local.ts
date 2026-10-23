@@ -69,7 +69,7 @@ import { isHeadless, markHeadless } from "../state/headless";
 import { setPromptHold, shouldTell } from "../state/promptHold";
 import { setDoneSummary } from "../state/notifications";
 import { duckTask, setDuckOwned } from "../state/duckOwned";
-import { addProject, deleteInstance, getRegistry, loadRegistry, renumberInstances } from "../state/registry";
+import { addProject, deleteInstance, getRegistry, loadRegistry, onSessionYouStarted, renumberInstances } from "../state/registry";
 import {
   answerChoice,
   answerChoiceText,
@@ -488,6 +488,7 @@ export const localPort: WorkbenchPort = {
   writeNote: notesWrite,
   createNote: notesCreateWith,
   deleteNote: notesDelete,
+  onSessionYouStarted: (cb) => onSessionYouStarted((i) => cb(i.id, i.projectId)),
   onPhase: (cb) =>
     onStatusTransition((id, phase, prev) => {
       if (phase !== "needs_you" || prev === "needs_you") return cb(id, phase, prev);

@@ -6,7 +6,14 @@
 // a toolbar (W5) or the core memory (W4) Duck changed is a chip with its diff.
 
 import type { StoredMessage } from "../../ipc/assistant";
-import type { MemoryEdit, NoteEdit, Notice, PluginsEdit } from "../../assistant/protocol";
+import type { MemoryEdit, NoteEdit, Notice, PluginsEdit, ReminderEdit } from "../../assistant/protocol";
+
+/** A reminder chip's diff (H8): the record as JSON, before and after. */
+export function reminderFiles(e: ReminderEdit): { label: string; before: string; after: string }[] {
+  const json = (r: unknown) => (r ? `${JSON.stringify(r, null, 2)}
+` : "");
+  return [{ label: "reminders.json", before: json(e.before), after: json(e.after) }];
+}
 
 export type Item =
   | { kind: "user"; key: string; text: string; source: string }
@@ -14,6 +21,8 @@ export type Item =
   | { kind: "note"; key: string; text: string; edit: NoteEdit }
   | { kind: "plugins"; key: string; text: string; edit: PluginsEdit }
   | { kind: "memory"; key: string; text: string; edit: MemoryEdit }
+  /** Duck added, closed or changed a reminder (H8): a chip with an undo. */
+  | { kind: "reminder"; key: string; text: string; edit: ReminderEdit }
   /** A worker task started here (D1): its card shows the task's live state. */
   | { kind: "task"; key: string; text: string; taskId: string }
   | { kind: "reply"; key: string; text: string }
@@ -139,6 +148,8 @@ export function toItems(messages: readonly StoredMessage[]): Item[] {
         items.push({ kind: "plugins", key, text: n.text, edit: n.plugins });
       else if (n.kind === "memory" && n.memory)
         items.push({ kind: "memory", key, text: n.text, edit: n.memory });
+      else if (n.kind === "reminder" && n.reminder)
+        items.push({ kind: "reminder", key, text: n.text, edit: n.reminder });
       else if (n.kind === "task" && n.task)
         items.push({ kind: "task", key, text: n.text, taskId: n.task.id });
       else items.push({ kind: "notice", key, notice: n });

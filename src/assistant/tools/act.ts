@@ -30,6 +30,7 @@ import {
   sessionArg,
 } from "./read";
 import { defineTool, type ToolContext } from "./registry";
+import { remindersFor } from "./reminders";
 
 const cut = (s: string, n: number) => {
   const one = s.replace(/\s+/g, " ").trim();
@@ -148,7 +149,7 @@ export const createSession = defineTool({
   trust: (input, port) => ({ ...onProject(input, port), texts: input.prompt ? [input.prompt] : [] }),
   async run(
     { project, prompt, title, worktree, model, permissionMode, delegatedBy },
-    { port, settings, request, threadId },
+    { port, settings, request, threadId, reminders },
   ) {
     // Handed over only on the user's own words (step T3).
     const delegated = !!delegatedBy?.trim() && quotes(request, delegatedBy);
@@ -182,6 +183,8 @@ export const createSession = defineTool({
           : "no: those words aren't in the user's latest message, so its questions go to them"
         : null,
       warning: made.message,
+      // The project's reminders come up with every new session there (H8).
+      ...remindersFor({ reminders }, p.id),
     });
   },
 });

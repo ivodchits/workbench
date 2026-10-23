@@ -208,6 +208,9 @@ export interface WorkbenchPort {
    *  Duck's trust watcher answers on its own is never reported, and one it leaves
    *  to the user is reported once it has decided (`holdNeedsYou`). */
   onPhase(cb: PhaseListener): () => void;
+  /** Hear each new session the user starts (the rail, the phone), not Duck's own
+   *  (step H8: the project's reminders come up). */
+  onSessionYouStarted(cb: (instanceId: string, projectId: string) => void): () => void;
 
   // ── project toolbar plugins (W5) ──
 

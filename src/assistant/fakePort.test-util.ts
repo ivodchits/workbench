@@ -331,6 +331,7 @@ export function fakePort(data: FakePortData = {}): FakePort {
     phase(id, phase, prev) {
       for (const l of [...listeners]) l(id, phase, prev ?? null);
     },
+    onSessionYouStarted: () => () => {},
 
     listPlugins(projectId) {
       const f = pluginsOf(projectId);

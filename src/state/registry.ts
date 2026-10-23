@@ -156,6 +156,21 @@ export async function addInstance(input: NewInstance): Promise<Instance> {
   }
 }
 
+const startedByYou = new Set<(instance: Instance) => void>();
+
+/** Hear each new session you start (the rail's "new instance", the phone's new
+ *  session); Duck's own aren't told. Duck brings up the project's reminders (H8). */
+export function onSessionYouStarted(cb: (instance: Instance) => void): () => void {
+  startedByYou.add(cb);
+  return () => {
+    startedByYou.delete(cb);
+  };
+}
+
+export function sessionYouStarted(instance: Instance): void {
+  for (const cb of startedByYou) cb(instance);
+}
+
 export function updateInstance(id: string, patch: InstancePatch): Promise<void> {
   return mutate(() => editInstance(id, patch));
 }

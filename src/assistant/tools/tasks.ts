@@ -13,6 +13,7 @@ import { TIERS } from "../settings";
 import { isFinished, TASK_KINDS, TASK_STATES, type Task, type TaskManager } from "../tasks";
 import { compact, findProject, projectArg } from "./read";
 import { defineTool, type ToolContext } from "./registry";
+import { remindersFor } from "./reminders";
 
 /** How much of a running worker's last reply `task_status` shows. */
 const PROGRESS_CHARS = 1500;
@@ -106,6 +107,8 @@ export const runTask = defineTool({
     const running = tasks.list().filter((x) => x.state === "running").length;
     return {
       ...view(t),
+      // A code task starts a session in the project: its reminders come up (H8).
+      ...(projectId && remindersFor(ctx, projectId)),
       next:
         t.state === "queued"
           ? `waiting for a free worker (${running} running); it starts by itself`

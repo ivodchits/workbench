@@ -17,6 +17,7 @@ import { PREP_TOOLS } from "./tools/prep";
 import { QUIET_TOOLS } from "./tools/quiet";
 import { READ_TOOLS } from "./tools/read";
 import { READ_ALOUD_TOOLS } from "./tools/readAloud";
+import { REMINDER_TOOLS } from "./tools/reminders";
 import { ROUTINE_TOOLS } from "./tools/routines";
 import { SCREEN_TOOLS } from "./tools/screen";
 import { SCREENSHOT_TOOLS } from "./tools/screenshot";
@@ -57,6 +58,7 @@ export const TOOLS = [
   ...PC_TOOLS,
   weather,
   ...MEDIA_TOOLS,
+  ...REMINDER_TOOLS,
   ...(import.meta.env.DEV ? [testConfirm, testAnnounce] : []),
 ];
 
@@ -92,6 +94,9 @@ export const DEFERRED = new Set([
   "play_music",
   "find_video",
   "play_video",
+  // Reminders (H8): adding, listing and "that's done" load up front.
+  "dismiss_reminder",
+  "edit_reminder",
   ...BROWSER_TOOLS.map((t) => t.name),
   ...ROUTINE_TOOLS.map((t) => t.name),
 ]);

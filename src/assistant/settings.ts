@@ -139,6 +139,9 @@ export interface DuckSettings {
   /** Where the user lives, as a place name ("Lisbon", "Portland, Oregon"): the
    *  weather's place when none is named (step H2); null unset. */
   home: string | null;
+  /** The general reminders come up on your first message after this many minutes
+   *  without one (step H8), as well as in a new thread. */
+  reminderSpellMinutes: number;
 }
 
 export const DEFAULT_TIERS: Record<Tier, TierSpec> = {
@@ -174,6 +177,7 @@ export const DEFAULT_SETTINGS: DuckSettings = {
   sessionModes: [],
   sessionModel: "sonnet",
   home: null,
+  reminderSpellMinutes: 30,
 };
 
 /** Do Not Disturb "until I turn it off". */
@@ -236,6 +240,8 @@ export function cleanSettings(raw: unknown): Partial<DuckSettings> {
   if (Array.isArray(r.sessionModes))
     out.sessionModes = [...new Set(r.sessionModes.filter((m): m is string => m === "chat" || m === "duck"))];
   if (r.sessionModel === "sonnet" || r.sessionModel === "opus") out.sessionModel = r.sessionModel;
+  const spell = whole(r.reminderSpellMinutes, 24 * 60);
+  if (spell !== undefined) out.reminderSpellMinutes = Math.max(5, spell);
   if (r.home === null) out.home = null;
   else if (typeof r.home === "string") out.home = r.home.trim().slice(0, 100) || null;
   if (r.google && typeof r.google === "object") out.google = cleanGoogle(r.google as Record<string, unknown>);

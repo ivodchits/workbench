@@ -81,6 +81,8 @@ import { connectLocal, createHosts } from "./hosts";
 import { pcHandlers } from "./tools/pc";
 import { youtubeMusic } from "./music/youtube";
 import { youtubeSearch } from "../ipc/music";
+import { onRemindersChanged, reminderSeenSet, remindersPut, remindersRead, remindersSeen, remindersWatch } from "../ipc/reminders";
+import { createReminderClock, createReminders, dueText, projectLine, view as reminderView, type RemindersBackend, type RemindersHost } from "./reminders";
 import { mediaControl, mediaNowPlaying, pcOpen, steamActivity, steamLibrary, steamStoreSearch } from "../ipc/pc";
 import { createBrowserHost } from "./browser";
 import { createHostedSync, type HostedSync } from "./hosted";
@@ -266,6 +268,7 @@ export function endpoint(
   promoter?: Promoter,
   timings?: TimingsHost,
   hosted?: HostedSync,
+  reminders?: RemindersHost,
 ): DuckEndpoint {
   const listeners = new Set<(ev: DuckEvent) => void>();
   const say = (ev: DuckEvent) => {
@@ -354,6 +357,18 @@ export function endpoint(
   };
   skills?.onChange((list) => say(skillsEvent(list)));
   reader?.subscribe((v) => say({ type: "reader", reader: v }));
+  // The open reminders (H8), for the widget.
+  const sendReminders = (to = say, pulse = false) => {
+    if (!reminders) return;
+    const now = Date.now();
+    to({
+      type: "reminders",
+      reminders: reminders.list().filter((r) => r.state === "open").map((r) => reminderView(r, now)),
+      problem: reminders.problem(),
+      ...(pulse && { pulse }),
+    });
+  };
+  reminders?.subscribe((pulse) => sendReminders(say, pulse));
   const needTrust = () => {
     if (!trust) throw new Error("Duck's trust settings didn't load.");
     return trust;
@@ -414,6 +429,7 @@ export function endpoint(
         await sendRoutines(answer);
         await sendSkills(answer).catch(fail);
         if (reader) answer({ type: "reader", reader: reader.reader.view() });
+        sendReminders(answer);
         await sendSpend(answer);
         return;
       case "settings.set":
@@ -576,6 +592,7 @@ export function endpoint(
  *  retried on the next call. */
 export function initAssistant(): Promise<void> {
   started ??= (async () => {
+    const startedAt = Date.now();
     const s = createThreadStore(ipcBackend);
     await s.load();
     const settings = await loadSettings();
@@ -718,6 +735,21 @@ export function initAssistant(): Promise<void> {
     // Routines (step L4): the backup, the weekly housekeeping, the monthly docs
     // clean-up, and the user's own.
     const ws = () => settings.get().workspace;
+    // Reminders (H8): `reminders.json` in Duck's repo, read again on a hand edit.
+    const remindersBackend: RemindersBackend = {
+      read: () => remindersRead(ws()),
+      put: (id, before, after, message) => remindersPut(ws(), id, before, after, message),
+      seen: remindersSeen,
+      setSeen: reminderSeenSet,
+    };
+    const reminders = createReminders({ backend: remindersBackend, spellMinutes: () => settings.get().reminderSpellMinutes });
+    const warnReminders = (e: unknown) => console.warn("duck: reminders", e);
+    const watchReminders = () => {
+      void remindersWatch(ws()).catch(warnReminders);
+      void reminders.load().catch(warnReminders);
+    };
+    watchReminders();
+    onRemindersChanged(() => void reminders.load().catch(warnReminders));
     const git: GitLane = {
       status: () => backupStatus(ws()),
       push: () => backupPush(ws()),
@@ -840,6 +872,7 @@ export function initAssistant(): Promise<void> {
       hosted: { call: mcpHostCall, browser },
       hosts,
       music: youtubeMusic({ search: youtubeSearch }),
+      reminders,
       google: createGoogleHost({ workspacePrepare, sheetExport, sheetCells, sheetDraft, sheetDrafts, sheetSearch, sheetRead }),
       core: createCoreHost(() => settings.get().workspace),
       memory,
@@ -952,6 +985,41 @@ export function initAssistant(): Promise<void> {
         });
       } else if (ev.type === "confirmed") announcer.answered(`card:${ev.toolUseId}`);
     });
+    // Where a reminder's line goes: the thread the drawer shows, else the latest.
+    const activeThread = async (): Promise<string> => {
+      const v = viewing.get("desktop");
+      if (v && s.thread(v.threadId)) return v.threadId;
+      return s.threads()[0]?.id ?? (await engine.newThread(undefined, "Reminders")).id;
+    };
+    // Timed reminders, announced once when due (late when the app was closed).
+    void createReminderClock({
+      reminders,
+      backend: remindersBackend,
+      startedAt,
+      announce: (r, late) =>
+        void (async () => {
+          const threadId = await activeThread();
+          const text = late && r.due ? `Reminder, late (it was due ${dueText(r.due)}): ${r.title}` : `Reminder: ${r.title}`;
+          await engine.notice(threadId, { kind: "reminder", text });
+          announcer.add({ level: "report", text, threadId, key: `reminder:${r.id}` });
+          reminders.pulse();
+        })().catch(warnReminders),
+    })
+      .then((clock) => {
+        reminders.subscribe((pulse) => pulse || clock.arm());
+        clock.arm();
+      })
+      .catch(warnReminders);
+    // A session you start: its project's reminders, one line (no model turn).
+    localPort.onSessionYouStarted((_id, projectId) => {
+      const list = reminders.forProject(projectId);
+      if (!list.length) return;
+      const name = localPort.listProjects().find((p) => p.id === projectId)?.name ?? list[0].project?.name ?? "";
+      void activeThread()
+        .then((threadId) => engine.notice(threadId, { kind: "reminder", text: projectLine(name, list) }))
+        .then(() => reminders.pulse())
+        .catch(warnReminders);
+    });
     await tasks.load().catch((e: unknown) => console.error("duck: worker tasks didn't load", e));
     await autopilot.load().catch((e: unknown) => console.error("duck: autopilots didn't load", e));
     await routines.load().catch((e: unknown) => console.error("duck: routines didn't load", e));
@@ -977,7 +1045,11 @@ export function initAssistant(): Promise<void> {
           return () => readerListeners.delete(cb);
         },
       },
-      () => announcer.poke(),
+      () => {
+        announcer.poke();
+        // The workspace may have moved: watch and read its reminders.
+        watchReminders();
+      },
       routinesHost,
       skills,
       promoter,
@@ -993,6 +1065,7 @@ export function initAssistant(): Promise<void> {
         fiveHour: async () => (await localPort.usageLimits())?.fiveHour?.usedPercentage ?? null,
       },
       hosted,
+      reminders,
     );
     epRef = ep;
     duck = createLocalTransport(ep);

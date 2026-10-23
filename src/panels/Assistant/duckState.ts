@@ -39,6 +39,7 @@ import type {
   TurnState,
 } from "../../assistant/protocol";
 import type { ReaderView } from "../../assistant/reader";
+import type { ReminderView } from "../../assistant/reminders";
 import type { DuckSettings } from "../../assistant/settings";
 import type { Mode } from "../../assistant/trust/decide";
 import type { Promotion, PromotionPreview } from "../../assistant/trust/promote";
@@ -107,6 +108,11 @@ export interface DuckState {
   backup: BackupView | null;
   /** What's being read aloud (step V3), or null. */
   reader: ReaderView | null;
+  /** The open reminders (step H8), what's wrong with their file, and a count that
+   *  goes up each time one comes up (the widget pulses). */
+  reminders: ReminderView[];
+  remindersProblem: string | null;
+  remindersPulse: number;
   /** Replies not seen yet, per thread. */
   unread: Record<string, number>;
   /** Each thread's latest reply, its first line. */
@@ -157,6 +163,9 @@ let state: DuckState = {
   routines: [],
   backup: null,
   reader: null,
+  reminders: [],
+  remindersProblem: null,
+  remindersPulse: 0,
   unread: {},
   news: {},
   fill: null,
@@ -442,6 +451,13 @@ function onEvent(e: DuckEvent): void {
       break;
     case "reader":
       set({ reader: e.reader });
+      break;
+    case "reminders":
+      set({
+        reminders: e.reminders,
+        remindersProblem: e.problem,
+        ...(e.pulse && { remindersPulse: state.remindersPulse + 1 }),
+      });
       break;
     case "autopilots":
       set({ autopilots: e.autopilots });

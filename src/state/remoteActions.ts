@@ -14,7 +14,7 @@ import { ENTER_KEY, INTERRUPT_KEY, ptyWrite } from "../ipc/pty";
 import { onRemoteAction, type RemoteAction } from "../ipc/remote";
 import type { Instance, Project } from "../ipc/registry";
 import type { RemoteChooseAction, RemoteCreateAction } from "../remote/protocol";
-import { addInstance, deleteInstance, getRegistry, nextInstanceTitle } from "./registry";
+import { addInstance, deleteInstance, getRegistry, nextInstanceTitle, sessionYouStarted } from "./registry";
 import { markInterrupted } from "./status";
 import { getPendingChoice, markChoiceSent, takeHold } from "./pendingChoice";
 import { closeConsole, openConsole } from "./consoles";
@@ -320,6 +320,7 @@ async function createSession(action: RemoteCreateAction): Promise<void> {
     return updateCreate(requestId, { instanceId: null, state: "failed", message: errorText(e) });
   }
   const { instance, message } = made;
+  sessionYouStarted(instance);
 
   const text = action.text?.trim();
   if (!text) return updateCreate(requestId, { state: "started", message });

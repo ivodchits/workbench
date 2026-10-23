@@ -58,6 +58,7 @@ import type { MemoryHost } from "../memory";
 import type { ConfigHost } from "../config";
 import type { SkillsHost } from "../skills";
 import type { MusicProvider } from "../music/provider";
+import type { RemindersHost } from "../reminders";
 import type { Surface } from "../protocol";
 import { isRemoteHost, type Host, type HostCaller } from "../hosts";
 
@@ -128,6 +129,8 @@ export interface ToolContext {
   /** Where the user's latest message in this thread was typed or said (step H3:
    *  music plays there unless they name a device); absent in some tests. */
   surface?: Surface;
+  /** The user's reminders (step H8); absent where there are none. */
+  reminders?: RemindersHost | null;
 }
 
 /** What `prepare` gets besides the port. */

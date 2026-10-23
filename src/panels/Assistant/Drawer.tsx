@@ -33,6 +33,7 @@ import { renderMarkdown } from "../Editor/markdown";
 import "../../theme/markdown.css";
 import "../../theme/assistant.css";
 import { memoryRestore } from "../../ipc/memory";
+import { remindersPut } from "../../ipc/reminders";
 import { coreWorkspace, EMPTY_CORE } from "../../assistant/core";
 import type { ModeView } from "../../assistant/protocol";
 import { coreWrite } from "../../ipc/assistant";
@@ -42,12 +43,14 @@ import type {
   NoteEdit,
   Notice,
   PluginsEdit,
+  ReminderEdit,
   ReviewItem,
   TaskView,
   TurnState,
 } from "../../assistant/protocol";
 import { projectMonth } from "../../assistant/spend";
 import DuckAvatar from "./DuckAvatar";
+import RemindersBadge from "./RemindersBadge";
 import type { DuckMode } from "./duck3d";
 import DuckIcon from "./DuckIcon";
 import DrawerSettings from "./DrawerSettings";
@@ -98,6 +101,7 @@ import {
   lineDiff,
   oneLine,
   readableInput,
+  reminderFiles,
   sessionLink,
   toItems,
   type Item,
@@ -305,17 +309,25 @@ export default function AssistantDrawer() {
       {view === "thread" && duck.prefs.avatar.show && (
         <div
           style={{
+            position: "relative",
             flex: "0 0 auto",
             height: "clamp(120px, 32%, 320px)",
             borderBottom: "1px solid var(--wb-border)",
           }}
         >
+          <RemindersBadge reminders={duck.reminders} problem={duck.remindersProblem} pulse={duck.remindersPulse} />
           <DuckAvatar
             mode={speech.speaking !== null ? "talking" : AVATAR_MODE[current ? (duck.states[current] ?? "idle") : "idle"]}
             level={speech.speaking !== null ? getSpeechLevel : undefined}
             prefs={duck.prefs.avatar}
             running={duck.open}
           />
+        </div>
+      )}
+      {view === "thread" && !duck.prefs.avatar.show && (
+        // The widget over the chat's corner when the duck is hidden (H8).
+        <div style={{ position: "relative", height: 0 }}>
+          <RemindersBadge reminders={duck.reminders} problem={duck.remindersProblem} pulse={duck.remindersPulse} />
         </div>
       )}
       {view === "thread" && <ThreadBody duck={duck} />}
@@ -964,6 +976,16 @@ function ItemView({ item, active }: { item: Item; active: boolean }) {
         />
       );
     }
+    case "reminder":
+      return (
+        <EditChip
+          text={item.text}
+          project="reminders"
+          files={reminderFiles(item.edit)}
+          undo={() => undoReminderEdit(item.edit)}
+          staleText="can't undo: the reminder changed since"
+        />
+      );
     case "task":
       return <TaskCard taskId={item.taskId} text={item.text} />;
     case "notice":
@@ -991,7 +1013,7 @@ function ItemView({ item, active }: { item: Item; active: boolean }) {
   }
 }
 
-const NOTICE_GLYPH: Partial<Record<Notice["kind"], string>> = { keys: "⌨", autopilot: "⟳", screen: "▣", reader: "♪", budget: "$", compacted: "⇲" };
+const NOTICE_GLYPH: Partial<Record<Notice["kind"], string>> = { keys: "⌨", autopilot: "⟳", screen: "▣", reader: "♪", budget: "$", compacted: "⇲", reminder: "⏰" };
 
 const TASK_STATE: Record<string, string> = {
   queued: "waiting for a free worker",
@@ -1288,6 +1310,16 @@ async function undoMemoryEdit(e: MemoryEdit): Promise<string> {
   }
   await coreWrite(coreWorkspace(e.path), e.before ?? EMPTY_CORE, e.after, "memory: core: undo");
   return "undone";
+}
+
+/** Put a reminder back as it was before Duck's change (H8), if nobody changed it
+ *  since: an added one goes, a closed one is open again. */
+async function undoReminderEdit(e: ReminderEdit): Promise<string> {
+  // The file is at the workspace's root.
+  const workspace = e.path.replace(/[\\/][^\\/]+$/, "");
+  const title = (e.after ?? e.before)?.title ?? e.id;
+  await remindersPut(workspace, e.id, e.after, e.before, `reminders: undo "${title.slice(0, 60)}"`);
+  return e.before ? "undone" : "removed";
 }
 
 /** Put a project's toolbar back as it was before Duck's edit (W5): the plugin file

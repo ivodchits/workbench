@@ -8,6 +8,7 @@
 
 import type { DecisionRow, Spend, StoredMessage, ThreadRow } from "../ipc/assistant";
 import type { ReaderView } from "./reader";
+import type { ReminderRecord, ReminderView } from "./reminders";
 import type { Brain } from "./routing";
 import type { Backend } from "./brain/policy";
 import type { DuckSettings } from "./settings";
@@ -111,6 +112,17 @@ export interface MemoryEdit {
   after: string;
 }
 
+/** A reminder Duck added, closed or changed (step H8), for the thread's chip: the
+ *  record before and after, and an undo over the record as Duck left it. */
+export interface ReminderEdit {
+  /** `reminders.json`'s path: its folder is Duck's workspace. */
+  path: string;
+  id: string;
+  /** null: the edit made it. */
+  before: ReminderRecord | null;
+  after: ReminderRecord | null;
+}
+
 /** The payload of a `notice` message: something the thread shows but the model
  *  never sees (a stopped turn, the budget cap, a refusal, an error). */
 export interface Notice {
@@ -145,7 +157,10 @@ export interface Notice {
     /** Duck edited its core memory (W4) or its long-term memory (L1). */
     | "memory"
     /** You asked Duck not to remember this thread, or to again (L1). */
-    | "memoryOff";
+    | "memoryOff"
+    /** A reminder: Duck's change to one (a chip with an undo), a project's when
+     *  you start a session there, or one that's due (H8). */
+    | "reminder";
   text: string;
   /** `note` only. */
   note?: NoteEdit;
@@ -153,6 +168,8 @@ export interface Notice {
   plugins?: PluginsEdit;
   /** `memory` only. */
   memory?: MemoryEdit;
+  /** `reminder` only, for Duck's change to one. */
+  reminder?: ReminderEdit;
   /** `memoryOff` only: false when you turned memory back on. */
   off?: boolean;
   /** `task` only. */
@@ -403,6 +420,9 @@ export type DuckEvent =
   /** What's being read aloud (step V3), on `sync` and after every change; null
    *  when nothing is. */
   | { type: "reader"; reader: ReaderView | null }
+  /** The open reminders (step H8), on `sync` and after every change; `pulse` when
+   *  one just came up (due, or a project's on a new session). */
+  | { type: "reminders"; reminders: ReminderView[]; problem: string | null; pulse?: boolean }
   /** A request from a surface failed (an unknown thread, storage down, …). */
   | { type: "error"; message: string };
 

@@ -86,6 +86,7 @@ import type { HostedCaller } from "./tools/mcpHost";
 import type { GoogleHost } from "./google";
 import type { HostCaller } from "./hosts";
 import type { MusicProvider } from "./music/provider";
+import type { RemindersHost } from "./reminders";
 import type { ThreadMoves } from "./tools/threads";
 import type { HaikuCall } from "./tools/haikuTask";
 import type { Level } from "./announce";
@@ -202,6 +203,9 @@ export interface EngineDeps {
   hosts?: HostCaller;
   /** Music and video search and play (step H3), for `play_music` and the rest. */
   music?: MusicProvider;
+  /** The user's reminders (step H8): their tools, and the general ones' note on
+   *  the first message of a conversation. */
+  reminders?: RemindersHost;
   /** The morning routine's Google sheet, for `morning_briefing`. */
   google?: GoogleHost;
   /** Duck's core memory (step W4): read into each new thread, edited by
@@ -902,6 +906,15 @@ export function createEngine(deps: EngineDeps): Engine {
         opening.push({
           role: "system",
           content: { content: [{ type: "text", text: recall.note }], clear_at: "next_user_message" },
+          source: "duck",
+        });
+      // The general reminders (step H8), on a new thread or after a quiet spell:
+      // turn-scoped too, so Duck mentions them once and the prefix holds.
+      const reminded = deps.reminders && USER_SOURCES.has(input.source) ? deps.reminders.opening(first) : null;
+      if (reminded)
+        opening.push({
+          role: "system",
+          content: { content: [{ type: "text", text: reminded }], clear_at: "next_user_message" },
           source: "duck",
         });
       const before = history[history.length - 1]?.seq ?? 0;
@@ -1605,6 +1618,7 @@ export function createEngine(deps: EngineDeps): Engine {
           hosted: deps.hosted ?? null,
           hosts: deps.hosts ?? null,
           music: deps.music ?? null,
+          reminders: deps.reminders ?? null,
           surface: surfaceOf(store.loaded(threadId)),
           google: deps.google ?? null,
           core: deps.core ?? null,

@@ -49,7 +49,7 @@ import {
 } from "../assistant/protocol";
 import type { DuckMode } from "../panels/Assistant/duck3d";
 import { startDuckCanvas, type DuckLook } from "../panels/Assistant/duckCanvas";
-import { lineDiff, oneLine, readableInput, sessionLink, toItems, type Item } from "../panels/Assistant/view";
+import { lineDiff, oneLine, readableInput, reminderFiles, sessionLink, toItems, type Item } from "../panels/Assistant/view";
 import { renderMarkdown } from "../panels/Editor/markdown";
 import type { EchoPath, RemoteConvFrame, RemoteConvMessage, RemoteDuckFrame, RemoteDuckMessage } from "../remote/protocol";
 import { formatAgo } from "../util/format";
@@ -909,6 +909,8 @@ function itemView(it: Item, active: boolean): HTMLElement {
       ]);
     case "memory":
       return editChip(it.text, "core memory", [{ label: "core.md", before: it.edit.before ?? "", after: it.edit.after }]);
+    case "reminder":
+      return editChip(it.text, "reminders", reminderFiles(it.edit));
     case "task":
       return taskCard(it.taskId, it.text);
     case "notice":
@@ -1025,7 +1027,7 @@ function taskCard(taskId: string, text: string): HTMLElement {
   return card;
 }
 
-const NOTICE_GLYPH: Partial<Record<Notice["kind"], string>> = { keys: "⌨", autopilot: "⟳", screen: "▣", reader: "♪", budget: "$", compacted: "⇲" };
+const NOTICE_GLYPH: Partial<Record<Notice["kind"], string>> = { keys: "⌨", autopilot: "⟳", screen: "▣", reader: "♪", budget: "$", compacted: "⇲", reminder: "⏰" };
 
 function noticeLine(n: Notice): HTMLElement {
   const quiet = n.kind === "stopped" || n.kind === "keys" || n.kind === "autopilot" || n.kind === "screen" || n.kind === "reader" || n.kind === "compacted";

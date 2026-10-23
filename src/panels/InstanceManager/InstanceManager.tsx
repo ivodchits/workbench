@@ -49,6 +49,7 @@ import { release } from "../terminalPool";
 import RemoteCommandTerminal from "./RemoteCommandTerminal";
 import {
   addInstance,
+  sessionYouStarted,
   deleteInstance,
   deleteProject,
   getRegistry,
@@ -82,6 +83,7 @@ async function spawnInstance(project: Project): Promise<void> {
   setActiveProject(instance.projectId);
   openConsole(instance);
   activatePanel(instance.id);
+  sessionYouStarted(instance);
 }
 
 /** A group with its projects, plus a synthetic "ungrouped" bucket (id `null`). */

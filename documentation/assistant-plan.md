@@ -7100,6 +7100,76 @@ checked in the scratch PTY first.
     `reminders.json` is reported, not overwritten.
 - **Out of scope:** timers, repeating reminders, snooze, and phone push with actions
   (H4, on this store); location reminders (H5); a calendar mirror.
+- **As built (2026-10-23):**
+  - **The store** (`reminders.rs`): `reminders.json` at the root of Duck's repo is
+    `{"reminders": [...]}`, with the record as planned. A due time is a local
+    `2026-10-24T10:00`, or a day (`2026-10-24`), which counts as due at 09:00.
+    Fields this version doesn't know (H4's `repeat`) are kept on every write.
+    - **Writes:** there is one, `put(id, before, after)`, which replaces, adds or
+      removes one record if it is still `before`; otherwise it fails with `stale:`.
+      That is the revision check, per record rather than per file, so an edit to
+      another reminder doesn't refuse this one.
+    - **Commits:** each write commits only `reminders.json`, as Duck, through
+      `memory::commit`, with messages like `reminders: added "…" (Workbench)`,
+      `reminders: done "…"` and `reminders: undo "…"`. Weekly housekeeping also
+      commits a hand edit.
+    - **A broken file** (it doesn't parse, or a record is bad: two with the same id,
+      a due that isn't a date, an empty title) is shown in the widget and by
+      `list_reminders`. Nothing is written over it until it's fixed.
+    - **The watcher** watches the workspace folder, not the file, because a save
+      replaces the file, and emits `duck-reminders-changed`. Delivery bookkeeping is
+      `meta` `reminder_seen:<id>` = `{announced: <due>}`.
+  - **The engine's side** (`src/assistant/reminders.ts`): the latest read, matching
+    a reminder by its id, its title or the words it holds, the timing rules and the
+    clock.
+    - **What comes up:** a reminder with a time comes up only once it's due (in the
+      notes, the project line and Duck's starts). Before that it shows only in the
+      widget and the list.
+    - **The clock** keeps one timer for the next reminder, waiting at most an hour.
+      Each reminder is announced once for its due. Moved to a new time, it's announced
+      again then.
+  - **Tools** (`tools/reminders.ts`):
+    - `list_reminders`, `add_reminder` and `complete_reminder` load up front;
+      `dismiss_reminder` and `edit_reminder` are deferred.
+    - Each change is a `reminder` notice: a chip with the record's diff and an undo.
+      The undo writes `before` back over `after`, and is refused when the reminder
+      changed since.
+    - `add_reminder` refuses a due in the past, which is usually a misread date,
+      and gives the time back ("Saturday 24 Oct, 10:00").
+    - A write that meets a stale record reads the file and tries once more.
+    - The chat and rubber-duck modes have the tools too (`COMMON_TOOLS`).
+  - **Project reminders:**
+    - **Duck's starts:** `create_session`, and `run_task` for a code task, return
+      the project's open titles with a note to mention them.
+    - **Your starts:** a new `onSessionYouStarted` event in the registry (the rail's
+      new instance and the phone's new session; Duck's own starts aren't told) puts
+      one notice line in the thread. That's the thread the drawer shows, else the
+      latest (or a new "Reminders" thread when there is none).
+  - **General reminders:**
+    - The note is a turn-scoped system message (`clear_at`), after the recall note.
+      It comes on your first message in a new thread, and on the first after
+      `reminderSpellMinutes` (default 30) without a message from you.
+    - **A change from the plan:** the instruction for how to mention them is in the
+      note itself, not the system prompt. It costs tokens only when the note is
+      there, and it stays even when your workspace has its own system prompt (L3).
+  - **Timed reminders** go to V5's announcer at `report`, with a notice ("Reminder:
+    …", or "Reminder, late (it was due …): …") and the widget's pulse.
+  - **The widget** (`RemindersBadge.tsx`):
+    - The red dot shows the count, or "!" for a broken file, in the duck's corner, or
+      the chat's with the duck hidden.
+    - It pulses three times when a reminder comes up.
+    - The list has titles only, sorted timed first, then the shown project's, then
+      general, then other projects'.
+    - It follows the `reminders` event, sent on `sync` and after every change.
+  - **On the phone**, the PWA shows the chips; its widget is not built.
+  - **Not tried yet:** the trials in "Done when" (a reminder through Duck, starting
+    sessions from the rail, an announcement two minutes out, the widget, a
+    hand-broken file) wait for you. The tests cover:
+    - the store;
+    - the timing rules;
+    - the clock, including a restart and a reminder moved to a new time;
+    - the tools;
+    - the note through the engine.
 
 #### Step H4 — Duck's reminders and timers
 
@@ -7688,7 +7758,7 @@ T2 goes live after the replay check in its done-when (the past week's prompts th
 | H2 | PC tools: Steam, media keys, weather | ☑ |
 | H3 | Music and video | ☑ |
 | H4 | Duck's reminders and timers | ☐ |
-| H8 | Reminders: project and general, with a widget | ☐ |
+| H8 | Reminders: project and general, with a widget | ☑ |
 | H5 | The phone as a host (with R4) | ☐ |
 | H6 | Duck on the home server (gate: the server) | ☐ |
 | H7 | The phone's fallback brain | ☐ |

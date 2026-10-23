@@ -342,7 +342,8 @@ fn tidy_tasks(ws: &Path, cutoff: &str, report: &mut HousekeepReport) -> Result<(
 }
 
 /// Housekeeping's mechanical part, on the git queue: old tasks folded into the
-/// index, the files no commit took committed, and `git gc --auto`.
+/// index, the files no commit took committed (a hand edit of the memory, the
+/// prompts or `reminders.json`), and `git gc --auto`.
 pub fn housekeep(workspace: &Path, cutoff: &str) -> Result<HousekeepReport, String> {
     if cutoff.len() != 10 || !cutoff.bytes().all(|b| b.is_ascii_digit() || b == b'-') {
         return Err("the cutoff is a date, YYYY-MM-DD".into());
@@ -356,7 +357,7 @@ pub fn housekeep(workspace: &Path, cutoff: &str) -> Result<HousekeepReport, Stri
             if !repo.join(".git").exists() {
                 return Ok(report);
             }
-            let mut files: Vec<String> = gitqueue::run(repo, &["status", "--porcelain", "-uall", "--", "memory", "config"])?
+            let mut files: Vec<String> = gitqueue::run(repo, &["status", "--porcelain", "-uall", "--", "memory", "config", super::reminders::FILE])?
                 .lines()
                 .filter_map(|l| l.get(3..).map(|p| p.trim().trim_matches('"').to_string()))
                 .filter(|p| !p.is_empty())

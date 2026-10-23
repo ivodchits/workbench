@@ -16,6 +16,7 @@
 //! bridge first ([`mcp_host`]).
 //! Step H2: the PC's tools, Steam ([`steam`]) and the media sessions ([`media`]).
 //! Step H3: YouTube search for music and video ([`youtube`]).
+//! Step H8: reminders, `reminders.json` in Duck's repo ([`reminders`]).
 //! The morning routine: Google access ([`google`]) and the invoice sheet ([`sheets`]).
 //!
 //! The webview never holds the key. It asks [`assistant_proxy_info`] for the proxy's
@@ -37,6 +38,7 @@ pub mod mcp_host;
 mod mcp_server;
 pub mod memory;
 mod proxy;
+pub mod reminders;
 mod routines;
 pub mod skills;
 mod summaries;

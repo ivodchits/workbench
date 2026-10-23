@@ -50,6 +50,7 @@ vi.mock("../panels/terminalPool", () => ({
 vi.mock("./registry", () => ({
   getRegistry: () => ({ projects, instances }),
   nextInstanceTitle: () => "3",
+  sessionYouStarted: (i: Instance) => calls.push(`started by you ${i.id}`),
   addInstance: async (input: { projectId: string; title: string }) => {
     const row = {
       id: `i${instances.length + 1}`,
@@ -97,7 +98,7 @@ describe("create from the phone", () => {
   it("starts a session as the rail does and sends the first prompt once the box shows", async () => {
     handleRemoteAction({ type: "create", requestId: "r1", projectId: "p1", text: "hello" });
     await settle();
-    expect(calls).toEqual(["add i1 3", "project p1", "open i1 /root", "activate i1"]);
+    expect(calls).toEqual(["add i1 3", "project p1", "open i1 /root", "activate i1", "started by you i1"]);
     expect(getCreated()[0]).toMatchObject({ instanceId: "i1", state: "starting" });
 
     await vi.advanceTimersByTimeAsync(1000); // no terminal yet, then a blank one
