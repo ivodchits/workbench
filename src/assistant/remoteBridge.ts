@@ -51,6 +51,7 @@
 //   and only files uploaded here count: the rest of each (name, path) is the
 //   desktop's own record, never the phone's word.
 
+import { withoutManifest } from "./voiceFiles";
 import { z } from "zod";
 import type { StoredFile, StoredMessage } from "../ipc/assistant";
 import { MAX_ATTACHMENTS, type AttachmentRef } from "./attachments";
@@ -96,6 +97,7 @@ const Message = z.discriminatedUnion("type", [
   z.object({ type: z.literal("stop"), threadId: id }),
   z.object({ type: z.literal("turn.commit"), threadId: id }),
   z.object({ type: z.literal("turn.withdraw"), threadId: id }),
+  z.object({ type: z.literal("turn.files"), threadId: id, attachments: z.array(id).min(1).max(MAX_ATTACHMENTS) }),
   z.object({ type: z.literal("confirm"), threadId: id, toolUseId: id, allow: z.boolean(), choice: z.string().max(64).optional() }),
   z.object({ type: z.literal("trust.pause") }),
   z.object({ type: z.literal("trust.decisions"), before: z.number().int().nullable() }),
@@ -156,6 +158,12 @@ export function parseRemote(
         ...(files.length && { attachments: files as AttachmentRef[] }),
       };
     }
+    case "turn.files": {
+      // Files shared just after a spoken turn (step G2).
+      const files = m.attachments.map(file);
+      if (files.some((f) => !f)) return "a file in this message wasn't uploaded here: attach it again";
+      return { type: "turn.files", threadId: m.threadId, attachments: files as AttachmentRef[], source: "phone-voice" };
+    }
     case "trust.pause":
       return { type: "trust.pause", paused: true };
     default:
@@ -166,7 +174,7 @@ export function parseRemote(
 /** The text of a stored user message. */
 function textOf(m: StoredMessage): string {
   return Array.isArray(m.content)
-    ? (m.content as { type?: string; text?: string }[])
+    ? withoutManifest(m.content as { type?: string; text?: string }[])
         .filter((b) => b.type === "text")
         .map((b) => b.text ?? "")
         .join("\n")

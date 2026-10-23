@@ -968,6 +968,61 @@ describe("provisional turns", () => {
   });
 });
 
+// ── late files (step G2) ────────────────────────────────────────────────────
+
+describe("files dropped just after a spoken turn", () => {
+  const tick = () => new Promise((r) => setTimeout(r, 20));
+  const plan = { id: "p".repeat(32), name: "plan.md", mime: "text/markdown", size: 10 };
+  const shot = { id: "s".repeat(32), name: "error.png", mime: "image/png", size: 10 };
+  const blocks = (m: StoredMessage) => m.content as { type: string; text?: string; name?: string }[];
+
+  it("start a turn that hasn't stood again with them, named ahead", async () => {
+    const { engine, store, events, calls } = await setup([{ hang: "Sure" }, message([text("Two files.")], "end_turn")]);
+    const { id } = await engine.newThread();
+    await engine.send({ threadId: id, text: "look at these two", source: "voice", provisional: true, attachments: [plan] });
+    await tick();
+    engine.lateFiles(id, [shot], "voice");
+    await tick();
+    expect(events.filter((e) => e.type === "withdrawn")).toHaveLength(1);
+    expect(calls).toHaveLength(2);
+    // Still provisional: nothing kept until it stands.
+    expect(store.loaded(id)).toHaveLength(0);
+    engine.commit(id);
+    await engine.settled(id);
+    const users = store.loaded(id).filter((m) => m.role === "user");
+    expect(users).toHaveLength(1);
+    const b = blocks(users[0]);
+    expect(b[0]).toEqual({ type: "text", text: "[2 files: plan.md, error.png]" });
+    expect(b.slice(1, 3).map((x) => [x.type, x.name])).toEqual([
+      ["attachment", "plan.md"],
+      ["attachment", "error.png"],
+    ]);
+    expect(b[3]).toEqual({ type: "text", text: "look at these two" });
+  });
+
+  it("follow a turn that stood", async () => {
+    const { engine, store } = await setup([message([text("A plan.")], "end_turn"), message([text("And a shot.")], "end_turn")]);
+    const { id } = await engine.newThread();
+    await engine.send({ threadId: id, text: "look at this", source: "voice", attachments: [plan] });
+    await engine.settled(id);
+    engine.lateFiles(id, [shot], "voice");
+    await tick();
+    await engine.settled(id);
+    const users = store.loaded(id).filter((m) => m.role === "user" && m.source === "voice");
+    expect(users).toHaveLength(2);
+    expect(blocks(users[1]).map((x) => x.type)).toEqual(["text", "attachment"]);
+    expect(blocks(users[1])[0].text).toBe("[1 file: error.png]");
+  });
+
+  it("a typed message's files aren't named ahead", async () => {
+    const { engine, store } = await setup([message([text("ok")], "end_turn")]);
+    const { id } = await engine.newThread();
+    await engine.send({ threadId: id, text: "look", source: "desktop", attachments: [plan] });
+    await engine.settled(id);
+    expect(blocks(store.loaded(id)[0]).map((x) => x.type)).toEqual(["attachment", "text"]);
+  });
+});
+
 // ── moving the conversation (step A7) ───────────────────────────────────────
 
 describe("moving the conversation", () => {

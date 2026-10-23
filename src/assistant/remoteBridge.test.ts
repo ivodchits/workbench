@@ -35,6 +35,19 @@ describe("parseRemote", () => {
     expect(typeof parseRemote({ type: "send", threadId: null, text: "x".repeat(20_001) }, fix)).toBe("string");
     expect(typeof parseRemote({ type: "send", threadId: null, text: "   " }, fix)).toBe("string");
   });
+
+  it("takes files shared just after a spoken turn as late to it, only ones uploaded here (G2)", () => {
+    const ref = { id: "a".repeat(32), name: "shot.png", mime: "image/png", size: 10 };
+    const file = (id: string) => (id === ref.id ? ref : undefined);
+    expect(parseRemote({ type: "turn.files", threadId: "t1", attachments: [ref.id] }, fix, file)).toEqual({
+      type: "turn.files",
+      threadId: "t1",
+      attachments: [ref],
+      source: "phone-voice",
+    });
+    expect(parseRemote({ type: "turn.files", threadId: "t1", attachments: ["b".repeat(32)] }, fix, file)).toMatch(/wasn't uploaded here/);
+    expect(typeof parseRemote({ type: "turn.files", threadId: "t1", attachments: [] }, fix, file)).toBe("string");
+  });
 });
 
 function harness(over: Partial<BridgeDeps> = {}) {

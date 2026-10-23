@@ -5,9 +5,9 @@ behind each decision are in `assistant-plan.md`. This file describes the code, a
 Duck step updates it as part of its Done when. Duck's self-development sessions (L3)
 read it first.
 
-Last updated: step G1 (2026-10-23). L3 audited it against the code. Since W5 it also
+Last updated: step G2 (2026-10-23). L3 audited it against the code. Since W5 it also
 covers W6, D2, D4, P1, P2, M2, M3, A5, A6, A7, W4, L1, L2, L3, L4, R1, R2, R3, B1, B2, T3, D3, V1 to V7,
-V8, S1, S2, X1, H1 to H5, H7, H8, R4, G1 and the morning routine. A fresh session changing Duck: read "The shape", then "Where to
+V8, S1, S2, X1, H1 to H5, H7, H8, R4, G1, G2 and the morning routine. A fresh session changing Duck: read "The shape", then "Where to
 change X" at the end, then the module rows it points to.
 
 ## The shape
@@ -75,6 +75,7 @@ change X" at the end, then the module rows it points to.
 | `engine.ts` | The loop. Pure helpers `toApiMessages`, `effectiveEffort`, `buildParams` and `eventText` are exported for tests. Each tool call gets a `ToolContext` with the settings, `notice()` (a thread item the model never sees) and `later(text)` (a follow-up sent into the thread as a `<workbench_event>` user message with source `event`, which runs its own turn). A tool with `prepare` has it run first (a throw fails the call before any card); what it returns is kept on the call (`BatchCall.prepared`, persisted with a parked batch) and handed to `describe`, `review`, `trust` and `run` (`ctx.prepared`). The gate is asked with the call's own tier (`registry.callTier`), the card's summary and the tool's trust facts (`registry.trustFacts`). It answers run, ask, or deny with a reason, and an optional notice. |
 | `threads.ts` | `createThreadStore(backend)`: threads, messages (loaded per thread on first use) and parked tool batches, in memory and persisted. Appends to one thread are serialized so each gets the next `seq`. `create(mode, id?)`: H7's imported threads keep the phone's id. |
 | `attachments.ts` | Attachments (G1): `AttachmentRef` (what a surface sends: id, name, mime, size, path, thumb), `AttachmentBlock` (the `attachment` block a user message stores, with `as`: `image`, `document`, `text` (and its text) or `ref` (and `why`)), `expand(refs, host, budget)` (how each is sent, read by Duck while the message stays within `attachmentTokens`, referenced past it), `toApiBlocks` (an `<attachment id … />` label and the image or PDF block; a text file wrapped `untrusted`, a closing tag inside defused; a `ref` names `run_task` `files`), `createFileCache` (the bytes a request needs, read by `AttachmentHost.data`, the latest 24 kept), `findAttachment` (a thread's file by id: a message of yours or a `files` notice), `attachmentLine`. |
+| `voiceFiles.ts` | G2: files with a voice turn, for the desktop and the phone. `createVoiceFiles` (a turn opens and closes as you talk; a drop while it's open, 10 s before or 10 s after is its own; `turn` sends the words with them; `Sent.late` takes a drop after the words went; `resume` a turn from before a reload), `spokenCount` (the files the words count, in five languages: the words wait up to 6 s for them), `manifestLine` / `withoutManifest` (the `[2 files: …]` line ahead of a spoken message's files, hidden in the chats), `pillText`. |
 | `offline.ts` | The phone's fallback brain (H7), what both sides share: `OFFLINE_NOTE` (added to the system prompt on the phone), the `offline.sync` frame's schema, `transcript` (a thread as text: your words, Duck's replies, a line per tool used, ending with a reply), and the app's kept state (`parseState`, `threadsToSync`, `withoutThreads`). The engine's `importThread` makes a synced conversation a thread of its own, once. |
 | `client.ts` | `getClient()` (the SDK at the proxy, with the launch token as its key), `purpose()`, `capMessage()`, `errorMessage()`, `structured({model, system, input, schema?, purpose, …})` (one call, structured output parsed), and `oneShot(name, input, {schema?})` for Haiku primitives over it. |
 | `prompt.ts` | The system prompt and the voice note as built in (L3: the defaults; what a thread runs with comes from `config.ts`), `MAIN_MODEL` / `PRIMITIVE_MODEL`, and `PRIMITIVES` (one frozen prompt per Haiku job; the key is its `x-wb-purpose`). |
@@ -924,6 +925,26 @@ When the app can't reach Workbench, the loader runs Duck's own engine on the pho
 - **Kept:** as long as a message or task names them, plus a week: the weekly
   housekeeping prunes the rest (`pruneFiles`).
 
+## Talking about what you drop (step G2)
+
+- **Which turn:** `voiceFiles.ts` holds the files for the voice turn. `staging.ts`
+  asks it at each drop or paste (`setVoiceClaim`): while you're talking, or 10 s after,
+  the file goes there (the pill), not the composer. Files staged 10 s before you start
+  move over. The phone does the same in `duck.ts` (`stageFiles`, uploads marked
+  `voice`).
+- **Sending:** the words go with the files. Push-to-talk on the desktop is now
+  provisional when the thread is free, and `voiceState.ts` stands it at the reply's
+  first act (`replySpeech.onReplyActs`) or after 4 s. Conversation turns carry the
+  files on each provisional send, and a withdrawn turn's files wait for the next.
+- **Late:** `turn.files` → `Engine.lateFiles`. A turn not yet decided (`Held.done`) is
+  withdrawn and queued again first with the files (`Turn.input`), still provisional.
+  A decided one gets a follow-up message.
+- **Manifest:** the engine's opening puts `[n files: …]` ahead of a spoken message's
+  files. The chats drop it (`view.ts`, `duckStore.userText`, the bridge's `textOf`).
+- **The phone after a share:** the page reloads, so `localStorage`
+  (`wb-duck-last-voice`) keeps the last voice turn's thread and time, and `resume`
+  makes a share within 10 s late to it.
+
 ## Where to change X
 
 - **What Duck says, its routing rules and examples, the tool tiers' wording**: the files
@@ -987,6 +1008,10 @@ When the app can't reach Workbench, the loader runs Duck's own engine on the pho
   `launchDuck` in `src/pwa/duck.ts`, and `takeShare` in `src/pwa/sw.js`. How a phone
   proves its key: `remote/auth.rs` (the rules), `remote/mod.rs` (`start_session`,
   `check_token`), and `src/pwa/deviceKey.ts` and `net.ts`.
+- **Voice and drops (G2)**: the windows, the counting and the late path,
+  `voiceFiles.ts`; when a push-to-talk turn stands (`MERGE_MS`) and the pill,
+  `voiceState.ts` and `Drawer.tsx` `TurnFilesLine`; the restart, `engine.ts`
+  `lateFiles`; the phone, `duck.ts`.
 - **Attachments (G1)**: how a file is sent and the thrift, `attachments.ts` and
   `attachments.rs` `prepare`; the rule Duck follows, `prompt.ts`; the drawer's chips
   and drop, `staging.ts` / `Attachments.tsx`; the phone's upload, `src/pwa/uploads.ts`
@@ -1049,6 +1074,10 @@ Both rules are in `prompt.ts`.
   and a text, the widget on a home screen. Not built: switching to the tailnet's own
   address (MagicDNS covers it), the screenshot with the gesture (G1), Glyph lights,
   the widget polling by itself.
+
+- Voice and drops (G2): push-to-talk with a real drop, the grace window by hand, the
+  phone's 📎 during a turn and a share within 10 s, and the spoken receipt haven't been
+  tried (the engine and the phone's frames were checked live by a script).
 
 - Attachments (G1): paste, drops and the picker on the desktop, the drag out, and the
   phone's camera and shares haven't been tried by hand (the phone side ran as a script

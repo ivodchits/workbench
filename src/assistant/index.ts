@@ -427,6 +427,9 @@ export function endpoint(
       case "turn.withdraw":
         e.withdraw(msg.threadId);
         return;
+      case "turn.files":
+        e.lateFiles(msg.threadId, msg.attachments, msg.source);
+        return;
       case "confirm":
         await e.confirm(msg.threadId, msg.toolUseId, msg.allow, msg.choice);
         return;

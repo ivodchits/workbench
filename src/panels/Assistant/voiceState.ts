@@ -32,8 +32,21 @@
 // deaf), for the ear on the Duck button. What it hears after the phrase comes
 // back as a transcript, like push-to-talk. The tray's check item asks to flip the
 // setting (`wake-toggle`), which is kept here like the rest.
+//
+// Talking about what you drop (step G2, `assistant/voiceFiles.ts`): while a turn is
+// open (push-to-talk listening, conversation mode hearing you) and for 10 s after,
+// a drop or paste goes with it, shown in the voice pill (`turnFiles`), not the
+// composer; files staged in the 10 s before you start talking move over.
+// - Push-to-talk's words go provisionally when they can, and stand once the reply
+//   first acts (a sentence spoken, a tool started) or after `MERGE_MS`: a drop
+//   before that starts the turn again with it (`lateFiles`).
+// - Conversation mode's turns carry their files on each provisional send; a drop
+//   in the grace window starts the turn again with it.
+// - After that, a late drop stops Duck's voice and goes as a follow-up.
 
 import { useSyncExternalStore } from "react";
+import type { AttachmentRef } from "../../assistant/attachments";
+import { BEFORE_MS, createVoiceFiles, type Sent, type VoiceFiles } from "../../assistant/voiceFiles";
 import { fixNames, voiceMessage } from "../../assistant/voiceNames";
 import { getPref, setPref, type Prefs } from "../../ipc/prefs";
 import {
@@ -62,6 +75,7 @@ import {
   commitTurn,
   currentMode,
   getDuckState,
+  lateFiles,
   openThread,
   sendMessage,
   sendProvisional,
@@ -69,7 +83,8 @@ import {
   subscribeDuck,
   withdrawTurn,
 } from "./duckState";
-import { isSpeaking, onAnnounced, stopSpeaking } from "./replySpeech";
+import { isSpeaking, onAnnounced, onReplyActs, stopSpeaking } from "./replySpeech";
+import { restage, setVoiceClaim, takeRecent } from "./staging";
 
 export type VoicePrefs = Prefs["voice"];
 
@@ -98,6 +113,19 @@ export const DEFAULT_VOICE: VoicePrefs = {
 
 /** Turning the mic on this soon after an announcement replies to it. */
 export const REPLY_AFTER_MS = 60_000;
+
+/** A push-to-talk turn stands this long after it went at most (step G2): until
+ *  then a drop starts it again with the file. */
+export const MERGE_MS = 4_000;
+
+/** The files going with the voice turn (step G2), for the pill. */
+export interface TurnFiles {
+  files: AttachmentRef[];
+  /** Being stored. */
+  coming: number;
+  /** Counted in the words ("these two") and not here yet: the turn waits. */
+  missing: number;
+}
 
 export interface Conversation {
   /** The mode is running. */
@@ -130,6 +158,7 @@ export interface VoiceState {
   echo: EchoMeasured | null;
   /** The wake word as the backend last said (V6). */
   wake: WakeState;
+  turnFiles: TurnFiles;
 }
 
 const WAKE_OFF: WakeState = { on: false, listening: false, hold: null, error: null };
@@ -152,6 +181,7 @@ let state: VoiceState = {
   conversation: OFF,
   echo: null,
   wake: WAKE_OFF,
+  turnFiles: { files: [], coming: 0, missing: 0 },
 };
 const listeners = new Set<() => void>();
 let level = 0;
@@ -236,13 +266,67 @@ export function messageFor(t: Pick<Transcript, "text">, names: string[]): string
   return voiceMessage(t.text, names);
 }
 
+// ── files with a voice turn (G2) ──
+
+const turnFiles: VoiceFiles = createVoiceFiles({
+  now: () => Date.now(),
+  later(ms, fn) {
+    const t = setTimeout(fn, ms);
+    return () => clearTimeout(t);
+  },
+  changed: () =>
+    set({ turnFiles: { files: turnFiles.files(), coming: turnFiles.coming(), missing: turnFiles.missing() } }),
+  back: restage,
+});
+
+/** Where a turn's late files go: `threadId`, or the thread on screen then. */
+function lateTo(threadId: string | null): Sent {
+  return {
+    late(files) {
+      // Duck is answering already: it stops, and the files follow.
+      if (isSpeaking()) stopSpeaking();
+      const to = threadId ?? getDuckState().current;
+      if (to) lateFiles(to, files);
+      else sendMessage("", undefined, "voice", files);
+    },
+  };
+}
+
+/** A push-to-talk turn waiting to stand: its thread, and the timer that stands it. */
+let standing: { threadId: string; timer: ReturnType<typeof setTimeout> } | null = null;
+
+function stand(threadId?: string): void {
+  if (!standing || (threadId !== undefined && threadId !== standing.threadId)) return;
+  clearTimeout(standing.timer);
+  commitTurn(standing.threadId);
+  standing = null;
+}
+
+/** Push-to-talk's words with their files: provisional into the open thread when
+ *  it's free, so a drop just after can join them; else a plain message. */
+function sendSpoken(text: string, files: AttachmentRef[]): Sent {
+  const thread = getDuckState().current;
+  stand();
+  if (thread && sendProvisional(thread, text, files)) {
+    standing = { threadId: thread, timer: setTimeout(() => stand(thread), MERGE_MS) };
+    return lateTo(thread);
+  }
+  sendMessage(text, undefined, "voice", files);
+  return lateTo(null);
+}
+
 function heard(t: Transcript): void {
   if (!t.text.trim()) {
     set({ phase: "idle", message: "Nothing was heard." });
     return;
   }
-  if (state.prefs.sendNow) sendMessage(messageFor(t, knownNames()), undefined, "voice");
-  else set({ dictated: { text: fixNames(t.text.trim(), knownNames()).text, seq: (state.dictated?.seq ?? 0) + 1 } });
+  const text = messageFor(t, knownNames());
+  if (state.prefs.sendNow) turnFiles.turn(text, (files) => sendSpoken(text, files));
+  else {
+    // For an edit first: the files wait in the composer with the words.
+    turnFiles.turn(text, (files) => void restage(files));
+    set({ dictated: { text: fixNames(t.text.trim(), knownNames()).text, seq: (state.dictated?.seq ?? 0) + 1 } });
+  }
 }
 
 // ── conversation mode (V4) ──
@@ -264,25 +348,42 @@ let announced: { threadId: string; at: number } | null = null;
 /** Turns sent provisionally, by id, with their thread. */
 const sent = new Map<number, string>();
 
-/** Where a turn goes, and what it sends. Exported for the tests. */
+/** A turn's files when nothing goes with them (the tests). */
+const NO_FILES: Pick<VoiceFiles, "turn" | "unsend" | "cancel"> = {
+  turn: (_text, go) => void go([]),
+  unsend() {},
+  cancel() {},
+};
+
+/** Where a turn goes, and what it sends, with its files (G2). Exported for the
+ *  tests. */
 export function routeTurn(
   t: VoiceTurn,
   d: {
     current: () => string | null;
-    provisional: (threadId: string | null, text: string) => boolean;
+    provisional: (threadId: string | null, text: string, files: AttachmentRef[]) => boolean;
     commit: (threadId: string) => void;
     withdraw: (threadId: string) => void;
-    send: (text: string) => void;
+    send: (text: string, files: AttachmentRef[]) => void;
+    late?: (threadId: string | null) => Sent;
   },
   text: string,
+  files = NO_FILES,
 ): void {
   switch (t.phase) {
     case "provisional": {
       const thread = d.current();
-      if (d.provisional(thread, text) && thread) sent.set(t.id, thread);
+      files.turn(text, (fs) => {
+        if (!d.provisional(thread, text, fs) || !thread) return false;
+        sent.set(t.id, thread);
+        return d.late?.(thread);
+      });
       return;
     }
     case "withdrawn": {
+      // You went on talking: the files wait for the longer words.
+      files.cancel();
+      files.unsend();
       const thread = sent.get(t.id);
       sent.delete(t.id);
       if (thread) d.withdraw(thread);
@@ -292,7 +393,11 @@ export function routeTurn(
       const thread = sent.get(t.id);
       sent.delete(t.id);
       if (thread) d.commit(thread);
-      else d.send(text);
+      else
+        files.turn(text, (fs) => {
+          d.send(text, fs);
+          return d.late?.(null);
+        });
     }
   }
 }
@@ -306,9 +411,11 @@ function onTurn(t: VoiceTurn): void {
       provisional: sendProvisional,
       commit: commitTurn,
       withdraw: withdrawTurn,
-      send: (text) => sendMessage(text, undefined, "voice"),
+      send: (text, files) => sendMessage(text, undefined, "voice", files),
+      late: lateTo,
     },
     t.phase === "withdrawn" ? "" : messageFor(t, knownNames()),
+    turnFiles,
   );
 }
 
@@ -319,6 +426,9 @@ function onConversation(s: ConversationState): void {
   // Talking over Duck: the backend cut its voice; drop the rest of the reply.
   if (s.state === "hearing" && s.duplex && isSpeaking()) stopSpeaking();
   if (!on) sent.clear();
+  // You're talking: drops go with what you say (G2).
+  if (s.state === "hearing") turnFiles.opened(takeRecent(BEFORE_MS));
+  else turnFiles.closed();
   // A new run starts on the setting; the thread's pauses go once it listens.
   if (s.state === "preparing" || !on) pausesSent = state.prefs.patience;
   if (s.state === "preparing") {
@@ -380,7 +490,11 @@ export function initVoice(): Promise<void> {
     const prefs = { ...DEFAULT_VOICE, ...(await getPref("voice", DEFAULT_VOICE).catch(() => DEFAULT_VOICE)) };
     set({ prefs });
     configure(prefs);
+    setVoiceClaim(turnFiles);
+    onReplyActs((threadId) => stand(threadId));
     await onVoiceState(({ state: phase, message }) => {
+      if (phase === "listening" && state.phase !== "listening") turnFiles.opened(takeRecent(BEFORE_MS));
+      else if (phase !== "listening") turnFiles.closed();
       set({ phase, message });
       if (phase === "listening") replyHere();
       if (phase === "listening" && document.visibilityState === "visible") setDrawerOpen(true);

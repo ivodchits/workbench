@@ -14,7 +14,8 @@ vi.mock("./duckState", () => ({
   currentMode: () => duck.mode,
   subscribeDuck: (cb: () => void) => duck.listeners.push(cb),
 }));
-vi.mock("./replySpeech", () => ({ isSpeaking: () => false, onAnnounced: vi.fn(), stopSpeaking: vi.fn() }));
+vi.mock("./replySpeech", () => ({ isSpeaking: () => false, onAnnounced: vi.fn(), onReplyActs: vi.fn(), stopSpeaking: vi.fn() }));
+vi.mock("./staging", () => ({ restage: vi.fn(), setVoiceClaim: vi.fn(), takeRecent: () => [] }));
 vi.mock("../../state/registry", () => ({ getRegistry: () => ({ projects: [], instances: [] }) }));
 vi.mock("../../ipc/prefs", () => ({ getPref: vi.fn(async (_k: string, d: unknown) => d), setPref: vi.fn() }));
 vi.mock("../../ipc/voice", () => {
@@ -43,6 +44,8 @@ vi.mock("../../ipc/voice", () => {
 
 import * as ipc from "../../ipc/voice";
 import type { ConversationState, VoiceTurn } from "../../ipc/voice";
+import type { AttachmentRef } from "../../assistant/attachments";
+import { createVoiceFiles } from "../../assistant/voiceFiles";
 import { openThread } from "./duckState";
 import { onAnnounced } from "./replySpeech";
 import {
@@ -103,6 +106,93 @@ describe("conversation mode's turns (V4)", () => {
     turn(2, "provisional", "what needs me now?");
     turn(2, "final", "what needs me now?");
     expect(log).toEqual(["provisional t1 what needs me?", "provisional t1 what needs me now?", "send what needs me now?"]);
+  });
+});
+
+describe("conversation mode's turns with files (G2)", () => {
+  const file = (name: string): AttachmentRef => ({ id: name.padEnd(32, "0").slice(0, 32), name, mime: "text/plain", size: 1 });
+  function harness() {
+    let now = 0;
+    const timers: { at: number; fn: () => void; on: boolean }[] = [];
+    const log: string[] = [];
+    const files = createVoiceFiles({
+      now: () => now,
+      later(ms, fn) {
+        const t = { at: now + ms, fn, on: true };
+        timers.push(t);
+        return () => (t.on = false);
+      },
+      changed() {},
+      back: (f) => log.push(`back ${f.map((x) => x.name)}`),
+    });
+    const names = (fs: AttachmentRef[]) => fs.map((f) => f.name).join(",");
+    const d = {
+      current: () => "t1",
+      provisional: (_t: string | null, text: string, fs: AttachmentRef[]) => (log.push(`provisional ${text} [${names(fs)}]`), true),
+      commit: (t: string) => log.push(`commit ${t}`),
+      withdraw: (t: string) => log.push(`withdraw ${t}`),
+      send: (text: string, fs: AttachmentRef[]) => log.push(`send ${text} [${names(fs)}]`),
+      late: (t: string | null) => ({ late: (fs: AttachmentRef[]) => log.push(`late ${t} [${names(fs)}]`) }),
+    };
+    const turn = (id: number, phase: VoiceTurn["phase"], text = "") => routeTurn({ run: 1, id, text, phase }, d, text, files);
+    const drop = (f: AttachmentRef) => {
+      if (!files.claims()) return log.push(`composer ${f.name}`);
+      files.expect(1);
+      files.arrive([f]);
+    };
+    const tick = (ms: number) => {
+      now += ms;
+      for (const t of timers.filter((t) => t.on && t.at <= now)) {
+        t.on = false;
+        t.fn();
+      }
+    };
+    return { log, turn, drop, files, tick };
+  }
+
+  it("files dropped while talking go with each send of the turn", () => {
+    const h = harness();
+    h.files.opened();
+    h.drop(file("plan.md"));
+    h.files.closed();
+    h.turn(1, "provisional", "look at this");
+    h.turn(1, "withdrawn");
+    h.files.opened();
+    h.files.closed();
+    h.turn(2, "provisional", "look at this and fix it");
+    h.turn(2, "final", "look at this and fix it");
+    expect(h.log).toEqual([
+      "provisional look at this [plan.md]",
+      "withdraw t1",
+      "provisional look at this and fix it [plan.md]",
+      "commit t1",
+    ]);
+  });
+
+  it("a drop in the grace window is late to the provisional turn; one long after goes to the composer", () => {
+    const h = harness();
+    h.files.opened();
+    h.files.closed();
+    h.turn(1, "provisional", "what's in this");
+    h.tick(800);
+    h.drop(file("error.png"));
+    h.turn(1, "final", "what's in this");
+    h.tick(20_000);
+    h.drop(file("later.txt"));
+    expect(h.log).toEqual(["provisional what's in this []", "late t1 [error.png]", "commit t1", "composer later.txt"]);
+  });
+
+  it("\"these two\" with one file waits, and goes when the second lands", () => {
+    const h = harness();
+    h.files.opened();
+    h.drop(file("a.md"));
+    h.files.closed();
+    h.turn(1, "provisional", "compare these two");
+    expect(h.files.missing()).toBe(1);
+    h.tick(2000);
+    h.drop(file("b.md"));
+    h.turn(1, "final", "compare these two");
+    expect(h.log).toEqual(["provisional compare these two [a.md,b.md]", "commit t1"]);
   });
 });
 

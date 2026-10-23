@@ -7679,6 +7679,79 @@ checked in the scratch PTY first.
   - On the phone: speak, then share a file from the Files app within 10 s; it joins
     the turn.
 - **Out of scope:** pointing at things on screen ("this window") without a screenshot.
+- **As built (2026-10-23):**
+  - **One core for both surfaces** (`src/assistant/voiceFiles.ts`, `createVoiceFiles`):
+    - A turn opens when you start talking (push-to-talk listening; conversation mode
+      `hearing`, which is V4's name for `speaking-user`) and closes when you stop.
+    - Files staged in the composer up to 10 s before it opens move over to it
+      (`takeRecent`); a drop while it's open, or within 10 s of its end, is its own.
+    - The words go with every file the turn has. A file still being stored or
+      uploaded holds them until it's there.
+    - A drop after the words went, still within 10 s, is late (`Sent.late`).
+    - Files no turn took (nothing was heard) go back to the composer after 10 s.
+  - **Counting** (`spokenCount`): "these two", "both", "три файла", "эти два", "estos
+    dos", "ambos", "zwei Dateien", "les deux", "3 screenshots". Bare numbers count
+    only after a pointing word or before a file word, so "a couple of things" and "two
+    questions" don't. When fewer files are there, the words wait up to 6 s ("waiting
+    for 1 more file…"), and a drop releases them. Bare "these two" with no file at all
+    doesn't wait (it's about something else); "two files" always does.
+  - **The manifest:** the engine puts `[2 files: plan.md, error.png]` ahead of a spoken
+    message's files. The chats hide it (`withoutManifest`), since the chips show the
+    files.
+  - **Late files** (`Engine.lateFiles`, the `turn.files` message on both protocols):
+    - A turn that hasn't stood is withdrawn and started again with the files, still
+      provisional, first in line once the old request is gone.
+    - Otherwise they go as a follow-up message (files only).
+    - The surface stops Duck's voice first if it's speaking.
+  - **Desktop:**
+    - Push-to-talk's words now go provisionally when the thread is free. They stand
+      when the reply first acts (a sentence spoken, or a tool call started:
+      `onReplyActs`), or after 4 s (`MERGE_MS`). So a drop 2 s after release joins the
+      turn unless Duck has already started talking; then it's a follow-up.
+    - A tool-first reply's tools wait up to those 4 s.
+    - Conversation mode: each provisional send carries the files. A drop during the
+      grace window starts the turn again with it (no second reply). After `final`,
+      it's a follow-up.
+    - The pill (`TurnFilesLine`, over the voice line): "🎤 + 2 files" and their chips,
+      or the wait. The drop overlay says "drop to send with what you say" while you're
+      talking.
+    - With "send at once" off, the files go to the composer with the words.
+  - **Phone:**
+    - 📎 and paste stage into an open turn the same way (push-to-talk or
+      conversation). The pill sits in the staged-files box.
+    - A share reloads the page (the service worker's redirect), so the last voice
+      turn's thread and time are kept in `localStorage`. A share of files within 10 s
+      of it goes to that thread as `turn.files`, not into a new thread.
+    - The phone's push-to-talk stays a plain send, so a share after it is a follow-up
+      (picking a file takes longer than the 4 s anyway).
+  - **The receipt:** the voice note asks Duck, when files came and the work goes to a
+    worker, to say so in a few words before the call ("Got both, sending them to a
+    worker."). The text before a tool call is spoken at once (`onToolStart`).
+  - **Tested:**
+    - the counting in five languages, and what doesn't count;
+    - which turn a drop belongs to, before, during and after;
+    - the wait and its timeout, files still being stored, late drops;
+    - withdrawn words keeping their files, files going back, a reload's turn;
+    - conversation turns carrying files on each send;
+    - the engine's restart with late files (one turn kept, manifest ahead), the
+      follow-up, and a typed message without a manifest;
+    - the phone's `turn.files` (only uploaded files).
+  - **Checked live on the dev app,** acting as the phone over its Duck socket (a
+    throwaway device row, removed after):
+    - **Merged:** a spoken turn went provisionally with the PNG from G1. The CSV was
+      shared 0.6 s later (`turn.files`), and the turn was withdrawn and started again
+      with both, then committed. One message was stored: `[2 files: g1_shot.png,
+      g1_sales1.csv]`, the image, the CSV's text, then the words. One reply covered
+      both files, each in a line ("CODE 7Q3K" and the red circle; the Lisbon sales
+      table).
+    - **Followed:** a spoken turn with the PNG stood and was answered. The CSV shared
+      6 s later went as a follow-up message (`[1 file: g1_sales1.csv]` and the file),
+      and Duck asked what to do with it.
+  - **Not tried yet:**
+    - push-to-talk with a real drop on the desktop, and conversation mode's grace
+      window by hand (no keys or mic were driven in your app);
+    - the phone's 📎 during a turn, and a share from the Files app within 10 s;
+    - the spoken receipt out loud.
 
 #### Step G3 — Drawing workers and the canvas
 
@@ -8080,7 +8153,7 @@ T2 goes live after the replay check in its done-when (the past week's prompts th
 | H6 | Duck on the home server (gate: the server) | ☐ |
 | H7 | The phone's fallback brain | ☑ (before H6; emulator only, no real phone key yet) |
 | G1 | Attachments: paste, drop and pick files into Duck | ☑ (desktop by hand and the phone's camera not tried; workers can't make .xlsx without a shell) |
-| G2 | Talking about what you drop | ☐ |
+| G2 | Talking about what you drop | ☑ (by hand with the key, the mic and a phone share not tried yet) |
 | G3 | Drawing workers and the canvas | ☐ |
 | G4 | The worker sees its drawing | ☐ |
 | G5 | Sketch pad on the PC and the phone | ☐ |

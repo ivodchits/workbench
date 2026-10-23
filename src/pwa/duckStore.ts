@@ -2,6 +2,7 @@
 // folded into one state, as the drawer's `duckState.ts` does on the desktop.
 // Pure: no DOM, no socket, so it's tested on its own (`duckStore.test.ts`).
 
+import { withoutManifest } from "../assistant/voiceFiles";
 import type { AutopilotView, ConfirmRequest, DecisionRow, TaskView, TrustView, TurnState } from "../assistant/protocol";
 import type { ReaderView } from "../assistant/reader";
 import type { Spend, StoredMessage, ThreadRow } from "../ipc/assistant";
@@ -172,7 +173,7 @@ export function apply(v: DuckView, f: RemoteDuckFrame, adopting: boolean): { vie
 /** The text of a stored user message. */
 export function userText(m: StoredMessage): string {
   return Array.isArray(m.content)
-    ? (m.content as { type?: string; text?: string }[])
+    ? withoutManifest(m.content as { type?: string; text?: string }[])
         .filter((b) => b.type === "text")
         .map((b) => b.text ?? "")
         .join("\n")

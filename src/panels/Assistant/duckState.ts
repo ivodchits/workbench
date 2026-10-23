@@ -601,10 +601,10 @@ export function currentMode(s: DuckState = state): string {
 /** Conversation mode (step V4): a turn that starts now and may be withdrawn.
  *  False when it can't be (no thread yet, or one busy): then send it once it
  *  stands. */
-export function sendProvisional(threadId: string | null, text: string): boolean {
+export function sendProvisional(threadId: string | null, text: string, attachments?: AttachmentRef[]): boolean {
   if (!threadId || isBusy(threadId)) return false;
   set({ error: null });
-  post({ type: "send", threadId, text, source: "voice", provisional: true });
+  post({ type: "send", threadId, text, source: "voice", provisional: true, ...(attachments?.length && { attachments }) });
   return true;
 }
 
@@ -614,6 +614,11 @@ export function commitTurn(threadId: string): void {
 
 export function withdrawTurn(threadId: string): void {
   post({ type: "turn.withdraw", threadId });
+}
+
+/** Files dropped just after a spoken turn went (step G2). */
+export function lateFiles(threadId: string, attachments: AttachmentRef[]): void {
+  post({ type: "turn.files", threadId, attachments, source: "voice" });
 }
 
 /** Send to a thread other than the open one (a reply to an announcement). */

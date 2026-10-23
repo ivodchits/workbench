@@ -222,6 +222,9 @@ export type RemoteDuckMessage =
   /** A provisional turn stands, or is dropped (you went on talking). */
   | { type: "turn.commit"; threadId: string }
   | { type: "turn.withdraw"; threadId: string }
+  /** Files shared just after a spoken turn (step G2), by id: the turn starts again
+   *  with them while it hasn't stood, else they follow it. */
+  | { type: "turn.files"; threadId: string; attachments: string[] }
   | { type: "confirm"; threadId: string; toolUseId: string; allow: boolean; choice?: string }
   /** The kill switch: pauses trust. Resuming is done on the desktop. */
   | { type: "trust.pause" }

@@ -265,6 +265,8 @@ export type ClientMessage =
   /** A provisional turn stands, or is dropped (you went on talking). */
   | { type: "turn.commit"; threadId: string }
   | { type: "turn.withdraw"; threadId: string }
+  /** Files dropped just after a spoken turn went (step G2): `Engine.lateFiles`. */
+  | { type: "turn.files"; threadId: string; attachments: AttachmentRef[]; source: Source }
   | {
       type: "confirm";
       threadId: string;

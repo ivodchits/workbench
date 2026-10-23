@@ -339,6 +339,7 @@ body .wb-tx-open-plan { display: none; }
 .duck-file .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .duck-file .size { color: var(--wb-textFaint); white-space: nowrap; }
 .duck-file button { background: none; border: none; color: var(--wb-textFaint); padding: 0 2px; }
+#duck-staged .duck-turnfiles { width: 100%; color: var(--wb-accent); font-size: 12px; }
 #duck-staged .error { width: 100%; color: var(--wb-needs, #e06c75); font-size: 12px; }
 .duck-reply { margin: 4px 2px; overflow-wrap: anywhere; }
 .duck-reply:empty { display: none; }

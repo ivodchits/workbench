@@ -56,6 +56,7 @@ import {
   type AttachmentRef,
   type FileData,
 } from "./attachments";
+import { manifestLine } from "./voiceFiles";
 import { capMessage, errorMessage, purpose, THREAD_PURPOSE } from "./client";
 import type { WorkbenchPort } from "./port";
 import { CORE_OPEN, coreText, type CoreHost } from "./core";
@@ -323,6 +324,9 @@ export interface Engine {
   /** A provisional turn is dropped (you went on talking): its request is
    *  aborted, and nothing of it is kept. */
   withdraw(threadId: string): void;
+  /** Files dropped just after a spoken turn went (step G2): a turn that hasn't
+   *  stood yet starts again with them; otherwise they go as a follow-up. */
+  lateFiles(threadId: string, files: AttachmentRef[], source: Source): void;
   /** `choice`: which of the card's choices allowed it (B2), for a tool that has them. */
   confirm(threadId: string, toolUseId: string, allow: boolean, choice?: string): Promise<void>;
   /** Re-announce parked confirmations (after a reload). */
@@ -665,6 +669,8 @@ interface Held {
   decide(keep: boolean): void;
   /** Runs once it's kept (the first message names the thread). */
   kept(): void;
+  /** Decided already. */
+  done?: boolean;
 }
 
 /** The card on a thread's first turn on Haiku (step M2). */
@@ -741,6 +747,8 @@ interface Turn {
   backend: Backend;
   held?: Held;
   withdrawn?: boolean;
+  /** What started it, for a resend with late files (step G2). */
+  input?: SendInput;
 }
 
 export function createEngine(deps: EngineDeps): Engine {
@@ -882,7 +890,7 @@ export function createEngine(deps: EngineDeps): Engine {
   }
 
   async function start(threadId: string, input: SendInput) {
-    const turn: Turn = { ctl: new AbortController(), state: "thinking", brain: "sonnet", backend: "api" };
+    const turn: Turn = { ctl: new AbortController(), state: "thinking", brain: "sonnet", backend: "api", input };
     turns.set(threadId, turn);
     narrowed.delete(threadId);
     setState(threadId, "thinking");
@@ -916,13 +924,20 @@ export function createEngine(deps: EngineDeps): Engine {
       const files = input.attachments?.length
         ? await expand(input.attachments.slice(0, MAX_ATTACHMENTS), deps.attachments ?? { prepare: noFile, data: noFile }, settings().attachmentTokens)
         : [];
+      // A spoken message's files are named ahead of them (step G2): what you said
+      // ("these two") and what came with it line up.
+      const spoken = input.source === "voice" || input.source === "phone-voice";
+      const manifest = spoken && files.length ? [{ type: "text", text: `[${manifestLine(files)}]` }] : [];
       const opening: Opening[] = [
-        { role: "user", content: [...files, ...(input.text.trim() || !files.length ? [{ type: "text", text: input.text }] : [])], source: input.source },
+        {
+          role: "user",
+          content: [...manifest, ...files, ...(input.text.trim() || !files.length ? [{ type: "text", text: input.text }] : [])],
+          source: input.source,
+        },
       ];
       const effortChanged = want !== effectiveEffort(toApiMessages(history));
       // A spoken message gets a spoken-style answer (step V2). One system message
       // carries both, since one must be followed by the reply.
-      const spoken = input.source === "voice" || input.source === "phone-voice";
       // A new thread starts with the core memory (step W4); a read that fails
       // leaves it out rather than holding the turn.
       const core = first && deps.core ? await readCore(deps.core) : null;
@@ -982,15 +997,19 @@ export function createEngine(deps: EngineDeps): Engine {
       };
       if (input.provisional) {
         // Step V4: the request starts now, on the opening held in memory.
-        let decide!: (keep: boolean) => void;
-        const decided = new Promise<boolean>((resolve) => (decide = resolve));
-        const timer = setTimeout(() => decide(true), PROVISIONAL_MAX_MS);
-        turn.held = {
+        let resolve!: (keep: boolean) => void;
+        const decided = new Promise<boolean>((r) => (resolve = r));
+        const held: Held = {
           opening,
           decided: decided.finally(() => clearTimeout(timer)),
-          decide,
+          decide(keep) {
+            held.done = true;
+            resolve(keep);
+          },
           kept: named,
         };
+        const timer = setTimeout(() => held.decide(true), PROVISIONAL_MAX_MS);
+        turn.held = held;
         emit({ type: "provisional", threadId, text: input.text, source: input.source });
       } else {
         for (const m of opening) await append(threadId, m.role, m.content, m.source);
@@ -1872,6 +1891,27 @@ export function createEngine(deps: EngineDeps): Engine {
       t.held.decide(false);
       t.ctl.abort();
       emit({ type: "withdrawn", threadId });
+    },
+
+    lateFiles(threadId, files, source) {
+      if (!files.length) return;
+      const t = turns.get(threadId);
+      if (t?.held && !t.held.done && !t.withdrawn && t.input) {
+        // Not decided yet: the turn starts again with them, still provisional, first
+        // in line once the old request is gone.
+        const all = [...(t.input.attachments ?? [])];
+        for (const f of files) if (!all.some((a) => a.id === f.id && a.name === f.name)) all.push(f);
+        const again: SendInput = { ...t.input, attachments: all.slice(0, MAX_ATTACHMENTS) };
+        t.withdrawn = true;
+        t.held.decide(false);
+        t.ctl.abort();
+        emit({ type: "withdrawn", threadId });
+        queues.set(threadId, [again, ...(queues.get(threadId) ?? [])]);
+        return;
+      }
+      void send({ threadId, text: "", source, attachments: files }).catch((e) =>
+        console.warn("duck: late files were dropped", e),
+      );
     },
 
     async confirm(threadId, toolUseId, allow, choice) {

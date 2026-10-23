@@ -68,6 +68,7 @@ import { TasksPanel } from "./TasksView";
 import { FileList, StagedFiles } from "./Attachments";
 import { getStaging, pasteFiles, pickFiles, takeStaged, useFileDrop, useStaging } from "./staging";
 import type { AttachmentRef } from "../../assistant/attachments";
+import { pillText } from "../../assistant/voiceFiles";
 import { MemoryPanel } from "./MemoryView";
 import { OverviewPanel } from "./OverviewView";
 import { DecisionsPanel, TrustPanel } from "./TrustViews";
@@ -235,8 +236,9 @@ export default function AssistantDrawer() {
   const current = duck.current;
   const thread = duck.threads.find((t) => t.id === current) ?? null;
   const busy = isBusy(current);
-  // The whole drawer takes files (G1).
+  // The whole drawer takes files (G1); while you talk, they go with what you say (G2).
   const drop = useFileDrop();
+  const voice = useVoiceState();
 
   return (
     <div
@@ -349,7 +351,7 @@ export default function AssistantDrawer() {
       <Asks duck={duck} />
       <SpendLine duck={duck} />
       <Composer duck={duck} busy={busy} inputRef={composerRef} />
-      {drop.over && <div className="wb-filedrop">drop to attach</div>}
+      {drop.over && <div className="wb-filedrop">{voice.conversation.on || voice.phase === "listening" ? "drop to send with what you say" : "drop to attach"}</div>}
       <div
         onPointerDown={startResize}
         title="drag to resize"
@@ -1702,6 +1704,7 @@ function Composer({
         }}
       />
       <ReaderBar />
+      <TurnFilesLine voice={voice} />
       {voice.conversation.on ? (
         <ConversationLine voice={voice} busy={busy} />
       ) : (
@@ -1759,6 +1762,19 @@ function Composer({
           {busy ? (duck.prefs.interrupt ? "interrupt" : "queue") : "send"}
         </button>
       </div>
+    </div>
+  );
+}
+
+/** The files going with what you're saying (G2): "🎤 + 2 files" and their chips,
+ *  or the wait for the ones the words counted. */
+function TurnFilesLine({ voice }: { voice: VoiceState }) {
+  const t = voice.turnFiles;
+  if (!t.files.length && !t.coming && !t.missing) return null;
+  return (
+    <div role="status" style={{ display: "flex", flexDirection: "column", gap: 4, font: "11px var(--wb-mono)", color: "var(--wb-accent)" }}>
+      <span>{pillText(t.files.length, t.missing, t.coming)}</span>
+      {t.files.length > 0 && <FileList files={t.files} />}
     </div>
   );
 }

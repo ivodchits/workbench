@@ -8,6 +8,7 @@
 import type { StoredMessage } from "../../ipc/assistant";
 import type { MemoryEdit, NoteEdit, Notice, PluginsEdit, ReminderEdit } from "../../assistant/protocol";
 import { attachmentsOf, type AttachmentRef } from "../../assistant/attachments";
+import { withoutManifest } from "../../assistant/voiceFiles";
 
 /** A reminder chip's diff (H8): the record as JSON, before and after. */
 export function reminderFiles(e: ReminderEdit): { label: string; before: string; after: string }[] {
@@ -162,7 +163,7 @@ export function toItems(messages: readonly StoredMessage[]): Item[] {
       continue;
     }
     if (m.role === "user") {
-      const text = blocksOf(m)
+      const text = withoutManifest(blocksOf(m))
         .filter((b) => b.type === "text")
         .map((b) => b.text ?? "")
         .join("\n")

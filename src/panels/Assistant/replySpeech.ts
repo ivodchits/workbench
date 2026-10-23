@@ -136,7 +136,17 @@ export const rewriteRussian = (s: string, signal: AbortSignal): Promise<string> 
 export const ACK_MS = 3500;
 const ACKS = ["One moment.", "On it.", "Let me check."];
 
+/** Hears a reply's first act (step G2). */
+let acted: ((threadId: string) => void) | null = null;
+
+/** Hear when a reply first does something: a sentence of it is spoken, or it
+ *  starts a tool call (step G2: late files stop merging into its turn). */
+export function onReplyActs(cb: (threadId: string) => void): void {
+  acted = cb;
+}
+
 function say(r: Reply, sentence: string): void {
+  if (!r.said) acted?.(r.key);
   r.said = true;
   const ready = prepareSentence(sentence, rewriteRussian);
   r.chain = r.chain.then(async () => {
@@ -269,6 +279,7 @@ export function onReplyDelta(threadId: string, text: string): void {
 /** A tool call starts: what the reply has so far is said now (an acknowledgement
  *  before the call would otherwise wait for the text after it). */
 export function onToolStart(threadId: string): void {
+  acted?.(threadId);
   const r = replies.get(threadId);
   if (r) for (const s of r.sentences.end()) say(r, s);
 }

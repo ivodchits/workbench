@@ -1,7 +1,12 @@
 // Files waiting to go with the next message (step G1): pasted, dropped on the
-// drawer (`useFileDrop`) or picked with 📎 (`pickFiles`). Each is stored at once (`attachments.rs`), shown as a
-// chip above the composer, and sent with the message; nothing goes to Duck before
-// you send. An external store in the house pattern.
+// drawer (`useFileDrop`) or picked with 📎 (`pickFiles`). Each is stored at once
+// (`attachments.rs`), shown as a chip above the composer, and sent with the
+// message; nothing goes to Duck before you send. An external store in the house
+// pattern.
+//
+// While you're talking, or just after (step G2), a file goes to the voice turn
+// instead (`setVoiceClaim`, the voice pill's chips); files staged just before you
+// start talking move over to it (`takeRecent`).
 
 import { useRef, useState, useSyncExternalStore } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
@@ -20,6 +25,22 @@ export interface Staging {
 }
 
 let state: Staging = { files: [], storing: 0, error: null };
+/** When each staged file came, by `id:name`. */
+const stagedAt = new Map<string, number>();
+const keyOf = (f: Pick<AttachmentRef, "id" | "name">) => `${f.id}:${f.name}`;
+
+/** The voice turn's side (G2): whether a file now goes with what you say. */
+export interface VoiceClaim {
+  claims(): boolean;
+  expect(n: number): void;
+  arrive(files: AttachmentRef[], settled: number): void;
+}
+
+let voice: VoiceClaim | null = null;
+
+export function setVoiceClaim(c: VoiceClaim | null): void {
+  voice = c;
+}
 const listeners = new Set<() => void>();
 
 function set(patch: Partial<Staging>): void {
@@ -48,9 +69,13 @@ const asRef = (s: StoredFile): AttachmentRef => ({
   ...(s.thumb && { thumb: s.thumb }),
 });
 
-function add(stored: StoredFile[], failed: string[]): void {
+function add(stored: AttachmentRef[], failed: string[]): void {
   const files = [...state.files];
-  for (const s of stored) if (!files.some((f) => f.id === s.id && f.name === s.name)) files.push(asRef(s));
+  for (const s of stored)
+    if (!files.some((f) => f.id === s.id && f.name === s.name)) {
+      files.push(s);
+      stagedAt.set(keyOf(s), Date.now());
+    }
   const over = files.length > MAX_ATTACHMENTS;
   set({
     files: files.slice(0, MAX_ATTACHMENTS),
@@ -62,14 +87,17 @@ function add(stored: StoredFile[], failed: string[]): void {
 export async function stagePaths(paths: readonly string[]): Promise<void> {
   const unique = [...new Set(paths)].filter(Boolean);
   if (!unique.length) return;
-  set({ storing: state.storing + unique.length });
+  const to = claim(unique.length);
+  let stored: AttachmentRef[] = [];
+  let failed: string[] = [];
   try {
     const r = await attachPaths(unique);
-    add(r.stored, r.failed);
+    stored = r.stored.map(asRef);
+    failed = r.failed;
   } catch (e) {
-    set({ error: e instanceof Error ? e.message : String(e) });
+    failed = [e instanceof Error ? e.message : String(e)];
   } finally {
-    set({ storing: Math.max(0, state.storing - unique.length) });
+    to(stored, unique.length, failed);
   }
 }
 
@@ -92,19 +120,46 @@ export function pastedName(file: File, now = new Date()): string {
 /** Stage files by their bytes: a paste. */
 export async function stageBlobs(files: readonly File[]): Promise<void> {
   if (!files.length) return;
-  set({ storing: state.storing + files.length });
-  const stored: StoredFile[] = [];
+  const to = claim(files.length);
+  const stored: AttachmentRef[] = [];
   const failed: string[] = [];
   for (const f of files) {
     try {
-      stored.push(await attachBytes(pastedName(f), await base64(f)));
+      stored.push(asRef(await attachBytes(pastedName(f), await base64(f))));
     } catch (e) {
       failed.push(`${f.name || "a pasted file"}: ${e instanceof Error ? e.message : String(e)}`);
-    } finally {
-      set({ storing: Math.max(0, state.storing - 1) });
     }
   }
-  add(stored, failed);
+  to(stored, files.length, failed);
+}
+
+/** Where `n` files being stored go once they are: the voice turn when it claims
+ *  them as they're dropped (its pill counts them meanwhile), else the composer. */
+function claim(n: number): (stored: AttachmentRef[], settled: number, failed: string[]) => void {
+  const v = voice?.claims() ? voice : null;
+  if (v) v.expect(n);
+  else set({ storing: state.storing + n });
+  return (stored, settled, failed) => {
+    if (!v) {
+      set({ storing: Math.max(0, state.storing - n) });
+      return add(stored, failed);
+    }
+    v.arrive(stored, settled);
+    if (failed.length) set({ error: failed.join("; ") });
+  };
+}
+
+/** Files back in the composer (a voice turn didn't take them). */
+export function restage(files: readonly AttachmentRef[]): void {
+  add([...files], []);
+}
+
+/** The files staged in the last `ms`, taken out of the composer (they go with
+ *  the voice turn that's starting). */
+export function takeRecent(ms: number, now = Date.now()): AttachmentRef[] {
+  const recent = state.files.filter((f) => now - (stagedAt.get(keyOf(f)) ?? 0) <= ms);
+  if (recent.length) set({ files: state.files.filter((f) => !recent.includes(f)) });
+  return recent;
 }
 
 export function unstage(id: string, name: string): void {

@@ -52,7 +52,7 @@ Safety rules that always hold:
 
 /** The mid-conversation note on a spoken message (step V2): its reply may be read
  *  aloud, so it leads with something worth hearing. */
-export const VOICE_NOTE = `The user spoke this message, and your reply may be read aloud by an English voice. After any short acknowledgement before your tool calls, start the answer with one or two short sentences that stand on their own, in plain speakable English whatever language the user spoke: no tables, code, lists or links in them. Put any detail after. If you must quote Russian, write it speakably: numbers in words with the right case, English terms respelled in Cyrillic.`;
+export const VOICE_NOTE = `The user spoke this message, and your reply may be read aloud by an English voice. After any short acknowledgement before your tool calls, start the answer with one or two short sentences that stand on their own, in plain speakable English whatever language the user spoke: no tables, code, lists or links in them. Put any detail after. When files came with the message and the work goes to a worker, say so in a few words before the call ("Got both, sending them to a worker."), so the user isn't left in silence while it starts. If you must quote Russian, write it speakably: numbers in words with the right case, English terms respelled in Cyrillic.`;
 
 /** One-shot primitives: each a frozen prompt for a Haiku job (design → Models and
  *  routing). The key doubles as the call's `x-wb-purpose`. `think: false` turns

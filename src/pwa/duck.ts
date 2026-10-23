@@ -82,6 +82,7 @@ import { api, ApiError, checkAccess, openSocket } from "./net";
 import { SHARE_ASKS, shareBody, shareLines, shareMessage, STATUS_ASK, takeShare, TASK_LEAD, type Launch } from "./launch";
 import { createUploader } from "./uploads";
 import { sizeText, type AttachmentRef } from "../assistant/attachments";
+import { AFTER_MS, BEFORE_MS, createVoiceFiles, pillText, type Sent } from "../assistant/voiceFiles";
 
 const RECONNECT_MS = 2000;
 const STICK_PX = 48;
@@ -244,33 +245,117 @@ function post(msg: RemoteDuckMessage | RemoteConvMessage | RemoteHostMessage): v
 const uploader = createUploader((m) => post(m));
 /** Stored, waiting to go with the next message. */
 let staged: AttachmentRef[] = [];
-/** Picked or shared, waiting for the socket to go up. */
-const toUpload: { blob: Blob; name: string }[] = [];
+/** When each staged file came (G2: ones from just before you talk go with it). */
+const stagedAt = new Map<AttachmentRef, number>();
+/** Picked or shared, waiting for the socket to go up; `voice`: for the voice turn
+ *  (G2), which counts it meanwhile. */
+const toUpload: { blob: Blob; name: string; voice?: boolean }[] = [];
 let uploading = 0;
 let filesError = "";
 
+function addStaged(files: readonly AttachmentRef[]): void {
+  for (const file of files)
+    if (!staged.some((s) => s.id === file.id && s.name === file.name)) {
+      staged = [...staged, file];
+      stagedAt.set(file, Date.now());
+    }
+}
+
 function stageFiles(files: { blob: Blob; name: string }[]): void {
-  toUpload.push(...files);
+  // While you talk, or just after, they go with what you say (G2).
+  const voice = turnFiles.claims();
+  if (voice) turnFiles.expect(files.length);
+  toUpload.push(...files.map((f) => ({ ...f, voice })));
   filesError = "";
   void pumpUploads();
   paintFiles();
 }
 
 async function pumpUploads(): Promise<void> {
+  let voiceDone: AttachmentRef[] = [];
+  let voiceSettled = 0;
   while (toUpload.length && ws?.readyState === WebSocket.OPEN) {
     const f = toUpload.shift()!;
-    uploading++;
+    if (!f.voice) uploading++;
     paintFiles();
     try {
       const file = await uploader.upload(f.blob, f.name);
-      if (!staged.some((s) => s.id === file.id && s.name === file.name)) staged = [...staged, file];
+      if (f.voice) voiceDone.push(file);
+      else addStaged([file]);
     } catch (e) {
       filesError = `${f.name}: ${e instanceof Error ? e.message : String(e)}`;
     } finally {
-      uploading--;
+      if (f.voice) voiceSettled++;
+      else uploading--;
+      // A voice turn's files arrive together, so a share of three is one late send.
+      if (voiceSettled && !toUpload.some((u) => u.voice)) {
+        turnFiles.arrive(voiceDone, voiceSettled);
+        voiceDone = [];
+        voiceSettled = 0;
+      }
       paintFiles();
     }
   }
+}
+
+// ── files with a voice turn (G2) ────────────────────────────────────────────
+
+const turnFiles = createVoiceFiles({
+  now: () => Date.now(),
+  later(ms, fn) {
+    const t = setTimeout(fn, ms);
+    return () => clearTimeout(t);
+  },
+  changed: () => paintFiles(),
+  back(files) {
+    addStaged(files);
+    paintFiles();
+  },
+});
+
+/** The last voice turn sent, kept over a reload: a share opens the page afresh. */
+const LAST_VOICE = "wb-duck-last-voice";
+
+function rememberVoice(threadId: string | null): void {
+  try {
+    localStorage.setItem(LAST_VOICE, JSON.stringify({ threadId, at: Date.now() }));
+  } catch {
+    // Without storage, a share after a reload starts its own message.
+  }
+}
+
+function lastVoice(): { threadId: string | null; at: number } | null {
+  try {
+    const v = JSON.parse(localStorage.getItem(LAST_VOICE) ?? "null") as { threadId: string | null; at: number } | null;
+    return v && Date.now() - v.at <= AFTER_MS ? v : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Where a voice turn's late files go: its thread (the engine starts a turn that
+ *  hasn't stood again with them, or they follow it). */
+function lateTo(threadId: string | null): Sent {
+  return {
+    late(files) {
+      if (queue.speaking) hush();
+      const to = threadId ?? view.current;
+      if (to) post({ type: "turn.files", threadId: to, attachments: files.map((f) => f.id) });
+      else send("", true, null, files);
+    },
+  };
+}
+
+/** The staged files from the last `ms`, out of the composer: they go with the
+ *  voice turn starting. */
+function takeRecentStaged(ms: number): AttachmentRef[] {
+  const now = Date.now();
+  const recent = staged.filter((f) => now - (stagedAt.get(f) ?? 0) <= ms);
+  if (recent.length) {
+    staged = staged.filter((f) => !recent.includes(f));
+    paintFiles();
+  }
+  return recent;
 }
 
 /** A file's chip: its thumbnail or a sign, its name and size; × when staged. */
@@ -302,6 +387,13 @@ function fileRow(files: readonly AttachmentRef[]): HTMLElement {
 function paintFiles(): void {
   const box = $("duck-staged");
   box.replaceChildren();
+  // The voice turn's files first (G2): "🎤 + 2 files", or the wait.
+  const turn = turnFiles.files();
+  const voiceLine = turn.length || turnFiles.coming() || turnFiles.missing();
+  if (voiceLine) {
+    box.append(el("div", "duck-turnfiles", pillText(turn.length, turnFiles.missing(), turnFiles.coming())));
+    for (const f of turn) box.append(fileChip(f));
+  }
   for (const f of staged)
     box.append(
       fileChip(f, () => {
@@ -312,7 +404,7 @@ function paintFiles(): void {
   const waiting = uploading + toUpload.length;
   if (waiting) box.append(el("span", "muted", `adding ${waiting}…`));
   if (filesError) box.append(el("div", "error", filesError));
-  box.classList.toggle("hidden", !staged.length && !waiting && !filesError);
+  box.classList.toggle("hidden", !staged.length && !waiting && !filesError && !voiceLine);
 }
 
 /** In the app, conversation mode goes on with the screen off (R4). */
@@ -477,12 +569,18 @@ function hush(): void {
 
 /** Send a message. Conversation mode's are spoken whatever the setting, and may
  *  be `provisional`. */
-function send(text: string, voice: boolean, talked: { provisional: boolean } | null = null): void {
+function send(
+  text: string,
+  voice: boolean,
+  talked: { provisional: boolean } | null = null,
+  turn: readonly AttachmentRef[] = [],
+): void {
   const body = text.trim();
-  // Files go with what you type or dictate, not with a conversation's turn (G2).
-  const files = talked ? [] : staged;
+  // A voice turn's own files (G2), and what's in the composer unless it's a
+  // conversation's turn.
+  const files = [...turn, ...(talked ? [] : staged)];
   if (!body && !files.length) return;
-  if (files.length) {
+  if (!talked && staged.length) {
     staged = [];
     paintFiles();
   }
@@ -600,6 +698,7 @@ function endTalk(message = ""): void {
   talkHeld = false;
   talkSent.clear();
   playingSaid = false;
+  turnFiles.closed();
   setVoiceNote(message);
 }
 
@@ -622,6 +721,9 @@ function onConv(f: RemoteConvFrame): void {
       }
       talkState = f.state;
       talkHeld = f.held;
+      // You're talking: drops go with what you say (G2).
+      if (f.state === "hearing") turnFiles.opened(takeRecentStaged(BEFORE_MS));
+      else turnFiles.closed();
       paintVoice();
       return;
     case "conv.turn":
@@ -643,14 +745,21 @@ function routeTalk(t: Extract<RemoteConvFrame, { type: "conv.turn" }>): void {
   switch (t.phase) {
     case "provisional": {
       const id = view.current;
-      if (!id || (view.states[id] ?? "idle") !== "idle") return;
-      // The phone's own command waits for the turn to stand (H5).
-      if (duckApp.inApp() && fastPath(t.text)) return;
-      send(t.text, true, { provisional: true });
-      talkSent.set(t.id, id);
+      turnFiles.turn(t.text, (files) => {
+        if (!id || (view.states[id] ?? "idle") !== "idle") return false;
+        // The phone's own command waits for the turn to stand (H5).
+        if (!files.length && duckApp.inApp() && fastPath(t.text)) return false;
+        send(t.text, true, { provisional: true }, files);
+        talkSent.set(t.id, id);
+        rememberVoice(id);
+        return lateTo(id);
+      });
       return;
     }
     case "withdrawn": {
+      // You went on talking: the files wait for the longer words.
+      turnFiles.cancel();
+      turnFiles.unsend();
       const id = talkSent.get(t.id);
       talkSent.delete(t.id);
       if (id) post({ type: "turn.withdraw", threadId: id });
@@ -660,8 +769,14 @@ function routeTalk(t: Extract<RemoteConvFrame, { type: "conv.turn" }>): void {
       const id = talkSent.get(t.id);
       talkSent.delete(t.id);
       if (id) post({ type: "turn.commit", threadId: id });
-      else if (duckApp.inApp() && fastPath(t.text)) void duckApp.runFast(t.text).then((said) => said && setVoiceNote(said));
-      else send(t.text, true, { provisional: false });
+      else
+        turnFiles.turn(t.text, (files) => {
+          if (!files.length && duckApp.inApp() && fastPath(t.text))
+            void duckApp.runFast(t.text).then((said) => said && setVoiceNote(said));
+          else send(t.text, true, { provisional: false }, files);
+          rememberVoice(view.current);
+          return lateTo(view.current);
+        });
     }
   }
 }
@@ -704,6 +819,7 @@ async function startRecording(): Promise<void> {
   hush();
   try {
     recording = await record(() => void finishRecording());
+    turnFiles.opened(takeRecentStaged(BEFORE_MS));
     setVoiceNote("listening… tap to send");
   } catch (e) {
     recording = null;
@@ -720,6 +836,7 @@ async function finishRecording(): Promise<void> {
   const r = recording;
   recording = null;
   if (!r) return;
+  turnFiles.closed();
   const wav = await r.stop();
   if (!wav) {
     setVoiceNote("Too short to hear.");
@@ -733,8 +850,20 @@ async function finishRecording(): Promise<void> {
       return;
     }
     setVoiceNote("");
-    if (prefs.sendNow) void sendOrRun(text, true);
+    if (prefs.sendNow)
+      turnFiles.turn(text, (files) => {
+        const thread = view.current;
+        // With files it's Duck's, not the phone's fast path.
+        if (files.length || staged.length) send(text, true, null, files);
+        else void sendOrRun(text, true);
+        rememberVoice(thread);
+        return lateTo(thread);
+      });
     else {
+      turnFiles.turn(text, (files) => {
+        addStaged(files);
+        paintFiles();
+      });
       const box = $<HTMLTextAreaElement>("duck-text");
       box.value = (box.value.trim() ? `${box.value.trimEnd()} ` : "") + text.trim();
       dictated = true;
@@ -748,6 +877,7 @@ async function finishRecording(): Promise<void> {
 function cancelRecording(): void {
   recording?.cancel();
   recording = null;
+  turnFiles.closed();
 }
 
 /** Listen for one request, sent once you stop talking (the assistant gesture and
@@ -1484,10 +1614,13 @@ export async function launchDuck(launch: Launch): Promise<void> {
     case "share": {
       const s = await takeShare();
       shared = s && shareBody(s) ? { body: shareBody(s), preview: shareLines(s).join("\n") } : null;
-      // Files shared (G1) are staged like a 📎 pick.
+      // Files shared (G1) are staged like a 📎 pick; within 10 s of a voice turn
+      // they go with it (G2), in its thread.
       const files = s?.files ?? [];
+      const turn = !shared && files.length ? lastVoice() : null;
+      if (turn) turnFiles.resume(turn.at, lateTo(turn.threadId));
       if (files.length) stageFiles(files);
-      fresh = shared !== null || files.length > 0;
+      fresh = !turn && (shared !== null || files.length > 0);
       openDuck();
       if (!shared && !files.length) {
         view = { ...view, error: "Nothing came with the share, or it was too old." };
