@@ -75,6 +75,7 @@ import { SketchView } from "./SketchView";
 import { closeSketch, openSketch, useSketchState } from "./sketchState";
 import { OverviewPanel } from "./OverviewView";
 import { DecisionsPanel, TrustPanel } from "./TrustViews";
+import { focusUnlessReading, sendsToComposer, watchSelecting } from "./composerFocus";
 import type { ThreadRow } from "../../ipc/assistant";
 import {
   answer,
@@ -151,6 +152,7 @@ export default function AssistantDrawer() {
   const [noKey, setNoKey] = useState(false);
   const [view, setView] = useState<View>("thread");
   const composerRef = useRef<HTMLTextAreaElement>(null);
+  const rootRef = useRef<HTMLDivElement>(null);
   const returnFocus = useRef<HTMLElement | null>(null);
 
   useEffect(() => void connectDuck(), []);
@@ -165,14 +167,18 @@ export default function AssistantDrawer() {
   /** The keyboard goes to the composer, so you can type at once. */
   const focusComposer = useCallback(() => requestAnimationFrame(() => composerRef.current?.focus()), []);
 
-  const showThread = useCallback(
-    (id: string | null) => {
-      openThread(id);
-      setView("thread");
-      focusComposer();
-    },
-    [focusComposer],
-  );
+  // A drag in the drawer may be a selection: nothing refocuses until it's done.
+  useEffect(() => {
+    const root = rootRef.current;
+    return root ? watchSelecting(root) : undefined;
+  }, []);
+
+  const showThread = useCallback((id: string | null) => {
+    openThread(id);
+    setView("thread");
+    // Not while you're selecting text to copy.
+    requestAnimationFrame(() => focusUnlessReading(composerRef.current));
+  }, []);
 
   // While open, the new-instance and cycle-panel chords (Ctrl+Shift+N, Ctrl+Tab /
   // Ctrl+Shift+Tab by default) start a thread and step through the threads.
@@ -247,25 +253,26 @@ export default function AssistantDrawer() {
 
   return (
     <div
+      ref={rootRef}
       data-wb-duck
       aria-hidden={!duck.open}
+      // A click on the thread keeps the keyboard in the drawer (here), not the
+      // composer, so a selection survives it and Ctrl+C copies it.
+      tabIndex={-1}
       {...drop.handlers}
       onKeyDown={(e) => {
-        if (e.key !== "Escape" || e.defaultPrevented) return;
+        if (e.key !== "Escape") {
+          // Typing (or pasting) anywhere in the drawer goes to the composer.
+          if (sendsToComposer(e.nativeEvent, e.target as Element)) composerRef.current?.focus();
+          return;
+        }
+        if (e.defaultPrevented) return;
         e.preventDefault();
         // Esc stops what's going on: the voice and the turn first, then the drawer.
         const speaking = isSpeaking();
         if (speaking) stopSpeaking();
         if (busy) stopTurn();
         else if (!speaking) setDrawerOpen(false);
-      }}
-      // A click that wasn't on a control, and didn't select text, hands the
-      // keyboard back to the composer.
-      onMouseUp={(e) => {
-        const t = e.target as HTMLElement;
-        if (t.closest("button, a, input, textarea, select, label, [contenteditable]")) return;
-        if (window.getSelection()?.toString()) return;
-        focusComposer();
       }}
       style={{
         position: "absolute",
@@ -282,6 +289,7 @@ export default function AssistantDrawer() {
         boxShadow: "6px 0 24px rgba(0,0,0,0.45)",
         font: "12px var(--wb-mono)",
         color: "var(--wb-text)",
+        outline: "none",
         // The app is unselectable by default; Duck's replies hold paths and links
         // you'll want to copy.
         userSelect: "text",
@@ -1709,7 +1717,7 @@ function Composer({
     const text = getVoiceState().dictated?.text;
     if (!text) return;
     setDraft((d) => (d.trim() ? `${d.trimEnd()} ${text}` : text));
-    inputRef.current?.focus();
+    focusUnlessReading(inputRef.current);
   }, [dictatedSeq, inputRef]);
 
   // Grow with the text, up to about eight lines.
