@@ -136,6 +136,9 @@ export interface DuckSettings {
   sessionModes: string[];
   /** The model those threads think on. */
   sessionModel: "sonnet" | "opus";
+  /** Where the user lives, as a place name ("Lisbon", "Portland, Oregon"): the
+   *  weather's place when none is named (step H2); null unset. */
+  home: string | null;
 }
 
 export const DEFAULT_TIERS: Record<Tier, TierSpec> = {
@@ -170,6 +173,7 @@ export const DEFAULT_SETTINGS: DuckSettings = {
   brainPolicy: "auto",
   sessionModes: [],
   sessionModel: "sonnet",
+  home: null,
 };
 
 /** Do Not Disturb "until I turn it off". */
@@ -232,6 +236,8 @@ export function cleanSettings(raw: unknown): Partial<DuckSettings> {
   if (Array.isArray(r.sessionModes))
     out.sessionModes = [...new Set(r.sessionModes.filter((m): m is string => m === "chat" || m === "duck"))];
   if (r.sessionModel === "sonnet" || r.sessionModel === "opus") out.sessionModel = r.sessionModel;
+  if (r.home === null) out.home = null;
+  else if (typeof r.home === "string") out.home = r.home.trim().slice(0, 100) || null;
   if (r.google && typeof r.google === "object") out.google = cleanGoogle(r.google as Record<string, unknown>);
   // The branch's first build kept the client id under `morning`.
   else if (r.morning && typeof r.morning === "object")

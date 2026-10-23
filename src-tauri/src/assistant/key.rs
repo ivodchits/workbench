@@ -32,6 +32,13 @@ pub fn google_tts() -> Option<String> {
     imp::read("duck/google-tts-key").filter(|k| !k.is_empty())
 }
 
+/// Step H2: the optional Steam Web API key for your Steam activity,
+/// `duck/steam-api-key` (one credential for both builds), stored with
+/// `cmdkey /generic:duck/steam-api-key /user:duck /pass:<key>`.
+pub fn steam_api() -> Option<String> {
+    imp::read("duck/steam-api-key").filter(|k| !k.is_empty())
+}
+
 /// The morning routine's Google refresh token (`duck-dev/…` for a debug build),
 /// written by the OAuth flow in [`super::google`], never by hand.
 pub const GOOGLE_TOKEN: &str = if cfg!(debug_assertions) {

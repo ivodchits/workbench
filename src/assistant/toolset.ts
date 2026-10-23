@@ -10,6 +10,7 @@ import { MCP_TOOLS } from "./tools/mcp";
 import { BROWSER_TOOLS } from "./tools/mcpHost";
 import { MEMORY_TOOLS } from "./tools/memory";
 import { MORNING_TOOLS } from "./tools/morning";
+import { PC_TOOLS } from "./tools/pc";
 import { PLUGIN_TOOLS } from "./tools/plugins";
 import { PREP_TOOLS } from "./tools/prep";
 import { QUIET_TOOLS } from "./tools/quiet";
@@ -24,6 +25,7 @@ import { SUMMARY_TOOLS } from "./tools/summaries";
 import { TASK_TOOLS } from "./tools/tasks";
 import { testAnnounce, testConfirm } from "./tools/testConfirm";
 import { THREAD_TOOLS } from "./tools/threads";
+import { weather } from "./tools/weather";
 import { WEB_TOOL_NAMES, WEB_TOOLS } from "./tools/web";
 
 /** Every tool Duck has. Order doesn't matter: the registry sorts them. The
@@ -51,6 +53,8 @@ export const TOOLS = [
   ...IMPROVE_TOOLS,
   ...ROUTINE_TOOLS,
   ...SKILL_TOOLS,
+  ...PC_TOOLS,
+  weather,
   ...(import.meta.env.DEV ? [testConfirm, testAnnounce] : []),
 ];
 
@@ -81,6 +85,8 @@ export const DEFERRED = new Set([
   "merge_duck_change",
   "rebuild_duck",
   "draft_skill",
+  // The PC's tools (H2) are deferred by the registry, as every host tool is.
+  "weather",
   ...BROWSER_TOOLS.map((t) => t.name),
   ...ROUTINE_TOOLS.map((t) => t.name),
 ]);

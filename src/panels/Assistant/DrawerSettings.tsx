@@ -1,7 +1,7 @@
 // The drawer's settings (step A3), in tabs that scroll on their own:
-// - drawer: what a message typed mid-reply does, the ASCII duck's look, and "Start
+// - drawer: what a message typed mid-reply does, the ASCII duck's look, "Start
 //   Workbench at login, minimized to tray", which keeps Duck there whenever the PC
-//   is on;
+//   is on, and Home, the weather's place (H2);
 // - sessions: Duck's prompts and permission answers, summaries, the coding model
 //   (W2, T2, W3, M4);
 // - workers: D1's worker sessions;
@@ -127,6 +127,7 @@ export default function DrawerSettings({ duck }: { duck: DuckState }) {
                 )}
               </span>
             </label>
+            {duck.settings && <Home settings={duck.settings} />}
           </>
         )}
         {tab === "sessions" &&
@@ -288,6 +289,26 @@ export default function DrawerSettings({ duck }: { duck: DuckState }) {
         {error && <div style={{ color: "var(--wb-needs)" }}>{error}</div>}
       </div>
     </div>
+  );
+}
+
+/** Where the user lives: the weather's place when none is named (H2). */
+function Home({ settings }: { settings: DuckSettings }) {
+  const [home, setHome] = useState(settings.home ?? "");
+  useEffect(() => setHome(settings.home ?? ""), [settings.home]);
+  return (
+    <label style={{ ...row, alignItems: "center" }}>
+      <span style={{ flex: "0 0 auto" }}>Home</span>
+      <input
+        value={home}
+        placeholder="a city, for the weather"
+        onChange={(e) => setHome(e.target.value)}
+        onBlur={() => {
+          if (home.trim() !== (settings.home ?? "")) setDuckSettings({ home: home.trim() || null });
+        }}
+        style={{ ...select, flex: 1, minWidth: 0, padding: "1px 4px" }}
+      />
+    </label>
   );
 }
 

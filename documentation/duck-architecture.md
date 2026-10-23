@@ -98,6 +98,8 @@ change X" at the end, then the module rows it points to.
 | `tools/haikuTask.ts` | `haiku_task` (M2): a reading-heavy chore over transcripts and notes the tool fetches itself, done in one Haiku call so the long text never enters Duck's context (about 25k tokens a source, 100k in all). |
 | `tools/screen.ts` | W6: `read_screen` (a session's console as untrusted text, with a hash) and consequential `press_keys`, refused when the screen changed since that hash or when you've typed there lately; keys into an open prompt are judged as `answer_choice`. |
 | `tools/screenshot.ts` | V3: `screenshot` (downscaled PNG as image blocks, with the monitor list) and `save_screenshot`. |
+| `tools/pc.ts` | H2, the `pc` host's tools (deferred, as every host tool is): `steam_library` (read; installed games, the last played first, `query` filters), `steam_launch` and `steam_install` (reversible; the game named as people say it, `appid` to pick from a call's choices; install searches the store), `steam_activity` (read; the Web API key's playtime, recently played, friends online, a game's achievements), `media_now_playing` (read) and `media_control` (reversible: play, pause, toggle, next, previous), `open_on_pc` (reversible: a web link, or Steam's run / install / store link for a game). `pcHandlers(backend)` is the PC's side, served in process from `index.ts` over `ipc/pc.ts`; each handler checks its input against the tool's schema again. `rankGames` / `clearPick` / `matchScore`: a game by name (exact, the name's start with or without "the", every word, an acronym, inside the name, or one or two typos; roman numerals as digits); a pick is clear at 0.75 and 0.05 ahead of the next, otherwise the call returns up to five choices. |
+| `tools/weather.ts` | H2: `weather(place?, days?)` (read, `any` host, deferred): Open-Meteo's geocoding (`"Portland, Oregon"` picks by region or country) and forecast, no key, in °C / km/h / mm: now, the next 12 hours' rain chance, the days. Without `place`, the `home` setting (the drawer tab's Home). |
 | `tools/readAloud.ts` | V3: `read_aloud` resolves a source (a session's reply, a note, a summary, text) and hands it to the reader in `verbatim`, `narrate` or `summary` mode. |
 | `tools/quiet.ts` | V5: `set_quiet`, Do Not Disturb and the Speak switch by voice or text. |
 | `brain/policy.ts` | Which brain answers a turn (M3): `pickBackend` over the `brainPolicy` setting (`auto`, `api`, `subscription`), a mode set to think on the subscription (D3, `session`: there while it has room, whatever the budget), the API's soft limit, a "credit balance is too low" this month (`creditsGone`), and the subscription's windows (both under 70% / 80%, `SUBSCRIPTION_LIMITS`; no reading counts as room). `switchCard` words the card of a switch. |
@@ -150,6 +152,8 @@ prompt's safety rules cover them.
 | `mcp_host.rs` | Duck's host for stdio MCP servers from your Claude Code config (B2), on `rmcp`: `McpHost` (managed) starts a server on first use (`crate::mcp::mcp_list` over the home folder, its env to the child only, `CREATE_NO_WINDOW`, `cmd /c` only for a `.cmd`), `kill_tree`s it after 10 minutes idle or on exit. `mcp_host_tools(server, refresh)` (from `mcp_tool_cache` by a hash of the command line unless `refresh`), `mcp_host_call(server, tool, args, timeout)` (the `CallToolResult` as JSON), `mcp_host_servers` (names and command names only), `mcp_host_running`, `mcp_host_stop`, `firefox_start_profile(profile)` (`firefox.exe -P <it> --no-remote`, not waited on). |
 | `mcp_client.rs` | `assistant_mcp_request(url, token_env, method, params)`: JSON-RPC to an MCP server over Streamable HTTP (X1). One session per URL (`initialize` + `notifications/initialized` on first use, `mcp-session-id` kept, a 404 retried once on a new session); JSON or SSE replies. In Rust because a local server sends no CORS headers, and so a bearer token is read from the environment variable `token_env` names and never reaches the webview. |
 | `google.rs` | The morning routine's Google access: the installed-app OAuth flow (a loopback redirect, PKCE) for the user's own Desktop client and only `drive.readonly` + `drive.file`, so the token can't write to the original sheet. The refresh token is in Credential Manager (`duck/google-sheets-token`, `duck-dev/…` in debug), the client's secret, if any, in `duck/google-oauth-secret` (by `cmdkey`); access tokens stay in memory. `invalid_grant` forgets the token and fails with `google_expired: …`. Commands: `assistant_google_status`, `_connect(client_id)`, `_disconnect` (revokes). |
+| `steam.rs` | H2: Steam on this PC. `parse` reads Valve's KeyValues (`.vdf`, `.acf`); `steam_root` (the registry's `SteamPath`), `libraries` (`libraryfolders.vdf`), `installed` (every `appmanifest_*.acf`, without the redistributables, the last played first). Commands: `assistant_steam_library`, `assistant_steam_store_search` (the store's search, no key), `assistant_steam_activity(appid?)` (the Web API with `duck/steam-api-key`, the account from `config/loginusers.vdf`; the key never reaches an error, `without_url`), `assistant_pc_open` (`may_open`: http(s), or `steam://rungameid|install|store/<digits>`; nothing else). |
+| `media.rs` | H2: Windows' media sessions (`GlobalSystemMediaTransportControlsSessionManager`, the `Media_Control` feature), on a blocking thread in the MTA. `assistant_media_now_playing` (each app's title, artist, album, status, and which is current; `app_name` names a browser by its AppUserModelID) and `assistant_media_control(action)` (`target`: the session that plays, else the current one). |
 | `sheets.rs` | Google Sheets. Reads: `assistant_sheet_search` (sheets by name), `assistant_sheet_read` (a tab's non-empty cells, shown and as formulas, 150 rows by 26 columns, and its tabs), `assistant_sheet_cells` (given cells, up to 20) and `assistant_sheet_export` (the cells, plus the tab as CSV, the file as xlsx and a JSON sidecar in `<workspace>/data/invoices/`). Only Google Sheets files. The draft: `assistant_sheet_draft` refuses a second draft of a sheet for a month while the first is in Drive, re-reads the original against what the card showed, refuses a formula cell (in the original and the copy), makes the drafts folder once, copies with Drive's `files.copy` and falls back to uploading the xlsx export as a new Sheet, records the file, then sets the cells (`USER_ENTERED`, plain values only) and reads them back. `assistant_sheet_drafts` lists a month's drafts still in Drive. |
 | `skills.rs` | Duck's skills (S2): `skills/<name>/SKILL.md` in the workspace. `list` (cached; a `notify` watcher on `skills/` marks it stale, so an edit is read on the next request), each file's frontmatter fields (`crate::skills::frontmatter`, the skill manager's parser made general), body, text and problems (a folder name that isn't kebab-case, no frontmatter, a `name:` that isn't the folder's, no description, over 64 KB); `write` (over the text it was read as, else "stale:"; the caller commits). Commands `assistant_skills_list`, `assistant_skill_write`. |
 | `config.rs` | Duck's prompt files (L3): `read` (`config/system.md` and `config/voice.md` only, with each one's seed from `meta` `config_seed:<file>`), `write` (over the text it was read as, else "stale:"; records a seed when given; the caller commits), `pin` / `pinned` (a thread's prompts as JSON under their hash; a pinned thread keeps its pin). Commands `assistant_config_read`, `_write`, `_pin`, `_pinned`. |
@@ -598,8 +602,10 @@ goes to whichever host offers it (`hosts.ts`).
 - **The cache:** host tools are always deferred, and the registry never changes with
   what's connected, so the request's tool list is the same with or without a host.
 - **Transports:** the desktop's `pc` tools are served in process (`connectLocal` in
-  `index.ts`, where H2's tools add their handlers); the phone connects over its
-  `/api/assistant` socket (`remoteBridge.ts`), which takes only `phone` as a host.
+  `index.ts`, with H2's `pcHandlers`); the phone connects over its `/api/assistant`
+  socket (`remoteBridge.ts`), which takes only `phone` as a host.
+- **The PC's tools (H2):** Steam (`steam.rs`), the media sessions (`media.rs`) and
+  `open_on_pc`, in `tools/pc.ts`. `weather` is `any`: it only needs the internet.
 - **Adding one:** `defineTool({…, host: "phone"})` with no `run` in `TOOLS`, and the
   handler on the host (`serveHost`).
 
@@ -774,7 +780,8 @@ Duck is one tap from its icon.
   in your Claude Code config is turned on in the settings (B2, `mcpHost`). Its tiers
   are `hostedTools` in `tools/mcpHost.ts`; the browser's profiles are `browser.ts`.
 - **A tool that runs on the PC or the phone**: `host` on its `defineTool`, its
-  handler on the host ("Tools that run elsewhere" above, `hosts.ts`).
+  handler on the host ("Tools that run elsewhere" above, `hosts.ts`); a PC tool's
+  handler goes in `pcHandlers` (`tools/pc.ts`), its Rust beside `steam.rs` / `media.rs`.
 - **A mode's prompt, tools, effort or pauses**: `modes.ts` for the built-in ones. A new
   mode with no code is a skill with `mode:` (`skills/<name>/SKILL.md`, "Skills" above).
 - **A new behavior for a kind of request**: a skill (no build), by hand or with
@@ -829,6 +836,11 @@ being discussed or translated, or an explicit request. Thread titles are English
 Both rules are in `prompt.ts`.
 
 ## Not built yet
+
+- The PC's tools (H2) live: Steam's library and the media sessions were read on this
+  PC by hand (ignored tests), and the matching, handlers and weather are tested over
+  fakes. Not yet tried by voice: a game launched and another installed by name, "what's
+  playing" naming a YouTube Music tab and pausing it, the weather for home and a city.
 
 - The wake word (V6) live: built and measured on recordings (no spots in 6.3 h of
   speech without the phrase; 81 of 84 synthetic English and 9 of 15 Russian caught),

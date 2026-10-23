@@ -14,6 +14,7 @@
 //! Step S2: Duck's skills, `skills/*/SKILL.md` in its workspace ([`skills`]).
 //! Step B2: a host for stdio MCP servers from your Claude Code config, your Firefox
 //! bridge first ([`mcp_host`]).
+//! Step H2: the PC's tools, Steam ([`steam`]) and the media sessions ([`media`]).
 //! The morning routine: Google access ([`google`]) and the invoice sheet ([`sheets`]).
 //!
 //! The webview never holds the key. It asks [`assistant_proxy_info`] for the proxy's
@@ -29,6 +30,7 @@ pub mod gitlane;
 pub mod google;
 pub mod headless;
 mod key;
+pub mod media;
 pub mod mcp_client;
 pub mod mcp_host;
 mod mcp_server;
@@ -39,6 +41,7 @@ pub mod skills;
 mod summaries;
 pub mod replay;
 pub mod sheets;
+pub mod steam;
 pub mod subscription_brain;
 mod threads;
 mod timings;

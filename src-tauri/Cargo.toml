@@ -124,5 +124,7 @@ windows = { version = "0.61", features = [
     "Win32_UI_Shell_PropertiesSystem",
     # Step V6: whether another app has the microphone (the privacy store).
     "Win32_System_Registry",
+    # Step H2: what's playing, and the media keys (the media sessions).
+    "Media_Control",
 ] }
 

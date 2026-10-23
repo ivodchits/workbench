@@ -6906,6 +6906,36 @@ checked in the scratch PTY first.
   names a YouTube Music tab in the browser, and pause pauses it; the weather answers for
   home and for a named city.
 - **Out of scope:** Steam store prices and wishlists, Big Picture.
+- **As built (2026-10-23):**
+  - **`tools/pc.ts`** declares the `pc` host's tools (deferred, as every host tool
+    is): `steam_library`, `steam_launch`, `steam_install`, `steam_activity`,
+    `media_now_playing`, `media_control`, `open_on_pc`. Their handlers
+    (`pcHandlers`) are served in process from `index.ts` over `ipc/pc.ts`, and check
+    their input against the schema again, as a host does.
+  - **Steam** (`steam.rs`): a small KeyValues parser, Steam's folder from the
+    registry, the libraries from `libraryfolders.vdf`, the games from their
+    manifests. Launch and install open Steam's own links. An installed game is found
+    by `rankGames` (the name's start, every word, an acronym, a typo, roman numerals as
+    digits); a game to install is found in the store's search, which needs no key.
+    A weak or close match returns up to five choices with their app ids instead of
+    guessing ("hades" picks Hades over Hades II; "dark souls" asks).
+  - **`steam_activity`** is always declared, so the tool list doesn't depend on a
+    key. Without `duck/steam-api-key` it says how to store one. The account is the
+    one that last signed in (`config/loginusers.vdf`). The key is kept out of errors
+    (`without_url`).
+  - **Media** (`media.rs`, the `windows` crate's `Media_Control`): every app's
+    session, with its title, artist and state. A control goes to the session that
+    plays, else to the current one. A browser is named from its AppUserModelID
+    (Firefox's is a hash).
+  - **`open_on_pc`** opens http(s), and only Steam's `rungameid`, `install` and
+    `store` links with a numeric id. Other `steam://` links can pass arguments to a
+    game, so they're refused.
+  - **`weather`** (`tools/weather.ts`, `any`, deferred): Open-Meteo geocoding and
+    forecast from the engine's `fetch`. "Portland, Oregon" picks by region or country.
+    Without a place it uses the new `home` setting (Home, on the drawer tab).
+  - Checked by hand on this PC (ignored tests): the real Steam library reads, and the
+    media sessions answer. The done-when's voice trials (a launch, an install, pausing
+    a YouTube Music tab, the weather for home and a city) wait for the user.
 
 #### Step H3 — Music and video
 
@@ -7621,7 +7651,7 @@ T2 goes live after the replay check in its done-when (the past week's prompts th
 | P1 | Autopilot loop for one session | ☑ |
 | P2 | Unattended runs: limits, windows, stalls, checklists, several sessions | ☑ (the overnight run not tried yet) |
 | H1 | Host-bound tools | ☑ |
-| H2 | PC tools: Steam, media keys, weather | ☐ |
+| H2 | PC tools: Steam, media keys, weather | ☑ |
 | H3 | Music and video | ☐ |
 | H4 | Duck's reminders and timers | ☐ |
 | H8 | Reminders: project and general, with a widget | ☐ |

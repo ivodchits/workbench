@@ -78,6 +78,8 @@ import { createMcpHost } from "./mcp";
 import { createGoogleHost } from "./google";
 import { createRegistry, toolsOn } from "./tools/registry";
 import { connectLocal, createHosts } from "./hosts";
+import { pcHandlers } from "./tools/pc";
+import { mediaControl, mediaNowPlaying, pcOpen, steamActivity, steamLibrary, steamStoreSearch } from "../ipc/pc";
 import { createBrowserHost } from "./browser";
 import { createHostedSync, type HostedSync } from "./hosted";
 import { firefoxStartProfile, mcpHostCall, mcpHostRunning, mcpHostServers, mcpHostTools } from "../ipc/mcpHost";
@@ -809,10 +811,21 @@ export function initAssistant(): Promise<void> {
       refLine: browser.refLine,
     });
     void hosted.sync().catch((e: unknown) => console.warn("duck: the hosted MCP servers didn't load", e));
-    // Tools that run where they act (H1): the PC's here, in process (H2's tools
-    // add their handlers); the phone's over its socket.
+    // Tools that run where they act (H1): the PC's here, in process (H2: Steam,
+    // the media sessions, opening a link); the phone's over its socket.
     const hosts = createHosts((host) => toolsOn(TOOLS, host));
-    connectLocal(hosts, "pc", {});
+    connectLocal(
+      hosts,
+      "pc",
+      pcHandlers({
+        library: steamLibrary,
+        storeSearch: steamStoreSearch,
+        activity: steamActivity,
+        open: pcOpen,
+        nowPlaying: mediaNowPlaying,
+        control: mediaControl,
+      }),
+    );
     const engine = createEngine({
       tasks,
       autopilot,
