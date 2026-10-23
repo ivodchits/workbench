@@ -2,6 +2,7 @@
 // (`index.ts`) and the tests that check what the modes name (step S1).
 
 import { ACT_TOOLS } from "./tools/act";
+import { DRAW_TOOLS } from "./tools/draw";
 import { AUTOPILOT_TOOLS } from "./tools/autopilot";
 import { getTime } from "./tools/getTime";
 import { HAIKU_TOOLS } from "./tools/haikuTask";
@@ -39,6 +40,7 @@ export const TOOLS = [
   ...ACT_TOOLS,
   ...PLUGIN_TOOLS,
   ...TASK_TOOLS,
+  ...DRAW_TOOLS,
   ...SUMMARY_TOOLS,
   ...SCREEN_TOOLS,
   ...READ_ALOUD_TOOLS,

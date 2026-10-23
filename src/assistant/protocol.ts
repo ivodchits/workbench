@@ -163,7 +163,9 @@ export interface Notice {
      *  you start a session there, or one that's due (H8). */
     | "reminder"
     /** Files a worker made, for the user (G1): chips to open or drag out. */
-    | "files";
+    | "files"
+    /** A drawing's new version (G3): a card that opens the canvas. */
+    | "drawing";
   text: string;
   /** `files` only. */
   files?: AttachmentRef[];
@@ -179,6 +181,8 @@ export interface Notice {
   off?: boolean;
   /** `task` only. */
   task?: { id: string };
+  /** `drawing` only: the version, and its PNG (with a thumbnail) for the card. */
+  drawing?: { id: string; n: number; title: string; png: AttachmentRef | null };
   /** `compacted` only: Duck's summary, which the requests send in place of every
    *  message up to and including `through` (a seq). */
   compaction?: { summary: string; through: number };
@@ -211,6 +215,26 @@ export interface TaskView {
   self: boolean;
   /** Its branch once it finished; `safety` lists the files in the safety layer. */
   changes: { branch: string; files: string[]; uncommitted: string[]; safety: string[] } | null;
+}
+
+/** A drawing as the canvas shows it (step G3). */
+export interface DrawingView {
+  id: string;
+  threadId: string;
+  title: string;
+  kind: "mermaid" | "svg" | "vega" | null;
+  versions: {
+    n: number;
+    ext: string;
+    /** The source file. */
+    path: string;
+    headline: string;
+    at: number;
+    png: AttachmentRef | null;
+    svg: AttachmentRef | null;
+  }[];
+  /** The version being drawn; `waiting` says why it hasn't started. */
+  pending: { n: number; waiting: string | null } | null;
 }
 
 /** A stdio MCP server from your Claude Code config, as Duck's settings list it
@@ -340,7 +364,13 @@ export type ClientMessage =
   /** The reader bar's buttons (step V3). */
   | { type: "reader"; action: ReaderAction }
   /** Duck's Do Not Disturb (step V5): until a moment (epoch ms), or off (null). */
-  | { type: "dnd"; until: number | null };
+  | { type: "dnd"; until: number | null }
+  /** A drawing, answered with `drawing` (step G3). */
+  | { type: "drawing.get"; drawingId: string }
+  /** A version's SVG, answered with `drawingSvg` (the desktop's canvas). */
+  | { type: "drawing.svg"; drawingId: string; n: number }
+  /** The drawing a surface's canvas shows (null: closed): its worker stays warm. */
+  | { type: "canvas"; surface: Surface; drawingId: string | null };
 
 export type ReaderAction = "pause" | "resume" | "next" | "prev" | "stop";
 
@@ -433,6 +463,11 @@ export type DuckEvent =
   /** The open reminders (step H8), on `sync` and after every change; `pulse` when
    *  one just came up (due, or a project's on a new session). */
   | { type: "reminders"; reminders: ReminderView[]; problem: string | null; pulse?: boolean }
+  /** A drawing changed, or was asked for (step G3). `open`: that surface's canvas
+   *  shows it now (where the request came from). */
+  | { type: "drawing"; drawing: DrawingView; open?: Surface }
+  /** Answer to `drawing.svg`: the SVG, or why there's none. */
+  | { type: "drawingSvg"; drawingId: string; n: number; svg: string | null; error?: string }
   /** A request from a surface failed (an unknown thread, storage down, …). */
   | { type: "error"; message: string };
 

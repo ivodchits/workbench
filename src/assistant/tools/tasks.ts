@@ -74,7 +74,8 @@ export const runTask = defineTool({
   schema: z.object({
     title: z.string().trim().min(1).max(80).describe("A short name for the task, shown on its card."),
     brief: z.string().trim().min(1).max(20_000),
-    kind: z.enum(TASK_KINDS),
+    // Drawings go through `draw` (step G3).
+    kind: z.enum(TASK_KINDS).exclude(["drawing"]),
     tier: z.enum(TIERS).default("standard"),
     project: projectArg.optional().describe("The project a code task works in."),
     model: z.enum(SESSION_MODELS).optional(),

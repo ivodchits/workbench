@@ -8,6 +8,9 @@
 //!   4 MB on this route only.
 //! - `GET /api/assistant/tts/{id}` — one sentence of a spoken reply the desktop
 //!   made for the phone (`audio/wav`, kept a few minutes). Auth: bearer.
+//! - `GET /api/assistant/image/{id}/{name}` — a stored image attachment (step G3: a
+//!   drawing's PNG for the phone's viewer). PNG, JPEG, GIF and WebP only, never an
+//!   SVG, which would be a page on this origin. Auth: bearer.
 //!
 //! Conversation mode on the phone (step V4 part 3) is this server's, not the
 //! webview's: `conv.start` / `conv.stop` / `conv.playing` frames and the binary
@@ -451,6 +454,40 @@ pub(super) async fn tts(
             .into_response(),
         None => StatusCode::NOT_FOUND.into_response(),
     }
+}
+
+/// The image types the image route serves.
+const IMAGE_TYPES: [&str; 4] = ["image/png", "image/jpeg", "image/gif", "image/webp"];
+
+/// A stored image attachment, for the phone (a drawing's PNG, step G3).
+pub(super) async fn image(
+    State(state): State<Arc<RemoteState>>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    Path((id, name)): Path<(String, String)>,
+) -> Response {
+    if let Err(refusal) = authed(&state, bearer(&headers).as_deref(), &client_addr(peer, &headers)) {
+        return refusal;
+    }
+    let Ok(data) = state.app.path().app_data_dir() else { return StatusCode::NOT_FOUND.into_response() };
+    let root = crate::assistant::attachments::root(&data);
+    let Ok(path) = crate::assistant::attachments::file_of(&root, &id, &name) else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    let Ok(bytes) = tokio::fs::read(&path).await else { return StatusCode::NOT_FOUND.into_response() };
+    let mime = crate::assistant::attachments::mime_of(&name, &bytes[..bytes.len().min(64)]);
+    if !IMAGE_TYPES.contains(&mime.as_str()) {
+        return StatusCode::UNSUPPORTED_MEDIA_TYPE.into_response();
+    }
+    (
+        [
+            (header::CONTENT_TYPE, mime),
+            (header::CACHE_CONTROL, "private, max-age=86400".to_string()),
+            (header::X_CONTENT_TYPE_OPTIONS, "nosniff".to_string()),
+        ],
+        bytes,
+    )
+        .into_response()
 }
 
 /// Send one of Duck's frames to the phones: to socket `conn`, or to all of them.

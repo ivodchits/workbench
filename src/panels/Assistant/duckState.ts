@@ -28,6 +28,7 @@ import type {
   RoutineView,
   ClientMessage,
   ConfirmRequest,
+  DrawingView,
   DuckEvent,
   Effort,
   HostedServerView,
@@ -120,6 +121,13 @@ export interface DuckState {
   news: Record<string, string>;
   /** Text a card put in the message box (L3's "ask for changes"), by a counter. */
   fill: { text: string; seq: number } | null;
+  /** Drawings seen so far (step G3), by id. */
+  drawings: Record<string, DrawingView>;
+  /** The drawing the drawer's canvas shows, and which version; null: closed. */
+  canvas: { id: string; n: number | null } | null;
+  /** Versions' SVGs as the engine rendered them, by `id:n`; a string starting
+   *  with "!" is why there's none. */
+  svgs: Record<string, string>;
 }
 
 export const DEFAULT_DRAWER: AssistantDrawerPrefs = {
@@ -170,6 +178,9 @@ let state: DuckState = {
   unread: {},
   news: {},
   fill: null,
+  drawings: {},
+  canvas: null,
+  svgs: {},
 };
 const listeners = new Set<() => void>();
 /** A send with no thread is waiting for the engine to name the new one. */
@@ -449,6 +460,22 @@ function onEvent(e: DuckEvent): void {
       break;
     case "tasks":
       set({ tasks: e.tasks });
+      break;
+    case "drawing": {
+      const prev = state.drawings[e.drawing.id];
+      const patch: Partial<DuckState> = { drawings: { ...state.drawings, [e.drawing.id]: e.drawing } };
+      // Asked for here: the canvas shows its newest version, and the drawer opens.
+      if (e.open === "desktop" && e.drawing.versions.length > (prev?.versions.length ?? 0)) {
+        patch.canvas = { id: e.drawing.id, n: null };
+        if (document.visibilityState === "visible") patch.open = true;
+        post({ type: "canvas", surface: "desktop", drawingId: e.drawing.id });
+      } else if (state.canvas?.id === e.drawing.id && state.canvas.n !== null && !e.drawing.versions.some((v) => v.n === state.canvas?.n))
+        patch.canvas = { id: e.drawing.id, n: null };
+      set(patch);
+      break;
+    }
+    case "drawingSvg":
+      set({ svgs: { ...state.svgs, [`${e.drawingId}:${e.n}`]: e.svg ?? `!${e.error ?? "it didn't render"}` } });
       break;
     case "reader":
       set({ reader: e.reader });
@@ -766,6 +793,31 @@ export function loadHosted(refresh?: string): void {
 /** The newest page of the decision log (`null`), or the page before an id. */
 export function loadDecisions(before: number | null): void {
   post({ type: "trust.decisions", before });
+}
+
+/** Show a drawing on the drawer's canvas (G3): its newest version, or `n`. */
+export function openCanvas(id: string, n: number | null = null): void {
+  set({ canvas: { id, n } });
+  post({ type: "drawing.get", drawingId: id });
+  post({ type: "canvas", surface: "desktop", drawingId: id });
+}
+
+/** Ask for a drawing (a dock tab showing it), without opening the canvas. */
+export function requestDrawing(id: string): void {
+  post({ type: "drawing.get", drawingId: id });
+}
+
+export function closeCanvas(): void {
+  set({ canvas: null });
+  post({ type: "canvas", surface: "desktop", drawingId: null });
+}
+
+/** Ask for a version's SVG, once (the canvas shows it). */
+export function loadSvg(id: string, n: number): void {
+  const key = `${id}:${n}`;
+  if (key in state.svgs) return;
+  set({ svgs: { ...state.svgs, [key]: "" } });
+  post({ type: "drawing.svg", drawingId: id, n });
 }
 
 /** Close a worker task (D1): its console closes, its files stay. */

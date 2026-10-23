@@ -39,6 +39,7 @@ import NotesPanel, { type NotesPanelParams } from "./Notes";
 import TaskPanel, { type TaskPanelParams } from "./TaskPanel";
 import PreviewPanel from "./PreviewPanel";
 import PlanPanel from "./PlanPanel";
+import DrawingPanel from "./Assistant/Canvas";
 import { GLYPH } from "../theme";
 import { useRegistry } from "../state/registry";
 import {
@@ -175,6 +176,9 @@ const COMPONENTS = {
   // Plan tabs (step P1) carry their text in params and no store id, so like the
   // preview they persist purely as part of the tree.
   plan: PlanPanel as React.FunctionComponent<IDockviewPanelProps>,
+  // A Duck drawing popped out of the drawer's canvas (step G3): its id in params,
+  // the drawing from Duck, so like the plan it persists as part of the tree.
+  drawing: DrawingPanel as React.FunctionComponent<IDockviewPanelProps>,
 };
 
 /** A console panel carries its instance id in params; other panels don't. */

@@ -59,6 +59,7 @@ import type { ConfigHost } from "../config";
 import type { SkillsHost } from "../skills";
 import type { MusicProvider } from "../music/provider";
 import type { RemindersHost } from "../reminders";
+import type { Drawings } from "../drawings";
 import type { Surface } from "../protocol";
 import { isRemoteHost, type Host, type HostCaller } from "../hosts";
 import type { AttachmentRef } from "../attachments";
@@ -134,6 +135,8 @@ export interface ToolContext {
   surface?: Surface;
   /** The user's reminders (step H8); absent where there are none. */
   reminders?: RemindersHost | null;
+  /** Drawings and the canvas (step G3); absent where there are none. */
+  drawings?: Drawings | null;
 }
 
 /** What `prepare` gets besides the port. */

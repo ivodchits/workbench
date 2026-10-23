@@ -49,6 +49,7 @@ import {
   USER_SOURCES,
   type AutopilotView,
   type ConfirmRequest,
+  type DrawingView,
   type DecisionRow,
   type Notice,
   type TaskView,
@@ -81,6 +82,7 @@ import { micAvailable, record, type Recording } from "./mic";
 import { api, ApiError, checkAccess, openSocket } from "./net";
 import { SHARE_ASKS, shareBody, shareLines, shareMessage, STATUS_ASK, takeShare, TASK_LEAD, type Launch } from "./launch";
 import { createUploader } from "./uploads";
+import { showDrawing, shownDrawing } from "./drawingView";
 import { sizeText, type AttachmentRef } from "../assistant/attachments";
 import { AFTER_MS, BEFORE_MS, createVoiceFiles, pillText, type Sent } from "../assistant/voiceFiles";
 
@@ -468,8 +470,58 @@ function disconnect(): void {
   socket?.close();
 }
 
+// ── drawings (G3) ───────────────────────────────────────────────────────────
+
+/** The drawings this page has heard of, and one asked for to show when it comes. */
+const drawingsSeen = new Map<string, DrawingView>();
+let wantDrawing: { id: string; n: number | null } | null = null;
+
+/** Show a drawing full screen; Duck keeps its worker warm while it's open. */
+function openDrawing(id: string, n: number | null): void {
+  const d = drawingsSeen.get(id);
+  post({ type: "drawing.get", drawingId: id });
+  if (!d) {
+    wantDrawing = { id, n };
+    return;
+  }
+  post({ type: "canvas", drawingId: id });
+  showDrawing(d, n, () => post({ type: "canvas", drawingId: null }));
+}
+
+function onDrawing(d: DrawingView, open: boolean): void {
+  drawingsSeen.set(d.id, d);
+  const shown = shownDrawing();
+  if (open && d.versions.length) openDrawing(d.id, null);
+  else if (wantDrawing?.id === d.id) {
+    const n = wantDrawing.n;
+    wantDrawing = null;
+    openDrawing(d.id, n);
+  } else if (shown?.id === d.id) showDrawing(d, shown.n, () => post({ type: "canvas", drawingId: null }));
+}
+
+/** A drawing's card in the thread: its thumbnail; a tap shows it. */
+function drawingCard(it: Extract<Item, { kind: "drawing" }>): HTMLElement {
+  const d = it.drawing;
+  const card = el("button", "duck-drawcard");
+  card.type = "button";
+  const thumb = d.png?.thumb;
+  if (thumb?.startsWith("data:image/jpeg;base64,") || thumb?.startsWith("data:image/png;base64,")) {
+    const img = el("img");
+    img.src = thumb;
+    img.alt = "";
+    card.append(img);
+  } else card.append(el("span", "glyph", "✎"));
+  card.append(el("span", "", `✎ ${it.text}`));
+  card.onclick = () => openDrawing(d.id, d.n);
+  return card;
+}
+
 function onFrame(f: RemoteDuckFrame): void {
   if (duckApp.onAppFrame(f) || uploader.onFrame(f)) return;
+  if (f.type === "drawing") {
+    onDrawing(f.drawing, f.open === "phone");
+    return;
+  }
   if (f.type.startsWith("conv.")) {
     onConv(f as RemoteConvFrame);
     return;
@@ -1263,6 +1315,8 @@ function itemView(it: Item, active: boolean): HTMLElement {
       return editChip(it.text, "reminders", reminderFiles(it.edit));
     case "task":
       return taskCard(it.taskId, it.text);
+    case "drawing":
+      return drawingCard(it);
     case "notice":
       return noticeLine(it.notice);
   }

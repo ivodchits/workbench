@@ -27,6 +27,11 @@ describe("parseRemote", () => {
 
   it("lets a phone pause trust but not loosen it or change settings", () => {
     expect(parseRemote({ type: "trust.pause" }, fix)).toEqual({ type: "trust.pause", paused: true });
+    // Drawings (G3): the phone's viewer is the phone surface's canvas.
+    expect(parseRemote({ type: "canvas", drawingId: "dr1" }, fix)).toEqual({ type: "canvas", surface: "phone", drawingId: "dr1" });
+    expect(parseRemote({ type: "canvas", drawingId: null }, fix)).toEqual({ type: "canvas", surface: "phone", drawingId: null });
+    expect(parseRemote({ type: "drawing.get", drawingId: "dr1" }, fix)).toEqual({ type: "drawing.get", drawingId: "dr1" });
+    expect(parseRemote({ type: "drawing.svg", drawingId: "dr1", n: 1 }, fix)).toBe(`"drawing.svg" can't be sent from the phone`);
     // A phone's `paused: false` is not a resume.
     expect(parseRemote({ type: "trust.pause", paused: false }, fix)).toEqual({ type: "trust.pause", paused: true });
     for (const type of ["settings.set", "trust.rule.add", "trust.rule.remove", "trust.mode", "trust.floor", "trust.replay", "thread.delete"])

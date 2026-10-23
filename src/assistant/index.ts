@@ -118,6 +118,8 @@ import { createHostedSync, type HostedSync } from "./hosted";
 import { firefoxStartProfile, mcpHostCall, mcpHostRunning, mcpHostServers, mcpHostTools } from "../ipc/mcpHost";
 import { DEFERRED, SERVER_TOOLS, TOOL_NAMES, TOOLS } from "./toolset";
 import { createTaskManager, ipcTaskBackend, type Task, type TaskManager } from "./tasks";
+import { createDrawings, ipcDrawingBackend, type Drawings } from "./drawings";
+import { renderSvg, toPng } from "../drawing/render";
 import { voiceMessage } from "./voiceNames";
 import { createSkills, type Skill, type SkillsHost } from "./skills";
 import { allModes, isModeId, modeOf, thinksOnSession } from "./modes";
@@ -298,6 +300,7 @@ export function endpoint(
   timings?: TimingsHost,
   hosted?: HostedSync,
   reminders?: RemindersHost,
+  drawings?: Drawings,
 ): DuckEndpoint {
   const listeners = new Set<(ev: DuckEvent) => void>();
   const say = (ev: DuckEvent) => {
@@ -343,6 +346,12 @@ export function endpoint(
     if (tasks) to({ type: "tasks", tasks: tasks.list().map(taskView) });
   };
   tasks?.subscribe(() => sendTasks());
+  // Drawings (G3): every change, and the canvas to open where it was asked for.
+  drawings?.subscribe((drawing, open) => say({ type: "drawing", drawing, ...(open && { open }) }));
+  const needDrawings = () => {
+    if (!drawings) throw new Error("Drawings aren't available here.");
+    return drawings;
+  };
   const sendAutopilots = (to = say) => {
     if (!autopilot) return;
     const title = (id: string) => localPort.listSessions().find((x) => x.id === id)?.title ?? id;
@@ -568,6 +577,25 @@ export function endpoint(
         if (!tasks) throw new Error("Worker tasks aren't available here.");
         await tasks.rerun(msg.taskId);
         return;
+      case "drawing.get": {
+        const d = needDrawings();
+        const found = d.get(msg.drawingId);
+        if (!found) throw new Error(`There is no drawing ${msg.drawingId}.`);
+        answer({ type: "drawing", drawing: d.view(found) });
+        return;
+      }
+      case "drawing.svg": {
+        const d = needDrawings();
+        try {
+          answer({ type: "drawingSvg", drawingId: msg.drawingId, n: msg.n, svg: await d.svg(msg.drawingId, msg.n) });
+        } catch (err) {
+          answer({ type: "drawingSvg", drawingId: msg.drawingId, n: msg.n, svg: null, error: errorMessage(err) });
+        }
+        return;
+      }
+      case "canvas":
+        drawings?.viewing(msg.surface, msg.drawingId);
+        return;
       case "task.diff": {
         const t = tasks?.get(msg.taskId);
         if (!t?.projectId || !t.instanceId) throw new Error("That task has no session to show the diff of.");
@@ -638,6 +666,8 @@ export function initAssistant(): Promise<void> {
     let engineRef: Engine | null = null;
     /** The level of the next Workbench event in each thread (V5). */
     const levels = new Map<string, Level>();
+    // Drawings (G3) are a kind of task: their reports and warmth are theirs.
+    let drawingsRef: Drawings | null = null;
     const tasks = createTaskManager({
       port: localPort,
       backend: ipcTaskBackend,
@@ -648,12 +678,22 @@ export function initAssistant(): Promise<void> {
           ?.send({ threadId, text: eventText(text), source: "event" })
           .catch((e: unknown) => console.warn("duck: a task report was dropped", e));
       },
+      report: (t) => drawingsRef?.report(t) ?? Promise.resolve(null),
+      keepWarm: (t) => drawingsRef?.keepWarm(t) ?? false,
       // What a worker made (G1): chips in its thread, before the report.
       files: (threadId, files, title) =>
         void engineRef
           ?.notice(threadId, { kind: "files", text: `Files from ${title}`, files })
           .catch((e: unknown) => console.warn("duck: a task's files weren't posted", e)),
     });
+    const drawings = createDrawings({
+      tasks,
+      backend: ipcDrawingBackend,
+      render: { svg: renderSvg, png: toPng },
+      notice: (threadId, n) =>
+        void engineRef?.notice(threadId, n).catch((e: unknown) => console.warn("duck: a drawing's card was dropped", e)),
+    });
+    drawingsRef = drawings;
     // Plan autopilots (P1) report the same way; their step log is notices.
     const autopilot = createAutopilot({
       port: localPort,
@@ -904,6 +944,7 @@ export function initAssistant(): Promise<void> {
     const engine = createEngine({
       attachments: { prepare: attachPrepare, data: attachData },
       tasks,
+      drawings,
       autopilot,
       summaries,
       reader: readerHost,
@@ -1090,6 +1131,7 @@ export function initAssistant(): Promise<void> {
         .catch(warnReminders);
     });
     await tasks.load().catch((e: unknown) => console.error("duck: worker tasks didn't load", e));
+    await drawings.load().catch((e: unknown) => console.error("duck: drawings didn't load", e));
     await autopilot.load().catch((e: unknown) => console.error("duck: autopilots didn't load", e));
     await routines.load().catch((e: unknown) => console.error("duck: routines didn't load", e));
     void housekeeping.check().catch(() => {});
@@ -1135,6 +1177,7 @@ export function initAssistant(): Promise<void> {
       },
       hosted,
       reminders,
+      drawings,
     );
     epRef = ep;
     duck = createLocalTransport(ep);

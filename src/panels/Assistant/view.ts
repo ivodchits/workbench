@@ -30,6 +30,8 @@ export type Item =
   | { kind: "reminder"; key: string; text: string; edit: ReminderEdit }
   /** A worker task started here (D1): its card shows the task's live state. */
   | { kind: "task"; key: string; text: string; taskId: string }
+  /** A drawing's new version (G3): a card that opens the canvas. */
+  | { kind: "drawing"; key: string; text: string; drawing: NonNullable<Notice["drawing"]> }
   | { kind: "reply"; key: string; text: string }
   | {
       kind: "tool";
@@ -157,6 +159,8 @@ export function toItems(messages: readonly StoredMessage[]): Item[] {
         items.push({ kind: "reminder", key, text: n.text, edit: n.reminder });
       else if (n.kind === "task" && n.task)
         items.push({ kind: "task", key, text: n.text, taskId: n.task.id });
+      else if (n.kind === "drawing" && n.drawing)
+        items.push({ kind: "drawing", key, text: n.text, drawing: n.drawing });
       else if (n.kind === "files" && n.files?.length)
         items.push({ kind: "files", key, text: n.text, files: n.files });
       else items.push({ kind: "notice", key, notice: n });

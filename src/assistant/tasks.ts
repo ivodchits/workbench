@@ -43,6 +43,10 @@
 //   API worker can't read them). What the worker leaves in `outputs/` is stored as
 //   attachments when it finishes, posted in the thread (a `files` notice) and named
 //   in the report.
+// - Drawings (step G3): a `drawing` task is the drawing worker of `drawings.ts`.
+//   Over the subscription's limits it waits for the window rather than going to
+//   the API, unless the request says `allowApi`. Its report is the drawing's
+//   (`report`), and it isn't stopped while its canvas is open (`keepWarm`).
 
 import { z } from "zod";
 
@@ -65,7 +69,7 @@ import type { DuckSettings, Tier } from "./settings";
 import type { Level } from "./announce";
 import { attachmentLine, type AttachmentRef } from "./attachments";
 
-export const TASK_KINDS = ["research", "writing", "browser", "analysis", "code"] as const;
+export const TASK_KINDS = ["research", "writing", "browser", "analysis", "code", "drawing"] as const;
 export type TaskKind = (typeof TASK_KINDS)[number];
 
 /** `queued` waits for a slot; `running` has a session working on it; the rest are
@@ -172,6 +176,9 @@ export const Task = z.object({
       }),
     )
     .default([]),
+  // Step G3.
+  /** A drawing that may run on the API over the limits ("draw it now on the API"). */
+  allowApi: z.boolean().default(false),
 });
 export type Task = z.infer<typeof Task>;
 
@@ -246,6 +253,8 @@ export interface RunRequest {
   quiet?: boolean;
   /** The user's files for it (step G1), copied into `inputs/`. */
   files?: AttachmentRef[];
+  /** A drawing that may run on the API over the limits (step G3). */
+  allowApi?: boolean;
 }
 
 /** How often finished tasks are checked for tidying up. */
@@ -294,6 +303,11 @@ export interface TaskDeps {
   files?: (threadId: string, files: AttachmentRef[], title: string) => void;
   /** Run a task on the API (`runApiWorker`); fakes in tests. */
   apiWorker?: (t: Task, brief: string, signal: AbortSignal, onCost: (usd: number) => void) => Promise<ApiWorkerOutcome>;
+  /** A finished task's report in place of the usual one (step G3: a drawing's);
+   *  null for the usual, false to tell the thread nothing (it went on working). */
+  report?: (t: Task) => Promise<string | false | null>;
+  /** Keep this finished task's worker running (step G3: its canvas is open). */
+  keepWarm?: (t: Task) => boolean;
 }
 
 /** The tier above `t` (serious stays serious). */
@@ -354,6 +368,8 @@ const localDate = () => {
   const pad = (n: number) => String(n).padStart(2, "0");
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 };
+
+const clock = (ms: number) => new Date(ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 
 const errorText = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
@@ -480,6 +496,9 @@ export function createTaskManager(deps: TaskDeps): TaskManager {
     // The latest reset of the windows that are over, but read again within a while.
     const until = () => Math.max(Math.min(Math.max(...resets), now() + LIMIT_RECHECK_MS), now() + 60_000);
     if (t.prep) return { until: until(), why: `${why}, and prep waits for room rather than using Duck's API credits` };
+    if (t.kind === "drawing" && !t.allowApi) {
+      return { until: until(), why: `drawing waits for your subscription window (resets ${clock(Math.max(...resets))})` };
+    }
     if (t.kind === "code" || t.inputs.length) return { runner: "session", why };
     const spend = await port.spend().catch(() => null);
     if (spend?.softReached || spend?.capReached)
@@ -526,7 +545,7 @@ export function createTaskManager(deps: TaskDeps): TaskManager {
       if (first)
         deps.tell(
           t.threadId,
-          `Task ${label(t)} is waiting: ${where.why}. It starts by itself once there's room (checked again ${new Date(where.until).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}). Tell the user.`,
+          `Task ${label(t)} is waiting: ${where.why}. It starts by itself once there's room (checked again ${clock(where.until)}). Tell the user.`,
           "info",
         );
       wakeAt(where.until);
@@ -576,7 +595,10 @@ export function createTaskManager(deps: TaskDeps): TaskManager {
       else
         void withOutputs(t)
           .then((o) => (o.self && o.instanceId ? withChanges(o) : o))
-          .then((c) => deps.tell(c.threadId, report(c), level));
+          .then(async (c) => {
+            const own = deps.report ? await deps.report(c).catch(() => null) : null;
+            if (own !== false) deps.tell(c.threadId, own ?? report(c), level);
+          });
     }
     void pump();
   }
@@ -735,6 +757,7 @@ export function createTaskManager(deps: TaskDeps): TaskManager {
       const s = deps.settings();
       for (const t of [...tasks.values()]) {
         if (!tidyable(t) || t.finished === null || !t.instanceId) continue;
+        if (deps.keepWarm?.(t)) continue;
         const session = port.listSessions().find((x) => x.id === t.instanceId);
         const quietSince = Math.max(t.finished, (session?.lastActivity ?? 0) * 1000);
         const idle = now() - quietSince;
@@ -856,6 +879,7 @@ export function createTaskManager(deps: TaskDeps): TaskManager {
         quiet: req.quiet === true,
         inputs,
         outputs: [],
+        allowApi: req.allowApi === true,
       });
       void pump();
       await starting.get(t.id);

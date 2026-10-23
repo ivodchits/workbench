@@ -271,6 +271,8 @@ export const attachOutputs = (workspace: string, folder: string): Promise<Stored
 export const attachPrune = (): Promise<number> => invoke("assistant_attach_prune");
 /** Drag a stored file out of the window. */
 export const attachDrag = (id: string, name: string): Promise<void> => invoke("assistant_attach_drag", { id, name });
+/** Save a copy of a stored file at `dest` (a full path from the save dialog). */
+export const attachSave = (id: string, name: string, dest: string): Promise<void> => invoke("assistant_attach_save", { id, name, dest });
 
 // ── core memory (step W4) ──
 
@@ -296,6 +298,22 @@ export const workerRegister = (instanceId: string, spec: WorkerSpec): Promise<vo
   invoke("assistant_worker_register", { instanceId, spec });
 export const taskPut = (id: string, data: string): Promise<void> => invoke("assistant_task_put", { id, data });
 export const taskList = (limit: number): Promise<string[]> => invoke("assistant_task_list", { limit });
+
+// Drawings (step G3).
+/** Version `n` of a drawing as its worker wrote it (`drawings/<id>/v<n>.<ext>` in
+ *  the task folder); null when it isn't there. */
+export interface DrawingSource {
+  ext: "mmd" | "svg" | "json";
+  text: string;
+  path: string;
+}
+export const drawingSource = (workspace: string, folder: string, id: string, n: number): Promise<DrawingSource | null> =>
+  invoke("assistant_drawing_source", { workspace, folder, id, n });
+/** Write a version for a worker that couldn't (the API worker); its path. */
+export const drawingWrite = (workspace: string, folder: string, id: string, n: number, ext: string, text: string): Promise<string> =>
+  invoke("assistant_drawing_write", { workspace, folder, id, n, ext, text });
+export const drawingPut = (id: string, data: string): Promise<void> => invoke("assistant_drawing_put", { id, data });
+export const drawingList = (limit: number): Promise<string[]> => invoke("assistant_drawing_list", { limit });
 
 // Plan autopilot records (step P1), one per session.
 /** A turn's timing (step D3): the engine's JSON, by when the turn started. */

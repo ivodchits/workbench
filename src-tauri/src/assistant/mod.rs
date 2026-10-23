@@ -30,6 +30,7 @@ mod autopilot;
 mod budget;
 pub mod config;
 mod db;
+pub mod drawings;
 pub mod gitlane;
 pub mod google;
 pub mod headless;
@@ -736,6 +737,31 @@ pub fn assistant_task_list(ctx: Db<'_>, limit: u32) -> Result<Vec<String>, Strin
     workspace::list_tasks(&lock(&ctx), limit.clamp(1, 500))
 }
 
+// ── drawings (step G3) ──
+
+/// Version `n` of a drawing as its worker wrote it in the task folder.
+#[tauri::command]
+pub fn assistant_drawing_source(workspace: String, folder: String, id: String, n: u32) -> Result<Option<drawings::Source>, String> {
+    drawings::read_source(&workspace::resolve(Some(&workspace))?, &folder, &id, n)
+}
+
+/// Write version `n` of a drawing (from an API worker's result); returns its path.
+#[tauri::command]
+pub fn assistant_drawing_write(workspace: String, folder: String, id: String, n: u32, ext: String, text: String) -> Result<String, String> {
+    drawings::write_source(&workspace::resolve(Some(&workspace))?, &folder, &id, n, &ext, &text)
+}
+
+#[tauri::command]
+pub fn assistant_drawing_put(ctx: Db<'_>, id: String, data: String) -> Result<(), String> {
+    drawings::put(&lock(&ctx), &id, &data, now_ms())
+}
+
+/// The latest drawing records, newest first.
+#[tauri::command]
+pub fn assistant_drawing_list(ctx: Db<'_>, limit: u32) -> Result<Vec<String>, String> {
+    drawings::list(&lock(&ctx), limit.clamp(1, 500))
+}
+
 /// Store a routine's record (step L4).
 #[tauri::command]
 pub fn assistant_routine_put(ctx: Db<'_>, id: String, data: String) -> Result<(), String> {
@@ -887,8 +913,20 @@ pub fn assistant_attach_prune(app: AppHandle, ctx: Db<'_>) -> Result<usize, Stri
         let q = |sql: &str| conn.query_row(sql, [id], |_| Ok(())).is_ok();
         q("SELECT 1 FROM assistant_messages WHERE instr(content, ?1) > 0 LIMIT 1")
             || q("SELECT 1 FROM assistant_tasks WHERE instr(data, ?1) > 0 LIMIT 1")
+            || q("SELECT 1 FROM assistant_drawings WHERE instr(data, ?1) > 0 LIMIT 1")
     };
     Ok(attachments::prune(&root, 7 * 24 * 3_600_000, referred))
+}
+
+/// Save a copy of a stored file where you picked ("save as…" on a drawing, G3).
+#[tauri::command]
+pub fn assistant_attach_save(app: AppHandle, id: String, name: String, dest: String) -> Result<(), String> {
+    let path = attachments::file_of(&attachments_root(&app)?, &id, &name)?;
+    let to = std::path::PathBuf::from(&dest);
+    if !to.is_absolute() {
+        return Err(format!("not a full path: {dest}"));
+    }
+    std::fs::copy(&path, &to).map(|_| ()).map_err(|e| format!("cannot write {dest}: {e}"))
 }
 
 /// Drag a stored file out of the window (to Explorer, the desktop, a mail).

@@ -106,6 +106,8 @@ const Message = z.discriminatedUnion("type", [
   z.object({ type: z.literal("autopilot"), instanceId: id, action: z.enum(["pause", "resume", "stop"]) }),
   z.object({ type: z.literal("reader"), action: z.enum(["pause", "resume", "next", "prev", "stop"]) }),
   z.object({ type: z.literal("dnd"), until: z.number().int().positive().nullable() }),
+  z.object({ type: z.literal("drawing.get"), drawingId: id }),
+  z.object({ type: z.literal("canvas"), drawingId: id.nullable() }),
 ]);
 
 /** Frames only a host sends, besides `hello` and results. */
@@ -166,6 +168,8 @@ export function parseRemote(
     }
     case "trust.pause":
       return { type: "trust.pause", paused: true };
+    case "canvas":
+      return { type: "canvas", surface: "phone", drawingId: m.drawingId };
     default:
       return m;
   }

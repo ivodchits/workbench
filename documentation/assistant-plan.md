@@ -7803,6 +7803,91 @@ checked in the scratch PTY first.
   - The same drawing opens on the phone.
 - **Out of scope:** the worker looking at its own render (G4); images from an image
   model (G6).
+- **As built (2026-10-23):**
+  - **Check first:** a headless Sonnet worker writing a small flowchart took about 10 s
+    cold (process start plus the turn) and about 6 s for a warm follow-up (v2), well
+    under 20 s, so the drawing worker starts at the first `draw` with no pre-warming.
+    In the app, request to picture was 45 s cold (Duck's turn, the worker's session,
+    its turn, the render) and 13 to 25 s for later drawings and edits.
+  - **`draw(title, brief, kind?, drawing?, tier?, files?, allowApi?)`**
+    (`tools/draw.ts`, in every mode): a D1 task of kind `drawing`
+    (`src/assistant/drawings.ts`).
+    - The worker writes `drawings/<id>/v<n>.<ext>` (`mmd`, `svg`, `json`) in its task
+      folder.
+    - One drawing worker per thread: while its last run is done and its session is
+      up, a new drawing or an edit goes to it as a follow-up. Otherwise a new worker
+      starts, with the latest version's path to work from.
+    - An edit is the next version; a drawing being drawn refuses another edit.
+  - **The rules travel in the brief** (`KIND_RULES`): Mermaid that v12 renders (the
+    hand-drawn look only on flowcharts and state diagrams, which is Mermaid's limit),
+    SVG with a `viewBox` and no script, event attributes, `foreignObject` or external
+    references, and Vega-Lite with inline data. Readable at 400 px, shown on white.
+    The workspace `CLAUDE.md` gets a short drawing section only for new workspaces,
+    since an existing one is yours and isn't rewritten; that's why the rules are in
+    each brief.
+  - **Over the limits** a drawing waits ("drawing waits for your subscription window
+    (resets 14:00)") unless `allowApi`. An API worker hands the source in `result.md` as
+    a fenced block, which is written as the version.
+  - **Rendering** (`src/drawing/`):
+    - Mermaid 12.1.0, Vega 6.4.0 and Vega-Lite 6.4.3, pinned, are loaded as text into
+      a sandboxed iframe (`allow-scripts`, no same origin, a CSP with no network) the
+      first time they're needed, and only the SVG comes back.
+    - Every SVG is shown as an `<img>` from a data URL, and the PNG is that image on a
+      canvas, white behind it.
+    - A version that doesn't render goes back to its worker once with the error.
+    - The SVG and PNG are stored as attachments.
+  - **When it's drawn**, the task manager's `report` hook (new) gives Duck a short
+    report ("It's on the canvas"), the thread gets a `drawing` card, and the `drawing`
+    event opens the canvas on the surface the request came from.
+  - **Desktop canvas** (`Canvas.tsx`): above the thread in the drawer, with pan, wheel
+    zoom, double-click to fit, the version strip, copy as PNG, save as…, open source in
+    the editor, and ⇱ to pop it out as a dockview tab (`drawing`). A card in the thread
+    opens it.
+  - **Warm:** while a canvas (the drawer's, or the phone's viewer) shows one of a
+    thread's drawings, that thread's drawing worker isn't stopped for being idle (the
+    task manager's `keepWarm` hook). A popped-out tab doesn't count yet.
+  - **Phone:** a card in the thread and a full-screen viewer with pinch zoom
+    (`src/pwa/drawingView.ts`). The `drawing` event carries the version's files by
+    reference, and the PNG comes from `GET /api/assistant/image/{id}/{name}` (images
+    only, never an SVG, which would be a page on that origin), not inside the event.
+  - **Tested:**
+    - the kinds' helpers (Vega-Lite or Vega, an SVG's size, Mermaid's 100% width,
+      fenced sources);
+    - a drawing from start to card;
+    - an edit going to the warm worker as v2, and a new worker once it's closed;
+    - the fix round, then the failure;
+    - the API worker's fenced source;
+    - warmth while viewed, the tool;
+    - the task manager's wait over the limits, `allowApi`, the report hook and
+      `keepWarm`;
+    - the phone's `canvas` and `drawing.get`;
+    - the Rust sources and records.
+  - **Checked live on the dev app,** acting as the phone over its Duck socket (a
+    throwaway device row, removed after):
+    - **Fixed on the way:** every Mermaid render failed at first ("Cannot read
+      properties of undefined (reading 'mermaid')"). Mermaid's bundle is strict code,
+      so `eval` kept its top-level `var` to itself. The sandbox now loads the bundles as
+      a classic `<script>`.
+    - **"Draw how a prompt goes from my phone to a session":** a Mermaid flowchart (v1,
+      45 s, Duck's turn $0.0033). Duck picked a flowchart; the tool now says a path
+      between parties is a sequence diagram.
+    - **"Add the trust check between them":** v2 from the warm worker (17 s), with a
+      trust-check decision, the confirmation card and the decline path.
+    - **A login wireframe** (SVG, 24 s), **a bar chart** from four numbers (Vega-Lite,
+      19 s), and **a hand-drawn sketch** of app, cache and database (a Mermaid
+      flowchart with `look: handDrawn`, after the tool's hint was fixed: Duck had
+      briefed a sequence diagram, which has no hand-drawn look).
+    - **Inert:** a worker wrote an SVG with a `<script>` and an `onload`, each calling
+      a local listener. It rendered to a PNG in the app, and the listener got 0
+      requests.
+    - **The phone's PNGs:** fetched over the image route (200, `image/png`, 14 to
+      231 KB); the SVG on the same route got 415.
+    - Each turn cost Duck about $0.003; the drawing itself ran on the subscription.
+  - **Not tried yet:**
+    - the drawer's canvas by hand (pan, zoom, copy, save, source, pop-out): the
+      requests came from the phone;
+    - the PWA's viewer on a real phone (pinch zoom);
+    - a drawing over the limits, and `allowApi`, live.
 
 #### Step G4 — The worker sees its drawing
 
@@ -8154,7 +8239,7 @@ T2 goes live after the replay check in its done-when (the past week's prompts th
 | H7 | The phone's fallback brain | ☑ (before H6; emulator only, no real phone key yet) |
 | G1 | Attachments: paste, drop and pick files into Duck | ☑ (desktop by hand and the phone's camera not tried; workers can't make .xlsx without a shell) |
 | G2 | Talking about what you drop | ☑ (by hand with the key, the mic and a phone share not tried yet) |
-| G3 | Drawing workers and the canvas | ☐ |
+| G3 | Drawing workers and the canvas | ☑ (the drawer's canvas and the phone's viewer not tried by hand yet) |
 | G4 | The worker sees its drawing | ☐ |
 | G5 | Sketch pad on the PC and the phone | ☐ |
 | G6 | Concept images through your Gemini subscription | ☐ |

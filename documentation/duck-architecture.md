@@ -5,9 +5,9 @@ behind each decision are in `assistant-plan.md`. This file describes the code, a
 Duck step updates it as part of its Done when. Duck's self-development sessions (L3)
 read it first.
 
-Last updated: step G2 (2026-10-23). L3 audited it against the code. Since W5 it also
+Last updated: step G3 (2026-10-23). L3 audited it against the code. Since W5 it also
 covers W6, D2, D4, P1, P2, M2, M3, A5, A6, A7, W4, L1, L2, L3, L4, R1, R2, R3, B1, B2, T3, D3, V1 to V7,
-V8, S1, S2, X1, H1 to H5, H7, H8, R4, G1, G2 and the morning routine. A fresh session changing Duck: read "The shape", then "Where to
+V8, S1, S2, X1, H1 to H5, H7, H8, R4, G1 to G3 and the morning routine. A fresh session changing Duck: read "The shape", then "Where to
 change X" at the end, then the module rows it points to.
 
 ## The shape
@@ -76,6 +76,7 @@ change X" at the end, then the module rows it points to.
 | `threads.ts` | `createThreadStore(backend)`: threads, messages (loaded per thread on first use) and parked tool batches, in memory and persisted. Appends to one thread are serialized so each gets the next `seq`. `create(mode, id?)`: H7's imported threads keep the phone's id. |
 | `attachments.ts` | Attachments (G1): `AttachmentRef` (what a surface sends: id, name, mime, size, path, thumb), `AttachmentBlock` (the `attachment` block a user message stores, with `as`: `image`, `document`, `text` (and its text) or `ref` (and `why`)), `expand(refs, host, budget)` (how each is sent, read by Duck while the message stays within `attachmentTokens`, referenced past it), `toApiBlocks` (an `<attachment id … />` label and the image or PDF block; a text file wrapped `untrusted`, a closing tag inside defused; a `ref` names `run_task` `files`), `createFileCache` (the bytes a request needs, read by `AttachmentHost.data`, the latest 24 kept), `findAttachment` (a thread's file by id: a message of yours or a `files` notice), `attachmentLine`. |
 | `voiceFiles.ts` | G2: files with a voice turn, for the desktop and the phone. `createVoiceFiles` (a turn opens and closes as you talk; a drop while it's open, 10 s before or 10 s after is its own; `turn` sends the words with them; `Sent.late` takes a drop after the words went; `resume` a turn from before a reload), `spokenCount` (the files the words count, in five languages: the words wait up to 6 s for them), `manifestLine` / `withoutManifest` (the `[2 files: …]` line ahead of a spoken message's files, hidden in the chats), `pillText`. |
+| `drawings.ts` | G3: drawings. `createDrawings({tasks, backend, render, notice})`: `draw` (a `drawing` task, or a follow-up to the thread's warm drawing worker; the brief's `drawingSection` and `KIND_RULES`), `report` (the task manager's hook: read `drawings/<id>/v<n>.<ext>`, or a fenced block from an API worker's `result.md`; render, store the SVG and PNG, post the `drawing` card, return Duck's short report; one fix round on a render error), `keepWarm` / `viewing` (a canvas open on a surface), `svg` (a version re-rendered from its source). Records in `assistant_drawings`. |
 | `offline.ts` | The phone's fallback brain (H7), what both sides share: `OFFLINE_NOTE` (added to the system prompt on the phone), the `offline.sync` frame's schema, `transcript` (a thread as text: your words, Duck's replies, a line per tool used, ending with a reply), and the app's kept state (`parseState`, `threadsToSync`, `withoutThreads`). The engine's `importThread` makes a synced conversation a thread of its own, once. |
 | `client.ts` | `getClient()` (the SDK at the proxy, with the launch token as its key), `purpose()`, `capMessage()`, `errorMessage()`, `structured({model, system, input, schema?, purpose, …})` (one call, structured output parsed), and `oneShot(name, input, {schema?})` for Haiku primitives over it. |
 | `prompt.ts` | The system prompt and the voice note as built in (L3: the defaults; what a thread runs with comes from `config.ts`), `MAIN_MODEL` / `PRIMITIVE_MODEL`, and `PRIMITIVES` (one frozen prompt per Haiku job; the key is its `x-wb-purpose`). |
@@ -90,6 +91,7 @@ change X" at the end, then the module rows it points to.
 | `tools/plugins.ts` | The W5 toolbar tools. Read: `list_plugins` (fields with values, actions with their `run` template and last run), `read_plugins` (the raw file and its revision). Consequential: `run_plugin_action` and `write_plugins`, whose `prepare` works out the card. A run's card shows the argv after substitution and the cwd; its facts give the specifier `plugin:action`, the argv as a `Bash` call for the floor, `asks` when the file has a confirm question, and `grantedBy`. It is pinned to the file's revision and previewed again just before it starts; its end comes back through `later` with the exit code and last lines. An edit is checked (`plugins_check`) and its base revision compared in `prepare`, so problems come back at their JSON paths before a card; scripts go into `{data}/scripts/` before the file, and a `plugins` chip offers the diff and undo. `delegate_plugins_edit` hands a change that needs the code read to a drafting session (on the coding model, with the `workbench:plugins` skill, allowed to edit only its draft folder) and watches it; `apply_plugins_draft` reads the draft from disk and goes through the same card and write as `write_plugins`. |
 | `summarize.ts` | Session summaries (W3): `createSummarizer({port, backend, call})` reads a session's transcript since its last summary (or a given time) with `readPlainText`'s `since`, makes one Haiku `summary` call, and keeps the last summary per session in duck.db `meta`. `newest` checks a transcript for activity without a call; `withReply` adds a turn's final reply the transcript doesn't have yet. |
 | `tools/summaries.ts` | The W3 tools, over `ctx.summaries`: `summarize_session` and `summarize_activity` ("since I was away"). |
+| `tools/draw.ts` | G3: `draw(title, brief, kind?, drawing?, tier?, files?, allowApi?)`, reversible, in every mode: a new drawing or the next version of one, over `ctx.drawings`. |
 | `tools/tasks.ts` | The D1 tools, over `ctx.tasks`: `run_task` (reversible; posts the `task` notice that the thread shows as a live card), `task_status`, `task_followup`, `task_close`, `list_tasks`, and D2's `task_rerun` (deferred). `findTask` and `view` are shared with `tools/improve.ts`. |
 | `tools/improve.ts` | L3: `improve_duck(request, scope, effort?)` (reversible): scope `config` returns the prompt files for Duck to draft from; scope `code` starts a `self` code task, tier serious (Opus, `medium` unless named), in a worktree of the Workbench repo, with `improveBrief`. `propose_config_change(file, edits, why)` (consequential, `asks`: always a card): `prepare` makes the edits on the file as it is and checks the result, the card shows the diff (`review`), `run` writes it over the text it was read as and commits it; new threads get it. `merge_duck_change(task, safetyConfirmed)` (consequential, `asks`; deferred): `prepare` reads the branch fresh and refuses an unfinished task, an empty branch or uncommitted files; a branch in the safety layer takes two cards, the second only after the first was confirmed (`firstConfirms`, in memory); then `port.mergeWorktree` and the task closes. `rebuild_duck(build)` (consequential; deferred): `npm run tauri:dev` or `tauri:build` in a new shell in the repo. |
 | `tools/skills.ts` | S2: `load_skill(name)` (read: the body; a skill with `tools:` narrows the rest of the turn through `ctx.narrow`), `draft_skill(name, text, why)` (consequential, deferred, `asks`: the whole `SKILL.md`, checked by `parseSkill` in `prepare`; the card's diff is the file before and after; written over what was read and committed). `splitDraft` reads a draft's frontmatter as `skills.rs` does. |
@@ -151,6 +153,7 @@ prompt's safety rules cover them.
 | `gitlane.rs` | Duck's background git lanes for its data repo (L4). `push` queues `push_now` on the git queue behind the memory commits and waits: `git push --porcelain origin HEAD:refs/heads/<branch>` (checked by `refuse_force`), classified as `pushed`, `nothing`, `no_remote`, `no_repo`, `offline`, `auth`, `rejected`, `lock`, `detached` or `failed`. `status` (remote, branch, commits ahead of `origin`). `create` writes a README saying the repo is private, commits it, and runs `gh repo create <name> --private --source <ws> --remote origin --push`. `review_branch` lists a branch's files against its merge base and the memory bullets it drops whose fact isn't in what it adds. `housekeep(cutoff)` on the git queue: task folders dated before the cutoff keep only `brief.md`, `result.md` and `result.json` and get a line in `tasks/INDEX.md`; uncommitted `memory/` and `config/` files, `reminders.json` (H8), and the indexed tasks' results are committed; `git gc --auto`. Commands `assistant_backup_status`, `_push`, `_create`, `assistant_branch_review`, `assistant_housekeep`. |
 | `summaries.rs` | The last summary per session (W3), JSON in `meta` under `assistant_summary:<instance>`. |
 | `memory.rs` | Long-term memory (L1). The files: `memory/<topic>.md` (`decisions`, `preferences`, `people`, `goals`, `lessons`, `projects/<name>`; `journal/` is L2's), one bullet per entry, `- 2026-10-22 — fact. Why: … (src: thread:…, conf: high, tags: …)`; `parse_file` reads any bullet, with or without the date and the parenthesis. `write` (secrets refused by `secret_in`: key and token patterns, a password after `:`/`=` or in quotes, long random-looking strings; the same text already in the file isn't written again), `forget` (exact bullets), `restore` (an undo, over the expected text), `list`. The index: `ensure` rescans what changed (by size and time) in `memory/` and, read-only, the notes root, each marked dirty by a `notify` watcher (or rescanned on every search without one); `search` splits the query into `terms` (stop words and numbers dropped, a long word cut by a letter or two so inflections match), ORs them in FTS5 (trigram), and ranks by words matched, then rank; a note hit is labelled `note: <project> / <name>`. `matching` is the AND for `forget`. Git: `commit` queues `commit_now` on the git queue: `git init` on the first change, then a commit of just the files changed, as Duck, none when nothing changed. L2: `apply` makes a consolidation's `Apply` (removals, then additions through `write`, then the day's bullet in `journal/<YYYY-MM>.md`, `- 2026-10-21 — paragraph (src: tidy)`) and returns one edit per file from before the run to after it, plus what it skipped (a secret, too long, not a topic); `assistant_memory_apply` commits it once. `log_recall` and `recall_stats` keep and count `recall_log`. |
+| `drawings.rs` | G3: a drawing's version in a task folder (`read_source`, and `write_source` for the API worker's), only under `tasks/`; the `assistant_drawings` records. |
 | `workspace.rs` | Duck's workspace (`prepare`, its `CLAUDE.md`, a `.gitignore` line for `data/`), task folders (`new_task`, `result`, both only under `tasks/`), the workers' registration (`register`: a settings file with the allow list in app data, and a `worker_sessions` row in the main DB) and `launch_args` for `pty_spawn`; the `assistant_tasks` records; the core memory (W4: `read_core`, and `write_core`, which refuses with "stale:" unless the file is still the text it was read as). |
 | `headless.rs` | Headless workers (D4): a worker session as `claude -p` over stream-json both ways. Prompts and interrupts are messages, permission requests are answered as data (racing the `PermissionRequest` hook, the first answer winning); otherwise it is an ordinary session to the status engine, summaries, the trust watcher and the transcript view. |
 | `subscription_brain.rs` | The subscription brain (M3): `brain_spawn` starts thread `t`'s `claude -p` (stream-json both ways, `--include-partial-messages`, `--model sonnet --effort medium` (D3: `opus`, and the mode's effort, for a mode that thinks there), `--tools ""`, `--strict-mcp-config` with only Duck's server and a per-process bearer token, `--permission-mode dontAsk --allowedTools mcp__duck`, `--setting-sources ""`, Duck's prompt by `--system-prompt-file`) in `<workspace>/brain`, with no `ANTHROPIC_*` or `WORKBENCH_INSTANCE_ID`, no CLAUDE.md, no auto-memory and no deferred tools. Session id = thread id, kept on disk, so a later spawn `--resume`s it. Emits `brain-event` (text deltas, `assistant` / `user` messages, `result`, init) and `brain-exited`; `rate_limit_event` goes to the usage meter (`statusline::ingest_rate_limit_info`), each `result` into the subscription ledger at its API price. `brain_send`, `brain_interrupt`, `brain_kill`, `brain_tool_result`; `kill_all` on exit. |
@@ -187,6 +190,7 @@ prompt's safety rules cover them.
 | `SkillsSettings.tsx` | The "skills" settings tab (S2), Duck's capabilities in one place: each skill and mode with its description, its problems, on/off (`disabledSkills`) and "edit" (the file in the "Duck" project's editor); the MCP servers (X1, moved here from the sessions tab). |
 | `openCore.ts` | `openCoreMemory(workspace)` (W4): prepares the workspace, makes `core.md` with its empty sections if missing, and opens it in the "Duck" project's editor. `openDuckFile(workspace, path)` (S2) opens any file of the workspace there. |
 | `MemoryView.tsx` | The Memory view (L1): the long-term memory by topic, a search over it and the notes, per entry "edit" (the file in the "Duck" project's editor) and "forget", and "don't remember this conversation" for the open thread (a `thread.memory` request, which posts a `memoryOff` notice). L2: the last tidy with what it changed, "tidy now" (`tidyMemory` from `index.ts`), and the past 14 days' recall numbers (`assistant_recall_stats`). |
+| `Canvas.tsx` | G3: the canvas. `CanvasView` (pan, wheel zoom, fit, the version strip, copy as PNG, save as…, open source, ⇱ pop out), `DrawerCanvas` (above the thread when `duck.canvas` is set) and `DrawingPanel` (the dockview `drawing` tab). The SVG comes from the engine (`drawing.svg`) and is shown as an `<img>`. |
 | `TasksView.tsx` | The Tasks view (D2): worker tasks newest first, with headline, cost for an API worker, and ways on (open `result.md`, save to notes, open the console, go to the thread). |
 | `OverviewView.tsx` | Every thread at a glance (A5): what each does, its news since you looked, its autopilots and tasks; no model call. |
 | `AnnounceSettings.tsx` / `SpeechSettings.tsx` / `VoiceSettings.tsx` | Settings tabs for announcements (V5), spoken replies (V2: engine, voices, rate, Chirp fallback, downloads) and voice input (V1, V4: the key, microphone, speech-to-text, conversation mode, talking over Duck; V6: the wake word's switch, sensitivity slider, when it stays deaf, and what it's doing, `wakeLine`). |
@@ -274,6 +278,7 @@ prompt's safety rules cover them.
   after a thread is deleted.
 - `assistant_trust_modes (project_id, mode)`: only projects that aren't `live`.
 - `assistant_tasks (id, data JSON, updated_at)`: worker tasks (D1).
+- `assistant_drawings (id, data JSON, updated_at)`: drawings and their versions (G3).
 - `assistant_autopilots`: one autopilot record per session (P1).
 - `meta` `assistant_summary:<instance>`: a session's last summary (W3).
 - `meta` `reminder_seen:<id>`: a timed reminder announced, for which time (H8).
@@ -945,6 +950,24 @@ When the app can't reach Workbench, the loader runs Duck's own engine on the pho
   (`wb-duck-last-voice`) keeps the last voice turn's thread and time, and `resume`
   makes a share within 10 s late to it.
 
+## Drawings (step G3)
+
+- **Asking:** `draw` → `drawings.ts` `draw`: a task of kind `drawing` with the
+  drawing's section in its brief, or a follow-up to the thread's warm drawing worker.
+  Over the limits it waits for the window (`tasks.ts` `route`) unless `allowApi`.
+- **Rendering:** `src/drawing/render.ts`. Mermaid and Vega run in a sandboxed iframe
+  (their bundles loaded as text, as classic scripts, the first time); the SVG comes
+  back and is shown only as an `<img>`; the PNG is that image on a canvas.
+  `src/drawing/kinds.ts` has the plain helpers.
+- **Done:** the task manager's `report` hook calls `drawings.report`: the version is
+  rendered, stored as attachments, posted as a `drawing` notice (the card), and sent
+  as a `drawing` event with `open` set to the surface that asked. Duck gets a short
+  report instead of the usual one.
+- **Seeing it:** the drawer's canvas (`Canvas.tsx`; `duckState` `canvas`, `drawings`,
+  `svgs`), a dock tab, or the phone's viewer (`src/pwa/drawingView.ts`, the PNG from
+  `GET /api/assistant/image/{id}/{name}`). A surface showing a drawing sends `canvas`,
+  which keeps the thread's drawing worker warm (`keepWarm`).
+
 ## Where to change X
 
 - **What Duck says, its routing rules and examples, the tool tiers' wording**: the files
@@ -1008,6 +1031,10 @@ When the app can't reach Workbench, the loader runs Duck's own engine on the pho
   `launchDuck` in `src/pwa/duck.ts`, and `takeShare` in `src/pwa/sw.js`. How a phone
   proves its key: `remote/auth.rs` (the rules), `remote/mod.rs` (`start_session`,
   `check_token`), and `src/pwa/deviceKey.ts` and `net.ts`.
+- **Drawings (G3)**: the rules a worker gets, `drawings.ts` `KIND_RULES`; when Duck
+  draws, `tools/draw.ts` and the prompt's "Pictures" line; rendering,
+  `src/drawing/render.ts`; the canvas, `Canvas.tsx`; the phone's viewer,
+  `src/pwa/drawingView.ts`.
 - **Voice and drops (G2)**: the windows, the counting and the late path,
   `voiceFiles.ts`; when a push-to-talk turn stands (`MERGE_MS`) and the pill,
   `voiceState.ts` and `Drawer.tsx` `TurnFilesLine`; the restart, `engine.ts`
@@ -1074,6 +1101,10 @@ Both rules are in `prompt.ts`.
   and a text, the widget on a home screen. Not built: switching to the tailnet's own
   address (MagicDNS covers it), the screenshot with the gesture (G1), Glyph lights,
   the widget polling by itself.
+
+- Drawings (G3): the drawer's canvas and the phone's viewer haven't been used by hand
+  (the live check drove the engine as the phone), and a drawing over the limits hasn't
+  been tried live.
 
 - Voice and drops (G2): push-to-talk with a real drop, the grace window by hand, the
   phone's 📎 during a turn and a share within 10 s, and the spoken receipt haven't been

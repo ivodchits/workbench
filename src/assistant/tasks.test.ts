@@ -41,7 +41,7 @@ const settle = async () => {
   for (let i = 0; i < 5; i++) await new Promise((r) => setTimeout(r, 0));
 };
 
-function setup(opts: { settings?: Partial<DuckSettings>; port?: FakePort; apiWorker?: TaskDeps["apiWorker"] } = {}) {
+function setup(opts: { settings?: Partial<DuckSettings>; port?: FakePort; apiWorker?: TaskDeps["apiWorker"]; hooks?: Pick<TaskDeps, "report" | "keepWarm"> } = {}) {
   const port =
     opts.port ??
     fakePort({
@@ -60,6 +60,7 @@ function setup(opts: { settings?: Partial<DuckSettings>; port?: FakePort; apiWor
     newId: () => `task${++ids}xxxx`,
     today: () => "2026-10-20",
     apiWorker: opts.apiWorker,
+    ...opts.hooks,
   });
   const advance = (ms: number) => (clock += ms);
   /** The worker wrote its result files now. */
@@ -159,6 +160,26 @@ describe("subscription limits (D2)", () => {
     tasks.dispose();
   });
 
+  it("keeps a drawing waiting for the window, unless it may use the API (G3)", async () => {
+    const port = fakePort({ projects: [project({ id: "app" })], limits: limits(20, 85), spend: spend(false) });
+    const briefs: string[] = [];
+    const { tasks, told } = setup({
+      port,
+      apiWorker: async (_t, brief) => {
+        briefs.push(brief);
+        return outcome;
+      },
+    });
+    const t = await tasks.run(req({ kind: "drawing", title: "Phone to session" }));
+    expect(t).toMatchObject({ state: "queued", why: expect.stringMatching(/^drawing waits for your subscription window \(resets /) });
+    expect(told[0].text).toMatch(/is waiting: drawing waits for your subscription window/);
+    const now = await tasks.run(req({ kind: "drawing", title: "Now", allowApi: true }));
+    await settle();
+    expect(tasks.get(now.id)).toMatchObject({ runner: "api", allowApi: true });
+    expect(briefs).toHaveLength(1);
+    tasks.dispose();
+  });
+
   it("re-runs an API task's follow-up with its previous result", async () => {
     const briefs: string[] = [];
     const port = fakePort({ projects: [project({ id: "app" })], limits: limits(20, 85), spend: spend(false) });
@@ -249,6 +270,37 @@ describe("a worker's turn ends", () => {
     await settle();
     expect(tasks.get(t.id)).toMatchObject({ state: "done", headline: "Use the official updater plugin.", resultFrom: "file", finished: t.started! + 60_000 });
     expect(told).toEqual([{ threadId: "th1", text: expect.stringContaining("Headline: Use the official updater plugin.") }]);
+  });
+
+  it("lets a hook give the report, or none (G3's drawings)", async () => {
+    const seen: string[] = [];
+    let answer: string | false | null = "Drawn: it's on the canvas.";
+    const { port, tasks, told, write } = setup({
+      hooks: {
+        report: async (t) => {
+          seen.push(t.id);
+          return answer;
+        },
+      },
+    });
+    const t = await tasks.run(req({ kind: "drawing" }));
+    write(t, { status: "done", headline: "A sequence diagram.", question: null });
+    port.phase("new-1", "done");
+    await settle();
+    expect(seen).toEqual([t.id]);
+    expect(told).toEqual([{ threadId: "th1", text: "Drawn: it's on the canvas." }]);
+    answer = false;
+    await tasks.followup(t.id, "Fix it.");
+    write(t, { status: "done", headline: "Fixed.", question: null });
+    port.phase("new-1", "done");
+    await settle();
+    expect(told).toHaveLength(1);
+    answer = null;
+    await tasks.followup(t.id, "Again.");
+    write(t, { status: "done", headline: "Again.", question: null });
+    port.phase("new-1", "done");
+    await settle();
+    expect(told[1].text).toContain("Headline: Again");
   });
 
   it("carries blocked and needs_decision through", async () => {
@@ -564,6 +616,17 @@ describe("tidying up finished tasks", () => {
     t.advance(48 * 3_600_000);
     await t.tasks.tidy();
     expect(t.calls("killSession")).toHaveLength(1);
+  });
+
+  it("keeps a worker its hook says is warm (G3: its canvas is open)", async () => {
+    let warm = true;
+    const t = await finished("done", { hooks: { keepWarm: () => warm } });
+    t.advance(31 * 60_000);
+    await t.tasks.tidy();
+    expect(t.calls("stopSession")).toEqual([]);
+    warm = false;
+    await t.tasks.tidy();
+    expect(t.calls("stopSession")).toEqual([[t.s.id]]);
   });
 
   it("counts idle from the session's own activity, and waits for a turn to end", async () => {

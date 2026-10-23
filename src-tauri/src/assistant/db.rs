@@ -308,6 +308,14 @@ const MIGRATIONS: &[&str] = &[
     );
     CREATE INDEX idx_assistant_quota_ts ON assistant_quota(ts);
     "#,
+    // Step G3: drawings (`drawings.rs`), as JSON the engine writes.
+    r#"
+    CREATE TABLE assistant_drawings (
+        id          TEXT PRIMARY KEY,
+        data        TEXT NOT NULL,
+        updated_at  INTEGER NOT NULL
+    );
+    "#,
 ];
 
 #[cfg(test)]
@@ -317,7 +325,7 @@ mod tests {
     #[test]
     fn s1_threads_from_before_modes_are_the_assistants() {
         let conn = Connection::open_in_memory().unwrap();
-        crate::db::run_migrations(&conn, &MIGRATIONS[..MIGRATIONS.len() - 4]).unwrap();
+        crate::db::run_migrations(&conn, &MIGRATIONS[..MIGRATIONS.len() - 5]).unwrap();
         conn.execute("INSERT INTO assistant_threads (id, mode, created, updated) VALUES ('old', 'chat', 1, 1)", []).unwrap();
         crate::db::run_migrations(&conn, MIGRATIONS).unwrap();
         let mode: String = conn.query_row("SELECT mode FROM assistant_threads WHERE id = 'old'", [], |r| r.get(0)).unwrap();

@@ -47,7 +47,7 @@ const MessageAction = z.object({ kind: z.literal("message"), text: z.string().tr
 const TaskAction = z.object({
   kind: z.literal("task"),
   brief: z.string().trim().min(1).max(8000),
-  taskKind: z.enum(TASK_KINDS).exclude(["code"]),
+  taskKind: z.enum(TASK_KINDS).exclude(["code", "drawing"]),
   tier: z.enum(["standard", "involved", "serious"]),
 });
 

@@ -120,6 +120,7 @@ async fn run(listener: std::net::TcpListener, state: Arc<RemoteState>) -> std::i
             post(super::assistant::audio).layer(DefaultBodyLimit::max(super::assistant::AUDIO_BODY_MAX)),
         )
         .route("/api/assistant/tts/{id}", get(super::assistant::tts))
+        .route("/api/assistant/image/{id}/{name}", get(super::assistant::image))
         // Project notes (step R8), through the N1 notes module.
         .route("/api/notes", get(super::notes::counts))
         .route("/api/notes/list", get(super::notes::list))

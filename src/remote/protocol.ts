@@ -235,7 +235,12 @@ export type RemoteDuckMessage =
   /** The reader bar (step V3): a read playing on the phone comes as `tts` parts. */
   | { type: "reader"; action: "pause" | "resume" | "next" | "prev" | "stop" }
   /** Duck's Do Not Disturb (step V5): until a moment (epoch ms), or off (null). */
-  | { type: "dnd"; until: number | null };
+  | { type: "dnd"; until: number | null }
+  /** A drawing (step G3), answered with `drawing`; its PNG is at
+   *  `GET /api/assistant/image/{id}/{name}`. */
+  | { type: "drawing.get"; drawingId: string }
+  /** The drawing the phone's viewer shows (null: closed): its worker stays warm. */
+  | { type: "canvas"; drawingId: string | null };
 
 /** What a phone host sends besides Duck messages (steps H1, H5): its `hello` and
  *  results, and Done or Snooze tapped on a reminder its app rang; H7: what its

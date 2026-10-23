@@ -82,6 +82,14 @@ Rules:
 - Don't ask the user anything interactively; put questions in `result.json`.
 - Never push, publish or send anything anywhere.
 - A follow-up prompt may ask for more on the same task: update both result files.
+
+## Drawings
+
+A drawing task's brief names the drawing's id and version, and the rules for each
+kind (Mermaid, SVG, Vega-Lite). Write the version to
+`drawings/<id>/v<n>.<ext>` in the task folder, never over an older version, then
+`result.json` with the headline as usual. Later edits come as follow-ups: each is
+the next version.
 "#;
 
 /// The workspace when Duck's settings name none.

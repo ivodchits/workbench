@@ -70,6 +70,7 @@ import { getStaging, pasteFiles, pickFiles, takeStaged, useFileDrop, useStaging 
 import type { AttachmentRef } from "../../assistant/attachments";
 import { pillText } from "../../assistant/voiceFiles";
 import { MemoryPanel } from "./MemoryView";
+import { DrawerCanvas } from "./Canvas";
 import { OverviewPanel } from "./OverviewView";
 import { DecisionsPanel, TrustPanel } from "./TrustViews";
 import type { ThreadRow } from "../../ipc/assistant";
@@ -89,6 +90,7 @@ import {
   isBusy,
   isRunning,
   openTaskDiff,
+  openCanvas,
   openThread,
   sendMessage,
   setDrawerOpen,
@@ -314,7 +316,13 @@ export default function AssistantDrawer() {
         </div>
       )}
       {view === "thread" && <Elsewhere duck={duck} onOpen={showThread} />}
-      {view === "thread" && duck.prefs.avatar.show && (
+      {view === "thread" && duck.canvas && (
+        // The canvas (G3) takes the duck's place, and more: the thread stays below.
+        <div style={{ flex: "0 0 auto", height: "55%", minHeight: 160, borderBottom: "1px solid var(--wb-border)" }}>
+          <DrawerCanvas />
+        </div>
+      )}
+      {view === "thread" && !duck.canvas && duck.prefs.avatar.show && (
         <div
           style={{
             position: "relative",
@@ -332,7 +340,7 @@ export default function AssistantDrawer() {
           />
         </div>
       )}
-      {view === "thread" && !duck.prefs.avatar.show && (
+      {view === "thread" && (duck.canvas || !duck.prefs.avatar.show) && (
         // The widget over the chat's corner when the duck is hidden (H8).
         <div style={{ position: "relative", height: 0 }}>
           <RemindersBadge reminders={duck.reminders} problem={duck.remindersProblem} pulse={duck.remindersPulse} />
@@ -1004,6 +1012,8 @@ function ItemView({ item, active }: { item: Item; active: boolean }) {
       );
     case "task":
       return <TaskCard taskId={item.taskId} text={item.text} />;
+    case "drawing":
+      return <DrawingCard item={item} />;
     case "notice":
       return (
         <div
@@ -1027,6 +1037,43 @@ function ItemView({ item, active }: { item: Item; active: boolean }) {
         </div>
       );
   }
+}
+
+/** A drawing's version in the thread (G3): its thumbnail; a click opens the canvas. */
+function DrawingCard({ item }: { item: Extract<Item, { kind: "drawing" }> }) {
+  const d = item.drawing;
+  const thumb = d.png?.thumb?.startsWith("data:image/") ? d.png.thumb : null;
+  return (
+    <button
+      type="button"
+      onClick={() => openCanvas(d.id, d.n)}
+      title="open on the canvas"
+      style={{
+        margin: "4px 16px",
+        display: "flex",
+        alignItems: "center",
+        gap: 8,
+        padding: 6,
+        background: "var(--wb-bg)",
+        border: "1px solid var(--wb-border)",
+        color: "var(--wb-text)",
+        font: "inherit",
+        cursor: "pointer",
+        textAlign: "left",
+      }}
+    >
+      {thumb ? (
+        <img src={thumb} alt="" style={{ width: 64, height: 48, objectFit: "contain", background: "#fff" }} />
+      ) : (
+        <span style={{ width: 64, textAlign: "center" }}>✎</span>
+      )}
+      <span>
+        ✎ {item.text}
+        <br />
+        <span style={{ color: "var(--wb-textFaint)" }}>on the canvas · {d.id}</span>
+      </span>
+    </button>
+  );
 }
 
 const NOTICE_GLYPH: Partial<Record<Notice["kind"], string>> = { keys: "⌨", autopilot: "⟳", screen: "▣", reader: "♪", budget: "$", compacted: "⇲", reminder: "⏰" };
