@@ -26,6 +26,8 @@ import { draftSkill, loadSkill, splitDraft } from "./tools/skills";
 import { SYSTEM_PROMPT, VOICE_NOTE } from "./prompt";
 import { createThreadStore, type ThreadBackend } from "./threads";
 import { getTime } from "./tools/getTime";
+import { MCP_TOOLS } from "./tools/mcp";
+import { DEFAULT_SETTINGS, GMAIL, GOOGLE_DOCS, QUEST_LOG } from "./settings";
 import { goToThread, listThreads, startThread, switchMode } from "./tools/threads";
 import { createRegistry, defineTool, toolsOn, type ToolDef } from "./tools/registry";
 import { createHosts } from "./hosts";
@@ -1318,6 +1320,43 @@ describe("modes (S1)", () => {
     expect(firstText(store.loaded(b!.threadId)[0])).toContain(words);
     expect(systemText(calls[2].params)).toBe(DUCK_PROMPT);
     expect(store.thread(a)?.mode).toBe("assistant");
+  });
+});
+
+describe("the MCP servers (X1)", () => {
+  const blocks = (p: Params) => (p.system as Anthropic.Beta.BetaTextBlockParam[]).map((b) => b.text);
+
+  it("a request carries a line per server that's on, after the system prompt, and none of their tools", async () => {
+    let settings = { ...DEFAULT_SETTINGS, mcpServers: [QUEST_LOG, { ...GMAIL, enabled: true }, GOOGLE_DOCS] };
+    const store = createThreadStore(memoryBackend());
+    await store.load();
+    const s = scripted([message([text("Two unread.")], "end_turn"), message([text("Done.")], "end_turn")]);
+    const engine = createEngine({
+      stream: s.stream,
+      registry: createRegistry([getTime, ...MCP_TOOLS]),
+      port,
+      store,
+      settings: () => settings,
+    });
+    const id = await turn(engine, "anything new in my mail?");
+    const [system, servers] = blocks(s.calls[0].params);
+    expect(system).toBe(SYSTEM_PROMPT);
+    expect(servers).toContain(`- gmail: ${GMAIL.description}`);
+    expect(servers).toContain("- quest_log: ");
+    expect(servers).not.toContain("google_docs");
+    const names = (s.calls[0].params.tools as { name: string }[]).map((t) => t.name);
+    expect(names).toEqual(["get_time", "mcp_call", "mcp_read", "mcp_tools"]);
+    expect(JSON.stringify(s.calls[0].params.tools)).not.toContain("get_gmail_thread_content");
+
+    settings = { ...settings, mcpServers: [] };
+    await turn(engine, "thanks", id);
+    expect(blocks(s.calls[1].params)).toEqual([SYSTEM_PROMPT]);
+  });
+
+  it("a thread without mcp_tools gets no server lines", async () => {
+    const { engine, calls } = await setup([message([text("8:30.")], "end_turn")], [getTime]);
+    await turn(engine, "what time is it?");
+    expect(blocks(calls[0].params)).toEqual([SYSTEM_PROMPT]);
   });
 });
 

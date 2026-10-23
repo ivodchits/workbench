@@ -95,7 +95,7 @@ import type { AutopilotManager } from "./autopilot";
 import type { ReaderHost } from "./tools/readAloud";
 import type { ScreenHost } from "./tools/screenshot";
 import type { QuietHost } from "./tools/quiet";
-import type { McpHost } from "./mcp";
+import { mcpServersBlock, type McpHost } from "./mcp";
 import type { HostedCaller } from "./tools/mcpHost";
 import type { GoogleHost } from "./google";
 import type { HostCaller } from "./hosts";
@@ -553,8 +553,8 @@ export function buildParams(
     ...(brain === "sonnet" && { fallbacks: "default" as const }),
     // tools → system is the frozen prefix: one explicit 1-hour breakpoint at its
     // end; automatic caching (also 1 hour: longer TTLs must come first) for the tail.
-    // The skills (step S2) come after it with a breakpoint of their own, so a
-    // changed skill rewrites only from there.
+    // The skills (step S2) and the MCP servers' lines (X1) come after it with a
+    // breakpoint of their own, so a changed skill or server rewrites only from there.
     tools,
     system: [
       { type: "text", text: system, cache_control: CACHE_1H },
@@ -794,19 +794,24 @@ export function createEngine(deps: EngineDeps): Engine {
   const systemOf = async (threadId: string): Promise<string> =>
     modeSystem(modeFor(threadId), (await promptsFor(threadId)).system);
   const toolsOf = (threadId: string) => registry.toolsFor(modeFor(threadId).tools);
-  /** The skills block a thread's requests carry (step S2), read now: a skill
-   *  written or edited works from the next request. None in a mode without
-   *  load_skill. Reading them also registers the modes they declare. */
+  /** The block a thread's requests carry after the system prompt: the skills
+   *  (step S2), read now, so a skill written or edited works from the next
+   *  request (none in a mode without load_skill; reading them also registers the
+   *  modes they declare), and the MCP servers that are on (X1). */
   const skillsOf = async (threadId: string): Promise<string | null> => {
-    if (!deps.skills) return null;
+    const tools = modeFor(threadId).tools;
+    // The MCP servers that are on, a line each (step X1), in the same block: none
+    // when the thread's tools have no mcp_tools.
+    const servers = toolsOf(threadId).some((t) => "name" in t && t.name === "mcp_tools") ? mcpServersBlock(settings().mcpServers) : null;
+    if (!deps.skills) return servers;
+    let skills: string | null = null;
     try {
-      const skills = await deps.skills.list();
-      const tools = modeFor(threadId).tools;
-      return !tools || tools.includes("load_skill") ? skillsBlock(skills) : null;
+      const all = await deps.skills.list();
+      if (!tools || tools.includes("load_skill")) skills = skillsBlock(all);
     } catch (e) {
       console.warn("duck: the skills couldn't be read", e);
-      return null;
     }
+    return [skills, servers].filter((b): b is string => !!b).join("\n\n") || null;
   };
   /** A loaded skill's tools (step S2), by thread, until the next message. */
   const narrowed = new Map<string, { skill: string; tools: readonly string[] }>();

@@ -1,9 +1,18 @@
 import { describe, expect, it } from "vitest";
 
 import { fakePort, toolCtx } from "../fakePort.test-util";
-import { createMcpHost, resultText, type McpRequest } from "../mcp";
+import { createMcpHost, mcpServersBlock, resultText, type McpRequest } from "../mcp";
 import { createPolicy } from "../policy";
-import { cleanMcpServers, cleanSettings, DEFAULT_SETTINGS, QUEST_LOG } from "../settings";
+import {
+  cleanMcpServers,
+  cleanSettings,
+  DEFAULT_SETTINGS,
+  GMAIL,
+  GOOGLE_DOCS,
+  GOOGLE_DRIVE,
+  GOOGLE_MCP_SERVERS,
+  QUEST_LOG,
+} from "../settings";
 import { memoryTrust } from "../trust/memoryTrust.test-util";
 import { createTrustStore } from "../trust/store";
 import { mcpCall, mcpRead, mcpTools, MCP_TOOLS } from "./mcp";
@@ -39,7 +48,9 @@ describe("mcp_tools", () => {
     const ctx = ctxWith(request, {
       mcpServers: [QUEST_LOG, { ...QUEST_LOG, name: "off_one", enabled: false }],
     });
-    expect(await mcpTools.run({}, ctx)).toEqual({ servers: [{ name: "quest_log", url: QUEST_LOG.url }] });
+    expect(await mcpTools.run({}, ctx)).toEqual({
+      servers: [{ name: "quest_log", url: QUEST_LOG.url, description: QUEST_LOG.description }],
+    });
     const out = (await mcpTools.run({ server: "quest_log" }, ctx)) as { tools: Record<string, unknown>[] };
     expect(out.tools.map((t) => [t.name, t.readOnly ?? false])).toEqual([
       ["get_agenda", true],
@@ -126,6 +137,13 @@ describe("the gate", () => {
     expect(verdict("mcp_call", create)).toBe("run");
     expect(verdict("mcp_call", remove)).toBe("ask");
   });
+
+  it("sending mail or editing a doc asks; reading mail runs", async () => {
+    const { verdict } = await gate();
+    expect(verdict("mcp_read", { server: "gmail", tool: "search_gmail_messages", arguments: { query: "x" } })).toBe("run");
+    expect(verdict("mcp_call", { server: "gmail", tool: "send_gmail_message", arguments: { to: "a@b.c", body: "x" } })).toBe("ask");
+    expect(verdict("mcp_call", { server: "google_docs", tool: "modify_doc_text", arguments: { document_id: "d1" } })).toBe("ask");
+  });
 });
 
 describe("the host", () => {
@@ -153,8 +171,30 @@ describe("the host", () => {
 });
 
 describe("the settings", () => {
-  it("default to Quest Log on loopback", () => {
-    expect(DEFAULT_SETTINGS.mcpServers).toEqual([QUEST_LOG]);
+  it("default to Quest Log on loopback, and the Google servers off", () => {
+    expect(DEFAULT_SETTINGS.mcpServers).toEqual([QUEST_LOG, GMAIL, GOOGLE_DRIVE, GOOGLE_DOCS]);
+    expect(GOOGLE_MCP_SERVERS.map((s) => [s.name, s.enabled, s.url])).toEqual([
+      ["gmail", false, "http://localhost:8000/mcp"],
+      ["google_drive", false, "http://localhost:8000/mcp"],
+      ["google_docs", false, "http://localhost:8000/mcp"],
+    ]);
+  });
+
+  it("the Google servers read without asking only tools they offer, never a send or a change", () => {
+    const changes = /^(send|draft|create|modify|update|manage|copy|import|set|batch|insert|find_and_replace|export|start)_/;
+    for (const s of GOOGLE_MCP_SERVERS) {
+      for (const t of s.readTools) expect(s.tools).toContain(t);
+      expect(s.readTools.filter((t) => changes.test(t))).toEqual([]);
+      expect(cleanMcpServers([s])).toEqual([s]);
+    }
+    expect(GMAIL.tools).toContain("send_gmail_message");
+    expect(GOOGLE_DOCS.tools).toContain("modify_doc_text");
+  });
+
+  it("a saved Google entry from before keeps the tools Duck knows it by", () => {
+    const [g] = cleanMcpServers([{ name: "gmail", url: "http://localhost:8123/mcp", readTools: ["search_gmail_messages"] }]);
+    expect(g).toMatchObject({ url: "http://localhost:8123/mcp", tools: GMAIL.tools, description: GMAIL.description });
+    expect(cleanMcpServers([{ ...GMAIL, tools: null }])[0].tools).toBeNull();
   });
 
   it("drop bad servers and bad fields, and never keep more than a token's name", () => {
@@ -165,13 +205,101 @@ describe("the settings", () => {
         { name: "Bad Name", url: "http://x/mcp" },
         { name: "files", url: "file:///c:/x" },
         { name: "remote", url: "https://example.com/mcp", enabled: false, tokenEnv: "not a var" },
+        { name: "notes", url: "http://127.0.0.1:1/mcp", description: `  My notes\napp, ${"x".repeat(300)}`, tools: ["a", 4, "b b"] },
         null,
       ]),
     ).toEqual([
-      { name: "quest_log", url: "http://127.0.0.1:9000/mcp", enabled: true, tokenEnv: "QL_TOKEN", readTools: ["get_agenda"] },
-      { name: "remote", url: "https://example.com/mcp", enabled: false, tokenEnv: null, readTools: [] },
+      {
+        name: "quest_log",
+        url: "http://127.0.0.1:9000/mcp",
+        enabled: true,
+        tokenEnv: "QL_TOKEN",
+        readTools: ["get_agenda"],
+        description: QUEST_LOG.description,
+        tools: null,
+      },
+      { name: "remote", url: "https://example.com/mcp", enabled: false, tokenEnv: null, readTools: [], description: "", tools: null },
+      {
+        name: "notes",
+        url: "http://127.0.0.1:1/mcp",
+        enabled: true,
+        tokenEnv: null,
+        readTools: [],
+        description: `My notes app, ${"x".repeat(146)}`,
+        tools: ["a"],
+      },
     ]);
     expect(cleanSettings({ mcpServers: "nope" })).toEqual({});
     expect(cleanSettings({ mcpServers: [] })).toEqual({ mcpServers: [] });
+  });
+});
+
+describe("the <mcp_servers> block", () => {
+  it("is all the fixed prefix says about any server: the mcp tools name none, Quest Log no more than the rest", () => {
+    const fixed = JSON.stringify(createRegistry(MCP_TOOLS).apiTools);
+    for (const s of DEFAULT_SETTINGS.mcpServers) expect(fixed).not.toContain(s.name);
+    for (const t of [...QUEST_LOG.readTools, ...GMAIL.tools!].filter((n) => n.includes("_"))) expect(fixed).not.toContain(t);
+  });
+
+  it("names the servers that are on, a line each, sorted; none when none are", () => {
+    const block = mcpServersBlock([QUEST_LOG, { ...GMAIL, enabled: true }, GOOGLE_DOCS, { ...GOOGLE_DRIVE, enabled: true, description: "" }]);
+    const lines = block!.split("\n");
+    expect(lines[0]).toBe("<mcp_servers>");
+    expect(lines.slice(2)).toEqual([`- gmail: ${GMAIL.description}`, "- google_drive", `- quest_log: ${QUEST_LOG.description}`, "</mcp_servers>"]);
+    expect(block).not.toContain("google_docs");
+    expect(mcpServersBlock([GMAIL, { ...QUEST_LOG, enabled: false }])).toBeNull();
+  });
+});
+
+describe("one part of a bigger server (Gmail of a Workspace server)", () => {
+  function workspace(answer: (name: string) => unknown = () => ({ content: [{ type: "text", text: "ok" }] })) {
+    const calls: string[] = [];
+    const request: McpRequest = async (url, _e, method, params) => {
+      calls.push(`${url} ${method}`);
+      if (method === "tools/list")
+        return {
+          tools: ["search_gmail_messages", "send_gmail_message", "get_doc_content", "modify_doc_text", "list_calendars"].map((name) => ({
+            name,
+            inputSchema: { type: "object" },
+          })),
+        };
+      return answer(params.name as string);
+    };
+    const on = GOOGLE_MCP_SERVERS.map((s) => ({ ...s, enabled: true }));
+    return { calls, ctx: ctxWith(request, { mcpServers: [QUEST_LOG, ...on] }) };
+  }
+
+  it("lists only its own tools, from the one catalog the parts share", async () => {
+    const { ctx, calls } = workspace();
+    const gmail = (await mcpTools.run({ server: "gmail" }, ctx)) as { tools: Record<string, unknown>[] };
+    expect(gmail.tools.map((t) => [t.name, t.readOnly ?? false])).toEqual([
+      ["search_gmail_messages", true],
+      ["send_gmail_message", false],
+    ]);
+    const docs = (await mcpTools.run({ server: "google_docs" }, ctx)) as { tools: Record<string, unknown>[] };
+    expect(docs.tools.map((t) => t.name)).toEqual(["get_doc_content", "modify_doc_text"]);
+    expect(calls).toEqual([`${GMAIL.url} tools/list`]);
+    const listed = (await mcpTools.run({}, ctx)) as { servers: { name: string; description?: string }[] };
+    expect(listed.servers.find((s) => s.name === "gmail")?.description).toBe(GMAIL.description);
+  });
+
+  it("refuses another part's tool, or one it doesn't offer, before calling the server", async () => {
+    const { ctx, calls } = workspace();
+    await expect(mcpRead.run({ server: "gmail", tool: "get_doc_content" }, ctx)).rejects.toThrow(/gmail has no tool get_doc_content/);
+    await expect(mcpCall.run({ server: "gmail", tool: "list_calendars" }, ctx)).rejects.toThrow(/gmail has no tool list_calendars/);
+    await expect(mcpRead.run({ server: "gmail", tool: "send_gmail_message" }, ctx)).rejects.toThrow(/call it with mcp_call/);
+    expect(calls).toEqual([]);
+    expect(await mcpRead.run({ server: "gmail", tool: "search_gmail_messages", arguments: { query: "invoice" } }, ctx)).toContain(
+      '<mcp_result server="gmail" tool="search_gmail_messages" untrusted>',
+    );
+  });
+
+  it("a sign-in the server asks for comes back as its text, wrapped, for the user to open", async () => {
+    const { ctx } = workspace(() => ({
+      content: [{ type: "text", text: "Authorization required. Open https://accounts.google.com/o/oauth2/auth?x=1 to sign in." }],
+    }));
+    const out = await mcpRead.run({ server: "google_docs", tool: "get_doc_content", arguments: { document_id: "d1" } }, ctx);
+    expect(out).toContain("https://accounts.google.com/o/oauth2/auth?x=1");
+    expect(out).toMatch(/^<mcp_result server="google_docs" tool="get_doc_content" untrusted>/);
   });
 });

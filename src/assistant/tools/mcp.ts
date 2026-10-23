@@ -1,5 +1,8 @@
 // The external MCP tools (step X1), over `ctx.mcp` and the servers in the settings.
-// `mcp_tools` lists the servers, or one server's tools with their input schemas.
+// `mcp_tools` lists the servers, or one server's tools with their input schemas:
+// the only way a server's schemas reach Duck, so they cost nothing until a request
+// needs that server. An entry with `tools` (Gmail, of a Google Workspace server)
+// offers only those: the rest aren't listed and can't be called.
 // Reads go through `mcp_read`, which runs only the tools the server's settings name
 // in `readTools`; everything else (creating, changing, completing or deleting
 // something in the user's app) goes through `mcp_call`, a consequential call: a
@@ -10,13 +13,14 @@
 // wrapped as untrusted, like a session's transcript.
 
 import { z } from "zod";
+import { offers } from "../mcp";
 import type { McpServerSpec } from "../settings";
 import { grantArg } from "./act";
 import { defineTool, type ToolContext } from "./registry";
 
 const TIMEOUT_MS = 30_000;
 
-const serverArg = z.string().min(1).max(32).describe('The server\'s name, from mcp_tools (e.g. "quest_log").');
+const serverArg = z.string().min(1).max(32).describe("The server's name, as in <mcp_servers>.");
 const toolArg = z.string().min(1).max(128).describe("The tool's name on that server, from mcp_tools.");
 const argsArg = z
   .record(z.string(), z.any())
@@ -37,6 +41,11 @@ function findServer(ctx: Pick<ToolContext, "settings">, name: string): McpServer
       ? `no MCP server "${name}"; the servers are ${names.join(", ")}.`
       : "no MCP servers are set up (Duck's settings, mcpServers).",
   );
+}
+
+/** Refuses a tool the server's entry doesn't offer, before calling the server. */
+function offered(server: McpServerSpec, tool: string) {
+  if (!offers(server, tool)) throw new Error(`${server.name} has no tool ${tool}; mcp_tools lists its tools.`);
 }
 
 function host(ctx: ToolContext) {
@@ -73,7 +82,7 @@ function argsLine(args: Record<string, unknown> | undefined): string {
 export const mcpTools = defineTool({
   name: "mcp_tools",
   description:
-    "The user's own apps that Duck reaches over MCP, such as quest_log (Quest Log: their calendar, agenda, tasks/quests, notes, projects). Without `server`, lists the servers set up; with it, that server's tools, each with its input schema and whether it only reads (call those with mcp_read; the rest with mcp_call). Look a server's tools up once per conversation before calling them. A server's app has to be running: if it can't be reached, say so.",
+    "The user's own apps that Duck reaches over MCP: the servers listed in <mcp_servers>, a line each on what it's for. Without `server`, lists the servers set up; with it, that server's tools, each with its input schema and whether it only reads (call those with mcp_read; the rest with mcp_call). Look a server's tools up once per conversation before calling them. A server's app has to be running: if it can't be reached, say so. Signing in is the user's: when a server says it needs authorization, give the user its sign-in link to open in their browser, and try again once they say they've signed in; never sign in for them or ask for a password or code.",
   schema: z.object({ server: serverArg.optional() }),
   tier: "read",
   timeoutMs: TIMEOUT_MS,
@@ -81,10 +90,10 @@ export const mcpTools = defineTool({
     if (!server) {
       const on = servers(ctx);
       if (!on.length) return "No MCP servers are set up.";
-      return { servers: on.map((s) => ({ name: s.name, url: s.url })) };
+      return { servers: on.map((s) => ({ name: s.name, url: s.url, ...(s.description && { description: s.description }) })) };
     }
     const s = findServer(ctx, server);
-    const tools = await host(ctx).listTools(s);
+    const tools = (await host(ctx).listTools(s)).filter((t) => offers(s, t.name));
     const reads = new Set(s.readTools);
     return {
       server: s.name,
@@ -101,12 +110,13 @@ export const mcpTools = defineTool({
 export const mcpRead = defineTool({
   name: "mcp_read",
   description:
-    "Call one of an MCP server's read-only tools (readOnly in mcp_tools), e.g. quest_log get_agenda for today's agenda, get_calendar_occurrences for a date range, search, get_note. Runs at once. A tool that changes something is refused here: use mcp_call.",
+    "Call one of an MCP server's read-only tools (readOnly in mcp_tools; look the server's tools up there first): searching, listing, reading. Runs at once. A tool that changes something is refused here: use mcp_call.",
   schema: z.object({ server: serverArg, tool: toolArg, arguments: argsArg }),
   tier: "read",
   timeoutMs: TIMEOUT_MS,
   async run({ server, tool, arguments: args }, ctx) {
     const s = findServer(ctx, server);
+    offered(s, tool);
     if (!s.readTools.includes(tool))
       throw new Error(`${tool} isn't one of ${s.name}'s read-only tools; call it with mcp_call (the user confirms it).`);
     return call(ctx, s, tool, args);
@@ -116,7 +126,7 @@ export const mcpRead = defineTool({
 export const mcpCall = defineTool({
   name: "mcp_call",
   description:
-    "Call an MCP server's tool that changes something in the user's app: e.g. quest_log create_entry, update_entry, complete_entry (awards XP/gold), delete_entry (also removes it from their Google Calendar), create_note. These are real actions in the user's data. The user is asked first, unless a trust rule allows it or their own words asked for it (`grantedBy`). Use mcp_read for tools that only read.",
+    "Call an MCP server's tool that changes something in the user's app (from mcp_tools, not readOnly; look the server's tools up there first): creating, editing, completing or deleting an item, sending or drafting a message, editing or sharing a file. These are real actions in the user's data. The user is asked first, unless a trust rule allows it or their own words asked for it (`grantedBy`). Use mcp_read for tools that only read.",
   schema: z.object({ server: serverArg, tool: toolArg, arguments: argsArg, grantedBy: grantArg }),
   tier: "consequential",
   timeoutMs: TIMEOUT_MS,
@@ -130,7 +140,9 @@ export const mcpCall = defineTool({
     grant: grantedBy?.trim() || undefined,
   }),
   async run({ server, tool, arguments: args }, ctx) {
-    return call(ctx, findServer(ctx, server), tool, args);
+    const s = findServer(ctx, server);
+    offered(s, tool);
+    return call(ctx, s, tool, args);
   },
 });
 

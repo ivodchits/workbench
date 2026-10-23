@@ -7,7 +7,11 @@
 // The servers come from the settings (`mcpServers`). They are not part of the API's
 // tools list: Duck asks `mcp_tools` for a server's catalog and calls through
 // `mcp_read` / `mcp_call`, so a server that is down, or changes its tools, never
-// touches the cached prompt prefix.
+// touches the cached prompt prefix. All a request carries about them is the
+// `<mcp_servers>` block (`mcpServersBlock`): one line per server that's on, after
+// the system prompt with the skills, so adding or turning off a server costs a
+// line and rewrites the cache only from there. A server's tool schemas come in
+// only when a request needs them, as `mcp_tools`'s result.
 
 import type { McpServerSpec } from "./settings";
 
@@ -98,4 +102,22 @@ export function resultText(
   if (parts.length) return parts.join("\n");
   if (res?.structuredContent !== undefined) return JSON.stringify(res.structuredContent);
   return "(no content)";
+}
+
+/** The block after the system prompt naming the servers that are on, one line
+ *  each, sorted; null when none are. */
+export function mcpServersBlock(servers: readonly McpServerSpec[]): string | null {
+  const on = servers.filter((s) => s.enabled).sort((a, b) => a.name.localeCompare(b.name));
+  if (!on.length) return null;
+  return [
+    "<mcp_servers>",
+    "The user's apps you reach over MCP. When a request needs one, call mcp_tools with its name for its tools (once per conversation), then mcp_read for reads and mcp_call for changes.",
+    ...on.map((s) => `- ${s.name}${s.description ? `: ${s.description}` : ""}`),
+    "</mcp_servers>",
+  ].join("\n");
+}
+
+/** Whether a server's entry offers a tool (`tools`, null for all). */
+export function offers(server: McpServerSpec, tool: string): boolean {
+  return server.tools === null || server.tools.includes(tool);
 }
