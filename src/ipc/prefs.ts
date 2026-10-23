@@ -71,6 +71,15 @@ export interface Prefs {
     cue: boolean;
     /** Save the phone's conversation runs for measuring its echo (V7, debug). */
     recordPhone?: boolean;
+    /** Step V6: listen for "Hey Duck" (an experiment, off by default). */
+    wake?: boolean;
+    /** How eager the spotter is, 0..1 (0.5 by default). */
+    wakeSensitivity?: number;
+    /** Deaf while a full-screen app is in front, and on battery (both on by default). */
+    wakeFullScreen?: boolean;
+    wakeBattery?: boolean;
+    /** Keep a false trigger's audio beside the trigger log (debug). */
+    wakeKeepClips?: boolean;
   };
   /** Read-aloud positions (step V3): source key → where it stopped. */
   readAloud: Record<string, ReadPosition>;

@@ -4,6 +4,7 @@ const duck = vi.hoisted(() => ({
   mode: "assistant",
   listeners: [] as (() => void)[],
   conversation: null as ((s: import("../../ipc/voice").ConversationState) => void) | null,
+  wakeToggle: null as ((on: boolean) => void) | null,
 }));
 vi.mock("./duckState", () => ({
   sendMessage: vi.fn(),
@@ -31,6 +32,12 @@ vi.mock("../../ipc/voice", () => {
     voiceConversation: vi.fn(async () => {}),
     voiceConversationOn: vi.fn(async () => false),
     voiceConversationPatience: vi.fn(async () => {}),
+    onWakeState: on(),
+    onWakeToggle: vi.fn(async (cb: (on: boolean) => void) => {
+      duck.wakeToggle = cb;
+      return () => {};
+    }),
+    voiceWakeState: vi.fn(async () => ({ on: false, listening: false, hold: null, error: null })),
   };
 });
 
@@ -38,7 +45,16 @@ import * as ipc from "../../ipc/voice";
 import type { ConversationState, VoiceTurn } from "../../ipc/voice";
 import { openThread } from "./duckState";
 import { onAnnounced } from "./replySpeech";
-import { heardAnnouncement, initVoice, messageFor, REPLY_AFTER_MS, replyTarget, routeTurn } from "./voiceState";
+import {
+  getVoiceState,
+  heardAnnouncement,
+  initVoice,
+  messageFor,
+  REPLY_AFTER_MS,
+  replyTarget,
+  routeTurn,
+  wakeLine,
+} from "./voiceState";
 
 describe("a transcript as a message", () => {
   it("is sent as said, or with the words as heard beside a fix", () => {
@@ -162,5 +178,28 @@ describe("conversation mode's pauses (S1)", () => {
     expect(asked).toHaveBeenCalledTimes(2);
     duck.mode = "assistant";
     vi.unstubAllGlobals();
+  });
+});
+
+describe("the wake word (V6)", () => {
+  it("is off by default, and the tray's item turns the setting on and hands it over", async () => {
+    await initVoice();
+    expect(getVoiceState().prefs.wake).toBe(false);
+    expect(getVoiceState().wake).toEqual({ on: false, listening: false, hold: null, error: null });
+    const sent = vi.mocked(ipc.voiceConfigure).mock.calls;
+    duck.wakeToggle?.(true);
+    expect(getVoiceState().prefs.wake).toBe(true);
+    expect(sent[sent.length - 1][0]).toMatchObject({ wake: true, wakeSensitivity: 0.5, wakeFullScreen: true, wakeBattery: true });
+    duck.wakeToggle?.(false);
+    expect(sent[sent.length - 1][0]).toMatchObject({ wake: false });
+  });
+
+  it("says what it's doing: an error first, then why it's deaf, then listening", () => {
+    const w = { on: true, listening: false, hold: null, error: null };
+    expect(wakeLine({ ...w, error: "The microphone didn't open: gone" })).toBe("The microphone didn't open: gone");
+    expect(wakeLine({ ...w, hold: "call" })).toMatch(/another app/);
+    expect(wakeLine({ ...w, hold: "busy" })).toMatch(/^Paused/);
+    expect(wakeLine({ ...w, listening: true })).toMatch(/^Listening/);
+    expect(wakeLine(w)).toMatch(/^Starting/);
   });
 });

@@ -6,6 +6,9 @@
 // Step V4: what the key does (conversation mode, or one message), how patient
 // conversation mode is with pauses, talking over Duck (with the echo removed, as
 // last measured), its auto-off and the chime.
+//
+// Step V6: the wake word ("Hey Duck"), an experiment: on or off, how eager, when
+// it stays deaf, and what it's doing now.
 
 import { useCallback, useEffect, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
@@ -22,7 +25,7 @@ import {
   type Transcript,
   type VoiceStatus,
 } from "../../ipc/voice";
-import { setVoicePrefs, useVoiceState } from "./voiceState";
+import { setVoicePrefs, useVoiceState, wakeLine } from "./voiceState";
 
 const GPU_CHOICES: { value: GpuPref; label: string }[] = [
   { value: "never", label: "CPU only (fastest here)" },
@@ -33,7 +36,10 @@ const GPU_CHOICES: { value: GpuPref; label: string }[] = [
 const mb = (n: number) => `${Math.round(n / 1_000_000).toLocaleString()} MB`;
 
 export default function VoiceSettings() {
-  const { prefs, keyProblem, echo } = useVoiceState();
+  const { prefs, keyProblem, echo, wake } = useVoiceState();
+  // The slider's value while it's dragged; set when it's let go (each change
+  // restarts the spotter).
+  const [sensitivity, setSensitivity] = useState<number | null>(null);
   const gpu = prefs.gpu;
   const [status, setStatus] = useState<VoiceStatus | null>(null);
   const [progress, setProgress] = useState<DownloadProgress | null>(null);
@@ -183,6 +189,69 @@ export default function VoiceSettings() {
           <span style={hint}> (for measuring its echo: ~/repos/Duck/voice-eval/recordings/phone, kept out of git)</span>
         </span>
       </label>
+      <label style={row}>
+        <input type="checkbox" checked={prefs.wake ?? false} onChange={(e) => setVoicePrefs({ wake: e.target.checked })} />
+        <span>
+          Listen for &quot;Hey Duck&quot; / «Эй, Дак»
+          <span style={hint}> (experimental: the microphone stays open; nothing leaves this PC)</span>
+        </span>
+      </label>
+      {prefs.wake && (
+        <>
+          <div style={{ ...hint, paddingLeft: 2, color: wake.error ? "var(--wb-needs)" : undefined }}>
+            {wakeLine(wake)} Say the phrase and what you want in one go, or the phrase alone and wait for the chime.
+          </div>
+          <label style={{ ...row, alignItems: "center" }}>
+            <span style={{ flex: "0 0 auto" }}>Sensitivity</span>
+            <span style={hint}>fewer false wakes</span>
+            <input
+              type="range"
+              min={0}
+              max={1}
+              step={0.05}
+              value={sensitivity ?? prefs.wakeSensitivity ?? 0.5}
+              onChange={(e) => setSensitivity(Number(e.target.value))}
+              onPointerUp={() => {
+                if (sensitivity !== null) setVoicePrefs({ wakeSensitivity: sensitivity });
+                setSensitivity(null);
+              }}
+              onKeyUp={() => {
+                if (sensitivity !== null) setVoicePrefs({ wakeSensitivity: sensitivity });
+                setSensitivity(null);
+              }}
+              style={{ flex: 1, minWidth: 0 }}
+            />
+            <span style={hint}>catches more</span>
+          </label>
+          <label style={row}>
+            <input
+              type="checkbox"
+              checked={prefs.wakeFullScreen ?? true}
+              onChange={(e) => setVoicePrefs({ wakeFullScreen: e.target.checked })}
+            />
+            <span>Not while a full-screen app is in front (a game, a video)</span>
+          </label>
+          <label style={row}>
+            <input
+              type="checkbox"
+              checked={prefs.wakeBattery ?? true}
+              onChange={(e) => setVoicePrefs({ wakeBattery: e.target.checked })}
+            />
+            <span>Not on battery</span>
+          </label>
+          <label style={row}>
+            <input
+              type="checkbox"
+              checked={prefs.wakeKeepClips ?? false}
+              onChange={(e) => setVoicePrefs({ wakeKeepClips: e.target.checked })}
+            />
+            <span>
+              Keep false wakes&apos; audio
+              <span style={hint}> (for tuning: ~/repos/Duck/voice-eval/wake, beside the trigger log, kept out of git)</span>
+            </span>
+          </label>
+        </>
+      )}
       <label style={{ ...row, alignItems: "center" }}>
         <span style={{ flex: "0 0 auto" }}>Microphone</span>
         <select

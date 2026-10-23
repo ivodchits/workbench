@@ -32,6 +32,10 @@
 //! Step V3: [`screen`], Duck's screenshots. Step V5: [`presence`], whether you're at
 //! the PC, for Duck's announcements.
 //!
+//! Step V6: [`wake`], "Hey Duck" (an experiment, off by default), on the keyword
+//! spotter [`kws`]. While it's on, the microphone stays open; conversation mode
+//! and a dictation take it over and give it back.
+//!
 //! Step V4: [`conversation`], hands-free. By default the push-to-talk key turns it
 //! on and off (`press: conversation`); `press: dictation` keeps the key for one
 //! dictation as above. Its turn detector is [`turn`]; [`endpoint`] says whether
@@ -45,6 +49,7 @@ pub mod capture;
 pub mod conversation;
 pub mod endpoint;
 pub mod engine;
+pub mod kws;
 pub mod overlay;
 pub mod parakeet;
 pub mod phone_record;
@@ -55,6 +60,7 @@ pub mod sidecar;
 pub mod tts;
 pub mod turn;
 pub mod vad;
+pub mod wake;
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -105,6 +111,28 @@ pub struct VoiceConfig {
     /// [`phone_record`]).
     #[serde(default)]
     pub record_phone: bool,
+    /// Listen for "Hey Duck" (step V6).
+    #[serde(default)]
+    pub wake: bool,
+    /// How eager the spotter is, 0..1.
+    #[serde(default = "half")]
+    pub wake_sensitivity: f32,
+    /// Deaf while a full-screen app is in front, and on battery.
+    #[serde(default = "yes")]
+    pub wake_full_screen: bool,
+    #[serde(default = "yes")]
+    pub wake_battery: bool,
+    /// Keep a false trigger's audio beside the trigger log.
+    #[serde(default)]
+    pub wake_keep_clips: bool,
+}
+
+fn half() -> f32 {
+    0.5
+}
+
+fn yes() -> bool {
+    true
 }
 
 fn five() -> u32 {
@@ -131,6 +159,8 @@ pub struct VoiceState {
     /// Conversation mode, while it runs (step V4).
     conversation: Mutex<Option<conversation::Handle>>,
     runs: AtomicU64,
+    /// The wake word, while it's on, and what it was started with (step V6).
+    wake: Mutex<Option<(wake::Handle, wake::Settings)>>,
 }
 
 impl VoiceState {
@@ -145,6 +175,7 @@ impl VoiceState {
             recording: Mutex::new(None),
             conversation: Mutex::new(None),
             runs: AtomicU64::new(0),
+            wake: Mutex::new(None),
         }
     }
 
@@ -365,12 +396,39 @@ fn release(app: &AppHandle) {
     });
 }
 
+/// The wake word on or off as the settings say, started again when what it runs
+/// with changed (step V6).
+fn apply_wake(app: &AppHandle, state: &VoiceState) {
+    let Ok(c) = state.config.lock().map(|c| c.clone()) else { return };
+    let want = c.wake.then(|| wake::Settings {
+        gpu: c.gpu,
+        device: c.device.clone(),
+        sensitivity: c.wake_sensitivity,
+        full_screen: c.wake_full_screen,
+        battery: c.wake_battery,
+        keep_clips: c.wake_keep_clips,
+        press: c.press,
+    });
+    let Ok(mut slot) = state.wake.lock() else { return };
+    if slot.as_ref().map(|(_, s)| s) == want.as_ref() {
+        return;
+    }
+    if let Some((h, _)) = slot.take() {
+        let _ = h.cmds.send(wake::Cmd::Stop);
+    }
+    crate::attention::set_wake_check(app, want.is_some());
+    if let Some(s) = want {
+        *slot = Some((wake::start(app.clone(), Arc::clone(&state.engine), s.clone()), s));
+    }
+}
+
 /// Take the settings: the GPU preference, the microphone, and the push-to-talk
 /// key (registered globally; the previous one is released).
 #[tauri::command]
 pub fn voice_configure(app: AppHandle, state: State<'_, VoiceState>, config: VoiceConfig) -> Result<(), String> {
     let key = config.hotkey.clone().filter(|k| !k.trim().is_empty());
     *state.config.lock().map_err(|e| e.to_string())? = config;
+    apply_wake(&app, &state);
     let mut current = state.hotkey.lock().map_err(|e| e.to_string())?;
     if *current == key {
         return Ok(());
@@ -442,6 +500,12 @@ pub fn voice_conversation_patience(app: AppHandle, patience: conversation::Patie
     if let Some(h) = c.as_ref() {
         let _ = h.cmds.send(conversation::Cmd::Patience(patience));
     }
+}
+
+/// The wake word's last state (step V6), for a webview that just loaded.
+#[tauri::command]
+pub fn voice_wake_state() -> serde_json::Value {
+    wake::last_state()
 }
 
 /// The microphones, for the settings.

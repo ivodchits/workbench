@@ -6,7 +6,9 @@
 //! microphone as in use only while the key is held.
 //!
 //! Conversation mode (step V4) [`listen`]s instead: the same mix-down, resampled a
-//! block at a time ([`StreamResampler`]) and handed over as it comes.
+//! block at a time ([`StreamResampler`]) and handed over as it comes. The wake word
+//! (step V6) listens all the time, so the kernel's weights are worked out once per
+//! phase of the rate change (one phase for 48 kHz, 160 for 44.1 kHz), not per tap.
 
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
@@ -129,21 +131,76 @@ impl Recorder {
 const TAPS: i64 = 16;
 
 /// The resampler's kernel for one rate change.
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct Kernel {
     ratio: f64,
     cutoff: f64,
     half: i64,
+    table: Option<Arc<Table>>,
+}
+
+/// The kernel's weights, normalized, for each phase: output `i` sits `(i q mod p)
+/// / p` past input `⌊i q / p⌋`, where `q / p` is `from / to` in lowest terms.
+struct Table {
+    q: u64,
+    p: u64,
+    taps: usize,
+    w: Vec<f32>,
+}
+
+/// More phases than this aren't tabled (an odd rate pair): each sample is worked
+/// out as it comes.
+const MAX_PHASES: u64 = 4096;
+
+fn gcd(a: u64, b: u64) -> u64 {
+    if b == 0 {
+        a
+    } else {
+        gcd(b, a % b)
+    }
 }
 
 impl Kernel {
     fn new(from: u32, to: u32) -> Self {
         let cutoff = (to as f64 / from as f64).min(1.0);
-        Self { ratio: from as f64 / to as f64, cutoff, half: (TAPS as f64 / cutoff).ceil() as i64 }
+        let half = (TAPS as f64 / cutoff).ceil() as i64;
+        let g = gcd(from as u64, to as u64).max(1);
+        let (q, p) = (from as u64 / g, to as u64 / g);
+        let table = (p <= MAX_PHASES && from != to).then(|| {
+            let taps = 2 * half as usize;
+            let mut w = Vec::with_capacity(p as usize * taps);
+            for phase in 0..p {
+                let frac = phase as f64 / p as f64;
+                let row: Vec<f64> = (0..taps).map(|j| Self::weight(frac + (half - 1 - j as i64) as f64, half, cutoff)).collect();
+                let norm: f64 = row.iter().sum();
+                w.extend(row.iter().map(|h| (h / norm) as f32));
+            }
+            Arc::new(Table { q, p, taps, w })
+        });
+        Self { ratio: from as f64 / to as f64, cutoff, half, table }
+    }
+
+    /// The windowed sinc `d` input samples from the output's position.
+    fn weight(d: f64, half: i64, cutoff: f64) -> f64 {
+        let arg = std::f64::consts::PI * d * cutoff;
+        let sinc = if d.abs() < 1e-9 { 1.0 } else { arg.sin() / arg };
+        let w = d / half as f64; // −1..1 across the kernel
+        let win = 0.42 + 0.5 * (std::f64::consts::PI * w).cos() + 0.08 * (2.0 * std::f64::consts::PI * w).cos();
+        sinc * win
     }
 
     /// Output sample `i`, from input `x` that starts at absolute index `offset`.
     fn sample(&self, i: usize, x: &[f32], offset: usize) -> f32 {
+        if let Some(t) = &self.table {
+            let iq = i as u64 * t.q;
+            let first = (iq / t.p) as i64 - self.half + 1 - offset as i64;
+            // The whole kernel within `x` (all but the stream's very start).
+            if first >= 0 && first as usize + t.taps <= x.len() {
+                let phase = (iq % t.p) as usize;
+                let w = &t.w[phase * t.taps..(phase + 1) * t.taps];
+                return w.iter().zip(&x[first as usize..]).map(|(a, b)| a * b).sum();
+            }
+        }
         let t = i as f64 * self.ratio;
         let center = t.floor() as i64;
         let (mut acc, mut norm) = (0f64, 0f64);
@@ -152,12 +209,7 @@ impl Kernel {
             if j < 0 || j as usize >= x.len() {
                 continue;
             }
-            let d = t - k as f64;
-            let arg = std::f64::consts::PI * d * self.cutoff;
-            let sinc = if d.abs() < 1e-9 { 1.0 } else { arg.sin() / arg };
-            let w = d / self.half as f64; // −1..1 across the kernel
-            let win = 0.42 + 0.5 * (std::f64::consts::PI * w).cos() + 0.08 * (2.0 * std::f64::consts::PI * w).cos();
-            let h = sinc * win;
+            let h = Self::weight(t - k as f64, self.half, self.cutoff);
             acc += x[j as usize] as f64 * h;
             norm += h;
         }
@@ -202,7 +254,7 @@ impl StreamResampler {
             return x.to_vec();
         }
         self.buf.extend_from_slice(x);
-        let k = self.kernel;
+        let k = &self.kernel;
         let have = (self.offset + self.buf.len()) as i64;
         let mut out = Vec::new();
         while (self.next as f64 * k.ratio).floor() as i64 + k.half < have {
@@ -346,6 +398,33 @@ mod tests {
         drop(mic);
         println!("{got} samples in a second");
         assert!((14_000..18_000).contains(&got), "{got}");
+    }
+
+    #[test]
+    fn the_tabled_kernel_gives_what_working_it_out_gives() {
+        // 44.1 kHz has 160 phases; every tabled sample against the slow path's.
+        let x = sine(1234.0, 44_100, 0.2);
+        let tabled = Kernel::new(44_100, 16_000);
+        assert_eq!(tabled.table.as_ref().map(|t| t.p), Some(160));
+        let slow = Kernel { table: None, ..tabled.clone() };
+        for i in (100..3000).step_by(7) {
+            assert!((tabled.sample(i, &x, 0) - slow.sample(i, &x, 0)).abs() < 1e-4, "{i}");
+        }
+        assert!(Kernel::new(16_000, 16_000).table.is_none());
+    }
+
+    /// What resampling the microphone costs (`cargo test --release
+    /// resampling_costs -- --ignored --nocapture`).
+    #[test]
+    #[ignore]
+    fn resampling_costs() {
+        for rate in [48_000, 44_100] {
+            let x = sine(440.0, rate, 10.0);
+            let mut rs = StreamResampler::new(rate, 16_000);
+            let t = std::time::Instant::now();
+            let n: usize = x.chunks(480).map(|b| rs.push(b).len()).sum();
+            println!("{rate} Hz: {n} samples, {:.2}% of a core", 100.0 * t.elapsed().as_secs_f64() / 10.0);
+        }
     }
 
     #[test]

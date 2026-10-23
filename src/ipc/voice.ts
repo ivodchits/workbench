@@ -76,6 +76,13 @@ export interface VoiceConfig {
   cue: boolean;
   /** Save the phone's conversation runs for measuring its echo (V7). */
   recordPhone: boolean;
+  /** Listen for "Hey Duck" (step V6), how eagerly (0..1), deaf in full screen and on
+   *  battery, and keep false triggers' audio. */
+  wake: boolean;
+  wakeSensitivity: number;
+  wakeFullScreen: boolean;
+  wakeBattery: boolean;
+  wakeKeepClips: boolean;
 }
 
 export type Press = "conversation" | "dictation";
@@ -143,6 +150,31 @@ export function onConversationState(cb: (s: ConversationState) => void): Promise
 
 export function onVoiceTurn(cb: (t: VoiceTurn) => void): Promise<UnlistenFn> {
   return listen<VoiceTurn>("voice-turn", (e) => cb(e.payload));
+}
+
+// ── the wake word (step V6) ──
+
+/** Why the wake word has let the microphone go: conversation mode or a dictation
+ *  has it, another app does (a call), a full-screen app is in front, on battery. */
+export type WakeHold = "busy" | "call" | "full_screen" | "battery";
+
+export interface WakeState {
+  on: boolean;
+  /** The microphone is open and "Hey Duck" would be heard. */
+  listening: boolean;
+  hold: WakeHold | null;
+  error: string | null;
+}
+
+export const voiceWakeState = (): Promise<WakeState> => invoke("voice_wake_state");
+
+export function onWakeState(cb: (s: WakeState) => void): Promise<UnlistenFn> {
+  return listen<WakeState>("wake-state", (e) => cb(e.payload));
+}
+
+/** The tray's "Listen for 'Hey Duck'" was clicked: the setting it asks for. */
+export function onWakeToggle(cb: (on: boolean) => void): Promise<UnlistenFn> {
+  return listen<boolean>("wake-toggle", (e) => cb(e.payload));
 }
 
 /** The microphone's loudness, 0..1, every 100 ms while conversation mode listens. */

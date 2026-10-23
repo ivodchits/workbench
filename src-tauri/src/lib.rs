@@ -273,6 +273,7 @@ pub fn run() {
             voice::voice_ptt,
             voice::voice_toggle,
             voice::voice_devices,
+            voice::voice_wake_state,
             voice::voice_conversation,
             voice::voice_conversation_on,
             voice::voice_conversation_patience,

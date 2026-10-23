@@ -84,6 +84,9 @@ tauri-plugin-autostart = "~2.5.1"
 ort = { version = "=2.0.0-rc.12", default-features = false, features = ["std", "ndarray", "load-dynamic", "api-24"] }
 ndarray = "0.17"
 zip = { version = "2", default-features = false, features = ["deflate"] }
+# Step V6: the wake word's model comes as sherpa-onnx's .tar.bz2 (pure-Rust bzip2).
+bzip2 = "0.6"
+tar = { version = "0.4", default-features = false }
 tauri-plugin-global-shortcut = "~2.3"
 cpal = "0.16"
 xcap = "0.9.8"
@@ -119,5 +122,7 @@ windows = { version = "0.61", features = [
     "Win32_System_Com_StructuredStorage",
     "Win32_System_Variant",
     "Win32_UI_Shell_PropertiesSystem",
+    # Step V6: whether another app has the microphone (the privacy store).
+    "Win32_System_Registry",
 ] }
 

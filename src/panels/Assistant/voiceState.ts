@@ -26,6 +26,12 @@
 //   listened by itself). You reply with the key or the drawer's mic: turned on
 //   within a minute of an announcement said in full, it opens that thread first,
 //   so what you say goes there.
+//
+// The wake word (step V6, `wake` and the four after it): the backend listens for
+// "Hey Duck" while it's on, and says how (`wake-state`: listening, or why it's
+// deaf), for the ear on the Duck button. What it hears after the phrase comes
+// back as a transcript, like push-to-talk. The tray's check item asks to flip the
+// setting (`wake-toggle`), which is kept here like the rest.
 
 import { useSyncExternalStore } from "react";
 import { fixNames, voiceMessage } from "../../assistant/voiceNames";
@@ -40,11 +46,15 @@ import {
   voiceConversation,
   voiceConversationOn,
   voiceConversationPatience,
+  onWakeState,
+  onWakeToggle,
+  voiceWakeState,
   type ConversationPhase,
   type ConversationState,
   type Transcript,
   type VoicePhase,
   type VoiceTurn,
+  type WakeState,
 } from "../../ipc/voice";
 import { getRegistry } from "../../state/registry";
 import { modeOf, patienceFor, type Patience } from "../../assistant/modes";
@@ -79,6 +89,11 @@ export const DEFAULT_VOICE: VoicePrefs = {
   autoOffMin: 5,
   cue: true,
   recordPhone: false,
+  wake: false,
+  wakeSensitivity: 0.5,
+  wakeFullScreen: true,
+  wakeBattery: true,
+  wakeKeepClips: false,
 };
 
 /** Turning the mic on this soon after an announcement replies to it. */
@@ -113,7 +128,11 @@ export interface VoiceState {
   keyProblem: string | null;
   conversation: Conversation;
   echo: EchoMeasured | null;
+  /** The wake word as the backend last said (V6). */
+  wake: WakeState;
 }
+
+const WAKE_OFF: WakeState = { on: false, listening: false, hold: null, error: null };
 
 const OFF: Conversation = {
   on: false,
@@ -132,6 +151,7 @@ let state: VoiceState = {
   keyProblem: null,
   conversation: OFF,
   echo: null,
+  wake: WAKE_OFF,
 };
 const listeners = new Set<() => void>();
 let level = 0;
@@ -169,9 +189,31 @@ function configure(prefs: VoicePrefs): void {
     autoOffMin: prefs.autoOffMin,
     cue: prefs.cue,
     recordPhone: prefs.recordPhone ?? false,
+    wake: prefs.wake ?? false,
+    wakeSensitivity: prefs.wakeSensitivity ?? 0.5,
+    wakeFullScreen: prefs.wakeFullScreen ?? true,
+    wakeBattery: prefs.wakeBattery ?? true,
+    wakeKeepClips: prefs.wakeKeepClips ?? false,
   })
     .then(() => set({ keyProblem: null }))
     .catch((e: unknown) => set({ keyProblem: String(e) }));
+}
+
+/** What the wake word is doing, in a line (V6). */
+export function wakeLine(w: WakeState): string {
+  if (w.error) return w.error;
+  switch (w.hold) {
+    case "busy":
+      return "Paused: conversation mode or a dictation has the microphone.";
+    case "call":
+      return "Deaf: another app is using the microphone (a call?).";
+    case "full_screen":
+      return "Deaf: a full-screen app is in front.";
+    case "battery":
+      return "Deaf: the PC is on battery.";
+  }
+  if (w.listening) return "Listening for “Hey Duck”: the ear on the Duck button shows it.";
+  return w.on ? "Starting (the first time, its 33 MB model downloads)…" : "Off.";
 }
 
 /** Change the voice prefs: stored, and handed to the backend. */
@@ -351,6 +393,9 @@ export function initVoice(): Promise<void> {
     });
     onAnnounced(heardAnnouncement);
     subscribeDuck(pausesHere);
+    await onWakeState((wake) => set({ wake }));
+    await onWakeToggle((on) => setVoicePrefs({ wake: on }));
+    set({ wake: await voiceWakeState().catch(() => WAKE_OFF) });
     // After a reload, the mode may still be on.
     if (await voiceConversationOn().catch(() => false))
       set({ conversation: { ...OFF, on: true, phase: "listening" } });

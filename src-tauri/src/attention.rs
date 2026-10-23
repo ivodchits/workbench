@@ -7,7 +7,7 @@
 //! mutate it after creation.
 
 use std::sync::Mutex;
-use tauri::{AppHandle, Manager, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_notification::NotificationExt;
 
 /// Managed tray state. The icon is `Option` because creation can fail (headless
@@ -84,8 +84,14 @@ fn on_tray_event(tray: &tauri::tray::TrayIcon, event: tauri::tray::TrayIconEvent
 /// tick it when it's flipped elsewhere.
 struct TrustItem(tauri::menu::CheckMenuItem<tauri::Wry>);
 
+/// "Listen for 'Hey Duck'" (step V6): ticked while the wake word is on.
+struct WakeItem(tauri::menu::CheckMenuItem<tauri::Wry>);
+
 const MENU_SHOW: &str = "show";
 const MENU_TRUST: &str = "duck-trust";
+const MENU_WAKE: &str = "duck-wake";
+/// The webview owns the voice settings: the tray asks it to flip the wake word.
+const WAKE_TOGGLE_EVENT: &str = "wake-toggle";
 const MENU_EXIT: &str = "exit";
 
 /// The right-click menu: bring the window back, Duck's kill switch, which works
@@ -101,10 +107,12 @@ fn tray_menu(app: &AppHandle) -> tauri::Result<tauri::menu::Menu<tauri::Wry>> {
         crate::assistant::trust_paused(app),
         None::<&str>,
     )?;
+    let wake = CheckMenuItem::with_id(app, MENU_WAKE, "Listen for \"Hey Duck\"", true, false, None::<&str>)?;
     let sep = PredefinedMenuItem::separator(app)?;
     let exit = MenuItem::with_id(app, MENU_EXIT, "Exit Workbench", true, None::<&str>)?;
-    let menu = Menu::with_items(app, &[&show, &trust, &sep, &exit])?;
+    let menu = Menu::with_items(app, &[&show, &trust, &wake, &sep, &exit])?;
     app.manage(TrustItem(trust));
+    app.manage(WakeItem(wake));
     Ok(menu)
 }
 
@@ -116,6 +124,12 @@ fn on_menu_event(app: &AppHandle, event: tauri::menu::MenuEvent) {
             if let Err(e) = crate::assistant::set_trust_paused(app, paused) {
                 eprintln!("[tray] trust: {e}");
             }
+        }
+        MENU_WAKE => {
+            // The item ticked itself; the webview turns the setting to match, and
+            // `set_wake_check` keeps it right from there.
+            let on = app.try_state::<WakeItem>().and_then(|i| i.0.is_checked().ok()).unwrap_or(false);
+            let _ = app.emit(WAKE_TOGGLE_EVENT, on);
         }
         // Quits the whole app, hidden windows too, in order (`shutdown`).
         MENU_EXIT => crate::shutdown::exit(app),
@@ -141,6 +155,13 @@ pub fn set_voice(app: &AppHandle, voice: Option<&str>) {
     if t.voice.as_deref() != voice {
         t.voice = voice.map(str::to_string);
         t.refresh();
+    }
+}
+
+/// Tick or clear the tray's "Listen for 'Hey Duck'" (step V6).
+pub fn set_wake_check(app: &AppHandle, on: bool) {
+    if let Some(item) = app.try_state::<WakeItem>() {
+        let _ = item.0.set_checked(on);
     }
 }
 

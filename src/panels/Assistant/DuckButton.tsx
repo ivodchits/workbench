@@ -6,6 +6,8 @@
 //
 // Beside it (V5): the speaker, Speak on or off (Duck's voice on this PC), and a
 // moon while Do Not Disturb is on. Right-click the button for Do Not Disturb.
+//
+// An ear on the button (V6) while the wake word listens for "Hey Duck".
 
 import { useEffect, useRef, useState } from "react";
 import { runCommand, useBindings } from "../../keyboard";
@@ -15,6 +17,7 @@ import { nextMorning } from "../../assistant/announce";
 import { DND_FOREVER } from "../../assistant/settings";
 import { setDnd, useDuckState } from "./duckState";
 import { setSpeakOn, useSpeechState } from "./replySpeech";
+import { useVoiceState } from "./voiceState";
 
 function untilText(until: number): string {
   if (until >= DND_FOREVER) return "until you turn it off";
@@ -36,6 +39,7 @@ export default function DuckButton() {
   const [tip, setTip] = useState(false);
   const [menu, setMenu] = useState(false);
   const speech = useSpeechState();
+  const listening = useVoiceState().wake.listening;
   const [, tick] = useState(0);
   const timer = useRef<number | undefined>(undefined);
 
@@ -75,7 +79,8 @@ export default function DuckButton() {
     `Duck: ${ACRONYM.map(([l, r]) => l + r).join(", ")}. ${shortcut}` +
     (asks ? `. ${asks} waiting for your confirmation` : "") +
     (unread ? `. ${unread} unread in other threads` : "") +
-    (paused ? ". Trust paused" : "");
+    (paused ? ". Trust paused" : "") +
+    (listening ? '. Listening for "Hey Duck"' : "");
 
   return (
     <div
@@ -124,6 +129,11 @@ export default function DuckButton() {
       >
         D.U.C.K.
         {paused && <span title="trust paused">⏸</span>}
+        {listening && (
+          <span title='Listening for "Hey Duck"' style={{ letterSpacing: 0, filter: "grayscale(0.6)", fontSize: 10.5 }}>
+            👂
+          </span>
+        )}
         {unread > 0 && asks === 0 && (
           <span title={`${unread} unread`} style={{ color: "var(--wb-accent)", letterSpacing: 0 }}>
             ● {unread}

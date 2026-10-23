@@ -5,8 +5,8 @@ behind each decision are in `assistant-plan.md`. This file describes the code, a
 Duck step updates it as part of its Done when. Duck's self-development sessions (L3)
 read it first.
 
-Last updated: step B2 (2026-10-22). L3 audited it against the code. Since W5 it also
-covers W6, D2, D4, P1, P2, M2, M3, A5, A6, A7, W4, L1, L2, L3, L4, R1, R2, R3, B1, B2, T3, D3, V1 to V5, V7,
+Last updated: step V6 (2026-10-22). L3 audited it against the code. Since W5 it also
+covers W6, D2, D4, P1, P2, M2, M3, A5, A6, A7, W4, L1, L2, L3, L4, R1, R2, R3, B1, B2, T3, D3, V1 to V7,
 V8, S1, S2, X1 and the morning routine. A fresh session changing Duck: read "The shape", then "Where to
 change X" at the end, then the module rows it points to.
 
@@ -170,9 +170,9 @@ prompt's safety rules cover them.
 | `MemoryView.tsx` | The Memory view (L1): the long-term memory by topic, a search over it and the notes, per entry "edit" (the file in the "Duck" project's editor) and "forget", and "don't remember this conversation" for the open thread (a `thread.memory` request, which posts a `memoryOff` notice). L2: the last tidy with what it changed, "tidy now" (`tidyMemory` from `index.ts`), and the past 14 days' recall numbers (`assistant_recall_stats`). |
 | `TasksView.tsx` | The Tasks view (D2): worker tasks newest first, with headline, cost for an API worker, and ways on (open `result.md`, save to notes, open the console, go to the thread). |
 | `OverviewView.tsx` | Every thread at a glance (A5): what each does, its news since you looked, its autopilots and tasks; no model call. |
-| `AnnounceSettings.tsx` / `SpeechSettings.tsx` / `VoiceSettings.tsx` | Settings tabs for announcements (V5), spoken replies (V2: engine, voices, rate, Chirp fallback, downloads) and voice input (V1, V4: the key, microphone, speech-to-text, conversation mode, talking over Duck). |
+| `AnnounceSettings.tsx` / `SpeechSettings.tsx` / `VoiceSettings.tsx` | Settings tabs for announcements (V5), spoken replies (V2: engine, voices, rate, Chirp fallback, downloads) and voice input (V1, V4: the key, microphone, speech-to-text, conversation mode, talking over Duck; V6: the wake word's switch, sensitivity slider, when it stays deaf, and what it's doing, `wakeLine`). |
 | `GoogleSettings.tsx` | The "google auth" tab: the OAuth client id, connect/disconnect and the `cmdkey` hint for the client secret; and whether the Chirp speech key is stored, with this month's use (which voice to use stays in the voice tab). |
-| `voiceState.ts` | Push-to-talk (V1) and conversation mode (V4, the key's default): voice prefs, the HUD, and where a transcript goes (names fixed, then sent to the open thread as `voice`, or into the composer). |
+| `voiceState.ts` | Push-to-talk (V1) and conversation mode (V4, the key's default): voice prefs, the HUD, and where a transcript goes (names fixed, then sent to the open thread as `voice`, or into the composer). V6: the wake word's prefs (`wake`, `wakeSensitivity`, `wakeFullScreen`, `wakeBattery`, `wakeKeepClips`), its `wake-state` (the ear on `DuckButton.tsx`), and the tray's `wake-toggle`. |
 | `replySpeech.ts` | Spoken replies on the desktop (V2): which replies are spoken, fed to `src-tauri/src/voice/tts.rs` a sentence at a time as they stream; a stock acknowledgement when nothing is said in time. |
 | `VoiceOverlay.tsx` | The listening sign, the `voice-overlay` window's page. |
 | `DuckAvatar.tsx` / `duckCanvas.ts` / `duck3d.ts` | The ASCII duck: a raymarched 3D rubber duck in characters (`duck3d.ts`, pure), its frame loop (`duckCanvas.ts`, shared with the phone), and the drawer's component; the beak follows the speech level. |
@@ -216,7 +216,8 @@ prompt's safety rules cover them.
   Kokoro, Silero, Chirp), presence for announcements, screen capture and the listening
   overlay window. Models download on first use. V7: a phone's conversation runs through
   the same canceller (see "The phone's echo" below), and `phone_record.rs` saves its
-  runs for measuring that echo.
+  runs for measuring that echo. V6: the wake word (`wake.rs`, on the keyword spotter
+  `kws.rs`; see "Hey Duck" below).
 - `src-tauri/src/remote/assistant.rs` (R1): the remote server's `/api/assistant`
   WebSocket carrying the Duck Protocol, `/api/assistant/audio` (a phone's speech,
   transcribed with V1's model) and `/api/assistant/tts/{id}` (a sentence the desktop
@@ -664,6 +665,39 @@ sentences played, every event at its sample). `tools/voice-eval/score_phone.py` 
 them chain by chain, and the ignored test `barge_in_on_a_phone_recording` replays one
 through the Rust chain.
 
+## "Hey Duck" (step V6)
+
+An experiment, off by default: with it on, the PC's microphone stays open and "Hey Duck"
+/ «Эй, Дак» starts a request without the key.
+
+- **The spotter** (`voice/kws.rs`): sherpa-onnx's keyword spotter ported to our ONNX
+  Runtime, on its `kws-zipformer-zh-en-3M-2025-12-20` model (phones as tokens, so the
+  phrases are given as their sounds, `KEYWORDS`). Kaldi's filterbank, the streaming
+  zipformer (its cached states found by name: every input but `x`, fed back from
+  `new_<input>`), and sherpa's keyword beam search over an Aho-Corasick graph. The
+  model downloads on first use (`assets::fetch_kws`: sherpa's `.tar.bz2`, four files
+  kept).
+- **The ear** (`voice/wake.rs`, `Ear`): Silero VAD on every 32 ms frame; speech wakes the
+  spotter, fed from half a second before it; a second of silence puts it back to sleep.
+  A hit records from just before the phrase to 0.8 s of silence (`Heard::Clip`).
+- **The verdict** (`confirm`): V1's engine transcribes the clip. The phrase near the
+  start (exact spellings, the ones Parakeet writes included: "Hey Doc", «Эй, Даг»)
+  with words after it sends those words as a transcript (`voice-transcript`, like
+  push-to-talk); the phrase alone chimes, then starts conversation mode, or for the
+  "one message" key a dictation that ends at a pause (`Ear::follow`). No phrase:
+  logged, nothing sent.
+- **Deaf** (`Hold`): while Duck speaks; with the microphone let go while conversation
+  mode or a dictation has it (they take it at once), while another app uses it
+  (`another_app_on_mic`: Windows' privacy store, this app skipped), a full-screen app is
+  in front, or on battery.
+- **The trigger log**: `<voice-eval data>/wake/triggers.jsonl` (when, the keyword, the
+  score, the outcome; never the words), false triggers' audio beside it with the
+  setting.
+- **Measuring**: `wake_bench` (an ignored test) runs the ear over clips and long
+  recordings; `kws_matches_sherpa` checks the port against sherpa-onnx's own hits.
+- **The tray**: "Listen for "Hey Duck"" (`attention.rs`, `set_wake_check`); a click asks
+  the webview to flip the setting (`wake-toggle`).
+
 ## The phone as an app (step R3)
 
 The PWA installs on Android as an app (a WebAPK, from the https Funnel address), and
@@ -743,7 +777,9 @@ Duck is one tap from its icon.
 - **Memory**: files and index in `memory.rs`; recall in `memory.ts`; the nightly tidy in
   `consolidate.ts` and its prompt in `PRIMITIVES.consolidate`; core memory in `core.ts`.
 - **Voice**: `src-tauri/src/voice/` (speech in and out), `speakable.ts`, `replySpeech.ts`,
-  `voiceState.ts`; announcements in `announce.ts`. A phone's echo: `aec.rs` (`Feed`),
+  `voiceState.ts`; announcements in `announce.ts`. The wake word: its phrases and their
+  spellings in `kws.rs` (`KEYWORDS`) and `wake.rs` (`HEY`, `DUCK`), its timings at the top
+  of `wake.rs`. A phone's echo: `aec.rs` (`Feed`),
   `conversation.rs` (`Surface::reference`, `BargeCheck`), the `Phone` surface in
   `remote/assistant.rs`, and the page's `conv.said` in `src/pwa/duck.ts`.
 - **The phone app's shortcuts, sharing and start view**: the manifest
@@ -771,6 +807,11 @@ being discussed or translated, or an explicit request. Thread titles are English
 Both rules are in `prompt.ts`.
 
 ## Not built yet
+
+- The wake word (V6) live: built and measured on recordings (no spots in 6.3 h of
+  speech without the phrase; 81 of 84 synthetic English and 9 of 15 Russian caught),
+  not yet tried in your room: the TV test, real attempts in both languages, CPU over a
+  day. Off by default until then.
 
 - B2 live: the host is checked against your real bridge (an ignored test: it starts,
   lists, answers, and its tree dies on stop). Not yet tried in the app: GitHub

@@ -4438,6 +4438,81 @@ up ("change this", with a circle around it).
   - If it misses the numbers after tuning, it ships off, with the numbers recorded.
 - **Out of scope:** the phone (not wanted, 2026-10-20); speaker identification; other
   wake phrases.
+- **As built (2026-10-22):** off by default; the numbers below are from recordings, and
+  the room test and real attempts wait for you.
+  - **The engine** (`src-tauri/src/voice/kws.rs`): sherpa-onnx's keyword spotter ported
+    to our ONNX Runtime, not linked as a library (it brings its own runtime).
+    - **Model: `kws-zipformer-zh-en-3M-2025-12-20`**, not the English gigaspeech one the
+      research assumed. Its tokens are phones, so «Эй, Дак» can be spelled as it sounds:
+      four spellings, `HH EY1 D AH1 K`, `EY1 D AH1 K`, `EY1 D AA1 K`, `HH EY1 D AA1 K`.
+      On the synthetic clips below, the gigaspeech model (BPE tokens) caught 8 of 15
+      Russian ones, this one 13.
+    - Kaldi's filterbank (matches kaldi-native-fbank to 1e-4), the streaming zipformer
+      with its states found by name, and sherpa's keyword beam search and Aho-Corasick
+      graph. Against sherpa-onnx itself on 348 clips: the same verdict on 343; the five
+      that differ are borderline both ways.
+    - Downloads on first use: sherpa's `.tar.bz2` (33 MB, pinned by hash), four files
+      kept (6 MB). New dependencies `bzip2` (pure Rust) and `tar`.
+    - Sensitivity 0..1 sets the boost and threshold; 0.5 is sherpa's defaults.
+  - **The ear** (`src-tauri/src/voice/wake.rs`):
+    - Silero VAD on every frame; speech wakes the spotter, fed from 0.5 s before it; 1 s
+      of silence puts it back to sleep. The spotter's thread runs below normal
+      priority, on the CPU.
+    - A hit records from 0.3 s before the phrase's first sound (the spotter reports
+      where the keyword started) to 0.8 s of silence, 15 s at most. The speech model
+      starts loading at the hit.
+    - **The verdict** (`confirm`): exact spellings, not fuzzy (one letter off «дак» is
+      «так», «как»). Parakeet hears "Hey Duck" as "Hey Doc" more often than not, and
+      «Эй, Дак» as «Эй, Даг», so those count. The phrase may start up to three words
+      in.
+      - With words after it: they go to Duck as a transcript, like push-to-talk.
+      - Alone: the chime, then conversation mode (the key's default), or, for the
+        "one message" key, a dictation that ends at 1.2 s of silence (8 s with nothing
+        said gives up).
+      - No phrase: logged, nothing sent.
+    - **Deaf** while Duck speaks (and 0.4 s after). The microphone is let go while
+      conversation mode or a dictation has it (checked on every block, so the key and
+      the button work as before), while another app has it (Windows' privacy store,
+      `CapabilityAccessManager`; a stop time of 0 means in use, this app's own entry
+      skipped), while a full-screen app is in front, and on battery (both settings, on
+      by default).
+    - **The trigger log**: `<voice-eval data>/wake/triggers.jsonl`, with the time, the
+      keyword, the score, the outcome and the transcription time, never the words. A
+      false trigger's audio goes beside it only with "keep false wakes' audio".
+  - **Controls**:
+    - Voice settings: the switch, a sensitivity slider (applied when let go; each change
+      restarts the spotter), the two deaf settings, the clips setting, and a line saying
+      what it's doing.
+    - Tray: "Listen for "Hey Duck"". A click asks the webview to flip the setting.
+    - An ear on the Duck button while it listens.
+  - **Also fixed:** the microphone's resampler worked out its sinc weights per tap (three
+    trig calls each, by count about 7% of a core at 48 kHz, more than the whole
+    budget). They're now tabled per phase: 0.07% at 48 and 44.1 kHz. Conversation mode
+    gains the same.
+  - **Measured** (`wake_bench`, an ignored test, release build):
+    - **Synthetic clips:** Kokoro's 28 English voices and Silero's 5 Russian ones, each
+      saying the phrase alone and with a request, plus near misses.
+      - English with the phrase: 82 of 84 spotted, 81 confirmed.
+      - Russian with the phrase: 10 of 15 spotted, 9 confirmed. The misses sit on the
+        threshold: the same clip hits or misses as the 0.32 s chunks shift. Sensitivity
+        0.8 adds one spot and no confirmation.
+      - Near misses: "Hey doc, I need an appointment" is confirmed in every voice (a
+        homophone here). The others ("Hey Doug", "hey, look at that duck", «эй, так
+        нельзя», «Эй, Даша») never were: 27 of 224 English and 0 of 25 Russian, the 27
+        all "hey doc".
+    - **No wake word:** LibriSpeech test-clean (5.4 h of read English) and X0's
+      recordings (0.9 h: your monologues, the STT prompts in both languages, the echo
+      runs): **no spots at all**, so nothing to confirm.
+    - **CPU:** the ear (VAD and spotter) costs 1.3–1.7% of a core on audio that's speech
+      all the way through, its worst case. In a quiet room only the VAD runs.
+  - **Not done yet** (the done-when needs you):
+    - The room test: TV, YouTube and call audio played into the room for hours, and
+      everyday use, read from the trigger log.
+    - Real attempts at desk distance in both languages, aiming for 9 of 10. The
+      synthetic Russian numbers suggest Russian is the weak side; a lower threshold, or
+      openWakeWord as the plan's second engine, is the next step if it is.
+    - CPU in the app over a day.
+    - Whether it ships on or off after that.
 
 #### Step V7 — Duck stops hearing itself on the phone (high priority, added 2026-10-22)
 
@@ -7388,7 +7463,7 @@ T2 goes live after the replay check in its done-when (the past week's prompts th
 | V3 | Read-aloud and screen reading | ☑ (the desktop's speakers not tried live) |
 | V4 | Hands-free conversation mode | ☑ (live: talking over Duck on speakers, and the phone, not tried yet) |
 | V5 | Proactive announcements | ☑ (the reply window built with V4) |
-| V6 | Wake word on the PC (experimental) | ☐ |
+| V6 | Wake word on the PC (experimental) | ☐ (built 2026-10-22, off by default; done when measured in your room) |
 | V7 | Duck stops hearing itself on the phone (high priority) | ☐ (built 2026-10-22; done when measured on your phone) |
 | V8 | Announcements don't turn the mic on (small fix) | ☑ |
 | L1 | Long-term memory: files, index, recall | ☑ (not tried in the app yet) |

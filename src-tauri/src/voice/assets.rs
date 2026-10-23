@@ -82,6 +82,55 @@ pub const RUNTIME_WHEEL: Asset = Asset {
 };
 pub const RUNTIME_FILES: &[&str] = &["onnxruntime.dll", "DirectML.dll", "onnxruntime_providers_shared.dll"];
 
+/// The wake word's keyword spotter (step V6): sherpa-onnx's release archive, of
+/// which the int8 encoder and joiner, the decoder and the tokens are kept (6 MB).
+pub const KWS_ARCHIVE: Asset = Asset {
+    path: "sherpa-onnx-kws-zipformer-zh-en-3M-2025-12-20.tar.bz2",
+    url: "https://github.com/k2-fsa/sherpa-onnx/releases/download/kws-models/sherpa-onnx-kws-zipformer-zh-en-3M-2025-12-20.tar.bz2",
+    size: 32_885_699,
+    sha256: "68447f4fbc67e70eee3a93961f36e81e98f47aef73ce7e7ca00885c6cd3616a6",
+};
+
+fn kws_files() -> [&'static str; 4] {
+    use super::kws;
+    [kws::ENCODER, kws::DECODER, kws::JOINER, kws::TOKENS]
+}
+
+/// Is the spotter unpacked?
+pub fn kws_present(root: &Path) -> bool {
+    kws_files().iter().all(|f| root.join(super::kws::DIR).join(f).is_file())
+}
+
+/// Download and unpack the spotter unless it's there.
+pub fn fetch_kws(root: &Path, progress: &mut dyn FnMut(u64)) -> Result<PathBuf, String> {
+    let dir = root.join(super::kws::DIR);
+    if kws_present(root) {
+        return Ok(dir);
+    }
+    let archive = fetch(root, &KWS_ARCHIVE, progress)?;
+    fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let file = File::open(&archive).map_err(|e| e.to_string())?;
+    let mut tar = tar::Archive::new(bzip2::read::BzDecoder::new(std::io::BufReader::new(file)));
+    let wanted = kws_files();
+    for entry in tar.entries().map_err(|e| e.to_string())? {
+        let mut entry = entry.map_err(|e| e.to_string())?;
+        let path = entry.path().map_err(|e| e.to_string())?.into_owned();
+        let Some(name) = path.file_name().and_then(|n| n.to_str()).filter(|n| wanted.contains(n)).map(str::to_string) else {
+            continue;
+        };
+        let tmp = dir.join(format!("{name}.part"));
+        let mut out = File::create(&tmp).map_err(|e| e.to_string())?;
+        std::io::copy(&mut entry, &mut out).map_err(|e| e.to_string())?;
+        drop(out);
+        fs::rename(&tmp, dir.join(&name)).map_err(|e| e.to_string())?;
+    }
+    if !kws_present(root) {
+        return Err("the archive is missing some of the spotter's files".into());
+    }
+    let _ = fs::remove_file(&archive);
+    Ok(dir)
+}
+
 /// Is `asset` in place (by its size)?
 pub fn present(root: &Path, asset: &Asset) -> bool {
     fs::metadata(root.join(asset.path)).is_ok_and(|m| m.len() == asset.size)
