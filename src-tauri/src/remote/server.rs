@@ -134,6 +134,7 @@ async fn run(listener: std::net::TcpListener, state: Arc<RemoteState>) -> std::i
         .route("/api/push/subscribe", post(super::push::subscribe))
         .route("/api/push/unsubscribe", post(super::push::unsubscribe))
         .route("/api/push/mute", post(super::push::mute))
+        .route("/api/push/test", post(super::push::test))
         // A reminder push's Done and Snooze (step H4): its one-use token is the key.
         .route("/api/reminders/action", post(super::push::reminder_action))
         .with_state(state);

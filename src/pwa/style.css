@@ -296,9 +296,9 @@ footer button { background: transparent; border: none; color: var(--dim); font-s
 body .wb-tx-open-plan { display: none; }
 
 /* Notifications toggle (step R6), above "forget this device". */
-#pushBtn { background: transparent; border: 1px solid var(--line); color: var(--accent); font-size: 13px; min-height: 40px; }
-#pushBtn.hidden { display: none; }
-#pushBtn:disabled { color: var(--dim); }
+#pushBtn, #pushTestBtn { background: transparent; border: 1px solid var(--line); color: var(--accent); font-size: 13px; min-height: 40px; }
+#pushBtn.hidden, #pushTestBtn.hidden { display: none; }
+#pushBtn:disabled, #pushTestBtn:disabled { color: var(--dim); }
 
 /* ── Duck (step R2) ────────────────────────────────────── */
 #duck-overlay {
