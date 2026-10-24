@@ -1,4 +1,5 @@
-//! Images pasted into the transcript view's composer.
+//! Images pasted into the transcript view's composer, on the desktop or the phone
+//! (`remote::uploads`).
 //!
 //! The composer hands prompts to the claude TUI as pasted text, so an image can't
 //! travel as clipboard content. It is saved here, under `<temp>/workbench-paste`,
@@ -27,6 +28,12 @@ pub fn pasted_image_dir() -> String {
 #[tauri::command]
 pub fn save_pasted_image(data: Vec<u8>, subtype: String) -> Result<String, String> {
     let ext = image_ext(&subtype).ok_or_else(|| format!("not an image type: {subtype}"))?;
+    save_image(&data, ext)
+}
+
+/// Save an image's bytes under a fresh name with `ext` (one of [`image_ext`]'s) and
+/// return the name. Also how the phone's images reach a session (`remote::uploads`).
+pub fn save_image(data: &[u8], ext: &str) -> Result<String, String> {
     let dir = paste_dir();
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let id = uuid::Uuid::new_v4().simple().to_string();

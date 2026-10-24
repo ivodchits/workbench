@@ -55,6 +55,7 @@ mod notes;
 pub mod push;
 mod server;
 mod transcript;
+mod uploads;
 
 use std::net::Ipv4Addr;
 use std::sync::atomic::AtomicU64;

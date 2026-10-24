@@ -41,8 +41,9 @@
 //   widget (conversation mode from the tile), runs the fast path's commands
 //   itself, and keeps conversation mode going with the screen off.
 // - G1: files go with a message: 📎 (the camera offered for images), a paste, or
-//   a share from another app. Each is uploaded at once (`uploads.ts`) and shown as
-//   a chip above the composer; the next typed or dictated message takes them.
+//   a share from another app. Each is uploaded at once (`uploads.ts`; a HEIC photo
+//   redrawn as a JPEG first, `images.ts`) and shown as a chip above the
+//   composer; the next typed or dictated message takes them.
 
 import { langOf, Sentences } from "../assistant/speakable";
 import {
@@ -82,6 +83,7 @@ import { micAvailable, record, type Recording } from "./mic";
 import { api, ApiError, checkAccess, openSocket } from "./net";
 import { SHARE_ASKS, shareBody, shareLines, shareMessage, STATUS_ASK, takeShare, TASK_LEAD, type Launch } from "./launch";
 import { createUploader } from "./uploads";
+import { pastedName, readyImage } from "./images";
 import { showDrawing, shownDrawing } from "./drawingView";
 import { openSketch } from "./sketch";
 import { sizeText, type AttachmentRef } from "../assistant/attachments";
@@ -282,7 +284,9 @@ async function pumpUploads(): Promise<void> {
     if (!f.voice) uploading++;
     paintFiles();
     try {
-      const file = await uploader.upload(f.blob, f.name);
+      // A photo Duck can't read as it is (HEIC) goes as a JPEG.
+      const ready = await readyImage(f.blob, f.name);
+      const file = await uploader.upload(ready.blob, ready.name);
       if (f.voice) voiceDone.push(file);
       else addStaged([file]);
     } catch (e) {
@@ -1827,7 +1831,7 @@ export function initDuck(d: typeof deps): void {
     const files = Array.from(e.clipboardData?.files ?? []);
     if (!files.length) return;
     e.preventDefault();
-    stageFiles(files.map((f) => ({ blob: f, name: f.name && f.name !== "image.png" ? f.name : `pasted-${Date.now()}.${f.type.split("/")[1] || "png"}` })));
+    stageFiles(files.map((f) => ({ blob: f, name: pastedName(f) })));
   });
   const sendBtn = $("duck-send");
   // Tapping send must not close the on-screen keyboard.

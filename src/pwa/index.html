@@ -132,7 +132,11 @@
           <button id="tx-deny" class="no" type="button">✗ deny</button>
           <button id="tx-answer" class="plain" type="button">terminal</button>
         </div>
+        <!-- Pictures and files waiting to go with the next prompt. -->
+        <div id="tx-files" class="duck-files hidden"></div>
         <div id="tx-composer">
+          <button id="tx-attach" type="button" aria-label="attach a picture or file">📎</button>
+          <input id="tx-file" type="file" multiple accept="image/*,*/*" hidden />
           <textarea id="tx-text" rows="1" placeholder="message Claude…" enterkeyhint="enter"></textarea>
           <button id="tx-stop" class="hidden" type="button">stop</button>
           <button id="tx-send" type="button">send</button>

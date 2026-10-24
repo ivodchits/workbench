@@ -42,6 +42,8 @@
 //!   `/api/ws`), the phone's voice clips and its spoken replies (auth: bearer).
 //! - `/api/notes…` — a project's notes, read and written through the N1 notes module
 //!   (step R8, [`super::notes`]). Auth: bearer.
+//! - `POST /api/session/upload?instance=&name=` — a picture or file for a session's
+//!   prompt, as the body ([`super::uploads`]). Auth: bearer.
 //!
 //! Auth is the parent's `check_token` (constant-time, approval and expiry aware); a
 //! grant also refreshes the device's `last_seen` and address. Both WebSockets refuse an
@@ -129,6 +131,11 @@ async fn run(listener: std::net::TcpListener, state: Arc<RemoteState>) -> std::i
         .route("/api/notes/save", post(super::notes::save))
         .route("/api/notes/rename", post(super::notes::rename))
         .route("/api/notes/delete", post(super::notes::delete))
+        // Files from the phone for a session's prompt ([`super::uploads`]).
+        .route(
+            "/api/session/upload",
+            post(super::uploads::session_upload).layer(DefaultBodyLimit::max(super::uploads::FILE_MAX)),
+        )
         // Web Push (step R6).
         .route("/api/push", get(super::push::status))
         .route("/api/push/subscribe", post(super::push::subscribe))
