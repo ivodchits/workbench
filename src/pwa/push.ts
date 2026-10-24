@@ -153,9 +153,15 @@ async function refresh(): Promise<void> {
     let status: Status;
     try {
       status = await api<Status>("/api/push");
-      if (!(await refreshApp(status))) return;
     } catch {
       return; // offline: leave the button as it was
+    }
+    try {
+      if (!(await refreshApp(status))) return;
+    } catch (e) {
+      // The app refused (an older app, a command it doesn't allow): say so.
+      show("notifications: not available in this app", app.reason(e), false);
+      return;
     }
     return showState(status, await localEndpoint(status));
   }

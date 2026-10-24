@@ -2217,10 +2217,10 @@
           "markdownDescription": "Denies the unminimize command without any pre-configured scope."
         },
         {
-          "description": "Default plugin permissions.\n#### This default permission set includes:\n\n- `allow-info`\n- `allow-run`\n- `allow-address`\n- `allow-set-address`\n- `allow-key-create`\n- `allow-key-sign`\n- `allow-key-drop`\n- `allow-token`\n- `allow-set-token`\n- `allow-launch`\n- `allow-reminders`\n- `allow-reminder-actions`\n- `allow-mic-start`\n- `allow-mic-stop`\n- `allow-widget-status`\n- `allow-recognize`\n- `allow-settings`\n- `allow-set-settings`\n- `allow-api-fetch`\n- `allow-api-abort`\n- `allow-phone-key`\n- `allow-set-phone-key`\n- `allow-phone-spend`\n- `allow-offline-get`\n- `allow-offline-put`\n- `allow-speak`\n- `allow-speak-stop`\n- `allow-register-listener`\n- `allow-remove-listener`",
+          "description": "Default plugin permissions.\n#### This default permission set includes:\n\n- `allow-info`\n- `allow-run`\n- `allow-address`\n- `allow-set-address`\n- `allow-key-create`\n- `allow-key-sign`\n- `allow-key-drop`\n- `allow-token`\n- `allow-set-token`\n- `allow-launch`\n- `allow-reminders`\n- `allow-reminder-actions`\n- `allow-mic-start`\n- `allow-mic-stop`\n- `allow-widget-status`\n- `allow-recognize`\n- `allow-settings`\n- `allow-set-settings`\n- `allow-api-fetch`\n- `allow-api-abort`\n- `allow-phone-key`\n- `allow-set-phone-key`\n- `allow-phone-spend`\n- `allow-offline-get`\n- `allow-offline-put`\n- `allow-speak`\n- `allow-speak-stop`\n- `allow-push-status`\n- `allow-push-register`\n- `allow-push-unregister`\n- `allow-register-listener`\n- `allow-remove-listener`",
           "type": "string",
           "const": "duck:default",
-          "markdownDescription": "Default plugin permissions.\n#### This default permission set includes:\n\n- `allow-info`\n- `allow-run`\n- `allow-address`\n- `allow-set-address`\n- `allow-key-create`\n- `allow-key-sign`\n- `allow-key-drop`\n- `allow-token`\n- `allow-set-token`\n- `allow-launch`\n- `allow-reminders`\n- `allow-reminder-actions`\n- `allow-mic-start`\n- `allow-mic-stop`\n- `allow-widget-status`\n- `allow-recognize`\n- `allow-settings`\n- `allow-set-settings`\n- `allow-api-fetch`\n- `allow-api-abort`\n- `allow-phone-key`\n- `allow-set-phone-key`\n- `allow-phone-spend`\n- `allow-offline-get`\n- `allow-offline-put`\n- `allow-speak`\n- `allow-speak-stop`\n- `allow-register-listener`\n- `allow-remove-listener`"
+          "markdownDescription": "Default plugin permissions.\n#### This default permission set includes:\n\n- `allow-info`\n- `allow-run`\n- `allow-address`\n- `allow-set-address`\n- `allow-key-create`\n- `allow-key-sign`\n- `allow-key-drop`\n- `allow-token`\n- `allow-set-token`\n- `allow-launch`\n- `allow-reminders`\n- `allow-reminder-actions`\n- `allow-mic-start`\n- `allow-mic-stop`\n- `allow-widget-status`\n- `allow-recognize`\n- `allow-settings`\n- `allow-set-settings`\n- `allow-api-fetch`\n- `allow-api-abort`\n- `allow-phone-key`\n- `allow-set-phone-key`\n- `allow-phone-spend`\n- `allow-offline-get`\n- `allow-offline-put`\n- `allow-speak`\n- `allow-speak-stop`\n- `allow-push-status`\n- `allow-push-register`\n- `allow-push-unregister`\n- `allow-register-listener`\n- `allow-remove-listener`"
         },
         {
           "description": "Enables the address command without any pre-configured scope.",
@@ -2305,6 +2305,24 @@
           "type": "string",
           "const": "duck:allow-phone-spend",
           "markdownDescription": "Enables the phone_spend command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the push_register command without any pre-configured scope.",
+          "type": "string",
+          "const": "duck:allow-push-register",
+          "markdownDescription": "Enables the push_register command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the push_status command without any pre-configured scope.",
+          "type": "string",
+          "const": "duck:allow-push-status",
+          "markdownDescription": "Enables the push_status command without any pre-configured scope."
+        },
+        {
+          "description": "Enables the push_unregister command without any pre-configured scope.",
+          "type": "string",
+          "const": "duck:allow-push-unregister",
+          "markdownDescription": "Enables the push_unregister command without any pre-configured scope."
         },
         {
           "description": "Enables the recognize command without any pre-configured scope.",
@@ -2479,6 +2497,24 @@
           "type": "string",
           "const": "duck:deny-phone-spend",
           "markdownDescription": "Denies the phone_spend command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the push_register command without any pre-configured scope.",
+          "type": "string",
+          "const": "duck:deny-push-register",
+          "markdownDescription": "Denies the push_register command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the push_status command without any pre-configured scope.",
+          "type": "string",
+          "const": "duck:deny-push-status",
+          "markdownDescription": "Denies the push_status command without any pre-configured scope."
+        },
+        {
+          "description": "Denies the push_unregister command without any pre-configured scope.",
+          "type": "string",
+          "const": "duck:deny-push-unregister",
+          "markdownDescription": "Denies the push_unregister command without any pre-configured scope."
         },
         {
           "description": "Denies the recognize command without any pre-configured scope.",

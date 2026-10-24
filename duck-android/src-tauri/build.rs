@@ -12,6 +12,8 @@ fn main() {
                     // The phone brain (H7).
                     "api_fetch", "api_abort", "phone_key", "set_phone_key", "phone_spend",
                     "offline_get", "offline_put", "speak", "speak_stop",
+                    // The desktop's pushes, through UnifiedPush (`Push.kt`).
+                    "push_status", "push_register", "push_unregister",
                     // `addPluginListener`'s, for the plugin's events.
                     "register_listener", "remove_listener",
                 ])
