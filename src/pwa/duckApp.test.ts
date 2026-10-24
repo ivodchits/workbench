@@ -56,6 +56,7 @@ describe("the app reconnecting (H7)", () => {
       listen: () => {},
       talk: () => {},
       open: () => {},
+      pushed: () => {},
       talkStopped: () => {},
       note: () => {},
     });
@@ -74,7 +75,7 @@ describe("the app reconnecting (H7)", () => {
 
   it("with nothing made offline, sends only the hello and the taps", async () => {
     const posted: string[] = [];
-    initApp({ post: (m) => void posted.push(m.type), live: () => true, listen: () => {}, talk: () => {}, open: () => {}, talkStopped: () => {}, note: () => {} });
+    initApp({ post: (m) => void posted.push(m.type), live: () => true, listen: () => {}, talk: () => {}, open: () => {}, pushed: () => {}, talkStopped: () => {}, note: () => {} });
     await connected();
     expect(posted).toEqual(["hello", "reminder.action"]);
   });

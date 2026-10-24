@@ -7,11 +7,12 @@ import androidx.activity.enableEdgeToEdge
 import org.json.JSONObject
 
 // The app's one activity (R4). Opened by the launcher, the assistant gesture
-// (`DuckSession`, over the lock screen), the tile, the widget, or a reminder;
-// what opened it goes to the page as a launch (`Launches`).
+// (`DuckSession`, over the lock screen), the tile, the widget, a reminder, or a
+// push (with the card or thread it names); what opened it goes to the page as a
+// launch (`Launches`).
 class MainActivity : TauriActivity() {
   companion object {
-    /** The intent extra naming why it opened: assist, talk, listen, open. */
+    /** The intent extra naming why it opened: assist, talk, listen, open, push. */
     const val LAUNCH = "duck.launch"
   }
 
@@ -36,7 +37,12 @@ class MainActivity : TauriActivity() {
       setShowWhenLocked(true)
       setTurnScreenOn(true)
     }
-    Launches.post(JSONObject().put("kind", kind))
+    val launch = JSONObject().put("kind", kind)
+    if (kind == "push") {
+      intent.getStringExtra("instanceId")?.let { launch.put("instanceId", it) }
+      intent.getStringExtra("threadId")?.let { launch.put("threadId", it) }
+    }
+    Launches.post(launch)
   }
 
   override fun onPause() {

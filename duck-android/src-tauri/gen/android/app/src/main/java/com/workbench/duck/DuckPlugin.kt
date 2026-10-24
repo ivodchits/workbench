@@ -12,6 +12,8 @@
 // - Reminders: `reminders` arms the desktop's list; `reminder_actions` hands over
 //   Done / Snooze taps (a `reminderActed` event says there are some).
 // - `widget_status`: the widget's line.
+// - Pushes (`Push.kt`): `push_status`, `push_register` (with the desktop's VAPID
+//   key), `push_unregister`; a `pushEndpoint` event says the endpoint changed.
 // - The phone brain (H7, `PhoneBrain.kt`): `api_fetch` / `api_abort` (a request
 //   to the API with the phone key, which the page never sees), `phone_key` /
 //   `set_phone_key`, `phone_spend`; `offline_get` / `offline_put` (what it made
@@ -88,6 +90,7 @@ class DuckPlugin(private val activity: Activity) : Plugin(activity) {
     this.webView = webView
     instance = this
     ReminderAlarms.channel(ctx)
+    Pushes.channel(ctx)
   }
 
   override fun onDestroy() {
@@ -108,6 +111,8 @@ class DuckPlugin(private val activity: Activity) : Plugin(activity) {
   }
 
   fun reminderActed() = trigger("reminderActed", JSObject())
+
+  fun pushEndpoint() = trigger("pushEndpoint", JSObject())
 
   // ── the phone host ──
 
@@ -253,6 +258,39 @@ class DuckPlugin(private val activity: Activity) : Plugin(activity) {
 
   @PermissionCallback
   private fun afterNotifyPermission(invoke: Invoke) = invoke.resolve()
+
+  // ── pushes ──
+
+  @Command
+  fun pushStatus(invoke: Invoke) = invoke.resolve(JSObject(Pushes.status(ctx).toString()))
+
+  @Command
+  fun pushRegister(invoke: Invoke) {
+    // Showing them needs the notification permission (Android 13+).
+    if (Build.VERSION.SDK_INT >= 33 && getPermissionState("notify") != PermissionState.GRANTED)
+      return requestPermissionForAlias("notify", invoke, "afterPushPermission")
+    register(invoke)
+  }
+
+  @PermissionCallback
+  private fun afterPushPermission(invoke: Invoke) {
+    if (getPermissionState("notify") != PermissionState.GRANTED) return invoke.reject("notifications aren't allowed for Duck")
+    register(invoke)
+  }
+
+  private fun register(invoke: Invoke) {
+    val vapid = invoke.getArgs().optString("vapid")
+    if (vapid.isEmpty()) return invoke.reject("no key to register with")
+    activity.runOnUiThread {
+      Pushes.register(activity, vapid) { err -> if (err == null) invoke.resolve() else invoke.reject(err) }
+    }
+  }
+
+  @Command
+  fun pushUnregister(invoke: Invoke) {
+    Pushes.unregister(ctx)
+    invoke.resolve()
+  }
 
   @Command
   fun reminderActions(invoke: Invoke) = invoke.resolve(JSObject().put("actions", Store.takeActions(ctx)))

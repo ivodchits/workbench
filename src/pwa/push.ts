@@ -4,15 +4,19 @@
 //
 // Browser rules shape this: push needs a secure page (the Funnel address, R3 —
 // not the plain tailnet one), permission can only be asked from a tap, and on
-// iPhone only an app added to the home screen may subscribe. Duck's Android app
-// (a WebView) has no push at all: there the button points to the browser's copy.
+// iPhone only an app added to the home screen may subscribe.
+//
+// Duck's Android app is a WebView, which has no Push API: there the subscription
+// comes from the phone's UnifiedPush distributor (ntfy, say) through the app
+// (`native.ts`, `Push.kt`). It is the same kind of Web Push endpoint, so the
+// desktop gets it the same way and pushes to it the same way.
 //
 // Muting is easy to do by accident and silent afterwards (the desktop just skips
 // the device), so the button says which state it's in, muting asks first, and
 // "send a test" checks the whole path and shows what the push service said.
 
 import { $ } from "./dom";
-import { inApp } from "./native";
+import * as app from "./native";
 import { api } from "./net";
 
 interface Status {
@@ -83,15 +87,77 @@ async function subscribe(status: Status): Promise<void> {
   await api("/api/push/subscribe", { body: sub.toJSON() });
 }
 
+// ── in Duck's app ──
+
+const REGISTER_WAIT_MS = 30_000;
+
+/** The app's endpoint, when it was made for the desktop's current key. */
+async function appEndpoint(status: Status): Promise<app.AppPush["endpoint"]> {
+  const p = await app.pushStatus();
+  return p.vapid === status.publicKey ? p.endpoint : null;
+}
+
+function sendAppEndpoint(e: NonNullable<app.AppPush["endpoint"]>): Promise<unknown> {
+  return api("/api/push/subscribe", { body: { endpoint: e.endpoint, keys: { p256dh: e.p256dh, auth: e.auth } } });
+}
+
+/** Register with the distributor and wait for its endpoint. */
+async function appSubscribe(status: Status): Promise<void> {
+  await app.pushRegister(status.publicKey);
+  const end = Date.now() + REGISTER_WAIT_MS;
+  for (;;) {
+    const p = await app.pushStatus();
+    if (p.endpoint && p.vapid === status.publicKey) return void (await sendAppEndpoint(p.endpoint));
+    if (p.error) throw new Error(p.error);
+    if (Date.now() > end) throw new Error("the distributor didn't answer");
+    await new Promise((ok) => setTimeout(ok, 500));
+  }
+}
+
+/** The local subscription's endpoint (the browser's, or the app's), if any. */
+async function localEndpoint(status: Status): Promise<string | null> {
+  if (supported()) return Notification.permission === "granted" ? ((await subscription())?.endpoint ?? null) : null;
+  return (await appEndpoint(status))?.endpoint ?? null;
+}
+
+/** The app's half of `refresh`: false when there's nothing more to show. */
+async function refreshApp(status: Status): Promise<boolean> {
+  const p = await app.pushStatus();
+  if (!p.distributors.length) {
+    show(
+      "notifications: install ntfy first · tap when done",
+      "the app gets pushes through a UnifiedPush distributor: install ntfy (or another) from the store, then come back",
+    );
+    return false;
+  }
+  const e = p.vapid === status.publicKey ? p.endpoint : null;
+  if (e && (!status.subscribed || status.endpoint !== e.endpoint)) {
+    try {
+      await sendAppEndpoint(e);
+      status.subscribed = true;
+      status.endpoint = e.endpoint;
+    } catch {
+      // try again next time
+    }
+  }
+  if (p.error && !e) {
+    show("notifications: failed · tap to retry", p.error);
+    return false;
+  }
+  return true;
+}
+
 async function refresh(): Promise<void> {
   showTest(false);
-  if (!supported() && inApp()) {
-    show(
-      "notifications: in the browser, not here",
-      "this app can't receive pushes — open Workbench's address in the phone's browser, add it to the home screen and turn notifications on there",
-      false,
-    );
-    return;
+  if (!supported() && app.inApp()) {
+    let status: Status;
+    try {
+      status = await api<Status>("/api/push");
+      if (!(await refreshApp(status))) return;
+    } catch {
+      return; // offline: leave the button as it was
+    }
+    return showState(status, await localEndpoint(status));
   }
   if (!supported()) {
     show(
@@ -124,7 +190,12 @@ async function refresh(): Promise<void> {
       // try again next time
     }
   }
-  if (!status.subscribed || !sub) {
+  showState(status, sub?.endpoint ?? null);
+}
+
+/** The button for the desktop's view (`status`) and this phone's (`local`). */
+function showState(status: Status, local: string | null): void {
+  if (!status.subscribed || !local) {
     show("turn on notifications", "be told when an agent needs you, with the app closed");
     return;
   }
@@ -139,7 +210,7 @@ async function onTest(): Promise<void> {
   b.disabled = true;
   try {
     await api("/api/push/test", { body: {} });
-    showTest(true, "test sent · no notification? check the phone's settings for this browser");
+    showTest(true, `test sent · no notification? check the phone's settings for ${app.inApp() ? "Duck and the distributor" : "this browser"}`);
   } catch (e) {
     const why = e instanceof Error ? e.message : String(e);
     showTest(true, `test failed: ${why} · tap to retry`, why);
@@ -151,22 +222,31 @@ async function onTest(): Promise<void> {
 async function onTap(): Promise<void> {
   const btn = $<HTMLButtonElement>("pushBtn");
   btn.disabled = true;
+  let failed = false;
   try {
     const status = await api<Status>("/api/push");
-    const sub = Notification.permission === "granted" ? await subscription() : null;
-    if (!status.subscribed || !sub) {
-      if ((await Notification.requestPermission()) !== "granted") return;
-      await subscribe(status);
+    const inBrowser = supported();
+    if (!inBrowser && !app.inApp()) return;
+    if (!status.subscribed || !(await localEndpoint(status))) {
+      if (inBrowser) {
+        if ((await Notification.requestPermission()) !== "granted") return;
+        await subscribe(status);
+      } else {
+        if (!(await app.pushStatus()).distributors.length) return; // refresh says what to install
+        await appSubscribe(status);
+      }
       // Turning notifications on means on: clear a mute left from before.
       if (status.muted) await api("/api/push/mute", { body: { muted: false } });
     } else if (status.muted || confirm("Mute notifications on this device? The desktop will send it nothing until you unmute.")) {
       await api("/api/push/mute", { body: { muted: !status.muted } });
     }
   } catch (e) {
-    show("notifications: failed — tap to retry", String(e));
+    failed = true;
+    show("notifications: failed — tap to retry", app.reason(e));
   } finally {
     btn.disabled = false;
-    await refresh();
+    // A failure stays on the button until the next tap.
+    if (!failed) await refresh();
   }
 }
 
@@ -175,6 +255,7 @@ export function initPush(open: (instanceId: string) => void): void {
   $("pushBtn").onclick = () => void onTap();
   $("pushTestBtn").onclick = () => void onTest();
   void refresh();
+  if (app.inApp()) void app.onPushEndpoint(() => void refresh()).catch(() => {});
   if ("serviceWorker" in navigator) {
     navigator.serviceWorker.addEventListener("message", (e: MessageEvent<{ type?: string; instanceId?: string }>) => {
       if (e.data?.type === "open-instance" && e.data.instanceId) open(e.data.instanceId);

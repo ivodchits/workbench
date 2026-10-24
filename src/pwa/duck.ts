@@ -1720,6 +1720,10 @@ export function initDuck(d: typeof deps): void {
     listen: listenOnce,
     talk: talkFromApp,
     open: () => openDuck(),
+    pushed: (to) => {
+      if (to.threadId) openDuck(to.threadId);
+      else if (to.instanceId) deps.console(to.instanceId);
+    },
     talkStopped: (why) => {
       if (talk || talkStarting) {
         post({ type: "conv.stop" });

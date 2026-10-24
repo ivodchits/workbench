@@ -11,6 +11,8 @@
 //   conversation mode runs its foreground service.
 // - What opened the app (the assistant gesture, the tile, the widget) comes as
 //   launches; the reminders the desktop sends are armed as exact alarms.
+// - The desktop's pushes come through the phone's UnifiedPush distributor
+//   (`push.ts`, `Push.kt`): the app registers and hands back the endpoint.
 // - The phone brain (H7, `phoneBrain.ts`): `apiFetch` is a `fetch` for the SDK
 //   that the app sends with the phone's own key, which the page never holds.
 
@@ -116,10 +118,12 @@ export function setAppSettings(s: Partial<AppSettings>): Promise<AppSettings> {
 // ── ways in ──
 
 /** Why the app opened: the assistant gesture (`assist`), the tile (`talk`), the
- *  widget (`listen`, `open`); `screen` carries the text of what was on screen. */
+ *  widget (`listen`, `open`); `screen` carries the text of what was on screen;
+ *  `push` is a tapped push, with the card or Duck thread it names. */
 export type AppLaunch =
   | { kind: "assist" | "talk" | "listen" | "open" }
-  | { kind: "screen"; app: string; text: string };
+  | { kind: "screen"; app: string; text: string }
+  | { kind: "push"; instanceId?: string; threadId?: string };
 
 /** Hear each launch: those waiting since the app opened, then each new one. */
 export async function onLaunch(cb: (l: AppLaunch) => void): Promise<void> {
@@ -157,6 +161,38 @@ export async function takeReminderActions(): Promise<{ id: string; action: "done
 
 export async function onReminderActed(cb: () => void): Promise<void> {
   await addPluginListener("duck", "reminderActed", cb);
+}
+
+// ── pushes ──
+
+export interface AppPush {
+  /** The distributors installed (their names). */
+  distributors: string[];
+  /** The one in use, once it has answered. */
+  distributor: string | null;
+  /** The subscription to give the desktop, once the distributor sent it. */
+  endpoint: { endpoint: string; p256dh: string; auth: string } | null;
+  /** The desktop key it was registered for. */
+  vapid: string | null;
+  error: string | null;
+}
+
+export function pushStatus(): Promise<AppPush> {
+  return call("push_status");
+}
+
+/** Register with the distributor (it may ask which); the endpoint comes later. */
+export function pushRegister(vapid: string): Promise<void> {
+  return call("push_register", { vapid });
+}
+
+export function pushUnregister(): Promise<void> {
+  return call("push_unregister");
+}
+
+/** The endpoint changed (new, failed or dropped): read `pushStatus` again. */
+export async function onPushEndpoint(cb: () => void): Promise<void> {
+  await addPluginListener("duck", "pushEndpoint", cb);
 }
 
 // ── the mic ──
