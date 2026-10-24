@@ -6,14 +6,18 @@
 // (`transcriptSource`). This module is the chrome: scrolling that sticks to the end,
 // "load earlier", the status line, the choice card (step R5) — or, when the desktop
 // can't say what is asked, the needs-you row — and the composer, which sends the
-// dashboard's ordinary `prompt` action.
+// dashboard's ordinary `prompt` action, with any pictures and files attached by 📎
+// or a paste (`sessionFiles`).
 
+import { sizeText } from "../assistant/attachments";
 import type { RemoteInstance } from "../remote/protocol";
 import { createFeed, type Feed } from "../transcript/feed";
 import { createRenderer, type TranscriptRenderer } from "../transcript/render";
 import { createChoiceCard, type ChoiceCardView } from "./choice";
-import { $ } from "./dom";
+import { $, el } from "./dom";
 import { phaseOf } from "./format";
+import { pastedName, readyImage, SESSION_IMAGE_MAX } from "./images";
+import { createStaging, promptWith, uploadToSession } from "./sessionFiles";
 import { action, openSocket } from "./net";
 import { transcriptSource } from "./transcriptSource";
 
@@ -35,6 +39,10 @@ let onLink: (text: string) => void = () => {};
 let linkText = "";
 let switchToTerminal: () => void = () => {};
 let card: ChoiceCardView | null = null;
+/** Pictures and files waiting for each instance's next prompt. */
+const staging = createStaging(uploadToSession, (id) => {
+  if (id === current) paintFiles();
+});
 
 function scroller(): HTMLElement {
   return $("tx-scroll");
@@ -100,7 +108,55 @@ function paintStatus(): void {
   const text = $<HTMLTextAreaElement>("tx-text");
   text.placeholder = running ? "message Claude…" : "session not running";
   $("tx-send").textContent = running ? "send" : "start";
+  // An SSH session's folder is on the other machine.
+  $("tx-attach").classList.toggle("hidden", it?.remote ?? false);
   if (stuck) toEnd();
+}
+
+/** The staged files' chips, and send held while some are still going up. */
+function paintFiles(): void {
+  const box = $("tx-files");
+  const items = current ? staging.list(current) : [];
+  box.replaceChildren(
+    ...items.map((s) => {
+      const chip = el("span", `duck-file${s.state === "failed" ? " failed" : ""}`);
+      if (s.preview) {
+        const img = document.createElement("img");
+        img.src = s.preview;
+        img.alt = "";
+        chip.append(img);
+      } else chip.append(el("span", "sign", "📄"));
+      chip.append(el("span", "name", s.name));
+      if (s.state === "adding") chip.append(el("span", "size", "adding…"));
+      else if (s.state === "failed") chip.append(el("span", "error", s.error ?? "failed"));
+      else chip.append(el("span", "size", sizeText(s.size)));
+      const x = el("button", "", "✕");
+      x.type = "button";
+      x.setAttribute("aria-label", `remove ${s.name}`);
+      x.onclick = () => {
+        if (current) staging.remove(current, s.key);
+      };
+      chip.append(x);
+      return chip;
+    }),
+  );
+  box.classList.toggle("hidden", items.length === 0);
+  const busy = current ? staging.busy(current) : false;
+  const sendBtn = $<HTMLButtonElement>("tx-send");
+  sendBtn.disabled = busy;
+  sendBtn.title = busy ? "waiting for the files to go up" : "";
+  if (stuck) toEnd();
+}
+
+/** Stage files for the open instance; a picture is readied first (`images`). */
+function attach(files: { blob: Blob; name: string }[]): void {
+  const id = current;
+  if (!id) return;
+  for (const f of files)
+    void readyImage(f.blob, f.name, SESSION_IMAGE_MAX).then((r) => {
+      const picture = r.blob.type.startsWith("image/") && r.blob.type !== "image/svg+xml";
+      staging.add(id, r.blob, r.name, picture ? URL.createObjectURL(r.blob) : undefined);
+    });
 }
 
 /** Grow the composer with its text, up to a cap; past it, it scrolls. */
@@ -120,8 +176,10 @@ function send(): void {
     return;
   }
   const body = text.value.trim();
-  if (!body) return;
-  action({ type: "prompt", instanceId: current, text: body });
+  const files = staging.list(current).some((s) => s.state === "ready");
+  if (!body && !files) return;
+  if (staging.busy(current)) return; // send is held until they're up
+  action({ type: "prompt", instanceId: current, text: promptWith(body, staging.take(current)) });
   text.value = "";
   drafts.delete(current);
   fitComposer();
@@ -154,6 +212,7 @@ export function showTranscript(id: string, it: RemoteInstance | undefined): void
     const text = $<HTMLTextAreaElement>("tx-text");
     text.value = drafts.get(id) ?? "";
     fitComposer();
+    paintFiles();
     changed("reset");
   } else {
     onLink(linkText); // back from the terminal: say where the feed stands
@@ -233,6 +292,19 @@ export function initTranscript(link: (text: string) => void, terminal: () => voi
     if (document.activeElement === text) e.preventDefault();
   });
   send_.onclick = send;
+  const picker = $<HTMLInputElement>("tx-file");
+  $("tx-attach").onclick = () => picker.click();
+  picker.onchange = () => {
+    attach(Array.from(picker.files ?? []).map((f) => ({ blob: f, name: f.name || "photo.jpg" })));
+    picker.value = "";
+  };
+  // A pasted picture (or file) is attached; pasted text is left to the field.
+  text.addEventListener("paste", (e) => {
+    const files = Array.from(e.clipboardData?.files ?? []);
+    if (!files.length) return;
+    e.preventDefault();
+    attach(files.map((f) => ({ blob: f, name: pastedName(f) })));
+  });
   $("tx-stop").onclick = () => {
     if (current) action({ type: "interrupt", instanceId: current });
   };

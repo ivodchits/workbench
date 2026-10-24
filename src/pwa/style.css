@@ -169,6 +169,12 @@ footer button { background: transparent; border: none; color: var(--dim); font-s
 #tx-send { color: var(--accent); border-color: var(--accent); }
 #tx-stop { color: var(--working); border-color: var(--working); }
 #tx-stop.hidden { display: none; }
+#tx-files { padding: 0 0 6px; }
+#tx-files.hidden, #tx-attach.hidden { display: none; }
+#tx-composer #tx-attach { min-width: 44px; padding: 0 8px; font-weight: 400; }
+#tx-send:disabled { opacity: 0.5; }
+.duck-file.failed { border-color: var(--needs); }
+.duck-file .error { color: var(--needs); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* mirrored terminal */
 #term-view { flex: 1; min-height: 0; display: flex; flex-direction: column; }
