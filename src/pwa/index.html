@@ -283,12 +283,15 @@
         <div id="duck-voice" class="hidden" aria-live="polite"></div>
         <!-- Files waiting to go with the next message (G1). -->
         <div id="duck-staged" class="duck-files hidden"></div>
-        <div id="duck-composer">
+        <!-- The buttons on their own line, so the text box gets the whole width. -->
+        <div id="duck-tools">
           <button id="duck-talk" type="button" aria-label="conversation mode">talk</button>
           <button id="duck-mic" type="button" aria-label="talk to Duck">mic</button>
           <button id="duck-attach" type="button" aria-label="attach files">📎</button>
           <button id="duck-sketch" type="button" aria-label="sketch pad">✏</button>
           <input id="duck-file" type="file" multiple accept="image/*,*/*" hidden />
+        </div>
+        <div id="duck-composer">
           <textarea id="duck-text" rows="1" placeholder="ask Duck…" enterkeyhint="enter"></textarea>
           <button id="duck-stop" class="hidden" type="button">stop</button>
           <button id="duck-send" type="button">send</button>
