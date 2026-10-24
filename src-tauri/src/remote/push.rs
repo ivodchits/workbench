@@ -13,14 +13,20 @@
 //!   encrypted for each device (RFC 8291, `aes128gcm`) and POSTed to its push
 //!   service on a short-lived thread, so nothing waits on the network.
 //!
+//! - **Failures.** The last failed push to each device is kept (in memory) and shown
+//!   on the phone, and `POST /api/push/test` sends one to the asking device and
+//!   answers with what its push service said — a release build has no console, so
+//!   an error only printed would never be seen.
+//!
 //! A reminder's push (step H4) has Done and Snooze buttons; they come back to
 //! `POST /api/reminders/action` with the push's one-use token.
 //!
 //! Only paired, approved devices are served or pushed to. The phone can only
 //! subscribe from a secure page — over Funnel (R3) — which is a browser rule.
 
+use std::collections::HashMap;
 use std::net::SocketAddr;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use aes_gcm::aead::{Aead, KeyInit, Payload};
 use aes_gcm::{Aes128Gcm, Nonce};
@@ -172,6 +178,23 @@ fn forget(app: &AppHandle, device_id: &str) {
     let _ = conn.execute("DELETE FROM push_subscriptions WHERE device_id = ?1", [device_id]);
 }
 
+/// Each device's last failed push, until one gets through.
+static LAST_ERROR: Mutex<Option<HashMap<String, String>>> = Mutex::new(None);
+
+fn note_result(device_id: &str, result: &Result<(), String>) {
+    let mut last = LAST_ERROR.lock().unwrap_or_else(|e| e.into_inner());
+    let map = last.get_or_insert_with(HashMap::new);
+    match result {
+        Ok(()) => map.remove(device_id),
+        Err(e) => map.insert(device_id.to_string(), e.clone()),
+    };
+}
+
+fn last_error(device_id: &str) -> Option<String> {
+    let last = LAST_ERROR.lock().unwrap_or_else(|e| e.into_inner());
+    last.as_ref().and_then(|m| m.get(device_id).cloned())
+}
+
 fn now() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -179,7 +202,7 @@ fn now() -> u64 {
 }
 
 /// Encrypt and POST one push. A subscription the service no longer knows is dropped.
-fn deliver(app: &AppHandle, key: &SigningKey, sub: &Subscription, payload: &[u8]) {
+fn deliver(app: &AppHandle, key: &SigningKey, sub: &Subscription, payload: &[u8]) -> Result<(), String> {
     let result = (|| -> Result<(), String> {
         let ua = B64.decode(sub.p256dh.trim_end_matches('=')).map_err(|e| e.to_string())?;
         let auth = B64.decode(sub.auth.trim_end_matches('=')).map_err(|e| e.to_string())?;
@@ -200,12 +223,15 @@ fn deliver(app: &AppHandle, key: &SigningKey, sub: &Subscription, payload: &[u8]
                 forget(app, &sub.device_id);
                 Err("the push service dropped this subscription".into())
             }
+            Err(ureq::Error::StatusCode(code)) => Err(format!("the push service refused it ({code})")),
             Err(e) => Err(e.to_string()),
         }
     })();
-    if let Err(e) = result {
+    if let Err(e) = &result {
         eprintln!("[remote] push to {}: {e}", sub.device_id);
     }
+    note_result(&sub.device_id, &result);
+    result
 }
 
 /// Push `payload` to every subscribed, unmuted device that may still use the app.
@@ -231,7 +257,7 @@ pub fn send_all(app: &AppHandle, payload: serde_json::Value) {
     let body = payload.to_string().into_bytes();
     std::thread::spawn(move || {
         for sub in &subs {
-            deliver(&app, &key, sub, &body);
+            let _ = deliver(&app, &key, sub, &body);
         }
     });
 }
@@ -285,6 +311,7 @@ pub(super) async fn status(
         "subscribed": row.is_some(),
         "endpoint": row.as_ref().map(|r| r.0.clone()),
         "muted": row.is_some_and(|r| r.1),
+        "lastError": last_error(&id),
     }))
     .into_response()
 }
@@ -346,6 +373,41 @@ pub(super) async fn unsubscribe(
             StatusCode::OK.into_response()
         }
         Err(r) => r,
+    }
+}
+
+/// `POST /api/push/test` — push to this device now, muted or not, and answer with
+/// what its push service said: the phone's way to check the whole path.
+pub(super) async fn test(
+    State(state): State<Arc<RemoteState>>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+) -> Response {
+    let id = match device(&state, peer, &headers) {
+        Ok(id) => id,
+        Err(r) => return r,
+    };
+    let app = state.app.clone();
+    let sent = tauri::async_runtime::spawn_blocking(move || -> Result<(), String> {
+        let sub = {
+            let db = app.state::<Db>();
+            let conn = db.conn.lock().expect("db lock poisoned");
+            conn.query_row(
+                "SELECT device_id, endpoint, p256dh, auth FROM push_subscriptions WHERE device_id = ?1",
+                [&id],
+                |r| Ok(Subscription { device_id: r.get(0)?, endpoint: r.get(1)?, p256dh: r.get(2)?, auth: r.get(3)? }),
+            )
+            .map_err(|_| "this device isn't subscribed".to_string())?
+        };
+        let key = vapid_key(&app)?;
+        let payload = json!({ "title": "Workbench", "body": "Test notification: pushes reach this phone.", "tag": "workbench-test" });
+        deliver(&app, &key, &sub, payload.to_string().as_bytes())
+    })
+    .await
+    .unwrap_or_else(|e| Err(e.to_string()));
+    match sent {
+        Ok(()) => StatusCode::OK.into_response(),
+        Err(e) => (StatusCode::BAD_GATEWAY, Json(json!({ "error": e }))).into_response(),
     }
 }
 
