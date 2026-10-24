@@ -13,6 +13,15 @@ val tauriProperties = Properties().apply {
     }
 }
 
+// Release signing: keystore.properties (gen/android/, ignored) or, failing that,
+// ~/.android/duck-release.properties. Both name a keystore kept outside the repo.
+val keystoreProperties = Properties().apply {
+    listOf(
+        rootProject.file("keystore.properties"),
+        File(System.getProperty("user.home"), ".android/duck-release.properties"),
+    ).firstOrNull { it.exists() }?.inputStream()?.use { load(it) }
+}
+
 android {
     compileSdk = 36
     namespace = "com.workbench.duck"
@@ -23,6 +32,16 @@ android {
         targetSdk = 36
         versionCode = tauriProperties.getProperty("tauri.android.versionCode", "1").toInt()
         versionName = tauriProperties.getProperty("tauri.android.versionName", "1.0")
+    }
+    signingConfigs {
+        if (keystoreProperties.containsKey("storeFile")) {
+            create("release") {
+                storeFile = file(keystoreProperties.getProperty("storeFile"))
+                storePassword = keystoreProperties.getProperty("storePassword")
+                keyAlias = keystoreProperties.getProperty("keyAlias")
+                keyPassword = keystoreProperties.getProperty("keyPassword")
+            }
+        }
     }
     buildTypes {
         getByName("debug") {
@@ -37,6 +56,7 @@ android {
             }
         }
         getByName("release") {
+            signingConfigs.findByName("release")?.let { signingConfig = it }
             isMinifyEnabled = true
             proguardFiles(
                 *fileTree(".") { include("**/*.pro") }

@@ -34,3 +34,9 @@ Thumbs.db
 
 # Workbench-managed worktrees (runtime artifacts)
 .workbench/
+
+# Android signing (keys live outside the repo, in ~/.android/)
+*.jks
+*.keystore
+keystore.properties
+key.properties
