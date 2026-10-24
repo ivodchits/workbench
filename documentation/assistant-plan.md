@@ -5128,6 +5128,15 @@ up ("change this", with a circle around it).
       and the copied-token test.
     - **Latency:** not measured over Funnel or Tailscale.
     - **Glyph lights:** not built.
+  - **Pushes in the app (2026-10-23), through UnifiedPush.** The webview has no Push
+    API, so the app never subscribed and the desktop pushed it nothing. Now a distributor
+    app on the phone (ntfy) holds the connection: Duck registers with it
+    (`org.unifiedpush.android:connector` 3.0.10; later ones need Kotlin 2.2) for the
+    desktop's VAPID key and gets a Web Push endpoint with its keys, which the page sends to
+    `/api/push/subscribe` like a browser's. The desktop didn't change: it pushes there as
+    to any browser. `Push.kt` shows each push on a "Workbench" channel; a tap opens the
+    card or Duck's thread it names (a `push` launch); a reminder whose alarm is armed on
+    the phone is left to the alarm. Mute and "send a test" work as in the browser.
 
 ### Track D — Delegation to sessions
 

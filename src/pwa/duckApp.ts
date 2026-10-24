@@ -9,7 +9,8 @@
 //   (now, or on the next connect).
 // - Ways in: the assistant gesture and the widget's talk button open Duck
 //   listening, the tile starts conversation mode, and what was on screen goes
-//   with the next message (`<shared>`: data, not instructions).
+//   with the next message (`<shared>`: data, not instructions). A tapped push
+//   opens the card or Duck's thread it names.
 // - The fast path (`fastPath.ts`): timers, alarms, the flashlight and media
 //   commands run here before any model, with the desktop reachable or not.
 // - The widget's line follows Duck's state.
@@ -35,6 +36,8 @@ export interface AppHooks {
   talk(): void;
   /** Open Duck. */
   open(): void;
+  /** A tapped push: open what it names. */
+  pushed(to: { instanceId?: string; threadId?: string }): void;
   /** Conversation mode was stopped outside the page (the tile, the notification). */
   talkStopped(why: string): void;
   /** A line under the mic. */
@@ -66,6 +69,8 @@ export function initApp(h: AppHooks): void {
         return h.talk();
       case "open":
         return h.open();
+      case "push":
+        return h.pushed(l);
     }
   });
   void app.onTalkStop((why) => h.talkStopped(why));

@@ -121,6 +121,13 @@
             </intent-filter>
         </service>
 
+        <!-- The desktop's pushes, from the phone's UnifiedPush distributor (Push.kt). -->
+        <service android:name=".DuckPushService" android:exported="false">
+            <intent-filter>
+                <action android:name="org.unifiedpush.android.connector.PUSH_EVENT" />
+            </intent-filter>
+        </service>
+
         <!-- Reminders' alarms and their Done / Snooze (H5). -->
         <receiver android:name=".ReminderReceiver" android:exported="false" />
         <receiver android:name=".BootReceiver" android:exported="true">
