@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Duck",
+  "productName": "Workbench",
   "version": "0.1.0",
   "identifier": "com.workbench.duck",
   "build": {
@@ -8,7 +8,7 @@
     "frontendDist": "../www"
   },
   "app": {
-    "windows": [{ "label": "main", "title": "Duck" }],
+    "windows": [{ "label": "main", "title": "Workbench" }],
     "security": { "csp": null }
   },
   "bundle": {
