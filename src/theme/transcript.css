@@ -426,6 +426,9 @@
   width: 200px;
   padding: 2px 6px;
   font: 12px var(--wb-mono);
+  font-kerning: none;
+  font-variant-ligatures: none;
+  font-feature-settings: "liga" 0, "calt" 0, "kern" 0;
   color: var(--wb-text);
   background: var(--wb-bg);
   border: 1px solid var(--wb-border);
@@ -476,6 +479,12 @@
   resize: none;
   padding: 7px 9px;
   font: 13px/1.5 var(--wb-mono);
+  /* The shorthand resets the shaping-off properties `body` sets (global.css). With
+     JetBrains Mono's contextual alternates back on, `->` and `...` change shape as
+     they are typed, and the field only repaints them fully at the next line. */
+  font-kerning: none;
+  font-variant-ligatures: none;
+  font-feature-settings: "liga" 0, "calt" 0, "kern" 0;
   color: var(--wb-text);
   background: var(--wb-bg);
   border: 1px solid var(--wb-border);
