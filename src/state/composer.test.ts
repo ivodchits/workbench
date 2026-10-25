@@ -8,6 +8,9 @@ import {
   imageToken,
   insertIntoDraft,
   promptChunks,
+  rememberSent,
+  SENT_KEEP,
+  sentPrompts,
   setDraft,
   spliceText,
   terminalCommand,
@@ -20,6 +23,38 @@ const decode = (bytes: Uint8Array) => new TextDecoder().decode(bytes);
 function live(patch: Partial<LiveStatus>): LiveStatus {
   return { phase: "idle", compacting: false, subagents: 0, updatedAt: 0, needsSince: null, ...patch } as LiveStatus;
 }
+
+describe("sent prompts", () => {
+  beforeEach(() => localStorage.clear());
+
+  it("are kept per instance, newest first, and outlive the window", () => {
+    rememberSent("a", "first");
+    rememberSent("a", "  second  ");
+    rememberSent("b", "other");
+    expect(sentPrompts("a")).toEqual(["second", "first"]);
+    expect(sentPrompts("b")).toEqual(["other"]);
+    expect(JSON.parse(localStorage.getItem("wb-sent:a") ?? "[]")).toEqual(["second", "first"]);
+  });
+
+  it("skip empty prompts and a repeat of the newest", () => {
+    rememberSent("a", "same");
+    rememberSent("a", "same");
+    rememberSent("a", "   ");
+    expect(sentPrompts("a")).toEqual(["same"]);
+  });
+
+  it("keep only the newest few", () => {
+    for (let n = 0; n < SENT_KEEP + 5; n++) rememberSent("a", `p${n}`);
+    const list = sentPrompts("a");
+    expect(list).toHaveLength(SENT_KEEP);
+    expect(list[0]).toBe(`p${SENT_KEEP + 4}`);
+  });
+
+  it("read a damaged entry as none", () => {
+    localStorage.setItem("wb-sent:a", "{not json");
+    expect(sentPrompts("a")).toEqual([]);
+  });
+});
 
 describe("drafts", () => {
   beforeEach(() => localStorage.clear());

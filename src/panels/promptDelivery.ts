@@ -6,20 +6,68 @@
 // Panel layer, not state: it writes to terminals. The queue store itself stays
 // pure (`state/queue`).
 
-import { submitPrompt } from "./terminalPool";
+import { readScreen, submitPrompt } from "./terminalPool";
 import { atRest, cancelQueued, getQueued, setQueued } from "../state/queue";
+import { promptBoxReady } from "../state/remoteCreate";
 import { getLiveStatuses, onCompactionEnd, onStatusTransition } from "../state/status";
 
 /** Send `text` to `instanceId` now, or queue it if its agent is mid-turn. A prompt
  *  is never sent into a pending permission prompt or question — it could answer
- *  it — so "waiting on you" queues too. Queueing replaces a prompt already queued. */
+ *  it — so "waiting on you" queues too, and so does a session that hasn't started
+ *  (`starting`). Queueing replaces a prompt already queued. */
 export function sendOrQueue(instanceId: string, text: string): "sent" | "queued" {
-  if (atRest(getLiveStatuses().get(instanceId))) {
+  const start = starting(instanceId);
+  if (!start && atRest(getLiveStatuses().get(instanceId))) {
     submitPrompt(instanceId, text);
     return "sent";
   }
   setQueued(instanceId, text);
+  if (start) watchStart(instanceId);
   return "queued";
+}
+
+/** True when a console hasn't started its session yet: no hook has come from it,
+ *  and its screen shows something other than the prompt box — Claude Code's trust
+ *  or MCP-server dialog, a login. No hook fires while such a dialog is up, so the
+ *  session looks at rest, but a prompt typed then goes into the dialog and its
+ *  Enter answers it. A console this window can't see is taken as started. */
+export function starting(instanceId: string): boolean {
+  if (getLiveStatuses().get(instanceId)) return false;
+  const screen = readScreen(instanceId);
+  return !!screen && !promptBoxReady(screen);
+}
+
+/** The prompt box has to have been on screen this long before a prompt goes in:
+ *  the TUI draws it before it takes input (`remoteActions.ts`, READY_SETTLE_MS). */
+const READY_SETTLE_MS = 1_000;
+const START_POLL_MS = 250;
+const watching = new Set<string>();
+
+/** Send the prompt queued for a starting console once its prompt box has shown for
+ *  a moment. Stops when nothing is queued any more, when the console goes, or when
+ *  hooks arrive with the session mid-turn (its Stop sends the prompt then). */
+function watchStart(instanceId: string): void {
+  if (watching.has(instanceId)) return;
+  watching.add(instanceId);
+  let since: number | null = null;
+  const tick = () => {
+    const screen = readScreen(instanceId);
+    const live = getLiveStatuses().get(instanceId);
+    if (!getQueued(instanceId) || !screen || !atRest(live)) {
+      watching.delete(instanceId);
+      return;
+    }
+    if (promptBoxReady(screen)) {
+      since ??= Date.now();
+      if (Date.now() - since >= READY_SETTLE_MS) {
+        watching.delete(instanceId);
+        deliverQueued(instanceId);
+        return;
+      }
+    } else since = null;
+    setTimeout(tick, START_POLL_MS);
+  };
+  setTimeout(tick, START_POLL_MS);
 }
 
 let users = 0;

@@ -4,7 +4,8 @@
 // A draft belongs to an instance, not to a mounted component: it survives the
 // terminal/transcript toggle, a tab switch, tearing the console off into its own
 // window, and a restart (it is kept in `localStorage`, which every window of the
-// app shares). It is cleared when the prompt is sent.
+// app shares). It is cleared when the prompt is sent, and the prompt joins the
+// instance's sent list, which ↑ in an empty composer walks back through.
 //
 // Framework-free apart from the one hook, so the rules are testable on their own.
 
@@ -52,6 +53,50 @@ export function setDraft(instanceId: string, text: string): void {
 export function insertIntoDraft(instanceId: string, text: string): void {
   const draft = getDraft(instanceId);
   setDraft(instanceId, draft && !draft.endsWith("\n") ? `${draft}\n${text}` : draft + text);
+}
+
+// --- sent prompts ------------------------------------------------------------
+// What an instance's composer has sent, newest first, so a prompt that went
+// nowhere (into a dialog, a session that died) can be taken back with ↑. Kept in
+// `localStorage` like the drafts, so every window and a restart see the same list.
+
+const SENT_PREFIX = "wb-sent:";
+/** How many sent prompts an instance keeps. */
+export const SENT_KEEP = 30;
+
+/** Used only when storage is unavailable. */
+const sentFallback = new Map<string, string[]>();
+
+/** The prompts an instance's composer has sent, newest first. */
+export function sentPrompts(instanceId: string): string[] {
+  let raw: string | null;
+  try {
+    raw = localStorage.getItem(SENT_PREFIX + instanceId);
+  } catch {
+    return sentFallback.get(instanceId) ?? [];
+  }
+  try {
+    const list: unknown = raw ? JSON.parse(raw) : [];
+    return Array.isArray(list) ? list.filter((t): t is string => typeof t === "string") : [];
+  } catch {
+    return []; // damaged: start the list again
+  }
+}
+
+/** Add a sent prompt to the front of the instance's list. Sending the newest one
+ *  again doesn't repeat it. */
+export function rememberSent(instanceId: string, text: string): void {
+  const prompt = text.trim();
+  if (!prompt) return;
+  const prev = sentPrompts(instanceId);
+  if (prev[0] === prompt) return;
+  const next = [prompt, ...prev].slice(0, SENT_KEEP);
+  sentFallback.set(instanceId, next);
+  try {
+    localStorage.setItem(SENT_PREFIX + instanceId, JSON.stringify(next));
+  } catch {
+    // not persisted (unavailable, or full); this window still has it
+  }
 }
 
 function subscribe(cb: () => void): () => void {

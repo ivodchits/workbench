@@ -1,8 +1,9 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { StatusPhase } from "../state/status";
 
 const sent: [string, string][] = [];
+const screens = new Map<string, string[]>();
 const phases = new Map<string, StatusPhase>();
 const listeners = new Set<(id: string, phase: StatusPhase, prev: StatusPhase | null) => void>();
 const compacting = new Set<string>();
@@ -10,6 +11,7 @@ const compactionEnds = new Set<(id: string, live: { phase: StatusPhase; compacti
 
 vi.mock("./terminalPool", () => ({
   submitPrompt: (id: string, text: string) => void sent.push([id, text]),
+  readScreen: (id: string) => screens.get(id) ?? null,
 }));
 vi.mock("../state/status", () => ({
   getLiveStatuses: () =>
@@ -45,6 +47,7 @@ describe("prompt delivery", () => {
     phases.clear();
     compacting.clear();
     cancelQueued("a");
+    screens.clear();
   });
 
   it("sends at once to an agent between turns", () => {
@@ -99,6 +102,56 @@ describe("prompt delivery", () => {
     move("a", "needs_you");
     expect(sendOrQueue("a", "later")).toBe("queued");
     expect(sent).toEqual([]);
+  });
+
+  describe("a console that hasn't started", () => {
+    const RULE = "─".repeat(100);
+    const DIALOG = [RULE, " New MCP server found in this project: dummy", "❯ Continue without using this MCP server"];
+    const BOX = [RULE, "❯ ", RULE];
+
+    beforeEach(() => vi.useFakeTimers());
+    afterEach(() => vi.useRealTimers());
+
+    it("holds a prompt while claude shows a dialog, and sends it once the box has settled", () => {
+      screens.set("a", DIALOG);
+      expect(sendOrQueue("a", "big prompt")).toBe("queued");
+      vi.advanceTimersByTime(5_000);
+      expect(sent).toEqual([]);
+
+      screens.set("a", BOX);
+      vi.advanceTimersByTime(500);
+      expect(sent).toEqual([]); // drawn, but not taking input yet
+      vi.advanceTimersByTime(1_000);
+      expect(sent).toEqual([["a", "big prompt"]]);
+      expect(getQueued("a")).toBeUndefined();
+    });
+
+    it("sends at once when the box is already showing", () => {
+      screens.set("a", BOX);
+      expect(sendOrQueue("a", "hello")).toBe("sent");
+    });
+
+    it("leaves the prompt to the turn's end when the session starts working", () => {
+      const stop = initQueueDelivery();
+      screens.set("a", DIALOG);
+      sendOrQueue("a", "later");
+      move("a", "working");
+      screens.set("a", BOX);
+      vi.advanceTimersByTime(5_000);
+      expect(sent).toEqual([]);
+      move("a", "done");
+      expect(sent).toEqual([["a", "later"]]);
+      stop();
+    });
+
+    it("stops watching once the prompt is cancelled", () => {
+      screens.set("a", DIALOG);
+      sendOrQueue("a", "never mind");
+      cancelQueued("a");
+      screens.set("a", BOX);
+      vi.advanceTimersByTime(5_000);
+      expect(sent).toEqual([]);
+    });
   });
 
   it("is one subscription however many hold it", () => {

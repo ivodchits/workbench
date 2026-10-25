@@ -39,6 +39,21 @@ const TRUST = [
   " Enter to confirm · Esc to cancel",
 ];
 
+/** The dialog a project's not-yet-approved `.mcp.json` server brings up at start
+ *  (Claude Code 2.1.3xx): no hook fires until it is answered. */
+const MCP = [
+  RULE,
+  " New MCP server found in this project: dummy",
+  "",
+  " MCP servers may execute code or access system resources. All tool calls require approval.",
+  "",
+  "   Use this MCP server",
+  "   Use this and all future MCP servers in this project",
+  " ❯ Continue without using this MCP server",
+  "",
+  " Enter to confirm · Esc to cancel",
+];
+
 describe("request records", () => {
   beforeEach(resetCreated);
 
@@ -75,6 +90,7 @@ describe("promptBoxReady", () => {
 
   it("does not take the trust dialog for it", () => {
     expect(promptBoxReady(TRUST)).toBe(false);
+    expect(promptBoxReady(MCP)).toBe(false);
   });
 
   it("does not take a permission prompt for it", () => {

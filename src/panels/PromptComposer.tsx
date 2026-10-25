@@ -10,12 +10,14 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react";
 
 import { GLYPH } from "../theme";
 import { submitPrompt } from "./terminalPool";
-import { deliverQueued, sendOrQueue } from "./promptDelivery";
+import { deliverQueued, sendOrQueue, starting as sessionStarting } from "./promptDelivery";
 import { savePastedImage } from "../ipc/os";
 import {
   COMPOSER_ATTR,
   imageToken,
   insertReferences,
+  rememberSent,
+  sentPrompts,
   setDraft,
   spliceText,
   terminalCommand,
@@ -39,6 +41,26 @@ interface PromptComposerProps {
 
 /** The field grows with its text up to this height, then scrolls. */
 const MAX_FIELD_PX = 190;
+/** How often a console with no hook signal yet is checked for having started. */
+const STARTING_POLL_MS = 500;
+
+/** True while the console hasn't started its session (`promptDelivery.starting`):
+ *  claude is showing a dialog in its terminal. Looked at only while no hook has
+ *  come from it — the first one means it has started. */
+function useStarting(instanceId: string, live: LiveStatus | null): boolean {
+  const [starting, setStarting] = useState(() => !live && sessionStarting(instanceId));
+  useEffect(() => {
+    if (live) {
+      setStarting(false);
+      return;
+    }
+    const check = () => setStarting(sessionStarting(instanceId));
+    check();
+    const timer = setInterval(check, STARTING_POLL_MS);
+    return () => clearInterval(timer);
+  }, [instanceId, live]);
+  return starting;
+}
 
 function PromptComposer({ instanceId, live, onShowTerminal, onSent }: PromptComposerProps) {
   const fieldRef = useRef<HTMLTextAreaElement>(null);
@@ -47,8 +69,11 @@ function PromptComposer({ instanceId, live, onShowTerminal, onSent }: PromptComp
   const [picking, setPicking] = useState(false);
   /** Where the caret goes once an inserted template has rendered. */
   const pendingSelection = useRef<[number, number] | null>(null);
+  /** The sent prompt ↑/↓ put in the field (its index in `sentPrompts`), or -1. */
+  const recalled = useRef(-1);
 
-  const resting = atRest(live);
+  const startingUp = useStarting(instanceId, live);
+  const resting = atRest(live) && !startingUp;
   const working = live?.phase === "working" && !live.compacting;
   const canSend = draft.trim().length > 0;
 
@@ -76,17 +101,27 @@ function PromptComposer({ instanceId, live, onShowTerminal, onSent }: PromptComp
         flash(`/${command} needs a terminal — take the worker over first`);
         return;
       }
+      if (startingUp) {
+        flash(`claude hasn't started — answer its dialog in the terminal, then send /${command}`);
+        onShowTerminal();
+        return;
+      }
       if (!resting) {
         flash(`/${command} answers in the terminal — send it when this turn has finished`);
         return;
       }
       submitPrompt(instanceId, draft.trim());
+      rememberSent(instanceId, draft);
+      recalled.current = -1;
       setDraft(instanceId, "");
       flash(`/${command} answers in the terminal`);
       onShowTerminal();
       return;
     }
-    sendOrQueue(instanceId, draft);
+    if (sendOrQueue(instanceId, draft) === "queued" && startingUp)
+      flash("claude hasn't started — answer its dialog in the terminal; this goes in once its prompt box shows");
+    rememberSent(instanceId, draft);
+    recalled.current = -1;
     setDraft(instanceId, "");
     onSent();
   };
@@ -131,7 +166,42 @@ function PromptComposer({ instanceId, live, onShowTerminal, onSent }: PromptComp
       .catch((err) => flash(`couldn't paste the image: ${String(err)}`));
   };
 
+  /** ↑ in an empty field (or on the first line of a prompt it recalled) puts the
+   *  previous sent prompt in it, ↓ on its last line the next one — and past the
+   *  newest, an empty field again. Once the text is edited it is a draft like any
+   *  other, and the arrows just move the caret. */
+  const recall = (e: React.KeyboardEvent<HTMLTextAreaElement>): boolean => {
+    const field = e.currentTarget;
+    const sent = sentPrompts(instanceId);
+    const at = recalled.current;
+    if (at >= 0 ? draft !== sent[at] : draft !== "") return false;
+    if (field.selectionStart !== field.selectionEnd) return false;
+    const caret = field.selectionStart;
+    if (e.key === "ArrowUp") {
+      if (draft.lastIndexOf("\n", caret - 1) >= 0 || at + 1 >= sent.length) return false;
+      recalled.current = at + 1;
+    } else {
+      if (at < 0 || draft.indexOf("\n", caret) >= 0) return false;
+      recalled.current = at - 1;
+    }
+    const text = recalled.current >= 0 ? sent[recalled.current] : "";
+    pendingSelection.current = [text.length, text.length];
+    setDraft(instanceId, text);
+    return true;
+  };
+
   const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (
+      (e.key === "ArrowUp" || e.key === "ArrowDown") &&
+      !e.shiftKey &&
+      !e.altKey &&
+      !e.ctrlKey &&
+      !e.metaKey &&
+      recall(e)
+    ) {
+      e.preventDefault();
+      return;
+    }
     // Enter sends, Shift+Enter is a line break — as in the terminal (step C1).
     // Not while an input method is composing: there Enter confirms the word.
     if (e.key !== "Enter" || e.shiftKey || e.altKey || e.nativeEvent.isComposing) return;
@@ -189,15 +259,29 @@ function PromptComposer({ instanceId, live, onShowTerminal, onSent }: PromptComp
         spellCheck={false}
         placeholder="prompt claude…"
         aria-label="prompt"
-        onChange={(e) => setDraft(instanceId, e.target.value)}
+        onChange={(e) => {
+          recalled.current = -1;
+          setDraft(instanceId, e.target.value);
+        }}
         onKeyDown={onKeyDown}
         onPaste={onPaste}
       />
       <div className="wb-cmp-bar">
         <span className="wb-cmp-hint">
-          {resting ? (
+          {startingUp ? (
+            <>
+              claude hasn't started — answer its dialog in the terminal; <b>↵</b> holds this
+              until it has
+            </>
+          ) : resting ? (
             <>
               <b>↵</b> send · <b>⇧↵</b> new line
+              {!draft && sentPrompts(instanceId).length > 0 && (
+                <>
+                  {" "}
+                  · <b>↑</b> past prompts
+                </>
+              )}
             </>
           ) : live?.phase === "needs_you" ? (
             <>
