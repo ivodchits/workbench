@@ -81,7 +81,40 @@
   button:focus-visible { outline: 2px solid var(--duck); outline-offset: 2px; }
   #play { margin-left: auto; }
   .team { display: grid; gap: 12px; }
-  .team h2 {
+  .section { display: grid; gap: 14px; }
+  .section > h2 {
+    margin: 0;
+    font: 400 21px var(--display);
+    letter-spacing: 0.03em;
+    color: var(--duck);
+  }
+  .section > p { margin: 0; color: var(--muted); max-width: 70ch; }
+  .scene-wrap {
+    overflow-x: auto;
+    display: grid;
+    justify-items: center;
+    background: var(--panel);
+    border: 3px solid var(--rim);
+    padding: 10px;
+  }
+  #scene { image-rendering: pixelated; display: block; }
+  .props, .floors {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px;
+    align-items: flex-end;
+  }
+  .prop {
+    margin: 0;
+    display: grid;
+    gap: 6px;
+    justify-items: start;
+    max-width: 100%;
+  }
+  .prop canvas { image-rendering: pixelated; max-width: 100%; height: auto; border: 1px solid var(--rim); }
+  .prop figcaption { display: grid; font-size: 12px; line-height: 1.35; }
+  .prop small { color: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
+  .team h3 {
     margin: 0;
     display: flex;
     align-items: baseline;
@@ -89,14 +122,14 @@
     font: 400 17px var(--display);
     letter-spacing: 0.04em;
   }
-  .team h2::before {
+  .team h3::before {
     content: "";
     width: 12px;
     height: 12px;
     background: var(--team);
     align-self: center;
   }
-  .team h2 small { font: 12px var(--body); color: var(--muted); }
+  .team h3 small { font: 12px var(--body); color: var(--muted); }
   .team-demiurge { --team: var(--demiurge); }
   .team-tinywizard { --team: var(--tinywizard); }
   .team-open { --team: var(--open); }
@@ -138,12 +171,29 @@
 
 <main>
   <header>
-    <h1>The Office · <b>Cast</b></h1>
-    <p>Twelve workers drawn entirely from text templates: one body, recoloured and layered
-      with hair, tops and accessories. Each frame is 16×26 pixels, shown here scaled up
-      without smoothing.</p>
+    <h1>The Office · <b>Art</b></h1>
+    <p>Every pixel here is drawn from text templates in the repo: no image files. Workers
+      are 16×26, floor tiles 16×16, all shown scaled up without smoothing.</p>
   </header>
 
+  <section class="section" aria-labelledby="scene-title">
+    <h2 id="scene-title">A corner of the office</h2>
+    <p>The Demiurge room, the lounge and the kitchen, hand-placed to check that the cast
+      and the furniture belong together. Bram and Kenji are working, Felix needs you, Theo
+      and Oksana are watching the TV, Pip and Juno are at the kicker table, and Mira and
+      Lola are chatting in the kitchen. The clock shows your time.</p>
+    <div class="scene-wrap"><canvas id="scene" aria-label="A sample corner of the office with workers"></canvas></div>
+  </section>
+
+  <section class="section" aria-labelledby="furniture-title">
+    <h2 id="furniture-title">Furniture</h2>
+    <p>Drawn in a 3/4 view: top surface, front face, legs. The partitions take each room's
+      colour; the window's sky will follow the time of day.</p>
+    <div id="furniture" style="display: grid; gap: 18px"></div>
+  </section>
+
+  <section class="section" aria-labelledby="cast-title">
+  <h2 id="cast-title">Cast</h2>
   <canvas id="corridor" aria-label="All twelve workers walking down a corridor"></canvas>
 
   <div class="controls">
@@ -172,6 +222,7 @@
   </div>
 
   <div id="teams" style="display: grid; gap: 28px"></div>
+  </section>
 
   <footer>Typing and Wave are drawn facing down only; that is how they'll be seen at the desks.</footer>
 </main>

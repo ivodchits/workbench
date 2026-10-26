@@ -35,7 +35,11 @@ approved.
    office is visible. Upgradeable to Sonnet by a setting.
 6. **Plain Canvas 2D, no game engine.** Native resolution 640×384 (40×24 tiles of 16 px),
    integer-scaled with nearest-neighbour. Characters are 16×32.
-7. **Performance budget** (measured in O0.4, re-checked in O6): idle office **< 1 % CPU**,
+7. **Workers sit with their backs to the camera** (decided in OD.3). The monitor faces
+   you over their shoulder, so a room's state — code scrolling, a flashing red "needs
+   you" screen, a dark one — reads at a glance. A worker who needs you stands and turns
+   to wave.
+8. **Performance budget** (measured in O0.4, re-checked in O6): idle office **< 1 % CPU**,
    busy office **< 3 % CPU**, page process **< 150 MB RAM** on this machine. The emulator
    and minigames are excluded while they're open — they only run while you play.
 
@@ -341,7 +345,7 @@ _Filled in by O0.4 and O6.2._
 - [ ] O0.4 Measuring the cost
 - [x] OD.1 Pixel format and palette
 - [ ] OD.2 Characters (pass 1 done: cast, idle/walk/type/wave; pass 2: drink, sleep, cheer, facepalm, interns)
-- [ ] OD.3 Furniture and tiles
+- [x] OD.3 Furniture and tiles
 - [ ] OD.4 Duck the boss
 - [ ] OD.5 Floor plan
 - [ ] O1.1 Entities and rendering

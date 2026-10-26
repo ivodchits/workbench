@@ -1,55 +1,28 @@
-// The cast preview (office plan OD.2): every worker, animated, for sign-off before
-// any office code builds on them. A walking corridor up top, then a card per worker
-// with animation, facing and zoom controls.
+// The office art preview (office plan OD.2–OD.3): a sample corner of the office, the
+// furniture catalogue, and the cast — every worker, animated, with animation, facing
+// and zoom controls. For sign-off before any office code builds on the art.
 
 import { ANIMS, FRAME_H, FRAME_W, frame, type Anim, type Dir } from "./art/characters";
 import { textOn } from "./art/palette";
+import { floorTile } from "./art/props";
+import { cached, frameIn } from "./previewCanvas";
+import { buildProps, drawProps } from "./previewProps";
+import { SCENE_H, SCENE_W, drawScene } from "./previewScene";
 import { ROSTER, TEAM_NAMES, type Team, type Worker } from "./roster";
 
-const TILE = 16;
-const FLOOR_A = "#c3c6cf";
-const FLOOR_B = "#b7bac5";
-const GROUT = "#a9acb8";
 const SHADOW = "rgba(30, 24, 40, 0.28)";
 
-// ── Sprite cache ─────────────────────────────────────────────────────────────
-
-const sprites = new Map<string, HTMLCanvasElement>();
-
 function sprite(worker: Worker, anim: Anim, dir: Dir, index: number): HTMLCanvasElement {
-  const key = `${worker.id}/${anim}/${dir}/${index}`;
-  let canvas = sprites.get(key);
-  if (!canvas) {
-    const bmp = frame(worker.look, anim, dir, index);
-    canvas = document.createElement("canvas");
-    canvas.width = bmp.w;
-    canvas.height = bmp.h;
-    canvas.getContext("2d")!.putImageData(new ImageData(bmp.data, bmp.w, bmp.h), 0, 0);
-    sprites.set(key, canvas);
-  }
-  return canvas;
+  return cached(`worker/${worker.id}/${anim}/${dir}/${index}`, () => frame(worker.look, anim, dir, index));
 }
 
-/** Which frame of `anim` is showing `ms` into the loop. */
-function frameAt(anim: Anim, ms: number): number {
-  const frames = ANIMS[anim].frames;
-  const total = frames.reduce((sum, f) => sum + f.ms, 0);
-  let t = ms % total;
-  for (let i = 0; i < frames.length; i++) {
-    if (t < frames[i].ms) return i;
-    t -= frames[i].ms;
-  }
-  return 0;
-}
+const frameAt = (anim: Anim, ms: number) => frameIn(ANIMS[anim].frames.map((f) => f.ms), ms);
 
 function floor(ctx: CanvasRenderingContext2D, w: number, h: number): void {
-  for (let y = 0; y < h; y += TILE) {
-    for (let x = 0; x < w; x += TILE) {
-      ctx.fillStyle = ((x + y) / TILE) % 2 === 0 ? FLOOR_A : FLOOR_B;
-      ctx.fillRect(x, y, TILE, TILE);
-      ctx.fillStyle = GROUT;
-      ctx.fillRect(x, y + TILE - 1, TILE, 1);
-      ctx.fillRect(x + TILE - 1, y, 1, TILE);
+  for (let y = 0; y < h; y += 16) {
+    for (let x = 0; x < w; x += 16) {
+      const alt = (x + y) / 16 % 2 === 1;
+      ctx.drawImage(cached(`floor/office/${alt}`, () => floorTile("office", alt)), x, y);
     }
   }
 }
@@ -81,6 +54,18 @@ function facingAt(ms: number): Dir {
   return TURN[Math.floor(ms / 1400) % TURN.length];
 }
 
+// ── Scene: a corner of the office, at the largest whole-pixel scale that fits ──
+
+const scene = document.querySelector<HTMLCanvasElement>("#scene")!;
+scene.width = SCENE_W;
+scene.height = SCENE_H;
+
+function fitScene(): void {
+  const room = scene.parentElement!.clientWidth;
+  const scale = Math.max(1, Math.floor(room / SCENE_W));
+  scene.style.width = `${SCENE_W * scale}px`;
+}
+
 // ── Corridor: the cast walking across ───────────────────────────────────────
 
 const CORRIDOR_SCALE = 3;
@@ -95,8 +80,7 @@ const walkers = ROSTER.map((worker, i) => ({
 }));
 
 function drawCorridor(ms: number): void {
-  const cssW = corridor.clientWidth;
-  const w = Math.max(160, Math.floor(cssW / CORRIDOR_SCALE));
+  const w = Math.max(160, Math.floor(corridor.clientWidth / CORRIDOR_SCALE));
   const h = 64;
   if (corridor.width !== w) {
     corridor.width = w;
@@ -111,8 +95,7 @@ function drawCorridor(ms: number): void {
     const travelled = (walker.offset + (ms / 1000) * walker.speed) % span;
     const x = walker.dir === "right" ? travelled - FRAME_W : w + FRAME_W - travelled;
     const y = 38 + walker.lane * 18;
-    const img = sprite(walker.worker, "walk", walker.dir, frameAt("walk", ms + walker.offset * 10));
-    drawWorker(ctx, img, x, y);
+    drawWorker(ctx, sprite(walker.worker, "walk", walker.dir, frameAt("walk", ms + walker.offset * 10)), x, y);
   }
 }
 
@@ -130,7 +113,7 @@ const STAGE_H = 34;
 
 function describe(worker: Worker): string {
   const l = worker.look;
-  const bits = [`${l.hairStyle} hair`, l.topStyle === "tee" ? "tee" : l.topStyle];
+  const bits = [`${l.hairStyle} hair`, l.topStyle];
   if (l.glasses) bits.push("glasses");
   if (l.beard) bits.push("beard");
   if (l.headphones) bits.push("headphones");
@@ -144,7 +127,7 @@ function buildCards(): void {
     const members = ROSTER.filter((w) => w.team === team);
     const section = document.createElement("section");
     section.className = `team team-${team}`;
-    section.innerHTML = `<h2><span>${TEAM_NAMES[team]}</span><small>${members.length} desks</small></h2>`;
+    section.innerHTML = `<h3><span>${TEAM_NAMES[team]}</span><small>${members.length} desks</small></h3>`;
     const grid = document.createElement("div");
     grid.className = "grid";
     for (const worker of members) {
@@ -219,6 +202,8 @@ let clock = 0;
 let last = performance.now();
 
 function paint(): void {
+  drawScene(scene.getContext("2d")!, clock);
+  drawProps(clock);
   drawCorridor(clock);
   drawCards(clock);
 }
@@ -230,6 +215,7 @@ function tick(now: number): void {
   requestAnimationFrame(tick);
 }
 
+buildProps(document.querySelector("#furniture")!);
 buildCards();
 bindGroup("anim", (v) => (state.anim = v as Anim));
 bindGroup("facing", (v) => (state.facing = v as Facing));
@@ -238,6 +224,8 @@ playButton.addEventListener("click", () => {
   state.playing = !state.playing;
   syncPlay();
 });
+addEventListener("resize", fitScene);
+fitScene();
 syncPlay();
 paint();
 requestAnimationFrame(tick);

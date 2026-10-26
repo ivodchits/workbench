@@ -76,6 +76,70 @@ export function draw(out: Bitmap, part: Part, colors: ColorMap, dx = 0, dy = 0):
   });
 }
 
+/** A row `w` wide of `fill`, with strings stamped at the given columns. Builds the
+ *  long regular rows of furniture without counting 32 characters by hand. */
+export function row(w: number, fill: string, ...marks: [number, string][]): string {
+  const cells = [...fill.repeat(w)];
+  for (const [at, text] of marks) {
+    if (at < 0 || at + text.length > w) throw new Error(`mark "${text}" at ${at} overflows ${w}`);
+    for (let i = 0; i < text.length; i++) cells[at + i] = text[i];
+  }
+  return cells.join("");
+}
+
+/** A row `w` wide of `fill` between two outline pixels, plus marks. */
+export function framed(w: number, fill: string, ...marks: [number, string][]): string {
+  return row(w, fill, [0, "o"], [w - 1, "o"], ...marks);
+}
+
+/** An ellipse: centre (cx, cy), radii rx, ry. */
+export type Ellipse = readonly [cx: number, cy: number, rx: number, ry: number];
+
+/** A soft organic shape — the union of ellipses — lit from the top left and outlined.
+ *  `keys` are light, base and dark; `speckle` sprinkles dark texture (leaves). */
+export function blob(
+  w: number,
+  h: number,
+  shapes: readonly Ellipse[],
+  keys = "456",
+  speckle = 0,
+): string[] {
+  const inside = (x: number, y: number) =>
+    x >= 1 && y >= 1 && x < w - 1 && y < h - 1 &&
+    shapes.some(([cx, cy, rx, ry]) => ((x + 0.5 - cx) / rx) ** 2 + ((y + 0.5 - cy) / ry) ** 2 <= 1);
+  const random = seeded(w * 131 + h * 7 + shapes.length);
+  const rows: string[] = [];
+  for (let y = 0; y < h; y++) {
+    let line = "";
+    for (let x = 0; x < w; x++) {
+      if (inside(x, y)) {
+        const lit = !inside(x, y - 1) || !inside(x - 1, y);
+        const shaded = !inside(x, y + 1) || !inside(x + 1, y) || !inside(x + 1, y + 1);
+        if (shaded) line += keys[2];
+        else if (lit) line += keys[0];
+        else line += random() < speckle ? keys[2] : keys[1];
+      } else {
+        const edge = inside(x - 1, y) || inside(x + 1, y) || inside(x, y - 1) || inside(x, y + 1);
+        line += edge ? "o" : TRANSPARENT;
+      }
+    }
+    rows.push(line);
+  }
+  return rows;
+}
+
+/** A small deterministic random source, so generated art is the same every run. */
+export function seeded(seed: number): () => number {
+  let s = seed >>> 0;
+  return () => {
+    s = (s + 0x6d2b79f5) >>> 0;
+    let t = s;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
 /** A part flipped left ↔ right within a frame `width` wide. */
 export function mirror(part: Part, width: number): Part {
   const w = part.rows[0]?.length ?? 0;

@@ -204,6 +204,23 @@ const TORSO_TYPE_B = part(13, [
   "..otTttttsstto..",
 ]);
 
+/** Typing seen from behind: the hands are hidden, the elbows bob. */
+const TORSO_TYPE_BACK_A = part(13, [
+  "...otttttttto...",
+  "..otttttttttto..",
+  "..otTttttttTto..",
+  ".ottTttttttTtto.",
+  "..otTttttttTto..",
+]);
+
+const TORSO_TYPE_BACK_B = part(13, [
+  "...otttttttto...",
+  "..otttttttttto..",
+  "..otTttttttTto..",
+  "..otTttttttTto..",
+  ".ottTttttttTtto.",
+]);
+
 /** The right arm is up, so that side of the torso has no hand. */
 const TORSO_WAVE = part(13, [
   "...otttttttto...",
@@ -558,7 +575,8 @@ export type Anim = "idle" | "walk" | "type" | "wave";
 
 /** One frame's pose: which legs and torso, and the extras. */
 interface Pose {
-  legs: Part;
+  /** None when something hides them (sitting with your back to the camera). */
+  legs?: Part;
   torso?: Part;
   arm?: Part;
   blink?: boolean;
@@ -567,8 +585,9 @@ interface Pose {
 interface AnimDef {
   /** Directions it has; others fall back to `down`. */
   dirs: readonly Dir[];
-  /** Per frame: the pose for the front/back view, and for the side view. */
-  frames: readonly { front: Pose; side: Pose; ms: number }[];
+  /** Per frame: the pose for the front view, the side view, and the back view when
+   *  it differs from the front. */
+  frames: readonly { front: Pose; side: Pose; back?: Pose; ms: number }[];
 }
 
 const stand: Pose = { legs: LEGS_FRONT };
@@ -594,12 +613,17 @@ export const ANIMS: Record<Anim, AnimDef> = {
     ],
   },
   type: {
-    dirs: ["down"],
+    dirs: ["down", "up"],
     frames: [
-      { front: { legs: LEGS_SEATED, torso: TORSO_TYPE_A }, side: standSide, ms: 170 },
-      { front: { legs: LEGS_SEATED, torso: TORSO_TYPE_B }, side: standSide, ms: 170 },
-      { front: { legs: LEGS_SEATED, torso: TORSO_TYPE_A }, side: standSide, ms: 170 },
-      { front: { legs: LEGS_SEATED, torso: TORSO_TYPE_B, blink: true }, side: standSide, ms: 140 },
+      { front: { legs: LEGS_SEATED, torso: TORSO_TYPE_A }, back: { torso: TORSO_TYPE_BACK_A }, side: standSide, ms: 170 },
+      { front: { legs: LEGS_SEATED, torso: TORSO_TYPE_B }, back: { torso: TORSO_TYPE_BACK_B }, side: standSide, ms: 170 },
+      { front: { legs: LEGS_SEATED, torso: TORSO_TYPE_A }, back: { torso: TORSO_TYPE_BACK_A }, side: standSide, ms: 170 },
+      {
+        front: { legs: LEGS_SEATED, torso: TORSO_TYPE_B, blink: true },
+        back: { torso: TORSO_TYPE_BACK_B },
+        side: standSide,
+        ms: 140,
+      },
     ],
   },
   wave: {
@@ -638,7 +662,7 @@ export function frame(look: Look, anim: Anim, dir: Dir, index: number): Bitmap {
   const facing = def.dirs.includes(dir) ? dir : "down";
   const drawn: DrawnDir = facing === "left" ? "right" : facing;
   const step = def.frames[index % def.frames.length];
-  const pose = drawn === "right" ? step.side : step.front;
+  const pose = drawn === "right" ? step.side : drawn === "up" ? (step.back ?? step.front) : step.front;
   const colors = colorsOf(look);
   const out = bitmap(FRAME_W, FRAME_H);
   const put = (p: Part | null | undefined) => p && draw(out, p, colors, 0, HEADROOM);
@@ -673,8 +697,9 @@ export function allParts(): [string, Part][] {
   for (const [d, p] of Object.entries(HEADPHONES)) add(`headphones.${d}`, p);
   for (const [a, def] of Object.entries(ANIMS)) {
     def.frames.forEach((f, i) => {
-      for (const view of ["front", "side"] as const) {
+      for (const view of ["front", "side", "back"] as const) {
         const pose = f[view];
+        if (!pose) continue;
         add(`${a}.${i}.${view}.legs`, pose.legs);
         add(`${a}.${i}.${view}.torso`, pose.torso);
         add(`${a}.${i}.${view}.arm`, pose.arm);
