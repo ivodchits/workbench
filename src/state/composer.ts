@@ -99,6 +99,16 @@ export function rememberSent(instanceId: string, text: string): void {
   }
 }
 
+/** What ↑ walks back through, newest first: the prompts in the conversation
+ *  (`typed`, which includes those typed in the terminal), then the composer's
+ *  sent prompts that never reached it. The newest sent prompt goes first when it
+ *  didn't arrive — it went into a dialog, or the session died. No repeats. */
+export function promptHistory(sent: readonly string[], typed: readonly string[]): string[] {
+  const arrived = new Set(typed.map((t) => t.trim()));
+  const lost = sent[0] !== undefined && !arrived.has(sent[0]) ? [sent[0]] : [];
+  return [...new Set([...lost, ...typed.map((t) => t.trim()), ...sent])].filter(Boolean);
+}
+
 function subscribe(cb: () => void): () => void {
   listeners.add(cb);
   return () => {

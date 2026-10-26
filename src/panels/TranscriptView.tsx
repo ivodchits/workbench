@@ -20,7 +20,7 @@ import { reconcileWithTranscript, usePendingChoice } from "../state/pendingChoic
 import { isTextInput } from "../keyboard/keymap";
 import type { LiveStatus } from "../state/status";
 import { instanceSource } from "../transcript/desktopSource";
-import { createFeed, plansIn, type Feed } from "../transcript/feed";
+import { createFeed, plansIn, userPrompts, type Feed } from "../transcript/feed";
 import { notePlans } from "../state/plans";
 import { openPlan } from "./openPlan";
 import { createRenderer } from "../transcript/render";
@@ -44,9 +44,18 @@ interface FeedState {
   ready: boolean;
   /** Bumped on every content change, so an open find re-runs. */
   rev: number;
+  /** What the user typed in the loaded part, newest first — the composer's ↑. */
+  prompts: string[];
 }
 
-const EMPTY: FeedState = { count: 0, hasEarlier: false, loading: false, ready: false, rev: 0 };
+const EMPTY: FeedState = {
+  count: 0,
+  hasEarlier: false,
+  loading: false,
+  ready: false,
+  rev: 0,
+  prompts: [],
+};
 
 function TranscriptView({ instanceId, live, onShowTerminal }: TranscriptViewProps) {
   const rootRef = useRef<HTMLDivElement>(null);
@@ -104,6 +113,7 @@ function TranscriptView({ instanceId, live, onShowTerminal }: TranscriptViewProp
         loading: feed.loading,
         ready: feed.ready,
         rev: s.rev + 1,
+        prompts: why === "loading" ? s.prompts : userPrompts(feed.items),
       }));
     });
     feedRef.current = feed;
@@ -288,6 +298,7 @@ function TranscriptView({ instanceId, live, onShowTerminal }: TranscriptViewProp
       <PromptComposer
         instanceId={instanceId}
         live={live}
+        typed={feedState.prompts}
         onShowTerminal={onShowTerminal}
         onSent={followEnd}
       />

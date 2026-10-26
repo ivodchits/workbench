@@ -16,6 +16,7 @@ import {
   COMPOSER_ATTR,
   imageToken,
   insertReferences,
+  promptHistory,
   rememberSent,
   sentPrompts,
   setDraft,
@@ -33,6 +34,8 @@ import { flash } from "../util/flash";
 interface PromptComposerProps {
   instanceId: string;
   live: LiveStatus | null;
+  /** What the user typed in the conversation, newest first (from its transcript). */
+  typed: readonly string[];
   /** Switch the console to its terminal (for a command that answers there). */
   onShowTerminal: () => void;
   /** A prompt left the composer — the view follows the conversation's end again. */
@@ -62,14 +65,14 @@ function useStarting(instanceId: string, live: LiveStatus | null): boolean {
   return starting;
 }
 
-function PromptComposer({ instanceId, live, onShowTerminal, onSent }: PromptComposerProps) {
+function PromptComposer({ instanceId, live, typed, onShowTerminal, onSent }: PromptComposerProps) {
   const fieldRef = useRef<HTMLTextAreaElement>(null);
   const draft = useDraft(instanceId);
   const queued = useQueued().get(instanceId) ?? null;
   const [picking, setPicking] = useState(false);
   /** Where the caret goes once an inserted template has rendered. */
   const pendingSelection = useRef<[number, number] | null>(null);
-  /** The sent prompt ↑/↓ put in the field (its index in `sentPrompts`), or -1. */
+  /** The past prompt ↑/↓ put in the field (its index in `promptHistory`), or -1. */
   const recalled = useRef(-1);
 
   const startingUp = useStarting(instanceId, live);
@@ -167,12 +170,12 @@ function PromptComposer({ instanceId, live, onShowTerminal, onSent }: PromptComp
   };
 
   /** ↑ in an empty field (or on the first line of a prompt it recalled) puts the
-   *  previous sent prompt in it, ↓ on its last line the next one — and past the
+   *  previous prompt in it, ↓ on its last line the next one — and past the
    *  newest, an empty field again. Once the text is edited it is a draft like any
    *  other, and the arrows just move the caret. */
   const recall = (e: React.KeyboardEvent<HTMLTextAreaElement>): boolean => {
     const field = e.currentTarget;
-    const sent = sentPrompts(instanceId);
+    const sent = promptHistory(sentPrompts(instanceId), typed);
     const at = recalled.current;
     if (at >= 0 ? draft !== sent[at] : draft !== "") return false;
     if (field.selectionStart !== field.selectionEnd) return false;
@@ -200,6 +203,17 @@ function PromptComposer({ instanceId, live, onShowTerminal, onSent }: PromptComp
       recall(e)
     ) {
       e.preventDefault();
+      return;
+    }
+    // Esc in an empty field takes the queued prompt back into it, or else stops
+    // the agent, as Esc does in the terminal. With text in the field it does nothing.
+    if (e.key === "Escape" && !e.nativeEvent.isComposing) {
+      if (draft) return;
+      if (queued) editQueued();
+      else if (working) interrupt();
+      else return;
+      e.preventDefault();
+      e.stopPropagation();
       return;
     }
     // Enter sends, Shift+Enter is a line break — as in the terminal (step C1).
@@ -243,7 +257,7 @@ function PromptComposer({ instanceId, live, onShowTerminal, onSent }: PromptComp
           >
             force send
           </button>
-          <button type="button" onClick={editQueued} title="take it back into the field">
+          <button type="button" onClick={editQueued} title="take it back into the field (Esc in an empty field)">
             edit
           </button>
           <button
@@ -281,7 +295,7 @@ function PromptComposer({ instanceId, live, onShowTerminal, onSent }: PromptComp
           ) : resting ? (
             <>
               <b>↵</b> send · <b>⇧↵</b> new line
-              {!draft && sentPrompts(instanceId).length > 0 && (
+              {!draft && promptHistory(sentPrompts(instanceId), typed).length > 0 && (
                 <>
                   {" "}
                   · <b>↑</b> past prompts
@@ -318,7 +332,7 @@ function PromptComposer({ instanceId, live, onShowTerminal, onSent }: PromptComp
             type="button"
             className="wb-cmp-stop"
             onClick={interrupt}
-            title="interrupt the agent (Esc in the terminal)"
+            title="interrupt the agent (Esc in an empty field)"
           >
             ■ stop
           </button>

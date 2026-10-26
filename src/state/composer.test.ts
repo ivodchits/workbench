@@ -8,6 +8,7 @@ import {
   imageToken,
   insertIntoDraft,
   promptChunks,
+  promptHistory,
   rememberSent,
   SENT_KEEP,
   sentPrompts,
@@ -55,6 +56,20 @@ describe("sent prompts", () => {
     expect(sentPrompts("a")).toEqual([]);
   });
 });
+describe("prompt history", () => {
+  it("walks the conversation, then sent prompts that never reached it", () => {
+    expect(promptHistory(["b", "lost"], ["c ", "b", "a"])).toEqual(["c", "b", "a", "lost"]);
+  });
+
+  it("puts the newest sent prompt first when it never arrived", () => {
+    expect(promptHistory(["new", "b"], ["b", "a"])).toEqual(["new", "b", "a"]);
+  });
+
+  it("has no repeats", () => {
+    expect(promptHistory([], ["a", "b", "a"])).toEqual(["a", "b"]);
+  });
+});
+
 
 describe("drafts", () => {
   beforeEach(() => localStorage.clear());

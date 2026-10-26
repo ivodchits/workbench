@@ -178,6 +178,16 @@ export function lastAssistantText(items: readonly Item[]): string | null {
   return null;
 }
 
+/** What the user typed in `items`, newest first. */
+export function userPrompts(items: readonly Item[]): string[] {
+  const prompts: string[] = [];
+  for (let i = items.length - 1; i >= 0; i--) {
+    const item = items[i];
+    if (item.kind === "user" && item.text) prompts.push(item.text);
+  }
+  return prompts;
+}
+
 /**
  * The last response of an instance's session, read straight from its transcript —
  * no view needs to be open. Pages back from the end until one turns up.
