@@ -226,6 +226,12 @@ favourite spots.
 - **Build:** the huge rubber duck (~48×48) and the boss desk; animations: idle bob, thinking,
   speaking, waddle (walking).
 - **Done when:** user approves.
+- _As built (approved):_ 48×48, in sunglasses and a red bow tie. Duck is generated from
+  ellipses with the face stamped on top, not hand-drawn, so blinking, looking up and an
+  open beak are pose parameters. The views are front, back, right, and left (the right view
+  mirrored). In the sunglasses, "thinking" moves the lens glint upward. Waddle is a bob in
+  place; the walking itself is done by moving Duck, as the preview does across the carpet.
+  The preview never shows the back view; it's there for walking away in O1.2.
 
 ### Step OD.5 — Floor plan
 - **Build:** the office map as an ASCII layout file + prop placements → tile layers, a
