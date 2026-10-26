@@ -113,7 +113,7 @@ favourite spots.
 
 ## Floor plan (approved in OD.5; `src/office/map/`)
 
-One open floor, 512×352, no walls inside: floors and furniture mark the areas.
+512×352. Mostly open floor: floors and furniture mark the areas.
 
 - **Along the back wall:** Demiurge (4 desks, whiteboard; a bookshelf and cabinet toward the
   open space, the server rack in the corner) · the hall with the front door and the clock ·
@@ -122,6 +122,8 @@ One open floor, 512×352, no walls inside: floors and furniture mark the areas.
 - **Below:** the open space (8 desks, 2 spare) · TinyWizardRoyale (2 desks) under Duck's
   office · under that the **meeting room** (a long table for 8 and a whiteboard on a stand)
   and the kitchen, as wide as the lounge (fridge, coffee, sink, water cooler).
+- **Walls:** the outside walls, Duck's glass, and walls with doors between the four rooms on
+  the right (TinyWizardRoyale, lounge, meeting room, kitchen). Everything else is open floor.
 - `office.ts` holds the tile layout, furniture, desks and named spots; `build.ts` makes the
   draw list, the seats (stand point, monitor) and an 8 px walk grid. Tests check that every
   desk and activity spot is reachable from the door.

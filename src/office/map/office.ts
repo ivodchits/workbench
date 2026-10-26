@@ -15,7 +15,7 @@ export const TILE = 16;
 export const MAP_W = 32;
 export const MAP_H = 22;
 
-/** One character per tile. `W` is the back wall; the rest are floors. */
+/** One character per tile. `W` is wall; the rest are floors (a doorway is floor). */
 export const LAYOUT = [
   "WWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW",
   "WWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW",
@@ -33,8 +33,8 @@ export const LAYOUT = [
   "ooooooooooooooo" + "tttttttt" + "lllllllll",
   "ooooooooooooooo" + "tttttttt" + "lllllllll",
   "ooooooooooooooo" + "tttttttt" + "lllllllll",
-  "ooooooooooooooo" + "tttttttt" + "lllllllll",
-  "ooooooooooooooo" + "mmmmmmmm" + "kkkkkkkkk",
+  "ooooooooooooooo" + "WWWWWWtW" + "WWWWWWWlW",
+  "ooooooooooooooo" + "WWWWWWtW" + "WWWWWWWlW",
   "ooooooooooooooo" + "mmmmmmmm" + "kkkkkkkkk",
   "ooooooooooooooo" + "mmmmmmmm" + "kkkkkkkkk",
   "ooooooooooooooo" + "mmmmmmmm" + "kkkkkkkkk",
@@ -66,7 +66,10 @@ export const FLOOR_OF: Record<Room, FloorKind> = {
 };
 
 /** A prop from the catalogue, or a built-to-length one (dividers, glass). */
-export type PropRef = PropName | { build: "partition" | "partitionSide" | "glass" | "glassSide"; tiles: number };
+export type PropRef =
+  | PropName
+  | { build: "partition" | "partitionSide" | "glass" | "glassSide" | "wallRun"; tiles: number }
+  | { build: "wallSide"; px: number };
 
 export interface Placement {
   prop: PropRef;
@@ -129,24 +132,33 @@ export const PLACEMENTS: Placement[] = [
   at("beanbagRed", 404, 88),
   at("beanbagYellow", 420, 120),
   at("kicker", 440, 160),
-  at("dndTable", 400, 220),
-  at("plant", 490, 230),
+  at("dndTable", 400, 206),
+  at("plant", 496, 230),
+
+  // The walls round the rooms on the right: TinyWizardRoyale and the lounge above, the
+  // meeting room and the kitchen below, with a door between each pair.
+  at({ build: "wallRun", tiles: 17 }, 240, 256, { foot: 0 }),
+  at("door", 336, 256, { base: 289, foot: 0 }),
+  at("door", 480, 256, { base: 289, foot: 0 }),
+  at({ build: "wallSide", px: 24 }, 365, 192),
+  at({ build: "wallSide", px: 24 }, 365, 232),
+  at({ build: "wallSide", px: 24 }, 365, 288),
+  at({ build: "wallSide", px: 24 }, 365, 328),
 
   // Meeting room, under TinyWizardRoyale: a long table for pitching an idea to whoever's
   // free, and a whiteboard to draw the discussion on.
-  at("whiteboardStand", 248, 274),
-  at("meetingTable", 288, 306),
-  at("plant", 350, 274),
+  at("whiteboardStand", 248, 288),
+  at("meetingTable", 288, 318),
 
-  // Kitchen, beside it and as wide as the lounge: a counter run facing the room.
-  at("fridge", 380, 268),
-  at("counter", 400, 282),
-  at("coffeeMachine", 402, 274, { base: 306 }),
-  at("sink", 416, 282),
-  at("counter", 432, 282),
-  at("counter", 448, 282),
-  at("waterCooler", 468, 277),
-  at("plant", 494, 274),
+  // Kitchen, beside it and as wide as the lounge: a counter run against the wall.
+  at("fridge", 380, 265),
+  at("counter", 400, 279),
+  at("coffeeMachine", 402, 271, { base: 303 }),
+  at("sink", 416, 279),
+  at("counter", 432, 279),
+  at("counter", 448, 279),
+  at("waterCooler", 468, 274),
+  at("plant", 494, 277),
 ];
 
 export interface DeskSpec {
@@ -198,16 +210,16 @@ export const SPOTS: SpotSpec[] = [
   spot("window-lounge", "window", 408, 48, "up"),
   spot("kicker-w", "play", 432, 182, "right"),
   spot("kicker-e", "play", 488, 182, "left"),
-  spot("dnd-w", "dnd", 390, 244, "right"),
-  spot("dnd-e", "dnd", 446, 244, "left"),
-  spot("dnd-n", "dnd", 418, 228, "down"),
-  spot("dnd-s", "dnd", 418, 260, "up"),
+  spot("dnd-w", "dnd", 390, 230, "right"),
+  spot("dnd-e", "dnd", 446, 230, "left"),
+  spot("dnd-n", "dnd", 418, 214, "down"),
+  spot("dnd-s", "dnd", 418, 246, "up"),
   // Meeting room: round the table for a pitch.
-  ...[300, 320, 340].map((x, i) => spot(`pitch-n${i + 1}`, "pitch", x, 304, "down")),
-  ...[300, 320, 340].map((x, i) => spot(`pitch-s${i + 1}`, "pitch", x, 334, "up")),
-  spot("pitch-w", "pitch", 278, 322, "right"),
-  spot("pitch-e", "pitch", 362, 322, "left"),
-  spot("pitch-board", "pitch", 264, 312, "right"),
+  ...[300, 320, 340].map((x, i) => spot(`pitch-n${i + 1}`, "pitch", x, 316, "down")),
+  ...[300, 320, 340].map((x, i) => spot(`pitch-s${i + 1}`, "pitch", x, 346, "up")),
+  spot("pitch-w", "pitch", 278, 330, "right"),
+  spot("pitch-e", "pitch", 358, 330, "left"),
+  spot("pitch-board", "pitch", 264, 326, "right"),
   // Standup, in Duck's office.
   ...[284, 304, 324].map((x, i) => spot(`standup-n${i + 1}`, "meeting", x, 138, "down")),
   ...[284, 304, 324].map((x, i) => spot(`standup-s${i + 1}`, "meeting", x, 168, "up")),

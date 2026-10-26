@@ -2,7 +2,7 @@
 // tile, the furniture as positioned props with draw-order edges, the seats at each
 // desk, and an 8px walkability grid for pathfinding.
 
-import { PROPS, glass, glassSide, partition, partitionSide, type FloorKind, type Prop } from "../art/props";
+import { PROPS, glass, glassSide, partition, partitionSide, wallRun, wallSide, type FloorKind, type Prop } from "../art/props";
 import {
   DESKS,
   DOOR,
@@ -73,13 +73,14 @@ export interface OfficeMap {
 
 function resolve(ref: PropRef): [string, Prop] {
   if (typeof ref === "string") return [ref, PROPS[ref] as Prop];
-  const make = { partition, partitionSide, glass, glassSide }[ref.build];
+  if (ref.build === "wallSide") return [`wallSide${ref.px}`, wallSide(ref.px)];
+  const make = { partition, partitionSide, glass, glassSide, wallRun }[ref.build];
   return [`${ref.build}${ref.tiles}`, make(ref.tiles)];
 }
 
 /** How deep a prop sits on the floor when its placement doesn't say. */
 function defaultFoot(ref: PropRef, p: Prop): number {
-  if (typeof ref !== "string" && (ref.build === "partitionSide" || ref.build === "glassSide")) return p.h;
+  if (typeof ref !== "string" && (ref.build === "partitionSide" || ref.build === "glassSide" || ref.build === "wallSide")) return p.h;
   if (ref === "kicker" || ref === "dndTable") return 16;
   return Math.min(p.h, 12);
 }

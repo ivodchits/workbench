@@ -203,6 +203,16 @@ export function clockAt(hours: number, minutes: number): Prop {
 
 const clock = clockAt(10, 10);
 
+/** A free-standing run of wall `tiles` long, between rooms: outlined at both ends. */
+export function wallRun(tiles: number): Prop {
+  return prop(wallRows(tiles * 16).map((line) => "o" + line.slice(1, -1) + "o"));
+}
+
+/** A wall running up the screen, `h` pixels long: its top, and at the near end, its face. */
+export function wallSide(h: number): Prop {
+  return prop(["oooooo", ...repeat(h - 9, "ovvvvo"), "oooooo", ...repeat(5, "ouuuuo"), "oVVVVo", "oooooo"]);
+}
+
 /** A low divider between areas, `tiles` long, seen from the front: top, face.
  *  Recolour 4/5/6 to the room's colour. */
 export function partition(tiles: number): Prop {
