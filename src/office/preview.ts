@@ -7,9 +7,10 @@ import type { DuckAnim } from "./art/duck";
 import { textOn } from "./art/palette";
 import { floorTile } from "./art/props";
 import { cached, frameIn } from "./canvas";
+import { SIM_STEP } from "./loop";
 import { DUCK_ROOM_H, DUCK_ROOM_W, drawDuckRoom } from "./previewDuck";
 import { buildProps, drawProps } from "./previewProps";
-import { OFFICE_H, OFFICE_W, drawOffice, workerAt } from "./previewOffice";
+import { OFFICE_H, OFFICE_W, clickOffice, drawOffice, stepOffice, workerAt } from "./previewOffice";
 import { ROSTER, TEAM_NAMES, type Team, type Worker } from "./roster";
 
 const SHADOW = "rgba(30, 24, 40, 0.28)";
@@ -50,6 +51,7 @@ const state = {
   overlay: false,
   tags: false,
   hover: null as string | null,
+  selected: null as string | null,
   playing: !matchMedia("(prefers-reduced-motion: reduce)").matches,
 };
 
@@ -81,14 +83,16 @@ function fitScene(): void {
   fit(duckRoom, DUCK_ROOM_W, 4);
 }
 
-/** Hovering a worker shows their name tag. */
-function bindHover(): void {
-  const at = (e: MouseEvent) => {
+/** Hovering a worker shows their name tag; a click picks a worker, the next sends
+ *  them walking. */
+function bindPointer(): void {
+  const at = (e: MouseEvent): [number, number] => {
     const rect = scene.getBoundingClientRect();
-    return workerAt(((e.clientX - rect.left) * OFFICE_W) / rect.width, ((e.clientY - rect.top) * OFFICE_H) / rect.height);
+    return [((e.clientX - rect.left) * OFFICE_W) / rect.width, ((e.clientY - rect.top) * OFFICE_H) / rect.height];
   };
-  scene.addEventListener("mousemove", (e) => (state.hover = at(e)));
+  scene.addEventListener("mousemove", (e) => (state.hover = workerAt(...at(e))));
   scene.addEventListener("mouseleave", () => (state.hover = null));
+  scene.addEventListener("click", (e) => (state.selected = clickOffice(state.selected, ...at(e), clock)));
 }
 
 // ── Corridor: the cast walking across ───────────────────────────────────────
@@ -225,6 +229,8 @@ function syncPlay(): void {
 
 let clock = 0;
 let last = performance.now();
+/** The office's sim runs at 10 Hz on the preview's clock, so pausing stops it too. */
+let stepped = 0;
 
 function paint(): void {
   drawOffice(scene.getContext("2d")!, clock, state);
@@ -237,6 +243,7 @@ function paint(): void {
 function tick(now: number): void {
   if (state.playing) clock += Math.min(now - last, 100);
   last = now;
+  while (stepped + SIM_STEP <= clock) stepOffice((stepped += SIM_STEP));
   paint();
   requestAnimationFrame(tick);
 }
@@ -252,7 +259,7 @@ bindGroup("overlay", (v) => {
   document.querySelector<HTMLElement>("#legend")!.hidden = !state.overlay;
 });
 bindGroup("tags", (v) => (state.tags = v === "all"));
-bindHover();
+bindPointer();
 playButton.addEventListener("click", () => {
   state.playing = !state.playing;
   syncPlay();

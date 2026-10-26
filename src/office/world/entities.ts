@@ -1,11 +1,12 @@
-// The office's people (office plan O1.1): a worker per roster entry and Duck, each with
-// a position, a facing, the animation playing, and what floats over them. Plain data,
-// no drawing: the sim changes it, render.ts draws it.
+// The office's people (office plans O1.1, O1.2): a worker per roster entry and Duck,
+// each with a position, a facing, the animation playing, what floats over them, and for
+// workers the walk they're on. Plain data, no drawing: the sim (move.ts) changes it,
+// render.ts draws it.
 
 import { ANIMS, FRAME_H, FRAME_W, type Anim, type Dir } from "../art/characters";
 import { DUCK_ANIMS, DUCK_H, DUCK_W, type DuckAnim, type DuckView } from "../art/duck";
 import type { BubbleTone, Overhead, TagGlyph } from "../art/labels";
-import type { OfficeMap, Seat } from "../map/build";
+import type { OfficeMap, Point, Seat } from "../map/build";
 import { ROSTER, type Team, type Worker } from "../roster";
 import { play, type Clip, type Playing } from "./anim";
 
@@ -19,6 +20,8 @@ export interface Bubble {
 interface Body {
   x: number;
   y: number;
+  /** Where the feet were before the last step; drawing slides from here to `x`, `y`. */
+  prev: Point;
   playing: Playing;
   bubble: Bubble | null;
 }
@@ -28,13 +31,27 @@ export interface WorkerEntity extends Body {
   worker: Worker;
   dir: Dir;
   anim: Anim;
-  /** On a chair: no shadow, and the chair hides the legs. */
-  seated: boolean;
+  /** The desk whose chair they're on (no shadow, the chair hides the legs), if any. */
+  seat: number | null;
   /** The desk they sit at when they have nowhere else to be. */
   home: number;
+  walk: Walk | null;
+  /** Out of the office: not drawn, not hit. */
+  away: boolean;
   overhead: Overhead | null;
   /** The status glyph on the name tag; none when there's no session. */
   tag: TagGlyph | null;
+}
+
+/** What happens at the end of a walk. */
+export type Arrival = { kind: "stand"; face?: Dir } | { kind: "sit"; seat: number } | { kind: "leave" };
+
+export interface Walk {
+  /** Feet positions still to reach, in order; the last is the destination. */
+  points: Point[];
+  then: Arrival;
+  /** Steps spent waiting for someone to get out of the way. */
+  waited: number;
 }
 
 export interface DuckEntity extends Body {
@@ -53,6 +70,8 @@ export interface World {
   duck: DuckEntity;
   /** By seat index. */
   screens: Screen[];
+  /** When the sim last stepped, ms: drawing slides people between steps from here. */
+  stepAt: number;
 }
 
 const clips = new Map<string, Clip>();
@@ -107,13 +126,17 @@ export function createWorld(office: OfficeMap, ms = 0): World {
   for (const seat of office.seats) {
     const worker = seated.get(seat.index);
     if (!worker) continue;
+    const at = seatedAt(seat);
     workers.push({
       kind: "worker",
       worker,
-      ...seatedAt(seat),
+      ...at,
+      prev: at,
       dir: "up",
       anim: "type",
-      seated: true,
+      seat: seat.index,
+      walk: null,
+      away: false,
       playing: play(workerClip("type"), ms - seat.sit.x * 53),
       home: seat.index,
       overhead: null,
@@ -121,23 +144,25 @@ export function createWorld(office: OfficeMap, ms = 0): World {
       bubble: null,
     });
   }
+  const duckAt = { x: office.duck.x + DUCK_W / 2, y: office.duck.y + DUCK_H };
   const duck: DuckEntity = {
     kind: "duck",
-    x: office.duck.x + DUCK_W / 2,
-    y: office.duck.y + DUCK_H,
+    ...duckAt,
+    prev: duckAt,
     view: "down",
     anim: "idle",
     playing: play(duckClip("idle"), ms),
     bubble: null,
   };
   const screens = office.seats.map((s): Screen => (seated.has(s.index) ? "code" : "off"));
-  return { workers, duck, screens };
+  return { workers, duck, screens, stepAt: ms };
 }
 
 /** The frontmost worker whose sprite covers (x, y). */
 export function workerAt(world: World, x: number, y: number): WorkerEntity | undefined {
   let hit: WorkerEntity | undefined;
   for (const w of world.workers) {
+    if (w.away) continue;
     const inside = x >= w.x - FRAME_W / 2 && x < w.x + FRAME_W / 2 && y >= w.y - FRAME_H && y < w.y;
     if (inside && (!hit || w.y >= hit.y)) hit = w;
   }

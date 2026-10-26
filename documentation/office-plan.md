@@ -281,6 +281,24 @@ favourite spots.
 - **Build:** A* on the walkability grid, walking with direction, simple waiting when blocked,
   entering/leaving through the door. Pure pathfinding module with tests.
 - **Done when:** a debug click sends a worker anywhere reachable without clipping furniture.
+- _As built (approved):_ `world/path.ts` is A* over the 8 px walk cells, 4-way so a path
+  only needs the four facings, with a small cost per turn so routes are long straight legs,
+  not staircases; it may start on a blocked cell (getting up) but never steps onto one, and
+  takes cells to avoid. `world/move.ts` walks people at 30 px/s along the cells where the
+  path turns, one axis at a time so they face where they go, ending exactly on the target
+  (or, if that can't be reached from the door, the nearest cell that can). Getting up puts
+  a worker behind their chair; arriving can mean standing, sitting at a desk, or leaving
+  through the door (then they're away: not drawn, not hit); coming in starts at the door.
+  Someone standing in the next cell makes a walker wait; after 1 s they look for a way
+  round, after 3 s they squeeze past. The sim moves people at 10 Hz and the renderer slides
+  them between steps, so walking is smooth at any frame rate. The debug click (page and
+  preview): click a worker to pick them (their tag shows), then the floor to send them
+  there, a free desk to sit at it, or the door to see them out — they come back to their
+  own desk 3 s later; `G` shows the routes. Tests cover A* (shortest, straight legs, walls,
+  no way through, blocked start, avoided cells, door to every desk) and walking (no step on
+  furniture, facing, landing, sitting, leaving and coming back, waiting and going round,
+  squeezing past). Checked in the preview: people walk behind desks and in front of them in
+  the right order; screens don't yet follow who's at a desk (O1.3/O1.4).
 
 ### Step O1.3 — Assignment engine
 - **Depends on:** O0.3, O1.2.
@@ -448,7 +466,7 @@ closed, open and still, and open and busy.
 - [x] OD.4 Duck the boss (sunglasses and a red bow tie)
 - [x] OD.5 Floor plan
 - [x] O1.1 Entities and rendering
-- [ ] O1.2 Movement
+- [x] O1.2 Movement
 - [ ] O1.3 Assignment engine
 - [ ] O1.4 Status → behaviour
 - [ ] O1.5 Hover and the sidebar
