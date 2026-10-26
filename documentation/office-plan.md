@@ -199,7 +199,12 @@ favourite spots.
   accessories (glasses, headphones, beard, hat). Animations: idle, walk in 4 directions, sit &
   type, sit relaxed, stand & wave, drink, sleep, cheer, facepalm. (Interns for subagents were
   drawn and dropped: not useful enough.)
-  The 12-worker roster with names, looks, personalities.
+  The 12-worker roster with names, looks, personalities. _As built (approved):_ frames
+  are 16×26, not 32 (hair rises into 2 rows of headroom); 6 hair styles, 4 top styles
+  (tee, collar, hoodie, stripes) told apart further by colour; glasses, beard, headphones
+  and blush, no hat. The animations are idle, walk (4 directions), type, wave, drink,
+  sleep, cheer and facepalm. "Sit relaxed" isn't drawn yet; `sleep`'s front view is the
+  seated pose it will build on, and it's due with the sofa in O2.1.
 - **Key files:** `src/office/art/characters.ts`, `src/office/roster.ts`.
 - **Done when:** the preview shows all 12 workers in every animation, and the user approves.
 
