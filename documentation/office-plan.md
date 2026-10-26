@@ -382,8 +382,8 @@ closed, open and still, and open and busy.
 
 - [x] O0.1 Office page scaffold (`npm run dev:office`, port 1432; draws the static office)
 - [x] O0.2 Serving, auth and "Open Office"
-- [ ] O0.3 Snapshot additions
-- [ ] O0.4 Measuring the cost
+- [x] O0.3 Snapshot additions
+- [x] O0.4 Measuring the cost
 - [x] OD.1 Pixel format and palette
 - [x] OD.2 Characters
 - [x] OD.3 Furniture and tiles
