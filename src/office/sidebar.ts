@@ -1,9 +1,10 @@
 // The sidebar's link section (office plan O0.2): where the office stands with
-// Workbench and, until workers come to life in O1, Duck and the live instance list as
-// plain text.
+// Workbench and, until the sidebar proper (O1.5), Duck and the live instance list as
+// plain text. Below it, the room each project sits in (O1.3).
 
-import type { RemoteDuck, RemoteInstance } from "../remote/protocol";
+import type { RemoteDuck, RemoteInstance, RemoteProject } from "../remote/protocol";
 import type { LinkState } from "./net";
+import { TEAM_NAMES, type Team } from "./roster";
 
 /** The rail's glyphs. */
 const GLYPH: Record<string, string> = { working: "◐", needs_you: "●", done: "○", idle: "·", ended: "–" };
@@ -48,4 +49,30 @@ export function showLink(el: HTMLElement, state: LinkState): void {
   // Live ones first, in the rail's order otherwise.
   list.append(...[...live, ...instances.filter((i) => !i.live)].map(line));
   el.replaceChildren(status, duckLine(duck, instances), list);
+}
+
+/** A room picker per project, rebuilt only when the projects or their rooms change (so
+ *  an open picker survives snapshots). */
+export function showRooms(el: HTMLElement, projects: readonly RemoteProject[], roomOf: (id: string) => Team, choose: (id: string, team: Team) => void): void {
+  const key = JSON.stringify(projects.map((p) => [p.id, p.name, roomOf(p.id)]));
+  if (el.dataset.key === key) return;
+  el.dataset.key = key;
+  if (!projects.length) return el.replaceChildren();
+
+  const head = document.createElement("h2");
+  head.textContent = "Rooms";
+  const list = document.createElement("ul");
+  list.className = "rooms";
+  for (const p of projects) {
+    const li = document.createElement("li");
+    const label = document.createElement("label");
+    label.textContent = p.name;
+    const pick = document.createElement("select");
+    for (const [team, name] of Object.entries(TEAM_NAMES)) pick.add(new Option(name, team, false, team === roomOf(p.id)));
+    pick.addEventListener("change", () => choose(p.id, pick.value as Team));
+    label.append(pick);
+    li.append(label);
+    list.append(li);
+  }
+  el.replaceChildren(head, list);
 }

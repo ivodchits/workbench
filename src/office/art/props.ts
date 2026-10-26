@@ -349,6 +349,26 @@ function monitor(screen: Screen): Prop {
   ]);
 }
 
+/** A contractor's open laptop (office plan O1.3), in a monitor's 14×14 box: the lid
+ *  facing you, a little code scrolling on it, the keyboard in front. */
+function laptop(lines: [number, string][][]): Prop {
+  return prop([
+    ...Array.from({ length: 5 }, () => row(14, ".")),
+    row(14, ".", [2, "oooooooooo"]),
+    ...lines.map((marks) => row(14, ".", [2, "o"], [3, row(8, "S", ...marks)], [11, "o"])),
+    row(14, ".", [2, "oooooooooo"]),
+    row(14, ".", [1, "oAAAAAAAAAAo"]),
+    row(14, ".", [1, "oAzAzAzAzAAo"]),
+    row(14, ".", [1, "oooooooooooo"]),
+  ]);
+}
+
+/** The laptop's two screens of code, 8×4. */
+const LAPTOP: [number, string][][][] = [
+  [[[0, "ccc"]], [[1, "yy"], [4, "cc"]], [[1, "cccc"]], [[0, "gg"]]],
+  [[[1, "yy"], [4, "cc"]], [[1, "cccc"]], [[0, "gg"]], [[0, "cccccc"]]],
+];
+
 /** Duck's desk: dark wood, gold trim, a duck on the front panel. */
 const bossDesk = prop([
   row(48, "o"),
@@ -852,6 +872,7 @@ export const PROPS = {
   monitorOff: monitor("off"),
   monitorCode: { ...monitor("code"), frames: [...monitor("code").frames, ...monitor("code2").frames], ms: 600 },
   monitorAlert: { ...monitor("alert"), frames: [...monitor("alert").frames, ...monitor("alert2").frames], ms: 450 },
+  laptop: { ...laptop(LAPTOP[0]), frames: [...laptop(LAPTOP[0]).frames, ...laptop(LAPTOP[1]).frames], ms: 900 },
   bossDesk,
   meetingTable,
   cabinet,

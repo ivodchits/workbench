@@ -1,15 +1,15 @@
-// The office page (office plans O0.1, O0.2, O1.1, O1.2): the office as large as fits
+// The office page (office plans O0.1, O0.2, O1.1–O1.3): the office as large as fits
 // beside the sidebar, on the loop in loop.ts, with the performance HUD, and the link to
-// Workbench. Until sessions drive the workers (O1.3) it runs the demo office from
-// previewOffice.ts, where a click picks a worker and the next sends them walking, and
-// the sidebar lists the sessions as text.
+// Workbench. Sessions drive the workers (liveOffice.ts); a click picks a worker and the
+// next sends them walking (debug); the sidebar lists the sessions as text and the room
+// each project sits in.
 
 import { fitSize } from "./canvas";
 import { startHud } from "./hud";
 import { startLoop } from "./loop";
 import { connect } from "./net";
-import { OFFICE_H, OFFICE_W, clickOffice, drawOffice, stepOffice, workerAt } from "./previewOffice";
-import { showLink } from "./sidebar";
+import { OFFICE_H, OFFICE_W, clickOffice, drawOffice, officeSnapshot, roomOf, setRoom, startOffice, stepOffice, workerAt } from "./liveOffice";
+import { showLink, showRooms } from "./sidebar";
 
 const canvas = document.querySelector<HTMLCanvasElement>("#office")!;
 const stage = document.querySelector<HTMLElement>("#stage")!;
@@ -39,7 +39,18 @@ const loop = startLoop({
   },
 });
 const linkEl = document.querySelector<HTMLElement>("#link")!;
-const link = connect((state) => showLink(linkEl, state));
+const roomsEl = document.querySelector<HTMLElement>("#rooms")!;
+const pickRoom = (id: string, team: Parameters<typeof setRoom>[1]) => {
+  setRoom(id, team);
+  loop.invalidate();
+};
+const link = connect((state) => {
+  showLink(linkEl, state);
+  if (state.kind !== "live") return;
+  officeSnapshot(state.snapshot);
+  showRooms(roomsEl, state.snapshot.projects, roomOf, pickRoom);
+});
+startOffice(link, () => loop.invalidate());
 startHud(hud, loop, () => link.cost());
 
 /** Fills the stage. At a whole-number scale every office pixel is a block of device

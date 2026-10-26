@@ -62,14 +62,21 @@ export interface DuckEntity extends Body {
 
 export type Entity = WorkerEntity | DuckEntity;
 
-/** What a desk's monitor shows. */
-export type Screen = "off" | "code" | "alert";
+/** What a desk's monitor shows; a contractor's desk has a laptop instead. */
+export type Screen = "off" | "code" | "alert" | "laptop";
+
+/** A session with no worker free for it, at a desk of its own (office plan O1.3). */
+export interface Contractor {
+  desk: number;
+  tag: TagGlyph | null;
+}
 
 export interface World {
   workers: WorkerEntity[];
   duck: DuckEntity;
   /** By seat index. */
   screens: Screen[];
+  contractors: Contractor[];
   /** When the sim last stepped, ms: drawing slides people between steps from here. */
   stepAt: number;
 }
@@ -155,7 +162,7 @@ export function createWorld(office: OfficeMap, ms = 0): World {
     bubble: null,
   };
   const screens = office.seats.map((s): Screen => (seated.has(s.index) ? "code" : "off"));
-  return { workers, duck, screens, stepAt: ms };
+  return { workers, duck, screens, contractors: [], stepAt: ms };
 }
 
 /** The frontmost worker whose sprite covers (x, y). */

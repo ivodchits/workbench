@@ -2,7 +2,8 @@
 // `/office/#t=<launch token>`; the token is traded once for a session, kept in this
 // tab's sessionStorage so a reload still works. Then one socket: the snapshot on
 // connect and on every change, and actions back up it. The same snapshot and actions
-// as the phone (`src/remote/protocol.ts`).
+// as the phone (`src/remote/protocol.ts`). The page's own settings (`prefs`) are kept by
+// Workbench too, in its DB, so they outlive the tab.
 
 import type { RemoteAction, RemoteSnapshot } from "../remote/protocol";
 
@@ -39,6 +40,11 @@ export interface Link {
   send(action: RemoteAction): boolean;
   /** What Workbench costs now, CPU since the previous call; null when it can't say. */
   cost(): Promise<Cost | null>;
+  /** The page's settings as saved (`{}` before the first save), once signed in; null
+   *  when they can't be had. */
+  prefs(): Promise<Record<string, unknown> | null>;
+  /** Replace the saved settings; false when that didn't work. */
+  savePrefs(prefs: Record<string, unknown>): Promise<boolean>;
 }
 
 function readSession(): string | null {
@@ -93,6 +99,8 @@ async function sessionKnown(session: string): Promise<boolean | null> {
 
 export function connect(onState: (state: LinkState) => void): Link {
   let session: string | null = null;
+  let signedIn!: (session: string | null) => void;
+  const ready = new Promise<string | null>((resolve) => (signedIn = resolve));
   let socket: WebSocket | null = null;
   let retry = RETRY_MIN;
 
@@ -127,6 +135,7 @@ export function connect(onState: (state: LinkState) => void): Link {
     onState({ kind: "connecting" });
     const token = takeLaunchToken();
     session = (token && (await startSession(token))) || readSession();
+    signedIn(session);
     if (!session) return onState({ kind: "signedOut" });
     saveSession(session);
     open();
@@ -145,6 +154,30 @@ export function connect(onState: (state: LinkState) => void): Link {
         return res.ok ? ((await res.json()) as Cost) : null;
       } catch {
         return null;
+      }
+    },
+    async prefs() {
+      const session = await ready;
+      if (!session) return null;
+      try {
+        const res = await fetch(`${API}/prefs`, { headers: { Authorization: `Bearer ${session}` } });
+        return res.ok ? ((await res.json()) as Record<string, unknown>) : null;
+      } catch {
+        return null;
+      }
+    },
+    async savePrefs(prefs) {
+      const session = await ready;
+      if (!session) return false;
+      try {
+        const res = await fetch(`${API}/prefs`, {
+          method: "PUT",
+          headers: { Authorization: `Bearer ${session}`, "Content-Type": "application/json" },
+          body: JSON.stringify(prefs),
+        });
+        return res.ok;
+      } catch {
+        return false;
       }
     },
   };

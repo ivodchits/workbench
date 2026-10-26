@@ -1,14 +1,15 @@
 // The office with everyone at their home desk (office plans O1.1, O1.2), for the
-// preview and, until sessions drive the workers in O1.3, the office page. A fixed cast
+// preview; the office page runs on sessions instead (liveOffice.ts). A fixed cast
 // of states shows what the renderer can draw: most people typing, Ada standing up to
 // wave because she needs you, a few status icons, a speech bubble, and Duck talking.
 // A debug click moves people: click a worker to pick them, then a spot on the floor to
 // send them there, a desk to sit at it, or the door to walk out (they come back in to
 // their own desk a little later).
 
-import { buildOffice, type Point } from "./map/build";
+import { buildOffice } from "./map/build";
+import { debugClick } from "./world/debug";
 import { workerAt as hit, createWorld, setAnim, setDuckAnim, type WorkerEntity, type World } from "./world/entities";
-import { enter, leave, stepWalkers, walkTo } from "./world/move";
+import { enter, stepWalkers } from "./world/move";
 import { OFFICE_H, OFFICE_W, createRenderer, type View } from "./world/render";
 
 export { OFFICE_H, OFFICE_W };
@@ -61,28 +62,9 @@ export function stepOffice(ms: number): boolean {
   return changed;
 }
 
-const DOOR_REACH = 12;
-
-/** The desk (with its chair and monitor) under `p`. */
-function deskAt(p: Point): number | undefined {
-  return office.seats.find((s) => p.x >= s.desk.x && p.x < s.desk.x + 32 && p.y >= s.monitor.y && p.y < s.sit.base + 4)?.index;
-}
-
 /** A debug click at (x, y): picks the worker there, or sends the one picked. Returns
  *  who's picked now. */
-export function clickOffice(picked: string | null, x: number, y: number, ms: number): string | null {
-  const under = hit(world, x, y);
-  if (under) return under.worker.id;
-  const w = world.workers.find((o) => o.worker.id === picked);
-  if (!w || w.away) return null;
-  const p = { x, y };
-  const desk = deskAt(p);
-  if (Math.hypot(x - office.door.x, y - office.door.y) <= DOOR_REACH) leave(office, w, ms);
-  else if (desk !== undefined && !world.workers.some((o) => o !== w && o.seat === desk)) {
-    walkTo(office, w, p, ms, { kind: "sit", seat: desk });
-  } else walkTo(office, w, p, ms);
-  return w.worker.id;
-}
+export const clickOffice = (picked: string | null, x: number, y: number, ms: number): string | null => debugClick(office, world, picked, x, y, ms);
 
 /** The worker at (x, y) in office pixels, for hover. */
 export function workerAt(x: number, y: number): string | null {

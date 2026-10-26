@@ -307,6 +307,40 @@ favourite spots.
   mapping are saved through Workbench (an `/office/api/prefs` route backed by the app DB),
   not in browser storage. Workers walk to their desks when assigned.
 - **Done when:** tests pass; starting/stopping sessions in Workbench moves the right workers.
+- _As built (approved):_ `world/assign.ts` is the rules, pure: live sessions in the rail's
+  order, the rooms, the sticky map and the seating so far in; the new seating and sticky
+  map out. Seating already given never moves while its session lives. A new session takes
+  its sticky worker if they're free — one from another team only when the room's own team
+  has nobody free — else a random free worker of the team, preferring ones no ended
+  session still has a claim on. A team with nobody free borrows from the open space, then
+  the other main team (the open space borrows from Demiurge, then TinyWizardRoyale); a
+  borrowed worker takes the free desk nearest the room, the two spare desks first, and
+  nobody takes the home desk of a worker who's free. Past twelve, a session is a
+  contractor: a free desk with a laptop on it and a "Remote contractor" tag (on hover or
+  `N`), or no desk once the two extra desks are gone; a contractor gets a worker as soon
+  as one is free. Sticky entries for instances Workbench no longer has are dropped.
+  `world/sessions.ts` applies it: on the first snapshot everyone is simply in place; after
+  that a newly seated worker walks to their desk (in through the door if they're out) and
+  a released one walks to a free kitchen spot (else another idle spot). People with
+  nothing to do stand at the kitchen, kicker, D&D and window spots — not at their desks,
+  since sitting without typing waits for the relaxed pose (O2.1); real idle life is O2.
+  "A borrowed worker returns home" means just that they're free again: their next session
+  is their own team's, at their home desk. Screens are on where a worker sits at their
+  session's desk, laptops on contractors' desks, dark elsewhere. Name tags carry the
+  session's phase glyph; the rest of "Status → behaviour" is O1.4. The page
+  (`liveOffice.ts`) loads the saved settings from `GET /office/api/prefs` before the first
+  seating, and saves `{rooms, sticky}` back with `PUT` (a second after a change). Workbench
+  keeps them as one JSON object (≤ 64 KiB) under `office.prefs` in the DB's `meta` table
+  and doesn't read them. The sidebar's **Rooms** list sets each project's room; moving a
+  project re-seats its live sessions from the new room. The preview keeps the O1.1 demo;
+  the office page's debug click still works, and the next snapshot sends a moved worker
+  back. Tests: assignment (home desks, stability, stickiness and claims, forgetting,
+  borrowing order and spare desks, release, > 12, a 200-round random run checking that
+  no desk or worker is used twice), seating (first snapshot in place, walking to a desk
+  and to the kitchen, coming in through the door, laptops, when to save), and the prefs
+  route's validation (Rust). Checked in the preview's renderer with made-up sessions:
+  borrowing onto the spare desks, contractors' laptops, and ten people walking off to the
+  kitchen and lounge. Not yet watched against real sessions in Workbench.
 
 ### Step O1.4 — Status → behaviour
 - **Build:** the table in "Status → behaviour", including the `!`/`?` bubbles.
@@ -467,7 +501,7 @@ closed, open and still, and open and busy.
 - [x] OD.5 Floor plan
 - [x] O1.1 Entities and rendering
 - [x] O1.2 Movement
-- [ ] O1.3 Assignment engine
+- [x] O1.3 Assignment engine
 - [ ] O1.4 Status → behaviour
 - [ ] O1.5 Hover and the sidebar
 - [ ] O1.6 Stats when nothing is selected

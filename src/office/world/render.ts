@@ -15,7 +15,7 @@ import { WALK_CELL, type OfficeMap, type Point } from "../map/build";
 import { MAP_H, MAP_W, TILE } from "../map/office";
 import { SIM_STEP } from "../loop";
 import { frameAt, play, type Playing } from "./anim";
-import type { Bubble, DuckEntity, Entity, Screen, WorkerEntity, World } from "./entities";
+import type { Bubble, Contractor, DuckEntity, Entity, Screen, WorkerEntity, World } from "./entities";
 
 export const OFFICE_W = MAP_W * TILE;
 export const OFFICE_H = MAP_H * TILE;
@@ -27,7 +27,8 @@ export interface View {
   overlay?: boolean;
   /** Everyone's name tag, not just the hovered worker's. */
   tags?: boolean;
-  /** The worker under the pointer, by id: their tag shows. */
+  /** The worker under the pointer, by id, or a contractor's desk as `desk:<index>`:
+   *  their tag shows. */
   hover?: string | null;
   /** The worker a debug click sends walking, by id: their tag shows too. */
   selected?: string | null;
@@ -53,7 +54,9 @@ function propStill(key: string, frames: number, ms: number, x: number, y: number
   };
 }
 
-const SCREEN_PROP: Record<Screen, PropName> = { off: "monitorOff", code: "monitorCode", alert: "monitorAlert" };
+const SCREEN_PROP: Record<Screen, PropName> = { off: "monitorOff", code: "monitorCode", alert: "monitorAlert", laptop: "laptop" };
+/** A contractor's tag: no shirt, so a neutral rim. */
+const CONTRACTOR_RIM = "#8e8e9e";
 
 export interface Renderer {
   draw(ctx: CanvasRenderingContext2D, world: World, ms: number, view?: View): number;
@@ -85,7 +88,7 @@ export function createRenderer(office: OfficeMap): Renderer {
       const prop = PROPS[SCREEN_PROP[screen]];
       return propStill(SCREEN_PROP[screen], prop.frames.length, prop.ms ?? 1000, m.x, m.y, m.base, (f) => propFrame(prop, f));
     };
-    return { off: of("off"), code: of("code"), alert: of("alert") } satisfies Record<Screen, Still>;
+    return { off: of("off"), code: of("code"), alert: of("alert"), laptop: of("laptop") } satisfies Record<Screen, Still>;
   });
 
   let floors: HTMLCanvasElement | undefined;
@@ -118,6 +121,7 @@ export function createRenderer(office: OfficeMap): Renderer {
       items.sort((a, b) => a.base - b.base);
       for (const item of items) next = Math.min(next, item.draw(ctx, ms));
 
+      for (const c of world.contractors) drawContractorTag(ctx, office, c, view);
       for (const { e, at } of people.sort((a, b) => a.at.y - b.at.y)) drawOverhead(ctx, e, at, view);
       if (view.overlay) drawOverlay(ctx, office, world);
       return next;
@@ -186,6 +190,15 @@ function drawOverhead(ctx: CanvasRenderingContext2D, e: Entity, at: Point, view:
     ctx.drawImage(img, x, y);
     bottom = y - 1;
   }
+}
+
+/** "Remote contractor" over a contractor's laptop, when tags show or it's hovered. */
+function drawContractorTag(ctx: CanvasRenderingContext2D, office: OfficeMap, c: Contractor, view: View): void {
+  if (!view.tags && view.hover !== `desk:${c.desk}`) return;
+  const img = cached(`tag/contractor/${c.tag}`, () => nameTag("Remote contractor", CONTRACTOR_RIM, c.tag));
+  const m = office.seats[c.desk].monitor;
+  const x = Math.min(Math.max(0, m.x + 7 - Math.floor(img.width / 2)), OFFICE_W - img.width);
+  ctx.drawImage(img, x, Math.max(0, m.y + 4 - img.height));
 }
 
 function bubbleImage(b: Bubble): HTMLCanvasElement {

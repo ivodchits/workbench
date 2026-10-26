@@ -10,6 +10,9 @@
 //! - `GET /office/api/state`, `POST /office/api/action` — as the phone's (auth:
 //!   `Authorization: Bearer <session>`).
 //! - `GET /office/api/stats` — what Workbench costs (O0.4, `stats.rs`), for the HUD.
+//! - `GET`/`PUT /office/api/prefs` — the page's own settings (O1.3: the room each
+//!   project sits in, which worker each instance had), one JSON object kept in the app
+//!   DB so they outlive the tab and the browser. Workbench doesn't read them.
 //! - `GET /office/api/ws`, `GET /office/api/transcript` — as the phone's sockets (auth:
 //!   the session as a `wb-token.<session>` subprotocol).
 //!
@@ -31,7 +34,7 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::Deserialize;
 use serde_json::{json, Value};
-use tauri::Emitter;
+use tauri::{Emitter, Manager};
 use tokio::sync::broadcast;
 
 use super::auth::{self, ct_eq};
@@ -48,6 +51,9 @@ const OFFICE_PORT: u16 = if cfg!(debug_assertions) { 49050 } else { 48950 };
 const LAUNCH_SECS: u64 = 60;
 /// Sessions kept (office tabs); a new one drops the oldest.
 const SESSIONS_MAX: usize = 8;
+/// The `meta` key the office's prefs live under, and how large they may get.
+const PREFS_KEY: &str = "office.prefs";
+const PREFS_MAX: usize = 64 * 1024;
 
 #[derive(Default)]
 pub(super) struct Office {
@@ -153,6 +159,7 @@ fn router(state: Arc<RemoteState>, port: u16) -> Router {
         .route("/office/api/state", get(api_state))
         .route("/office/api/action", post(api_action))
         .route("/office/api/stats", get(api_stats))
+        .route("/office/api/prefs", get(get_prefs).put(put_prefs))
         .route("/office/api/ws", get(api_ws))
         .route("/office/api/transcript", get(api_transcript))
         .with_state(state)
@@ -228,6 +235,46 @@ async fn api_stats(State(state): State<Arc<RemoteState>>, headers: HeaderMap) ->
     match tokio::task::spawn_blocking(stats::measure).await {
         Ok(cost) => ([(header::CACHE_CONTROL, "no-store")], Json(cost)).into_response(),
         Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    }
+}
+
+/// The office's prefs as saved, `{}` before the first save.
+async fn get_prefs(State(state): State<Arc<RemoteState>>, headers: HeaderMap) -> Response {
+    if !state.office.valid(bearer(&headers).as_deref()) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    match state.app.state::<crate::db::Db>().meta_get(PREFS_KEY) {
+        Ok(saved) => (
+            [(header::CONTENT_TYPE, "application/json"), (header::CACHE_CONTROL, "no-store")],
+            saved.unwrap_or_else(|| "{}".into()),
+        )
+            .into_response(),
+        Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    }
+}
+
+/// Replace the office's prefs: any JSON object up to [`PREFS_MAX`] bytes.
+async fn put_prefs(State(state): State<Arc<RemoteState>>, headers: HeaderMap, body: Bytes) -> Response {
+    if !state.office.valid(bearer(&headers).as_deref()) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let Some(prefs) = prefs_ok(&body) else {
+        return StatusCode::BAD_REQUEST.into_response();
+    };
+    match state.app.state::<crate::db::Db>().meta_set(PREFS_KEY, &prefs) {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    }
+}
+
+/// `body` as compact JSON, when it is an object and not too large.
+fn prefs_ok(body: &[u8]) -> Option<String> {
+    if body.len() > PREFS_MAX {
+        return None;
+    }
+    match serde_json::from_slice::<Value>(body).ok()? {
+        v @ Value::Object(_) => Some(v.to_string()),
+        _ => None,
     }
 }
 
@@ -354,6 +401,15 @@ mod tests {
         assert!(office.session(&late, 2000 + LAUNCH_SECS).is_none(), "expired");
         assert!(!office.valid(Some("nope")));
         assert!(!office.valid(None));
+    }
+
+    #[test]
+    fn takes_prefs_only_as_a_json_object_of_bounded_size() {
+        assert_eq!(prefs_ok(br#"{ "rooms": {"p1": "demiurge"} }"#).as_deref(), Some(r#"{"rooms":{"p1":"demiurge"}}"#));
+        assert!(prefs_ok(b"[1, 2]").is_none());
+        assert!(prefs_ok(b"not json").is_none());
+        let big = format!(r#"{{"x":"{}"}}"#, "a".repeat(PREFS_MAX));
+        assert!(prefs_ok(big.as_bytes()).is_none());
     }
 
     #[test]
