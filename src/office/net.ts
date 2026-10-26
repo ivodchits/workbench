@@ -19,9 +19,26 @@ export type LinkState =
   /** No session, or one Workbench no longer knows (it restarted): open the office from Workbench again. */
   | { kind: "signedOut" };
 
+/** CPU (a share of the whole machine, 0–100) and RAM of some of Workbench's
+ *  processes (`office/stats.rs`). */
+export interface Usage {
+  cpu: number;
+  ramMb: number;
+  processes: number;
+}
+
+/** What Workbench costs (office plan O0.4): itself with its webview, and the
+ *  sessions' processes under it. */
+export interface Cost {
+  workbench: Usage;
+  sessions: Usage;
+}
+
 export interface Link {
   /** Send an action; false when there is no live connection to send it on. */
   send(action: RemoteAction): boolean;
+  /** What Workbench costs now, CPU since the previous call; null when it can't say. */
+  cost(): Promise<Cost | null>;
 }
 
 function readSession(): string | null {
@@ -120,6 +137,15 @@ export function connect(onState: (state: LinkState) => void): Link {
       if (socket?.readyState !== WebSocket.OPEN) return false;
       socket.send(JSON.stringify(action));
       return true;
+    },
+    async cost() {
+      if (!session) return null;
+      try {
+        const res = await fetch(`${API}/stats`, { headers: { Authorization: `Bearer ${session}` } });
+        return res.ok ? ((await res.json()) as Cost) : null;
+      } catch {
+        return null;
+      }
     },
   };
 }

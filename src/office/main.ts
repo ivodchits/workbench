@@ -36,10 +36,9 @@ const loop = startLoop({
     return view.paused ? Infinity : next;
   },
 });
-startHud(hud, loop);
-
 const linkEl = document.querySelector<HTMLElement>("#link")!;
-connect((state) => showLink(linkEl, state));
+const link = connect((state) => showLink(linkEl, state));
+startHud(hud, loop, () => link.cost());
 
 /** Fills the stage. At a whole-number scale every office pixel is a block of device
  *  pixels; between those, the canvas holds the next whole scale up and the browser

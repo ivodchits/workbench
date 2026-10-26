@@ -366,6 +366,14 @@ favourite spots.
 
 _Filled in by O0.4 and O6.2._
 
+**How to measure.** The office's HUD (`H`) shows the page's own work (draws/s, ms per
+draw, steps/s, JS heap) and, every 3 s, what Workbench costs (`GET /office/api/stats`):
+`cli` is the consoles (`claude`, shells, `ssh`, ConPTY's `conhost`, and all they
+start), `app` the rest of Workbench's tree (itself, WebView2, the voice sidecar). CPU is a share of the whole machine, averaged since the previous reading.
+The browser tab's own cost is in the browser's task manager (Chrome: Shift+Esc;
+Firefox: `about:processes`). Take each number after a minute settled: with the office
+closed, open and still, and open and busy.
+
 - **O0.1, the page alone** (headless Chrome, 2× scale): the static office with its
   animations redraws ~21 times a second at ~0.4 ms a draw; paused, 0 draws; hidden, no
   frames and no steps. JS heap ~9.5 MB.

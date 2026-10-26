@@ -99,6 +99,8 @@ rustfft = "6"
 # recording it matched livekit's native build (29.3 dB at 16 kHz, no false
 # barge-ins), with nothing to build in C++.
 sonora = "0.2"
+# What Workbench and its sessions cost, for the office's HUD (office plan O0.4).
+sysinfo = { version = "0.39.6", default-features = false, features = ["system"] }
 
 # Windows-only: intercept WebView2 accelerator keys so we can suppress the engine's
 # built-in reload shortcuts (F5 / Ctrl+R / Ctrl+Shift+R), which would otherwise

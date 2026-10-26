@@ -9,6 +9,7 @@
 //!   minute. The session lives in memory here and in the tab, until the app quits.
 //! - `GET /office/api/state`, `POST /office/api/action` — as the phone's (auth:
 //!   `Authorization: Bearer <session>`).
+//! - `GET /office/api/stats` — what Workbench costs (O0.4, `stats.rs`), for the HUD.
 //! - `GET /office/api/ws`, `GET /office/api/transcript` — as the phone's sockets (auth:
 //!   the session as a `wb-token.<session>` subprotocol).
 //!
@@ -37,6 +38,8 @@ use super::auth::{self, ct_eq};
 use super::server::{bearer, subprotocol_token, SUBPROTOCOL};
 use super::transcript::{self, TranscriptQuery};
 use super::RemoteState;
+
+mod stats;
 
 /// Where the office listens; a debug build apart from a release, like the phone's
 /// server. Taken by something else, any free port does: the URL is minted per launch.
@@ -149,6 +152,7 @@ fn router(state: Arc<RemoteState>, port: u16) -> Router {
         .route("/office/api/session", post(start_session))
         .route("/office/api/state", get(api_state))
         .route("/office/api/action", post(api_action))
+        .route("/office/api/stats", get(api_stats))
         .route("/office/api/ws", get(api_ws))
         .route("/office/api/transcript", get(api_transcript))
         .with_state(state)
@@ -214,6 +218,17 @@ async fn api_state(State(state): State<Arc<RemoteState>>, headers: HeaderMap) ->
     }
     let snap = state.inner.lock().unwrap().snapshot.clone();
     ([(header::CONTENT_TYPE, "application/json"), (header::CACHE_CONTROL, "no-store")], snap).into_response()
+}
+
+/// What Workbench and its sessions cost now; CPU since the previous call.
+async fn api_stats(State(state): State<Arc<RemoteState>>, headers: HeaderMap) -> Response {
+    if !state.office.valid(bearer(&headers).as_deref()) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    match tokio::task::spawn_blocking(stats::measure).await {
+        Ok(cost) => ([(header::CACHE_CONTROL, "no-store")], Json(cost)).into_response(),
+        Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    }
 }
 
 /// One action, forwarded to the webview as the phone's are.
