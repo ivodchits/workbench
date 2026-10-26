@@ -260,6 +260,22 @@ favourite spots.
 - **Build:** worker and Duck entities, an animation player, depth sorting by y, name tags,
   status glyphs, speech bubbles.
 - **Done when:** workers render at their home desks with animations playing.
+- _As built (approved):_ `src/office/world/`. `entities.ts` is plain data: a worker
+  (feet position, facing, animation, seated, home desk, overhead icon, tag glyph, bubble)
+  per roster entry and Duck, plus which screen each desk's monitor shows; `createWorld`
+  seats everyone at their home desk, typing, with clips offset so neighbours don't move
+  in step. `anim.ts` is the player: frame at a time and time to the next frame, looping
+  or played once and held. `render.ts` draws the floors once, then furniture, monitors and
+  people sorted together by their draw edge, then name tags, status icons and bubbles over
+  everything, and returns when the picture next changes. Lettering is a 5 px pixel font
+  (`art/font.ts`, capitals only, unknown characters as `?`), so text scales with the
+  scene. Name tags (`art/labels.ts`) are a dark pill rimmed in the worker's shirt colour
+  with the rail's glyph (◐ ● ○ · –) in the rail's colours, shown on hover or for everyone
+  (`N` on the page, a toggle in the preview). Status icons are 7×7 badges (working, `!`,
+  `?`, red `!`, `…`, ✓); bubbles wrap at 72 px and have a tail toward the speaker. Until
+  O1.3 the page and preview show a fixed demo of these: Ada standing and waving with the
+  `!` bubble and the alert screen, Felix's working icon, Pip done, Gus asleep and stuck,
+  Theo and Duck speaking. Tests cover the font, the labels, the player and the world.
 
 ### Step O1.2 — Movement
 - **Build:** A* on the walkability grid, walking with direction, simple waiting when blocked,
@@ -431,7 +447,7 @@ closed, open and still, and open and busy.
 - [x] OD.3 Furniture and tiles
 - [x] OD.4 Duck the boss (sunglasses and a red bow tie)
 - [x] OD.5 Floor plan
-- [ ] O1.1 Entities and rendering
+- [x] O1.1 Entities and rendering
 - [ ] O1.2 Movement
 - [ ] O1.3 Assignment engine
 - [ ] O1.4 Status → behaviour

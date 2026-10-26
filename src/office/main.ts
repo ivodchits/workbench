@@ -1,12 +1,13 @@
-// The office page (office plans O0.1, O0.2): the office as large as fits beside the
-// sidebar, on the loop in loop.ts, with the performance HUD, and the link to Workbench. Until O1 it draws the static office from the floor-plan
-// preview, and the sidebar lists the sessions as text.
+// The office page (office plans O0.1, O0.2, O1.1): the office as large as fits beside
+// the sidebar, on the loop in loop.ts, with the performance HUD, and the link to
+// Workbench. Until sessions drive the workers (O1.3) it draws the demo office from
+// previewOffice.ts, and the sidebar lists the sessions as text.
 
 import { fitSize } from "./canvas";
 import { startHud } from "./hud";
 import { startLoop } from "./loop";
 import { connect } from "./net";
-import { OFFICE_H, OFFICE_W, drawOffice } from "./previewOffice";
+import { OFFICE_H, OFFICE_W, drawOffice, workerAt } from "./previewOffice";
 import { showLink } from "./sidebar";
 
 const canvas = document.querySelector<HTMLCanvasElement>("#office")!;
@@ -26,12 +27,12 @@ function present(): void {
   shown.drawImage(scene, 0, 0, canvas.width, canvas.height);
 }
 
-const view = { overlay: false, paused: false, pausedAt: 0 };
+const view = { overlay: false, tags: false, hover: null as string | null, paused: false, pausedAt: 0 };
 
 const loop = startLoop({
   step: () => false,
   draw: (ms) => {
-    const next = drawOffice(ctx, view.paused ? view.pausedAt : ms, view.overlay);
+    const next = drawOffice(ctx, view.paused ? view.pausedAt : ms, view);
     present();
     return view.paused ? Infinity : next;
   },
@@ -66,6 +67,7 @@ addEventListener("keydown", (e) => {
   if (e.ctrlKey || e.metaKey || e.altKey || e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
   const key = e.key.toLowerCase();
   if (key === "g") view.overlay = !view.overlay;
+  else if (key === "n") view.tags = !view.tags;
   else if (key === "p") {
     view.paused = !view.paused;
     view.pausedAt = performance.now();
@@ -73,3 +75,19 @@ addEventListener("keydown", (e) => {
   else return;
   loop.invalidate();
 });
+
+/** Hovering a worker shows their name tag. */
+function hoverAt(e: PointerEvent | null): void {
+  let id: string | null = null;
+  if (e) {
+    const rect = canvas.getBoundingClientRect();
+    id = workerAt(((e.clientX - rect.left) * OFFICE_W) / rect.width, ((e.clientY - rect.top) * OFFICE_H) / rect.height);
+  }
+  canvas.style.cursor = id ? "pointer" : "";
+  if (id === view.hover) return;
+  view.hover = id;
+  loop.invalidate();
+}
+
+canvas.addEventListener("pointermove", hoverAt);
+canvas.addEventListener("pointerleave", () => hoverAt(null));

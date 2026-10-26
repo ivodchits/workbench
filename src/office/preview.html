@@ -100,17 +100,6 @@
   }
   #scene, #duck-room { image-rendering: pixelated; display: block; }
   .scene-wrap { position: relative; }
-  .who {
-    position: absolute;
-    pointer-events: none;
-    transform: translate(-50%, -100%);
-    font: 400 11px var(--display);
-    background: var(--tag);
-    color: var(--tag-text);
-    border: 2px solid #1d1622;
-    padding: 2px 8px 1px;
-    white-space: nowrap;
-  }
   .legend { display: flex; flex-wrap: wrap; gap: 4px 14px; align-items: center; font-size: 12px; }
   .legend i { display: inline-block; width: 10px; height: 10px; background: var(--c); border: 1px solid #1d1622; margin-right: -8px; }
   .props, .floors {
@@ -201,19 +190,25 @@
       the D&amp;D table. Below: the open space (eight desks, two of them spare for
       borrowed workers), TinyWizardRoyale (two desks) under Duck's office, and under
       that the meeting room, where you can pitch an idea to whoever is free, and the kitchen.
-      Everyone is at their home desk; Ada needs you. Hover a worker to see who
-      it is.</p>
+      Everyone is at their home desk, most of them typing. Ada needs you, so she stands
+      and waves with a <code>!</code> over her head; Felix shows the working icon, Pip
+      is done, Gus is stuck (asleep on the keyboard), Theo is saying something, and so
+      is Duck. Hover a worker for their name tag, with the rail's status glyph.</p>
     <div class="group" role="group" aria-label="Overlay">
       <span>Overlay</span>
       <button type="button" id="overlay-off" data-overlay="off" aria-pressed="true">None</button>
       <button type="button" id="overlay-on" data-overlay="on" aria-pressed="false">Walk grid &amp; spots</button>
     </div>
+    <div class="group" role="group" aria-label="Name tags">
+      <span>Name tags</span>
+      <button type="button" data-tags="hover" aria-pressed="true">On hover</button>
+      <button type="button" data-tags="all" aria-pressed="false">Everyone</button>
+    </div>
     <p id="legend" class="legend" hidden><i style="--c:rgba(230,40,60,.5)"></i>blocked
       <i style="--c:#5aa0ff"></i>where to stand to sit at a desk
       <i style="--c:#ffd23f"></i>chat, play, meeting and D&amp;D spots
       <i style="--c:#ffffff"></i>the door</p>
-    <div class="scene-wrap"><canvas id="scene" aria-label="The whole office, everyone at their desk"></canvas>
-      <div id="who" class="who" hidden></div></div>
+    <div class="scene-wrap"><canvas id="scene" aria-label="The whole office, everyone at their desk"></canvas></div>
   </section>
 
   <section class="section" aria-labelledby="duck-title">

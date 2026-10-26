@@ -9,7 +9,7 @@ import { floorTile } from "./art/props";
 import { cached, frameIn } from "./canvas";
 import { DUCK_ROOM_H, DUCK_ROOM_W, drawDuckRoom } from "./previewDuck";
 import { buildProps, drawProps } from "./previewProps";
-import { OFFICE_H, OFFICE_SEATS, OFFICE_W, drawOffice } from "./previewOffice";
+import { OFFICE_H, OFFICE_W, drawOffice, workerAt } from "./previewOffice";
 import { ROSTER, TEAM_NAMES, type Team, type Worker } from "./roster";
 
 const SHADOW = "rgba(30, 24, 40, 0.28)";
@@ -48,6 +48,8 @@ const state = {
   zoom: 4,
   duck: "idle" as DuckAnim,
   overlay: false,
+  tags: false,
+  hover: null as string | null,
   playing: !matchMedia("(prefers-reduced-motion: reduce)").matches,
 };
 
@@ -79,25 +81,14 @@ function fitScene(): void {
   fit(duckRoom, DUCK_ROOM_W, 4);
 }
 
-/** Hovering a seated worker shows their name tag. */
+/** Hovering a worker shows their name tag. */
 function bindHover(): void {
-  const who = document.querySelector<HTMLDivElement>("#who")!;
-  scene.addEventListener("mousemove", (e) => {
+  const at = (e: MouseEvent) => {
     const rect = scene.getBoundingClientRect();
-    const scale = rect.width / OFFICE_W;
-    const x = (e.clientX - rect.left) / scale;
-    const y = (e.clientY - rect.top) / scale;
-    const hit = OFFICE_SEATS.find((s) => x >= s.x && x < s.x + FRAME_W && y >= s.y && y < s.y + FRAME_H + 8);
-    who.hidden = !hit;
-    if (!hit) return;
-    const top = hit.worker.look.top;
-    who.textContent = hit.worker.name;
-    who.style.setProperty("--tag", top.base);
-    who.style.setProperty("--tag-text", textOn(top.base));
-    who.style.left = `${scene.offsetLeft + (hit.x + FRAME_W / 2) * scale}px`;
-    who.style.top = `${scene.offsetTop + hit.y * scale}px`;
-  });
-  scene.addEventListener("mouseleave", () => (who.hidden = true));
+    return workerAt(((e.clientX - rect.left) * OFFICE_W) / rect.width, ((e.clientY - rect.top) * OFFICE_H) / rect.height);
+  };
+  scene.addEventListener("mousemove", (e) => (state.hover = at(e)));
+  scene.addEventListener("mouseleave", () => (state.hover = null));
 }
 
 // ── Corridor: the cast walking across ───────────────────────────────────────
@@ -236,7 +227,7 @@ let clock = 0;
 let last = performance.now();
 
 function paint(): void {
-  drawOffice(scene.getContext("2d")!, clock, state.overlay);
+  drawOffice(scene.getContext("2d")!, clock, state);
   drawDuckRoom(duckRoom.getContext("2d")!, clock, state.duck);
   drawProps(clock);
   drawCorridor(clock);
@@ -260,6 +251,7 @@ bindGroup("overlay", (v) => {
   state.overlay = v === "on";
   document.querySelector<HTMLElement>("#legend")!.hidden = !state.overlay;
 });
+bindGroup("tags", (v) => (state.tags = v === "all"));
 bindHover();
 playButton.addEventListener("click", () => {
   state.playing = !state.playing;

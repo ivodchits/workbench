@@ -86,3 +86,17 @@ export const GEAR = {
   red: sw("#c94444", "#933030"),
   white: sw("#e6e3dc", "#b8b4ac"),
 } as const;
+
+/** Status colours for name tags, icons and bubbles: the rail's (`src/pwa/style.css`),
+ *  with idle and ended lifted so they read on a tag's dark fill. */
+export const STATUS = {
+  working: "#d8a657",
+  needs: "#e06c9a",
+  done: "#89b482",
+  idle: "#9aa3ad",
+  ended: "#7a828c",
+  alert: "#d43a3a",
+  /** Tag and bubble fills. */
+  dark: "#2b1e2f",
+  paper: "#fdf8ec",
+} as const;
