@@ -239,6 +239,19 @@ favourite spots.
   Static render of the full office with all 12 workers seated.
 - **Key files:** `src/office/map/office.ts`, `src/office/map/build.ts`.
 - **Done when:** the static office renders in the page; published for review; user approves.
+- _As built (approved):_ 32×22 tiles of 16 px (512×352), laid out as described under "Floor
+  plan". The ASCII layout is a string array in `office.ts` rather than a separate file; it
+  marks only the back wall and each room's floor. Furniture is placed in pixels. Glass and
+  dividers are built to length. Each placement can set `base` (its draw-order edge) and `foot`
+  (how much floor it blocks). There are 14 desks: 4 Demiurge, 2 TinyWizardRoyale and 8 in the
+  open space, 2 of them spare. Each seat gives the desk, the monitor, the seated sprite and a
+  stand point. The named spots (kitchen, lounge, D&D, pitch, standup, browse, window) are the
+  "chat spots" and "prop slots" the spec lists; O2.1 will reserve them. The door is at the
+  hall and Duck sits behind the boss desk. `build.ts` makes the floor layer, the props sorted
+  by y and an 8 px walk grid. Tests check the desk counts, that props stay on the canvas and
+  are sorted, that every desk and spot can be reached from the door, and that no two spots
+  overlap. `previewOffice.ts` draws the office for the page and the preview: all 12 workers at
+  their home desks, Ada's screen on alert, and the walk grid and spots on `G`.
 
 ## Phase O1 — MVP: sessions in the office
 
