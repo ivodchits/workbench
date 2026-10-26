@@ -206,6 +206,11 @@ function PromptComposer({ instanceId, live, onShowTerminal, onSent }: PromptComp
     // Not while an input method is composing: there Enter confirms the word.
     if (e.key !== "Enter" || e.shiftKey || e.altKey || e.nativeEvent.isComposing) return;
     e.preventDefault();
+    // Ctrl+Enter in an empty field force-sends the queued prompt, like its button.
+    if (e.ctrlKey && !canSend) {
+      if (queued && live?.phase !== "needs_you") deliverQueued(instanceId);
+      return;
+    }
     send();
   };
 
@@ -233,7 +238,7 @@ function PromptComposer({ instanceId, live, onShowTerminal, onSent }: PromptComp
             title={
               live?.phase === "needs_you"
                 ? "can't send while claude is waiting on you — it could answer the prompt"
-                : "send it now, without waiting for the turn to end"
+                : "send it now, without waiting for the turn to end (Ctrl+↵ in an empty field)"
             }
           >
             force send
@@ -291,6 +296,12 @@ function PromptComposer({ instanceId, live, onShowTerminal, onSent }: PromptComp
             <>
               {live?.compacting ? "compacting" : "working"} — <b>↵</b> queues this for the end of
               the turn
+              {queued && !canSend && (
+                <>
+                  {" "}
+                  · <b>Ctrl+↵</b> force send
+                </>
+              )}
             </>
           )}
         </span>
