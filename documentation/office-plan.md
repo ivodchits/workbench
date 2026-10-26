@@ -377,6 +377,12 @@ closed, open and still, and open and busy.
 - **O0.1, the page alone** (headless Chrome, 2× scale): the static office with its
   animations redraws ~21 times a second at ~0.4 ms a draw; paused, 0 draws; hidden, no
   frames and no steps. JS heap ~9.5 MB.
+- **O0.4, baseline** (2026-10-26, debug build under `tauri dev`, Firefox, no live
+  sessions, the office still): the page ~27 draws/s at ~0.3 ms. Workbench (`app`, 11
+  processes) ~1.0 GB; CPU 1.6–2.0 % of the machine with the office tab showing, 1.5 %
+  with it in the background (the HUD's polling stops; the snapshot still goes out).
+  So the office adds ~0.3–0.5 %, most of it likely the HUD reading the process tree
+  every 3 s. Firefox's own cost for the tab is not measured yet.
 
 ## Progress tracker
 
