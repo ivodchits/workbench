@@ -203,14 +203,33 @@ export function clockAt(hours: number, minutes: number): Prop {
 
 const clock = clockAt(10, 10);
 
-/** A free-standing run of wall `tiles` long, between rooms: outlined at both ends. */
-export function wallRun(tiles: number): Prop {
-  return prop(wallRows(tiles * 16).map((line) => "o" + line.slice(1, -1) + "o"));
+const FROSTED = { h: "#dce9ee", H: "#f6fbfd", A: "#c9d3dc" };
+
+function glassRows(w: number): string[] {
+  return [
+    row(w, "o"),
+    framed(w, "A"),
+    row(w, "o"),
+    ...Array.from({ length: 15 }, (_, i) => {
+      const y = i + 3;
+      const cells = [...framed(w, "h")];
+      for (let x = 1; x < w - 1; x++) if ((x + y) % 13 === 0 || (x + y) % 13 === 1) cells[x] = "H";
+      return cells.join("");
+    }),
+    framed(w, "a"),
+    row(w, "o"),
+  ];
 }
 
-/** A wall running up the screen, `h` pixels long: its top, and at the near end, its face. */
-export function wallSide(h: number): Prop {
-  return prop(["oooooo", ...repeat(h - 9, "ovvvvo"), "oooooo", ...repeat(5, "ouuuuo"), "oVVVVo", "oooooo"]);
+/** Frosted glass between the rooms on the right, `w` pixels long, facing the viewer: a
+ *  paler Duck's glass, light enough to read as a separator rather than a wall. */
+export function frostedGlass(w: number): Prop {
+  return prop(glassRows(w), { colors: FROSTED });
+}
+
+/** The same frosted glass running up the screen, `h` pixels long. */
+export function frostedGlassSide(h: number): Prop {
+  return prop(["oooo", ...repeat(h - 2, "oAho"), "oooo"], { colors: FROSTED });
 }
 
 /** A low divider between areas, `tiles` long, seen from the front: top, face.
@@ -235,20 +254,7 @@ export function partitionSide(tiles: number): Prop {
 
 /** Duck's glass wall, `tiles` long, facing the viewer. */
 export function glass(tiles: number): Prop {
-  const w = tiles * 16;
-  return prop([
-    row(w, "o"),
-    framed(w, "A"),
-    row(w, "o"),
-    ...Array.from({ length: 15 }, (_, i) => {
-      const y = i + 3;
-      const cells = [...framed(w, "h")];
-      for (let x = 1; x < w - 1; x++) if ((x + y) % 13 === 0 || (x + y) % 13 === 1) cells[x] = "H";
-      return cells.join("");
-    }),
-    framed(w, "a"),
-    row(w, "o"),
-  ]);
+  return prop(glassRows(tiles * 16));
 }
 
 /** Duck's glass wall running up the screen. */

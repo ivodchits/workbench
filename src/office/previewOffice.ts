@@ -5,7 +5,7 @@
 import { ANIMS, frame } from "./art/characters";
 import { DUCK_ANIMS, DUCK_H, duckFrame } from "./art/duck";
 import { PROPS, clockAt, floorTile, propFrame, type PropName } from "./art/props";
-import { WALK_CELL, buildOffice, type Seat } from "./map/build";
+import { WALK_CELL, buildOffice, type OfficeMap, type Seat } from "./map/build";
 import { MAP_H, MAP_W, TILE } from "./map/office";
 import { cached, frameIn } from "./previewCanvas";
 import { ROSTER, type Team, type Worker } from "./roster";
@@ -13,20 +13,17 @@ import { ROSTER, type Team, type Worker } from "./roster";
 export const OFFICE_W = MAP_W * TILE;
 export const OFFICE_H = MAP_H * TILE;
 
-const office = buildOffice();
-
-/** Each team fills its own room's desks in roster order. */
-function homeDesks(): Map<Seat, Worker> {
+/** Each team fills its own room's desks in roster order; by desk index. */
+function homeDesks(seats: readonly Seat[]): Map<number, Worker> {
   const room: Record<Team, Seat["room"]> = { demiurge: "demiurge", tinywizard: "tinywizard", open: "open" };
-  const seated = new Map<Seat, Worker>();
+  const seated = new Map<number, Worker>();
   for (const team of Object.keys(room) as Team[]) {
-    const seats = office.seats.filter((s) => s.room === room[team]);
-    ROSTER.filter((w) => w.team === team).forEach((w, i) => seated.set(seats[i], w));
+    const mine = seats.filter((s) => s.room === room[team]);
+    ROSTER.filter((w) => w.team === team).forEach((w, i) => seated.set(mine[i].index, w));
   }
   return seated;
 }
 
-const seated = homeDesks();
 /** One worker needs you, so the alert screen shows up somewhere. */
 const NEEDS_YOU = "ada";
 
@@ -46,7 +43,7 @@ function propThing(id: string, frames: number, ms: number, x: number, y: number,
   };
 }
 
-function things(): Thing[] {
+function things(office: OfficeMap, seated: Map<number, Worker>): Thing[] {
   const list: Thing[] = office.props.map((p) => {
     if (p.id === "clock") {
       return {
@@ -64,7 +61,7 @@ function things(): Thing[] {
   });
 
   for (const seat of office.seats) {
-    const who = seated.get(seat);
+    const who = seated.get(seat.index);
     const screen: PropName = !who ? "monitorOff" : who.id === NEEDS_YOU ? "monitorAlert" : "monitorCode";
     const m = PROPS[screen];
     list.push(propThing(screen, m.frames.length, m.ms ?? 1000, seat.monitor.x, seat.monitor.y, seat.monitor.base, (f) => propFrame(m, f)));
@@ -91,10 +88,15 @@ function things(): Thing[] {
   return list.sort((a, b) => a.base - b.base);
 }
 
-const drawList = things();
+const office = buildOffice();
+const seated = homeDesks(office.seats);
+const drawList = things(office, seated);
 
 /** Who sits where, for the hover labels. */
-export const OFFICE_SEATS = [...seated].map(([seat, w]) => ({ worker: w, x: seat.sit.x, y: seat.sit.y }));
+export const OFFICE_SEATS = office.seats.flatMap((seat) => {
+  const worker = seated.get(seat.index);
+  return worker ? [{ worker, x: seat.sit.x, y: seat.sit.y }] : [];
+});
 
 export function drawOffice(ctx: CanvasRenderingContext2D, ms: number, overlay = false): void {
   ctx.imageSmoothingEnabled = false;
@@ -107,11 +109,11 @@ export function drawOffice(ctx: CanvasRenderingContext2D, ms: number, overlay = 
   );
   for (const x of office.backWall) ctx.drawImage(cached("prop/wall/0", () => propFrame(PROPS.wall)), x, 0);
   for (const thing of drawList) thing.draw(ctx, ms);
-  if (overlay) drawOverlay(ctx);
+  if (overlay) drawOverlay(ctx, office);
 }
 
 /** Blocked walk cells in red, desk stand points in blue, spots in yellow. */
-function drawOverlay(ctx: CanvasRenderingContext2D): void {
+function drawOverlay(ctx: CanvasRenderingContext2D, office: OfficeMap): void {
   const { cols, rows, blocked } = office.walk;
   ctx.fillStyle = "rgba(230, 40, 60, 0.32)";
   for (let y = 0; y < rows; y++) {
@@ -123,9 +125,7 @@ function drawOverlay(ctx: CanvasRenderingContext2D): void {
     ctx.fillStyle = color;
     ctx.fillRect(x - 1, y - 1, 3, 3);
   };
-  for (const s of office.seats) {
-    dot(s.stand.x, s.stand.y, "#5aa0ff");
-  }
+  for (const s of office.seats) dot(s.stand.x, s.stand.y, "#5aa0ff");
   for (const s of office.spots) dot(s.x, s.y, "#ffd23f");
   dot(office.door.x, office.door.y, "#ffffff");
 }

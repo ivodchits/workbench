@@ -2,7 +2,17 @@
 // tile, the furniture as positioned props with draw-order edges, the seats at each
 // desk, and an 8px walkability grid for pathfinding.
 
-import { PROPS, glass, glassSide, partition, partitionSide, wallRun, wallSide, type FloorKind, type Prop } from "../art/props";
+import {
+  PROPS,
+  frostedGlass,
+  frostedGlassSide,
+  glass,
+  glassSide,
+  partition,
+  partitionSide,
+  type FloorKind,
+  type Prop,
+} from "../art/props";
 import {
   DESKS,
   DOOR,
@@ -11,10 +21,10 @@ import {
   LAYOUT,
   MAP_H,
   MAP_W,
-  PLACEMENTS,
   ROOM_OF,
   SPOTS,
   TILE,
+  placements,
   type Placement,
   type PropRef,
   type Room,
@@ -73,14 +83,17 @@ export interface OfficeMap {
 
 function resolve(ref: PropRef): [string, Prop] {
   if (typeof ref === "string") return [ref, PROPS[ref] as Prop];
-  if (ref.build === "wallSide") return [`wallSide${ref.px}`, wallSide(ref.px)];
-  const make = { partition, partitionSide, glass, glassSide, wallRun }[ref.build];
+  if ("px" in ref) {
+    const make = ref.build === "frostedGlass" ? frostedGlass : frostedGlassSide;
+    return [`${ref.build}${ref.px}`, make(ref.px)];
+  }
+  const make = { partition, partitionSide, glass, glassSide }[ref.build];
   return [`${ref.build}${ref.tiles}`, make(ref.tiles)];
 }
 
 /** How deep a prop sits on the floor when its placement doesn't say. */
 function defaultFoot(ref: PropRef, p: Prop): number {
-  if (typeof ref !== "string" && (ref.build === "partitionSide" || ref.build === "glassSide" || ref.build === "wallSide")) return p.h;
+  if (typeof ref !== "string" && (ref.build === "partitionSide" || ref.build === "glassSide" || ref.build === "frostedGlassSide")) return p.h;
   if (ref === "kicker" || ref === "dndTable") return 16;
   return Math.min(p.h, 12);
 }
@@ -115,7 +128,7 @@ export function buildOffice(): OfficeMap {
   const backWall = [...LAYOUT[0]].flatMap((c, x) => (c === "W" ? [x * TILE] : []));
 
   const foots: Footprint[] = [];
-  const props = PLACEMENTS.map((pl) => place(pl, foots));
+  const props = placements().map((pl) => place(pl, foots));
 
   const seats = DESKS.map(({ room, x, y }, index): Seat => {
     props.push(place({ prop: "desk", x, y }, foots));
