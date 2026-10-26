@@ -230,9 +230,57 @@ const TORSO_WAVE = part(13, [
   "..osTttttttto...",
 ]);
 
+/** Both hands up, so neither side of the torso has a hand. */
+const TORSO_CHEER = part(13, [
+  "...otttttttto...",
+  "..otttttttttto..",
+  "..otTttttttTto..",
+  "..otTttttttTto..",
+  "...otttttttto...",
+]);
+
 const SLEEVE = "otto";
 const ARM_UP_A = part(2, [".oo.", "osso", "osso", "osso", ...Array<string>(8).fill(SLEEVE)], 12);
 const ARM_UP_B = part(3, [".oo.", "osso", "osso", "osso", ...Array<string>(7).fill(SLEEVE)], 12);
+const ARMS_UP: Part = { ...ARM_UP_A, rows: ARM_UP_A.rows.map((r) => r + "........" + r), x: 0 };
+
+/** A hand over the face, the forearm down to the right shoulder. */
+const ARM_FACEPALM = part(5, [
+  ".......ossso....",
+  ".......osssso...",
+  ".......osssso...",
+  "........osso....",
+  "........otto....",
+  ".........otto...",
+  ".........otto...",
+  "..........otto..",
+  "..........otto..",
+]);
+
+// A mug of coffee: white, with coffee on top (`m`).
+const MUG_HOLD: Record<"down" | "right", Part> = {
+  down: part(15, ["oooo.", "ommo.", "occso", "occso", "oooo."], 11),
+  right: part(15, [".oooo", ".ommo", "socco", "socco", ".oooo"], 10),
+};
+const MUG_SIP: Record<"down" | "right", Part> = {
+  down: part(8, [
+    "oooo....",
+    "ommo....",
+    "occsoo..",
+    "occssto.",
+    "oooootto",
+    "....otto",
+  ], 6),
+  right: part(7, [
+    "...oooo",
+    "...ommo",
+    "...occo",
+    "..ossco",
+    ".ottooo",
+    ".otto..",
+    ".otto..",
+  ], 9),
+};
 
 /** Trim over the front of the top. */
 const TOP_TRIM: Record<TopStyle, Part | null> = {
@@ -571,7 +619,7 @@ const HEADPHONES: Record<DrawnDir, Part> = {
 
 // ── Animations ───────────────────────────────────────────────────────────────
 
-export type Anim = "idle" | "walk" | "type" | "wave";
+export type Anim = "idle" | "walk" | "type" | "wave" | "drink" | "sleep" | "cheer" | "facepalm";
 
 /** One frame's pose: which legs and torso, and the extras. */
 interface Pose {
@@ -579,7 +627,14 @@ interface Pose {
   legs?: Part;
   torso?: Part;
   arm?: Part;
+  /** Something held, drawn last (a mug). */
+  held?: Part;
   blink?: boolean;
+  /** Whole-body nudge (a hop), and the head's own on top (a nod, a slump). */
+  dy?: number;
+  headDy?: number;
+  /** The arm moves with the head (a hand on the face). */
+  armWithHead?: boolean;
 }
 
 interface AnimDef {
@@ -633,6 +688,59 @@ export const ANIMS: Record<Anim, AnimDef> = {
       { front: { legs: LEGS_FRONT, torso: TORSO_WAVE, arm: ARM_UP_B }, side: standSide, ms: 260 },
     ],
   },
+  /** Standing with a mug; now and then a sip. From behind, only the elbow shows. */
+  drink: {
+    dirs: ["down", "up", "left", "right"],
+    frames: [
+      {
+        front: { ...stand, torso: TORSO_WAVE, held: MUG_HOLD.down },
+        side: { ...standSide, held: MUG_HOLD.right },
+        back: stand,
+        ms: 1800,
+      },
+      {
+        front: { ...stand, torso: TORSO_WAVE, held: MUG_SIP.down, blink: true },
+        side: { ...standSide, held: MUG_SIP.right, blink: true },
+        back: { ...stand, torso: TORSO_TYPE_BACK_A },
+        ms: 900,
+      },
+      {
+        front: { ...stand, torso: TORSO_WAVE, held: MUG_HOLD.down },
+        side: { ...standSide, held: MUG_HOLD.right },
+        back: stand,
+        ms: 1400,
+      },
+    ],
+  },
+  /** Asleep: at the desk (from behind), slumped over the keyboard; on the sofa
+   *  (facing you), eyes shut and nodding. The Zzz are drawn over the head. */
+  sleep: {
+    dirs: ["down", "up"],
+    frames: [
+      { front: { legs: LEGS_SEATED, blink: true, headDy: 1 }, back: { torso: TORSO_TYPE_BACK_A, headDy: 3 }, side: standSide, ms: 1500 },
+      { front: { legs: LEGS_SEATED, blink: true, headDy: 2 }, back: { torso: TORSO_TYPE_BACK_A, headDy: 2 }, side: standSide, ms: 1500 },
+    ],
+  },
+  /** Both arms up, hopping. */
+  cheer: {
+    dirs: ["down"],
+    frames: [
+      { front: { legs: LEGS_FRONT, torso: TORSO_CHEER, arm: ARMS_UP }, side: standSide, ms: 200 },
+      { front: { legs: LEGS_FRONT, torso: TORSO_CHEER, arm: ARMS_UP, dy: -2 }, side: standSide, ms: 200 },
+    ],
+  },
+  /** A hand over the face, the head sinking into it. */
+  facepalm: {
+    dirs: ["down"],
+    frames: [
+      { front: { legs: LEGS_FRONT, torso: TORSO_WAVE, arm: ARM_FACEPALM, blink: true }, side: standSide, ms: 700 },
+      {
+        front: { legs: LEGS_FRONT, torso: TORSO_WAVE, arm: ARM_FACEPALM, blink: true, headDy: 1, armWithHead: true },
+        side: standSide,
+        ms: 1100,
+      },
+    ],
+  },
 };
 
 // ── Composition ──────────────────────────────────────────────────────────────
@@ -665,18 +773,21 @@ export function frame(look: Look, anim: Anim, dir: Dir, index: number): Bitmap {
   const pose = drawn === "right" ? step.side : drawn === "up" ? (step.back ?? step.front) : step.front;
   const colors = colorsOf(look);
   const out = bitmap(FRAME_W, FRAME_H);
-  const put = (p: Part | null | undefined) => p && draw(out, p, colors, 0, HEADROOM);
+  const body = HEADROOM + (pose.dy ?? 0);
+  const head = body + (pose.headDy ?? 0);
+  const put = (p: Part | null | undefined, dy = body) => p && draw(out, p, colors, 0, dy);
 
   put(pose.legs);
   put(pose.torso ?? TORSO[drawn]);
   if (drawn === "down") put(TOP_TRIM[look.topStyle]);
-  put(HEAD[drawn]);
-  if (pose.blink) put(BLINK[drawn]);
-  if (look.beard) put(BEARD[drawn]);
-  put(HAIR[look.hairStyle][drawn]);
-  if (look.glasses) put(GLASSES[drawn]);
-  if (look.headphones) put(HEADPHONES[drawn]);
-  put(pose.arm);
+  put(HEAD[drawn], head);
+  if (pose.blink) put(BLINK[drawn], head);
+  if (look.beard) put(BEARD[drawn], head);
+  put(HAIR[look.hairStyle][drawn], head);
+  if (look.glasses) put(GLASSES[drawn], head);
+  if (look.headphones) put(HEADPHONES[drawn], head);
+  put(pose.arm, pose.armWithHead ? head : body);
+  put(pose.held, body);
 
   return facing === "left" ? mirrorBitmap(out) : out;
 }
@@ -703,6 +814,7 @@ export function allParts(): [string, Part][] {
         add(`${a}.${i}.${view}.legs`, pose.legs);
         add(`${a}.${i}.${view}.torso`, pose.torso);
         add(`${a}.${i}.${view}.arm`, pose.arm);
+        add(`${a}.${i}.${view}.held`, pose.held);
       }
     });
   }

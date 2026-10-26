@@ -752,7 +752,7 @@ const dndTable: Prop = {
 
 // ── Floors ───────────────────────────────────────────────────────────────────
 
-export type FloorKind = "office" | "demiurge" | "tinywizard" | "wood" | "kitchen" | "boss";
+export type FloorKind = "office" | "demiurge" | "tinywizard" | "wood" | "kitchen" | "boss" | "meeting";
 
 /** A 16×16 floor tile in keys 1/2/3, plus its colours; `alt` checkerboards. */
 export interface Floor {
@@ -786,6 +786,10 @@ export const FLOORS: Record<FloorKind, Floor> = {
   tinywizard: {
     rows: speckled(23, 0.1),
     colors: { "1": "#3f7f7c", "2": "#377370", "3": "#4a8e8a" },
+  },
+  meeting: {
+    rows: speckled(37, 0.08),
+    colors: { "1": "#4b5878", "2": "#434f6d", "3": "#56648a" },
   },
   boss: {
     rows: speckled(5, 0.08),

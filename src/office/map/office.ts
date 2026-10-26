@@ -6,7 +6,7 @@
 // furniture mark the areas. Along the back wall: Demiurge, the hall with the front
 // door, Duck's glass office (with the standup table), and the lounge down the right
 // side (TV, sofa, kicker, D&D). Below: the open space, TinyWizardRoyale under Duck's
-// office, and the kitchen under that, as wide as the lounge.
+// office, and under that the kitchen and the meeting room, as wide as the lounge.
 
 import type { Dir } from "../art/characters";
 import type { FloorKind, PropName } from "../art/props";
@@ -34,14 +34,14 @@ export const LAYOUT = [
   "ooooooooooooooo" + "tttttttt" + "lllllllll",
   "ooooooooooooooo" + "tttttttt" + "lllllllll",
   "ooooooooooooooo" + "tttttttt" + "lllllllll",
-  "ooooooooooooooo" + "kkkkkkkkkkkkkkkkk",
-  "ooooooooooooooo" + "kkkkkkkkkkkkkkkkk",
-  "ooooooooooooooo" + "kkkkkkkkkkkkkkkkk",
-  "ooooooooooooooo" + "kkkkkkkkkkkkkkkkk",
-  "ooooooooooooooo" + "kkkkkkkkkkkkkkkkk",
+  "ooooooooooooooo" + "kkkkkkkkkk" + "mmmmmmm",
+  "ooooooooooooooo" + "kkkkkkkkkk" + "mmmmmmm",
+  "ooooooooooooooo" + "kkkkkkkkkk" + "mmmmmmm",
+  "ooooooooooooooo" + "kkkkkkkkkk" + "mmmmmmm",
+  "ooooooooooooooo" + "kkkkkkkkkk" + "mmmmmmm",
 ];
 
-export type Room = "demiurge" | "hall" | "boss" | "tinywizard" | "kitchen" | "open" | "lounge";
+export type Room = "demiurge" | "hall" | "boss" | "tinywizard" | "kitchen" | "meeting" | "open" | "lounge";
 
 export const ROOM_OF: Record<string, Room> = {
   d: "demiurge",
@@ -49,6 +49,7 @@ export const ROOM_OF: Record<string, Room> = {
   b: "boss",
   t: "tinywizard",
   k: "kitchen",
+  m: "meeting",
   o: "open",
   l: "lounge",
 };
@@ -59,6 +60,7 @@ export const FLOOR_OF: Record<Room, FloorKind> = {
   boss: "boss",
   tinywizard: "tinywizard",
   kitchen: "kitchen",
+  meeting: "meeting",
   open: "office",
   lounge: "wood",
 };
@@ -132,7 +134,7 @@ export const PLACEMENTS: Placement[] = [
   at("dndTable", 400, 220),
   at("plant", 490, 230),
 
-  // Kitchen, under TinyWizardRoyale: a counter run facing the room, a table.
+  // Kitchen, under TinyWizardRoyale: a counter run facing the room.
   at("fridge", 252, 268),
   at("counter", 272, 282),
   at("coffeeMachine", 274, 274, { base: 306 }),
@@ -140,8 +142,11 @@ export const PLACEMENTS: Placement[] = [
   at("counter", 304, 282),
   at("counter", 320, 282),
   at("waterCooler", 340, 277),
-  at("kitchenTable", 420, 300),
-  at("plant", 488, 280),
+
+  // Meeting room, beside the kitchen: a long table for pitching an idea to whoever's free.
+  at("meetingTable", 424, 300),
+  at("plant", 404, 274),
+  at("plant", 494, 274),
 ];
 
 export interface DeskSpec {
@@ -162,7 +167,7 @@ export const DESKS: DeskSpec[] = [
   ...grid("open", [12, 68, 124, 180], [228, 292]),
 ];
 
-export type SpotKind = "chat" | "drink" | "sit" | "play" | "meeting" | "dnd" | "browse" | "window";
+export type SpotKind = "chat" | "drink" | "sit" | "play" | "meeting" | "pitch" | "dnd" | "browse" | "window";
 
 export interface SpotSpec {
   id: string;
@@ -184,9 +189,6 @@ export const SPOTS: SpotSpec[] = [
   spot("cooler", "chat", 346, 314, "up"),
   spot("cooler-2", "chat", 330, 330, "right"),
   spot("cooler-3", "chat", 362, 330, "left"),
-  spot("table-w", "sit", 412, 316, "right"),
-  spot("table-e", "sit", 460, 316, "left"),
-  spot("table-s", "chat", 436, 334, "up"),
   // Lounge.
   spot("sofa-1", "sit", 462, 92, "up"),
   spot("sofa-2", "sit", 474, 92, "up"),
@@ -200,6 +202,11 @@ export const SPOTS: SpotSpec[] = [
   spot("dnd-e", "dnd", 446, 244, "left"),
   spot("dnd-n", "dnd", 418, 228, "down"),
   spot("dnd-s", "dnd", 418, 260, "up"),
+  // Meeting room: round the table for a pitch.
+  ...[436, 456, 476].map((x, i) => spot(`pitch-n${i + 1}`, "pitch", x, 298, "down")),
+  ...[436, 456, 476].map((x, i) => spot(`pitch-s${i + 1}`, "pitch", x, 328, "up")),
+  spot("pitch-w", "pitch", 414, 314, "right"),
+  spot("pitch-e", "pitch", 498, 314, "left"),
   // Standup, in Duck's office.
   ...[284, 304, 324].map((x, i) => spot(`standup-n${i + 1}`, "meeting", x, 138, "down")),
   ...[284, 304, 324].map((x, i) => spot(`standup-s${i + 1}`, "meeting", x, 168, "up")),

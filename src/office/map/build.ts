@@ -48,8 +48,6 @@ export interface Seat {
   sit: Point & { base: number };
   /** Where to stand to sit down (feet), behind the chair. */
   stand: Point;
-  /** Where a session's intern stands (feet), beside the desk. */
-  intern: Point;
 }
 
 export interface WalkGrid {
@@ -128,7 +126,6 @@ export function buildOffice(): OfficeMap {
       monitor: { x: x + 9, y: y - 11, base: y + 21 },
       sit: { x: x + 8, y: y - 4, base: y + 22 },
       stand: { x: x + 16, y: y + 34 },
-      intern: { x: x + 44, y: y + 22 },
     };
   });
 

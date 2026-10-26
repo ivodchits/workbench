@@ -90,7 +90,7 @@ Workbench webview ──snapshot──▶ Rust core ──▶ office listener (1
 | `working` + edit | typing, monitor glows | status icon |
 | `working` + bash / test | at the whiteboard / server rack, fidgeting | status icon |
 | `working` + web / read | reading a newspaper / a document | status icon |
-| `subagents > 0` | an **intern** per subagent beside the desk | — |
+| `subagents > 0` | typing faster; the count shows in the sidebar | — |
 | `compacting` | shuffling papers into the filing cabinet | — |
 | `needs_you` | stands, waves | **`!`** bubble (**`?`** when it's a question with options) |
 | `escalated` | sweating, bubble pulses red | `!` red |
@@ -120,11 +120,11 @@ One open floor, 512×352, no walls inside: floors and furniture mark the areas.
   office (boss desk under the window, the standup table in front of it) · the lounge down
   the right side (TV, sofa, beanbags, kicker, D&D table).
 - **Below:** the open space (8 desks, 2 spare) · TinyWizardRoyale (2 desks) under Duck's
-  office · the kitchen under that, as wide as the lounge (fridge, coffee, sink, water cooler,
-  a table).
+  office · under that the kitchen (fridge, coffee, sink, water cooler) and the **meeting
+  room** (a long table for 8), together as wide as the lounge.
 - `office.ts` holds the tile layout, furniture, desks and named spots; `build.ts` makes the
-  draw list, the seats (stand point, monitor, intern spot) and an 8 px walk grid. Tests check
-  that every desk, intern spot and activity spot is reachable from the door.
+  draw list, the seats (stand point, monitor) and an 8 px walk grid. Tests check that every
+  desk and activity spot is reachable from the door.
 
 ---
 
@@ -183,7 +183,8 @@ One open floor, 512×352, no walls inside: floors and furniture mark the areas.
 ### Step OD.2 — Characters (may need 2 passes)
 - **Build:** 16×32 base body; layers: skin tones, 6+ hair styles, 6+ tops, trousers,
   accessories (glasses, headphones, beard, hat). Animations: idle, walk in 4 directions, sit &
-  type, sit relaxed, stand & wave, drink, sleep, cheer, facepalm. Interns as a smaller variant.
+  type, sit relaxed, stand & wave, drink, sleep, cheer, facepalm. (Interns for subagents were
+  drawn and dropped: not useful enough.)
   The 12-worker roster with names, looks, personalities.
 - **Key files:** `src/office/art/characters.ts`, `src/office/roster.ts`.
 - **Done when:** the preview shows all 12 workers in every animation, and the user approves.
@@ -210,7 +211,7 @@ One open floor, 512×352, no walls inside: floors and furniture mark the areas.
 
 ### Step O1.1 — Entities and rendering
 - **Depends on:** OD.*.
-- **Build:** worker/intern/Duck entities, an animation player, depth sorting by y, name tags,
+- **Build:** worker and Duck entities, an animation player, depth sorting by y, name tags,
   status glyphs, speech bubbles.
 - **Done when:** workers render at their home desks with animations playing.
 
@@ -228,8 +229,7 @@ One open floor, 512×352, no walls inside: floors and furniture mark the areas.
 - **Done when:** tests pass; starting/stopping sessions in Workbench moves the right workers.
 
 ### Step O1.4 — Status → behaviour
-- **Build:** the table in "Status → behaviour", including interns for subagents and `!`/`?`
-  bubbles.
+- **Build:** the table in "Status → behaviour", including the `!`/`?` bubbles.
 - **Done when:** each state is visible when driven from a real session (and from a fake
   snapshot fixture for the rare ones).
 
@@ -323,12 +323,24 @@ One open floor, 512×352, no walls inside: floors and furniture mark the areas.
 - **Build:** you draw, Duck guesses — or Duck draws (its drawing tools) and you guess.
 
 ### Step O5.5 — Morning standup
-- **Build:** on request, idle workers gather at the meeting table; each summarises yesterday's
+- **Build:** on request, idle workers gather at the standup table in Duck's office; each summarises yesterday's
   sessions of their project (Haiku over transcripts).
 
 ### Step O5.6 — D&D table (stretch, may need several passes)
 - **Build:** an LLM dungeon master, idle workers as the party with their personas, a saved
   campaign, played in a side panel with dice.
+
+### Step O5.7 — Meeting room: pitch an idea
+- **Build:** a shortcut for brainstorming. From the sidebar (or by clicking the meeting room),
+  write the idea, pick 2–6 participants and optionally a project for context. Whichever
+  workers are free walk in and sit round the table. Each participant is a Workbench session
+  (Claude Code, read-only in that project) with a role (builder, skeptic, user advocate…)
+  from the worker's personality; they take turns on a shared thread run by the office, shown
+  in the sidebar as a chat, and you can chime in or steer. It ends with a written summary:
+  options, risks, a recommendation, that you can copy or send to a project session as a task.
+  Workers who are busy can't be taken; if too few are free, say so and offer fewer seats.
+- **Done when:** a pitch with 3 participants runs to a summary; the workers sit in the
+  meeting room while it runs and go back to idle after; cost per round is shown up front.
 
 ## Phase O6 — Polish
 - **O6.1** Settings page (room mapping, roster names, chatter budget and model, open in browser
@@ -349,7 +361,7 @@ _Filled in by O0.4 and O6.2._
 - [ ] O0.3 Snapshot additions
 - [ ] O0.4 Measuring the cost
 - [x] OD.1 Pixel format and palette
-- [ ] OD.2 Characters (pass 1 done: cast, idle/walk/type/wave; pass 2: drink, sleep, cheer, facepalm, interns)
+- [x] OD.2 Characters
 - [x] OD.3 Furniture and tiles
 - [x] OD.4 Duck the boss (sunglasses and a red bow tie)
 - [x] OD.5 Floor plan
@@ -374,6 +386,7 @@ _Filled in by O0.4 and O6.2._
 - [ ] O5.4 Whiteboard Pictionary with Duck
 - [ ] O5.5 Morning standup
 - [ ] O5.6 D&D table
+- [ ] O5.7 Meeting room: pitch an idea
 - [ ] O6.1 Settings
 - [ ] O6.2 Performance pass
 - [ ] O6.3 Docs

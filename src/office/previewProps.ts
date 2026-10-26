@@ -37,6 +37,7 @@ const FLOOR_LABELS: Record<FloorKind, string> = {
   boss: "Duck's carpet",
   wood: "Lounge wood",
   kitchen: "Kitchen",
+  meeting: "Meeting room carpet",
 };
 
 function label(name: string): string {

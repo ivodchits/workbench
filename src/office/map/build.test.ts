@@ -36,10 +36,9 @@ describe("office map", () => {
     expect(bases).toEqual([...bases].sort((a, b) => a - b));
   });
 
-  it("can walk from the door to every desk and intern spot", () => {
+  it("can walk from the door to every desk", () => {
     for (const s of office.seats) {
       expect(canReach(s.stand), `desk ${s.index} (${s.room}) stand`).toBe(true);
-      expect(canReach(s.intern), `desk ${s.index} (${s.room}) intern`).toBe(true);
     }
   });
 

@@ -110,7 +110,7 @@ export function drawOffice(ctx: CanvasRenderingContext2D, ms: number, overlay = 
   if (overlay) drawOverlay(ctx);
 }
 
-/** Blocked walk cells in red, desk stand points in blue, interns in teal, spots in yellow. */
+/** Blocked walk cells in red, desk stand points in blue, spots in yellow. */
 function drawOverlay(ctx: CanvasRenderingContext2D): void {
   const { cols, rows, blocked } = office.walk;
   ctx.fillStyle = "rgba(230, 40, 60, 0.32)";
@@ -125,7 +125,6 @@ function drawOverlay(ctx: CanvasRenderingContext2D): void {
   };
   for (const s of office.seats) {
     dot(s.stand.x, s.stand.y, "#5aa0ff");
-    dot(s.intern.x, s.intern.y, "#3fd6c8");
   }
   for (const s of office.spots) dot(s.x, s.y, "#ffd23f");
   dot(office.door.x, office.door.y, "#ffffff");

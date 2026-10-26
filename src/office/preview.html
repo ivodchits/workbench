@@ -43,6 +43,7 @@
   }
   h1 b { color: var(--duck); font-weight: 400; }
   header p { margin: 0; color: var(--muted); max-width: 64ch; }
+  .note { margin: 0 0 10px; color: var(--muted); font-size: 12px; max-width: 70ch; }
   #corridor {
     width: 100%;
     height: auto;
@@ -197,8 +198,9 @@
       desks), the hall with the front door, Duck's glass office with the standup table in
       front of the boss, and the lounge down the right side with the TV, the kicker and
       the D&amp;D table. Below: the open space (eight desks, two of them spare for
-      borrowed workers), TinyWizardRoyale (two desks) under Duck's office, and the
-      kitchen. Everyone is at their home desk; Ada needs you. Hover a worker to see who
+      borrowed workers), TinyWizardRoyale (two desks) under Duck's office, and under
+      that the kitchen and the meeting room, where you can pitch an idea to whoever is free.
+      Everyone is at their home desk; Ada needs you. Hover a worker to see who
       it is.</p>
     <div class="group" role="group" aria-label="Overlay">
       <span>Overlay</span>
@@ -207,7 +209,6 @@
     </div>
     <p id="legend" class="legend" hidden><i style="--c:rgba(230,40,60,.5)"></i>blocked
       <i style="--c:#5aa0ff"></i>where to stand to sit at a desk
-      <i style="--c:#3fd6c8"></i>a session's intern
       <i style="--c:#ffd23f"></i>chat, play, meeting and D&amp;D spots
       <i style="--c:#ffffff"></i>the door</p>
     <div class="scene-wrap"><canvas id="scene" aria-label="The whole office, everyone at their desk"></canvas>
@@ -248,6 +249,10 @@
       <button type="button" id="anim-walk" data-anim="walk" aria-pressed="false">Walk</button>
       <button type="button" id="anim-type" data-anim="type" aria-pressed="false">Typing</button>
       <button type="button" id="anim-wave" data-anim="wave" aria-pressed="false">Wave</button>
+      <button type="button" id="anim-drink" data-anim="drink" aria-pressed="false">Coffee</button>
+      <button type="button" id="anim-sleep" data-anim="sleep" aria-pressed="false">Asleep</button>
+      <button type="button" id="anim-cheer" data-anim="cheer" aria-pressed="false">Cheer</button>
+      <button type="button" id="anim-facepalm" data-anim="facepalm" aria-pressed="false">Facepalm</button>
     </div>
     <div class="group" role="group" aria-label="Facing">
       <span>Facing</span>
@@ -267,9 +272,11 @@
   </div>
 
   <div id="teams" style="display: grid; gap: 28px"></div>
+
   </section>
 
-  <footer>Typing and Wave are drawn facing down only; that is how they'll be seen at the desks.</footer>
+  <footer>Typing and Asleep face down (on the sofa) and up (at a desk, from behind); Wave,
+    Cheer and Facepalm face down only. Coffee turns every way.</footer>
 </main>
 
 <script type="module" src="./preview.ts"></script>
