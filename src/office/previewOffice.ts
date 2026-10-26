@@ -1,13 +1,13 @@
-// The whole office for the preview (office plan OD.5): the floor plan built from
-// map/, everyone at their home desk, Duck behind the boss desk. A static picture —
-// people start moving in O1 — with an overlay of the walk grid and the named spots.
+// The whole office (office plan OD.5), for the preview and, until workers come to life in
+// O1, the office page: the floor plan built from map/, everyone at their home desk, Duck
+// behind the boss desk, with an overlay of the walk grid and the named spots.
 
 import { ANIMS, frame } from "./art/characters";
 import { DUCK_ANIMS, DUCK_H, duckFrame } from "./art/duck";
 import { PROPS, clockAt, floorTile, propFrame, type PropName } from "./art/props";
 import { WALK_CELL, buildOffice, type OfficeMap, type Seat } from "./map/build";
 import { MAP_H, MAP_W, TILE } from "./map/office";
-import { cached, frameIn } from "./previewCanvas";
+import { cached, frameIn, untilNextFrame } from "./canvas";
 import { ROSTER, type Team, type Worker } from "./roster";
 
 export const OFFICE_W = MAP_W * TILE;
@@ -30,17 +30,24 @@ const NEEDS_YOU = "ada";
 interface Thing {
   base: number;
   draw: (ctx: CanvasRenderingContext2D, ms: number) => void;
+  /** How long after `ms` it looks different. */
+  next: (ms: number) => number;
+}
+
+const still = () => Infinity;
+
+/** Something looping through `durations`, offset by `phase` so neighbours don't tick together. */
+function looping(base: number, durations: readonly number[], phase: number, draw: (ctx: CanvasRenderingContext2D, f: number) => void): Thing {
+  if (durations.length < 2) return { base, draw: (ctx) => draw(ctx, 0), next: still };
+  return {
+    base,
+    draw: (ctx, ms) => draw(ctx, frameIn(durations, ms + phase)),
+    next: (ms) => untilNextFrame(durations, ms + phase),
+  };
 }
 
 function propThing(id: string, frames: number, ms: number, x: number, y: number, base: number, make: (f: number) => ReturnType<typeof propFrame>): Thing {
-  const durations = Array<number>(frames).fill(ms);
-  return {
-    base,
-    draw: (ctx, now) => {
-      const f = frameIn(durations, now + x * 37);
-      ctx.drawImage(cached(`office/${id}/${f}`, () => make(f)), x, y);
-    },
-  };
+  return looping(base, Array<number>(frames).fill(ms), x * 37, (ctx, f) => ctx.drawImage(cached(`office/${id}/${f}`, () => make(f)), x, y));
 }
 
 function things(office: OfficeMap, seated: Map<number, Worker>): Thing[] {
@@ -54,6 +61,8 @@ function things(office: OfficeMap, seated: Map<number, Worker>): Thing[] {
           const m = now.getMinutes();
           ctx.drawImage(cached(`clock/${h}:${m}`, () => propFrame(clockAt(h, m))), p.x, p.y);
         },
+        // Every zone is a whole number of minutes off UTC, so local minutes turn with UTC's.
+        next: () => 60_000 - (Date.now() % 60_000),
       };
     }
     const key = p.colors ? `${p.id}:${JSON.stringify(p.colors)}` : p.id;
@@ -68,23 +77,22 @@ function things(office: OfficeMap, seated: Map<number, Worker>): Thing[] {
     if (!who) continue;
     const anim = who.id === NEEDS_YOU ? "idle" : "type";
     const durations = ANIMS[anim].frames.map((f) => f.ms);
-    list.push({
-      base: seat.sit.base,
-      draw: (ctx, ms) => {
-        const f = frameIn(durations, ms + seat.sit.x * 53);
-        ctx.drawImage(cached(`worker/${who.id}/${anim}/up/${f}`, () => frame(who.look, anim, "up", f)), seat.sit.x, seat.sit.y);
-      },
-    });
+    list.push(
+      looping(seat.sit.base, durations, seat.sit.x * 53, (ctx, f) =>
+        ctx.drawImage(cached(`worker/${who.id}/${anim}/up/${f}`, () => frame(who.look, anim, "up", f)), seat.sit.x, seat.sit.y),
+      ),
+    );
   }
 
   const duck = DUCK_ANIMS.idle;
-  list.push({
-    base: office.duck.y + DUCK_H,
-    draw: (ctx, ms) => {
-      const f = frameIn(duck.map((d) => d.ms), ms);
-      ctx.drawImage(cached(`duck/idle/down/${f}`, () => duckFrame("down", duck[f].pose)), office.duck.x, office.duck.y);
-    },
-  });
+  list.push(
+    looping(
+      office.duck.y + DUCK_H,
+      duck.map((d) => d.ms),
+      0,
+      (ctx, f) => ctx.drawImage(cached(`duck/idle/down/${f}`, () => duckFrame("down", duck[f].pose)), office.duck.x, office.duck.y),
+    ),
+  );
   return list.sort((a, b) => a.base - b.base);
 }
 
@@ -98,8 +106,15 @@ export const OFFICE_SEATS = office.seats.flatMap((seat) => {
   return worker ? [{ worker, x: seat.sit.x, y: seat.sit.y }] : [];
 });
 
-export function drawOffice(ctx: CanvasRenderingContext2D, ms: number, overlay = false): void {
-  ctx.imageSmoothingEnabled = false;
+let floorLayer: HTMLCanvasElement | undefined;
+
+/** The floors and the back wall, which never change, drawn once. */
+function floorsOf(office: OfficeMap): HTMLCanvasElement {
+  if (floorLayer) return floorLayer;
+  floorLayer = document.createElement("canvas");
+  floorLayer.width = OFFICE_W;
+  floorLayer.height = OFFICE_H;
+  const ctx = floorLayer.getContext("2d")!;
   office.floors.forEach((line, ty) =>
     line.forEach((kind, tx) => {
       if (!kind) return;
@@ -108,8 +123,20 @@ export function drawOffice(ctx: CanvasRenderingContext2D, ms: number, overlay = 
     }),
   );
   for (const x of office.backWall) ctx.drawImage(cached("prop/wall/0", () => propFrame(PROPS.wall)), x, 0);
-  for (const thing of drawList) thing.draw(ctx, ms);
+  return floorLayer;
+}
+
+/** Draws the office at `ms`; returns how long until it looks different. */
+export function drawOffice(ctx: CanvasRenderingContext2D, ms: number, overlay = false): number {
+  ctx.imageSmoothingEnabled = false;
+  ctx.drawImage(floorsOf(office), 0, 0);
+  let next = Infinity;
+  for (const thing of drawList) {
+    thing.draw(ctx, ms);
+    next = Math.min(next, thing.next(ms));
+  }
   if (overlay) drawOverlay(ctx, office);
+  return next;
 }
 
 /** Blocked walk cells in red, desk stand points in blue, spots in yellow. */

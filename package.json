@@ -7,6 +7,8 @@
     "dev": "npm run build:pwa && vite",
     "build": "tsc && npm run build:pwa && vite build",
     "build:pwa": "vite build --config vite.pwa.config.js",
+    "dev:office": "vite --config vite.office.config.js",
+    "build:office": "vite build --config vite.office.config.js",
     "build:duck-android": "vite build --config duck-android/vite.config.js",
     "preview": "vite preview",
     "lint": "eslint .",

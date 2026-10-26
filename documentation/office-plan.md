@@ -140,7 +140,9 @@ favourite spots.
   Canvas at 512×352, integer-scaled to fit the window, nearest-neighbour, sidebar on the right.
   Fixed-step simulation at 10 Hz; render on `requestAnimationFrame` capped at 30 fps and
   skipped when nothing changed; everything stops when the page is hidden. HUD: fps, frame ms,
-  JS heap (where available). Draw a placeholder grid.
+  JS heap (where available). Draw a placeholder grid. _(Done: it draws the static office
+  instead, with the walk grid on `G`; the build goes to `src-tauri/src/remote/office/dist/`
+  as one page, for O0.2 to embed.)_
 - **Key files:** `src/office/main.ts`, `src/office/loop.ts`, `src/office/hud.ts`,
   `vite.office.config.js`, `package.json` scripts.
 - **Done when:** `vite` serves the page; grid renders crisply at any window size; HUD shows
@@ -359,9 +361,13 @@ favourite spots.
 
 _Filled in by O0.4 and O6.2._
 
+- **O0.1, the page alone** (headless Chrome, 2× scale): the static office with its
+  animations redraws ~21 times a second at ~0.4 ms a draw; paused, 0 draws; hidden, no
+  frames and no steps. JS heap ~9.5 MB.
+
 ## Progress tracker
 
-- [ ] O0.1 Office page scaffold
+- [x] O0.1 Office page scaffold (`npm run dev:office`, port 1432; draws the static office)
 - [ ] O0.2 Serving, auth and "Open Office"
 - [ ] O0.3 Snapshot additions
 - [ ] O0.4 Measuring the cost

@@ -11,6 +11,8 @@ import { fileURLToPath } from "node:url";
 
 import { defineConfig } from "vite";
 
+import { SINGLE_PAGE_BUILD, inlineIntoPage } from "./vite.singlePage.js";
+
 const here = (rel) => fileURLToPath(new URL(rel, import.meta.url));
 
 /** The static shell assets the server embeds as they are; hashed into the cache name. */
@@ -34,26 +36,7 @@ function singlePage() {
     name: "workbench-pwa-single-page",
     enforce: "post",
     generateBundle(_options, bundle) {
-      const page = bundle["index.html"];
-      let html = page.source.toString();
-      for (const [name, file] of Object.entries(bundle)) {
-        if (name === "index.html") continue;
-        const ref = new RegExp(`<(script|link)[^>]*"/${name}"[^>]*>(</script>)?`);
-        if (!ref.test(html)) this.error(`${name} is not referenced by index.html`);
-        let inline;
-        if (file.type === "chunk") {
-          // The page's parser must not see the end of the script inside the script.
-          const code = file.code.replace(/<\/script/gi, "<\/script").replace(/<!--/g, "<\!--");
-          inline = `<script type="module">${code}</script>`;
-        } else {
-          const css = file.source.toString();
-          if (/<\/style/i.test(css)) this.error(`${name} contains </style`);
-          inline = `<style>${css}</style>`;
-        }
-        html = html.replace(ref, () => inline);
-        delete bundle[name];
-      }
-      page.source = html;
+      const html = inlineIntoPage(this, bundle);
 
       const hash = createHash("sha256").update(html);
       for (const name of STATIC) hash.update(readFileSync(STATIC_DIR + name));
@@ -74,12 +57,7 @@ export default defineConfig({
   publicDir: false,
   plugins: [singlePage()],
   build: {
+    ...SINGLE_PAGE_BUILD,
     outDir: here("./src-tauri/src/remote/pwa/dist"),
-    emptyOutDir: true,
-    // One script, one stylesheet, nothing fetched later.
-    cssCodeSplit: false,
-    modulePreload: false,
-    assetsInlineLimit: Number.MAX_SAFE_INTEGER,
-    rollupOptions: { output: { inlineDynamicImports: true } },
   },
 });

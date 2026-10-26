@@ -2,7 +2,7 @@
 // of office floor, animated where it moves, and every floor tile.
 
 import { FLOORS, PROPS, floorTile, propFrame, type FloorKind, type Prop } from "./art/props";
-import { cached, frameIn } from "./previewCanvas";
+import { cached, frameIn } from "./canvas";
 
 const SCALE = 3;
 const PAD = 6;

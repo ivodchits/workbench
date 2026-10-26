@@ -4,7 +4,7 @@
 
 import { DUCK_ANIMS, DUCK_H, DUCK_W, duckFrame, type DuckAnim, type DuckView } from "./art/duck";
 import { PROPS, floorTile, glassSide, propFrame } from "./art/props";
-import { cached, frameIn } from "./previewCanvas";
+import { cached, frameIn } from "./canvas";
 
 export const DUCK_ROOM_W = 160;
 export const DUCK_ROOM_H = 128;

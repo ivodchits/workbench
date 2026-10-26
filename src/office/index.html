@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="dark" />
+    <title>The Office</title>
+    <link rel="stylesheet" href="./style.css" />
+  </head>
+  <body>
+    <main id="stage">
+      <canvas id="office" width="512" height="352" aria-label="The office"></canvas>
+      <pre id="hud" aria-live="off"></pre>
+    </main>
+    <aside id="side">
+      <h1>The Office</h1>
+      <p class="muted">Not connected to Workbench yet: everyone sits at their home desk.</p>
+      <dl class="keys">
+        <dt>G</dt><dd>walk grid and spots</dd>
+        <dt>P</dt><dd>pause the animations</dd>
+        <dt>H</dt><dd>performance HUD</dd>
+      </dl>
+    </aside>
+    <script type="module" src="./main.ts"></script>
+  </body>
+</html>

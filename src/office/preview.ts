@@ -6,7 +6,7 @@ import { ANIMS, FRAME_H, FRAME_W, frame, type Anim, type Dir } from "./art/chara
 import type { DuckAnim } from "./art/duck";
 import { textOn } from "./art/palette";
 import { floorTile } from "./art/props";
-import { cached, frameIn } from "./previewCanvas";
+import { cached, frameIn } from "./canvas";
 import { DUCK_ROOM_H, DUCK_ROOM_W, drawDuckRoom } from "./previewDuck";
 import { buildProps, drawProps } from "./previewProps";
 import { OFFICE_H, OFFICE_SEATS, OFFICE_W, drawOffice } from "./previewOffice";
