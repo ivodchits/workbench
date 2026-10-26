@@ -53,6 +53,8 @@ export interface RemoteStatus {
   /** Wrong tries burned the last code; a new one is needed. */
   pairingLocked: boolean;
   public: PublicStatus;
+  /** The office's listener is up (office plan O0.2): the snapshot is pushed for it too. */
+  office: boolean;
 }
 
 /** A paired device, approved or waiting for approval. The token stays in the

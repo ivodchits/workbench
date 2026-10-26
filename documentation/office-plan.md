@@ -159,6 +159,11 @@ favourite spots.
   `src-tauri/src/remote/server.rs`, `src/panels/CommandPalette.tsx`, `src/office/net.ts`.
 - **Done when:** the page in Firefox/Chrome shows instances updating live; a request without
   the session, or with a foreign `Host`, is refused; works with phone remote access off.
+  _(Built: `src-tauri/src/remote/office.rs`, port 48950 (49050 in a debug build), any
+  free port if that one is taken. The transcript socket is the phone's
+  (`transcript::follow`). "Open Office" is the palette's "Open the office" and the
+  status bar's "office" (there is no app menu); the Tauri-window setting waits until
+  someone wants it.)_
 
 ### Step O0.3 — Snapshot additions
 - **Depends on:** O0.2.
@@ -368,7 +373,7 @@ _Filled in by O0.4 and O6.2._
 ## Progress tracker
 
 - [x] O0.1 Office page scaffold (`npm run dev:office`, port 1432; draws the static office)
-- [ ] O0.2 Serving, auth and "Open Office"
+- [x] O0.2 Serving, auth and "Open Office"
 - [ ] O0.3 Snapshot additions
 - [ ] O0.4 Measuring the cost
 - [x] OD.1 Pixel format and palette

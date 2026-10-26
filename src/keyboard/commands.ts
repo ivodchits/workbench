@@ -13,6 +13,7 @@ import {
   splitActivePanel,
 } from "../state/dock";
 import { applyPresetByIndex } from "../state/presets";
+import { officeOpen } from "../ipc/office";
 
 /** Run a global command (with its optional `arg`). No-op for rail-scope commands,
  *  which are dispatched in the rail's own scope, and for any command whose owning
@@ -37,6 +38,10 @@ export function runAction(command: CommandId, arg?: number): void {
     // Recall a saved arrangement by number — pure store logic, no owning component.
     case "applyPreset":
       if (arg) applyPresetByIndex(arg);
+      break;
+    // The office opens in the browser; nothing in the window owns it.
+    case "openOffice":
+      officeOpen().catch((e) => console.error("[office]", e));
       break;
     // Component/host-owned — dispatched to the registered handler (no-op if absent,
     // which is how `jumpNeedsYou` stayed a registered stub until Phase 2). The

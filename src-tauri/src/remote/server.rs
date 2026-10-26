@@ -341,7 +341,7 @@ pub(super) fn bearer(headers: &HeaderMap) -> Option<String> {
 }
 
 /// The token offered as a `wb-token.<token>` WebSocket subprotocol.
-fn subprotocol_token(headers: &HeaderMap) -> Option<String> {
+pub(super) fn subprotocol_token(headers: &HeaderMap) -> Option<String> {
     let raw = headers.get(header::SEC_WEBSOCKET_PROTOCOL)?.to_str().ok()?;
     raw.split(',')
         .find_map(|p| p.trim().strip_prefix("wb-token."))

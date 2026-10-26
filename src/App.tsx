@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import InstanceManager from "./panels/InstanceManager";
 import AppearanceMenu from "./panels/AppearanceMenu";
 import RemoteAccessMenu from "./panels/RemoteAccessMenu";
+import OfficeButton from "./panels/OfficeButton";
 import NotificationsMenu from "./panels/NotificationsMenu";
 import NotesSyncMenu from "./panels/NotesSyncMenu";
 import { initNotesSync } from "./state/notesSync";
@@ -495,6 +496,7 @@ function StatusBar({ openCount, sessionId }: { openCount: number; sessionId: str
       </span>
       <HookIndicator />
       <RemoteAccessMenu />
+      <OfficeButton />
       <NotificationsMenu />
       <NotesSyncMenu />
       <AssistantMenu />

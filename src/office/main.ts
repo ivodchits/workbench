@@ -1,16 +1,30 @@
-// The office page (office plan O0.1): the office at the largest whole-pixel scale that
-// fits beside the sidebar, on the loop in loop.ts, with the performance HUD. Until O1 it
-// draws the static office from the floor-plan preview.
+// The office page (office plans O0.1, O0.2): the office as large as fits beside the
+// sidebar, on the loop in loop.ts, with the performance HUD, and the link to Workbench. Until O1 it draws the static office from the floor-plan
+// preview, and the sidebar lists the sessions as text.
 
-import { fitScale } from "./canvas";
+import { fitSize } from "./canvas";
 import { startHud } from "./hud";
 import { startLoop } from "./loop";
+import { connect } from "./net";
 import { OFFICE_H, OFFICE_W, drawOffice } from "./previewOffice";
+import { showLink } from "./sidebar";
 
 const canvas = document.querySelector<HTMLCanvasElement>("#office")!;
 const stage = document.querySelector<HTMLElement>("#stage")!;
 const hud = document.querySelector<HTMLElement>("#hud")!;
-const ctx = canvas.getContext("2d")!;
+const shown = canvas.getContext("2d")!;
+
+/** The office at 1:1; each frame is copied up onto the page's canvas. */
+const scene = document.createElement("canvas");
+scene.width = OFFICE_W;
+scene.height = OFFICE_H;
+const ctx = scene.getContext("2d")!;
+
+/** Copies the scene up by whole pixels; the browser takes it the rest of the way. */
+function present(): void {
+  shown.imageSmoothingEnabled = false;
+  shown.drawImage(scene, 0, 0, canvas.width, canvas.height);
+}
 
 const view = { overlay: false, paused: false, pausedAt: 0 };
 
@@ -18,17 +32,30 @@ const loop = startLoop({
   step: () => false,
   draw: (ms) => {
     const next = drawOffice(ctx, view.paused ? view.pausedAt : ms, view.overlay);
+    present();
     return view.paused ? Infinity : next;
   },
 });
 startHud(hud, loop);
 
-/** Sizes the canvas in CSS pixels so each office pixel is a whole number of device pixels. */
+const linkEl = document.querySelector<HTMLElement>("#link")!;
+connect((state) => showLink(linkEl, state));
+
+/** Fills the stage. At a whole-number scale every office pixel is a block of device
+ *  pixels; between those, the canvas holds the next whole scale up and the browser
+ *  shrinks it smoothly, which stays sharp where nearest-neighbour would leave some
+ *  pixels a device pixel wider than others. */
 function fit(): void {
   const dpr = devicePixelRatio || 1;
-  const scale = fitScale(stage.clientWidth - 16, stage.clientHeight - 16, dpr, OFFICE_W, OFFICE_H);
+  const { scale, backing } = fitSize(stage.clientWidth - 16, stage.clientHeight - 16, dpr, OFFICE_W, OFFICE_H);
   canvas.style.width = `${(OFFICE_W * scale) / dpr}px`;
   canvas.style.height = `${(OFFICE_H * scale) / dpr}px`;
+  canvas.style.imageRendering = backing === scale ? "pixelated" : "auto";
+  if (canvas.width !== OFFICE_W * backing) {
+    canvas.width = OFFICE_W * backing;
+    canvas.height = OFFICE_H * backing;
+    present();
+  }
 }
 
 new ResizeObserver(fit).observe(stage);

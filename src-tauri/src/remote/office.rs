@@ -1,0 +1,345 @@
+//! The office's listener (office plan O0.2): the office page and its API, on
+//! **loopback only**, started by the first "Open Office" and kept while the app runs.
+//! Independent of the phone's remote-access switch, but fed the same way: the same
+//! snapshot the webview pushes, the same `remote-action` events back.
+//!
+//! - `GET /office/` — the page, built from `src/office/` into `office/dist/`.
+//! - `POST /office/api/session` — trade a launch token for a session. Workbench mints
+//!   the token when it opens the page (`/office/#t=<token>`); it works once, within a
+//!   minute. The session lives in memory here and in the tab, until the app quits.
+//! - `GET /office/api/state`, `POST /office/api/action` — as the phone's (auth:
+//!   `Authorization: Bearer <session>`).
+//! - `GET /office/api/ws`, `GET /office/api/transcript` — as the phone's sockets (auth:
+//!   the session as a `wb-token.<session>` subprotocol).
+//!
+//! Every request must name this listener in its `Host` (`127.0.0.1:<port>` or
+//! `localhost:<port>`): any web page can reach loopback, and a DNS-rebinding page would
+//! arrive under its own name. Requests that act, and the sockets, must also come from
+//! the office's own page (`Origin`).
+
+use std::net::{Ipv4Addr, SocketAddr};
+use std::sync::{Arc, Mutex};
+
+use axum::body::Bytes;
+use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
+use axum::extract::{Query, Request, State};
+use axum::http::{header, HeaderMap, StatusCode};
+use axum::middleware::{self, Next};
+use axum::response::{Html, IntoResponse, Redirect, Response};
+use axum::routing::{get, post};
+use axum::{Json, Router};
+use serde::Deserialize;
+use serde_json::{json, Value};
+use tauri::Emitter;
+use tokio::sync::broadcast;
+
+use super::auth::{self, ct_eq};
+use super::server::{bearer, subprotocol_token, SUBPROTOCOL};
+use super::transcript::{self, TranscriptQuery};
+use super::RemoteState;
+
+/// Where the office listens; a debug build apart from a release, like the phone's
+/// server. Taken by something else, any free port does: the URL is minted per launch.
+const OFFICE_PORT: u16 = if cfg!(debug_assertions) { 49050 } else { 48950 };
+/// How long a launch token works, seconds.
+const LAUNCH_SECS: u64 = 60;
+/// Sessions kept (office tabs); a new one drops the oldest.
+const SESSIONS_MAX: usize = 8;
+
+#[derive(Default)]
+pub(super) struct Office {
+    inner: Mutex<OfficeInner>,
+}
+
+#[derive(Default)]
+struct OfficeInner {
+    /// The bound port, once started.
+    port: Option<u16>,
+    /// Snapshots to the office's sockets.
+    tx: Option<broadcast::Sender<String>>,
+    /// Launch tokens not yet used, with when they stop working.
+    launches: Vec<(String, u64)>,
+    sessions: Vec<String>,
+}
+
+impl Office {
+    pub(super) fn running(&self) -> bool {
+        self.inner.lock().unwrap().port.is_some()
+    }
+
+    /// Hand a new snapshot to the office's sockets.
+    pub(super) fn push(&self, json: &str) {
+        if let Some(tx) = &self.inner.lock().unwrap().tx {
+            let _ = tx.send(json.to_string()); // Err: no office open
+        }
+    }
+
+    /// A fresh launch token, good once for [`LAUNCH_SECS`].
+    fn launch(&self, now: u64) -> String {
+        let mut inner = self.inner.lock().unwrap();
+        inner.launches.retain(|(_, until)| *until > now);
+        let token = auth::random_token();
+        inner.launches.push((token.clone(), now + LAUNCH_SECS));
+        token
+    }
+
+    /// Spend a launch token on a session.
+    fn session(&self, token: &str, now: u64) -> Option<String> {
+        let mut inner = self.inner.lock().unwrap();
+        inner.launches.retain(|(_, until)| *until > now);
+        let mut hit = None;
+        for (i, (t, _)) in inner.launches.iter().enumerate() {
+            if ct_eq(t.as_bytes(), token.as_bytes()) {
+                hit = Some(i);
+            }
+        }
+        inner.launches.remove(hit?);
+        if inner.sessions.len() >= SESSIONS_MAX {
+            inner.sessions.remove(0);
+        }
+        let session = auth::random_token();
+        inner.sessions.push(session.clone());
+        Some(session)
+    }
+
+    fn valid(&self, session: Option<&str>) -> bool {
+        let Some(session) = session else { return false };
+        let inner = self.inner.lock().unwrap();
+        let mut hit = false;
+        for s in &inner.sessions {
+            hit |= ct_eq(s.as_bytes(), session.as_bytes());
+        }
+        hit
+    }
+}
+
+/// Start the listener if it isn't up; its port.
+fn ensure_started(state: &Arc<RemoteState>) -> Result<u16, String> {
+    if let Some(port) = state.office.inner.lock().unwrap().port {
+        return Ok(port);
+    }
+    let listener = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, OFFICE_PORT))
+        .or_else(|_| std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0)))
+        .map_err(|e| format!("the office could not listen on loopback: {e}"))?;
+    let port = listener.local_addr().map_err(|e| e.to_string())?.port();
+    listener.set_nonblocking(true).map_err(|e| e.to_string())?;
+    let (tx, _rx) = broadcast::channel::<String>(32);
+    {
+        let mut inner = state.office.inner.lock().unwrap();
+        inner.port = Some(port);
+        inner.tx = Some(tx);
+    }
+    let router = router(state.clone(), port);
+    tauri::async_runtime::spawn(async move {
+        let serve = async {
+            let listener = tokio::net::TcpListener::from_std(listener)?;
+            axum::serve(listener, router.into_make_service_with_connect_info::<SocketAddr>()).await
+        };
+        if let Err(e) = serve.await {
+            eprintln!("[office] listener stopped: {e}");
+        }
+    });
+    Ok(port)
+}
+
+fn router(state: Arc<RemoteState>, port: u16) -> Router {
+    Router::new()
+        .route("/office", get(|| async { Redirect::permanent("/office/") }))
+        .route("/office/", get(page))
+        .route("/office/api/session", post(start_session))
+        .route("/office/api/state", get(api_state))
+        .route("/office/api/action", post(api_action))
+        .route("/office/api/ws", get(api_ws))
+        .route("/office/api/transcript", get(api_transcript))
+        .with_state(state)
+        .layer(middleware::from_fn_with_state(port, host_guard))
+}
+
+/// One header as text, when present and readable.
+fn header_str(headers: &HeaderMap, name: header::HeaderName) -> Option<&str> {
+    headers.get(name).and_then(|v| v.to_str().ok())
+}
+
+/// The `Host` a request to this listener carries: loopback by number or by name.
+fn host_ok(host: Option<&str>, port: u16) -> bool {
+    host.is_some_and(|h| {
+        h.eq_ignore_ascii_case(&format!("127.0.0.1:{port}")) || h.eq_ignore_ascii_case(&format!("localhost:{port}"))
+    })
+}
+
+/// Refuses a request that doesn't name this listener (DNS rebinding), and one that
+/// acts or opens a socket from another site.
+async fn host_guard(State(port): State<u16>, req: Request, next: Next) -> Response {
+    let headers = req.headers();
+    let host = header_str(headers, header::HOST);
+    if !host_ok(host, port) {
+        return (StatusCode::MISDIRECTED_REQUEST, "not this host").into_response();
+    }
+    let acts = req.method() != axum::http::Method::GET || headers.contains_key(header::UPGRADE);
+    if acts && !auth::origin_ok(header_str(headers, header::ORIGIN), host) {
+        return (StatusCode::FORBIDDEN, "not from the office").into_response();
+    }
+    next.run(req).await
+}
+
+/// The office page, never cached (a new build replaces it) nor framed.
+async fn page() -> Response {
+    (
+        [
+            (header::CACHE_CONTROL, "no-store"),
+            (header::X_FRAME_OPTIONS, "DENY"),
+            (header::REFERRER_POLICY, "no-referrer"),
+        ],
+        Html(include_str!("office/dist/index.html")),
+    )
+        .into_response()
+}
+
+#[derive(Deserialize)]
+struct SessionReq {
+    token: String,
+}
+
+/// Trade a launch token for a session; 401 once it is spent or too old.
+async fn start_session(State(state): State<Arc<RemoteState>>, Json(req): Json<SessionReq>) -> Response {
+    match state.office.session(&req.token, super::now()) {
+        Some(session) => ([(header::CACHE_CONTROL, "no-store")], Json(json!({ "session": session }))).into_response(),
+        None => StatusCode::UNAUTHORIZED.into_response(),
+    }
+}
+
+async fn api_state(State(state): State<Arc<RemoteState>>, headers: HeaderMap) -> Response {
+    if !state.office.valid(bearer(&headers).as_deref()) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let snap = state.inner.lock().unwrap().snapshot.clone();
+    ([(header::CONTENT_TYPE, "application/json"), (header::CACHE_CONTROL, "no-store")], snap).into_response()
+}
+
+/// One action, forwarded to the webview as the phone's are.
+async fn api_action(State(state): State<Arc<RemoteState>>, headers: HeaderMap, body: Bytes) -> Response {
+    if !state.office.valid(bearer(&headers).as_deref()) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    match serde_json::from_slice::<Value>(&body) {
+        Ok(action) => {
+            let _ = state.app.emit("remote-action", action);
+            StatusCode::OK.into_response()
+        }
+        Err(_) => StatusCode::BAD_REQUEST.into_response(),
+    }
+}
+
+async fn api_ws(ws: WebSocketUpgrade, State(state): State<Arc<RemoteState>>, headers: HeaderMap) -> Response {
+    if !state.office.valid(subprotocol_token(&headers).as_deref()) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    ws.protocols([SUBPROTOCOL]).on_upgrade(move |socket| snapshots(socket, state))
+}
+
+/// The current snapshot, then every new one; inbound frames are actions.
+async fn snapshots(mut socket: WebSocket, state: Arc<RemoteState>) {
+    let Some(mut rx) = state.office.inner.lock().unwrap().tx.as_ref().map(|tx| tx.subscribe()) else {
+        return;
+    };
+    let initial = state.inner.lock().unwrap().snapshot.clone();
+    if socket.send(Message::Text(initial.into())).await.is_err() {
+        return;
+    }
+    loop {
+        tokio::select! {
+            update = rx.recv() => match update {
+                Ok(snap) => {
+                    if socket.send(Message::Text(snap.into())).await.is_err() {
+                        break;
+                    }
+                }
+                // Each frame is the whole state, so the next one catches up.
+                Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                Err(broadcast::error::RecvError::Closed) => break,
+            },
+            incoming = socket.recv() => match incoming {
+                Some(Ok(Message::Text(t))) => {
+                    if let Ok(action) = serde_json::from_str::<Value>(t.as_str()) {
+                        let _ = state.app.emit("remote-action", action);
+                    }
+                }
+                Some(Ok(Message::Close(_))) | None | Some(Err(_)) => break,
+                _ => {}
+            },
+        }
+    }
+}
+
+async fn api_transcript(
+    ws: WebSocketUpgrade,
+    State(state): State<Arc<RemoteState>>,
+    headers: HeaderMap,
+    Query(q): Query<TranscriptQuery>,
+) -> Response {
+    if !state.office.valid(subprotocol_token(&headers).as_deref()) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    // An office session lasts as long as the app, so nothing ends the socket early.
+    ws.protocols([SUBPROTOCOL]).on_upgrade(move |socket| transcript::follow(socket, state, q, || true))
+}
+
+/// Start the office's listener if needed and open the office in the default browser.
+/// Returns the URL opened.
+#[tauri::command]
+pub fn office_open(state: tauri::State<'_, Arc<RemoteState>>) -> Result<String, String> {
+    use tauri_plugin_opener::OpenerExt;
+    let st = state.inner();
+    let was_running = st.office.running();
+    let port = ensure_started(st)?;
+    let url = format!("http://127.0.0.1:{port}/office/#t={}", st.office.launch(super::now()));
+    if !was_running {
+        // The mirror starts pushing snapshots for the office.
+        super::changed(st);
+    }
+    st.app.opener().open_url(&url, None::<&str>).map_err(|e| e.to_string())?;
+    Ok(url)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn accepts_only_its_own_host() {
+        assert!(host_ok(Some("127.0.0.1:48950"), 48950));
+        assert!(host_ok(Some("LOCALHOST:48950"), 48950));
+        assert!(!host_ok(Some("127.0.0.1:48951"), 48950));
+        assert!(!host_ok(Some("evil.example:48950"), 48950));
+        assert!(!host_ok(Some("127.0.0.1"), 48950));
+        assert!(!host_ok(None, 48950));
+    }
+
+    #[test]
+    fn a_launch_token_works_once_and_not_for_long() {
+        let office = Office::default();
+        let token = office.launch(1000);
+        assert!(office.session("nope", 1001).is_none());
+        let session = office.session(&token, 1001).expect("a session");
+        assert!(office.valid(Some(&session)));
+        assert!(office.session(&token, 1002).is_none(), "spent");
+
+        let late = office.launch(2000);
+        assert!(office.session(&late, 2000 + LAUNCH_SECS).is_none(), "expired");
+        assert!(!office.valid(Some("nope")));
+        assert!(!office.valid(None));
+    }
+
+    #[test]
+    fn keeps_the_newest_sessions() {
+        let office = Office::default();
+        let sessions: Vec<String> = (0..=SESSIONS_MAX)
+            .map(|i| {
+                let t = office.launch(i as u64);
+                office.session(&t, i as u64).unwrap()
+            })
+            .collect();
+        assert!(!office.valid(Some(&sessions[0])));
+        assert!(sessions[1..].iter().all(|s| office.valid(Some(s))));
+    }
+}

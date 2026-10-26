@@ -66,7 +66,8 @@ export default function RemoteMirror(): null {
   const notif = useNotificationConfig();
   const created = useCreated();
   const choices = useChoiceStates();
-  const running = server?.running ?? false;
+  // The phone's server, or the office (office plan O0.2): both read this snapshot.
+  const running = (server?.running || server?.office) ?? false;
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {

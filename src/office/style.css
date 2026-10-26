@@ -37,7 +37,6 @@ body {
 
 #office {
   display: block;
-  image-rendering: pixelated;
 }
 
 #hud {
@@ -72,6 +71,36 @@ h1 {
 
 .muted {
   color: var(--muted);
+}
+
+.instances {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+}
+
+.instances li {
+  display: flex;
+  gap: 8px;
+  padding: 2px 0;
+}
+
+.instances .glyph {
+  flex: none;
+  width: 1em;
+  text-align: center;
+}
+
+.instances .off {
+  color: var(--muted);
+}
+
+.instances .phase-needs_you .glyph {
+  color: #ff6b6b;
+}
+
+.instances .phase-working .glyph {
+  color: var(--duck);
 }
 
 .keys {

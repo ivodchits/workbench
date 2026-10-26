@@ -63,9 +63,25 @@ pub(super) async fn api_transcript(
         Ok(id) => id,
         Err(refusal) => return refusal,
     };
+    ws.protocols([SUBPROTOCOL]).on_upgrade(move |socket| {
+        let allowed = {
+            let state = state.clone();
+            move || device_valid(&state, &device)
+        };
+        follow(socket, state, q, allowed)
+    })
+}
+
+/// Serve the transcript `q` asks for on `socket`, until it closes or, checked whenever
+/// access changes anywhere, `allowed()` says no. The office's socket uses this too.
+pub(super) async fn follow(
+    socket: WebSocket,
+    state: Arc<RemoteState>,
+    q: TranscriptQuery,
+    allowed: impl Fn() -> bool + Send + 'static,
+) {
     let resume = q.session.zip(q.offset);
-    ws.protocols([SUBPROTOCOL])
-        .on_upgrade(move |socket| handle(socket, state, q.instance, resume, device))
+    handle(socket, state, q.instance, resume, allowed).await
 }
 
 /// Gives the follow back however the socket ends.
@@ -93,7 +109,7 @@ async fn handle(
     state: Arc<RemoteState>,
     instance_id: String,
     resume: Option<(String, u64)>,
-    device: String,
+    allowed: impl Fn() -> bool,
 ) {
     let app = state.app.clone();
     let mut kick = state.kick.subscribe();
@@ -158,7 +174,7 @@ async fn handle(
                 }
             },
             _ = kick.changed() => {
-                if !device_valid(&state, &device) {
+                if !allowed() {
                     break;
                 }
             },

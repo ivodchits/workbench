@@ -42,8 +42,13 @@ export function untilNextFrame(durations: readonly number[], ms: number): number
   return durations[0];
 }
 
-/** Device pixels per office pixel: the largest whole number that fits `w`×`h` CSS
- *  pixels, so no office pixel is drawn wider than another. At least 1. */
-export function fitScale(w: number, h: number, dpr: number, sceneW: number, sceneH: number): number {
-  return Math.max(1, Math.floor(Math.min((w * dpr) / sceneW, (h * dpr) / sceneH)));
+/** How to show a `sceneW`×`sceneH` scene in `w`×`h` CSS pixels: `scale`, device pixels
+ *  per scene pixel, as large as fits (at least 1); `backing`, the whole scale to draw it
+ *  at before the browser shrinks it to `scale` (equal when `scale` is whole). */
+export function fitSize(w: number, h: number, dpr: number, sceneW: number, sceneH: number): { scale: number; backing: number } {
+  const fits = Math.min((w * dpr) / sceneW, (h * dpr) / sceneH);
+  // A hair under a whole number is that number: no blur for a rounding error.
+  const whole = Math.round(fits);
+  const scale = Math.max(1, Math.abs(fits - whole) < 0.01 ? whole : fits);
+  return { scale, backing: Math.ceil(scale - 1e-9) };
 }

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { fitScale, frameIn, untilNextFrame } from "./canvas";
+import { fitSize, frameIn, untilNextFrame } from "./canvas";
 
 describe("untilNextFrame", () => {
   const durations = [100, 300, 50];
@@ -29,18 +29,23 @@ describe("untilNextFrame", () => {
   });
 });
 
-describe("fitScale", () => {
-  it("takes the largest whole scale that fits both ways", () => {
-    expect(fitScale(1600, 1200, 1, 512, 352)).toBe(3);
-    expect(fitScale(1600, 700, 1, 512, 352)).toBe(1);
+describe("fitSize", () => {
+  it("fills the room the tighter way, drawing at the next whole scale up", () => {
+    const { scale, backing } = fitSize(1557, 938, 1, 512, 352);
+    expect(scale).toBeCloseTo(938 / 352);
+    expect(backing).toBe(3);
+  });
+
+  it("keeps a whole scale whole", () => {
+    expect(fitSize(1536, 2000, 1, 512, 352)).toEqual({ scale: 3, backing: 3 });
+    expect(fitSize(1535, 2000, 1, 512, 352)).toEqual({ scale: 3, backing: 3 });
   });
 
   it("counts device pixels", () => {
-    expect(fitScale(1300, 800, 1.5, 512, 352)).toBe(3);
-    expect(fitScale(1300, 800, 2, 512, 352)).toBe(4);
+    expect(fitSize(1024, 2000, 2, 512, 352)).toEqual({ scale: 4, backing: 4 });
   });
 
   it("never goes below 1", () => {
-    expect(fitScale(200, 100, 1, 512, 352)).toBe(1);
+    expect(fitSize(200, 100, 1, 512, 352)).toEqual({ scale: 1, backing: 1 });
   });
 });

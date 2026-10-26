@@ -52,6 +52,7 @@ pub mod assistant;
 mod auth;
 mod funnel;
 mod notes;
+pub mod office;
 pub mod push;
 mod server;
 mod transcript;
@@ -107,6 +108,8 @@ pub struct RemoteState {
     wake: Mutex<mpsc::Sender<()>>,
     /// Numbers Duck's sockets, so an answer goes to the one that asked.
     next_conn: AtomicU64,
+    /// The office's own loopback listener (office plan O0.2).
+    office: office::Office,
 }
 
 struct RemoteInner {
@@ -217,6 +220,7 @@ pub fn init(app: &AppHandle) {
         kick: watch::channel(0).0,
         wake: Mutex::new(wake),
         next_conn: AtomicU64::new(0),
+        office: office::Office::default(),
     });
     app.manage(state.clone());
 
@@ -688,6 +692,8 @@ pub struct RemoteStatus {
     pub pairing_locked: bool,
     /// Public access through Tailscale Funnel (step R3).
     pub public: PublicStatus,
+    /// The office's listener is up (office plan O0.2): the mirror pushes for it too.
+    pub office: bool,
 }
 
 /// A paired device row for the settings panel's device list. The token never leaves
@@ -725,6 +731,7 @@ fn status_of(state: &Arc<RemoteState>) -> RemoteStatus {
         pairing_expires_at: live.map(|(_, exp)| exp),
         pairing_locked: inner.gate.locked(),
         public: inner.public.clone(),
+        office: state.office.running(),
     }
 }
 
@@ -848,6 +855,7 @@ pub fn remote_push_snapshot(state: State<'_, Arc<RemoteState>>, json: String) {
     let st = state.inner();
     let mut inner = st.inner.lock().unwrap();
     inner.snapshot = json.clone();
+    st.office.push(&json);
     if let Some(tx) = &inner.tx {
         let _ = tx.send(json); // Err only means no WS clients are connected
     }
