@@ -33,7 +33,7 @@ approved.
    reach "good-looking".
 5. **Chatter runs on Haiku**, through Duck's existing API client, budgeted, and only while the
    office is visible. Upgradeable to Sonnet by a setting.
-6. **Plain Canvas 2D, no game engine.** Native resolution 640×384 (40×24 tiles of 16 px),
+6. **Plain Canvas 2D, no game engine.** Native resolution 512×352 (32×22 tiles of 16 px),
    integer-scaled with nearest-neighbour. Characters are 16×32.
 7. **Workers sit with their backs to the camera** (decided in OD.3). The monitor faces
    you over their shoulder, so a room's state — code scrolling, a flashing red "needs
@@ -76,8 +76,9 @@ Workbench webview ──snapshot──▶ Rust core ──▶ office listener (1
 - **Sticky:** the instance → worker map is saved; a returning instance gets the same worker
   if they're free. New instances get a random free worker from the room's team.
 - **Borrowing:** when the team is all busy, take an idle worker — from open space first, then
-  from the other main team. The borrowed worker walks over to a **spare desk** in that room
-  (Demiurge has 6 desks, TWR 4, open space 8). A borrowed worker returns home when released.
+  from the other main team. Demiurge (4 desks) and TWR (2) have one desk per worker, so a
+  borrowed worker takes one of the open space's 2 **spare desks** (8 in all), the nearest to
+  the team's room. A borrowed worker returns home when released.
 - **Beyond 12 live sessions** (not expected): the extra session shows as an empty desk with an
   open laptop and a "remote contractor" tag — still hoverable and clickable.
 - Released (session ended): the worker packs up, walks to the kitchen and goes idle.
@@ -110,16 +111,20 @@ Name tags show the worker name + a status glyph (same glyphs as the rail).
 Each gets a look (generated), a one-line personality (feeds idle preferences and chatter), and
 favourite spots.
 
-## Floor plan (to be designed in OD.5)
+## Floor plan (approved in OD.5; `src/office/map/`)
 
-- **Duck's glass office** — boss desk, the huge rubber duck.
-- **Demiurge room** — 6 desks, a whiteboard.
-- **TinyWizardRoyale room** — 4 desks, a whiteboard.
-- **Open space** — 8 desks.
-- **Kitchen & water cooler** — coffee machine, fridge, table.
-- **Lounge** — sofa, TV with a console, beanbags.
-- **Kicker table**, **meeting table** (standup), **D&D corner**, entrance door, a server rack,
-  plants, a wall clock showing real time.
+One open floor, 512×352, no walls inside: floors and furniture mark the areas.
+
+- **Along the back wall:** Demiurge (4 desks, whiteboard; a bookshelf and cabinet toward the
+  open space) · the hall with the front door, the clock and the server rack · Duck's glass
+  office (boss desk under the window, the standup table in front of it) · the lounge down
+  the right side (TV, sofa, beanbags, kicker, D&D table).
+- **Below:** the open space (8 desks, 2 spare) · TinyWizardRoyale (2 desks) under Duck's
+  office · the kitchen under that, as wide as the lounge (fridge, coffee, sink, water cooler,
+  a table).
+- `office.ts` holds the tile layout, furniture, desks and named spots; `build.ts` makes the
+  draw list, the seats (stand point, monitor, intern spot) and an 8 px walk grid. Tests check
+  that every desk, intern spot and activity spot is reachable from the door.
 
 ---
 
@@ -129,7 +134,7 @@ favourite spots.
 - **Goal:** A blank office page with the render loop and a performance overlay.
 - **Depends on:** —
 - **Build:** New Vite entry `src/office/` with its own config (mirror `vite.pwa.config.js`).
-  Canvas at 640×384, integer-scaled to fit the window, nearest-neighbour, sidebar on the right.
+  Canvas at 512×352, integer-scaled to fit the window, nearest-neighbour, sidebar on the right.
   Fixed-step simulation at 10 Hz; render on `requestAnimationFrame` capped at 30 fps and
   skipped when nothing changed; everything stops when the page is hidden. HUD: fps, frame ms,
   JS heap (where available). Draw a placeholder grid.
@@ -347,7 +352,7 @@ _Filled in by O0.4 and O6.2._
 - [ ] OD.2 Characters (pass 1 done: cast, idle/walk/type/wave; pass 2: drink, sleep, cheer, facepalm, interns)
 - [x] OD.3 Furniture and tiles
 - [x] OD.4 Duck the boss (sunglasses and a red bow tie)
-- [ ] OD.5 Floor plan
+- [x] OD.5 Floor plan
 - [ ] O1.1 Entities and rendering
 - [ ] O1.2 Movement
 - [ ] O1.3 Assignment engine

@@ -1,4 +1,4 @@
-// The office art preview (office plan OD.2–OD.3): a sample corner of the office, the
+// The office art preview (office plan OD.2–OD.5): the whole office, Duck, the
 // furniture catalogue, and the cast — every worker, animated, with animation, facing
 // and zoom controls. For sign-off before any office code builds on the art.
 
@@ -9,7 +9,7 @@ import { floorTile } from "./art/props";
 import { cached, frameIn } from "./previewCanvas";
 import { DUCK_ROOM_H, DUCK_ROOM_W, drawDuckRoom } from "./previewDuck";
 import { buildProps, drawProps } from "./previewProps";
-import { SCENE_H, SCENE_W, drawScene } from "./previewScene";
+import { OFFICE_H, OFFICE_SEATS, OFFICE_W, drawOffice } from "./previewOffice";
 import { ROSTER, TEAM_NAMES, type Team, type Worker } from "./roster";
 
 const SHADOW = "rgba(30, 24, 40, 0.28)";
@@ -47,6 +47,7 @@ const state = {
   facing: "down" as Facing,
   zoom: 4,
   duck: "idle" as DuckAnim,
+  overlay: false,
   playing: !matchMedia("(prefers-reduced-motion: reduce)").matches,
 };
 
@@ -57,11 +58,11 @@ function facingAt(ms: number): Dir {
   return TURN[Math.floor(ms / 1400) % TURN.length];
 }
 
-// ── Scene: a corner of the office, at the largest whole-pixel scale that fits ──
+// ── The office, at the largest whole-pixel scale that fits ───────────────────
 
 const scene = document.querySelector<HTMLCanvasElement>("#scene")!;
-scene.width = SCENE_W;
-scene.height = SCENE_H;
+scene.width = OFFICE_W;
+scene.height = OFFICE_H;
 
 const duckRoom = document.querySelector<HTMLCanvasElement>("#duck-room")!;
 duckRoom.width = DUCK_ROOM_W;
@@ -74,8 +75,29 @@ function fit(canvas: HTMLCanvasElement, width: number, most = Infinity): void {
 }
 
 function fitScene(): void {
-  fit(scene, SCENE_W);
+  fit(scene, OFFICE_W);
   fit(duckRoom, DUCK_ROOM_W, 4);
+}
+
+/** Hovering a seated worker shows their name tag. */
+function bindHover(): void {
+  const who = document.querySelector<HTMLDivElement>("#who")!;
+  scene.addEventListener("mousemove", (e) => {
+    const rect = scene.getBoundingClientRect();
+    const scale = rect.width / OFFICE_W;
+    const x = (e.clientX - rect.left) / scale;
+    const y = (e.clientY - rect.top) / scale;
+    const hit = OFFICE_SEATS.find((s) => x >= s.x && x < s.x + FRAME_W && y >= s.y && y < s.y + FRAME_H + 8);
+    who.hidden = !hit;
+    if (!hit) return;
+    const top = hit.worker.look.top;
+    who.textContent = hit.worker.name;
+    who.style.setProperty("--tag", top.base);
+    who.style.setProperty("--tag-text", textOn(top.base));
+    who.style.left = `${scene.offsetLeft + (hit.x + FRAME_W / 2) * scale}px`;
+    who.style.top = `${scene.offsetTop + hit.y * scale}px`;
+  });
+  scene.addEventListener("mouseleave", () => (who.hidden = true));
 }
 
 // ── Corridor: the cast walking across ───────────────────────────────────────
@@ -214,7 +236,7 @@ let clock = 0;
 let last = performance.now();
 
 function paint(): void {
-  drawScene(scene.getContext("2d")!, clock);
+  drawOffice(scene.getContext("2d")!, clock, state.overlay);
   drawDuckRoom(duckRoom.getContext("2d")!, clock, state.duck);
   drawProps(clock);
   drawCorridor(clock);
@@ -234,6 +256,11 @@ bindGroup("anim", (v) => (state.anim = v as Anim));
 bindGroup("facing", (v) => (state.facing = v as Facing));
 bindGroup("zoom", (v) => (state.zoom = Number(v)));
 bindGroup("duck", (v) => (state.duck = v as DuckAnim));
+bindGroup("overlay", (v) => {
+  state.overlay = v === "on";
+  document.querySelector<HTMLElement>("#legend")!.hidden = !state.overlay;
+});
+bindHover();
 playButton.addEventListener("click", () => {
   state.playing = !state.playing;
   syncPlay();
