@@ -213,6 +213,14 @@ favourite spots.
   glowing), chairs, plants, whiteboards, filing cabinet, server rack; kitchen set; lounge set
   (sofa, TV, console, beanbags); kicker table; meeting table; D&D table; wall clock.
 - **Done when:** every prop in the preview; user approves.
+- _As built (approved):_ 37 props and 7 floors (office, Demiurge, TinyWizard, boss,
+  meeting, wood, kitchen), all in the preview, with the animated ones playing. Monitors are
+  off / code / alert: the code and alert screens flash between 2 frames, and the red alert
+  is the "needs you" screen. The glow a lit monitor casts on the room is lighting and is due
+  in O2.4. The console isn't its own prop; it sits in the TV stand with a controller. The
+  wall clock takes the time as an argument (`clockAt`), so O2.4 only has to pass in the
+  real time. Added beyond the list: partitions, a wall-mounted and a standing whiteboard,
+  bookshelf, bin, tall plant, water cooler, fridge, and the boss desk (OD.4).
 
 ### Step OD.4 — Duck the boss
 - **Build:** the huge rubber duck (~48×48) and the boss desk; animations: idle bob, thinking,
