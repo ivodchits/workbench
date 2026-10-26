@@ -10,7 +10,12 @@ export type DuckMode = "idle" | "listening" | "thinking" | "talking";
 
 export const MAT_BODY = 0;
 export const MAT_BEAK = 1;
+/** The sunglasses' lenses, which carry the eyes' catchlight. */
 export const MAT_EYE = 2;
+/** The sunglasses' bridge and arms. */
+export const MAT_SHADES = 3;
+export const MAT_TIE = 4;
+export const MAT_KNOT = 5;
 
 /** Where the duck is and what its face does, set per frame by `Animator`. */
 export interface Pose {
@@ -24,7 +29,7 @@ export interface Pose {
   nod: number;
   /** Beak opening, 0..1. */
   mouth: number;
-  /** Eyelids, 1 = open, 0 = shut. */
+  /** Eyelids, 1 = open, 0 = shut. Behind the sunglasses it doesn't show. */
   blink: number;
 }
 
@@ -38,10 +43,20 @@ export interface Frame {
 
 // ── the model ────────────────────────────────────────────────────────────────
 
+/** Which way the lenses face, about the vertical axis: along the head's surface
+ *  where the eyes were. */
+const LENS_C = Math.cos(0.646);
+const LENS_S = Math.sin(0.646);
+
 let pose: Pose;
 let mat = MAT_BODY;
 /** Which eye `scene` hit last: -1 or 1. */
 let eyeSide = 1;
+/** The normal the catchlight reads at the lens `scene` hit last, model space: a
+ *  tighter curve than the lens's own, so the glint is a spot that slides. */
+let lensNx = 0;
+let lensNy = 0;
+let lensNz = 0;
 let rx = 0;
 let ry = 0;
 
@@ -51,6 +66,18 @@ function ellipsoid(px: number, py: number, pz: number, ax: number, ay: number, a
   const k0 = len3(px / ax, py / ay, pz / az);
   const k1 = len3(px / (ax * ax), py / (ay * ay), pz / (az * az));
   return k1 === 0 ? -Math.min(ax, ay, az) : (k0 * (k0 - 1)) / k1;
+}
+
+/** Distance to the capsule from (ax, ay, az) to (bx, by, bz) of radius `r`. */
+function capsule(px: number, py: number, pz: number, ax: number, ay: number, az: number, bx: number, by: number, bz: number, r: number): number {
+  const dx = bx - ax;
+  const dy = by - ay;
+  const dz = bz - az;
+  const qx = px - ax;
+  const qy = py - ay;
+  const qz = pz - az;
+  const h = Math.min(1, Math.max(0, (qx * dx + qy * dy + qz * dz) / (dx * dx + dy * dy + dz * dz)));
+  return len3(qx - dx * h, qy - dy * h, qz - dz * h) - r;
 }
 
 function smoothMin(a: number, b: number, k: number): number {
@@ -91,12 +118,49 @@ function scene(x: number, y: number, z: number): number {
     d = beak;
     mat = MAT_BEAK;
   }
-  const er = 0.085;
-  const eye = ellipsoid(hx - 0.83, hy - 0.76, Math.abs(z) - 0.25, er, er * Math.max(pose.blink, 0.08), er);
-  if (eye < d) {
-    d = eye;
-    mat = MAT_EYE;
-    eyeSide = z < 0 ? -1 : 1;
+  const az = Math.abs(z);
+  // Sunglasses: a flat lens over each eye, turned to face along the head, with a
+  // bridge over the front and arms back along the sides. They and the tie are
+  // skipped where their bounding sphere is farther than what's already there.
+  if (len3(hx - 0.5, hy - 0.62, z) - 0.58 < d) {
+    const lx = hx - 0.855;
+    const ly = hy - 0.77;
+    const lz = az - 0.268;
+    const lens = ellipsoid(lx * LENS_C + lz * LENS_S, ly, lz * LENS_C - lx * LENS_S, 0.04, 0.13, 0.16);
+    if (lens < d) {
+      d = lens;
+      mat = MAT_EYE;
+      eyeSide = z < 0 ? -1 : 1;
+      const gx = lx + 0.13 * LENS_C;
+      const gz = (lz + 0.13 * LENS_S) * eyeSide;
+      const nc = Math.cos(pose.nod);
+      const ns = Math.sin(pose.nod);
+      lensNx = gx * nc - ly * ns;
+      lensNy = gx * ns + ly * nc;
+      lensNz = gz;
+    }
+    const frame = Math.min(
+      len3(hx - 0.95, hy - 0.81, Math.max(az - 0.14, 0)) - 0.025,
+      capsule(hx, hy, az, 0.76, 0.82, 0.39, 0.42, 0.83, 0.45, 0.018),
+    );
+    if (frame < d) {
+      d = frame;
+      mat = MAT_SHADES;
+    }
+  }
+  // The bow tie sits on the body at the neck, so it doesn't nod with the head.
+  if (len3(x - 0.85, y - 0.26, z) - 0.33 < d) {
+    const tx = x - 0.85;
+    const ty = y - 0.26;
+    const knot = ellipsoid(tx - 0.02, ty, z, 0.065, 0.065, 0.06);
+    const wings = ellipsoid(tx, ty, az - 0.16, 0.05, 0.1, 0.13);
+    if (knot < d && knot <= wings) {
+      d = knot;
+      mat = MAT_KNOT;
+    } else if (wings < d) {
+      d = wings;
+      mat = MAT_TIE;
+    }
   }
   return d;
 }
@@ -174,6 +238,9 @@ export function render(p: Pose, cols: number, rows: number, cellAspect: number, 
       scene(px, sy, pz);
       const m = mat;
       const side = eyeSide;
+      const gx = lensNx;
+      const gy = lensNy;
+      const gz = lensNz;
       // Tetrahedral normal in model space, turned back into the world.
       const a = scene(px + eps, sy - eps, pz - eps);
       const b = scene(px - eps, sy - eps, pz + eps);
@@ -192,8 +259,15 @@ export function render(p: Pose, cols: number, rows: number, cellAspect: number, 
       const wny = -wx * sr + ny * cr;
       let l: number;
       if (m === MAT_EYE) {
-        glintDot[idx] = wnx * GLINT[0] + wny * GLINT[1] + wz * GLINT[2];
+        // The lens is flat; the glint reads a rounder normal, turned like the rest.
+        const gl = len3(gx, gy, gz) || 1;
+        const gwx = (gx * c - gz * s) / gl;
+        const gwz = (gx * s + gz * c) / gl;
+        const gwy = gy / gl;
+        glintDot[idx] = (gwx * cr + gwy * sr) * GLINT[0] + (-gwx * sr + gwy * cr) * GLINT[1] + gwz * GLINT[2];
         glintSide[idx] = side;
+        l = 0.04;
+      } else if (m === MAT_SHADES) {
         l = 0.04;
       } else {
         const diff = Math.max(0, wnx * LIGHT[0] + wny * LIGHT[1] + wz * LIGHT[2]);

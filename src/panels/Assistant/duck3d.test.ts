@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { Animator, MAT_EYE, render, type Pose } from "./duck3d";
+import { Animator, MAT_EYE, MAT_KNOT, MAT_SHADES, MAT_TIE, render, type Pose } from "./duck3d";
 
 const pose = (yaw: number): Pose => ({ yaw, rock: 0, bob: 0, nod: 0, mouth: 0, blink: 1 });
 
@@ -22,6 +22,24 @@ describe("render", () => {
     const hits = f.lum.filter((l) => l >= 0).length / f.lum.length;
     expect(hits).toBeGreaterThan(0.25);
     expect(hits).toBeLessThan(0.7);
+  });
+
+  it("wears sunglasses and a bow tie", () => {
+    for (const yaw of [0, 0.62, 1.3]) {
+      const f = render(pose(yaw), 72, 36, 0.52);
+      const count = (m: number) => f.mat.filter((v, i) => v === m && f.lum[i] >= 0).length;
+      expect(count(MAT_EYE)).toBeGreaterThan(4);
+      expect(count(MAT_SHADES)).toBeGreaterThan(0);
+      expect(count(MAT_TIE)).toBeGreaterThan(2);
+      // Side on, the near wing hides the knot.
+      if (yaw > 0) expect(count(MAT_KNOT)).toBeGreaterThan(0);
+    }
+  });
+
+  it("keeps the shades on through a blink", () => {
+    const open = render(pose(0.62), 72, 36, 0.52);
+    const shut = render({ ...pose(0.62), blink: 0 }, 72, 36, 0.52);
+    expect(Array.from(shut.mat)).toEqual(Array.from(open.mat));
   });
 
   it("gives a visible eye a catchlight at every turn, and keeps most of it dark", () => {

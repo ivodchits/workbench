@@ -25,6 +25,9 @@ function untilText(until: number): string {
   return `until ${d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}${d.toDateString() !== new Date().toDateString() ? " tomorrow" : ""}`;
 }
 
+/** The icon is duck-yellow, like the ASCII duck, unless the budget tints it. */
+const DUCK_YELLOW = "#ffd84a";
+
 const ACRONYM = [
   ["D", "ispatch"],
   ["U", "nderstand"],
@@ -159,7 +162,7 @@ export default function DuckButton() {
           </span>
         )}
       </button>
-      <DuckIcon size={13.5} color={tone ?? "var(--wb-accent)"} />
+      <DuckIcon size={13.5} color={tone ?? DUCK_YELLOW} />
       <button
         type="button"
         aria-pressed={speech.prefs.on}

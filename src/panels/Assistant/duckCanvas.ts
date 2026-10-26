@@ -2,14 +2,15 @@
 // `DuckAvatar` and the phone's Duck view (step R2). Framework-free, so the PWA can
 // use it without React.
 //
-// The duck is duck-yellow or in the canvas's text color (`duck3d.ts` does the 3D).
+// The duck is duck-yellow or in the canvas's text color (`duck3d.ts` does the 3D),
+// in sunglasses and a red bow tie.
 // It spins while Duck thinks or runs a tool, works its beak while it talks, and
 // tilts its head while it waits for you. With a `level` (the loudness of what's
 // playing, 0..1) the beak opens on the syllables actually heard; otherwise it
 // follows a stand-in rhythm.
 
 import type { DuckAvatarPrefs } from "../../ipc/prefs";
-import { Animator, MAT_BEAK, MAT_EYE, render, type DuckMode, type Frame } from "./duck3d";
+import { Animator, MAT_BEAK, MAT_EYE, MAT_KNOT, MAT_SHADES, MAT_TIE, render, type DuckMode, type Frame } from "./duck3d";
 
 export type DuckLook = Pick<DuckAvatarPrefs, "ink" | "chars" | "cols" | "fps">;
 
@@ -30,6 +31,8 @@ type Rgb = [number, number, number];
 
 const BODY: Rgb = [255, 216, 74];
 const BEAK: Rgb = [255, 140, 40];
+const TIE: Rgb = [212, 58, 58];
+const KNOT: Rgb = [154, 37, 48];
 const EYE = "#3a3f48";
 const GLINT = "#ebf0f5";
 const LINE_HEIGHT = 1.15;
@@ -71,7 +74,7 @@ export function startDuckCanvas(canvas: HTMLCanvasElement, live: () => DuckLive)
     const key = `${ink}/${m}/${level}`;
     let c = colors.get(key);
     if (!c) {
-      const rgb = ink === "mono" ? text : m === MAT_BEAK ? BEAK : BODY;
+      const rgb = ink === "mono" ? text : m === MAT_BEAK ? BEAK : m === MAT_TIE ? TIE : m === MAT_KNOT ? KNOT : BODY;
       const f = 0.35 + 0.65 * level;
       c = `rgb(${(rgb[0] * f) | 0},${(rgb[1] * f) | 0},${(rgb[2] * f) | 0})`;
       colors.set(key, c);
@@ -116,8 +119,8 @@ export function startDuckCanvas(canvas: HTMLCanvasElement, live: () => DuckLive)
         if (l < 0) continue;
         const m = frame.mat[k];
         const step = Math.min(ramp.length - 1, 1 + Math.floor(l * (ramp.length - 1)));
-        const c =
-          m === MAT_EYE && look.ink === "color" ? (l > 0.5 ? GLINT : EYE) : color(look.ink, m, step / (ramp.length - 1));
+        const shades = look.ink === "color" && (m === MAT_EYE || m === MAT_SHADES);
+        const c = shades ? (l > 0.5 ? GLINT : EYE) : color(look.ink, m, step / (ramp.length - 1));
         if (c !== fill) {
           ctx.fillStyle = c;
           fill = c;
