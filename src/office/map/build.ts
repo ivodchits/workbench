@@ -4,8 +4,8 @@
 
 import {
   PROPS,
-  frostedGlass,
-  frostedGlassSide,
+  glassRun,
+  glassRunSide,
   glass,
   glassSide,
   partition,
@@ -84,7 +84,7 @@ export interface OfficeMap {
 function resolve(ref: PropRef): [string, Prop] {
   if (typeof ref === "string") return [ref, PROPS[ref] as Prop];
   if ("px" in ref) {
-    const make = ref.build === "frostedGlass" ? frostedGlass : frostedGlassSide;
+    const make = ref.build === "glassRun" ? glassRun : glassRunSide;
     return [`${ref.build}${ref.px}`, make(ref.px)];
   }
   const make = { partition, partitionSide, glass, glassSide }[ref.build];
@@ -93,7 +93,7 @@ function resolve(ref: PropRef): [string, Prop] {
 
 /** How deep a prop sits on the floor when its placement doesn't say. */
 function defaultFoot(ref: PropRef, p: Prop): number {
-  if (typeof ref !== "string" && (ref.build === "partitionSide" || ref.build === "glassSide" || ref.build === "frostedGlassSide")) return p.h;
+  if (typeof ref !== "string" && (ref.build === "partitionSide" || ref.build === "glassSide" || ref.build === "glassRunSide")) return p.h;
   if (ref === "kicker" || ref === "dndTable") return 16;
   return Math.min(p.h, 12);
 }

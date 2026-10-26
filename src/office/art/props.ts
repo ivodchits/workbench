@@ -203,8 +203,6 @@ export function clockAt(hours: number, minutes: number): Prop {
 
 const clock = clockAt(10, 10);
 
-const FROSTED = { h: "#dce9ee", H: "#f6fbfd", A: "#c9d3dc" };
-
 function glassRows(w: number): string[] {
   return [
     row(w, "o"),
@@ -221,15 +219,15 @@ function glassRows(w: number): string[] {
   ];
 }
 
-/** Frosted glass between the rooms on the right, `w` pixels long, facing the viewer: a
- *  paler Duck's glass, light enough to read as a separator rather than a wall. */
-export function frostedGlass(w: number): Prop {
-  return prop(glassRows(w), { colors: FROSTED });
+/** Duck's glass, `w` pixels long, facing the viewer: between the rooms on the right too,
+ *  where it reads as a separator rather than a wall. */
+export function glassRun(w: number): Prop {
+  return prop(glassRows(w));
 }
 
-/** The same frosted glass running up the screen, `h` pixels long. */
-export function frostedGlassSide(h: number): Prop {
-  return prop(["oooo", ...repeat(h - 2, "oAho"), "oooo"], { colors: FROSTED });
+/** The same glass running up the screen, `h` pixels long. */
+export function glassRunSide(h: number): Prop {
+  return prop(["oooo", ...repeat(h - 2, "oAho"), "oooo"]);
 }
 
 /** A low divider between areas, `tiles` long, seen from the front: top, face.

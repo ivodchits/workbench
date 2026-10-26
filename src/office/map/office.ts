@@ -9,7 +9,7 @@
 // office, and under that the meeting room and the kitchen, as wide as the lounge.
 
 import type { Dir } from "../art/characters";
-import { frostedGlass, type FloorKind, type PropName } from "../art/props";
+import { glassRun, type FloorKind, type PropName } from "../art/props";
 
 export const TILE = 16;
 export const MAP_W = 32;
@@ -69,7 +69,7 @@ export const FLOOR_OF: Record<Room, FloorKind> = {
 export type PropRef =
   | PropName
   | { build: "partition" | "partitionSide" | "glass" | "glassSide"; tiles: number }
-  | { build: "frostedGlass" | "frostedGlassSide"; px: number };
+  | { build: "glassRun" | "glassRunSide"; px: number };
 
 export interface Placement {
   prop: PropRef;
@@ -95,18 +95,18 @@ const onWall = (prop: PropRef, x: number, y: number): Placement => at(prop, x, y
 const BACK = 32; // where the back wall meets the floor
 
 const ROOMS_SPLIT = 272; // where TinyWizardRoyale and the lounge end, the meeting room and the kitchen begin
-const GLASS_H = frostedGlass(16).h;
+const GLASS_H = glassRun(16).h;
 
-/** Frosted glass round the rooms on the right, with empty doorways: across, under
+/** Glass round the rooms on the right, with empty doorways: across, under
  *  TinyWizardRoyale and the lounge (doorways at x 328 and 464); up, between the left and
  *  the right rooms (doorways at y 216 and 304). The glass up stops at the top of the
  *  glass across and carries on below it. */
 const GLASS: Placement[] = [
   ...([[240, 328], [360, 464], [496, 512]] as const).map(([x0, x1]) =>
-    at({ build: "frostedGlass", px: x1 - x0 }, x0, ROOMS_SPLIT - GLASS_H, { foot: 6 }),
+    at({ build: "glassRun", px: x1 - x0 }, x0, ROOMS_SPLIT - GLASS_H, { foot: 6 }),
   ),
   ...([[192, 216], [232, ROOMS_SPLIT - GLASS_H + 1], [ROOMS_SPLIT, 304], [320, 352]] as const).map(([y0, y1]) =>
-    at({ build: "frostedGlassSide", px: y1 - y0 }, 366, y0),
+    at({ build: "glassRunSide", px: y1 - y0 }, 366, y0),
   ),
 ];
 

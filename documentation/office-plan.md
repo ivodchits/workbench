@@ -122,7 +122,7 @@ favourite spots.
 - **Below:** the open space (8 desks, 2 spare) · TinyWizardRoyale (2 desks) under Duck's
   office · under that the **meeting room** (a long table for 8 and a whiteboard on a stand)
   and the kitchen, as wide as the lounge (fridge, coffee, sink, water cooler).
-- **Walls:** the outside wall, Duck's glass, and frosted glass with open doorways between the
+- **Walls:** the outside wall, Duck's glass, and glass (like Duck's) with open doorways between the
   four rooms on the right (TinyWizardRoyale, lounge, meeting room, kitchen). Everything else
   is open floor.
 - `office.ts` holds the tile layout, furniture, desks and named spots; `build.ts` makes the
