@@ -97,7 +97,7 @@
     border: 3px solid var(--rim);
     padding: 10px;
   }
-  #scene { image-rendering: pixelated; display: block; }
+  #scene, #duck-room { image-rendering: pixelated; display: block; }
   .props, .floors {
     display: flex;
     flex-wrap: wrap;
@@ -183,6 +183,22 @@
       and Oksana are watching the TV, Pip and Juno are at the kicker table, and Mira and
       Lola are chatting in the kitchen. The clock shows your time.</p>
     <div class="scene-wrap"><canvas id="scene" aria-label="A sample corner of the office with workers"></canvas></div>
+  </section>
+
+  <section class="section" aria-labelledby="duck-title">
+    <h2 id="duck-title">Duck, the boss</h2>
+    <p>A huge rubber duck in sunglasses and a red bow tie, in a glass office, three
+      workers wide. Idle, it bobs, and the light glints across its shades; thinking, it
+      sways; speaking, its beak moves; and when autopilot acts on a session, it waddles
+      over to that desk.</p>
+    <div class="group" role="group" aria-label="Duck">
+      <span>Duck</span>
+      <button type="button" id="duck-idle" data-duck="idle" aria-pressed="true">Idle</button>
+      <button type="button" id="duck-think" data-duck="think" aria-pressed="false">Thinking</button>
+      <button type="button" id="duck-speak" data-duck="speak" aria-pressed="false">Speaking</button>
+      <button type="button" id="duck-waddle" data-duck="waddle" aria-pressed="false">Waddling</button>
+    </div>
+    <div class="scene-wrap"><canvas id="duck-room" aria-label="Duck at its desk in a glass office"></canvas></div>
   </section>
 
   <section class="section" aria-labelledby="furniture-title">

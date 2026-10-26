@@ -346,7 +346,7 @@ _Filled in by O0.4 and O6.2._
 - [x] OD.1 Pixel format and palette
 - [ ] OD.2 Characters (pass 1 done: cast, idle/walk/type/wave; pass 2: drink, sleep, cheer, facepalm, interns)
 - [x] OD.3 Furniture and tiles
-- [ ] OD.4 Duck the boss
+- [x] OD.4 Duck the boss (sunglasses and a red bow tie)
 - [ ] OD.5 Floor plan
 - [ ] O1.1 Entities and rendering
 - [ ] O1.2 Movement

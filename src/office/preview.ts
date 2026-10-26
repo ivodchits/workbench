@@ -3,9 +3,11 @@
 // and zoom controls. For sign-off before any office code builds on the art.
 
 import { ANIMS, FRAME_H, FRAME_W, frame, type Anim, type Dir } from "./art/characters";
+import type { DuckAnim } from "./art/duck";
 import { textOn } from "./art/palette";
 import { floorTile } from "./art/props";
 import { cached, frameIn } from "./previewCanvas";
+import { DUCK_ROOM_H, DUCK_ROOM_W, drawDuckRoom } from "./previewDuck";
 import { buildProps, drawProps } from "./previewProps";
 import { SCENE_H, SCENE_W, drawScene } from "./previewScene";
 import { ROSTER, TEAM_NAMES, type Team, type Worker } from "./roster";
@@ -44,6 +46,7 @@ const state = {
   anim: "idle" as Anim,
   facing: "down" as Facing,
   zoom: 4,
+  duck: "idle" as DuckAnim,
   playing: !matchMedia("(prefers-reduced-motion: reduce)").matches,
 };
 
@@ -60,10 +63,19 @@ const scene = document.querySelector<HTMLCanvasElement>("#scene")!;
 scene.width = SCENE_W;
 scene.height = SCENE_H;
 
+const duckRoom = document.querySelector<HTMLCanvasElement>("#duck-room")!;
+duckRoom.width = DUCK_ROOM_W;
+duckRoom.height = DUCK_ROOM_H;
+
+/** The largest whole-pixel scale that fits, so no pixel is drawn wider than another. */
+function fit(canvas: HTMLCanvasElement, width: number, most = Infinity): void {
+  const room = canvas.parentElement!.clientWidth - 20;
+  canvas.style.width = `${width * Math.max(1, Math.min(most, Math.floor(room / width)))}px`;
+}
+
 function fitScene(): void {
-  const room = scene.parentElement!.clientWidth;
-  const scale = Math.max(1, Math.floor(room / SCENE_W));
-  scene.style.width = `${SCENE_W * scale}px`;
+  fit(scene, SCENE_W);
+  fit(duckRoom, DUCK_ROOM_W, 4);
 }
 
 // ── Corridor: the cast walking across ───────────────────────────────────────
@@ -203,6 +215,7 @@ let last = performance.now();
 
 function paint(): void {
   drawScene(scene.getContext("2d")!, clock);
+  drawDuckRoom(duckRoom.getContext("2d")!, clock, state.duck);
   drawProps(clock);
   drawCorridor(clock);
   drawCards(clock);
@@ -220,6 +233,7 @@ buildCards();
 bindGroup("anim", (v) => (state.anim = v as Anim));
 bindGroup("facing", (v) => (state.facing = v as Facing));
 bindGroup("zoom", (v) => (state.zoom = Number(v)));
+bindGroup("duck", (v) => (state.duck = v as DuckAnim));
 playButton.addEventListener("click", () => {
   state.playing = !state.playing;
   syncPlay();
