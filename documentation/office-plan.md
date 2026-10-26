@@ -95,13 +95,13 @@ Workbench webview ──snapshot──▶ Rust core ──▶ office listener (1
 
 Name tags show the worker name + a status glyph (same glyphs as the rail).
 
-## Worker roster (proposed — rename freely in OD.2)
+## Worker roster (approved in OD.2; `src/office/roster.ts`)
 
 | Team | Workers |
 |---|---|
-| Demiurge | Mira, Bram, Oksana, Theo |
+| Demiurge | Felix, Bram, Kenji, Theo |
 | TinyWizardRoyale | Pip, Juno |
-| Open space | Felix, Ada, Kenji, Lola, Gus, Rhea |
+| Open space | Mira, Oksana, Ada, Lola, Gus, Rhea |
 
 Each gets a look (generated), a one-line personality (feeds idle preferences and chatter), and
 favourite spots.
@@ -339,8 +339,8 @@ _Filled in by O0.4 and O6.2._
 - [ ] O0.2 Serving, auth and "Open Office"
 - [ ] O0.3 Snapshot additions
 - [ ] O0.4 Measuring the cost
-- [ ] OD.1 Pixel format and palette
-- [ ] OD.2 Characters
+- [x] OD.1 Pixel format and palette
+- [ ] OD.2 Characters (pass 1 done: cast, idle/walk/type/wave; pass 2: drink, sleep, cheer, facepalm, interns)
 - [ ] OD.3 Furniture and tiles
 - [ ] OD.4 Duck the boss
 - [ ] OD.5 Floor plan

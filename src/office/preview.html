@@ -1,0 +1,179 @@
+<title>Office Cast</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Silkscreen&family=JetBrains+Mono:wght@400;600&display=swap">
+<style>
+  /* Layout: one column, a walking corridor as the opener, then a card per worker,
+     grouped by team. One committed look: the office after hours, duck-yellow accent. */
+  :root {
+    color-scheme: dark;
+    --night: #15131b;
+    --panel: #1f1c28;
+    --rim: #342e42;
+    --text: #ebe6f3;
+    --muted: #a39bb4;
+    --duck: #ffcf3f;
+    --demiurge: #7c6cf0;
+    --tinywizard: #33b8a6;
+    --open: #e98a46;
+    --display: "Silkscreen", "Courier New", monospace;
+    --body: "JetBrains Mono", ui-monospace, Consolas, monospace;
+  }
+  body {
+    background: var(--night);
+    color: var(--text);
+    font: 13px/1.55 var(--body);
+  }
+  main {
+    max-width: 1080px;
+    margin: 0 auto;
+    padding-block: 28px 48px;
+    padding-left: max(16px, env(safe-area-inset-left, 0px));
+    padding-right: max(16px, env(safe-area-inset-right, 0px));
+    display: grid;
+    gap: 28px;
+  }
+  header { display: grid; gap: 6px; }
+  h1 {
+    margin: 0;
+    font: 400 clamp(26px, 5vw, 40px)/1 var(--display);
+    letter-spacing: 0.02em;
+    text-wrap: balance;
+  }
+  h1 b { color: var(--duck); font-weight: 400; }
+  header p { margin: 0; color: var(--muted); max-width: 64ch; }
+  #corridor {
+    width: 100%;
+    height: auto;
+    aspect-ratio: auto;
+    image-rendering: pixelated;
+    display: block;
+    border: 3px solid var(--rim);
+    background: var(--panel);
+  }
+  .controls {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px 22px;
+    align-items: center;
+    padding: 12px 14px;
+    background: var(--panel);
+    border: 1px solid var(--rim);
+  }
+  .group { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; }
+  .group > span {
+    font: 400 11px var(--display);
+    color: var(--muted);
+    letter-spacing: 0.06em;
+    margin-right: 6px;
+  }
+  button {
+    font: 600 12px var(--body);
+    color: var(--text);
+    background: transparent;
+    border: 1px solid var(--rim);
+    padding: 5px 10px;
+    cursor: pointer;
+  }
+  button:hover { border-color: var(--muted); }
+  button[aria-pressed="true"] { background: var(--duck); border-color: var(--duck); color: var(--night); }
+  button:focus-visible { outline: 2px solid var(--duck); outline-offset: 2px; }
+  #play { margin-left: auto; }
+  .team { display: grid; gap: 12px; }
+  .team h2 {
+    margin: 0;
+    display: flex;
+    align-items: baseline;
+    gap: 12px;
+    font: 400 17px var(--display);
+    letter-spacing: 0.04em;
+  }
+  .team h2::before {
+    content: "";
+    width: 12px;
+    height: 12px;
+    background: var(--team);
+    align-self: center;
+  }
+  .team h2 small { font: 12px var(--body); color: var(--muted); }
+  .team-demiurge { --team: var(--demiurge); }
+  .team-tinywizard { --team: var(--tinywizard); }
+  .team-open { --team: var(--open); }
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(min(100%, 220px), 1fr));
+    gap: 12px;
+  }
+  .card {
+    background: var(--panel);
+    border: 1px solid var(--rim);
+    border-top: 3px solid var(--team);
+    display: grid;
+    grid-template-rows: auto 1fr;
+    min-width: 0;
+  }
+  .stage {
+    display: grid;
+    justify-items: center;
+    gap: 8px;
+    padding: 14px 10px 10px;
+  }
+  .stage canvas { image-rendering: pixelated; max-width: 100%; }
+  .tag {
+    font: 400 12px var(--display);
+    color: var(--tag-text, #fff);
+    background: var(--tag);
+    box-shadow: 0 3px 0 var(--tag-edge);
+    padding: 3px 10px 2px;
+    text-shadow: 1px 1px 0 rgba(0, 0, 0, 0.45);
+  }
+  .tag.light { text-shadow: none; }
+  .about { padding: 0 14px 14px; display: grid; gap: 4px; align-content: start; }
+  .about p { margin: 0; }
+  .about .look { color: var(--muted); font-size: 12px; }
+  footer { color: var(--muted); font-size: 12px; }
+  @media (max-width: 520px) { #play { margin-left: 0; } }
+</style>
+
+<main>
+  <header>
+    <h1>The Office · <b>Cast</b></h1>
+    <p>Twelve workers drawn entirely from text templates: one body, recoloured and layered
+      with hair, tops and accessories. Each frame is 16×26 pixels, shown here scaled up
+      without smoothing.</p>
+  </header>
+
+  <canvas id="corridor" aria-label="All twelve workers walking down a corridor"></canvas>
+
+  <div class="controls">
+    <div class="group" role="group" aria-label="Animation">
+      <span>Animation</span>
+      <button type="button" id="anim-idle" data-anim="idle" aria-pressed="true">Idle</button>
+      <button type="button" id="anim-walk" data-anim="walk" aria-pressed="false">Walk</button>
+      <button type="button" id="anim-type" data-anim="type" aria-pressed="false">Typing</button>
+      <button type="button" id="anim-wave" data-anim="wave" aria-pressed="false">Wave</button>
+    </div>
+    <div class="group" role="group" aria-label="Facing">
+      <span>Facing</span>
+      <button type="button" id="face-down" data-facing="down" aria-pressed="true" aria-label="Down">↓</button>
+      <button type="button" id="face-up" data-facing="up" aria-pressed="false" aria-label="Up">↑</button>
+      <button type="button" id="face-left" data-facing="left" aria-pressed="false" aria-label="Left">←</button>
+      <button type="button" id="face-right" data-facing="right" aria-pressed="false" aria-label="Right">→</button>
+      <button type="button" id="face-turn" data-facing="turn" aria-pressed="false">Turn</button>
+    </div>
+    <div class="group" role="group" aria-label="Zoom">
+      <span>Zoom</span>
+      <button type="button" id="zoom-2" data-zoom="2" aria-pressed="false">2×</button>
+      <button type="button" id="zoom-4" data-zoom="4" aria-pressed="true">4×</button>
+      <button type="button" id="zoom-6" data-zoom="6" aria-pressed="false">6×</button>
+    </div>
+    <button type="button" id="play">Pause</button>
+  </div>
+
+  <div id="teams" style="display: grid; gap: 28px"></div>
+
+  <footer>Typing and Wave are drawn facing down only; that is how they'll be seen at the desks.</footer>
+</main>
+
+<script type="module" src="./preview.ts"></script>
