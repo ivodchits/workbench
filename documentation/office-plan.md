@@ -116,12 +116,12 @@ favourite spots.
 One open floor, 512×352, no walls inside: floors and furniture mark the areas.
 
 - **Along the back wall:** Demiurge (4 desks, whiteboard; a bookshelf and cabinet toward the
-  open space) · the hall with the front door, the clock and the server rack · Duck's glass
-  office (boss desk under the window, the standup table in front of it) · the lounge down
-  the right side (TV, sofa, beanbags, kicker, D&D table).
+  open space, the server rack in the corner) · the hall with the front door and the clock ·
+  Duck's glass office (boss desk under the window, the standup table in front of it) · the
+  lounge down the right side (TV, sofa, beanbags, kicker, D&D table).
 - **Below:** the open space (8 desks, 2 spare) · TinyWizardRoyale (2 desks) under Duck's
   office · under that the kitchen (fridge, coffee, sink, water cooler) and the **meeting
-  room** (a long table for 8), together as wide as the lounge.
+  room**, as wide as the lounge (a long table for 8 and a whiteboard on a stand).
 - `office.ts` holds the tile layout, furniture, desks and named spots; `build.ts` makes the
   draw list, the seats (stand point, monitor) and an 8 px walk grid. Tests check that every
   desk and activity spot is reachable from the door.
@@ -336,7 +336,9 @@ One open floor, 512×352, no walls inside: floors and furniture mark the areas.
   workers are free walk in and sit round the table. Each participant is a Workbench session
   (Claude Code, read-only in that project) with a role (builder, skeptic, user advocate…)
   from the worker's personality; they take turns on a shared thread run by the office, shown
-  in the sidebar as a chat, and you can chime in or steer. It ends with a written summary:
+  in the sidebar as a chat, and you can chime in or steer. While it runs, the meeting room's
+  whiteboard shows the discussion: the idea's title and the options as they come up, as
+  pixel scribbles. It ends with a written summary:
   options, risks, a recommendation, that you can copy or send to a project session as a task.
   Workers who are busy can't be taken; if too few are free, say so and offer fewer seats.
 - **Done when:** a pitch with 3 participants runs to a summary; the workers sit in the

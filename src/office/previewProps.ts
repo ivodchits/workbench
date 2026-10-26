@@ -19,6 +19,7 @@ const LABELS: Partial<Record<keyof typeof PROPS, string>> = {
   bossDesk: "Duck's desk",
   meetingTable: "Meeting table",
   serverRack: "Server rack",
+  whiteboardStand: "Whiteboard on a stand",
   tallPlant: "Tall plant",
   coffeeMachine: "Coffee machine",
   waterCooler: "Water cooler",

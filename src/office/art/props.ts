@@ -157,6 +157,17 @@ const whiteboard = prop([
   row(32, ".", [3, "o".repeat(14) + "r" + "b" + "o".repeat(10)]),
 ]);
 
+/** The whiteboard on a stand, for a room without a wall to hang it on. The board's
+ *  writing area is x 2–29, y 2–14, for drawing on it live. */
+const whiteboardStand: Prop = {
+  w: 32,
+  h: 29,
+  frames: [[
+    { rows: whiteboard.frames[0][0].rows },
+    { y: 19, rows: [...repeat(8, row(32, ".", [4, "oao"], [25, "oao"])), row(32, ".", [2, "ooooooo"], [23, "ooooooo"])] },
+  ]],
+};
+
 const CLOCK_FACE = [
   "....oooo....",
   "..oowwwwoo..",
@@ -816,6 +827,7 @@ export const PROPS = {
   windowWall,
   door,
   whiteboard,
+  whiteboardStand,
   clock,
   partition: partition(2),
   partitionSide: partitionSide(2),

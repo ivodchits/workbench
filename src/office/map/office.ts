@@ -34,11 +34,11 @@ export const LAYOUT = [
   "ooooooooooooooo" + "tttttttt" + "lllllllll",
   "ooooooooooooooo" + "tttttttt" + "lllllllll",
   "ooooooooooooooo" + "tttttttt" + "lllllllll",
-  "ooooooooooooooo" + "kkkkkkkkkk" + "mmmmmmm",
-  "ooooooooooooooo" + "kkkkkkkkkk" + "mmmmmmm",
-  "ooooooooooooooo" + "kkkkkkkkkk" + "mmmmmmm",
-  "ooooooooooooooo" + "kkkkkkkkkk" + "mmmmmmm",
-  "ooooooooooooooo" + "kkkkkkkkkk" + "mmmmmmm",
+  "ooooooooooooooo" + "kkkkkkkk" + "mmmmmmmmm",
+  "ooooooooooooooo" + "kkkkkkkk" + "mmmmmmmmm",
+  "ooooooooooooooo" + "kkkkkkkk" + "mmmmmmmmm",
+  "ooooooooooooooo" + "kkkkkkkk" + "mmmmmmmmm",
+  "ooooooooooooooo" + "kkkkkkkk" + "mmmmmmmmm",
 ];
 
 export type Room = "demiurge" | "hall" | "boss" | "tinywizard" | "kitchen" | "meeting" | "open" | "lounge";
@@ -102,14 +102,12 @@ export const PLACEMENTS: Placement[] = [
   onWall("windowWall", 392, 0),
 
   // Demiurge: four desks (see DESKS); a bookshelf and a cabinet between it and the
-  // open space, a tall plant by the hall.
+  // open space, the server rack in the corner, a tall plant by the hall.
   at("tallPlant", 176, 12),
   at("bookshelf", 60, 156),
   at("cabinet", 100, 163),
   at("plant", 140, 165),
-
-  // Hall: the server rack by the door.
-  at("serverRack", 224, 14),
+  at("serverRack", 4, 150),
 
   // Duck's glass office: the boss desk under the window, a bookshelf, and the standup
   // table in front of the desk, so the morning standup happens in front of the boss.
@@ -143,9 +141,10 @@ export const PLACEMENTS: Placement[] = [
   at("counter", 320, 282),
   at("waterCooler", 340, 277),
 
-  // Meeting room, beside the kitchen: a long table for pitching an idea to whoever's free.
-  at("meetingTable", 424, 300),
-  at("plant", 404, 274),
+  // Meeting room, beside the kitchen, as wide as the lounge: a long table for pitching
+  // an idea to whoever's free, and a whiteboard to draw the discussion on.
+  at("whiteboardStand", 376, 274),
+  at("meetingTable", 424, 306),
   at("plant", 494, 274),
 ];
 
@@ -203,10 +202,11 @@ export const SPOTS: SpotSpec[] = [
   spot("dnd-n", "dnd", 418, 228, "down"),
   spot("dnd-s", "dnd", 418, 260, "up"),
   // Meeting room: round the table for a pitch.
-  ...[436, 456, 476].map((x, i) => spot(`pitch-n${i + 1}`, "pitch", x, 298, "down")),
-  ...[436, 456, 476].map((x, i) => spot(`pitch-s${i + 1}`, "pitch", x, 328, "up")),
-  spot("pitch-w", "pitch", 414, 314, "right"),
-  spot("pitch-e", "pitch", 498, 314, "left"),
+  ...[436, 456, 476].map((x, i) => spot(`pitch-n${i + 1}`, "pitch", x, 304, "down")),
+  ...[436, 456, 476].map((x, i) => spot(`pitch-s${i + 1}`, "pitch", x, 334, "up")),
+  spot("pitch-w", "pitch", 414, 322, "right"),
+  spot("pitch-e", "pitch", 498, 322, "left"),
+  spot("pitch-board", "pitch", 392, 312, "right"),
   // Standup, in Duck's office.
   ...[284, 304, 324].map((x, i) => spot(`standup-n${i + 1}`, "meeting", x, 138, "down")),
   ...[284, 304, 324].map((x, i) => spot(`standup-s${i + 1}`, "meeting", x, 168, "up")),
@@ -216,6 +216,7 @@ export const SPOTS: SpotSpec[] = [
   spot("board-demiurge", "browse", 80, 48, "up"),
   spot("books-demiurge", "browse", 76, 200, "up"),
   spot("books-boss", "browse", 260, 56, "up"),
+  spot("rack", "browse", 12, 194, "up"),
 ];
 
 /** Where people come in and leave. */
