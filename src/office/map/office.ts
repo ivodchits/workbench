@@ -6,7 +6,7 @@
 // furniture mark the areas. Along the back wall: Demiurge, the hall with the front
 // door, Duck's glass office (with the standup table), and the lounge down the right
 // side (TV, sofa, kicker, D&D). Below: the open space, TinyWizardRoyale under Duck's
-// office, and under that the kitchen and the meeting room, as wide as the lounge.
+// office, and under that the meeting room and the kitchen, as wide as the lounge.
 
 import type { Dir } from "../art/characters";
 import type { FloorKind, PropName } from "../art/props";
@@ -34,11 +34,11 @@ export const LAYOUT = [
   "ooooooooooooooo" + "tttttttt" + "lllllllll",
   "ooooooooooooooo" + "tttttttt" + "lllllllll",
   "ooooooooooooooo" + "tttttttt" + "lllllllll",
-  "ooooooooooooooo" + "kkkkkkkk" + "mmmmmmmmm",
-  "ooooooooooooooo" + "kkkkkkkk" + "mmmmmmmmm",
-  "ooooooooooooooo" + "kkkkkkkk" + "mmmmmmmmm",
-  "ooooooooooooooo" + "kkkkkkkk" + "mmmmmmmmm",
-  "ooooooooooooooo" + "kkkkkkkk" + "mmmmmmmmm",
+  "ooooooooooooooo" + "mmmmmmmm" + "kkkkkkkkk",
+  "ooooooooooooooo" + "mmmmmmmm" + "kkkkkkkkk",
+  "ooooooooooooooo" + "mmmmmmmm" + "kkkkkkkkk",
+  "ooooooooooooooo" + "mmmmmmmm" + "kkkkkkkkk",
+  "ooooooooooooooo" + "mmmmmmmm" + "kkkkkkkkk",
 ];
 
 export type Room = "demiurge" | "hall" | "boss" | "tinywizard" | "kitchen" | "meeting" | "open" | "lounge";
@@ -132,19 +132,20 @@ export const PLACEMENTS: Placement[] = [
   at("dndTable", 400, 220),
   at("plant", 490, 230),
 
-  // Kitchen, under TinyWizardRoyale: a counter run facing the room.
-  at("fridge", 252, 268),
-  at("counter", 272, 282),
-  at("coffeeMachine", 274, 274, { base: 306 }),
-  at("sink", 288, 282),
-  at("counter", 304, 282),
-  at("counter", 320, 282),
-  at("waterCooler", 340, 277),
+  // Meeting room, under TinyWizardRoyale: a long table for pitching an idea to whoever's
+  // free, and a whiteboard to draw the discussion on.
+  at("whiteboardStand", 248, 274),
+  at("meetingTable", 288, 306),
+  at("plant", 350, 274),
 
-  // Meeting room, beside the kitchen, as wide as the lounge: a long table for pitching
-  // an idea to whoever's free, and a whiteboard to draw the discussion on.
-  at("whiteboardStand", 376, 274),
-  at("meetingTable", 424, 306),
+  // Kitchen, beside it and as wide as the lounge: a counter run facing the room.
+  at("fridge", 380, 268),
+  at("counter", 400, 282),
+  at("coffeeMachine", 402, 274, { base: 306 }),
+  at("sink", 416, 282),
+  at("counter", 432, 282),
+  at("counter", 448, 282),
+  at("waterCooler", 468, 277),
   at("plant", 494, 274),
 ];
 
@@ -182,12 +183,12 @@ const spot = (id: string, kind: SpotKind, x: number, y: number, dir: Dir): SpotS
 /** Places to be when not at a desk. */
 export const SPOTS: SpotSpec[] = [
   // Kitchen.
-  spot("fridge", "drink", 261, 314, "up"),
-  spot("coffee", "drink", 280, 314, "up"),
-  spot("sink", "drink", 296, 314, "up"),
-  spot("cooler", "chat", 346, 314, "up"),
-  spot("cooler-2", "chat", 330, 330, "right"),
-  spot("cooler-3", "chat", 362, 330, "left"),
+  spot("fridge", "drink", 389, 314, "up"),
+  spot("coffee", "drink", 408, 314, "up"),
+  spot("sink", "drink", 424, 314, "up"),
+  spot("cooler", "chat", 474, 314, "up"),
+  spot("cooler-2", "chat", 458, 330, "right"),
+  spot("cooler-3", "chat", 490, 330, "left"),
   // Lounge.
   spot("sofa-1", "sit", 462, 92, "up"),
   spot("sofa-2", "sit", 474, 92, "up"),
@@ -202,11 +203,11 @@ export const SPOTS: SpotSpec[] = [
   spot("dnd-n", "dnd", 418, 228, "down"),
   spot("dnd-s", "dnd", 418, 260, "up"),
   // Meeting room: round the table for a pitch.
-  ...[436, 456, 476].map((x, i) => spot(`pitch-n${i + 1}`, "pitch", x, 304, "down")),
-  ...[436, 456, 476].map((x, i) => spot(`pitch-s${i + 1}`, "pitch", x, 334, "up")),
-  spot("pitch-w", "pitch", 414, 322, "right"),
-  spot("pitch-e", "pitch", 498, 322, "left"),
-  spot("pitch-board", "pitch", 392, 312, "right"),
+  ...[300, 320, 340].map((x, i) => spot(`pitch-n${i + 1}`, "pitch", x, 304, "down")),
+  ...[300, 320, 340].map((x, i) => spot(`pitch-s${i + 1}`, "pitch", x, 334, "up")),
+  spot("pitch-w", "pitch", 278, 322, "right"),
+  spot("pitch-e", "pitch", 362, 322, "left"),
+  spot("pitch-board", "pitch", 264, 312, "right"),
   // Standup, in Duck's office.
   ...[284, 304, 324].map((x, i) => spot(`standup-n${i + 1}`, "meeting", x, 138, "down")),
   ...[284, 304, 324].map((x, i) => spot(`standup-s${i + 1}`, "meeting", x, 168, "up")),

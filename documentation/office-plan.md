@@ -120,8 +120,8 @@ One open floor, 512×352, no walls inside: floors and furniture mark the areas.
   Duck's glass office (boss desk under the window, the standup table in front of it) · the
   lounge down the right side (TV, sofa, beanbags, kicker, D&D table).
 - **Below:** the open space (8 desks, 2 spare) · TinyWizardRoyale (2 desks) under Duck's
-  office · under that the kitchen (fridge, coffee, sink, water cooler) and the **meeting
-  room**, as wide as the lounge (a long table for 8 and a whiteboard on a stand).
+  office · under that the **meeting room** (a long table for 8 and a whiteboard on a stand)
+  and the kitchen, as wide as the lounge (fridge, coffee, sink, water cooler).
 - `office.ts` holds the tile layout, furniture, desks and named spots; `build.ts` makes the
   draw list, the seats (stand point, monitor) and an 8 px walk grid. Tests check that every
   desk and activity spot is reachable from the door.
