@@ -104,9 +104,15 @@ export function blob(
   keys = "456",
   speckle = 0,
 ): string[] {
-  const inside = (x: number, y: number) =>
-    x >= 1 && y >= 1 && x < w - 1 && y < h - 1 &&
-    shapes.some(([cx, cy, rx, ry]) => ((x + 0.5 - cx) / rx) ** 2 + ((y + 0.5 - cy) / ry) ** 2 <= 1);
+  // Each pixel asks about itself and its neighbours, so the shape is tested once
+  // per pixel up front.
+  const mask = new Uint8Array(w * h);
+  for (let y = 1; y < h - 1; y++) {
+    for (let x = 1; x < w - 1; x++) {
+      mask[y * w + x] = shapes.some(([cx, cy, rx, ry]) => ((x + 0.5 - cx) / rx) ** 2 + ((y + 0.5 - cy) / ry) ** 2 <= 1) ? 1 : 0;
+    }
+  }
+  const inside = (x: number, y: number) => x >= 0 && y >= 0 && x < w && y < h && mask[y * w + x] === 1;
   const random = seeded(w * 131 + h * 7 + shapes.length);
   const rows: string[] = [];
   for (let y = 0; y < h; y++) {

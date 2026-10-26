@@ -185,10 +185,14 @@ favourite spots.
 ### Step OD.1 — Pixel format and palette
 - **Build:** A text pixel format (rows of palette characters in TS files) compiled at runtime
   into one atlas canvas; recolour maps; a ~32-colour palette; a preview page listing every
-  sprite at 1×/3×.
+  sprite at 1×/3×. _As built:_ no single atlas — each sprite becomes its own canvas the
+  first time it's drawn and is kept (`src/office/canvas.ts`, `cached`), so the page only
+  builds what it shows.
 - **Key files:** `src/office/art/pixels.ts`, `src/office/art/palette.ts`,
   `src/office/preview.html`.
-- **Done when:** atlas builds in < 50 ms; preview page works; tests for parsing and recolouring.
+- **Done when:** atlas builds in < 50 ms; preview page works; tests for parsing and recolouring
+  (`pixels.test.ts`). Measured: every sprite (1,235: all workers, props, floors, Duck) builds
+  in ~28 ms (Node, warm; ~52 ms cold).
 
 ### Step OD.2 — Characters (may need 2 passes)
 - **Build:** 16×32 base body; layers: skin tones, 6+ hair styles, 6+ tops, trousers,

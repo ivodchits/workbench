@@ -110,7 +110,12 @@ const FACE: Face = {
   },
 };
 
-function duckCells(view: "down" | "up" | "right", pose: DuckPose, face: Face): string[][] {
+/** The body and head of each view, shaded and creased: the same under every pose. */
+const bodies = new Map<"down" | "up" | "right", readonly string[]>();
+
+function body(view: "down" | "up" | "right"): readonly string[] {
+  let rows = bodies.get(view);
+  if (rows) return rows;
   const shape = SHAPES[view];
   const parts: Ellipse[] = [shape.body, shape.head, ...(shape.tail ? [shape.tail] : [])];
   const cells = blob(DUCK_W, DUCK_H, parts, "lyd").map((line) => [...line]);
@@ -122,6 +127,13 @@ function duckCells(view: "down" | "up" | "right", pose: DuckPose, face: Face): s
       if (inside(shape.body, x, y) && inside(shape.head, x, y, 0.8) && !inside(shape.head, x, y)) cells[y][x] = "d";
     }
   }
+  rows = cells.map((line) => line.join(""));
+  bodies.set(view, rows);
+  return rows;
+}
+
+function duckCells(view: "down" | "up" | "right", pose: DuckPose, face: Face): string[][] {
+  const cells = body(view).map((line) => [...line]);
 
   const eyes = pose.eyes ?? "open";
   const put = ([x, y, rows]: Stamp) => stamp(cells, x, y, rows);
