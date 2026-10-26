@@ -1108,6 +1108,12 @@ fn safe_ref(reference: &str) -> Result<&str, String> {
     Ok(r)
 }
 
+/// When the repo's latest commit on any branch was made (epoch seconds), or `None`
+/// when `repo_root` isn't a repo or has no commits (office plan O0.3).
+pub fn last_commit_at(repo_root: &Path) -> Option<i64> {
+    git_output(repo_root, &["log", "--all", "-1", "--format=%ct"])?.parse().ok()
+}
+
 /// History for a project's repo (step 3.11, extended in G7): commits newest first,
 /// filtered and paged by `query`. Pure inspection, and still a single invocation
 /// however many filters are set.
@@ -2761,6 +2767,20 @@ mod tests {
         assert_eq!(res2.branch, "agent/fix-auth-redirect-2");
         assert_ne!(res.path, res2.path);
 
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn last_commit_at_reads_the_newest_commit() {
+        let dir = temp_dir("last");
+        assert_eq!(last_commit_at(&dir), None, "not a repo");
+        if !init_repo(&dir) {
+            std::fs::remove_dir_all(&dir).ok();
+            return;
+        }
+        let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() as i64;
+        let at = last_commit_at(&dir).expect("a commit time");
+        assert!((now - at).abs() < 120, "{at} is not about now ({now})");
         std::fs::remove_dir_all(&dir).ok();
     }
 

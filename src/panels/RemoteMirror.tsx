@@ -8,17 +8,24 @@
 // the contributing stores through their existing hooks — registry, live statuses,
 // consoles (is it running?), account usage limits, the phone's own `create`
 // requests (step R7) and pending prompts (step R5) — and re-push on any
-// change. Pushes are debounced to coalesce the ~2 s token ticks; gated on the server
-// actually running so we don't do needless IPC while remote access is off (the
-// default). Mounted once from `App.tsx` (main window only).
+// change. The office (office plan O0.3) adds each session's activity, Duck's
+// state and each project's latest commit time. Pushes are debounced to coalesce
+// the ~2 s token ticks; gated on the server actually running so we don't do
+// needless IPC while remote access is off (the default). Mounted once from
+// `App.tsx` (main window only).
 
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
+import { officeLastCommits } from "../ipc/office";
+import type { Project } from "../ipc/registry";
 import { remotePushSnapshot } from "../ipc/remote";
-import type { RemoteChoice, RemoteSnapshot } from "../remote/protocol";
+import type { RemoteChoice, RemoteDuck, RemoteSnapshot } from "../remote/protocol";
 import { useChoiceStates, type PendingChoice } from "../state/pendingChoice";
 import { useRegistry } from "../state/registry";
 import { useConsoles } from "../state/consoles";
-import { useLiveStatuses } from "../state/status";
+import { onStatusTransition, useLiveStatuses } from "../state/status";
+import { officeDuck } from "../state/officeDuck";
+import { useDuckState } from "./Assistant/duckState";
+import { useSpeechState } from "./Assistant/replySpeech";
 import { useUsageLimits } from "../state/usageLimits";
 import { useRemoteServer } from "../state/remoteServer";
 import { useCreated } from "../state/remoteCreate";
@@ -27,6 +34,10 @@ import { contextWindowTokens } from "../util/format";
 
 /** One push per this window, to coalesce bursts of token/status updates. */
 const PUSH_DEBOUNCE_MS = 250;
+/** How often the latest commits are read again; a session finishing its turn
+ *  reads them sooner. */
+const COMMITS_EVERY_MS = 60_000;
+const COMMITS_AFTER_TURN_MS = 3_000;
 /** A tool argument longer than this is cut for the phone: the snapshot is pushed
  *  on every change, and a whole file being written would ride along each time. */
 const MAX_INPUT_CHARS = 6000;
@@ -56,6 +67,43 @@ function remoteChoice(p: PendingChoice): RemoteChoice {
   };
 }
 
+/** Each local project's latest commit time (epoch seconds), read while `on`. */
+function useLastCommits(projects: readonly Project[], on: boolean): ReadonlyMap<string, number | null> {
+  const [commits, setCommits] = useState<ReadonlyMap<string, number | null>>(new Map());
+  // The projects as a string, so a registry change elsewhere doesn't run git again.
+  const key = JSON.stringify(projects.filter((p) => p.remoteSshDest == null).map((p) => [p.id, p.rootPath]));
+  useEffect(() => {
+    const local = JSON.parse(key) as [string, string][];
+    if (!on || local.length === 0) return;
+    let live = true;
+    let soon: ReturnType<typeof setTimeout> | null = null;
+    const read = () => {
+      officeLastCommits(local.map(([, root]) => root))
+        .then((times) => {
+          if (live) setCommits(new Map(local.map(([id], i) => [id, times[i] ?? null])));
+        })
+        .catch(() => {});
+    };
+    read();
+    const every = setInterval(read, COMMITS_EVERY_MS);
+    // A turn that ends has often just committed.
+    const off = onStatusTransition((_id, phase) => {
+      if (phase !== "done" || soon !== null) return;
+      soon = setTimeout(() => {
+        soon = null;
+        read();
+      }, COMMITS_AFTER_TURN_MS);
+    });
+    return () => {
+      live = false;
+      clearInterval(every);
+      if (soon !== null) clearTimeout(soon);
+      off();
+    };
+  }, [on, key]);
+  return commits;
+}
+
 export default function RemoteMirror(): null {
   const registry = useRegistry();
   const consoles = useConsoles();
@@ -68,6 +116,19 @@ export default function RemoteMirror(): null {
   const choices = useChoiceStates();
   // The phone's server, or the office (office plan O0.2): both read this snapshot.
   const running = (server?.running || server?.office) ?? false;
+  const lastCommits = useLastCommits(registry.projects, running);
+  const duckStore = useDuckState();
+  const speech = useSpeechState();
+  // Kept as a string so a streaming reply, which changes the store many times a
+  // second, doesn't keep putting the push off.
+  const duckKey = JSON.stringify(
+    officeDuck({
+      speaking: speech.speaking !== null,
+      routines: duckStore.routines,
+      states: duckStore.states,
+      autopilots: duckStore.autopilots,
+    }),
+  );
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
@@ -106,6 +167,7 @@ export default function RemoteMirror(): null {
             phase: live?.phase ?? null,
             compacting: live?.compacting ?? false,
             subagents: live?.subagents ?? 0,
+            activity: live?.activity ?? null,
             status: i.status, // persisted fallback for a card with no live status
             ctxTokens: contextWindowTokens(i),
             live: liveIds.has(i.id),
@@ -124,7 +186,9 @@ export default function RemoteMirror(): null {
           name: p.name,
           group: p.groupId ? groupName.get(p.groupId) ?? null : null,
           remote: p.remoteSshDest != null,
+          lastCommitAt: lastCommits.get(p.id) ?? null,
         })),
+        duck: JSON.parse(duckKey) as RemoteDuck,
         created: [...created],
       };
       void remotePushSnapshot(JSON.stringify(snapshot)).catch(() => {});
@@ -135,7 +199,7 @@ export default function RemoteMirror(): null {
         timer.current = null;
       }
     };
-  }, [running, registry, consoles, statuses, limits, alerts, notif, created, choices]);
+  }, [running, registry, consoles, statuses, limits, alerts, notif, created, choices, lastCommits, duckKey]);
 
   return null;
 }

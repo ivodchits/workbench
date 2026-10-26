@@ -336,6 +336,7 @@ pub fn run() {
             remote::remote_new_pairing_code,
             remote::remote_push_snapshot,
             remote::office::office_open,
+            remote::office::office_last_commits,
             remote::remote_devices_list,
             remote::remote_approve_device,
             remote::remote_revoke_device,

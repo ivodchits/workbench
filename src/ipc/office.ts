@@ -9,3 +9,8 @@ import { invoke } from "@tauri-apps/api/core";
 export function officeOpen(): Promise<string> {
   return invoke("office_open");
 }
+
+/** Each repo's latest commit time (epoch seconds), in order; null where there is none. */
+export function officeLastCommits(repoRoots: string[]): Promise<(number | null)[]> {
+  return invoke("office_last_commits", { repoRoots });
+}

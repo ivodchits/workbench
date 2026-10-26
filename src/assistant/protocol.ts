@@ -492,6 +492,8 @@ export interface RoutineView {
   next: number;
   last: number | null;
   lastResult: string | null;
+  /** A run of it is going now. */
+  running: boolean;
 }
 
 /** One of Duck's skills (step S2), for the settings. */

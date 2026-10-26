@@ -374,7 +374,7 @@ export function endpoint(
       type: "routines",
       routines: routines.routines.list().map((r) => {
         const v = routineView(r);
-        return { id: r.id, title: r.title, when: v.when, does: v.does, on: r.enabled, builtIn: r.builtIn, next: r.nextRun, last: r.lastRun, lastResult: r.lastResult };
+        return { id: r.id, title: r.title, when: v.when, does: v.does, on: r.enabled, builtIn: r.builtIn, next: r.nextRun, last: r.lastRun, lastResult: r.lastResult, running: routines.routines.running(r.id) };
       }),
       backup: st && { repo: st.repo, remote: st.remote, ahead: st.ahead, failing },
     });

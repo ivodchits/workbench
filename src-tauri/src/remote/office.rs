@@ -301,6 +301,17 @@ pub fn office_open(state: tauri::State<'_, Arc<RemoteState>>) -> Result<String, 
     Ok(url)
 }
 
+/// Each repo's latest commit time (epoch seconds), in order, `None` where there is
+/// none. Off the main thread: it runs git once per repo.
+#[tauri::command]
+pub async fn office_last_commits(repo_roots: Vec<String>) -> Result<Vec<Option<i64>>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        repo_roots.iter().map(|r| crate::git::last_commit_at(std::path::Path::new(r))).collect()
+    })
+    .await
+    .map_err(|e| e.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

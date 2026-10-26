@@ -167,6 +167,8 @@ export interface Routines {
   setThread(id: string, threadId: string): Promise<void>;
   get(id: string): Routine | undefined;
   list(): Routine[];
+  /** A run of it is going now. */
+  running(id: string): boolean;
   subscribe(cb: () => void): () => void;
 }
 
@@ -253,8 +255,12 @@ export function createRoutines(deps: RoutinesDeps): Routines {
       const t = now();
       await save({ ...cur, lastRun: t, lastResult: result, ...(scheduled && { nextRun: nextSlot(cur.schedule, t) }) });
       return result;
-    })().finally(() => running.delete(id));
+    })().finally(() => {
+      running.delete(id);
+      changed();
+    });
     running.set(id, p);
+    changed();
     return p;
   }
 
@@ -296,6 +302,7 @@ export function createRoutines(deps: RoutinesDeps): Routines {
     },
     get: (id) => routines.get(id),
     list: () => [...routines.values()],
+    running: (id) => running.has(id),
     subscribe(cb) {
       listeners.add(cb);
       return () => listeners.delete(cb);

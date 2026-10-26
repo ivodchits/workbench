@@ -34,6 +34,7 @@
 
 import { useSyncExternalStore } from "react";
 import { onHookEvent, type HookEnvelope, type HookEvent } from "../ipc/hooks";
+import { toolActivity, type Activity } from "./activity";
 
 /** One repaint per this window for debounced (tool-event) changes. Attention /
  *  turn-boundary transitions ignore it — they must be instant. */
@@ -56,6 +57,9 @@ export interface LiveStatus {
   compacting: boolean;
   /** Active subagents (SubagentStart − SubagentStop), for the nested spinner. */
   subagents: number;
+  /** The kind of the latest tool this turn started (office plan O0.3); null before
+   *  the turn's first tool. */
+  activity: Activity | null;
   /** Epoch seconds of the last event that touched this card (live "ago"). */
   updatedAt: number;
   /** When the current needs-you began (epoch s); null whenever the phase isn't
@@ -102,6 +106,7 @@ export function reduceStatus(
     phase: "idle",
     compacting: false,
     subagents: 0,
+    activity: null,
     updatedAt: at,
     needsSince: null,
     reason: null,
@@ -135,7 +140,7 @@ export function reduceStatus(
   // must not produce — only the user resumes a finished agent.
   const startWork = (): Reduction => {
     if (base.phase === "needs_you" || base.phase === "done") return keep();
-    return to("working", false);
+    return to("working", false, { activity: toolActivity(event.tool_name ?? "", event.tool_input) });
   };
   // A tool/subagent *finished* (a completion): must never reanimate a resting state
   // (that's the done→working→done flicker) and never break a held needs-you. It only
@@ -162,7 +167,7 @@ export function reduceStatus(
           ? { entry: { ...base, compacting: false, updatedAt: at, reason: name }, instant: true }
           : keep();
       }
-      return to("idle", true, { subagents: 0 });
+      return to("idle", true, { subagents: 0, activity: null });
     case "SessionEnd": {
       // `/clear` fires `SessionEnd` with `reason: "clear"`, but it is a *rotation*,
       // not a death: the same `claude` process keeps running in the same cwd and
@@ -176,11 +181,12 @@ export function reduceStatus(
       // (`prompt_input_exit`, `logout`, `other`) is a genuine end.
       const reason = typeof event.reason === "string" ? event.reason : "";
       const rotated = reason === "clear" || reason === "resume";
-      return to(rotated ? "idle" : "ended", true, { subagents: 0 });
+      return to(rotated ? "idle" : "ended", true, { subagents: 0, activity: null });
     }
 
     // --- you acted (instant): start a new turn, clearing any resting state ---
     case "UserPromptSubmit":
+      return to("working", true, { activity: null });
     case "PermissionDenied": // auto-classifier denial; the turn continues
       return to("working", true);
 
@@ -343,6 +349,7 @@ export function markInterrupted(instanceId: string): void {
     phase: "done",
     compacting: false,
     subagents: 0,
+    activity: null,
     updatedAt: Math.floor(Date.now() / 1000),
     needsSince: null,
     reason: "interrupt",

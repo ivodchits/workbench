@@ -13,6 +13,7 @@ import type { OfflineThread } from "../assistant/offline";
 import type { AttachmentRef } from "../assistant/attachments";
 import type { InstanceStatus } from "../ipc/registry";
 import type { RateLimits } from "../ipc/usageLimits";
+import type { Activity } from "../state/activity";
 import type { ChoiceKind, ChoiceOption, ChoiceQuestion } from "../state/pendingChoice";
 import type { StatusPhase } from "../state/status";
 
@@ -50,6 +51,9 @@ export interface RemoteInstance {
   phase: StatusPhase | null;
   compacting: boolean;
   subagents: number;
+  /** The kind of the latest tool this turn (the office's worker picks a spot from
+   *  it); null before the first, or with no live session. */
+  activity: Activity | null;
   /** Persisted status: the fallback for a card with no live phase. */
   status: InstanceStatus;
   ctxTokens: number;
@@ -71,6 +75,22 @@ export interface RemoteProject {
   group: string | null;
   /** The project runs on another host over SSH. */
   remote: boolean;
+  /** When its repo's latest commit on any branch was made (epoch seconds); null for
+   *  a remote project, or before it is known. */
+  lastCommitAt: number | null;
+}
+
+/** What Duck is up to, for the office's boss:
+ *  - `speaking` — reading a reply or an announcement aloud;
+ *  - `routine` — running one of its routines;
+ *  - `thinking` — a turn is running in some thread;
+ *  - `idle` — none of those. */
+export type DuckActivity = "idle" | "thinking" | "speaking" | "routine";
+
+export interface RemoteDuck {
+  state: DuckActivity;
+  /** The instances Duck's running autopilots drive. */
+  autopilots: string[];
 }
 
 /** How far a `create` request has got (step R7):
@@ -101,6 +121,7 @@ export interface RemoteSnapshot {
   usageLimits: RateLimits | null;
   instances: RemoteInstance[];
   projects: RemoteProject[];
+  duck: RemoteDuck;
   /** Recent `create` requests, newest first. */
   created: RemoteCreated[];
 }
