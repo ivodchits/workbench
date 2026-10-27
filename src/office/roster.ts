@@ -1,6 +1,6 @@
 // The company (office plan OD.2): twelve workers in three teams. The team is home —
 // the room they sit in when they have no session — and the personality line feeds
-// what they do when idle and what they talk about.
+// what they talk about; `likes` is what they'd rather do when idle.
 
 import type { Look } from "./art/characters";
 import { CLOTH, GEAR, HAIR, PANTS, SHOES, SKIN } from "./art/palette";
@@ -12,6 +12,8 @@ export interface Worker {
   name: string;
   team: Team;
   personality: string;
+  /** Idle activities they're likelier to pick (`world/idle.ts`). */
+  likes: readonly string[];
   look: Look;
 }
 
@@ -27,6 +29,7 @@ export const ROSTER: readonly Worker[] = [
     name: "Mira",
     team: "open",
     personality: "Methodical. Reads the whole file before touching a line.",
+    likes: ["books", "window"],
     look: {
       skin: SKIN.light,
       hair: HAIR.ginger,
@@ -44,6 +47,7 @@ export const ROSTER: readonly Worker[] = [
     name: "Bram",
     team: "demiurge",
     personality: "Big-picture type. Draws architecture diagrams on every surface.",
+    likes: ["doodle", "books"],
     look: {
       skin: SKIN.medium,
       hair: HAIR.brown,
@@ -60,6 +64,7 @@ export const ROSTER: readonly Worker[] = [
     name: "Oksana",
     team: "open",
     personality: "Fast and fearless. Ships first, refactors after lunch.",
+    likes: ["cooler", "stroll"],
     look: {
       skin: SKIN.pale,
       hair: HAIR.platinum,
@@ -76,6 +81,7 @@ export const ROSTER: readonly Worker[] = [
     name: "Theo",
     team: "demiurge",
     personality: "Lives in headphones. Hums while debugging.",
+    likes: ["window", "sofa"],
     look: {
       skin: SKIN.brown,
       hair: HAIR.black,
@@ -92,6 +98,7 @@ export const ROSTER: readonly Worker[] = [
     name: "Pip",
     team: "tinywizard",
     personality: "Tiny wizard energy. Names every variable after a spell.",
+    likes: ["books", "beanbag"],
     look: {
       skin: SKIN.light,
       hair: HAIR.pink,
@@ -108,6 +115,7 @@ export const ROSTER: readonly Worker[] = [
     name: "Juno",
     team: "tinywizard",
     personality: "Balance-patch philosopher. Has an opinion on every stat.",
+    likes: ["cooler", "doodle"],
     look: {
       skin: SKIN.tan,
       hair: HAIR.blue,
@@ -124,6 +132,7 @@ export const ROSTER: readonly Worker[] = [
     name: "Felix",
     team: "demiurge",
     personality: "Jack of all trades. First to the coffee machine every morning.",
+    likes: ["coffee", "snack"],
     look: {
       skin: SKIN.light,
       hair: HAIR.blonde,
@@ -139,6 +148,7 @@ export const ROSTER: readonly Worker[] = [
     name: "Ada",
     team: "open",
     personality: "Writes tests for the tests. Keeps the kitchen rota.",
+    likes: ["dishes", "plants"],
     look: {
       skin: SKIN.deep,
       hair: HAIR.black,
@@ -155,6 +165,7 @@ export const ROSTER: readonly Worker[] = [
     name: "Kenji",
     team: "demiurge",
     personality: "Quiet. Holds the lounge console high score.",
+    likes: ["sofa", "beanbag"],
     look: {
       skin: SKIN.medium,
       hair: HAIR.black,
@@ -171,6 +182,7 @@ export const ROSTER: readonly Worker[] = [
     name: "Lola",
     team: "open",
     personality: "The office social hub. Knows everyone's business.",
+    likes: ["cooler", "stroll"],
     look: {
       skin: SKIN.tan,
       hair: HAIR.brown,
@@ -187,6 +199,7 @@ export const ROSTER: readonly Worker[] = [
     name: "Gus",
     team: "open",
     personality: "Veteran. Remembers when everything was Perl.",
+    likes: ["plants", "books"],
     look: {
       skin: SKIN.pale,
       hair: HAIR.gray,
@@ -204,6 +217,7 @@ export const ROSTER: readonly Worker[] = [
     name: "Rhea",
     team: "open",
     personality: "Night owl. Does the best work after midnight.",
+    likes: ["desk", "window"],
     look: {
       skin: SKIN.brown,
       hair: HAIR.auburn,

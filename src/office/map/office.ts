@@ -190,7 +190,7 @@ export const DESKS: DeskSpec[] = [
   ...grid("open", [12, 68, 124, 180], [228, 292]),
 ];
 
-export type SpotKind = "chat" | "drink" | "sit" | "play" | "meeting" | "pitch" | "dnd" | "browse" | "window";
+export type SpotKind = "chat" | "drink" | "sit" | "play" | "meeting" | "pitch" | "dnd" | "browse" | "window" | "plant" | "stroll";
 
 export interface SpotSpec {
   id: string;
@@ -242,6 +242,18 @@ export const SPOTS: SpotSpec[] = [
   spot("books-boss", "browse", 260, 56, "up"),
   spot("rack", "browse", 12, 194, "up"),
   spot("cabinet", "browse", 107, 200, "up"),
+  // For idle workers (O2.1): the windows, the plants, and places a stroll ends at.
+  spot("window-demiurge", "window", 40, 46, "up"),
+  spot("window-demiurge-2", "window", 128, 46, "up"),
+  spot("plant-demiurge-tall", "plant", 168, 50, "right"),
+  spot("plant-demiurge", "plant", 130, 186, "right"),
+  spot("plant-lounge-tall", "plant", 384, 50, "up"),
+  spot("plant-lounge", "plant", 484, 218, "right"),
+  spot("plant-kitchen", "plant", 492, 292, "up"),
+  spot("stroll-hall", "stroll", 216, 120, "down"),
+  spot("stroll-open", "stroll", 120, 262, "down"),
+  spot("stroll-tinywizard", "stroll", 300, 258, "down"),
+  spot("stroll-lounge", "stroll", 440, 140, "down"),
 ];
 
 /** Where people come in and leave. */

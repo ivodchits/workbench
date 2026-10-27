@@ -2,10 +2,10 @@ import { describe, expect, it } from "vitest";
 
 import { buildOffice } from "../map/build";
 import { createWorld, seatedAt, type World } from "./entities";
-import { instance, snapshot } from "./fixtures";
+import { instance, snapshot, testStaff } from "./fixtures";
 import { stepWalkers } from "./move";
 import { behave } from "./behave";
-import { createStaff, seatSessions, whoIs, type Staff } from "./sessions";
+import { seatSessions, whoIs, type Staff } from "./sessions";
 
 const office = buildOffice();
 
@@ -24,7 +24,7 @@ const workerOf = (staff: Staff, id: string) => staff.seating.get(id)!.worker!;
 describe("sessions in the office", () => {
   it("puts the first snapshot's workers straight at their desks, everyone else about the place", () => {
     const world = createWorld(office);
-    const staff = createStaff({ rooms: { dem: "demiurge" } });
+    const staff = testStaff({ rooms: { dem: "demiurge" } });
     seatSessions(office, world, staff, snapshot([instance("a", "dem"), instance("b", "misc")]), 0, () => 0);
     for (const id of ["a", "b"]) {
       const s = staff.seating.get(id)!;
@@ -32,15 +32,16 @@ describe("sessions in the office", () => {
       expect([w.seat, w.walk, w.tag]).toEqual([s.desk, null, "working"]);
       expect(world.screens[s.desk!]).toBe("code");
     }
-    const free = world.workers.filter((w) => w.seat === null);
+    // The rest are straight at something to do (some at their own desk), each somewhere else.
+    const free = world.workers.filter((w) => !staff.jobs.has(w.worker.id));
     expect(free.length).toBe(10);
-    expect(free.every((w) => !w.walk && w.tag === null)).toBe(true);
+    expect(free.every((w) => !w.walk && w.tag === null && staff.idle.has(w.worker.id))).toBe(true);
     expect(new Set(free.map((w) => `${w.x},${w.y}`)).size).toBe(10);
   });
 
   it("walks a newly assigned worker to their desk, and a released one to the kitchen", () => {
     const world = createWorld(office);
-    const staff = createStaff();
+    const staff = testStaff();
     seatSessions(office, world, staff, snapshot([]), 0);
     seatSessions(office, world, staff, snapshot([instance("a", "misc")]), 0, () => 0);
     const w = world.workers.find((o) => o.worker.id === workerOf(staff, "a"))!;
@@ -50,20 +51,20 @@ describe("sessions in the office", () => {
     expect(w.seat).toBe(staff.seating.get("a")!.desk);
     expect(world.screens[w.seat!]).toBe("code");
 
-    // It ends: they get up and go to a free kitchen spot, and the screen goes dark.
+    // It ends: they get up and go to the kitchen, and the screen goes dark.
     const desk = w.seat!;
     seatSessions(office, world, staff, snapshot([instance("a", "misc", { live: false, phase: null })]), 0);
     expect(w.tag).toBeNull();
     settle(world, staff);
     const spot = office.spots.find((s) => s.id === staff.spots.get(w.worker.id))!;
-    expect(["drink", "chat", "play", "dnd", "window"]).toContain(spot.kind);
-    expect([w.x, w.y, w.dir]).toEqual([spot.x, spot.y, spot.dir]);
+    expect(["drink", "chat"]).toContain(spot.kind);
+    expect([w.x, w.y]).toEqual([spot.x, spot.y]);
     expect(world.screens[desk]).toBe("off");
   });
 
   it("sends the first ones released to the kitchen when it has room", () => {
     const world = createWorld(office);
-    const staff = createStaff();
+    const staff = testStaff();
     const all = Array.from({ length: 12 }, (_, i) => instance(`s${i}`, "misc"));
     seatSessions(office, world, staff, snapshot(all), 0);
     const first = workerOf(staff, "s0");
@@ -73,7 +74,7 @@ describe("sessions in the office", () => {
 
   it("brings in a worker who is out, through the door", () => {
     const world = createWorld(office);
-    const staff = createStaff();
+    const staff = testStaff();
     seatSessions(office, world, staff, snapshot([]), 0);
     for (const w of world.workers) w.away = true;
     seatSessions(office, world, staff, snapshot([instance("a", "misc")]), 0);
@@ -85,7 +86,7 @@ describe("sessions in the office", () => {
 
   it("gives contractors a laptop", () => {
     const world = createWorld(office);
-    const staff = createStaff();
+    const staff = testStaff();
     const all = Array.from({ length: 13 }, (_, i) => instance(`s${i}`, "misc"));
     seatSessions(office, world, staff, snapshot(all), 0);
     expect(world.contractors).toHaveLength(1);
@@ -94,14 +95,14 @@ describe("sessions in the office", () => {
 
   it("says when the sticky map changed, so it can be saved", () => {
     const world = createWorld(office);
-    const staff = createStaff();
+    const staff = testStaff();
     expect(seatSessions(office, world, staff, snapshot([instance("a", "misc")]), 0)).toBe(true);
     expect(seatSessions(office, world, staff, snapshot([instance("a", "misc")]), 0)).toBe(false);
   });
 
   it("says who a worker or a contractor is, and since when their session has been so", () => {
     const world = createWorld(office);
-    const staff = createStaff();
+    const staff = testStaff();
     const all = Array.from({ length: 13 }, (_, i) => instance(`s${i}`, "misc"));
     seatSessions(office, world, staff, snapshot(all), 1000);
     const worker = workerOf(staff, "s0");

@@ -51,6 +51,26 @@ export interface Staff {
   loose: Map<string, number>;
   /** Whether a snapshot has been seated yet: the first one places people outright. */
   started: boolean;
+  /** What each worker with nothing to do is up to (`idle.ts`), by worker id. */
+  idle: Map<string, IdleState>;
+  /** What each worker did idle last, so it isn't picked twice running. */
+  lastIdle: Map<string, string>;
+  /** The hour of the day now (0–23), and the dice: both swapped in tests. */
+  hour: () => number;
+  random: () => number;
+}
+
+/** An idle worker's activity: where, and until when once they got there. */
+export interface IdleState {
+  /** The activity's id; empty while waiting for somewhere to come free. */
+  activity: string;
+  /** The spot id, or `home` for their own desk. */
+  place: string;
+  /** When it was picked. */
+  since: number;
+  lasts: number;
+  /** When they move on: set once they're there. */
+  until: number | null;
 }
 
 export function createStaff(saved: { sticky?: Record<string, string>; rooms?: Record<string, Team> } = {}): Staff {
@@ -66,6 +86,10 @@ export function createStaff(saved: { sticky?: Record<string, string>; rooms?: Re
     settled: new Set(),
     loose: new Map(),
     started: false,
+    idle: new Map(),
+    lastIdle: new Map(),
+    hour: () => new Date().getHours(),
+    random: Math.random,
   };
 }
 

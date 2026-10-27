@@ -6,7 +6,9 @@
 // too long), slumped on the keyboard when it seems stuck, leaning back with a coffee
 // when it's done — wandering off after ten minutes of that — and off to the kitchen or
 // the lounge when the session has ended. Nobody leaves the office. Over the head: the
-// `!`/`?` bubble, or the status icon (the working one only away from the desk).
+// `!`/`?` bubble, or the status icon (the working one only away from the desk). Anyone
+// with nothing to do (no session, or wandered off from one) is the idle planner's
+// (O2.1, `idle.ts`): an activity at a time, somewhere free, moving on every so often.
 //
 // A change of activity only moves someone once it has held for a moment, and nobody
 // leaves the rack or the whiteboard straight after getting there, so a session
@@ -16,11 +18,12 @@
 import type { Anim, Dir } from "../art/characters";
 import type { Overhead } from "../art/labels";
 import type { OfficeMap, Point, Seat } from "../map/build";
-import type { SpotKind, SpotSpec } from "../map/office";
+import type { SpotSpec } from "../map/office";
 import type { RemoteInstance } from "../../remote/protocol";
 import { seatedAt, setAnim, type Bubble, type Screen, type WorkerEntity, type World } from "./entities";
+import { activity, dayPart, pickIdle } from "./idle";
 import { enter, landing, walkTo } from "./move";
-import type { Staff } from "./sessions";
+import type { IdleState, Staff } from "./sessions";
 
 /** Away from the desk for work: which spots, and which way to face there. */
 export type Station = "rack" | "board" | "cabinet";
@@ -54,6 +57,10 @@ export const SETTLE = 1500;
 export const STAY = 6000;
 /** Someone a debug click sent somewhere stays there this long. */
 export const LOOSE_FOR = 3000;
+/** An idle worker who hasn't got where they were going in this long picks again. */
+export const TRAVEL_MAX = 90_000;
+/** With nowhere free to go, an idle worker looks again after this. */
+export const IDLE_RETRY = 5000;
 
 const WORKING: Partial<Record<NonNullable<RemoteInstance["activity"]>, Omit<Doing, "overhead" | "bubble">>> = {
   bash: { place: { kind: "station", station: "rack" }, anim: "tinker" },
@@ -98,12 +105,6 @@ export interface Plan {
 const placeKey = (p: Place) => (p.kind === "station" ? `station:${p.station}` : p.kind);
 const keyOf = (d: Doing) => `${placeKey(d.place)}/${d.anim}`;
 
-/** Where people with nothing to do stand, in the order they fill. Released workers
- *  go to the kitchen's first. */
-const IDLE_KINDS: readonly SpotKind[] = ["drink", "chat", "play", "dnd", "window"];
-const KITCHEN_KINDS: readonly SpotKind[] = ["drink", "chat"];
-const IDLE_SPOT = new Set<SpotKind>(IDLE_KINDS);
-
 /** Moves everyone to match their session, or to an idle spot without one. `instant`
  *  puts people where they belong without walking (the first snapshot). True when the
  *  picture changed. */
@@ -124,7 +125,8 @@ export function behave(office: OfficeMap, world: World, staff: Staff, ms: number
       w.tag = null;
       w.overhead = null;
       if (isStatusBubble(w.bubble)) w.bubble = null;
-      if (!IDLE_SPOT.has(spotOf(office, staff, id)?.kind as SpotKind)) toSpot(office, staff, w, ms, instant, KITCHEN_KINDS);
+      // Nothing to do yet, after the start: just let go, so the kitchen first.
+      idle(office, staff, w, ms, instant, !instant && !staff.idle.has(id), true);
     } else {
       const since = staff.phases.get(job.instance.id);
       const want = doing(job.instance, job.instance.phase === "done" && since ? ms - since.at : 0);
@@ -163,6 +165,7 @@ function go(office: OfficeMap, staff: Staff, w: WorkerEntity, desk: number, plan
   if (instant && place.kind !== "about") staff.settled.add(id);
   switch (place.kind) {
     case "desk": {
+      leaveIdle(staff, id);
       staff.spots.delete(id);
       if (w.seat === desk && !w.walk) {
         staff.settled.add(id);
@@ -176,10 +179,12 @@ function go(office: OfficeMap, staff: Staff, w: WorkerEntity, desk: number, plan
       return toDesk(office, w, desk, ms);
     }
     case "stand": {
+      leaveIdle(staff, id);
       staff.spots.delete(id);
       return stand(office, w, besideDesk(seat), "down", anim, ms, instant, () => staff.settled.add(id));
     }
     case "station": {
+      leaveIdle(staff, id);
       const spot = stationFor(office, staff, w, place.station, seat.stand);
       if (!spot) return go(office, staff, w, desk, { ...plan, doing: { ...plan.doing, place: { kind: "desk" }, anim: "type" } }, ms, instant);
       staff.spots.set(id, spot.id);
@@ -187,8 +192,9 @@ function go(office: OfficeMap, staff: Staff, w: WorkerEntity, desk: number, plan
     }
     case "about": {
       staff.settled.delete(id);
-      if (!IDLE_SPOT.has(spotOf(office, staff, id)?.kind as SpotKind)) toSpot(office, staff, w, ms, instant, IDLE_KINDS);
-      return;
+      // Their desk is the session's: idle anywhere else. An ended session sends them to
+      // the kitchen first.
+      return idle(office, staff, w, ms, instant, staff.jobs.get(id)?.instance.phase === "ended", false);
     }
   }
 }
@@ -199,11 +205,21 @@ export function besideDesk(seat: Seat): Point {
   return { x: seat.desk.x + DESK_W + 6, y: seatedAt(seat).y };
 }
 
-/** Gets `w` standing at `p` facing `face`, then posing as `anim`. */
-function stand(office: OfficeMap, w: WorkerEntity, p: Point, face: Dir, anim: Anim, ms: number, instant: boolean, arrived?: () => void): void {
+/** Gets `w` standing at `p` facing `face`, then posing as `anim`. `onto` is for a seat
+ *  on furniture (the sofa, a beanbag): nobody can walk there, so they walk up to it and
+ *  then settle onto `p` itself, which puts them behind the furniture's front. */
+function stand(office: OfficeMap, w: WorkerEntity, p: Point, face: Dir, anim: Anim, ms: number, instant: boolean, arrived?: () => void, onto = false): void {
   const at = landing(office, p);
-  if (instant) Object.assign(w, { x: at.x, y: at.y, prev: { ...at }, seat: null, walk: null, away: false });
-  if (!w.walk && !w.away && w.seat === null && w.x === at.x && w.y === at.y) {
+  const end = onto ? p : at;
+  if (instant) Object.assign(w, { x: end.x, y: end.y, prev: { ...end }, seat: null, walk: null, away: false });
+  const still = !w.walk && !w.away && w.seat === null;
+  if (still && w.x === end.x && w.y === end.y) {
+    arrived?.();
+    return pose(w, anim, face, ms);
+  }
+  if (onto && still && w.x === at.x && w.y === at.y) {
+    // Got to it: sit down onto the seat (drawn as a short slide).
+    Object.assign(w, { x: p.x, y: p.y, prev: { ...at } });
     arrived?.();
     return pose(w, anim, face, ms);
   }
@@ -222,9 +238,6 @@ const headedTo = (w: WorkerEntity, p: Point) => {
   const last = w.walk?.points[w.walk.points.length - 1];
   return w.walk?.then.kind === "stand" && last !== undefined && last.x === p.x && last.y === p.y;
 };
-
-/** The spot `id` holds. */
-const spotOf = (office: OfficeMap, staff: Staff, id: string): SpotSpec | undefined => office.spots.find((s) => s.id === staff.spots.get(id));
 
 /** The station spot `w` holds, else the free one nearest their desk. */
 function stationFor(office: OfficeMap, staff: Staff, w: WorkerEntity, station: Station, from: Point): (SpotSpec & { face: Dir }) | undefined {
@@ -256,23 +269,81 @@ function toDesk(office: OfficeMap, w: WorkerEntity, desk: number, ms: number): v
   else walkTo(office, w, office.seats[desk].stand, ms, then);
 }
 
-/** Gives `w` an idle spot nobody has, the first of `first` kinds if one's free:
- *  walked to, or (on the first snapshot) put there. */
-function toSpot(office: OfficeMap, staff: Staff, w: WorkerEntity, ms: number, instant: boolean, first: readonly SpotKind[]): void {
-  staff.spots.delete(w.worker.id);
-  const taken = new Set(staff.spots.values());
-  const free = (kinds: readonly SpotKind[]) => kinds.flatMap((k) => office.spots.filter((s) => s.kind === k && !taken.has(s.id)));
-  const spot = instant ? free(IDLE_KINDS)[0] : (free(first)[0] ?? free(IDLE_KINDS)[0]);
-  if (!spot) return;
-  staff.spots.set(w.worker.id, spot.id);
-  if (instant) {
-    Object.assign(w, { x: spot.x, y: spot.y, prev: { x: spot.x, y: spot.y }, seat: null, dir: spot.dir, walk: null, away: false });
-    setAnim(w, "idle", ms);
+/** What `staff.spots` holds for `w`'s idle place: the spot, or `desk:<n>` for home. */
+const holdOf = (place: string, w: WorkerEntity) => (place === "home" ? `desk:${w.home}` : place);
+
+/** Done with idle life for now (a session wants them): the activity's place is let go. */
+function leaveIdle(staff: Staff, id: string): void {
+  if (!staff.idle.delete(id)) return;
+  staff.spots.delete(id);
+}
+
+/** Whether `desk` has a session on it, or someone else holds it. */
+function deskTaken(staff: Staff, desk: number, id: string): boolean {
+  for (const s of staff.seating.values()) if (s.desk === desk) return true;
+  for (const [who, held] of staff.spots) if (who !== id && held === `desk:${desk}`) return true;
+  return false;
+}
+
+/** Keeps `w` busy with nothing to do: on with their activity, or on to the next one
+ *  once it's over (or they can't get there, or their desk is wanted). `kitchenFirst`
+ *  sends someone just let go to the kitchen; `homeOk` lets them use their own desk. */
+function idle(office: OfficeMap, staff: Staff, w: WorkerEntity, ms: number, instant: boolean, kitchenFirst: boolean, homeOk: boolean): void {
+  const id = w.worker.id;
+  let s = staff.idle.get(id);
+  const over =
+    !!s &&
+    ((s.until !== null && ms >= s.until) ||
+      (s.until === null && ms - s.since > TRAVEL_MAX) ||
+      (s.place === "home" && (!homeOk || deskTaken(staff, w.home, id))));
+  if (!s || over) {
+    staff.idle.delete(id);
+    staff.spots.delete(id);
+    s = startIdle(office, staff, w, ms, instant, kitchenFirst && !over, homeOk);
+  }
+  const state = s;
+  const doing = activity(state.activity);
+  const there = () => void (state.until ??= ms + state.lasts);
+  if (!doing) {
+    // Nowhere was free: stand where they are a moment.
+    if (!w.walk && w.seat === null) setAnim(w, "idle", ms);
     return;
   }
-  const then = { kind: "stand", face: spot.dir } as const;
-  if (w.away) enter(office, w, spot, ms, then);
-  else walkTo(office, w, spot, ms, then);
+  if (state.place === "home") {
+    if (instant) sitNow(office, w, w.home, ms);
+    if (w.seat === w.home && !w.walk) {
+      there();
+      return pose(w, doing.anim, "up", ms);
+    }
+    return toDesk(office, w, w.home, ms);
+  }
+  const spot = office.spots.find((p) => p.id === state.place)!;
+  stand(office, w, spot, doing.face ?? spot.dir, doing.anim, ms, instant, there, spot.kind === "sit");
+}
+
+/** Picks `w`'s next activity and holds its place; with nothing free, a short wait. */
+function startIdle(office: OfficeMap, staff: Staff, w: WorkerEntity, ms: number, instant: boolean, kitchenFirst: boolean, homeOk: boolean): IdleState {
+  const id = w.worker.id;
+  const held = new Set([...staff.spots].filter(([who]) => who !== id).map(([, spot]) => spot));
+  const known = new Set(office.spots.map((p) => p.id));
+  const pick = pickIdle({
+    likes: w.worker.likes,
+    part: dayPart(staff.hour()),
+    last: staff.lastIdle.get(id) ?? null,
+    kitchenFirst,
+    homeOk: homeOk && !deskTaken(staff, w.home, id),
+    free: (spot) => known.has(spot) && !held.has(spot),
+    random: staff.random,
+  });
+  const state: IdleState = pick
+    ? { activity: pick.activity.id, place: pick.place, since: ms, lasts: pick.lasts, until: instant ? ms + pick.lasts : null }
+    : { activity: "", place: "", since: ms, lasts: IDLE_RETRY, until: ms + IDLE_RETRY };
+  staff.idle.set(id, state);
+  if (pick) {
+    staff.lastIdle.set(id, pick.activity.id);
+    staff.spots.set(id, holdOf(pick.place, w));
+  }
+  return state;
 }
 
 /** Monitors: code while a session works, flashing red while it needs you — once its

@@ -5,9 +5,9 @@ import { buildOffice } from "../map/build";
 import { LOOSE_FOR, SETTLE, STAY, WANDER_AFTER, behave, besideDesk, doing } from "./behave";
 import { debugClick } from "./debug";
 import { createWorld, type WorkerEntity, type World } from "./entities";
-import { EVERY_STATE, EVERY_STATE_ROOMS, instance, snapshot } from "./fixtures";
+import { EVERY_STATE, EVERY_STATE_ROOMS, instance, snapshot, testStaff } from "./fixtures";
 import { landing, stepWalkers } from "./move";
-import { createStaff, seatSessions, type Staff } from "./sessions";
+import { seatSessions, type Staff } from "./sessions";
 
 const office = buildOffice();
 const spot = (id: string) => office.spots.find((s) => s.id === id)!;
@@ -50,7 +50,7 @@ describe("what a session asks of its worker", () => {
 /** An office driven like the page: snapshots seated, the sim stepped. */
 function office$(rooms: Record<string, "demiurge" | "tinywizard"> = {}) {
   const world = createWorld(office);
-  const staff = createStaff({ rooms });
+  const staff = testStaff({ rooms });
   let ms = 0;
   const seat = (list: RemoteInstance[]) => seatSessions(office, world, staff, snapshot(list), ms, () => 0);
   seat([]);
@@ -76,7 +76,7 @@ const still = (world: World) => world.workers.every((w) => !w.walk);
 describe("workers doing what their session is doing", () => {
   it("puts everyone straight in place on the first snapshot, needs you and all", () => {
     const world = createWorld(office);
-    const staff = createStaff({ rooms: EVERY_STATE_ROOMS });
+    const staff = testStaff({ rooms: EVERY_STATE_ROOMS });
     seatSessions(office, world, staff, snapshot(EVERY_STATE), 0, () => 0);
     expect(still(world)).toBe(true);
     const by = (id: string) => world.workers.find((w) => w.worker.id === staff.seating.get(id)!.worker)!;
@@ -219,7 +219,7 @@ describe("workers doing what their session is doing", () => {
 
   it("says when a step changed the picture", () => {
     const world = createWorld(office);
-    const staff: Staff = createStaff();
+    const staff: Staff = testStaff();
     seatSessions(office, world, staff, snapshot([instance("a", "misc")]), 0);
     expect(behave(office, world, staff, 100)).toBe(false);
     staff.jobs.get(staff.seating.get("a")!.worker!)!.instance = instance("a", "misc", { phase: "needs_you" });

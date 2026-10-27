@@ -441,10 +441,31 @@ favourite spots.
 ### Step O2.1 — Idle planner
 - **Build:** activities with locations, slots, durations and weights by personality (coffee,
   water cooler, sofa, bookshelf, window, plants, a walk); slot reservation so nobody stacks.
-  Time of day: arrive in the morning, lunch in the kitchen, leave in the evening; at night only
-  assigned workers stay.
+  Nobody ever leaves the office: idle workers always find something to do inside, and move
+  on to another activity every so often, so a long idle stretch doesn't freeze anyone in
+  one place. The activity list is meant to grow, so adding one is just a new entry. Time of
+  day shapes the choice (lunch in the kitchen around noon; at night the quieter ones: the
+  sofa, the window, their desk with the lamp off).
 - **Done when:** idle workers look busy for 10 minutes without anyone getting stuck or
   overlapping.
+- _As built (approved):_ `world/idle.ts`: twelve activities as a list (coffee, a fridge
+  snack, the dishes, the water cooler, the sofa, a beanbag, a window, the bookshelves,
+  watering plants, doodling on a whiteboard, a stroll, the paper at their own desk), each
+  with its places, pose, how long it lasts (half a minute to eight) and a weight. A
+  worker's `likes` (two each, in the roster) make those three times likelier; the time
+  of day weighs in (lunch 12–14: the kitchen; night 22–7: the sofa, the windows, their
+  desk); the same thing never twice running. A spot (or desk, as `desk:<n>`) is held by
+  one person from the moment it's picked; someone at their own desk gets up when a
+  session wants it; anyone not there within 90 s picks again. A session ending sends its
+  worker to the kitchen first; done-for-ten-minutes and ended workers idle the same way
+  (but not at their session's desk). Sofa and beanbag sitters walk up and settle onto
+  the seat itself, behind the furniture's front. New spots: a second Demiurge window,
+  five plants, four stroll ends. Tests: the picker's rules (likes, time of day, no
+  repeats, only free places, kitchen first, durations); ten simulated minutes of a whole
+  office checked every step — nobody holding or standing on another's place, everyone
+  moving on, nobody giving up on a trip, under 30 % of the time walking — passing on 40
+  seeds across morning, lunch and night, with and without sessions. Seen in the office
+  page.
 
 ### Step O2.2 — Group activities
 - **Build:** water-cooler chats (canned lines for now), kicker matches (moving ball, score),
@@ -583,7 +604,7 @@ closed, open and still, and open and busy.
 - [x] O1.4 Status → behaviour
 - [x] O1.5 Hover and the sidebar
 - [x] O1.6 Stats when nothing is selected
-- [ ] O2.1 Idle planner
+- [x] O2.1 Idle planner
 - [ ] O2.2 Group activities
 - [ ] O2.3 Reactions
 - [ ] O2.4 Ambience

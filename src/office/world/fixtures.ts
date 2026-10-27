@@ -2,6 +2,7 @@
 // every state from "Status → behaviour" at once — some are rare in real use.
 
 import type { RemoteChoice, RemoteInstance, RemoteSnapshot } from "../../remote/protocol";
+import { createStaff, type Staff } from "./sessions";
 
 export const instance = (id: string, projectId: string, over: Partial<RemoteInstance> = {}): RemoteInstance => ({
   id,
@@ -57,3 +58,18 @@ export const EVERY_STATE: RemoteInstance[] = [
 ];
 
 export const EVERY_STATE_ROOMS = { dem: "demiurge", twr: "tinywizard" } as const;
+
+/** Dice that roll the same every run (mulberry32), for the idle planner in tests. */
+export function dice(seed = 1): () => number {
+  let a = seed >>> 0;
+  return () => {
+    a = (a + 0x6d2b79f5) >>> 0;
+    let t = a;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+/** Staff for tests: at ten in the morning, with dice that roll the same every run. */
+export const testStaff = (saved?: Parameters<typeof createStaff>[0]): Staff => Object.assign(createStaff(saved), { hour: () => 10, random: dice() });
