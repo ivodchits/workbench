@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { fitSize, frameIn, untilNextFrame } from "./canvas";
+import { fitSize, frameIn, sideLayout, untilNextFrame } from "./canvas";
 
 describe("untilNextFrame", () => {
   const durations = [100, 300, 50];
@@ -47,5 +47,25 @@ describe("fitSize", () => {
 
   it("never goes below 1", () => {
     expect(fitSize(200, 100, 1, 512, 352)).toEqual({ scale: 1, backing: 1 });
+  });
+});
+
+describe("sideLayout", () => {
+  const layout = (w: number, h: number) => sideLayout(w, h, 512, 352, 8, 280);
+
+  it("gives the sidebar what's left beside an office as tall as the window", () => {
+    expect(layout(1920, 1080)).toEqual({ below: false, size: 356 });
+    expect(layout(2560, 1440)).toEqual({ below: false, size: 472 });
+    // An office 1064 px tall is 1547.6 wide: with the pads and 356 px, the window is full.
+    expect(16 + (1064 * 512) / 352 + 356).toBeCloseTo(1920, 0);
+  });
+
+  it("keeps it usable on a narrow screen, where the office gives way", () => {
+    expect(layout(1280, 1024)).toEqual({ below: false, size: 280 });
+  });
+
+  it("puts it under the office on a portrait screen", () => {
+    expect(layout(1080, 1920)).toEqual({ below: true, size: 1172 });
+    expect(layout(400, 500)).toEqual({ below: true, size: 280 });
   });
 });

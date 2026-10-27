@@ -5,7 +5,7 @@ import { createWorld, seatedAt, type World } from "./entities";
 import { instance, snapshot } from "./fixtures";
 import { stepWalkers } from "./move";
 import { behave } from "./behave";
-import { createStaff, seatSessions, type Staff } from "./sessions";
+import { createStaff, seatSessions, whoIs, type Staff } from "./sessions";
 
 const office = buildOffice();
 
@@ -97,5 +97,23 @@ describe("sessions in the office", () => {
     const staff = createStaff();
     expect(seatSessions(office, world, staff, snapshot([instance("a", "misc")]), 0)).toBe(true);
     expect(seatSessions(office, world, staff, snapshot([instance("a", "misc")]), 0)).toBe(false);
+  });
+
+  it("says who a worker or a contractor is, and since when their session has been so", () => {
+    const world = createWorld(office);
+    const staff = createStaff();
+    const all = Array.from({ length: 13 }, (_, i) => instance(`s${i}`, "misc"));
+    seatSessions(office, world, staff, snapshot(all), 1000);
+    const worker = workerOf(staff, "s0");
+    expect(whoIs(staff, worker)).toMatchObject({ worker: { id: worker }, instance: { id: "s0" }, since: 1000 });
+    all[0] = instance("s0", "misc", { phase: "done" });
+    seatSessions(office, world, staff, snapshot(all), 5000);
+    expect(whoIs(staff, worker)?.since).toBe(5000);
+    expect(whoIs(staff, `desk:${world.contractors[0].desk}`)).toMatchObject({ worker: null, instance: { id: "s12" } });
+
+    seatSessions(office, world, staff, snapshot([]), 6000);
+    expect(whoIs(staff, worker)).toMatchObject({ worker: { id: worker }, instance: null, since: null });
+    expect(whoIs(staff, "desk:0")).toBeNull();
+    expect(whoIs(staff, "nobody")).toBeNull();
   });
 });

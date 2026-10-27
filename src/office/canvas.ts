@@ -52,3 +52,13 @@ export function fitSize(w: number, h: number, dpr: number, sceneW: number, scene
   const scale = Math.max(1, Math.abs(fits - whole) < 0.01 ? whole : fits);
   return { scale, backing: Math.ceil(scale - 1e-9) };
 }
+
+/** Where the office page's sidebar goes in a `w`×`h` window, and how big it is: beside
+ *  the office, as wide as the office (filling the height, `pad` round it) leaves, or —
+ *  on a portrait screen — under it, as tall as it leaves. Never smaller than `min`; then
+ *  the office shrinks to make room. */
+export function sideLayout(w: number, h: number, sceneW: number, sceneH: number, pad: number, min: number): { below: boolean; size: number } {
+  const below = w < h;
+  const left = below ? h - ((w - 2 * pad) * sceneH) / sceneW - 2 * pad : w - ((h - 2 * pad) * sceneW) / sceneH - 2 * pad;
+  return { below, size: Math.max(min, Math.floor(left)) };
+}

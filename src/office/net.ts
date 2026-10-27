@@ -1,7 +1,8 @@
 // The office's link to Workbench (office plan O0.2). Workbench opens the page as
 // `/office/#t=<launch token>`; the token is traded once for a session, kept in this
 // tab's sessionStorage so a reload still works. Then one socket: the snapshot on
-// connect and on every change, and actions back up it. The same snapshot and actions
+// connect and on every change, and actions back up it — plus one for the transcript the
+// sidebar shows (O1.5), on the phone's terms. The same snapshot and actions
 // as the phone (`src/remote/protocol.ts`). The page's own settings (`prefs`) are kept by
 // Workbench too, in its DB, so they outlive the tab.
 
@@ -45,6 +46,9 @@ export interface Link {
   prefs(): Promise<Record<string, unknown> | null>;
   /** Replace the saved settings; false when that didn't work. */
   savePrefs(prefs: Record<string, unknown>): Promise<boolean>;
+  /** A socket on `/office/api/<path>` with these query parameters (the transcript's),
+   *  signed in; null before there is a session. */
+  socket(path: string, params: Record<string, string>): WebSocket | null;
 }
 
 function readSession(): string | null {
@@ -104,9 +108,14 @@ export function connect(onState: (state: LinkState) => void): Link {
   let socket: WebSocket | null = null;
   let retry = RETRY_MIN;
 
+  const socketTo = (path: string, params: Record<string, string> = {}) => {
+    const query = new URLSearchParams(params).toString();
+    const url = `${location.protocol === "https:" ? "wss" : "ws"}://${location.host}${API}/${path}${query ? `?${query}` : ""}`;
+    return new WebSocket(url, ["wb", `wb-token.${session}`]);
+  };
+
   const open = () => {
-    const url = `${location.protocol === "https:" ? "wss" : "ws"}://${location.host}${API}/ws`;
-    const ws = new WebSocket(url, ["wb", `wb-token.${session}`]);
+    const ws = socketTo("ws");
     socket = ws;
     ws.onmessage = (e) => {
       retry = RETRY_MIN;
@@ -179,6 +188,9 @@ export function connect(onState: (state: LinkState) => void): Link {
       } catch {
         return false;
       }
+    },
+    socket(path, params) {
+      return session ? socketTo(path, params) : null;
     },
   };
 }

@@ -11,14 +11,18 @@
     <main id="stage">
       <canvas id="office" width="512" height="352" aria-label="The office"></canvas>
       <pre id="hud" aria-live="off"></pre>
+      <div id="tip" role="tooltip" hidden></div>
     </main>
     <aside id="side">
       <h1>The Office</h1>
+      <section id="session" hidden></section>
       <section id="link"></section>
       <section id="rooms"></section>
       <dl class="keys">
+        <dt>Click</dt><dd>a worker: their session here</dd>
+        <dt>Esc</dt><dd>close it</dd>
         <dt>N</dt><dd>everyone's name tag</dd>
-        <dt>G</dt><dd>walk grid, spots and routes</dd>
+        <dt>G</dt><dd>walk grid, spots and routes; a click sends a worker walking</dd>
         <dt>P</dt><dd>pause the animations</dd>
         <dt>H</dt><dd>performance HUD</dd>
       </dl>

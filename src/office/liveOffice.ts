@@ -15,7 +15,8 @@ import { createWorld, workerAt as hit } from "./world/entities";
 import { stepWalkers } from "./world/move";
 import { OFFICE_H, OFFICE_W, createRenderer, type View } from "./world/render";
 import { behave } from "./world/behave";
-import { createStaff, seatSessions, type Staff } from "./world/sessions";
+import { createStaff, seatSessions, whoIs, type Staff } from "./world/sessions";
+import type { Who } from "./describe";
 
 export { OFFICE_H, OFFICE_W };
 
@@ -97,6 +98,9 @@ export function stepOffice(ms: number): boolean {
   const walked = stepWalkers(world, office, ms);
   return (loaded && behave(office, world, staff, ms)) || walked;
 }
+
+/** Who `id` (from `workerAt`) is, and their session. */
+export const whoAt = (id: string): Who | null => whoIs(staff, id);
 
 export const clickOffice = (picked: string | null, x: number, y: number, ms: number): string | null =>
   debugClick(office, world, picked, x, y, ms, (w) => staff.loose.set(w.worker.id, ms));

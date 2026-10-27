@@ -7,6 +7,27 @@
   --muted: #a39bb4;
   --duck: #ffcf3f;
   --mono: ui-monospace, "Cascadia Mono", Consolas, monospace;
+  --needs: #ff6b6b;
+  --done: #89b482;
+  /* The desktop theme's names, for the shared transcript and choice card styles. */
+  --wb-bg: var(--night);
+  --wb-panel: var(--panel);
+  --wb-titlebar: #121017;
+  --wb-border: var(--rim);
+  --wb-borderActive: var(--duck);
+  --wb-text: var(--text);
+  --wb-textDim2: var(--muted);
+  --wb-textFaint: #6b6380;
+  --wb-sel: #2a2536;
+  --wb-accent: var(--duck);
+  --wb-accentSoft: rgb(255 207 63 / 0.12);
+  --wb-working: var(--duck);
+  --wb-needs: var(--needs);
+  --wb-done: var(--done);
+  --wb-addText: #6cc886;
+  --wb-delText: #e8707a;
+  --wb-str: #9bd4a6;
+  --wb-mono: var(--mono);
 }
 
 * {
@@ -53,13 +74,197 @@ body {
   pointer-events: none;
 }
 
+/* Sized by the page (`--side`) so the office fills the rest of the window. */
 #side {
-  width: 300px;
+  width: var(--side, 300px);
   flex: none;
   padding: 16px;
   background: var(--panel);
   border-left: 1px solid var(--rim);
   overflow-y: auto;
+}
+
+#tip {
+  position: absolute;
+  max-width: 280px;
+  padding: 5px 8px;
+  background: rgb(21 19 27 / 0.94);
+  border: 1px solid var(--rim);
+  border-radius: 4px;
+  font: 12px/1.45 var(--mono);
+  color: var(--muted);
+  pointer-events: none;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+#tip .who {
+  color: var(--text);
+}
+
+/* A session open: it has the sidebar to itself. */
+#side.open {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+#side.open > :not(h1, #session) {
+  display: none;
+}
+
+#session {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+/* Over any part's own display. */
+#session[hidden],
+#session [hidden],
+#session .hidden {
+  display: none !important;
+}
+
+#session header {
+  position: relative;
+  padding-right: 28px;
+}
+
+#session h2 {
+  margin: 0;
+  color: var(--text);
+}
+
+#session header p {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+#session .what {
+  color: var(--muted);
+}
+
+#session .state.phase-needs_you {
+  color: var(--needs);
+}
+
+#session .state.phase-working {
+  color: var(--duck);
+}
+
+#session .state.phase-done {
+  color: var(--done);
+}
+
+#session button {
+  font: inherit;
+  color: var(--text);
+  background: var(--night);
+  border: 1px solid var(--rim);
+  border-radius: 4px;
+  padding: 3px 10px;
+  cursor: pointer;
+}
+
+#session button:hover {
+  border-color: var(--muted);
+}
+
+#session .close {
+  position: absolute;
+  top: 0;
+  right: 0;
+  padding: 0 6px;
+}
+
+#session .wb-chc {
+  max-height: 45%;
+  overflow-y: auto;
+  border: 1px solid var(--needs);
+  border-radius: 4px;
+}
+
+/* No terminal here: those answers are Workbench's. */
+#session .wb-chc-bar button:not(.wb-chc-deny),
+#session .wb-chc-note button {
+  display: none;
+}
+
+#session .needs {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--needs);
+}
+
+#session .needs span {
+  margin-right: auto;
+}
+
+#session .needs .ok {
+  border-color: var(--done);
+}
+
+#session .needs .no {
+  border-color: var(--needs);
+}
+
+#session .scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  border: 1px solid var(--rim);
+  border-radius: 4px;
+  background: var(--night);
+  padding: 4px 6px;
+  font-size: 12px;
+}
+
+#session .jump {
+  align-self: center;
+  margin-top: -36px;
+}
+
+#session .composer {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+#session textarea {
+  resize: vertical;
+  min-height: 3.2em;
+  font: inherit;
+  color: inherit;
+  background: var(--night);
+  border: 1px solid var(--rim);
+  border-radius: 4px;
+  padding: 4px 6px;
+}
+
+#session textarea:focus {
+  outline: none;
+  border-color: var(--duck);
+}
+
+#session .buttons {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+#session .send {
+  border-color: var(--duck);
+  color: var(--duck);
+}
+
+#session .stop {
+  margin-right: auto;
+  color: var(--needs);
 }
 
 h1 {
@@ -96,7 +301,7 @@ h1 {
 }
 
 .instances .phase-needs_you .glyph {
-  color: #ff6b6b;
+  color: var(--needs);
 }
 
 .instances .phase-working .glyph {
@@ -153,13 +358,14 @@ h2 {
   color: var(--muted);
 }
 
-@media (max-width: 720px) {
-  body {
-    flex-direction: column;
-  }
-  #side {
-    width: auto;
-    border-left: 0;
-    border-top: 1px solid var(--rim);
-  }
+/* A portrait screen: the sidebar goes under the office. */
+body.below {
+  flex-direction: column;
+}
+
+body.below #side {
+  width: auto;
+  height: var(--side, 300px);
+  border-left: 0;
+  border-top: 1px solid var(--rim);
 }

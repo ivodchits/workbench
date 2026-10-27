@@ -7,8 +7,9 @@
 
 import type { RemoteInstance, RemoteSnapshot } from "../../remote/protocol";
 import type { TagGlyph } from "../art/labels";
+import type { Who } from "../describe";
 import type { OfficeMap } from "../map/build";
-import type { Team } from "../roster";
+import { ROSTER, type Team } from "../roster";
 import { assign, type Seating } from "./assign";
 import { behave, doing, type Plan } from "./behave";
 import type { World } from "./entities";
@@ -36,6 +37,8 @@ export interface Staff {
   rooms: Record<string, Team>;
   /** By worker id. */
   jobs: Map<string, Job>;
+  /** The live sessions, by instance id. */
+  instances: Map<string, RemoteInstance>;
   /** The spot each worker holds, by worker id: an idle spot, or a station for work. */
   spots: Map<string, string>;
   /** What each busy worker is doing, by worker id. */
@@ -56,6 +59,7 @@ export function createStaff(saved: { sticky?: Record<string, string>; rooms?: Re
     sticky: { ...saved.sticky },
     rooms: { ...saved.rooms },
     jobs: new Map(),
+    instances: new Map(),
     spots: new Map(),
     plans: new Map(),
     phases: new Map(),
@@ -103,10 +107,27 @@ export function seatSessions(office: OfficeMap, world: World, staff: Staff, snap
     staff.plans.delete(w);
   }
   staff.jobs = jobs;
+  staff.instances = instances;
 
   world.contractors = [...seating]
     .filter(([, s]) => !s.worker && s.desk !== null)
     .map(([id, s]) => ({ desk: s.desk!, tag: tagFor(instances.get(id)!), bubble: doing(instances.get(id)!).bubble }));
   behave(office, world, staff, ms, instant);
   return stickyChanged;
+}
+
+/** Who `id` is — a worker's id, or a contractor's desk as `desk:<index>` — and the
+ *  session they're on; null for nobody (a desk with no contractor at it). */
+export function whoIs(staff: Staff, id: string): Who | null {
+  const since = (i: RemoteInstance | null) => (i && staff.phases.get(i.id)?.at) ?? null;
+  if (id.startsWith("desk:")) {
+    const desk = Number(id.slice("desk:".length));
+    const seated = [...staff.seating].find(([, s]) => !s.worker && s.desk === desk);
+    const instance = seated ? staff.instances.get(seated[0]) : undefined;
+    return instance ? { worker: null, instance, since: since(instance) } : null;
+  }
+  const worker = ROSTER.find((w) => w.id === id);
+  if (!worker) return null;
+  const instance = staff.jobs.get(id)?.instance ?? null;
+  return { worker, instance, since: since(instance) };
 }

@@ -392,6 +392,30 @@ favourite spots.
   Clicking a worker opens the sidebar: header, the pending choice (choice card → `choose`),
   transcript tail, prompt box, interrupt / stop. Esc closes it.
 - **Done when:** you can answer a permission prompt and send a prompt from the office.
+- _As built (approved):_ hovering a worker shows a tooltip by the pointer
+  (`describe.ts`): who they are and their room, the project and session title, and
+  what it's doing in words ("editing, 2 subagents out", "needs you: wants
+  permission") with how long it's been so — counted from when the page first saw that
+  state, so a session already waiting when the office opened counts from then. A
+  worker with no session is "free"; a contractor's desk is a "Remote contractor".
+  Clicking a worker or a contractor's desk opens their session in the sidebar
+  (`panel.ts`); clicking the floor, ✕ or Esc closes it, and it follows the worker
+  onto their next session. The panel: the header (who, project · title · branch, the
+  state with the rail's glyph), the phone's choice card (`pwa/choice.ts`) to answer
+  with `choose` — its terminal buttons hidden, there's none here — or approve/deny when
+  Workbench can't say what's asked, the transcript's tail (the desktop's feed and
+  renderer over the office's transcript socket, through the phone's
+  `transcriptSource`), following the end unless you scroll up, and a prompt box
+  (Enter sends, Shift+Enter a new line; "start" when the console isn't running) with
+  interrupt while it works and stop, which asks a second click because it closes the
+  console. Drafts are kept per session. The O1.2 debug click (pick a worker, send them
+  walking) now works only with the walk grid on (`G`). The sidebar is the same size
+  in every mode, set from the window (`sideLayout` in `canvas.ts`): the office fills
+  the height and the column takes the width left (wider on a wide monitor, never under
+  280 px, the office shrinking then); on a portrait screen it's a panel under the
+  office, as tall as the office leaves. Tests: the tooltip's wording, who a worker or
+  a contractor is, the sidebar's size. Checked in Workbench (the dev app): a
+  permission prompt answered and a prompt sent from the office.
 
 ### Step O1.6 — Stats when nothing is selected
 - **Build:** sessions by phase, usage limits, context sizes, sessions and commits today,
@@ -543,7 +567,7 @@ closed, open and still, and open and busy.
 - [x] O1.2 Movement
 - [x] O1.3 Assignment engine
 - [x] O1.4 Status → behaviour
-- [ ] O1.5 Hover and the sidebar
+- [x] O1.5 Hover and the sidebar
 - [ ] O1.6 Stats when nothing is selected
 - [ ] O2.1 Idle planner
 - [ ] O2.2 Group activities
