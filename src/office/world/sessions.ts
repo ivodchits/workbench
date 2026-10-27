@@ -3,7 +3,8 @@
 // their desk (in through the door if they're out) and does what their session is
 // doing; one whose session ended packs up and goes to the kitchen; whoever has nothing
 // to do stands about the kitchen and the lounge. On the first snapshot everyone is
-// simply where they belong, nobody walks. A contractor's desk gets a laptop.
+// simply where they belong, nobody walks. A contractor's desk gets a laptop. What
+// changed since the last snapshot can set off a reaction (reactions.ts).
 
 import type { Anim } from "../art/characters";
 import { noGames, type Games } from "./groups";
@@ -14,6 +15,7 @@ import type { OfficeMap } from "../map/build";
 import { ROSTER, type Team } from "../roster";
 import { assign, type Seating } from "./assign";
 import { behave, doing, type Plan } from "./behave";
+import { react, type DuckTrip } from "./reactions";
 import type { World } from "./entities";
 
 /** The rail's glyph for a session's phase. */
@@ -68,6 +70,12 @@ export interface Staff {
   saying: Map<string, number>;
   /** What happened worth a line in the activity log, until the page takes it. */
   events: { kind: "fun"; text: string }[];
+  /** Each project's commits today, as last seen (`reactions.ts`). */
+  commits: Map<string, number>;
+  /** Workers cheering a commit, till when, by worker id. */
+  cheers: Map<string, number>;
+  /** Duck's trip to a desk, if it's on one. */
+  trip: DuckTrip | null;
 }
 
 /** An idle worker's activity: where, and until when once they got there. */
@@ -104,6 +112,9 @@ export function createStaff(saved: { sticky?: Record<string, string>; rooms?: Re
     groupPose: new Map(),
     saying: new Map(),
     events: [],
+    commits: new Map(),
+    cheers: new Map(),
+    trip: null,
   };
 }
 
@@ -145,7 +156,9 @@ export function seatSessions(office: OfficeMap, world: World, staff: Staff, snap
     staff.plans.delete(w);
   }
   staff.jobs = jobs;
+  const before = staff.instances;
   staff.instances = instances;
+  react(staff, before, snapshot, ms, instant);
 
   world.contractors = [...seating]
     .filter(([, s]) => !s.worker && s.desk !== null)

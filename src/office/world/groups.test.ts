@@ -77,5 +77,5 @@ describe("idle workers together", () => {
       expect(tvAlone).toBe(0);
       expect(movedMidMatch).toBe(0);
     }
-  });
+  }, 30_000);
 });

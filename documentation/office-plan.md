@@ -492,6 +492,17 @@ favourite spots.
 - **Build:** a commit → the worker cheers; escalation → sweating; session end → off to the kitchen (nobody leaves the office);
   Duck's autopilot acting on a session → Duck waddles over.
 - **Done when:** each is visible when triggered for real.
+- _As built (approved):_ `world/reactions.ts` compares each snapshot with the last.
+  Sweating (`fret`) came with O1.4 and the kitchen after an ended session with O2.1. A
+  rise in a project's commits today has one worker on it (one running a command first,
+  then one working) get up beside the desk and cheer for five seconds, or turn and
+  cheer at the rack; not on the first snapshot, nor when the count resets at midnight.
+  A session on autopilot that starts working, starts compacting or gets its question
+  answered brings Duck out from behind the boss desk, waddling the same routes as
+  everyone, to the left of that desk: it faces the worker and says a short line for six
+  seconds, then goes back. The snapshot says which sessions an autopilot drives, not
+  who acted, so moving one on yourself brings Duck too. Tests: the cheer and who gives
+  it, no cheer for what isn't news, Duck there and back, Duck staying put otherwise.
 
 ### Step O2.4 — Ambience
 - **Build:** daylight tint through the day and lamps at night, monitor glow, clock with real
@@ -622,7 +633,7 @@ closed, open and still, and open and busy.
 - [x] O1.6 Stats when nothing is selected
 - [x] O2.1 Idle planner
 - [x] O2.2 Group activities
-- [ ] O2.3 Reactions
+- [x] O2.3 Reactions
 - [ ] O2.4 Ambience
 - [ ] O3.1 Duck in the boss office
 - [ ] O3.2 Giving tasks

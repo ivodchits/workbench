@@ -61,6 +61,8 @@ export interface DuckEntity extends Body {
   kind: "duck";
   view: DuckView;
   anim: DuckAnim;
+  /** Feet positions still to reach while waddling somewhere (office plan O2.3). */
+  walk: Point[] | null;
 }
 
 export type Entity = WorkerEntity | DuckEntity;
@@ -169,6 +171,7 @@ export function createWorld(office: OfficeMap, ms = 0): World {
     anim: "idle",
     playing: play(duckClip("idle"), ms),
     bubble: null,
+    walk: null,
   };
   const screens = office.seats.map((s): Screen => (seated.has(s.index) ? "code" : "off"));
   return { workers, duck, screens, contractors: [], stepAt: ms, tv: false, kicker: null };

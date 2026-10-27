@@ -5,7 +5,8 @@
 // context compacts, up and waving when the session needs you (sweating once it's been
 // too long), slumped on the keyboard when it seems stuck, leaning back with a coffee
 // when it's done — wandering off after ten minutes of that — and off to the kitchen or
-// the lounge when the session has ended. Nobody leaves the office. Over the head: the
+// the lounge when the session has ended; up and cheering for a moment after a commit
+// (O2.3, `reactions.ts`, which also sends Duck round). Nobody leaves the office. Over the head: the
 // `!`/`?` bubble, or the status icon (the working one only away from the desk). Anyone
 // with nothing to do (no session, or wandered off from one) is the idle planner's
 // (O2.1, `idle.ts`): an activity at a time, somewhere free, moving on every so often.
@@ -22,6 +23,7 @@ import type { SpotSpec } from "../map/office";
 import type { RemoteInstance } from "../../remote/protocol";
 import { seatedAt, setAnim, type Bubble, type Screen, type WorkerEntity, type World } from "./entities";
 import { playGroups } from "./groups";
+import { duckRounds } from "./reactions";
 import { activity, dayPart, pickIdle } from "./idle";
 import { enter, landing, walkTo } from "./move";
 import type { IdleState, Staff } from "./sessions";
@@ -135,7 +137,7 @@ export function behave(office: OfficeMap, world: World, staff: Staff, ms: number
       staff.plans.set(id, plan);
       w.tag = job.tag;
       if (want.bubble || isStatusBubble(w.bubble)) w.bubble = want.bubble;
-      go(office, staff, w, job.desk, plan, ms, instant);
+      go(office, staff, w, job.desk, cheering(staff, id, ms) ? cheer(plan) : plan, ms, instant);
       // At the desk, the monitor says they're working.
       w.overhead = want.overhead === "working" && w.seat === job.desk ? null : want.overhead;
     }
@@ -144,8 +146,27 @@ export function behave(office: OfficeMap, world: World, staff: Staff, ms: number
   const tv = world.tv;
   const kicker = world.kicker;
   if (playGroups(world, staff, ms) || world.tv !== tv || world.kicker !== kicker) changed = true;
+  if (duckRounds(office, world, staff, ms)) changed = true;
   showScreens(office, world, staff);
   return changed;
+}
+
+/** Whether `id` is cheering a commit (`reactions.ts`); a cheer over is forgotten. */
+function cheering(staff: Staff, id: string, ms: number): boolean {
+  const until = staff.cheers.get(id);
+  if (until === undefined) return false;
+  if (ms < until) return true;
+  staff.cheers.delete(id);
+  return false;
+}
+
+/** `plan` with a cheer in it: up beside the desk, or where they are at a station.
+ *  Nobody cheers mid-question or wandered off. */
+function cheer(plan: Plan): Plan {
+  const { place } = plan.doing;
+  if (place.kind === "desk") return { ...plan, doing: { ...plan.doing, place: { kind: "stand" }, anim: "cheer" } };
+  if (place.kind === "station") return { ...plan, doing: { ...plan.doing, anim: "cheer" } };
+  return plan;
 }
 
 /** Takes up `want` now, or once it has held long enough. */
@@ -192,7 +213,8 @@ function go(office: OfficeMap, staff: Staff, w: WorkerEntity, desk: number, plan
       const spot = stationFor(office, staff, w, place.station, seat.stand);
       if (!spot) return go(office, staff, w, desk, { ...plan, doing: { ...plan.doing, place: { kind: "desk" }, anim: "type" } }, ms, instant);
       staff.spots.set(id, spot.id);
-      return stand(office, w, spot, spot.face, anim, ms, instant, () => (plan.arrived ??= ms));
+      // Cheering turns to face the room.
+      return stand(office, w, spot, anim === "cheer" ? "down" : spot.face, anim, ms, instant, () => (plan.arrived ??= ms));
     }
     case "about": {
       staff.settled.delete(id);

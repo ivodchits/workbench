@@ -3,15 +3,18 @@
 // the destination; people move one axis at a time, so they always face where they go.
 // Someone in the next cell makes them wait; after a second they look for a way round,
 // and after three they squeeze past. Getting up puts them behind their chair; sitting
-// down puts them on it. Coming in and leaving are walks from and to the door.
+// down puts them on it. Coming in and leaving are walks from and to the door. Duck
+// waddles the same routes (O2.3), and nobody waits for anybody over it.
 
 import type { Dir } from "../art/characters";
 import { WALK_CELL, cellOf, isFree, reachable, type OfficeMap, type Point } from "../map/build";
-import { seatedAt, setAnim, type Arrival, type WorkerEntity, type World } from "./entities";
+import { seatedAt, setAnim, setDuckAnim, type Arrival, type DuckEntity, type WorkerEntity, type World } from "./entities";
 import { findPath, nearestFree } from "./path";
 
 /** Pixels per step: 30 px/s, about one stride per walk cycle. */
 export const WALK_SPEED = 3;
+/** Duck's pixels per step: a waddle, as quick as anyone's walk. */
+export const DUCK_SPEED = 3;
 /** Steps of waiting before looking for another way round. */
 export const REPATH_AFTER = 10;
 /** Steps of waiting before walking through whoever is in the way. */
@@ -92,6 +95,21 @@ function sitAt(office: OfficeMap, w: WorkerEntity, seat: number, ms: number): vo
   setAnim(w, "type", ms);
 }
 
+/** Sends Duck waddling to `to` (or the nearest place that can be reached); `exact`
+ *  ends on `to` itself, off the walkable floor (back behind the boss desk). False if
+ *  there's no way there. */
+export function waddleTo(office: OfficeMap, d: DuckEntity, to: Point, ms: number, exact = false): boolean {
+  const goal = landing(office, to);
+  // From behind the boss desk, first out onto the floor.
+  const start = landing(office, d);
+  const points = route(office, start, goal);
+  if (!points) return false;
+  if (!same(start, d)) points.unshift(start);
+  d.walk = exact && !same(goal, to) ? [...points, to] : points;
+  setDuckAnim(d, "waddle", ms);
+  return true;
+}
+
 /** One sim step for everyone walking; true when anyone moved or changed what they do. */
 export function stepWalkers(world: World, office: OfficeMap, ms: number): boolean {
   world.stepAt = ms;
@@ -100,7 +118,36 @@ export function stepWalkers(world: World, office: OfficeMap, ms: number): boolea
     if (w.prev.x !== w.x || w.prev.y !== w.y) w.prev = { x: w.x, y: w.y };
     if (w.walk) changed = advance(world, office, w, ms) || changed;
   }
+  const d = world.duck;
+  if (d.prev.x !== d.x || d.prev.y !== d.y) d.prev = { x: d.x, y: d.y };
+  if (d.walk) changed = waddle(d, ms) || changed;
   return changed;
+}
+
+/** Duck along its walk, one axis at a time like everyone; on arrival it stands there. */
+function waddle(d: DuckEntity, ms: number): boolean {
+  const points = d.walk!;
+  let budget = DUCK_SPEED;
+  while (budget > 0 && points.length) {
+    const p = points[0];
+    const dx = p.x - d.x;
+    const dy = p.y - d.y;
+    if (!dx && !dy) {
+      points.shift();
+      continue;
+    }
+    const across = dx !== 0;
+    const step = Math.min(budget, Math.abs(across ? dx : dy));
+    if (across) d.x += Math.sign(dx) * step;
+    else d.y += Math.sign(dy) * step;
+    d.view = across ? (dx > 0 ? "right" : "left") : dy > 0 ? "down" : "up";
+    budget -= step;
+  }
+  if (!points.length) {
+    d.walk = null;
+    setDuckAnim(d, "idle", ms);
+  }
+  return true;
 }
 
 function advance(world: World, office: OfficeMap, w: WorkerEntity, ms: number): boolean {
