@@ -11,10 +11,10 @@ import { WALK_CELL, cellOf, isFree, reachable, type OfficeMap, type Point } from
 import { seatedAt, setAnim, setDuckAnim, type Arrival, type DuckEntity, type WorkerEntity, type World } from "./entities";
 import { findPath, nearestFree } from "./path";
 
-/** Pixels per step: 30 px/s, about one stride per walk cycle. */
-export const WALK_SPEED = 3;
+/** Pixels per step: 50 px/s, about one stride per walk cycle. */
+export const WALK_SPEED = 5;
 /** Duck's pixels per step: a waddle, as quick as anyone's walk. */
-export const DUCK_SPEED = 3;
+export const DUCK_SPEED = 5;
 /** Steps of waiting before looking for another way round. */
 export const REPATH_AFTER = 10;
 /** Steps of waiting before walking through whoever is in the way. */

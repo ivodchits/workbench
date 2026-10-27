@@ -777,10 +777,10 @@ export const ANIMS: Record<Anim, AnimDef> = {
   walk: {
     dirs: ["down", "up", "left", "right"],
     frames: [
-      { front: { legs: LEGS_FRONT_STEP_L }, side: { legs: LEGS_SIDE_STRIDE_A }, ms: 160 },
-      { front: stand, side: standSide, ms: 160 },
-      { front: { legs: LEGS_FRONT_STEP_R }, side: { legs: LEGS_SIDE_STRIDE_B }, ms: 160 },
-      { front: stand, side: standSide, ms: 160 },
+      { front: { legs: LEGS_FRONT_STEP_L }, side: { legs: LEGS_SIDE_STRIDE_A }, ms: 100 },
+      { front: stand, side: standSide, ms: 100 },
+      { front: { legs: LEGS_FRONT_STEP_R }, side: { legs: LEGS_SIDE_STRIDE_B }, ms: 100 },
+      { front: stand, side: standSide, ms: 100 },
     ],
   },
   type: {

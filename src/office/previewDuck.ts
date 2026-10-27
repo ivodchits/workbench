@@ -14,7 +14,7 @@ const DESK_Y = 62;
 const WALK_Y = DUCK_ROOM_H - DUCK_H - 4;
 const WALK_FROM = 6;
 const WALK_TO = DUCK_ROOM_W - DUCK_W - 6;
-const WALK_SPEED = 22;
+const WALK_SPEED = 37;
 
 function prop(ctx: CanvasRenderingContext2D, key: string, make: () => ReturnType<typeof propFrame>, x: number, y: number) {
   ctx.drawImage(cached(key, make), x, y);

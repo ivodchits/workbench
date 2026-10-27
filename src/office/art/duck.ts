@@ -205,10 +205,10 @@ export const DUCK_ANIMS: Record<DuckAnim, { pose: DuckPose; ms: number }[]> = {
     { pose: {}, ms: 320 },
   ],
   waddle: [
-    { pose: { dx: -1 }, ms: 150 },
-    { pose: { dy: -1 }, ms: 150 },
-    { pose: { dx: 1 }, ms: 150 },
-    { pose: { dy: -1 }, ms: 150 },
+    { pose: { dx: -1 }, ms: 90 },
+    { pose: { dy: -1 }, ms: 90 },
+    { pose: { dx: 1 }, ms: 90 },
+    { pose: { dy: -1 }, ms: 90 },
   ],
 };
 
