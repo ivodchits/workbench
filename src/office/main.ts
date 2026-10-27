@@ -1,19 +1,21 @@
-// The office page (office plans O0.1, O0.2, O1.1–O1.5): the office as large as fits
+// The office page (office plans O0.1, O0.2, O1.1–O1.6): the office as large as fits
 // beside the sidebar, on the loop in loop.ts, with the performance HUD, and the link to
 // Workbench. Sessions drive the workers (liveOffice.ts). Hovering a worker shows who
 // they are and what their session is doing; clicking one opens their session in the
 // sidebar (panel.ts), and clicking the floor or Esc closes it. With the walk grid on
 // (`G`) a click is the debug one instead: pick a worker, then send them walking. With
-// nobody picked the sidebar lists the sessions as text and the room each project sits in.
+// nobody picked the sidebar shows the stats (stats.ts) and the room each project sits in.
 
 import { fitSize, sideLayout } from "./canvas";
 import { startHud } from "./hud";
 import { startLoop } from "./loop";
 import { connect } from "./net";
 import { tooltipLines } from "./describe";
-import { OFFICE_H, OFFICE_W, clickOffice, drawOffice, officeSnapshot, roomOf, setRoom, startOffice, stepOffice, whoAt, workerAt } from "./liveOffice";
+import { OFFICE_H, OFFICE_W, clickOffice, drawOffice, nameOf, officeLog, officeSnapshot, roomOf, setRoom, startOffice, stepOffice, whoAt, workedToday, workerAt } from "./liveOffice";
+import type { Cost } from "./net";
 import { createPanel } from "./panel";
 import { showLink, showRooms } from "./sidebar";
+import { showStats } from "./stats";
 
 const canvas = document.querySelector<HTMLCanvasElement>("#office")!;
 const stage = document.querySelector<HTMLElement>("#stage")!;
@@ -45,14 +47,20 @@ const loop = startLoop({
   },
 });
 const linkEl = document.querySelector<HTMLElement>("#link")!;
+const statsEl = document.querySelector<HTMLElement>("#stats")!;
 const roomsEl = document.querySelector<HTMLElement>("#rooms")!;
+let snapshot: Parameters<typeof officeSnapshot>[0] | null = null;
 const pickRoom = (id: string, team: Parameters<typeof setRoom>[1]) => {
   setRoom(id, team);
   loop.invalidate();
 };
 const link = connect((state) => {
   showLink(linkEl, state);
-  if (state.kind !== "live") return;
+  if (state.kind !== "live") {
+    snapshot = null;
+    return statsEl.replaceChildren();
+  }
+  snapshot = state.snapshot;
   officeSnapshot(state.snapshot);
   showRooms(roomsEl, state.snapshot.projects, roomOf, pickRoom);
   showSelected();
@@ -66,6 +74,7 @@ function showSelected(): void {
   const who = view.selected && !view.overlay ? whoAt(view.selected) : null;
   side.classList.toggle("open", !!who);
   panel.show(who);
+  if (!who) showStatsNow();
 }
 
 function select(id: string | null): void {
@@ -74,7 +83,26 @@ function select(id: string | null): void {
   loop.invalidate();
 }
 startOffice(link, () => loop.invalidate());
-startHud(hud, loop, () => link.cost());
+
+/** How often Workbench's cost is asked, while the HUD or the stats show it; its CPU is
+ *  the average since the last ask. */
+const COST_EVERY_MS = 3000;
+let cost: Cost | null = null;
+startHud(hud, loop, () => cost);
+
+/** The stats, while nobody is picked. */
+function showStatsNow(): void {
+  if (!snapshot || side.classList.contains("open")) return;
+  showStats(statsEl, { snapshot, cost, log: officeLog(), workedToday: workedToday(), nameOf });
+}
+setInterval(() => {
+  const statsShown = !!snapshot && !side.classList.contains("open");
+  if (document.hidden || (hud.hidden && !statsShown)) return;
+  void link.cost().then((c) => {
+    cost = c;
+    showStatsNow();
+  });
+}, COST_EVERY_MS);
 
 /** Space round the office in the stage, each side. */
 const PAD = 8;

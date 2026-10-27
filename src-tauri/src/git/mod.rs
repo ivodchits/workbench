@@ -1114,6 +1114,17 @@ pub fn last_commit_at(repo_root: &Path) -> Option<i64> {
     git_output(repo_root, &["log", "--all", "-1", "--format=%ct"])?.parse().ok()
 }
 
+/// How many commits on any branch were made at or after `since` (epoch seconds), or
+/// `None` when `repo_root` isn't a repo (office plan O1.6: commits today).
+pub fn commits_since(repo_root: &Path, since: i64) -> Option<u32> {
+    if git_output(repo_root, &["rev-parse", "--git-dir"]).is_none() {
+        return None;
+    }
+    let since = format!("--since=@{since}");
+    let out = git_output(repo_root, &["log", "--all", &since, "--format=%ct"]).unwrap_or_default();
+    Some(out.lines().filter(|l| !l.trim().is_empty()).count() as u32)
+}
+
 /// History for a project's repo (step 3.11, extended in G7): commits newest first,
 /// filtered and paged by `query`. Pure inspection, and still a single invocation
 /// however many filters are set.
@@ -2781,6 +2792,20 @@ mod tests {
         let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() as i64;
         let at = last_commit_at(&dir).expect("a commit time");
         assert!((now - at).abs() < 120, "{at} is not about now ({now})");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn commits_since_counts_the_recent_ones() {
+        let dir = temp_dir("since");
+        assert_eq!(commits_since(&dir, 0), None, "not a repo");
+        if !init_repo(&dir) {
+            std::fs::remove_dir_all(&dir).ok();
+            return;
+        }
+        let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() as i64;
+        assert!(commits_since(&dir, now - 3600).is_some_and(|n| n >= 1));
+        assert_eq!(commits_since(&dir, now + 3600), Some(0));
         std::fs::remove_dir_all(&dir).ok();
     }
 

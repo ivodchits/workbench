@@ -224,6 +224,9 @@ pub fn init(app: &AppHandle) {
     });
     app.manage(state.clone());
 
+    if cfg!(debug_assertions) {
+        office::dev_launch(&state);
+    }
     if enabled {
         if let Err(e) = start_server(&state) {
             eprintln!("[remote] auto-start skipped: {e}");

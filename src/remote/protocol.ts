@@ -78,6 +78,9 @@ export interface RemoteProject {
   /** When its repo's latest commit on any branch was made (epoch seconds); null for
    *  a remote project, or before it is known. */
   lastCommitAt: number | null;
+  /** How many commits its repo had today (since the local midnight), on any branch;
+   *  null for a remote project, or before it is known. */
+  commitsToday: number | null;
 }
 
 /** What Duck is up to, for the office's boss:

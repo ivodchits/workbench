@@ -119,7 +119,7 @@ describe("attentionLine", () => {
 
 describe("new session", () => {
   it("lists the projects with no session yet, in order", () => {
-    const proj = (id: string) => ({ id, name: id, group: null, remote: false, lastCommitAt: null });
+    const proj = (id: string) => ({ id, name: id, group: null, remote: false, lastCommitAt: null, commitsToday: null });
     const snap = {
       projects: [proj("a"), proj("b"), proj("c")],
       instances: [inst({ id: "1", projectId: "b" })],
@@ -129,8 +129,8 @@ describe("new session", () => {
   });
 
   it("labels a project with its group and ssh", () => {
-    expect(projectLabel({ id: "p", name: "web", group: null, remote: false, lastCommitAt: null })).toBe("web");
-    expect(projectLabel({ id: "p", name: "web", group: "work", remote: true, lastCommitAt: null })).toBe("work / web (ssh)");
+    expect(projectLabel({ id: "p", name: "web", group: null, remote: false, lastCommitAt: null, commitsToday: null })).toBe("web");
+    expect(projectLabel({ id: "p", name: "web", group: "work", remote: true, lastCommitAt: null, commitsToday: null })).toBe("work / web (ssh)");
   });
 
   it("says how a request went, preferring the desktop's message", () => {

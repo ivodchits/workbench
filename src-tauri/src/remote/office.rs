@@ -16,6 +16,9 @@
 //! - `GET /office/api/ws`, `GET /office/api/transcript` — as the phone's sockets (auth:
 //!   the session as a `wb-token.<session>` subprotocol).
 //!
+//! A debug build starts the listener with the app and leaves a reusable URL in the
+//! app-data dir ([`DEV_URL_FILE`]), so a tool can open the office without a click.
+//!
 //! Every request must name this listener in its `Host` (`127.0.0.1:<port>` or
 //! `localhost:<port>`): any web page can reach loopback, and a DNS-rebinding page would
 //! arrive under its own name. Requests that act, and the sockets, must also come from
@@ -68,6 +71,9 @@ struct OfficeInner {
     tx: Option<broadcast::Sender<String>>,
     /// Launch tokens not yet used, with when they stop working.
     launches: Vec<(String, u64)>,
+    /// A debug build's launch token that works as often as asked while the app runs
+    /// ([`dev_launch`]).
+    dev_launch: Option<String>,
     sessions: Vec<String>,
 }
 
@@ -102,7 +108,12 @@ impl Office {
                 hit = Some(i);
             }
         }
-        inner.launches.remove(hit?);
+        let dev = inner.dev_launch.as_deref().is_some_and(|t| ct_eq(t.as_bytes(), token.as_bytes()));
+        match hit {
+            Some(i) => drop(inner.launches.remove(i)),
+            None if dev => {}
+            None => return None,
+        }
         if inner.sessions.len() >= SESSIONS_MAX {
             inner.sessions.remove(0);
         }
@@ -120,6 +131,28 @@ impl Office {
         }
         hit
     }
+}
+
+/// Where a debug build leaves its office URL, in the app-data dir.
+pub const DEV_URL_FILE: &str = "office-dev.url";
+
+/// A debug build (`tauri dev`) opens the office's listener at start and writes a URL
+/// for it to [`DEV_URL_FILE`], with a launch token that works every time while the app
+/// runs: a tool driving a browser can open the office without anyone clicking "Open
+/// Office". Only someone who can read the user's app-data dir can use it.
+pub(super) fn dev_launch(state: &Arc<RemoteState>) {
+    let Ok(dir) = state.app.path().app_data_dir() else { return };
+    let port = match ensure_started(state) {
+        Ok(port) => port,
+        Err(e) => return eprintln!("[office] no dev launch: {e}"),
+    };
+    let token = auth::random_token();
+    state.office.inner.lock().unwrap().dev_launch = Some(token.clone());
+    let url = format!("http://127.0.0.1:{port}/office/#t={token}");
+    if let Err(e) = std::fs::write(dir.join(DEV_URL_FILE), &url) {
+        eprintln!("[office] could not write the dev URL: {e}");
+    }
+    super::changed(state);
 }
 
 /// Start the listener if it isn't up; its port.
@@ -363,12 +396,29 @@ pub fn office_open(state: tauri::State<'_, Arc<RemoteState>>) -> Result<String, 
     Ok(url)
 }
 
-/// Each repo's latest commit time (epoch seconds), in order, `None` where there is
-/// none. Off the main thread: it runs git once per repo.
+/// A repo's commits, as the office shows them.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RepoCommits {
+    /// The latest commit's time (epoch seconds), on any branch.
+    last_at: Option<i64>,
+    /// How many were made since the `since` asked for (office plan O1.6: today's).
+    since: Option<u32>,
+}
+
+/// Each repo's commits, in order: the latest one's time and how many since `since`
+/// (epoch seconds), `None` where there are none. Off the main thread: it runs git
+/// twice per repo.
 #[tauri::command]
-pub async fn office_last_commits(repo_roots: Vec<String>) -> Result<Vec<Option<i64>>, String> {
+pub async fn office_commits(repo_roots: Vec<String>, since: i64) -> Result<Vec<RepoCommits>, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        repo_roots.iter().map(|r| crate::git::last_commit_at(std::path::Path::new(r))).collect()
+        repo_roots
+            .iter()
+            .map(|r| {
+                let root = std::path::Path::new(r);
+                RepoCommits { last_at: crate::git::last_commit_at(root), since: crate::git::commits_since(root, since) }
+            })
+            .collect()
     })
     .await
     .map_err(|e| e.to_string())
@@ -396,6 +446,10 @@ mod tests {
         let session = office.session(&token, 1001).expect("a session");
         assert!(office.valid(Some(&session)));
         assert!(office.session(&token, 1002).is_none(), "spent");
+
+        office.inner.lock().unwrap().dev_launch = Some("dev".into());
+        assert!(office.session("dev", 1003).is_some());
+        assert!(office.session("dev", 9999).is_some(), "a dev launch works again, and late");
 
         let late = office.launch(2000);
         assert!(office.session(&late, 2000 + LAUNCH_SECS).is_none(), "expired");

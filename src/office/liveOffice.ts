@@ -4,12 +4,14 @@
 // sticky — the room each project sits in, the worker each instance had — load from
 // Workbench before the first seating and are saved back when they change. The debug
 // click from O1.2 still works: a moved worker goes back to work a moment after
-// getting there.
+// getting there. Each snapshot also adds to the activity log and to today's count of
+// sessions that worked (O1.6), which is saved with the settings so a reload keeps it.
 
 import type { RemoteSnapshot } from "../remote/protocol";
 import { buildOffice } from "./map/build";
 import type { Link } from "./net";
-import { TEAM_NAMES, type Team } from "./roster";
+import { addToLog, logEvents, type LogEntry } from "./log";
+import { ROSTER, TEAM_NAMES, type Team } from "./roster";
 import { debugClick, deskAt } from "./world/debug";
 import { createWorld, workerAt as hit } from "./world/entities";
 import { stepWalkers } from "./world/move";
@@ -43,14 +45,48 @@ let loaded = false;
 let saveTimer: ReturnType<typeof setTimeout> | undefined;
 let onChange = () => {};
 
+/** The sessions that worked on `day` (local, `YYYY-MM-DD`), by instance id. */
+let today = { day: "", ids: [] as string[] };
+let log: LogEntry[] = [];
+/** The snapshot the log last compared against. */
+let logged: RemoteSnapshot | null = null;
+
 function save(): void {
   clearTimeout(saveTimer);
-  saveTimer = setTimeout(() => void link?.savePrefs({ rooms: staff.rooms, sticky: staff.sticky }), SAVE_AFTER);
+  saveTimer = setTimeout(() => void link?.savePrefs({ rooms: staff.rooms, sticky: staff.sticky, today }), SAVE_AFTER);
+}
+
+const dayOf = (ms: number) => {
+  const d = new Date(ms);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+};
+
+/** Counts `snapshot`'s working sessions into today's; true when that changed. */
+function countToday(snapshot: RemoteSnapshot): boolean {
+  const day = dayOf(Date.now());
+  if (today.day !== day) today = { day, ids: [] };
+  const fresh = snapshot.instances.filter((i) => i.live && i.phase === "working" && !today.ids.includes(i.id));
+  today.ids.push(...fresh.map((i) => i.id));
+  return fresh.length > 0;
+}
+
+/** Who has `instanceId` as seated now: a worker's name, "A contractor", or "Someone". */
+function nameIn(seating: Staff["seating"], instanceId: string): string | null {
+  const s = seating.get(instanceId);
+  if (!s) return null;
+  return s.worker ? (ROSTER.find((w) => w.id === s.worker)?.name ?? s.worker) : "A contractor";
 }
 
 function seat(): void {
   if (!loaded || !latest) return;
-  if (seatSessions(office, world, staff, latest, performance.now())) save();
+  const before = staff.seating;
+  let changed = seatSessions(office, world, staff, latest, performance.now());
+  // Someone who just left is named by where they sat before.
+  const name = (id: string) => nameIn(staff.seating, id) ?? nameIn(before, id) ?? "Someone";
+  if (latest !== logged) log = addToLog(log, logEvents(logged, latest, name, Date.now()));
+  logged = latest;
+  changed = countToday(latest) || changed;
+  if (changed) save();
   onChange();
 }
 
@@ -65,6 +101,8 @@ export function startOffice(l: Link, changed: () => void): void {
     const rooms = Object.fromEntries(Object.entries((saved?.rooms ?? {}) as Record<string, unknown>).filter(([, t]) => isTeam(t))) as Record<string, Team>;
     const sticky = Object.fromEntries(Object.entries((saved?.sticky ?? {}) as Record<string, unknown>).filter(([, w]) => typeof w === "string")) as Record<string, string>;
     staff = createStaff({ rooms, sticky });
+    const t = saved?.today as { day?: unknown; ids?: unknown } | undefined;
+    if (typeof t?.day === "string" && Array.isArray(t.ids)) today = { day: t.day, ids: t.ids.filter((id): id is string => typeof id === "string") };
     standAbout();
     loaded = true;
     seat();
@@ -98,6 +136,15 @@ export function stepOffice(ms: number): boolean {
   const walked = stepWalkers(world, office, ms);
   return (loaded && behave(office, world, staff, ms)) || walked;
 }
+
+/** The activity log, newest first. */
+export const officeLog = (): readonly LogEntry[] => log;
+
+/** How many sessions worked today. */
+export const workedToday = (): number => (today.day === dayOf(Date.now()) ? today.ids.length : 0);
+
+/** Who has `instanceId`: a worker's name, "A contractor", or "Someone". */
+export const nameOf = (instanceId: string): string => nameIn(staff.seating, instanceId) ?? "Someone";
 
 /** Who `id` (from `workerAt`) is, and their session. */
 export const whoAt = (id: string): Who | null => whoIs(staff, id);

@@ -421,6 +421,20 @@ favourite spots.
 - **Build:** sessions by phase, usage limits, context sizes, sessions and commits today,
   CPU/RAM from O0.4, a short activity log (worker events in plain words).
 - **Done when:** the sidebar shows them updating live.
+- _As built (approved):_ with nobody picked the sidebar shows (`stats.ts`, rebuilt on
+  every snapshot and every 3 s): the live sessions by phase; today's sessions that
+  worked (counted by the page, kept with its prefs so a reload doesn't lose them) and
+  today's commits (Workbench counts each project's commits since the local midnight,
+  `git::commits_since`, carried as `commitsToday` on the snapshot's projects); the
+  5-hour and 7-day usage limits as bars with their resets; the five fullest contexts,
+  by worker; Workbench's CPU/RAM (one poll shared with the HUD); and an activity log
+  (`log.ts`): the last eight changes between snapshots in plain words, by worker — a
+  session opening or closing, getting to work, needing you (and what it asks),
+  finishing, new commits. It replaces O0.2's plain session list. A debug build also
+  starts the office's listener with the app and writes a reusable office URL to
+  `office-dev.url` in the app-data dir, so a tool can open the office without a
+  click. Tests: the log's wording, the phase counts, the contexts, today's commits;
+  counting commits since a time. Checked in Workbench (the dev app).
 
 ## Phase O2 — Office life
 
@@ -568,7 +582,7 @@ closed, open and still, and open and busy.
 - [x] O1.3 Assignment engine
 - [x] O1.4 Status → behaviour
 - [x] O1.5 Hover and the sidebar
-- [ ] O1.6 Stats when nothing is selected
+- [x] O1.6 Stats when nothing is selected
 - [ ] O2.1 Idle planner
 - [ ] O2.2 Group activities
 - [ ] O2.3 Reactions

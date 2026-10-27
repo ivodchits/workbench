@@ -15,7 +15,7 @@
 // `App.tsx` (main window only).
 
 import { useEffect, useRef, useState } from "react";
-import { officeLastCommits } from "../ipc/office";
+import { officeCommits, type RepoCommits } from "../ipc/office";
 import type { Project } from "../ipc/registry";
 import { remotePushSnapshot } from "../ipc/remote";
 import type { RemoteChoice, RemoteDuck, RemoteSnapshot } from "../remote/protocol";
@@ -67,9 +67,17 @@ function remoteChoice(p: PendingChoice): RemoteChoice {
   };
 }
 
-/** Each local project's latest commit time (epoch seconds), read while `on`. */
-function useLastCommits(projects: readonly Project[], on: boolean): ReadonlyMap<string, number | null> {
-  const [commits, setCommits] = useState<ReadonlyMap<string, number | null>>(new Map());
+/** The local midnight just gone, epoch seconds. */
+function midnight(): number {
+  const d = new Date();
+  d.setHours(0, 0, 0, 0);
+  return Math.floor(d.getTime() / 1000);
+}
+
+/** Each local project's commits — the latest one's time and today's count — read
+ *  while `on`. */
+function useCommits(projects: readonly Project[], on: boolean): ReadonlyMap<string, RepoCommits> {
+  const [commits, setCommits] = useState<ReadonlyMap<string, RepoCommits>>(new Map());
   // The projects as a string, so a registry change elsewhere doesn't run git again.
   const key = JSON.stringify(projects.filter((p) => p.remoteSshDest == null).map((p) => [p.id, p.rootPath]));
   useEffect(() => {
@@ -78,9 +86,9 @@ function useLastCommits(projects: readonly Project[], on: boolean): ReadonlyMap<
     let live = true;
     let soon: ReturnType<typeof setTimeout> | null = null;
     const read = () => {
-      officeLastCommits(local.map(([, root]) => root))
-        .then((times) => {
-          if (live) setCommits(new Map(local.map(([id], i) => [id, times[i] ?? null])));
+      officeCommits(local.map(([, root]) => root), midnight())
+        .then((repos) => {
+          if (live) setCommits(new Map(local.map(([id], i) => [id, repos[i] ?? { lastAt: null, since: null }])));
         })
         .catch(() => {});
     };
@@ -116,7 +124,7 @@ export default function RemoteMirror(): null {
   const choices = useChoiceStates();
   // The phone's server, or the office (office plan O0.2): both read this snapshot.
   const running = (server?.running || server?.office) ?? false;
-  const lastCommits = useLastCommits(registry.projects, running);
+  const commits = useCommits(registry.projects, running);
   const duckStore = useDuckState();
   const speech = useSpeechState();
   // Kept as a string so a streaming reply, which changes the store many times a
@@ -186,7 +194,8 @@ export default function RemoteMirror(): null {
           name: p.name,
           group: p.groupId ? groupName.get(p.groupId) ?? null : null,
           remote: p.remoteSshDest != null,
-          lastCommitAt: lastCommits.get(p.id) ?? null,
+          lastCommitAt: commits.get(p.id)?.lastAt ?? null,
+          commitsToday: commits.get(p.id)?.since ?? null,
         })),
         duck: JSON.parse(duckKey) as RemoteDuck,
         created: [...created],
@@ -199,7 +208,7 @@ export default function RemoteMirror(): null {
         timer.current = null;
       }
     };
-  }, [running, registry, consoles, statuses, limits, alerts, notif, created, choices, lastCommits, duckKey]);
+  }, [running, registry, consoles, statuses, limits, alerts, notif, created, choices, commits, duckKey]);
 
   return null;
 }

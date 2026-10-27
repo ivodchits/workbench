@@ -10,7 +10,14 @@ export function officeOpen(): Promise<string> {
   return invoke("office_open");
 }
 
-/** Each repo's latest commit time (epoch seconds), in order; null where there is none. */
-export function officeLastCommits(repoRoots: string[]): Promise<(number | null)[]> {
-  return invoke("office_last_commits", { repoRoots });
+/** A repo's commits: the latest one's time (epoch seconds), and how many since the
+ *  `since` asked for; null where there are none. */
+export interface RepoCommits {
+  lastAt: number | null;
+  since: number | null;
+}
+
+/** Each repo's commits, in order (office plan O1.6: `since` is the local midnight). */
+export function officeCommits(repoRoots: string[], since: number): Promise<RepoCommits[]> {
+  return invoke("office_commits", { repoRoots, since });
 }

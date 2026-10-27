@@ -278,36 +278,6 @@ h1 {
   color: var(--muted);
 }
 
-.instances {
-  list-style: none;
-  margin: 8px 0 0;
-  padding: 0;
-}
-
-.instances li {
-  display: flex;
-  gap: 8px;
-  padding: 2px 0;
-}
-
-.instances .glyph {
-  flex: none;
-  width: 1em;
-  text-align: center;
-}
-
-.instances .off {
-  color: var(--muted);
-}
-
-.instances .phase-needs_you .glyph {
-  color: var(--needs);
-}
-
-.instances .phase-working .glyph {
-  color: var(--duck);
-}
-
 h2 {
   margin: 16px 0 6px;
   font-size: 13px;
@@ -368,4 +338,121 @@ body.below #side {
   height: var(--side, 300px);
   border-left: 0;
   border-top: 1px solid var(--rim);
+}
+
+/* The stats (O1.6). */
+#stats .phases {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 4px;
+  margin-bottom: 6px;
+}
+
+#stats .phases > span {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 4px 0;
+  border: 1px solid var(--rim);
+  border-radius: 4px;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+#stats .phases b {
+  font-size: 15px;
+  font-weight: normal;
+  color: var(--text);
+}
+
+#stats .phases .none {
+  opacity: 0.45;
+}
+
+#stats .phase-working b {
+  color: var(--duck);
+}
+
+#stats .phase-needs_you b {
+  color: var(--needs);
+}
+
+#stats .phase-done b {
+  color: var(--done);
+}
+
+#stats .row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 1px 0;
+  white-space: nowrap;
+}
+
+#stats .row .label {
+  flex: none;
+  width: 9ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--muted);
+}
+
+#stats .row .value {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+#stats .row .muted {
+  margin-left: auto;
+  font-size: 11px;
+}
+
+#stats .bar {
+  flex: 1;
+  min-width: 40px;
+  height: 6px;
+  background: var(--rim);
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+#stats .bar > span {
+  display: block;
+  height: 100%;
+  background: var(--done);
+}
+
+#stats .bar.mid > span {
+  background: var(--duck);
+}
+
+#stats .bar.high > span {
+  background: var(--needs);
+}
+
+#stats .log {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  font-size: 12px;
+}
+
+#stats .log li {
+  display: flex;
+  gap: 8px;
+  padding: 1px 0;
+}
+
+#stats .log li > :first-child {
+  flex: none;
+}
+
+#stats .log-needs > :last-child {
+  color: var(--needs);
+}
+
+#stats .log-done > :last-child,
+#stats .log-commit > :last-child {
+  color: var(--done);
 }
