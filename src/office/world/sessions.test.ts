@@ -1,49 +1,20 @@
 import { describe, expect, it } from "vitest";
 
-import type { RemoteInstance, RemoteSnapshot } from "../../remote/protocol";
 import { buildOffice } from "../map/build";
 import { createWorld, seatedAt, type World } from "./entities";
+import { instance, snapshot } from "./fixtures";
 import { stepWalkers } from "./move";
-import { createStaff, seatSessions, showScreens, type Staff } from "./sessions";
+import { behave } from "./behave";
+import { createStaff, seatSessions, type Staff } from "./sessions";
 
 const office = buildOffice();
 
-const instance = (id: string, projectId: string, live = true): RemoteInstance => ({
-  id,
-  projectId,
-  projectName: projectId,
-  title: id,
-  taskNote: "",
-  branch: null,
-  worktreeOn: false,
-  remote: false,
-  phase: live ? "working" : null,
-  compacting: false,
-  subagents: 0,
-  activity: null,
-  status: "idle",
-  ctxTokens: 0,
-  live,
-  needsSince: null,
-  escalated: false,
-  stuck: false,
-  choice: null,
-});
-
-const snapshot = (instances: RemoteInstance[]): RemoteSnapshot => ({
-  updatedAt: 0,
-  usageLimits: null,
-  instances,
-  projects: [],
-  duck: { state: "idle", autopilots: [] },
-  created: [],
-});
-
-/** Steps until nobody's walking. */
+/** Steps as the page does until nobody's walking. */
 function settle(world: World, staff: Staff): void {
   let ms = 0;
   for (let n = 0; n < 3000 && world.workers.some((w) => w.walk); n++) {
-    if (stepWalkers(world, office, (ms += 100))) showScreens(office, world, staff);
+    stepWalkers(world, office, (ms += 100));
+    behave(office, world, staff, ms);
   }
   expect(world.workers.filter((w) => w.walk).map((w) => w.worker.id)).toEqual([]);
 }
@@ -81,7 +52,7 @@ describe("sessions in the office", () => {
 
     // It ends: they get up and go to a free kitchen spot, and the screen goes dark.
     const desk = w.seat!;
-    seatSessions(office, world, staff, snapshot([instance("a", "misc", false)]), 0);
+    seatSessions(office, world, staff, snapshot([instance("a", "misc", { live: false, phase: null })]), 0);
     expect(w.tag).toBeNull();
     settle(world, staff);
     const spot = office.spots.find((s) => s.id === staff.spots.get(w.worker.id))!;

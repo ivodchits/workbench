@@ -3,7 +3,7 @@
 // or the door to walk out.
 
 import type { OfficeMap, Point } from "../map/build";
-import { workerAt, type World } from "./entities";
+import { workerAt, type WorkerEntity, type World } from "./entities";
 import { leave, walkTo } from "./move";
 
 const DOOR_REACH = 12;
@@ -13,9 +13,17 @@ export function deskAt(office: OfficeMap, p: Point): number | undefined {
   return office.seats.find((s) => p.x >= s.desk.x && p.x < s.desk.x + 32 && p.y >= s.monitor.y && p.y < s.sit.base + 4)?.index;
 }
 
-/** A debug click at (x, y): picks the worker there, or sends the one picked. Returns
- *  who's picked now. */
-export function debugClick(office: OfficeMap, world: World, picked: string | null, x: number, y: number, ms: number): string | null {
+/** A debug click at (x, y): picks the worker there, or sends the one picked (and tells
+ *  `sent`). Returns who's picked now. */
+export function debugClick(
+  office: OfficeMap,
+  world: World,
+  picked: string | null,
+  x: number,
+  y: number,
+  ms: number,
+  sent?: (w: WorkerEntity) => void,
+): string | null {
   const under = workerAt(world, x, y);
   if (under) return under.worker.id;
   const w = world.workers.find((o) => o.worker.id === picked);
@@ -26,5 +34,6 @@ export function debugClick(office: OfficeMap, world: World, picked: string | nul
   else if (desk !== undefined && !world.workers.some((o) => o !== w && o.seat === desk)) {
     walkTo(office, w, p, ms, { kind: "sit", seat: desk });
   } else walkTo(office, w, p, ms);
+  sent?.(w);
   return w.worker.id;
 }

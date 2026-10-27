@@ -1,8 +1,10 @@
-// The office page's office (office plan O1.3): workers driven by Workbench's sessions.
-// Snapshots seat sessions (world/sessions.ts); the settings that make that sticky — the
-// room each project sits in, the worker each instance had — load from Workbench before
-// the first seating and are saved back when they change. The debug click from O1.2
-// still works: the next snapshot sends a moved worker back to their desk.
+// The office page's office (office plans O1.3, O1.4): workers driven by Workbench's
+// sessions. Snapshots seat sessions (world/sessions.ts) and every sim step has people
+// do what their session is doing (world/behave.ts); the settings that make seating
+// sticky — the room each project sits in, the worker each instance had — load from
+// Workbench before the first seating and are saved back when they change. The debug
+// click from O1.2 still works: a moved worker goes back to work a moment after
+// getting there.
 
 import type { RemoteSnapshot } from "../remote/protocol";
 import { buildOffice } from "./map/build";
@@ -12,7 +14,8 @@ import { debugClick, deskAt } from "./world/debug";
 import { createWorld, workerAt as hit } from "./world/entities";
 import { stepWalkers } from "./world/move";
 import { OFFICE_H, OFFICE_W, createRenderer, type View } from "./world/render";
-import { createStaff, seatSessions, showScreens, type Staff } from "./world/sessions";
+import { behave } from "./world/behave";
+import { createStaff, seatSessions, type Staff } from "./world/sessions";
 
 export { OFFICE_H, OFFICE_W };
 
@@ -91,12 +94,12 @@ export function setRoom(projectId: string, team: Team): void {
 
 /** One sim step at `ms`; true when the picture changed. */
 export function stepOffice(ms: number): boolean {
-  const changed = stepWalkers(world, office, ms);
-  if (changed) showScreens(office, world, staff);
-  return changed;
+  const walked = stepWalkers(world, office, ms);
+  return (loaded && behave(office, world, staff, ms)) || walked;
 }
 
-export const clickOffice = (picked: string | null, x: number, y: number, ms: number): string | null => debugClick(office, world, picked, x, y, ms);
+export const clickOffice = (picked: string | null, x: number, y: number, ms: number): string | null =>
+  debugClick(office, world, picked, x, y, ms, (w) => staff.loose.set(w.worker.id, ms));
 
 /** What's at (x, y) in office pixels, for hover: a worker's id, or a contractor's desk
  *  as `desk:<index>`. */

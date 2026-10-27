@@ -1,9 +1,9 @@
-// Drawing the office (office plans O1.1, O1.2): the floors once, then the furniture and
-// the people together in depth order (by the y of their draw edge, so whoever stands
-// lower on screen is in front), then what floats over heads — name tags, status icons
-// and speech bubbles — on top of everything. People are drawn sliding from where the
-// last sim step found them to where it left them, so walking is smooth at any frame
-// rate. Each draw reports how long until the picture changes by itself, so the loop
+// Drawing the office (office plans O1.1, O1.2, O1.4): the floors once, then the
+// furniture and the people together in depth order (by the y of their draw edge, so
+// whoever stands lower on screen is in front), then what floats over heads — name
+// tags, status icons and speech bubbles, a red one flashing — on top of everything.
+// People are drawn sliding from where the last sim step found them to where it left
+// them, so walking is smooth at any frame rate. Each draw reports how long until the picture changes by itself, so the loop
 // sleeps between animation frames.
 
 import { FRAME_H, FRAME_W, frame } from "../art/characters";
@@ -121,8 +121,8 @@ export function createRenderer(office: OfficeMap): Renderer {
       items.sort((a, b) => a.base - b.base);
       for (const item of items) next = Math.min(next, item.draw(ctx, ms));
 
-      for (const c of world.contractors) drawContractorTag(ctx, office, c, view);
-      for (const { e, at } of people.sort((a, b) => a.at.y - b.at.y)) drawOverhead(ctx, e, at, view);
+      for (const c of world.contractors) next = Math.min(next, drawContractorTag(ctx, office, c, view, ms));
+      for (const { e, at } of people.sort((a, b) => a.at.y - b.at.y)) next = Math.min(next, drawOverhead(ctx, e, at, view, ms));
       if (view.overlay) drawOverlay(ctx, office, world);
       return next;
     },
@@ -168,8 +168,9 @@ function drawDuck(ctx: CanvasRenderingContext2D, d: DuckEntity, at: Point, ms: n
   return next;
 }
 
-/** Stacked up from the top of the head: the name tag, the status icon, the bubble. */
-function drawOverhead(ctx: CanvasRenderingContext2D, e: Entity, at: Point, view: View): void {
+/** Stacked up from the top of the head: the name tag, the status icon, the bubble.
+ *  Returns how long until a pulsing bubble flashes. */
+function drawOverhead(ctx: CanvasRenderingContext2D, e: Entity, at: Point, view: View, ms: number): number {
   const layers: HTMLCanvasElement[] = [];
   if (e.kind === "worker") {
     const w = e.worker;
@@ -178,8 +179,8 @@ function drawOverhead(ctx: CanvasRenderingContext2D, e: Entity, at: Point, view:
     }
     if (e.overhead && !e.bubble) layers.push(cached(`icon/${e.overhead}`, () => statusIcon(e.overhead!)));
   }
-  if (e.bubble) layers.push(bubbleImage(e.bubble));
-  if (!layers.length) return;
+  if (e.bubble) layers.push(bubbleImage(e.bubble, ms));
+  if (!layers.length) return Infinity;
 
   // Duck's head fills its frame; a worker's starts a pixel or two down.
   let bottom = Math.round(at.y) - (e.kind === "duck" ? DUCK_H - 2 : FRAME_H) - 1;
@@ -190,20 +191,37 @@ function drawOverhead(ctx: CanvasRenderingContext2D, e: Entity, at: Point, view:
     ctx.drawImage(img, x, y);
     bottom = y - 1;
   }
+  return pulseIn(e.bubble, ms);
 }
 
-/** "Remote contractor" over a contractor's laptop, when tags show or it's hovered. */
-function drawContractorTag(ctx: CanvasRenderingContext2D, office: OfficeMap, c: Contractor, view: View): void {
-  if (!view.tags && view.hover !== `desk:${c.desk}`) return;
-  const img = cached(`tag/contractor/${c.tag}`, () => nameTag("Remote contractor", CONTRACTOR_RIM, c.tag));
+/** Over a contractor's laptop: "Remote contractor" when tags show or it's hovered, and
+ *  the bubble when the session needs you. */
+function drawContractorTag(ctx: CanvasRenderingContext2D, office: OfficeMap, c: Contractor, view: View, ms: number): number {
+  const layers: HTMLCanvasElement[] = [];
+  if (view.tags || view.hover === `desk:${c.desk}`) {
+    layers.push(cached(`tag/contractor/${c.tag}`, () => nameTag("Remote contractor", CONTRACTOR_RIM, c.tag)));
+  }
+  if (c.bubble) layers.push(bubbleImage(c.bubble, ms));
   const m = office.seats[c.desk].monitor;
-  const x = Math.min(Math.max(0, m.x + 7 - Math.floor(img.width / 2)), OFFICE_W - img.width);
-  ctx.drawImage(img, x, Math.max(0, m.y + 4 - img.height));
+  let bottom = m.y + 4;
+  for (const img of layers) {
+    const x = Math.min(Math.max(0, m.x + 7 - Math.floor(img.width / 2)), OFFICE_W - img.width);
+    const y = Math.max(0, bottom - img.height);
+    ctx.drawImage(img, x, y);
+    bottom = y - 1;
+  }
+  return pulseIn(c.bubble, ms);
 }
 
-function bubbleImage(b: Bubble): HTMLCanvasElement {
-  return cached(`bubble/${b.tone}/${b.text}`, () => speechBubble(b.text, b.tone));
+/** A pulsing bubble flashes between its own tone and "needs" this often. */
+const PULSE_MS = 400;
+
+function bubbleImage(b: Bubble, ms: number): HTMLCanvasElement {
+  const tone = b.pulse && Math.floor(ms / PULSE_MS) % 2 === 1 ? "needs" : b.tone;
+  return cached(`bubble/${tone}/${b.text}`, () => speechBubble(b.text, tone));
 }
+
+const pulseIn = (b: Bubble | null, ms: number) => (b?.pulse ? PULSE_MS - (ms % PULSE_MS) : Infinity);
 
 /** Blocked walk cells in red, desk stand points in blue, spots in yellow, and where
  *  everyone walking is headed, in white. */

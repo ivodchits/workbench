@@ -241,6 +241,7 @@ export const SPOTS: SpotSpec[] = [
   spot("books-demiurge", "browse", 76, 200, "up"),
   spot("books-boss", "browse", 260, 56, "up"),
   spot("rack", "browse", 12, 194, "up"),
+  spot("cabinet", "browse", 107, 200, "up"),
 ];
 
 /** Where people come in and leave. */

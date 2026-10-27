@@ -282,6 +282,100 @@ const MUG_SIP: Record<"down" | "right", Part> = {
   ], 9),
 };
 
+// Work seen from behind (office plan O1.4). A newspaper held up hides the face; from
+// behind its top shows over the bowed head and its edges either side, the hands on them. `n` is the
+// paper, `N` the print.
+const NEWSPAPER = (print: readonly string[]): Part =>
+  part(-2, ["oooooooooooooooo", ...print.map((p) => `o${p}o`), "oooooooooooooooo"]);
+const NEWSPAPER_A = NEWSPAPER([
+  "nNNNNNnnNNNNNn",
+  "nnnnnnnnnnnnnn",
+  "nNNnnnnnnnnNNn",
+  "nNNnnnnnnnnNNn",
+  "nnnnnnnnnnnnnn",
+  "NNnnnnnnnnnnNN",
+  "nnnnnnnnnnnnnn",
+  "nNNnnnnnnnnNNn",
+  "nnnnnnnnnnnnnn",
+  "NNnnnnnnnnnnNN",
+  "nNNnnnnnnnnNNn",
+  "nnnnnnnnnnnnnn",
+  "NNnnnnnnnnnnNN",
+]);
+const NEWSPAPER_B = NEWSPAPER([
+  "nNNNNnnNNNNNNn",
+  "nnnnnnnnnnnnnn",
+  "nnnnnnnnnnnnnn",
+  "NNnnnnnnnnnnNN",
+  "nnnnnnnnnnnnnn",
+  "nNNnnnnnnnnNNn",
+  "nNNnnnnnnnnNNn",
+  "nnnnnnnnnnnnnn",
+  "NNnnnnnnnnnnNN",
+  "nnnnnnnnnnnnnn",
+  "nNNnnnnnnnnNNn",
+  "nnnnnnnnnnnnnn",
+  "NNnnnnnnnnnnNN",
+]);
+const PAPER_HANDS_A = part(8, [".so..........os.", ".so..........os."]);
+const PAPER_HANDS_B = part(9, [".so..........os.", ".so..........os."]);
+/** A sheet held up off to one side, lower than a newspaper: white, fine print. */
+const DOCUMENT = part(5, [
+  "...........ooooo",
+  "...........occco",
+  "...........oNcco",
+  "...........occco",
+  "...........oNNco",
+  "...........occco",
+  "...........oNcco",
+  "...........occco",
+  "...........ooooo",
+], 0);
+const DOCUMENT_HAND = part(10, ["............oso."]);
+
+/** A hand up at the whiteboard, from behind: the marker moves across. */
+const ARM_BOARD_A = ARM_UP_A;
+const ARM_BOARD_B: Part = { ...ARM_UP_B, x: 11 };
+const ARM_BOARD_C: Part = { ...ARM_UP_A, x: 11 };
+
+/** A sheet of paper going into the cabinet, by one hand or the other. */
+const FILE_SHEET_R = part(10, ["...........oooo.", "...........occo.", "...........occo.", "...........oooo."]);
+const FILE_SHEET_L = part(10, [".oooo...........", ".occo...........", ".occo...........", ".oooo..........."]);
+
+/** A drop of sweat by the head, falling. */
+const SWEAT_A = part(3, [".o.", "odo", "odo", ".o."]);
+const SWEAT_B = part(5, [".o.", "odo", "odo", ".o."]);
+
+/** Leaning back with the hands behind the head, from behind: the arms frame it, the
+ *  hands across the back of it. */
+const HANDS_BEHIND_HEAD = part(2, [
+  ".oo..........oo.",
+  "otto........otto",
+  "otso........osto",
+  "otsossssssssosto",
+  "oto.oooooooo.oto",
+  "oto..........oto",
+  "oto..........oto",
+  "oto..........oto",
+  "otto........otto",
+  ".otto......otto.",
+  "..oo........oo..",
+]);
+/** One hand still behind the head, the other bringing the mug up. */
+const SIP_BEHIND_HEAD = part(2, [
+  ".oo.............",
+  "otto............",
+  "otso............",
+  "otsossssso..oooo",
+  "oto.oooooo..occo",
+  "oto.........occo",
+  "oto........osooo",
+  "oto........osso.",
+  "otto......ottto.",
+  ".otto.....otto..",
+  "..oo......ooo...",
+]);
+
 /** Trim over the front of the top. */
 const TOP_TRIM: Record<TopStyle, Part | null> = {
   tee: null,
@@ -619,7 +713,24 @@ const HEADPHONES: Record<DrawnDir, Part> = {
 
 // ── Animations ───────────────────────────────────────────────────────────────
 
-export type Anim = "idle" | "walk" | "type" | "wave" | "drink" | "sleep" | "cheer" | "facepalm";
+export type Anim =
+  | "idle"
+  | "walk"
+  | "type"
+  | "typeFast"
+  | "wave"
+  | "fret"
+  | "drink"
+  | "sleep"
+  | "cheer"
+  | "facepalm"
+  | "newspaper"
+  | "document"
+  | "board"
+  | "tinker"
+  | "file"
+  | "relax"
+  | "coffee";
 
 /** One frame's pose: which legs and torso, and the extras. */
 interface Pose {
@@ -629,6 +740,9 @@ interface Pose {
   arm?: Part;
   /** Something held, drawn last (a mug). */
   held?: Part;
+  /** Something in front of them that the body hides, drawn first (a newspaper, seen
+   *  from behind). */
+  behind?: Part;
   blink?: boolean;
   /** Whole-body nudge (a hop), and the head's own on top (a nod, a slump). */
   dy?: number;
@@ -681,11 +795,87 @@ export const ANIMS: Record<Anim, AnimDef> = {
       },
     ],
   },
+  /** Typing with subagents out: the same, twice as fast. */
+  typeFast: {
+    dirs: ["down", "up"],
+    frames: [
+      { front: { legs: LEGS_SEATED, torso: TORSO_TYPE_A }, back: { torso: TORSO_TYPE_BACK_A }, side: standSide, ms: 85 },
+      { front: { legs: LEGS_SEATED, torso: TORSO_TYPE_B }, back: { torso: TORSO_TYPE_BACK_B }, side: standSide, ms: 85 },
+    ],
+  },
   wave: {
     dirs: ["down"],
     frames: [
       { front: { legs: LEGS_FRONT, torso: TORSO_WAVE, arm: ARM_UP_A }, side: standSide, ms: 260 },
       { front: { legs: LEGS_FRONT, torso: TORSO_WAVE, arm: ARM_UP_B }, side: standSide, ms: 260 },
+    ],
+  },
+  /** Waving harder, sweating: you've kept them waiting. */
+  fret: {
+    dirs: ["down"],
+    frames: [
+      { front: { legs: LEGS_FRONT, torso: TORSO_WAVE, arm: ARM_UP_A, held: SWEAT_A }, side: standSide, ms: 180 },
+      { front: { legs: LEGS_FRONT, torso: TORSO_WAVE, arm: ARM_UP_B, held: SWEAT_B }, side: standSide, ms: 180 },
+    ],
+  },
+  /** Seated with a newspaper up; now and then a page turns. */
+  newspaper: {
+    dirs: ["down", "up"],
+    frames: [
+      { front: { legs: LEGS_SEATED }, back: { torso: TORSO_TYPE_BACK_A, behind: NEWSPAPER_A, held: PAPER_HANDS_A, headDy: 2 }, side: standSide, ms: 2600 },
+      { front: { legs: LEGS_SEATED }, back: { torso: TORSO_TYPE_BACK_A, behind: NEWSPAPER_B, held: PAPER_HANDS_B, headDy: 2 }, side: standSide, ms: 500 },
+    ],
+  },
+  /** Seated, reading a sheet held up to one side; the head follows the lines. */
+  document: {
+    dirs: ["down", "up"],
+    frames: [
+      { front: { legs: LEGS_SEATED }, back: { torso: TORSO_WAVE, behind: DOCUMENT, held: DOCUMENT_HAND }, side: standSide, ms: 1800 },
+      { front: { legs: LEGS_SEATED }, back: { torso: TORSO_WAVE, behind: DOCUMENT, held: DOCUMENT_HAND, headDy: 1 }, side: standSide, ms: 1200 },
+    ],
+  },
+  /** At the whiteboard, from behind: writing across it. */
+  board: {
+    dirs: ["up"],
+    frames: [
+      { front: { legs: LEGS_FRONT, torso: TORSO_WAVE, arm: ARM_BOARD_A }, side: standSide, ms: 300 },
+      { front: { legs: LEGS_FRONT, torso: TORSO_WAVE, arm: ARM_BOARD_B }, side: standSide, ms: 300 },
+      { front: { legs: LEGS_FRONT, torso: TORSO_WAVE, arm: ARM_BOARD_C }, side: standSide, ms: 300 },
+      { front: { legs: LEGS_FRONT, torso: TORSO_WAVE, arm: ARM_BOARD_B }, side: standSide, ms: 300 },
+      { front: { legs: LEGS_FRONT }, side: standSide, ms: 900 },
+    ],
+  },
+  /** At the server rack, from behind: hands busy, head down, shifting about. */
+  tinker: {
+    dirs: ["up"],
+    frames: [
+      { front: { legs: LEGS_FRONT, torso: TORSO_TYPE_BACK_A, headDy: 1 }, side: standSide, ms: 240 },
+      { front: { legs: LEGS_FRONT, torso: TORSO_TYPE_BACK_B, headDy: 1 }, side: standSide, ms: 240 },
+      { front: { legs: LEGS_FRONT_STEP_L, torso: TORSO_TYPE_BACK_A }, side: standSide, ms: 400 },
+      { front: { legs: LEGS_FRONT, torso: TORSO_TYPE_BACK_B, headDy: 1 }, side: standSide, ms: 240 },
+    ],
+  },
+  /** At the filing cabinet, from behind: a sheet at a time going in. */
+  file: {
+    dirs: ["up"],
+    frames: [
+      { front: { legs: LEGS_FRONT, torso: TORSO_TYPE_BACK_A, held: FILE_SHEET_R }, side: standSide, ms: 350 },
+      { front: { legs: LEGS_FRONT, torso: TORSO_TYPE_BACK_B, headDy: 1 }, side: standSide, ms: 250 },
+      { front: { legs: LEGS_FRONT, torso: TORSO_TYPE_BACK_B, held: FILE_SHEET_L }, side: standSide, ms: 350 },
+      { front: { legs: LEGS_FRONT, torso: TORSO_TYPE_BACK_A, headDy: 1 }, side: standSide, ms: 250 },
+    ],
+  },
+  /** Leaning back at the desk, hands behind the head. */
+  relax: {
+    dirs: ["down", "up"],
+    frames: [{ front: { legs: LEGS_SEATED }, back: { torso: TORSO_CHEER, held: HANDS_BEHIND_HEAD }, side: standSide, ms: 4000 }],
+  },
+  /** Leaning back with a coffee: now and then a sip. */
+  coffee: {
+    dirs: ["down", "up"],
+    frames: [
+      { front: { legs: LEGS_SEATED }, back: { torso: TORSO_CHEER, held: HANDS_BEHIND_HEAD }, side: standSide, ms: 3200 },
+      { front: { legs: LEGS_SEATED }, back: { torso: TORSO_CHEER, held: SIP_BEHIND_HEAD, headDy: -1 }, side: standSide, ms: 1400 },
     ],
   },
   /** Standing with a mug; now and then a sip. From behind, only the elbow shows. */
@@ -777,6 +967,7 @@ export function frame(look: Look, anim: Anim, dir: Dir, index: number): Bitmap {
   const head = body + (pose.headDy ?? 0);
   const put = (p: Part | null | undefined, dy = body) => p && draw(out, p, colors, 0, dy);
 
+  put(pose.behind);
   put(pose.legs);
   put(pose.torso ?? TORSO[drawn]);
   if (drawn === "down") put(TOP_TRIM[look.topStyle]);
@@ -815,6 +1006,7 @@ export function allParts(): [string, Part][] {
         add(`${a}.${i}.${view}.torso`, pose.torso);
         add(`${a}.${i}.${view}.arm`, pose.arm);
         add(`${a}.${i}.${view}.held`, pose.held);
+        add(`${a}.${i}.${view}.behind`, pose.behind);
       }
     });
   }

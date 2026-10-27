@@ -36,6 +36,17 @@ describe("toolActivity", () => {
     expect(toolActivity("Bash", {})).toBe("bash");
   });
 
+  it("counts running a test script of your own as a test run", () => {
+    expect(toolActivity("PowerShell", { command: String.raw`& "C:\Temp\scratchpad\random_test.ps1"` })).toBe("test");
+    expect(bash("python test_api.py")).toBe("test");
+    expect(bash("./scripts/run-tests.sh")).toBe("test");
+    expect(bash("node app.test.js")).toBe("test");
+    expect(toolActivity("PowerShell", { command: "Invoke-Pester ./tests" })).toBe("test");
+    expect(bash("./scripts/build.sh")).toBe("bash");
+    expect(bash("python latest.py")).toBe("bash");
+    expect(bash("cat contest.txt")).toBe("bash");
+  });
+
   it("counts a browser over MCP as the web", () => {
     expect(toolActivity("mcp__firefox__navigation_go_to_url", {})).toBe("web");
     expect(toolActivity("mcp__github__list_issues", {})).toBe("other");

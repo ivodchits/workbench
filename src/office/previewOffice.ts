@@ -1,70 +1,44 @@
-// The office with everyone at their home desk (office plans O1.1, O1.2), for the
-// preview; the office page runs on sessions instead (liveOffice.ts). A fixed cast
-// of states shows what the renderer can draw: most people typing, Ada standing up to
-// wave because she needs you, a few status icons, a speech bubble, and Duck talking.
+// The office for the preview (office plans O1.1–O1.4); the office page runs on real
+// sessions instead (liveOffice.ts). A made-up snapshot with one session in each state
+// from "Status → behaviour" (world/fixtures.ts) is seated as the page would seat it, so
+// every behaviour shows at once: typing, typing fast, at the rack and the whiteboard,
+// reading, filing, waving with a `!` or a `?`, sweating, slumped, leaning back with a
+// coffee, and two contractors. Theo is saying something, and so is Duck.
 // A debug click moves people: click a worker to pick them, then a spot on the floor to
-// send them there, a desk to sit at it, or the door to walk out (they come back in to
-// their own desk a little later).
+// send them there, a desk to sit at it, or the door to walk out (they go back to what
+// they were doing a few seconds after getting there).
 
 import { buildOffice } from "./map/build";
+import { behave } from "./world/behave";
 import { debugClick } from "./world/debug";
-import { workerAt as hit, createWorld, setAnim, setDuckAnim, type WorkerEntity, type World } from "./world/entities";
-import { enter, stepWalkers } from "./world/move";
+import { workerAt as hit, createWorld, setDuckAnim, type World } from "./world/entities";
+import { EVERY_STATE, EVERY_STATE_ROOMS, snapshot } from "./world/fixtures";
+import { stepWalkers } from "./world/move";
 import { OFFICE_H, OFFICE_W, createRenderer, type View } from "./world/render";
+import { createStaff, seatSessions } from "./world/sessions";
 
 export { OFFICE_H, OFFICE_W };
 
 const office = buildOffice();
 const world: World = createWorld(office);
 const renderer = createRenderer(office);
+const staff = createStaff({ rooms: { ...EVERY_STATE_ROOMS } });
 
-function demo(world: World): void {
-  const by = (id: string) => world.workers.find((w) => w.worker.id === id)!;
-  for (const w of world.workers) w.tag = "working";
-
-  const ada = by("ada");
-  const seat = office.seats[ada.home];
-  Object.assign(ada, { x: seat.stand.x, y: seat.stand.y, prev: { ...seat.stand }, dir: "down", seat: null, overhead: "needs", tag: "needs" });
-  setAnim(ada, "wave", 0);
-  ada.bubble = { text: "!", tone: "needs" };
-  world.screens[ada.home] = "alert";
-
-  Object.assign(by("felix"), { overhead: "working" });
-  Object.assign(by("pip"), { overhead: "done", tag: "done" });
-  setAnim(by("pip"), "idle", 0);
-  Object.assign(by("gus"), { overhead: "stuck" });
-  setAnim(by("gus"), "sleep", 0);
-  by("theo").bubble = { text: "Who touched main?", tone: "say" };
-  for (const id of ["mira", "lola"]) by(id).tag = null;
-
-  setDuckAnim(world.duck, "speak", 0);
-  world.duck.bubble = { text: "Ship it.", tone: "say" };
-}
-
-demo(world);
-
-/** How long someone who walked out stays out. */
-const AWAY_MS = 3000;
-const outSince = new Map<WorkerEntity, number>();
+seatSessions(office, world, staff, snapshot(EVERY_STATE), 0, () => 0);
+world.workers.find((w) => w.worker.id === "theo")!.bubble = { text: "Who touched main?", tone: "say" };
+setDuckAnim(world.duck, "speak", 0);
+world.duck.bubble = { text: "Ship it.", tone: "say" };
 
 /** One sim step at `ms`; true when the picture changed. */
 export function stepOffice(ms: number): boolean {
-  let changed = stepWalkers(world, office, ms);
-  for (const w of world.workers) {
-    if (!w.away) continue;
-    const since = outSince.get(w) ?? ms;
-    outSince.set(w, since);
-    if (ms - since < AWAY_MS) continue;
-    outSince.delete(w);
-    enter(office, w, office.seats[w.home].stand, ms, { kind: "sit", seat: w.home });
-    changed = true;
-  }
-  return changed;
+  const walked = stepWalkers(world, office, ms);
+  return behave(office, world, staff, ms) || walked;
 }
 
 /** A debug click at (x, y): picks the worker there, or sends the one picked. Returns
  *  who's picked now. */
-export const clickOffice = (picked: string | null, x: number, y: number, ms: number): string | null => debugClick(office, world, picked, x, y, ms);
+export const clickOffice = (picked: string | null, x: number, y: number, ms: number): string | null =>
+  debugClick(office, world, picked, x, y, ms, (w) => staff.loose.set(w.worker.id, ms));
 
 /** The worker at (x, y) in office pixels, for hover. */
 export function workerAt(x: number, y: number): string | null {

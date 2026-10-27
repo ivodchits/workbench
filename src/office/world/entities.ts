@@ -13,6 +13,8 @@ import { play, type Clip, type Playing } from "./anim";
 export interface Bubble {
   text: string;
   tone: BubbleTone;
+  /** Flashes between its tone and the plain "needs you" one (office plan O1.4). */
+  pulse?: boolean;
 }
 
 /** What every entity has. `x`, `y` are the feet (the sprite's bottom centre), and
@@ -69,6 +71,8 @@ export type Screen = "off" | "code" | "alert" | "laptop";
 export interface Contractor {
   desk: number;
   tag: TagGlyph | null;
+  /** The `!`/`?` when the session needs you (office plan O1.4). */
+  bubble: Bubble | null;
 }
 
 export interface World {

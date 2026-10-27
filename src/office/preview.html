@@ -190,13 +190,19 @@
       the D&amp;D table. Below: the open space (eight desks, two of them spare for
       borrowed workers), TinyWizardRoyale (two desks) under Duck's office, and under
       that the meeting room, where you can pitch an idea to whoever is free, and the kitchen.
-      Everyone is at their home desk, most of them typing. Ada needs you, so she stands
-      and waves with a <code>!</code> over her head; Felix shows the working icon, Pip
-      is done, Gus is stuck (asleep on the keyboard), Theo is saying something, and so
-      is Duck. Hover a worker for their name tag, with the rail's status glyph. Click a
+      Everyone has a made-up session, one in each state, seated the way the office page
+      seats real ones. Demiurge: typing, typing fast (subagents out), at the whiteboard
+      (tests) and at the server rack (a command). TinyWizardRoyale: both need you, one
+      with a <code>!</code>, one with a <code>?</code> (a question). The open space:
+      reading the paper (the web), reading a document (files), filing at the cabinet
+      (compacting), sweating under a flashing red <code>!</code> (kept waiting), slumped
+      on the keyboard (stuck), and leaning back with a coffee (done). Two remote
+      contractors have laptops on the spare desks, one needing you. Theo is saying
+      something, and so is Duck. Hover a worker for their name tag, with the rail's
+      status glyph. Click a
       worker to pick them, then click the floor to send them walking, a desk to sit at
-      it, or the front door to see them out (they come back to their desk a few seconds
-      later); the walk grid overlay shows their route.</p>
+      it, or the front door to see them out (they go back to what they were doing a few
+      seconds after getting there); the walk grid overlay shows their route.</p>
     <div class="group" role="group" aria-label="Overlay">
       <span>Overlay</span>
       <button type="button" id="overlay-off" data-overlay="off" aria-pressed="true">None</button>
@@ -252,6 +258,15 @@
       <button type="button" id="anim-sleep" data-anim="sleep" aria-pressed="false">Asleep</button>
       <button type="button" id="anim-cheer" data-anim="cheer" aria-pressed="false">Cheer</button>
       <button type="button" id="anim-facepalm" data-anim="facepalm" aria-pressed="false">Facepalm</button>
+      <button type="button" id="anim-typeFast" data-anim="typeFast" aria-pressed="false">Typing fast</button>
+      <button type="button" id="anim-fret" data-anim="fret" aria-pressed="false">Sweating</button>
+      <button type="button" id="anim-newspaper" data-anim="newspaper" aria-pressed="false">Newspaper</button>
+      <button type="button" id="anim-document" data-anim="document" aria-pressed="false">Document</button>
+      <button type="button" id="anim-board" data-anim="board" aria-pressed="false">Whiteboard</button>
+      <button type="button" id="anim-tinker" data-anim="tinker" aria-pressed="false">Server rack</button>
+      <button type="button" id="anim-file" data-anim="file" aria-pressed="false">Filing</button>
+      <button type="button" id="anim-relax" data-anim="relax" aria-pressed="false">Leaning back</button>
+      <button type="button" id="anim-coffee" data-anim="coffee" aria-pressed="false">Coffee at the desk</button>
     </div>
     <div class="group" role="group" aria-label="Facing">
       <span>Facing</span>
@@ -275,7 +290,9 @@
   </section>
 
   <footer>Typing and Asleep face down (on the sofa) and up (at a desk, from behind); Wave,
-    Cheer and Facepalm face down only. Coffee turns every way.</footer>
+    Sweating, Cheer and Facepalm face down only; Whiteboard, Server rack and Filing up
+    only; Newspaper, Document, Leaning back and Coffee at the desk are drawn from behind
+    (up). Coffee turns every way.</footer>
 </main>
 
 <script type="module" src="./preview.ts"></script>

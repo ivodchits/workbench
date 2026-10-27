@@ -87,16 +87,16 @@ Workbench webview ──snapshot──▶ Rust core ──▶ office listener (1
 
 | Signal | Worker | Over the head |
 |---|---|---|
-| `working` + edit | typing, monitor glows | status icon |
-| `working` + bash / test | at the whiteboard / server rack, fidgeting | status icon |
-| `working` + web / read | reading a newspaper / a document | status icon |
+| `working` + edit | typing, monitor glows | — (the monitor shows it) |
+| `working` + bash / test | at the server rack / whiteboard, fidgeting | status icon |
+| `working` + web / read | reading a newspaper / a document | — |
 | `subagents > 0` | typing faster; the count shows in the sidebar | — |
 | `compacting` | shuffling papers into the filing cabinet | — |
-| `needs_you` | stands, waves | **`!`** bubble (**`?`** when it's a question with options) |
+| `needs_you` | stands beside the desk, waves; monitor flashes red | **`!`** bubble (**`?`** when it's a question with options) |
 | `escalated` | sweating, bubble pulses red | `!` red |
 | `stuck` | slumped on the keyboard | `…` |
 | `done` | leans back with a coffee; after ~10 min wanders off (comes back on the next turn) | ✓ |
-| ended | walks out | — |
+| ended | goes off to the kitchen or the lounge — nobody leaves the office | — |
 
 Name tags show the worker name + a status glyph (same glyphs as the rail).
 
@@ -346,6 +346,46 @@ favourite spots.
 - **Build:** the table in "Status → behaviour", including the `!`/`?` bubbles.
 - **Done when:** each state is visible when driven from a real session (and from a fake
   snapshot fixture for the rare ones).
+- _As built (approved):_ `world/behave.ts` turns each session into a place and a pose,
+  re-applied every sim step so timed changes happen without a new snapshot. At the
+  desk: typing (twice as fast with subagents out), a newspaper held up for the web (its
+  top shows over the bowed head), a sheet held to one side for reads, slumped on the
+  keyboard when stuck, leaning back with the hands behind the head for an idle session,
+  and with a coffee when done. Away from it: the server rack for a command, the
+  Demiurge whiteboard (or the meeting room's, if that one's taken) for tests, the filing
+  cabinet (a new spot in front of it) while compacting; with the station taken, they
+  type at the desk instead. Needs you: up and standing beside the desk facing you, so
+  the bubble doesn't hide the monitor, waving, a `!` bubble (`?` for a question), the
+  monitor flashing red; escalated: sweating, waving faster, the bubble flashing red.
+  Done for ten minutes: they wander to an idle spot and come back for the next turn.
+  Nobody leaves the office: a session that ended in a still-open console sends its
+  worker to the kitchen or the lounge until it restarts (a closed console releases
+  them the same way, as in O1.3), and a console whose session hasn't sent its first
+  hook yet counts as idle — at the desk, leaning back. Over the head: the stuck and
+  done icons, and the working icon only away from the desk (at it, the monitor says
+  so). Contractors get the `!`/`?` over their laptop. A change of activity only moves a
+  worker once it has held for 1.5 s, and nobody leaves a station sooner than 6 s after
+  getting there, so a session flicking between tools doesn't send them running; a
+  change of phase is acted on at once. Monitors: code while working, red while it
+  needs you, dark otherwise (done, idle). New poses in `art/characters.ts`: typeFast,
+  fret, newspaper, document, board, tinker, file, relax, coffee (Cast section buttons
+  in the preview). The preview now seats `world/fixtures.ts`'s one-session-per-state
+  snapshot, so every state shows at once; a debug-clicked worker goes back to work 3 s
+  after arriving. Tests: the state → behaviour table, and in a stepped office: first
+  snapshot in place, standing up and sitting back down, rack only for a lasting
+  command, staying at a station, sharing the whiteboards, done → wander → back, ended
+  → kitchen → back, a new console at the desk, the working icon only away from the
+  desk, the debug click, change detection. A shell command that runs a test script of
+  your own (`random_test.ps1`, `test_api.py`, `run-tests.sh`, `app.test.js`, Pester)
+  now counts as a test run (`state/activity.ts`), not only the known test runners.
+  Watched against real sessions in the dev app (O1.3 and O1.4 together): sessions
+  got workers from their rooms and kept them; reading, editing, waving with the red
+  monitor, coffee when done all showed. What that turned up, all fixed: a new console
+  read as ended (its phase is null until the first hook), so its worker walked out and
+  back in on the first prompt; a session running `random_test.ps1` sent its worker to
+  the rack (the script wasn't recognised as a test); the working icon over every desk
+  was noise; and the waving worker, behind the chair, hid the monitor under the
+  bubble. Workers no longer leave the office at all.
 
 ### Step O1.5 — Hover and the sidebar
 - **Build:** hover tooltip (worker, project, session title, phase, activity, for how long).
@@ -374,7 +414,7 @@ favourite spots.
 - **Done when:** each happens on its own during a normal session.
 
 ### Step O2.3 — Reactions
-- **Build:** a commit → the worker cheers; escalation → sweating; session end → walks out;
+- **Build:** a commit → the worker cheers; escalation → sweating; session end → off to the kitchen (nobody leaves the office);
   Duck's autopilot acting on a session → Duck waddles over.
 - **Done when:** each is visible when triggered for real.
 
@@ -502,7 +542,7 @@ closed, open and still, and open and busy.
 - [x] O1.1 Entities and rendering
 - [x] O1.2 Movement
 - [x] O1.3 Assignment engine
-- [ ] O1.4 Status → behaviour
+- [x] O1.4 Status → behaviour
 - [ ] O1.5 Hover and the sidebar
 - [ ] O1.6 Stats when nothing is selected
 - [ ] O2.1 Idle planner

@@ -11,6 +11,9 @@ export const INK = {
   m: "#8a3f3f", // mouth
   c: "#f4f1ea", // collar / white trim
   g: "#9fd4f0", // lens glint
+  n: "#e9e4d6", // newsprint
+  N: "#8c8778", // print
+  d: "#8fd3ff", // sweat
 } as const;
 
 /** Text colour that reads on `hex`: the outline ink on light colours, white on dark. */
