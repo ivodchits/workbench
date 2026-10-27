@@ -452,6 +452,10 @@ body.below #side {
   color: var(--needs);
 }
 
+#stats .log-fun > :last-child {
+  color: var(--duck);
+}
+
 #stats .log-done > :last-child,
 #stats .log-commit > :last-child {
   color: var(--done);

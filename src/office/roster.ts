@@ -64,7 +64,7 @@ export const ROSTER: readonly Worker[] = [
     name: "Oksana",
     team: "open",
     personality: "Fast and fearless. Ships first, refactors after lunch.",
-    likes: ["cooler", "stroll"],
+    likes: ["cooler", "kicker"],
     look: {
       skin: SKIN.pale,
       hair: HAIR.platinum,
@@ -165,7 +165,7 @@ export const ROSTER: readonly Worker[] = [
     name: "Kenji",
     team: "demiurge",
     personality: "Quiet. Holds the lounge console high score.",
-    likes: ["sofa", "beanbag"],
+    likes: ["sofa", "kicker"],
     look: {
       skin: SKIN.medium,
       hair: HAIR.black,

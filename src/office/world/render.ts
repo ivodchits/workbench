@@ -4,7 +4,8 @@
 // tags, status icons and speech bubbles, a red one flashing — on top of everything.
 // People are drawn sliding from where the last sim step found them to where it left
 // them, so walking is smooth at any frame rate. Each draw reports how long until the picture changes by itself, so the loop
-// sleeps between animation frames.
+// sleeps between animation frames. The lounge TV is on only while someone plays the
+// console, and a kicker match shows its ball and, over the table, the score (O2.2).
 
 import { FRAME_H, FRAME_W, frame } from "../art/characters";
 import { DUCK_ANIMS, DUCK_H, DUCK_W, duckFrame } from "../art/duck";
@@ -15,6 +16,7 @@ import { WALK_CELL, type OfficeMap, type Point } from "../map/build";
 import { MAP_H, MAP_W, TILE } from "../map/office";
 import { SIM_STEP } from "../loop";
 import { frameAt, play, type Playing } from "./anim";
+import { ballAt, kickerScore, type KickerMatch } from "./groups";
 import type { Bubble, Contractor, DuckEntity, Entity, Screen, WorkerEntity, World } from "./entities";
 
 export const OFFICE_W = MAP_W * TILE;
@@ -62,7 +64,17 @@ export interface Renderer {
   draw(ctx: CanvasRenderingContext2D, world: World, ms: number, view?: View): number;
 }
 
+/** The kicker's playing field inside its sprite: where the ball runs. */
+const FIELD = { x: 3, y: 3, w: 32, h: 10 };
+/** How often a kicker match is redrawn: the ball moves. */
+const BALL_EVERY = 60;
+
 export function createRenderer(office: OfficeMap): Renderer {
+  /** The world being drawn, for the furniture that shows its state. */
+  let drawing: World | null = null;
+  const still = (p: (typeof office.props)[number], prop = p.prop, key = p.id) =>
+    propStill(key, prop.frames.length, prop.ms ?? 1000, p.x, p.y, p.base, (f) => propFrame(prop, f, p.colors));
+
   const furniture: Still[] = office.props.map((p) => {
     if (p.id === "clock") {
       return {
@@ -77,9 +89,29 @@ export function createRenderer(office: OfficeMap): Renderer {
         },
       };
     }
-    const key = p.colors ? `${p.id}:${JSON.stringify(p.colors)}` : p.id;
-    return propStill(key, p.prop.frames.length, p.prop.ms ?? 1000, p.x, p.y, p.base, (f) => propFrame(p.prop, f, p.colors));
+    if (p.id === "tvOn") {
+      const on = still(p);
+      const off = still(p, PROPS.tvOff, "tvOff");
+      return { base: p.base, draw: (ctx, ms) => (drawing?.tv ? on : off).draw(ctx, ms) };
+    }
+    if (p.id === "kicker") {
+      const table = still(p);
+      return {
+        base: p.base,
+        draw: (ctx, ms) => {
+          const next = table.draw(ctx, ms);
+          const m = drawing?.kicker;
+          if (!m) return next;
+          const ball = ballAt(m, ms);
+          ctx.fillStyle = "#ffffff";
+          ctx.fillRect(Math.round(p.x + FIELD.x + ball.x * FIELD.w), Math.round(p.y + FIELD.y + ball.y * FIELD.h), 2, 2);
+          return ms < m.end ? Math.min(next, BALL_EVERY) : next;
+        },
+      };
+    }
+    return still(p, p.prop, p.colors ? `${p.id}:${JSON.stringify(p.colors)}` : p.id);
   });
+  const kickerTable = office.props.find((p) => p.id === "kicker");
 
   // A monitor per seat for each screen it can show; the world says which one is on.
   const monitors = office.seats.map((seat) => {
@@ -97,6 +129,7 @@ export function createRenderer(office: OfficeMap): Renderer {
     draw(ctx, world, ms, view = {}) {
       ctx.imageSmoothingEnabled = false;
       ctx.drawImage((floors ??= floorLayer(office)), 0, 0);
+      drawing = world;
 
       // How far through the current step: people slide from `prev` to where they are.
       const t = Math.min(1, Math.max(0, (ms - world.stepAt) / SIM_STEP));
@@ -123,10 +156,21 @@ export function createRenderer(office: OfficeMap): Renderer {
 
       for (const c of world.contractors) next = Math.min(next, drawContractorTag(ctx, office, c, view, ms));
       for (const { e, at } of people.sort((a, b) => a.at.y - b.at.y)) next = Math.min(next, drawOverhead(ctx, e, at, view, ms));
+      if (world.kicker && kickerTable) next = Math.min(next, drawScore(ctx, world.kicker, kickerTable.x + kickerTable.prop.w / 2, kickerTable.y - 1, ms));
       if (view.overlay) drawOverlay(ctx, office, world);
       return next;
     },
   };
+}
+
+/** A kicker match's score over the table, its bottom centre at (`cx`, `bottom`).
+ *  Returns how long until the next goal changes it. */
+function drawScore(ctx: CanvasRenderingContext2D, m: KickerMatch, cx: number, bottom: number, ms: number): number {
+  const [w, e] = kickerScore(m, ms);
+  const img = cached(`score/${w}:${e}`, () => speechBubble(`${w} : ${e}`));
+  ctx.drawImage(img, Math.round(cx - img.width / 2), bottom - img.height);
+  const goal = m.goals.find((g) => g.at > ms);
+  return goal ? goal.at - ms : Infinity;
 }
 
 /** The floors and the back wall, which never change, drawn once. */

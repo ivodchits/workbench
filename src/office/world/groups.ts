@@ -1,0 +1,264 @@
+// Things idle workers do together (office plan O2.2), on top of the idle planner: two or
+// three at the water cooler chat (canned lines in bubbles, in turns); two at the kicker
+// play a match to five, the ball running and the score over the table, and the winner
+// cheers; two or more on the sofa get the console out, the TV on. Each starts by itself
+// when enough people are there (`idle.ts` draws people to company), keeps them long
+// enough to be worth it, and tells the activity log.
+
+import type { Anim } from "../art/characters";
+import type { WorkerEntity, World } from "./entities";
+import type { Staff } from "./sessions";
+
+export const CHAT_LINES: readonly string[] = [
+  "Coffee's better today.",
+  "Did the build go green?",
+  "Who broke main?",
+  "Not me this time!",
+  "Lunch at one?",
+  "That PR is huge.",
+  "Tabs or spaces?",
+  "Ship it Friday?",
+  "Never on a Friday.",
+  "Duck seems busy.",
+  "Have you tried the new model?",
+  "It works on my machine.",
+  "Standup ran long again.",
+  "Who took my mug?",
+  "Rubber duck it.",
+  "Naming things is hard.",
+  "I renamed it twice.",
+  "Off by one again.",
+  "The tests pass. Mostly.",
+  "Is it a cache thing?",
+  "It's always DNS.",
+  "Weekend plans?",
+  "Kicker after this?",
+  "I'm one refactor away.",
+  "Read the logs yet?",
+  "Ha!",
+  "No way.",
+  "True.",
+  "Same.",
+  "Tell me about it.",
+];
+
+export const GAME_LINES: readonly string[] = ["gg", "One more!", "No!!", "Combo!", "Pause!", "Rematch.", "Boss fight!", "Lag!", "Nice.", "Watch this."];
+
+/** First to this many goals wins. */
+export const GOALS_TO_WIN = 5;
+/** The winner cheers (and the loser sulks) this long after the last goal. */
+export const CHEER_FOR = 4000;
+/** A chat or a console session keeps those in it at least this long once it starts. */
+export const CHAT_MIN = 90_000;
+export const CONSOLE_MIN = 3 * 60_000;
+/** A bubble stays up this long. */
+export const SAY_FOR = 3200;
+/** Log lines kept for the page to take. */
+const EVENTS_MAX = 20;
+
+export interface KickerMatch {
+  /** Worker ids, by side. */
+  west: string;
+  east: string;
+  start: number;
+  /** Each goal, in order, and who scored it. */
+  goals: readonly { at: number; side: "west" | "east" }[];
+  /** The last goal. */
+  end: number;
+  reported?: boolean;
+}
+
+export interface Games {
+  kicker: KickerMatch | null;
+  chat: { next: number; last: string | null } | null;
+  console: { next: number; last: string | null } | null;
+}
+
+export const noGames = (): Games => ({ kicker: null, chat: null, console: null });
+
+/** The score at `ms`: west, east. */
+export function kickerScore(m: KickerMatch, ms: number): [number, number] {
+  let w = 0;
+  let e = 0;
+  for (const g of m.goals) {
+    if (g.at > ms) break;
+    if (g.side === "west") w++;
+    else e++;
+  }
+  return [w, e];
+}
+
+/** Where the ball is at `ms`, across the field (0 west goal – 1 east goal, 0 top – 1
+ *  bottom): bouncing about between goals, then into the net. */
+export function ballAt(m: KickerMatch, ms: number): { x: number; y: number } {
+  const tri = (v: number) => 1 - Math.abs((((v % 2) + 2) % 2) - 1);
+  let from = m.start;
+  for (const g of m.goals) {
+    if (ms < g.at) {
+      const into = { x: g.side === "west" ? 1 : 0, y: 0.5 };
+      const u = (ms - from) / 1000;
+      const seed = from % 997;
+      const play = { x: 0.1 + 0.8 * tri(u * 0.9 + seed / 97), y: 0.1 + 0.8 * tri(u * 1.3 + seed / 61) };
+      // The last moment before a goal, it goes in.
+      const shot = 600;
+      if (g.at - ms > shot) return play;
+      const t = 1 - (g.at - ms) / shot;
+      const at = (g.at - shot - from) / 1000;
+      const start = { x: 0.1 + 0.8 * tri(at * 0.9 + seed / 97), y: 0.1 + 0.8 * tri(at * 1.3 + seed / 61) };
+      return { x: start.x + (into.x - start.x) * t, y: start.y + (into.y - start.y) * t };
+    }
+    from = g.at;
+  }
+  return { x: 0.5, y: 0.5 };
+}
+
+/** A match from `ms`: goals every few seconds, at random, until one side has five. */
+export function newMatch(west: string, east: string, ms: number, random: () => number): KickerMatch {
+  const goals: { at: number; side: "west" | "east" }[] = [];
+  let t = ms + 2000;
+  let w = 0;
+  let e = 0;
+  while (w < GOALS_TO_WIN && e < GOALS_TO_WIN) {
+    t += 6000 + random() * 14_000;
+    const side = random() < 0.5 ? "west" : "east";
+    if (side === "west") w++;
+    else e++;
+    goals.push({ at: t, side });
+  }
+  return { west, east, start: ms, goals, end: t };
+}
+
+/** Workers there for `activity`: arrived, not walking. */
+function present(world: World, staff: Staff, activity: string): WorkerEntity[] {
+  return world.workers.filter((w) => {
+    const s = staff.idle.get(w.worker.id);
+    return s?.activity === activity && s.until !== null && !w.walk && !staff.jobs.has(w.worker.id);
+  });
+}
+
+/** Workers on their way to `activity`. */
+const coming = (world: World, staff: Staff, activity: string) =>
+  world.workers.filter((w) => {
+    const s = staff.idle.get(w.worker.id);
+    return s?.activity === activity && s.until === null;
+  });
+
+const names = (ws: readonly WorkerEntity[]) => {
+  const n = ws.map((w) => w.worker.name);
+  return n.length > 1 ? `${n.slice(0, -1).join(", ")} and ${n[n.length - 1]}` : n[0];
+};
+
+/** Keeps those in a group there at least until `until`. */
+function keep(staff: Staff, ws: readonly WorkerEntity[], until: number): void {
+  for (const w of ws) {
+    const s = staff.idle.get(w.worker.id)!;
+    s.until = Math.max(s.until ?? 0, until);
+  }
+}
+
+function say(staff: Staff, w: WorkerEntity, text: string, ms: number): void {
+  w.bubble = { text, tone: "say" };
+  staff.saying.set(w.worker.id, ms + SAY_FOR);
+}
+
+/** The next to speak: anyone but whoever spoke last. */
+function speaker(ws: readonly WorkerEntity[], last: string | null, random: () => number): WorkerEntity {
+  const others = ws.filter((w) => w.worker.id !== last);
+  const from = others.length ? others : ws;
+  return from[Math.floor(random() * from.length)] ?? from[0];
+}
+
+const pick = <T>(list: readonly T[], random: () => number): T => list[Math.floor(random() * list.length)] ?? list[0];
+
+/** One sim step of the group activities; sets the poses they need (`staff.groupPose`),
+ *  the TV and the kicker on `world`, and queues what's worth a line in the log. True
+ *  when a bubble went up or came down. */
+export function playGroups(world: World, staff: Staff, ms: number): boolean {
+  let said = false;
+  const g = staff.games;
+  const poses = staff.groupPose;
+  poses.clear();
+  const byId = new Map(world.workers.map((w) => [w.worker.id, w]));
+
+  // Bubbles run out.
+  for (const [id, until] of staff.saying) {
+    if (ms < until) continue;
+    staff.saying.delete(id);
+    const w = byId.get(id);
+    if (w?.bubble?.tone === "say") {
+      w.bubble = null;
+      said = true;
+    }
+  }
+
+  // The water cooler.
+  const chatting = present(world, staff, "cooler");
+  if (chatting.length >= 2) {
+    if (!g.chat) {
+      g.chat = { next: ms + 1500, last: null };
+      keep(staff, chatting, ms + CHAT_MIN);
+      staff.events.push({ kind: "fun", text: `${names(chatting)} are chatting at the water cooler` });
+    }
+    if (ms >= g.chat.next) {
+      const w = speaker(chatting, g.chat.last, staff.random);
+      say(staff, w, pick(CHAT_LINES, staff.random), ms);
+      said = true;
+      g.chat = { next: ms + 4000 + staff.random() * 2500, last: w.worker.id };
+    }
+  } else g.chat = null;
+
+  // The console on the sofa.
+  const playing = present(world, staff, "sofa");
+  if (playing.length >= 2) {
+    if (!g.console) {
+      g.console = { next: ms + 6000, last: null };
+      keep(staff, playing, ms + CONSOLE_MIN);
+      staff.events.push({ kind: "fun", text: `${names(playing)} got the console out` });
+    }
+    for (const w of playing) poses.set(w.worker.id, "gamepad");
+    if (ms >= g.console.next) {
+      const w = speaker(playing, g.console.last, staff.random);
+      say(staff, w, pick(GAME_LINES, staff.random), ms);
+      said = true;
+      g.console = { next: ms + 8000 + staff.random() * 9000, last: w.worker.id };
+    }
+  } else g.console = null;
+  world.tv = g.console !== null;
+
+  // The kicker.
+  const atTable = present(world, staff, "kicker");
+  let m = g.kicker;
+  const there = (id: string) => atTable.some((w) => w.worker.id === id);
+  if (m && (!there(m.west) || !there(m.east))) m = g.kicker = null;
+  if (!m && atTable.length >= 2) {
+    const side = (w: WorkerEntity) => staff.idle.get(w.worker.id)!.place;
+    const west = atTable.find((w) => side(w) === "kicker-w");
+    const east = atTable.find((w) => side(w) === "kicker-e");
+    if (west && east) {
+      m = g.kicker = newMatch(west.worker.id, east.worker.id, ms, staff.random);
+      keep(staff, [west, east], m.end + CHEER_FOR);
+    }
+  } else if (!m && atTable.length === 1 && coming(world, staff, "kicker").length) {
+    // Someone's coming to play: wait for them.
+    keep(staff, atTable, ms + 5000);
+  }
+  if (m) {
+    if (ms < m.end) {
+      poses.set(m.west, "foosball");
+      poses.set(m.east, "foosball");
+    } else if (ms < m.end + CHEER_FOR) {
+      const [w, e] = kickerScore(m, m.end);
+      const [won, lost] = w > e ? [m.west, m.east] : [m.east, m.west];
+      poses.set(won, "cheer" satisfies Anim);
+      poses.set(lost, "facepalm" satisfies Anim);
+      if (!m.reported) {
+        m.reported = true;
+        staff.events.push({ kind: "fun", text: `${byId.get(won)!.worker.name} beat ${byId.get(lost)!.worker.name} ${Math.max(w, e)}:${Math.min(w, e)} at the kicker` });
+      }
+    } else m = g.kicker = null;
+  }
+  world.kicker = m;
+  // Nobody reading them (the preview): keep only the latest.
+  if (staff.events.length > EVENTS_MAX) staff.events.splice(0, staff.events.length - EVENTS_MAX);
+  return said;
+}

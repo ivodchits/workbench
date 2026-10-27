@@ -730,7 +730,9 @@ export type Anim =
   | "tinker"
   | "file"
   | "relax"
-  | "coffee";
+  | "coffee"
+  | "foosball"
+  | "gamepad";
 
 /** One frame's pose: which legs and torso, and the extras. */
 interface Pose {
@@ -909,6 +911,26 @@ export const ANIMS: Record<Anim, AnimDef> = {
     frames: [
       { front: { legs: LEGS_SEATED, blink: true, headDy: 1 }, back: { torso: TORSO_TYPE_BACK_A, headDy: 3 }, side: standSide, ms: 1500 },
       { front: { legs: LEGS_SEATED, blink: true, headDy: 2 }, back: { torso: TORSO_TYPE_BACK_A, headDy: 2 }, side: standSide, ms: 1500 },
+    ],
+  },
+  /** At the kicker, side on: working the rods, the head bobbing with the play. */
+  foosball: {
+    dirs: ["left", "right"],
+    frames: [
+      { front: stand, side: standSide, ms: 180 },
+      { front: stand, side: { ...standSide, headDy: 1 }, ms: 140 },
+      { front: stand, side: { legs: LEGS_SIDE_STRIDE_A }, ms: 180 },
+      { front: stand, side: { ...standSide, headDy: 1 }, ms: 140 },
+    ],
+  },
+  /** On the sofa with a controller, from behind: thumbs busy, now and then a lean. */
+  gamepad: {
+    dirs: ["down", "up"],
+    frames: [
+      { front: { legs: LEGS_SEATED, torso: TORSO_TYPE_A }, back: { torso: TORSO_TYPE_BACK_A }, side: standSide, ms: 220 },
+      { front: { legs: LEGS_SEATED, torso: TORSO_TYPE_B }, back: { torso: TORSO_TYPE_BACK_B }, side: standSide, ms: 260 },
+      { front: { legs: LEGS_SEATED, torso: TORSO_TYPE_A }, back: { torso: TORSO_TYPE_BACK_A, headDy: 1 }, side: standSide, ms: 600 },
+      { front: { legs: LEGS_SEATED, torso: TORSO_TYPE_B }, back: { torso: TORSO_TYPE_BACK_B }, side: standSide, ms: 260 },
     ],
   },
   /** Both arms up, hopping. */

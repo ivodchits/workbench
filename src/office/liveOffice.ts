@@ -134,7 +134,13 @@ export function setRoom(projectId: string, team: Team): void {
 /** One sim step at `ms`; true when the picture changed. */
 export function stepOffice(ms: number): boolean {
   const walked = stepWalkers(world, office, ms);
-  return (loaded && behave(office, world, staff, ms)) || walked;
+  const changed = (loaded && behave(office, world, staff, ms)) || walked;
+  // What idle workers got up to together goes in the log.
+  if (staff.events.length) {
+    log = addToLog(log, staff.events.map((e) => ({ at: Date.now(), ...e })));
+    staff.events.length = 0;
+  }
+  return changed;
 }
 
 /** The activity log, newest first. */

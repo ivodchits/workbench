@@ -3,6 +3,7 @@
 // workers the walk they're on. Plain data, no drawing: the sim (move.ts) changes it,
 // render.ts draws it.
 
+import type { KickerMatch } from "./groups";
 import { ANIMS, FRAME_H, FRAME_W, type Anim, type Dir } from "../art/characters";
 import { DUCK_ANIMS, DUCK_H, DUCK_W, type DuckAnim, type DuckView } from "../art/duck";
 import type { BubbleTone, Overhead, TagGlyph } from "../art/labels";
@@ -83,6 +84,10 @@ export interface World {
   contractors: Contractor[];
   /** When the sim last stepped, ms: drawing slides people between steps from here. */
   stepAt: number;
+  /** The lounge TV is on: someone's playing on the console (office plan O2.2). */
+  tv: boolean;
+  /** The kicker match being played, if any. */
+  kicker: KickerMatch | null;
 }
 
 const clips = new Map<string, Clip>();
@@ -166,7 +171,7 @@ export function createWorld(office: OfficeMap, ms = 0): World {
     bubble: null,
   };
   const screens = office.seats.map((s): Screen => (seated.has(s.index) ? "code" : "off"));
-  return { workers, duck, screens, contractors: [], stepAt: ms };
+  return { workers, duck, screens, contractors: [], stepAt: ms, tv: false, kicker: null };
 }
 
 /** The frontmost worker whose sprite covers (x, y). */

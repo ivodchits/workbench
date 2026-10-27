@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 
+import { ANIMS } from "../art/characters";
 import { buildOffice } from "../map/build";
 import { TRAVEL_MAX, behave } from "./behave";
 import { createWorld } from "./entities";
@@ -148,7 +149,10 @@ describe("an idle office", () => {
     for (const w of world.workers) {
       const s = staff.idle.get(w.worker.id)!;
       if (s.until === null || w.walk) continue;
-      expect(w.anim, `${w.worker.id} at ${s.activity}`).toBe(activity(s.activity)!.anim);
+      // Or what a group activity asks (a controller on the sofa, the kicker); a pose
+      // drawn only one way, facing another, is plain standing.
+      const anim = staff.groupPose.get(w.worker.id) ?? activity(s.activity)!.anim;
+      expect(w.anim, `${w.worker.id} at ${s.activity}`).toBe(ANIMS[anim].dirs.includes(w.dir) || w.seat !== null ? anim : "idle");
     }
   });
 });

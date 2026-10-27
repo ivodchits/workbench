@@ -5,6 +5,8 @@
 // to do stands about the kitchen and the lounge. On the first snapshot everyone is
 // simply where they belong, nobody walks. A contractor's desk gets a laptop.
 
+import type { Anim } from "../art/characters";
+import { noGames, type Games } from "./groups";
 import type { RemoteInstance, RemoteSnapshot } from "../../remote/protocol";
 import type { TagGlyph } from "../art/labels";
 import type { Who } from "../describe";
@@ -58,6 +60,14 @@ export interface Staff {
   /** The hour of the day now (0–23), and the dice: both swapped in tests. */
   hour: () => number;
   random: () => number;
+  /** What idle workers are doing together (`groups.ts`). */
+  games: Games;
+  /** Poses the group activities ask of their players, by worker id. */
+  groupPose: Map<string, Anim>;
+  /** When each bubble a group put up comes down, by worker id. */
+  saying: Map<string, number>;
+  /** What happened worth a line in the activity log, until the page takes it. */
+  events: { kind: "fun"; text: string }[];
 }
 
 /** An idle worker's activity: where, and until when once they got there. */
@@ -90,6 +100,10 @@ export function createStaff(saved: { sticky?: Record<string, string>; rooms?: Re
     lastIdle: new Map(),
     hour: () => new Date().getHours(),
     random: Math.random,
+    games: noGames(),
+    groupPose: new Map(),
+    saying: new Map(),
+    events: [],
   };
 }
 

@@ -4,8 +4,10 @@
 // and picks another. What they pick is weighted by what they like (`Worker.likes`) and
 // the time of day (lunch in the kitchen; at night the quiet things), never the same
 // thing twice running, and only where nobody else already is: each spot (or desk) is
-// held by one person from the moment they choose it. A new activity is one more entry
-// in `ACTIVITIES` (and, for a new place, a spot in `map/office.ts`).
+// held by one person from the moment they choose it. Social activities (the cooler,
+// the sofa, the kicker) draw people to where someone already is, so groups form
+// (`groups.ts`, O2.2). A new activity is one more entry in `ACTIVITIES` (and, for a new
+// place, a spot in `map/office.ts`).
 
 import type { Anim, Dir } from "../art/characters";
 
@@ -33,6 +35,9 @@ export interface IdleActivity {
   times?: Partial<Record<DayPart, number>>;
   /** Where people go first when their session ends: the kitchen. */
   kitchen?: boolean;
+  /** Better with company: likelier with others already at it (and, for one that needs
+   *  a partner, unlikely to be started alone). */
+  social?: "joins" | "needs";
 }
 
 const MIN = 60_000;
@@ -43,8 +48,10 @@ export const ACTIVITIES: readonly IdleActivity[] = [
   { id: "coffee", at: ["coffee"], anim: "drink", face: "down", lasts: [1 * MIN, 3 * MIN], weight: 3, times: { lunch: 3, night: 0.5 }, kitchen: true },
   { id: "snack", at: ["fridge"], anim: "idle", face: "up", lasts: [0.4 * MIN, 1 * MIN], weight: 1, times: { lunch: 4, night: 0.5 }, kitchen: true },
   { id: "dishes", at: ["sink"], anim: "tinker", face: "up", lasts: [1 * MIN, 2 * MIN], weight: 1, times: { lunch: 2 }, kitchen: true },
-  { id: "cooler", at: ["cooler", "cooler-2", "cooler-3"], anim: "drink", lasts: [2 * MIN, 5 * MIN], weight: 3, times: { lunch: 2, ...BUSY_PLACE }, kitchen: true },
-  { id: "sofa", at: ["sofa-1", "sofa-2", "sofa-3"], anim: "relax", face: "up", lasts: [3 * MIN, 8 * MIN], weight: 2, times: QUIET },
+  { id: "cooler", at: ["cooler", "cooler-2", "cooler-3"], anim: "drink", lasts: [2 * MIN, 5 * MIN], weight: 3, times: { lunch: 2, ...BUSY_PLACE }, kitchen: true, social: "joins" },
+  { id: "sofa", at: ["sofa-1", "sofa-2", "sofa-3"], anim: "relax", face: "up", lasts: [3 * MIN, 8 * MIN], weight: 2, times: QUIET, social: "joins" },
+  // Waiting for an opponent; a match (groups.ts) keeps them as long as it lasts.
+  { id: "kicker", at: ["kicker-w", "kicker-e"], anim: "idle", lasts: [1.5 * MIN, 2 * MIN], weight: 1.5, times: BUSY_PLACE, social: "needs" },
   { id: "beanbag", at: ["beanbag-1", "beanbag-2"], anim: "relax", face: "up", lasts: [3 * MIN, 6 * MIN], weight: 1.5, times: QUIET },
   { id: "window", at: ["window-lounge", "window-demiurge", "window-demiurge-2"], anim: "idle", face: "up", lasts: [1 * MIN, 4 * MIN], weight: 1.5, times: QUIET },
   { id: "books", at: ["books-demiurge", "books-boss"], anim: "file", face: "up", lasts: [1 * MIN, 3 * MIN], weight: 1.5 },
@@ -59,6 +66,10 @@ export const activity = (id: string): IdleActivity | undefined => BY_ID.get(id);
 
 /** How much likelier a worker is to pick what they like. */
 export const LIKED = 3;
+/** How much likelier a social activity is with someone already at it. */
+export const COMPANY = 4;
+/** How much less likely one that needs a partner is with nobody there. */
+export const ALONE = 0.3;
 
 export interface Pick {
   activity: IdleActivity;
@@ -79,6 +90,8 @@ export interface PickInput {
   homeOk: boolean;
   /** Whether a spot is free for them. */
   free: (spot: string) => boolean;
+  /** How many others are at (or on their way to) an activity, by its id. */
+  company?: (activity: string) => number;
   random: () => number;
   activities?: readonly IdleActivity[];
 }
@@ -90,7 +103,13 @@ export function pickIdle(input: PickInput): Pick | null {
   const open = all.filter((a) => a.id !== input.last && places(a).length > 0);
   const kitchen = open.filter((a) => a.kitchen);
   const pool = input.kitchenFirst && kitchen.length ? kitchen : open;
-  const weight = (a: IdleActivity) => a.weight * (input.likes.includes(a.id) ? LIKED : 1) * (a.times?.[input.part] ?? 1);
+  const social = (a: IdleActivity) => {
+    if (!a.social) return 1;
+    // Someone waiting for a partner is hard to say no to.
+    if (input.company?.(a.id)) return a.social === "needs" ? COMPANY * 3 : COMPANY;
+    return a.social === "needs" ? ALONE : 1;
+  };
+  const weight = (a: IdleActivity) => a.weight * (input.likes.includes(a.id) ? LIKED : 1) * (a.times?.[input.part] ?? 1) * social(a);
   const total = pool.reduce((sum, a) => sum + weight(a), 0);
   if (total <= 0) return null;
   let r = input.random() * total;

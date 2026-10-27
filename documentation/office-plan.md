@@ -471,6 +471,22 @@ favourite spots.
 - **Build:** water-cooler chats (canned lines for now), kicker matches (moving ball, score),
   console sessions on the sofa.
 - **Done when:** each happens on its own during a normal session.
+- _As built (approved):_ `world/groups.ts`, on top of the idle planner. Two or three at
+  the water cooler chat: canned lines in speech bubbles, taking turns every few seconds,
+  for at least a minute and a half. Two at the kicker (a new idle activity that waits up
+  to two minutes for an opponent) play a match to five: goals at random every 6–20 s,
+  the ball running on the table and into the net, the score in a bubble over it; the
+  winner cheers and the loser facepalms. Two or more on the sofa get the console out:
+  the TV is on only then (off otherwise), controllers in hand (a new `gamepad` pose; the
+  kicker's is `foosball`), now and then a shout. Social activities draw people to
+  company (four times likelier with someone there; one that needs a partner twelve
+  times likelier with someone waiting, less likely started alone), so they form by
+  themselves. Each goes in the activity log ("Kenji beat Lola 5:3 at the kicker").
+  Tests: matches always reach five with the ball on the table and in the net at each
+  goal; thirty simulated afternoon minutes with three sessions working see a chat, a
+  console session and a finished match on every seed tried (about six chats, four
+  console sessions and three matches per half hour), the TV never on for one, and
+  nobody leaving a match before it's over.
 
 ### Step O2.3 — Reactions
 - **Build:** a commit → the worker cheers; escalation → sweating; session end → off to the kitchen (nobody leaves the office);
@@ -605,7 +621,7 @@ closed, open and still, and open and busy.
 - [x] O1.5 Hover and the sidebar
 - [x] O1.6 Stats when nothing is selected
 - [x] O2.1 Idle planner
-- [ ] O2.2 Group activities
+- [x] O2.2 Group activities
 - [ ] O2.3 Reactions
 - [ ] O2.4 Ambience
 - [ ] O3.1 Duck in the boss office

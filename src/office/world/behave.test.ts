@@ -221,6 +221,9 @@ describe("workers doing what their session is doing", () => {
     const world = createWorld(office);
     const staff: Staff = testStaff();
     seatSessions(office, world, staff, snapshot([instance("a", "misc")]), 0);
+    // The first step may start a group (people put straight onto the sofa); a second at
+    // the same moment has nothing new.
+    behave(office, world, staff, 100);
     expect(behave(office, world, staff, 100)).toBe(false);
     staff.jobs.get(staff.seating.get("a")!.worker!)!.instance = instance("a", "misc", { phase: "needs_you" });
     expect(behave(office, world, staff, 200)).toBe(true);

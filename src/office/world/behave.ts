@@ -15,12 +15,13 @@
 // flicking between tools doesn't send its worker running back and forth. A change of
 // phase is acted on at once.
 
-import type { Anim, Dir } from "../art/characters";
+import { ANIMS, type Anim, type Dir } from "../art/characters";
 import type { Overhead } from "../art/labels";
 import type { OfficeMap, Point, Seat } from "../map/build";
 import type { SpotSpec } from "../map/office";
 import type { RemoteInstance } from "../../remote/protocol";
 import { seatedAt, setAnim, type Bubble, type Screen, type WorkerEntity, type World } from "./entities";
+import { playGroups } from "./groups";
 import { activity, dayPart, pickIdle } from "./idle";
 import { enter, landing, walkTo } from "./move";
 import type { IdleState, Staff } from "./sessions";
@@ -140,6 +141,9 @@ export function behave(office: OfficeMap, world: World, staff: Staff, ms: number
     }
     if (look(w) !== before) changed = true;
   }
+  const tv = world.tv;
+  const kicker = world.kicker;
+  if (playGroups(world, staff, ms) || world.tv !== tv || world.kicker !== kicker) changed = true;
   showScreens(office, world, staff);
   return changed;
 }
@@ -304,6 +308,8 @@ function idle(office: OfficeMap, staff: Staff, w: WorkerEntity, ms: number, inst
   const state = s;
   const doing = activity(state.activity);
   const there = () => void (state.until ??= ms + state.lasts);
+  // A group activity may ask for its own pose (a controller on the sofa, the kicker).
+  const anim = staff.groupPose.get(id) ?? doing?.anim ?? "idle";
   if (!doing) {
     // Nowhere was free: stand where they are a moment.
     if (!w.walk && w.seat === null) setAnim(w, "idle", ms);
@@ -313,12 +319,14 @@ function idle(office: OfficeMap, staff: Staff, w: WorkerEntity, ms: number, inst
     if (instant) sitNow(office, w, w.home, ms);
     if (w.seat === w.home && !w.walk) {
       there();
-      return pose(w, doing.anim, "up", ms);
+      return pose(w, anim, "up", ms);
     }
     return toDesk(office, w, w.home, ms);
   }
   const spot = office.spots.find((p) => p.id === state.place)!;
-  stand(office, w, spot, doing.face ?? spot.dir, doing.anim, ms, instant, there, spot.kind === "sit");
+  const face = doing.face ?? spot.dir;
+  // A pose drawn only one way (watering faces up) would turn them from what they're at.
+  stand(office, w, spot, face, ANIMS[anim].dirs.includes(face) ? anim : "idle", ms, instant, there, spot.kind === "sit");
 }
 
 /** Picks `w`'s next activity and holds its place; with nothing free, a short wait. */
@@ -333,6 +341,7 @@ function startIdle(office: OfficeMap, staff: Staff, w: WorkerEntity, ms: number,
     kitchenFirst,
     homeOk: homeOk && !deskTaken(staff, w.home, id),
     free: (spot) => known.has(spot) && !held.has(spot),
+    company: (a) => [...staff.idle].filter(([who, s]) => who !== id && s.activity === a).length,
     random: staff.random,
   });
   const state: IdleState = pick

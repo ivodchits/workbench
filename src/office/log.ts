@@ -1,11 +1,12 @@
 // The sidebar's activity log (office plan O1.6): what changed between two snapshots,
-// in plain words, by the worker it happened to. Pure, so the tests pin the wording.
+// in plain words, by the worker it happened to — and, from O2.2, what idle workers got
+// up to together. Pure, so the tests pin the wording.
 
 import type { RemoteInstance, RemoteSnapshot } from "../remote/protocol";
 import { titleOf } from "./describe";
 
 /** The kinds tint the log's lines. */
-export type LogKind = "sit" | "work" | "needs" | "done" | "leave" | "commit";
+export type LogKind = "sit" | "work" | "needs" | "done" | "leave" | "commit" | "fun";
 
 export interface LogEntry {
   /** Epoch ms. */
