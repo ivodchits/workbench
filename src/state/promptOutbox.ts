@@ -169,6 +169,14 @@ async function typeIn(id: string, text: string, midTurn: boolean): Promise<Outco
   return { ok: false, why: "it was typed into the session's prompt box, but Claude Code didn't take it" };
 }
 
+/** Type `text` into a running session's prompt box, outside Duck's lines (the
+ *  composer, the queue), re-sending its Enter while it isn't taken. `midTurn`: the
+ *  session is working, so Claude Code's own queue takes it at its next step. */
+export function typePrompt(id: string, text: string, midTurn: boolean): Promise<Outcome> {
+  listen();
+  return typeIn(id, text, midTurn);
+}
+
 /** How long a headless worker gets to take a prompt sent between turns. */
 const HEADLESS_ACK_MS = 15_000;
 

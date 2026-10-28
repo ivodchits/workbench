@@ -30,7 +30,6 @@ describe("compaction", () => {
   it("keeps a mid-turn auto-compaction working, so a queued prompt waits", () => {
     const live = run(ev("UserPromptSubmit"), ev("PreToolUse"), ev("PreCompact"), ev("SessionStart", { source: "compact" }));
     expect(live.phase).toBe("working");
-    expect(live.compacting).toBe(false);
     expect(atRest(live)).toBe(false);
     expect(run(ev("UserPromptSubmit"), ev("PreCompact"), ev("SessionStart", { source: "compact" }), ev("PostCompact")).phase).toBe(
       "working",
@@ -41,6 +40,15 @@ describe("compaction", () => {
     const live = run(ev("UserPromptSubmit"), ev("Stop"), ev("PreCompact"), ev("SessionStart", { source: "compact" }), ev("PostCompact"));
     expect(live.phase).toBe("done");
     expect(atRest(live)).toBe(true);
+  });
+
+  it("ends a compaction at PostCompact, not at its SessionStart", () => {
+    // The TUI is still finishing at the SessionStart: a queued prompt sent then
+    // could land in the box without its Enter being taken.
+    const mid = run(ev("Stop"), ev("PreCompact"), ev("SessionStart", { source: "compact" }));
+    expect(mid.compacting).toBe(true);
+    expect(atRest(mid)).toBe(false);
+    expect(reduceStatus(mid, ev("PostCompact"), 9).entry.compacting).toBe(false);
   });
 
   it("still treats other session starts as a fresh idle session", () => {

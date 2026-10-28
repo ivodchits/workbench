@@ -10,8 +10,13 @@ const compacting = new Set<string>();
 const compactionEnds = new Set<(id: string, live: { phase: StatusPhase; compacting: boolean }) => void>();
 
 vi.mock("./terminalPool", () => ({
-  submitPrompt: (id: string, text: string) => void sent.push([id, text]),
   readScreen: (id: string) => screens.get(id) ?? null,
+}));
+vi.mock("../state/promptOutbox", () => ({
+  typePrompt: (id: string, text: string) => {
+    sent.push([id, text]);
+    return Promise.resolve({ ok: true });
+  },
 }));
 vi.mock("../state/status", () => ({
   getLiveStatuses: () =>

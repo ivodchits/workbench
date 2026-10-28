@@ -6,10 +6,20 @@
 // Panel layer, not state: it writes to terminals. The queue store itself stays
 // pure (`state/queue`).
 
-import { readScreen, submitPrompt } from "./terminalPool";
+import { readScreen } from "./terminalPool";
+import { typePrompt } from "../state/promptOutbox";
 import { atRest, cancelQueued, getQueued, setQueued } from "../state/queue";
 import { promptBoxReady } from "../state/remoteCreate";
 import { getLiveStatuses, onCompactionEnd, onStatusTransition } from "../state/status";
+
+/** Type `text` in and see its Enter taken: a busy TUI can leave a typed prompt in
+ *  its box unsent, so the Enter is re-sent while the box still holds it. */
+function submit(instanceId: string, text: string): void {
+  const midTurn = !atRest(getLiveStatuses().get(instanceId));
+  void typePrompt(instanceId, text, midTurn).then((out) => {
+    if (!out.ok) console.warn(`prompt to ${instanceId}: ${out.why}`);
+  });
+}
 
 /** Send `text` to `instanceId` now, or queue it if its agent is mid-turn. A prompt
  *  is never sent into a pending permission prompt or question — it could answer
@@ -18,7 +28,7 @@ import { getLiveStatuses, onCompactionEnd, onStatusTransition } from "../state/s
 export function sendOrQueue(instanceId: string, text: string): "sent" | "queued" {
   const start = starting(instanceId);
   if (!start && atRest(getLiveStatuses().get(instanceId))) {
-    submitPrompt(instanceId, text);
+    submit(instanceId, text);
     return "sent";
   }
   setQueued(instanceId, text);
@@ -81,7 +91,7 @@ export function deliverQueued(instanceId: string): void {
   const q = getQueued(instanceId);
   if (!q) return;
   cancelQueued(instanceId);
-  submitPrompt(instanceId, q.text);
+  submit(instanceId, q.text);
 }
 
 /** Start sending queued prompts as their agents finish a turn (live phase →

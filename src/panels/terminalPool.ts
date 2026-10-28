@@ -652,6 +652,7 @@ export function submitToTerminal(instanceId: string, text: string): boolean {
         (chunk) => void pasteIntoTerminal(instanceId, chunk),
         (count) => imageLanded(instanceId, count),
       );
+      await settle(PASTE_SETTLE_MS);
       await ptyWrite(instanceId, ENTER_KEY);
       // The TUI holds a landed image in memory: its file has done its job.
       if (landed.length > 0) void deletePastedImages(landed);
@@ -679,6 +680,7 @@ export function submitPrompt(instanceId: string, text: string): void {
         () => new Promise<boolean>((resolve) => setTimeout(() => resolve(false), IMAGE_SETTLE_MS)),
       ),
     )
+    .then(() => settle(PASTE_SETTLE_MS))
     .then(() => ptyWrite(instanceId, ENTER_KEY))
     .catch(() => {}); // no such PTY: the session is gone, nothing to send to
 }
@@ -756,12 +758,16 @@ function inputAttachments(screen: string[]): number {
  *  drawing — the Ctrl+U burst makes the TUI take the Enter as part of the paste,
  *  and the prompt sits in the input unsent. 30 ms was enough in a scratch PTY. */
 const CLEAR_SETTLE_MS = 50;
+/** How long a pasted prompt is left before its Enter, for the same reason: read in
+ *  one chunk with the paste by a busy TUI (finishing a compaction, say), the Enter
+ *  becomes a newline in the input instead of a submit. */
+const PASTE_SETTLE_MS = 50;
+
+const settle = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
 /** Empty the TUI's input (`CLEAR_INPUT_KEY`), then give it a moment to settle. */
 function clearInput(instanceId: string): Promise<void> {
-  return ptyWrite(instanceId, CLEAR_INPUT_KEY).then(
-    () => new Promise((resolve) => setTimeout(resolve, CLEAR_SETTLE_MS)),
-  );
+  return ptyWrite(instanceId, CLEAR_INPUT_KEY).then(() => settle(CLEAR_SETTLE_MS));
 }
 
 /**
