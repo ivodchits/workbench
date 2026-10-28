@@ -741,3 +741,67 @@ body.below #side {
   -webkit-box-orient: vertical;
   word-break: break-word;
 }
+
+/* A game (O5.1), over the dimmed office. */
+#game {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  background: rgb(10 9 14 / 0.72);
+  z-index: 3;
+}
+
+#game[hidden] {
+  display: none;
+}
+
+#game .window {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 10px 6px;
+  background: var(--panel);
+  border: 1px solid var(--rim);
+  border-radius: 6px;
+  box-shadow: 0 6px 24px rgb(0 0 0 / 0.6);
+}
+
+#game header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+#game h2 {
+  margin: 0 auto 0 0;
+  font-size: 13px;
+  color: var(--text);
+}
+
+#game .close {
+  padding: 0 6px;
+  background: transparent;
+  border: 1px solid var(--rim);
+  border-radius: 4px;
+  color: var(--muted);
+  font: inherit;
+  cursor: pointer;
+}
+
+#game .close:hover {
+  color: var(--text);
+  border-color: var(--muted);
+}
+
+#game canvas {
+  display: block;
+  image-rendering: pixelated;
+}
+
+#game p {
+  margin: 0;
+  max-width: 100%;
+  font-size: 11px;
+  color: var(--muted);
+}

@@ -9,6 +9,8 @@
 // O3.3), and leaves the sidebar alone. With the walk grid on
 // (`G`) a click is the debug one instead: pick a worker, then send them walking. With
 // nobody picked the sidebar shows the stats (stats.ts) and the room each project sits in.
+// Clicking the TV or the kicker opens a game over the dimmed office (games/, O5.1); the
+// office keeps stepping behind it but isn't drawn till it closes.
 
 import { fitSize, sideLayout } from "./canvas";
 import { startHud } from "./hud";
@@ -27,6 +29,7 @@ import {
   duckChatTurn,
   duckDoing,
   freeDeskAt,
+  gameAt,
   hire,
   hired,
   nameOf,
@@ -54,6 +57,9 @@ import { showLink, showRooms } from "./sidebar";
 import { showStats } from "./stats";
 import { createChatter } from "./chatter";
 import { createChatterPanel } from "./chatterPanel";
+import { testGame, type GameDef } from "./games/game";
+import { createGameOverlay } from "./games/overlay";
+import type { GameProp } from "./games/props";
 
 const canvas = document.querySelector<HTMLCanvasElement>("#office")!;
 const stage = document.querySelector<HTMLElement>("#stage")!;
@@ -92,9 +98,22 @@ let hireTarget: HireTarget | null = null;
 let hoverDesk: number | null = null;
 let dropDesk: number | null = null;
 
+/** What each game prop opens: the test game till their own (O5.2, O5.3). */
+const GAMES: Record<GameProp, GameDef> = {
+  tv: testGame("The TV", "#7fd1ff"),
+  kicker: testGame("Kicker", "#89b482"),
+};
+const games = createGameOverlay(document.querySelector<HTMLElement>("#game")!, () => loop.invalidate());
+const GAME_NAMES: Record<GameProp, string> = { tv: "The TV", kicker: "The kicker" };
+
 const loop = startLoop({
-  step: () => !view.paused && stepOffice(performance.now()),
+  step: () => {
+    const changed = !view.paused && stepOffice(performance.now());
+    return changed && !games.open;
+  },
   draw: (ms) => {
+    // Still behind a game: it has the frames.
+    if (games.open) return Infinity;
     const next = drawOffice(ctx, view.paused ? view.pausedAt : ms, view);
     present();
     placeAsk();
@@ -275,6 +294,8 @@ const watchRatio = () => matchMedia(`(resolution: ${devicePixelRatio}dppx)`).add
 watchRatio();
 
 addEventListener("keydown", (e) => {
+  // The game has the keys (and Esc).
+  if (games.open) return;
   if (e.key === "Escape" && ask.id) {
     openAsk(null);
     return;
@@ -313,7 +334,8 @@ function showTip(): void {
   const duck = view.hover === DUCK_ID;
   const who = view.hover && pointer && !view.overlay && !duck && !drag?.moved && view.hover !== ask.id ? whoAt(view.hover) : null;
   const desk = !view.hover && !drag && hoverDesk !== null;
-  tip.hidden = !((who || duck || desk) && pointer && !view.overlay);
+  const game = !view.hover && !drag ? hoverGame : null;
+  tip.hidden = !((who || duck || desk || game) && pointer && !view.overlay);
   if (tip.hidden || !pointer) return;
   const free = who && !who.instance && who.worker && workerFree(who.worker.id);
   const hint = free ? "drag onto a free desk: a new session" : hoverAsk ? "click the bubble to answer here" : null;
@@ -321,7 +343,9 @@ function showTip(): void {
     ? [...tooltipLines(who, performance.now()), ...(hint ? [hint] : [])]
     : duck
       ? ["Duck", `${duckDoing()} · click to talk`]
-      : ["A free desk", "click to start a session here"];
+      : game
+        ? [GAME_NAMES[game], "click to play"]
+        : ["A free desk", "click to start a session here"];
   tip.replaceChildren(
     ...lines.map((text, n) => {
       const line = document.createElement("div");
@@ -339,8 +363,9 @@ function showTip(): void {
 // The "for how long" moves on.
 setInterval(() => !tip.hidden && showTip(), 1000);
 
-/** The pointer is on a bubble asking for you. */
+/** The pointer is on a bubble asking for you; on a prop that opens a game. */
 let hoverAsk = false;
+let hoverGame: GameProp | null = null;
 
 /** Hovering a worker (or their bubble) shows their name tag and the tooltip; a free
  *  desk is outlined. */
@@ -350,8 +375,10 @@ function hoverAt(e: PointerEvent | null): void {
   hoverAsk = !!bubble;
   const id = bubble?.id ?? (e ? workerAt(...sceneAt(e)) : null);
   const desk = e && !id && !view.overlay ? freeDeskAt(...sceneAt(e)) : null;
-  canvas.style.cursor = id || desk !== null || (view.overlay && view.selected) ? "pointer" : "";
+  const game = e && !id && desk === null && !view.overlay ? gameAt(...sceneAt(e)) : null;
+  canvas.style.cursor = id || desk !== null || game || (view.overlay && view.selected) ? "pointer" : "";
   const moved = id !== view.hover || desk !== hoverDesk;
+  hoverGame = game;
   view.hover = id;
   hoverDesk = desk;
   outline();
@@ -414,9 +441,13 @@ canvas.addEventListener("click", (e) => {
     return;
   }
   // A worker (or a contractor's desk) opens their session, Duck a chat, a free desk the
-  // new-session form; anywhere else closes it.
+  // new-session form, the TV or the kicker a game; anywhere else closes it.
   const id = workerAt(...sceneAt(e));
   const desk = id ? null : freeDeskAt(...sceneAt(e));
-  if (desk !== null) openHire(desk, null);
+  const game = id || desk !== null ? null : gameAt(...sceneAt(e));
+  if (game) {
+    hoverAt(null);
+    games.show(GAMES[game]);
+  } else if (desk !== null) openHire(desk, null);
   else select(id);
 });

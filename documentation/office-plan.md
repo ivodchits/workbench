@@ -662,6 +662,24 @@ favourite spots.
 - **Build:** clicking a prop opens a game overlay over the dimmed office; keyboard and gamepad
   input (Gamepad API); the office render pauses while it's open.
 - **Done when:** a dummy game opens from the TV and the kicker and closes cleanly.
+- _As built (approved; live test owed):_ `games/` on the office page. Hovering the TV or the
+  kicker says "click to play"; clicking it opens its game in a window over the dimmed
+  office (`overlay.ts`), scaled up by whole pixels, on its own 60 Hz loop that stops
+  while the page is hidden. The office keeps stepping behind it (walks and chats go
+  on) but isn't drawn till it closes. The keyboard and any gamepads (Gamepad API,
+  standard mapping) read as one pad (`pad.ts`): arrows/WASD, the stick or the d-pad
+  steer; Z/Space or A, X/Shift or B, Enter or Start. The game has those keys, so the
+  office's own (G, N, P, H) wait. It closes on ✕, Esc, a gamepad's Back (let go first,
+  so one held at open doesn't) or a click on the dimmed office. A game is `{w, h,
+  step(pad), draw(ctx), stop?}` (`game.ts`); both props open the test game for now, a
+  dot steered round a field with lamps for the buttons and which controller is in use.
+  Gamepads need a secure page: on localhost they work, over plain http on the LAN the
+  browser hides them and it's keyboard only. Tests: the keyboard and gamepad reading
+  (deadzone, d-pad, a non-standard pad), the test game's steering, the props' hit test.
+  Checked in the dev page: the TV and the kicker open their game, Esc and a click on the
+  dimmed office close it. **Owed:** a live play test (the dot steering, the office
+  still behind the game and back after it) and a real gamepad; the browser tab used
+  was hidden, so no frames ran. To be done with the later games.
 
 ### Step O5.2 — Kicker
 - **Build:** a small top-down foosball game against the computer.
@@ -755,7 +773,7 @@ closed, open and still, and open and busy.
 - [x] O3.3 Answering from the bubbles
 - [x] O4.1 Chatter service
 - [x] O4.2 Playing scenes
-- [ ] O5.1 Game overlay
+- [x] O5.1 Game overlay (live test and gamepad owed)
 - [ ] O5.2 Kicker
 - [ ] O5.3 TV: retro console emulator
 - [ ] O5.4 Whiteboard Pictionary with Duck

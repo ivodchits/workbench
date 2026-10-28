@@ -26,6 +26,7 @@ import type { SceneWriter } from "./world/groups";
 import { behave } from "./world/behave";
 import { createStaff, seatSessions, whoIs, type Staff } from "./world/sessions";
 import { deskFree, isFree, workerFor } from "./world/hire";
+import { gamePropAt, type GameProp } from "./games/props";
 import type { Who } from "./describe";
 
 export { OFFICE_H, OFFICE_W };
@@ -193,6 +194,9 @@ export function freeDeskAt(x: number, y: number): number | null {
   const desk = deskAt(office, { x, y });
   return desk !== undefined && deskFree(staff, desk) ? desk : null;
 }
+
+/** The prop at (x, y) in office pixels that opens a game (O5.1): the TV or the kicker. */
+export const gameAt = (x: number, y: number): GameProp | null => gamePropAt(office, x, y);
 
 /** Whether worker `id` has nothing to do (so can be given a session). */
 export const workerFree = (id: string): boolean => world.workers.some((w) => w.worker.id === id) && isFree(staff, id);
