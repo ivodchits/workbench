@@ -32,6 +32,9 @@
 //!   checks what the phone may do and hands it to Duck.
 //! - Down: the webview sends Duck's events back with [`assistant_remote_emit`],
 //!   either to every socket or to the one that asked.
+//!
+//! The office's Duck chat (office plan O3.1) rides the same bridge ([`relay`]) as
+//! the device `office`, on the office's own listener and channel.
 
 use std::net::SocketAddr;
 use std::collections::VecDeque;
@@ -106,7 +109,13 @@ pub(super) async fn api_assistant(
     };
     ws.protocols([SUBPROTOCOL])
         .max_message_size(FRAME_MAX)
-        .on_upgrade(move |socket| handle(socket, state, device))
+        .on_upgrade(move |socket| async move {
+            let Some(rx) = state.inner.lock().unwrap().duck.as_ref().map(|tx| tx.subscribe()) else {
+                return;
+            };
+            let (st, id) = (state.clone(), device.clone());
+            relay(socket, state, device, rx, move || device_valid(&st, &id), true).await
+        })
 }
 
 // ── conversation mode on the phone (step V4 part 3) ──
@@ -339,12 +348,20 @@ fn conv_message(app: &AppHandle, run: &mut Option<PhoneRun>, out: &tmpsc::Unboun
 /// Per-connection loop: relay Duck's frames meant for this socket down, and the
 /// phone's frames up to the webview (conversation mode's to its run here). Ends
 /// when either side closes, the server stops, or the device loses access.
-async fn handle(mut socket: WebSocket, state: Arc<RemoteState>, device: String) {
+/// One Duck socket: its frames up to the webview as `device`, Duck's frames for it
+/// down from `rx`, until it closes or `valid` says it no longer may (checked on each
+/// kick). `conv`: it may run conversation mode (the phone; not the office).
+pub(super) async fn relay(
+    mut socket: WebSocket,
+    state: Arc<RemoteState>,
+    device: String,
+    mut rx: broadcast::Receiver<DuckFrame>,
+    valid: impl Fn() -> bool,
+    conv_ok: bool,
+) {
     let mut kick = state.kick.subscribe();
-    let Some(mut rx) = state.inner.lock().unwrap().duck.as_ref().map(|tx| tx.subscribe()) else {
-        return;
-    };
     let conn = state.next_conn.fetch_add(1, Ordering::Relaxed) + 1;
+    state.duck_conns.lock().unwrap().push((conn, device.clone()));
     input(&state.app, conn, &device, "open", None);
     let (conv_out, mut conv_frames) = tmpsc::unbounded_channel::<String>();
     let mut conv: Option<PhoneRun> = None;
@@ -370,7 +387,7 @@ async fn handle(mut socket: WebSocket, state: Arc<RemoteState>, device: String) 
                 Err(broadcast::error::RecvError::Closed) => break,
             },
             _ = kick.changed() => {
-                if !device_valid(&state, &device) {
+                if !valid() {
                     break;
                 }
             },
@@ -381,7 +398,7 @@ async fn handle(mut socket: WebSocket, state: Arc<RemoteState>, device: String) 
                     }
                 }
                 Some(Ok(Message::Text(t))) => match serde_json::from_str::<Value>(t.as_str()) {
-                    Ok(msg) if msg["type"].as_str().is_some_and(|t| t.starts_with("conv.")) => {
+                    Ok(msg) if conv_ok && msg["type"].as_str().is_some_and(|t| t.starts_with("conv.")) => {
                         conv_message(&state.app, &mut conv, &conv_out, &msg);
                     }
                     Ok(msg) => input(&state.app, conn, &device, "message", Some(msg)),
@@ -397,6 +414,7 @@ async fn handle(mut socket: WebSocket, state: Arc<RemoteState>, device: String) 
         }
     }
     drop(conv);
+    state.duck_conns.lock().unwrap().retain(|(c, _)| *c != conn);
     input(&state.app, conn, &device, "close", None);
 }
 
@@ -494,9 +512,18 @@ pub(super) async fn image(
 /// A no-op while the server is off.
 #[tauri::command]
 pub fn assistant_remote_emit(state: TauriState<'_, Arc<RemoteState>>, json: String, conn: Option<u64>) {
+    let frame = DuckFrame { to: conn, json: json.into() };
     if let Some(tx) = &state.inner().inner.lock().unwrap().duck {
-        let _ = tx.send(DuckFrame { to: conn, json: json.into() });
+        let _ = tx.send(frame.clone());
     }
+    state.inner().office.duck(frame);
+}
+
+/// The Duck sockets open now, as `{conn, device}`: a bridge that starts (the webview
+/// reloaded) takes them as opened, or Duck's news would never reach them.
+#[tauri::command]
+pub fn assistant_remote_conns(state: TauriState<'_, Arc<RemoteState>>) -> Vec<Value> {
+    state.duck_conns.lock().unwrap().iter().map(|(conn, device)| json!({ "conn": conn, "device": device })).collect()
 }
 
 /// Push "Duck is waiting for you" to the phones (a confirmation, and no surface

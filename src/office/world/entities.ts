@@ -186,6 +186,12 @@ export function createWorld(office: OfficeMap, ms = 0): World {
 }
 
 /** The frontmost worker whose sprite covers (x, y). */
+/** Whether (x, y) is on Duck. */
+export function onDuck(world: World, x: number, y: number): boolean {
+  const d = world.duck;
+  return x >= d.x - DUCK_W / 2 && x < d.x + DUCK_W / 2 && y >= d.y - DUCK_H && y < d.y;
+}
+
 export function workerAt(world: World, x: number, y: number): WorkerEntity | undefined {
   let hit: WorkerEntity | undefined;
   for (const w of world.workers) {

@@ -110,11 +110,11 @@ body {
   overflow: hidden;
 }
 
-#side.open > :not(h1, #session) {
+#side.open > :not(h1, #session, #duck) {
   display: none;
 }
 
-#session {
+:is(#session, #duck) {
   flex: 1;
   min-height: 0;
   display: flex;
@@ -123,44 +123,44 @@ body {
 }
 
 /* Over any part's own display. */
-#session[hidden],
-#session [hidden],
-#session .hidden {
+:is(#session, #duck)[hidden],
+:is(#session, #duck) [hidden],
+:is(#session, #duck) .hidden {
   display: none !important;
 }
 
-#session header {
+:is(#session, #duck) header {
   position: relative;
   padding-right: 28px;
 }
 
-#session h2 {
+:is(#session, #duck) h2 {
   margin: 0;
   color: var(--text);
 }
 
-#session header p {
+:is(#session, #duck) header p {
   margin: 0;
   overflow-wrap: anywhere;
 }
 
-#session .what {
+:is(#session, #duck) .what {
   color: var(--muted);
 }
 
-#session .state.phase-needs_you {
+:is(#session, #duck) .state.phase-needs_you {
   color: var(--needs);
 }
 
-#session .state.phase-working {
+:is(#session, #duck) .state.phase-working {
   color: var(--duck);
 }
 
-#session .state.phase-done {
+:is(#session, #duck) .state.phase-done {
   color: var(--done);
 }
 
-#session button {
+:is(#session, #duck) button {
   font: inherit;
   color: var(--text);
   background: var(--night);
@@ -170,18 +170,18 @@ body {
   cursor: pointer;
 }
 
-#session button:hover {
+:is(#session, #duck) button:hover {
   border-color: var(--muted);
 }
 
-#session .close {
+:is(#session, #duck) .close {
   position: absolute;
   top: 0;
   right: 0;
   padding: 0 6px;
 }
 
-#session .wb-chc {
+:is(#session, #duck) .wb-chc {
   max-height: 45%;
   overflow-y: auto;
   border: 1px solid var(--needs);
@@ -189,31 +189,31 @@ body {
 }
 
 /* No terminal here: those answers are Workbench's. */
-#session .wb-chc-bar button:not(.wb-chc-deny),
-#session .wb-chc-note button {
+:is(#session, #duck) .wb-chc-bar button:not(.wb-chc-deny),
+:is(#session, #duck) .wb-chc-note button {
   display: none;
 }
 
-#session .needs {
+:is(#session, #duck) .needs {
   display: flex;
   align-items: center;
   gap: 8px;
   color: var(--needs);
 }
 
-#session .needs span {
+:is(#session, #duck) .needs span {
   margin-right: auto;
 }
 
-#session .needs .ok {
+:is(#session, #duck) .needs .ok {
   border-color: var(--done);
 }
 
-#session .needs .no {
+:is(#session, #duck) .needs .no {
   border-color: var(--needs);
 }
 
-#session .scroll {
+:is(#session, #duck) .scroll {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
@@ -224,18 +224,18 @@ body {
   font-size: 12px;
 }
 
-#session .jump {
+:is(#session, #duck) .jump {
   align-self: center;
   margin-top: -36px;
 }
 
-#session .composer {
+:is(#session, #duck) .composer {
   display: flex;
   flex-direction: column;
   gap: 6px;
 }
 
-#session textarea {
+:is(#session, #duck) textarea {
   resize: vertical;
   min-height: 3.2em;
   font: inherit;
@@ -246,24 +246,152 @@ body {
   padding: 4px 6px;
 }
 
-#session textarea:focus {
+:is(#session, #duck) textarea:focus {
   outline: none;
   border-color: var(--duck);
 }
 
-#session .buttons {
+:is(#session, #duck) .buttons {
   display: flex;
   justify-content: flex-end;
   gap: 6px;
 }
 
-#session .send {
+:is(#session, #duck) .send {
   border-color: var(--duck);
   color: var(--duck);
 }
 
-#session .stop {
+:is(#session, #duck) .stop {
   margin-right: auto;
+  color: var(--needs);
+}
+
+/* The chat with Duck (O3.1). */
+#duck header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding-right: 28px;
+}
+
+#duck header h2 {
+  color: var(--duck);
+}
+
+#duck .threads {
+  flex: 1;
+  min-width: 0;
+  font: inherit;
+  color: inherit;
+  background: var(--night);
+  border: 1px solid var(--rim);
+  border-radius: 4px;
+  padding: 1px 4px;
+}
+
+#duck .state {
+  margin: 0;
+  min-height: 1.4em;
+  color: var(--muted);
+}
+
+#duck .state.turn-waiting {
+  color: var(--needs);
+}
+
+#duck .state:is(.turn-thinking, .turn-streaming, .turn-tool) {
+  color: var(--duck);
+}
+
+#duck .scroll {
+  font-size: 13px;
+  padding: 6px 8px;
+}
+
+#duck .empty {
+  margin: 12px 0;
+}
+
+#duck .duck-user {
+  margin: 8px 0 8px 24px;
+  padding: 5px 9px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  background: var(--wb-sel);
+  border: 1px solid var(--rim);
+  border-radius: 8px;
+}
+
+#duck .duck-reply {
+  margin: 6px 0;
+  overflow-wrap: anywhere;
+}
+
+#duck .duck-tool,
+#duck .duck-event {
+  display: flex;
+  gap: 6px;
+  margin: 3px 0;
+  font: 12px/1.4 var(--mono);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+#duck .duck-tool .name {
+  color: var(--text);
+}
+
+#duck .duck-tool .muted {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+#duck .needs-text {
+  color: var(--needs);
+}
+
+#duck .done-text {
+  color: var(--done);
+}
+
+#duck .asks {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 45%;
+  overflow-y: auto;
+}
+
+#duck .ask {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 6px 8px;
+  border: 1px solid var(--needs);
+  border-radius: 4px;
+}
+
+#duck .ask .input {
+  margin: 0;
+  max-height: 8em;
+  overflow: auto;
+  font: 11px/1.4 var(--mono);
+  color: var(--muted);
+  white-space: pre-wrap;
+}
+
+#duck .ask .ok {
+  border-color: var(--done);
+}
+
+#duck .ask .no {
+  border-color: var(--needs);
+}
+
+#duck .error {
+  margin: 0;
   color: var(--needs);
 }
 

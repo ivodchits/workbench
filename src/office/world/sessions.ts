@@ -17,6 +17,7 @@ import { officeTime } from "./ambience";
 import { assign, type Seating } from "./assign";
 import { behave, doing, type Plan } from "./behave";
 import { react, type DuckTrip } from "./reactions";
+import type { DuckDoing } from "./boss";
 import type { World } from "./entities";
 
 /** The rail's glyph for a session's phase. */
@@ -77,6 +78,8 @@ export interface Staff {
   cheers: Map<string, number>;
   /** Duck's trip to a desk, if it's on one. */
   trip: DuckTrip | null;
+  /** What Duck is doing (`boss.ts`): the snapshot's word, and the office chat's turn. */
+  duckDoing: DuckDoing;
 }
 
 /** An idle worker's activity: where, and until when once they got there. */
@@ -116,6 +119,7 @@ export function createStaff(saved: { sticky?: Record<string, string>; rooms?: Re
     commits: new Map(),
     cheers: new Map(),
     trip: null,
+    duckDoing: { state: "idle", chat: "idle" },
   };
 }
 
@@ -135,6 +139,7 @@ export function seatSessions(office: OfficeMap, world: World, staff: Staff, snap
   const stickyChanged = JSON.stringify(sticky) !== JSON.stringify(staff.sticky);
   const instant = !staff.started;
   staff.started = true;
+  staff.duckDoing = { ...staff.duckDoing, state: snapshot.duck.state };
   staff.seating = seating;
   staff.sticky = sticky;
 

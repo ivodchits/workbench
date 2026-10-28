@@ -85,6 +85,8 @@ export function duckRounds(office: OfficeMap, world: World, staff: Staff, ms: nu
         staff.trip = null;
         return false;
       }
+      // What it was doing at the desk (`boss.ts`) stays there.
+      d.bubble = null;
       staff.trip = { leg: "out", instance: t.instance, desk };
       return true;
     }

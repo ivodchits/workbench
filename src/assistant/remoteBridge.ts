@@ -6,7 +6,8 @@
 //   `assistant-remote-input`. A frame is checked against what a phone may do
 //   (`RemoteDuckMessage`) and handed to Duck; the answers to it (`threads`,
 //   `history`, an error…) go back to that socket only.
-// - Down: Duck's events go to every socket while one is open.
+// - Down: Duck's events go to every socket while one is open. A bridge that starts
+//   with sockets already open (the webview reloaded) asks the server for them.
 // - What a phone may not do, over an address that may be public: change Duck's
 //   settings, loosen trust (rules, modes, the floor, resuming after a pause), run
 //   the replay, or delete a thread. It can pause trust.
@@ -50,12 +51,17 @@
 //   `attached` gives the phone the file to send. A `send` names its files by id,
 //   and only files uploaded here count: the rest of each (name, path) is the
 //   desktop's own record, never the phone's word.
+// - The office's Duck chat (office plan O3.1) comes over this bridge too, as the
+//   device `office`: a page on this PC, so its messages are the desktop's (no
+//   dictation, nothing spoken for it), and it's not a phone: confirmations are still
+//   pushed with only offices open, and announcements aren't said there.
 
 import { withoutManifest } from "./voiceFiles";
 import { z } from "zod";
 import type { StoredFile, StoredMessage } from "../ipc/assistant";
 import { MAX_ATTACHMENTS, type AttachmentRef } from "./attachments";
 import {
+  assistantRemoteConns,
   assistantRemoteEmit,
   assistantRemotePush,
   onAssistantRemoteInput,
@@ -110,6 +116,9 @@ const Message = z.discriminatedUnion("type", [
   z.object({ type: z.literal("canvas"), drawingId: id.nullable() }),
 ]);
 
+/** What the office may not send: it's no host, and it uploads nothing. */
+const OFFICE_REFUSED = new Set<unknown>(["hello", "device.result", "reminder.action", "offline.sync", "attach.chunk"]);
+
 /** Frames only a host sends, besides `hello` and results. */
 const HOST_ONLY = new Set<unknown>(["reminder.action", "offline.sync"]);
 
@@ -134,12 +143,16 @@ const Chunk = z.object({
   last: z.boolean(),
 });
 
+/** The device the office's sockets come as (`src-tauri/src/remote/office.rs`). */
+export const OFFICE_DEVICE = "office";
+
 /** A phone's frame as a Duck Protocol message, or why it's refused. `file`
- *  finds a file uploaded here (step G1). */
+ *  finds a file uploaded here (step G1). `office`: it's the office's, on this PC. */
 export function parseRemote(
   raw: unknown,
   fixVoice: (text: string) => string,
   file: (id: string) => AttachmentRef | undefined = () => undefined,
+  office = false,
 ): ClientMessage | string {
   const type = (raw as { type?: unknown } | null)?.type;
   const r = Message.safeParse(raw);
@@ -153,8 +166,8 @@ export function parseRemote(
       return {
         type: "send",
         threadId: m.threadId,
-        text: m.voice ? fixVoice(m.text) : m.text,
-        source: m.voice ? "phone-voice" : "phone",
+        text: m.voice && !office ? fixVoice(m.text) : m.text,
+        source: office ? "desktop" : m.voice ? "phone-voice" : "phone",
         ...(m.effort && { effort: m.effort }),
         ...(m.provisional && { provisional: true }),
         ...(files.length && { attachments: files as AttachmentRef[] }),
@@ -169,7 +182,7 @@ export function parseRemote(
     case "trust.pause":
       return { type: "trust.pause", paused: true };
     case "canvas":
-      return { type: "canvas", surface: "phone", drawingId: m.drawingId };
+      return { type: "canvas", surface: office ? "desktop" : "phone", drawingId: m.drawingId };
     default:
       return m;
   }
@@ -188,6 +201,8 @@ function textOf(m: StoredMessage): string {
 /** The server's side, as the bridge sees it. */
 export interface RemoteLink {
   onInput(cb: (i: AssistantRemoteInput) => void): () => void;
+  /** The sockets already open (the webview reloaded under them). */
+  open?(): Promise<{ conn: number; device: string }[]>;
   emit(frame: RemoteDuckFrame, conn: number | null): void;
   push(threadId: string, title: string, body: string): void;
 }
@@ -272,6 +287,9 @@ export interface RemoteBridge {
 /** Start relaying. */
 export function startRemoteBridge(d: BridgeDeps): RemoteBridge {
   const conns = new Set<number>();
+  /** The sockets that are the office's, not phones. */
+  const offices = new Set<number>();
+  const phones = () => conns.size - offices.size;
   /** Messages phones sent, not yet seen stored. */
   const sent: { conn: number; text: string }[] = [];
   /** The phone that sent each thread's latest message of yours. */
@@ -415,7 +433,7 @@ export function startRemoteBridge(d: BridgeDeps): RemoteBridge {
       }
       case "confirm": {
         const r = e.request;
-        if (conns.size === 0 && !pushed.has(r.toolUseId) && !d.watching()) {
+        if (phones() === 0 && !pushed.has(r.toolUseId) && !d.watching()) {
           pushed.add(r.toolUseId);
           d.link.push(r.threadId, "Duck is waiting for a yes or no", r.summary ?? `It wants to use ${r.name}.`);
         }
@@ -467,26 +485,46 @@ export function startRemoteBridge(d: BridgeDeps): RemoteBridge {
       .catch((e: unknown) => answer({ error: e instanceof Error ? e.message : String(e) }));
   }
 
+  /** Sockets that closed since this bridge started. */
+  const closed = new Set<number>();
+  // Sockets that opened before this bridge (the webview reloaded): theirs too.
+  void d.link
+    .open?.()
+    .then((open) => {
+      for (const o of open) {
+        if (closed.has(o.conn)) continue;
+        conns.add(o.conn);
+        if (o.device === OFFICE_DEVICE) offices.add(o.conn);
+      }
+    })
+    .catch(() => {});
+
   const offInput = d.link.onInput((i) => {
-    if (i.kind === "open") conns.add(i.conn);
-    else if (i.kind === "close") {
+    if (i.kind === "open") {
+      conns.add(i.conn);
+      if (i.device === OFFICE_DEVICE) offices.add(i.conn);
+    } else if (i.kind === "close") {
+      closed.add(i.conn);
       conns.delete(i.conn);
+      offices.delete(i.conn);
       for (const k of uploads.keys()) if (k.startsWith(`${i.conn}:`)) uploads.delete(k);
       hostConns.get(i.conn)?.close();
       hostConns.delete(i.conn);
       d.duck.handle({ type: "thread.view", surface: `phone:${i.conn}`, threadId: null });
       for (let k = wanted.length - 1; k >= 0; k--) if (wanted[k].conn === i.conn) wanted.splice(k, 1);
       for (let k = sent.length - 1; k >= 0; k--) if (sent[k].conn === i.conn) sent.splice(k, 1);
+    } else if (offices.has(i.conn) && OFFICE_REFUSED.has((i.msg as { type?: unknown } | null)?.type)) {
+      toPhone(i.conn, { type: "error", message: "not from the office" });
     } else if (isHostUp(i.msg) || HOST_ONLY.has((i.msg as { type?: unknown } | null)?.type)) {
       host(i.conn, i.msg);
     } else if ((i.msg as { type?: unknown } | null)?.type === "attach.chunk") {
       chunk(i.conn, i.msg);
     } else {
-      const msg = parseRemote(i.msg, d.fixVoice, (fid) => uploaded.get(fid));
+      const msg = parseRemote(i.msg, d.fixVoice, (fid) => uploaded.get(fid), offices.has(i.conn));
       if (typeof msg === "string") return toPhone(i.conn, { type: "error", message: msg });
       const raw = i.msg as RemoteDuckMessage;
       if (msg.type === "send") sent.push({ conn: i.conn, text: msg.text });
-      if (msg.type === "send" && raw.type === "send" && raw.speak) {
+      if (msg.type === "send" && raw.type === "send" && raw.speak && !offices.has(i.conn)) {
         wanted.push({ conn: i.conn, text: msg.text });
         d.warm(langOf(msg.text) === "ru");
       }
@@ -586,10 +624,11 @@ export function startRemoteBridge(d: BridgeDeps): RemoteBridge {
       while (speaking.has(threadId)) await new Promise((r) => setTimeout(r, 100));
       await tails.get(threadId);
     },
-    phones: () => conns.size,
+    phones,
     announce(text, threadId) {
       const reply = `news${++nextReply}`;
-      const to = [...conns];
+      const to = [...conns].filter((c) => !offices.has(c));
+      if (!to.length) return;
       void (async () => {
         let part = 0;
         for (const p of await Promise.all(sentencesOf(text).map((x) => d.prepare(x)))) {
@@ -615,6 +654,7 @@ export const ipcLink: RemoteLink = {
     const off = onAssistantRemoteInput(cb);
     return () => void off.then((f) => f());
   },
+  open: assistantRemoteConns,
   emit(frame, conn) {
     void assistantRemoteEmit(frame, conn).catch(() => {});
   },

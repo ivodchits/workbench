@@ -13,7 +13,8 @@ import type { Link } from "./net";
 import { addToLog, logEvents, type LogEntry } from "./log";
 import { ROSTER, TEAM_NAMES, type Team } from "./roster";
 import { debugClick, deskAt } from "./world/debug";
-import { createWorld, workerAt as hit } from "./world/entities";
+import { createWorld, onDuck, workerAt as hit } from "./world/entities";
+import type { TurnState } from "../assistant/protocol";
 import { stepWalkers } from "./world/move";
 import { OFFICE_H, OFFICE_W, createRenderer, type View } from "./world/render";
 import { budgetOf } from "./world/ambience";
@@ -101,7 +102,7 @@ export function startOffice(l: Link, changed: () => void): void {
   void l.prefs().then((saved) => {
     const rooms = Object.fromEntries(Object.entries((saved?.rooms ?? {}) as Record<string, unknown>).filter(([, t]) => isTeam(t))) as Record<string, Team>;
     const sticky = Object.fromEntries(Object.entries((saved?.sticky ?? {}) as Record<string, unknown>).filter(([, w]) => typeof w === "string")) as Record<string, string>;
-    staff = createStaff({ rooms, sticky });
+    staff = { ...createStaff({ rooms, sticky }), duckDoing: staff.duckDoing };
     // A bubble up now would never come down: the old staff kept its time.
     for (const w of world.workers) if (w.bubble?.tone === "say") w.bubble = null;
     const t = saved?.today as { day?: unknown; ids?: unknown } | undefined;
@@ -162,11 +163,26 @@ export const whoAt = (id: string): Who | null => whoIs(staff, id);
 export const clickOffice = (picked: string | null, x: number, y: number, ms: number): string | null =>
   debugClick(office, world, picked, x, y, ms, (w) => staff.loose.set(w.worker.id, ms));
 
-/** What's at (x, y) in office pixels, for hover: a worker's id, or a contractor's desk
- *  as `desk:<index>`. */
+/** Duck's id for `workerAt`. */
+export const DUCK_ID = "duck";
+
+/** The turn in the thread open in the office's Duck chat (O3.1): Duck shows it. */
+export function duckChatTurn(state: TurnState): void {
+  staff.duckDoing = { ...staff.duckDoing, chat: state };
+}
+
+/** What Duck is doing, in a word, for its tooltip. */
+export const duckDoing = (): string => {
+  const { state, chat } = staff.duckDoing;
+  return chat === "waiting" ? "waiting for your answer" : chat !== "idle" ? "thinking" : state;
+};
+
+/** What's at (x, y) in office pixels, for hover: a worker's id, a contractor's desk
+ *  as `desk:<index>`, or Duck (`DUCK_ID`). */
 export function workerAt(x: number, y: number): string | null {
   const w = hit(world, x, y);
   if (w) return w.worker.id;
+  if (onDuck(world, x, y)) return DUCK_ID;
   const desk = deskAt(office, { x, y });
   return desk !== undefined && world.contractors.some((c) => c.desk === desk) ? `desk:${desk}` : null;
 }

@@ -525,6 +525,22 @@ favourite spots.
 - **Build:** Duck's state animations; clicking Duck opens a Duck chat in the sidebar (reuse
   the phone's Duck client where it fits, `src/pwa/duck*.ts`).
 - **Done when:** you can talk to Duck from the office and see it think and answer.
+- _As built (approved):_ `world/boss.ts`, `duckChat.ts`. At the boss desk Duck shows
+  what it's doing: its beak moves while it speaks aloud or its reply streams into the
+  office's chat; it looks up with a "…" while it thinks or runs a tool, with "routine"
+  during a routine; a card waiting for your yes or no is a red "?"; otherwise it bobs.
+  Out on a trip (O2.3) it leaves that behind. Hovering Duck says what it's doing;
+  clicking it opens a chat in the sidebar: a thread picker and a new thread, the
+  conversation (the desktop's items and markdown), the reply as it streams, the turn's
+  state, Duck's cards to allow or deny, and stop. The phone's pieces do the work: Duck's
+  socket on the office's listener (`/office/api/assistant`, the same relay as the
+  phone's) and the phone's store (`duckStore.ts`); no mic, voice or files. The webview
+  takes the office as you at the desktop, not a phone: its messages are the desktop's,
+  nothing is spoken for it, pushes and announcements go on as if it weren't open, and it
+  can't be a host or upload. Also: the server keeps the list of open Duck sockets, and a
+  bridge that starts asks for it, so a webview reload (a hot reload in dev) no longer
+  leaves open chats, the phone's too, without Duck's news; an announcement with no phone
+  open no longer renders speech.
 
 ### Step O3.2 — Giving tasks
 - **Build:** drag an idle worker onto a desk (or click an empty desk): a small form (project,
@@ -645,7 +661,7 @@ closed, open and still, and open and busy.
 - [x] O2.2 Group activities
 - [x] O2.3 Reactions
 - [x] O2.4 Ambience
-- [ ] O3.1 Duck in the boss office
+- [x] O3.1 Duck in the boss office
 - [ ] O3.2 Giving tasks
 - [ ] O3.3 Answering from the bubbles
 - [ ] O4.1 Chatter service

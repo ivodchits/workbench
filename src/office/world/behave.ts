@@ -6,7 +6,8 @@
 // too long), slumped on the keyboard when it seems stuck, leaning back with a coffee
 // when it's done — wandering off after ten minutes of that — and off to the kitchen or
 // the lounge when the session has ended; up and cheering for a moment after a commit
-// (O2.3, `reactions.ts`, which also sends Duck round). Nobody leaves the office. Over the head: the
+// (O2.3, `reactions.ts`, which also sends Duck round; at home, Duck shows what it's
+// doing, O3.1 `boss.ts`). Nobody leaves the office. Over the head: the
 // `!`/`?` bubble, or the status icon (the working one only away from the desk). Anyone
 // with nothing to do (no session, or wandered off from one) is the idle planner's
 // (O2.1, `idle.ts`): an activity at a time, somewhere free, moving on every so often.
@@ -24,6 +25,7 @@ import type { RemoteInstance } from "../../remote/protocol";
 import { seatedAt, setAnim, type Bubble, type Screen, type WorkerEntity, type World } from "./entities";
 import { playGroups } from "./groups";
 import { duckRounds } from "./reactions";
+import { duckAtDesk } from "./boss";
 import { activity, dayPart, pickIdle } from "./idle";
 import { enter, landing, walkTo } from "./move";
 import type { IdleState, Staff } from "./sessions";
@@ -147,6 +149,7 @@ export function behave(office: OfficeMap, world: World, staff: Staff, ms: number
   const kicker = world.kicker;
   if (playGroups(world, staff, ms) || world.tv !== tv || world.kicker !== kicker) changed = true;
   if (duckRounds(office, world, staff, ms)) changed = true;
+  if (duckAtDesk(world, staff, ms)) changed = true;
   showScreens(office, world, staff);
   return changed;
 }

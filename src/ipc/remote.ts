@@ -178,6 +178,11 @@ export function onAssistantRemoteInput(cb: (i: AssistantRemoteInput) => void): P
   return listen<AssistantRemoteInput>("assistant-remote-input", (event) => cb(event.payload));
 }
 
+/** The Duck sockets open now, for a bridge that starts after they opened. */
+export function assistantRemoteConns(): Promise<{ conn: number; device: string }[]> {
+  return invoke("assistant_remote_conns");
+}
+
 /** Send one of Duck's frames to socket `conn`, or to every one (null). */
 export function assistantRemoteEmit(frame: RemoteDuckFrame, conn: number | null): Promise<void> {
   return invoke("assistant_remote_emit", { json: JSON.stringify(frame), conn });

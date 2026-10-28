@@ -15,6 +15,10 @@
 //!   DB so they outlive the tab and the browser. Workbench doesn't read them.
 //! - `GET /office/api/ws`, `GET /office/api/transcript` — as the phone's sockets (auth:
 //!   the session as a `wb-token.<session>` subprotocol).
+//! - `GET /office/api/assistant` — Duck's socket (O3.1), the phone's Duck Protocol
+//!   over the same bridge ([`assistant::relay`]), as the device `office`: the webview
+//!   takes it for you at the desktop, not a phone (`remoteBridge.ts`). Auth as the
+//!   other sockets.
 //!
 //! A debug build starts the listener with the app and leaves a reusable URL in the
 //! app-data dir ([`DEV_URL_FILE`]), so a tool can open the office without a click.
@@ -40,6 +44,7 @@ use serde_json::{json, Value};
 use tauri::{Emitter, Manager};
 use tokio::sync::broadcast;
 
+use super::assistant::{self, DuckFrame};
 use super::auth::{self, ct_eq};
 use super::server::{bearer, subprotocol_token, SUBPROTOCOL};
 use super::transcript::{self, TranscriptQuery};
@@ -69,6 +74,8 @@ struct OfficeInner {
     port: Option<u16>,
     /// Snapshots to the office's sockets.
     tx: Option<broadcast::Sender<String>>,
+    /// Duck's frames to the office's Duck sockets.
+    duck: Option<broadcast::Sender<DuckFrame>>,
     /// Launch tokens not yet used, with when they stop working.
     launches: Vec<(String, u64)>,
     /// A debug build's launch token that works as often as asked while the app runs
@@ -86,6 +93,13 @@ impl Office {
     pub(super) fn push(&self, json: &str) {
         if let Some(tx) = &self.inner.lock().unwrap().tx {
             let _ = tx.send(json.to_string()); // Err: no office open
+        }
+    }
+
+    /// Hand one of Duck's frames to the office's Duck sockets.
+    pub(super) fn duck(&self, frame: DuckFrame) {
+        if let Some(tx) = &self.inner.lock().unwrap().duck {
+            let _ = tx.send(frame); // Err: no Duck chat open
         }
     }
 
@@ -166,10 +180,13 @@ fn ensure_started(state: &Arc<RemoteState>) -> Result<u16, String> {
     let port = listener.local_addr().map_err(|e| e.to_string())?.port();
     listener.set_nonblocking(true).map_err(|e| e.to_string())?;
     let (tx, _rx) = broadcast::channel::<String>(32);
+    // Room for a burst of streamed text, as the phone's.
+    let (duck, _rx) = broadcast::channel::<DuckFrame>(512);
     {
         let mut inner = state.office.inner.lock().unwrap();
         inner.port = Some(port);
         inner.tx = Some(tx);
+        inner.duck = Some(duck);
     }
     let router = router(state.clone(), port);
     tauri::async_runtime::spawn(async move {
@@ -195,6 +212,7 @@ fn router(state: Arc<RemoteState>, port: u16) -> Router {
         .route("/office/api/prefs", get(get_prefs).put(put_prefs))
         .route("/office/api/ws", get(api_ws))
         .route("/office/api/transcript", get(api_transcript))
+        .route("/office/api/assistant", get(api_assistant))
         .with_state(state)
         .layer(middleware::from_fn_with_state(port, host_guard))
 }
@@ -377,6 +395,24 @@ async fn api_transcript(
     }
     // An office session lasts as long as the app, so nothing ends the socket early.
     ws.protocols([SUBPROTOCOL]).on_upgrade(move |socket| transcript::follow(socket, state, q, || true))
+}
+
+/// The largest frame the office's Duck socket takes, as the phone's.
+const DUCK_FRAME_MAX: usize = 256 * 1024;
+
+/// Duck's socket for the office's chat.
+async fn api_assistant(ws: WebSocketUpgrade, State(state): State<Arc<RemoteState>>, headers: HeaderMap) -> Response {
+    let session = subprotocol_token(&headers);
+    if !state.office.valid(session.as_deref()) {
+        return StatusCode::UNAUTHORIZED.into_response();
+    }
+    let Some(rx) = state.office.inner.lock().unwrap().duck.as_ref().map(|tx| tx.subscribe()) else {
+        return StatusCode::SERVICE_UNAVAILABLE.into_response();
+    };
+    ws.protocols([SUBPROTOCOL]).max_message_size(DUCK_FRAME_MAX).on_upgrade(move |socket| {
+        let st = state.clone();
+        assistant::relay(socket, state, "office".into(), rx, move || st.office.valid(session.as_deref()), false)
+    })
 }
 
 /// Start the office's listener if needed and open the office in the default browser.

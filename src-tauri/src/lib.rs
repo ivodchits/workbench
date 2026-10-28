@@ -347,6 +347,7 @@ pub fn run() {
             remote::push::remote_push_send,
             remote::push::remote_push_count,
             remote::assistant::assistant_remote_emit,
+            remote::assistant::assistant_remote_conns,
             remote::assistant::assistant_remote_push,
             statusline::usage_limits,
             git::detect_repo,

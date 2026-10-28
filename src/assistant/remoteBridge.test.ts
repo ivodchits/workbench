@@ -3,7 +3,7 @@ import type { StoredMessage } from "../ipc/assistant";
 import type { AssistantRemoteInput } from "../ipc/remote";
 import type { RemoteDuckFrame } from "../remote/protocol";
 import type { ClientMessage, DuckEndpoint, DuckEvent } from "./protocol";
-import { parseRemote, startRemoteBridge, type BridgeDeps } from "./remoteBridge";
+import { OFFICE_DEVICE, parseRemote, startRemoteBridge, type BridgeDeps } from "./remoteBridge";
 import type { Lang } from "./speakable";
 import { base64, createUploader, PART_BYTES } from "../pwa/uploads";
 
@@ -92,7 +92,7 @@ function harness(over: Partial<BridgeDeps> = {}) {
   const phone = (conn: number, msg: unknown) => input({ conn, device: "d", kind: "message", msg });
   const open = (conn: number) => input({ conn, device: "d", kind: "open", msg: null });
   const close = (conn: number) => input({ conn, device: "d", kind: "close", msg: null });
-  return { handled, sent, pushes, render, warm, stop: bridge.stop, bridge, event, phone, open, close };
+  return { handled, sent, pushes, render, warm, stop: bridge.stop, bridge, event, phone, open, close, raw: (i: AssistantRemoteInput) => input(i) };
 }
 
 const userMessage = (threadId: string, text: string, source: string): StoredMessage => ({
@@ -359,6 +359,54 @@ describe("startRemoteBridge", () => {
 });
 
 const last = <T,>(a: readonly T[]): T | undefined => a[a.length - 1];
+
+describe("the office's Duck chat (O3.1)", () => {
+  it("is the desktop's, not a phone: its messages, no speaking, pushes and announcements as without it", async () => {
+    const h = harness();
+    const input = (conn: number, kind: AssistantRemoteInput["kind"], msg: unknown = null) => h.raw({ conn, device: OFFICE_DEVICE, kind, msg });
+    input(5, "open");
+    input(5, "message", { type: "send", threadId: "t", text: "открой воркбенч", voice: true, speak: true });
+    expect(h.handled[h.handled.length - 1].msg).toEqual({ type: "send", threadId: "t", text: "открой воркбенч", source: "desktop" });
+    expect(h.warm).not.toHaveBeenCalled();
+    h.event({ type: "delta", threadId: "t", text: "seen" });
+    expect(h.sent[h.sent.length - 1]).toEqual({ frame: { type: "delta", threadId: "t", text: "seen", v: 1 }, conn: null });
+    expect(h.bridge.phones()).toBe(0);
+    h.event({ type: "confirm", request: { threadId: "t", batchId: "b", toolUseId: "u1", name: "bash", input: {} } });
+    expect(h.pushes.length).toBe(1);
+    h.bridge.announce("Done.", "t");
+    await new Promise((r) => setTimeout(r, 0));
+    expect(h.render).not.toHaveBeenCalled();
+    input(5, "message", { type: "hello", host: "phone", tools: [], version: 1 });
+    expect(h.sent[h.sent.length - 1]).toEqual({ frame: { type: "error", message: "not from the office", v: 1 }, conn: 5 });
+  });
+});
+
+describe("a bridge started under open sockets (the webview reloaded)", () => {
+  it("takes them as open, but not one that closed meanwhile", async () => {
+    let answer!: (open: { conn: number; device: string }[]) => void;
+    let input!: (i: AssistantRemoteInput) => void;
+    const h = harness();
+    const late = harness({
+      link: {
+        onInput: (cb) => ((input = cb), () => {}),
+        open: () => new Promise((r) => (answer = r)),
+        emit: (frame, conn) => void h.sent.push({ frame, conn }),
+        push: () => {},
+      },
+    });
+    input({ conn: 3, device: "d", kind: "close", msg: null });
+    answer([
+      { conn: 1, device: "d" },
+      { conn: 2, device: OFFICE_DEVICE },
+      { conn: 3, device: "d" },
+    ]);
+    await Promise.resolve();
+    await Promise.resolve();
+    late.event({ type: "delta", threadId: "t", text: "news" });
+    expect(h.sent).toEqual([{ frame: { type: "delta", threadId: "t", text: "news", v: 1 }, conn: null }]);
+    expect(late.bridge.phones()).toBe(1);
+  });
+});
 
 describe("files from the phone (G1)", () => {
   const stored = (name: string, data: string) => ({ id: "e".repeat(32), name, mime: "image/jpeg", size: (data.length * 3) / 4, path: `/att/${name}`, thumb: "data:image/jpeg;base64,t" });

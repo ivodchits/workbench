@@ -2,7 +2,8 @@
 // beside the sidebar, on the loop in loop.ts, with the performance HUD, and the link to
 // Workbench. Sessions drive the workers (liveOffice.ts). Hovering a worker shows who
 // they are and what their session is doing; clicking one opens their session in the
-// sidebar (panel.ts), and clicking the floor or Esc closes it. With the walk grid on
+// sidebar (panel.ts), clicking Duck opens a chat with Duck there (duckChat.ts, O3.1),
+// and clicking the floor or Esc closes it. With the walk grid on
 // (`G`) a click is the debug one instead: pick a worker, then send them walking. With
 // nobody picked the sidebar shows the stats (stats.ts) and the room each project sits in.
 
@@ -11,7 +12,26 @@ import { startHud } from "./hud";
 import { startLoop } from "./loop";
 import { connect } from "./net";
 import { tooltipLines } from "./describe";
-import { OFFICE_H, OFFICE_W, clickOffice, drawOffice, nameOf, officeLog, officeSnapshot, roomOf, setRoom, startOffice, stepOffice, whoAt, workedToday, workerAt } from "./liveOffice";
+import {
+  DUCK_ID,
+  OFFICE_H,
+  OFFICE_W,
+  clickOffice,
+  drawOffice,
+  duckChatTurn,
+  duckDoing,
+  nameOf,
+  officeLog,
+  officeSnapshot,
+  roomOf,
+  setRoom,
+  startOffice,
+  stepOffice,
+  whoAt,
+  workedToday,
+  workerAt,
+} from "./liveOffice";
+import { createDuckChat } from "./duckChat";
 import type { Cost } from "./net";
 import { createPanel } from "./panel";
 import { showLink, showRooms } from "./sidebar";
@@ -67,14 +87,20 @@ const link = connect((state) => {
   showTip();
 });
 const panel = createPanel(document.querySelector<HTMLElement>("#session")!, link, () => select(null));
+const duckChat = createDuckChat(document.querySelector<HTMLElement>("#duck")!, link, () => select(null), (turn) => {
+  duckChatTurn(turn);
+  loop.invalidate();
+});
 
-/** The session of whoever is picked, in the sidebar. A pick made for the debug click
- *  (with the walk grid on) isn't one. */
+/** The session of whoever is picked, or the chat with Duck, in the sidebar. A pick
+ *  made for the debug click (with the walk grid on) isn't one. */
 function showSelected(): void {
-  const who = view.selected && !view.overlay ? whoAt(view.selected) : null;
-  side.classList.toggle("open", !!who);
+  const duck = view.selected === DUCK_ID && !view.overlay;
+  const who = view.selected && !view.overlay && !duck ? whoAt(view.selected) : null;
+  side.classList.toggle("open", !!who || duck);
   panel.show(who);
-  if (!who) showStatsNow();
+  duckChat.show(duck);
+  if (!who && !duck) showStatsNow();
 }
 
 function select(id: string | null): void {
@@ -172,11 +198,13 @@ let pointer: { x: number; y: number } | null = null;
 
 /** The tooltip for whoever is hovered, by the pointer. */
 function showTip(): void {
-  const who = view.hover && pointer && !view.overlay ? whoAt(view.hover) : null;
-  tip.hidden = !who;
-  if (!who || !pointer) return;
+  const duck = view.hover === DUCK_ID;
+  const who = view.hover && pointer && !view.overlay && !duck ? whoAt(view.hover) : null;
+  tip.hidden = !(who || (duck && pointer && !view.overlay));
+  if (tip.hidden || !pointer) return;
+  const lines = who ? tooltipLines(who, performance.now()) : ["Duck", `${duckDoing()} · click to talk`];
   tip.replaceChildren(
-    ...tooltipLines(who, performance.now()).map((text, n) => {
+    ...lines.map((text, n) => {
       const line = document.createElement("div");
       if (n === 0) line.className = "who";
       line.textContent = text;
@@ -212,6 +240,7 @@ canvas.addEventListener("click", (e) => {
     loop.invalidate();
     return;
   }
-  // A worker (or a contractor's desk) opens their session; anywhere else closes it.
+  // A worker (or a contractor's desk) opens their session, Duck a chat; anywhere else
+  // closes it.
   select(workerAt(...sceneAt(e)));
 });

@@ -108,6 +108,9 @@ pub struct RemoteState {
     wake: Mutex<mpsc::Sender<()>>,
     /// Numbers Duck's sockets, so an answer goes to the one that asked.
     next_conn: AtomicU64,
+    /// The Duck sockets open now, phones' and the office's, with their device: a
+    /// webview that reloads learns them again (`assistant_remote_conns`).
+    duck_conns: Mutex<Vec<(u64, String)>>,
     /// The office's own loopback listener (office plan O0.2).
     office: office::Office,
 }
@@ -220,6 +223,7 @@ pub fn init(app: &AppHandle) {
         kick: watch::channel(0).0,
         wake: Mutex::new(wake),
         next_conn: AtomicU64::new(0),
+        duck_conns: Mutex::new(Vec::new()),
         office: office::Office::default(),
     });
     app.manage(state.clone());
