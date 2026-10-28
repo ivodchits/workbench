@@ -6,6 +6,8 @@
 // them, so walking is smooth at any frame rate. Each draw reports how long until the picture changes by itself, so the loop
 // sleeps between animation frames. The lounge TV is on only while someone plays the
 // console, and a kicker match shows its ball and, over the table, the score (O2.2).
+// The windows show the sky of the hour, and the whiteboard on Demiurge's wall keeps the
+// coffee budget: what's left of each usage window (O2.4).
 
 import { FRAME_H, FRAME_W, frame } from "../art/characters";
 import { DUCK_ANIMS, DUCK_H, DUCK_W, duckFrame } from "../art/duck";
@@ -17,7 +19,8 @@ import { MAP_H, MAP_W, TILE } from "../map/office";
 import { SIM_STEP } from "../loop";
 import { frameAt, play, type Playing } from "./anim";
 import { ballAt, kickerScore, type KickerMatch } from "./groups";
-import type { Bubble, Contractor, DuckEntity, Entity, Screen, WorkerEntity, World } from "./entities";
+import { SKY_COLORS, hoursOf, officeTime, skyAt } from "./ambience";
+import type { Budget, Bubble, Contractor, DuckEntity, Entity, Screen, WorkerEntity, World } from "./entities";
 
 export const OFFICE_W = MAP_W * TILE;
 export const OFFICE_H = MAP_H * TILE;
@@ -80,12 +83,33 @@ export function createRenderer(office: OfficeMap): Renderer {
       return {
         base: p.base,
         draw: (ctx) => {
-          const now = new Date();
+          const now = officeTime();
           const h = now.getHours();
           const m = now.getMinutes();
           ctx.drawImage(cached(`clock/${h}:${m}`, () => propFrame(clockAt(h, m))), p.x, p.y);
           // Every zone is a whole number of minutes off UTC, so local minutes turn with UTC's.
           return 60_000 - (Date.now() % 60_000);
+        },
+      };
+    }
+    if (p.id === "windowWall") {
+      return {
+        base: p.base,
+        draw: (ctx) => {
+          const sky = skyAt(hoursOf(officeTime()));
+          ctx.drawImage(cached(`window/${sky}`, () => propFrame(p.prop, 0, SKY_COLORS[sky])), p.x, p.y);
+          return 60_000 - (Date.now() % 60_000);
+        },
+      };
+    }
+    if (p.id === "whiteboard") {
+      const board = still(p);
+      return {
+        base: p.base,
+        draw: (ctx, ms) => {
+          board.draw(ctx, ms);
+          if (drawing) drawBudget(ctx, drawing.budget, p.x, p.y);
+          return Infinity;
         },
       };
     }
@@ -125,6 +149,8 @@ export function createRenderer(office: OfficeMap): Renderer {
 
   let floors: HTMLCanvasElement | undefined;
 
+
+
   return {
     draw(ctx, world, ms, view = {}) {
       ctx.imageSmoothingEnabled = false;
@@ -161,6 +187,40 @@ export function createRenderer(office: OfficeMap): Renderer {
       return next;
     },
   };
+}
+
+/** The coffee budget, on the wall whiteboard at `x`, `y`: a mug for the five-hour
+ *  window and a pot for the week, each with a gauge of the coffee left, red when it's
+ *  nearly gone and empty grey when not known. */
+function drawBudget(ctx: CanvasRenderingContext2D, budget: Budget, x: number, y: number): void {
+  // The board's writing area is x 2–29, y 2–14.
+  ctx.fillStyle = "#f4f1ea";
+  ctx.fillRect(x + 2, y + 2, 28, 13);
+  const row = (used: number | null, top: number, pot: boolean) => {
+    ctx.fillStyle = "#6f472b";
+    if (pot) {
+      ctx.fillRect(x + 3, top, 4, 4);
+      ctx.fillRect(x + 4, top - 1, 2, 1);
+    } else {
+      ctx.fillRect(x + 3, top + 1, 3, 3);
+      ctx.fillRect(x + 6, top + 2, 1, 1);
+    }
+    // The gauge: an outline, coffee for what's left.
+    ctx.fillStyle = "#3d3c4a";
+    ctx.fillRect(x + 9, top, 20, 4);
+    ctx.fillStyle = "#f4f1ea";
+    ctx.fillRect(x + 10, top + 1, 18, 2);
+    if (used === null) {
+      ctx.fillStyle = "#b9b9c6";
+      for (let i = 0; i < 18; i += 3) ctx.fillRect(x + 10 + i, top + 1, 1, 2);
+      return;
+    }
+    const left = Math.round((18 * (100 - used)) / 100);
+    ctx.fillStyle = used >= 80 ? "#d94a4a" : "#9c6a42";
+    ctx.fillRect(x + 10, top + 1, left, 2);
+  };
+  row(budget.fiveHour, y + 3, false);
+  row(budget.sevenDay, y + 9, true);
 }
 
 /** A kicker match's score over the table, its bottom centre at (`cx`, `bottom`).

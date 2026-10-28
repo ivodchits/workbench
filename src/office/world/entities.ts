@@ -90,6 +90,14 @@ export interface World {
   tv: boolean;
   /** The kicker match being played, if any. */
   kicker: KickerMatch | null;
+  /** The usage limits, for the coffee-budget whiteboard (office plan O2.4). */
+  budget: Budget;
+}
+
+/** How much of each usage window is used, in percent; null when not known. */
+export interface Budget {
+  fiveHour: number | null;
+  sevenDay: number | null;
 }
 
 const clips = new Map<string, Clip>();
@@ -174,7 +182,7 @@ export function createWorld(office: OfficeMap, ms = 0): World {
     walk: null,
   };
   const screens = office.seats.map((s): Screen => (seated.has(s.index) ? "code" : "off"));
-  return { workers, duck, screens, contractors: [], stepAt: ms, tv: false, kicker: null };
+  return { workers, duck, screens, contractors: [], stepAt: ms, tv: false, kicker: null, budget: { fiveHour: null, sevenDay: null } };
 }
 
 /** The frontmost worker whose sprite covers (x, y). */

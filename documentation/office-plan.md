@@ -508,6 +508,16 @@ favourite spots.
 - **Build:** daylight tint through the day and lamps at night, monitor glow, clock with real
   time, a "coffee budget" whiteboard showing the usage limits.
 - **Done when:** the office looks right at noon and at midnight; CPU still within budget.
+- _As built (approved):_ `world/ambience.ts`. The windows show the sky of the hour by
+  the local clock: night (19:30–5:30, the starry one), dawn, day and dusk. A shade over
+  the office with ceiling lamps and monitor glow at night was tried and dropped as not
+  adding much. The clock already told the real time (OD.5). The whiteboard on
+  Demiurge's wall is the coffee budget: a mug for the five-hour usage window and a pot
+  for the week, each a gauge of what's left (red past 80 % used, dashed when not
+  known; a window past its reset is full again). `?time=HH:MM` on the page's address
+  sets the office's time (the sky, the clock, the idle planner's hour) for checking it
+  at noon or midnight. Also: chat bubbles up when the saved settings load no longer
+  stay up for good.
 
 ## Phase O3 — Duck and running the office
 
@@ -634,7 +644,7 @@ closed, open and still, and open and busy.
 - [x] O2.1 Idle planner
 - [x] O2.2 Group activities
 - [x] O2.3 Reactions
-- [ ] O2.4 Ambience
+- [x] O2.4 Ambience
 - [ ] O3.1 Duck in the boss office
 - [ ] O3.2 Giving tasks
 - [ ] O3.3 Answering from the bubbles

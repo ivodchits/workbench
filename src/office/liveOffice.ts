@@ -16,6 +16,7 @@ import { debugClick, deskAt } from "./world/debug";
 import { createWorld, workerAt as hit } from "./world/entities";
 import { stepWalkers } from "./world/move";
 import { OFFICE_H, OFFICE_W, createRenderer, type View } from "./world/render";
+import { budgetOf } from "./world/ambience";
 import { behave } from "./world/behave";
 import { createStaff, seatSessions, whoIs, type Staff } from "./world/sessions";
 import type { Who } from "./describe";
@@ -101,6 +102,8 @@ export function startOffice(l: Link, changed: () => void): void {
     const rooms = Object.fromEntries(Object.entries((saved?.rooms ?? {}) as Record<string, unknown>).filter(([, t]) => isTeam(t))) as Record<string, Team>;
     const sticky = Object.fromEntries(Object.entries((saved?.sticky ?? {}) as Record<string, unknown>).filter(([, w]) => typeof w === "string")) as Record<string, string>;
     staff = createStaff({ rooms, sticky });
+    // A bubble up now would never come down: the old staff kept its time.
+    for (const w of world.workers) if (w.bubble?.tone === "say") w.bubble = null;
     const t = saved?.today as { day?: unknown; ids?: unknown } | undefined;
     if (typeof t?.day === "string" && Array.isArray(t.ids)) today = { day: t.day, ids: t.ids.filter((id): id is string => typeof id === "string") };
     standAbout();
@@ -111,6 +114,7 @@ export function startOffice(l: Link, changed: () => void): void {
 
 export function officeSnapshot(snapshot: RemoteSnapshot): void {
   latest = snapshot;
+  world.budget = budgetOf(snapshot.usageLimits, Date.now() / 1000);
   seat();
 }
 

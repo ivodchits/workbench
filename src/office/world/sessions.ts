@@ -13,6 +13,7 @@ import type { TagGlyph } from "../art/labels";
 import type { Who } from "../describe";
 import type { OfficeMap } from "../map/build";
 import { ROSTER, type Team } from "../roster";
+import { officeTime } from "./ambience";
 import { assign, type Seating } from "./assign";
 import { behave, doing, type Plan } from "./behave";
 import { react, type DuckTrip } from "./reactions";
@@ -106,7 +107,7 @@ export function createStaff(saved: { sticky?: Record<string, string>; rooms?: Re
     started: false,
     idle: new Map(),
     lastIdle: new Map(),
-    hour: () => new Date().getHours(),
+    hour: () => officeTime().getHours(),
     random: Math.random,
     games: noGames(),
     groupPose: new Map(),
