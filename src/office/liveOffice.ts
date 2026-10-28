@@ -20,7 +20,7 @@ import type { TurnState } from "../assistant/protocol";
 import { stepWalkers } from "./world/move";
 import { OFFICE_H, OFFICE_W, createRenderer, type AskBubble, type View } from "./world/render";
 import { budgetOf, officeTime } from "./world/ambience";
-import type { ChatterRequest } from "../remote/chatter";
+import { CHAT_PLACES, type ChatSpot, type ChatterRequest } from "../remote/chatter";
 import { sceneRequest } from "./chatter";
 import type { SceneWriter } from "./world/groups";
 import { behave } from "./world/behave";
@@ -177,14 +177,16 @@ export const clickOffice = (picked: string | null, x: number, y: number, ms: num
 /** The workers with no session now. */
 export const freeWorkers = (): string[] => ROSTER.map((w) => w.id).filter(workerFree);
 
-/** Who writes the water cooler's scenes (O4.2): chatter, by way of the page. */
+/** Who writes the chats' scenes (O4.2): chatter, by way of the page. */
 export function setSceneWriter(writer: SceneWriter | null): void {
   staff.writer = writer;
 }
 
-/** A chatter request (O4.1) for `ids` meeting at `place`, now by the office's clock. */
-export const chatterRequest = (ids: readonly string[], place: string, lines?: number): ChatterRequest =>
-  sceneRequest(ids, place, whoAt, latest, roomOf, officeTime(), lines);
+/** A chatter request (O4.1) for `ids` meeting at `spot`, now by the office's clock. */
+export const chatterRequest = (ids: readonly string[], spot: ChatSpot, lines?: number): ChatterRequest => ({
+  ...sceneRequest(ids, CHAT_PLACES[spot], whoAt, latest, roomOf, officeTime(), lines),
+  spot,
+});
 
 /** A free desk at (x, y) in office pixels: nothing sits there, nor is on its way. */
 export function freeDeskAt(x: number, y: number): number | null {

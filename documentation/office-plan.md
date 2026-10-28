@@ -615,12 +615,15 @@ favourite spots.
 - **Build:** when 2–3 idle workers meet at a chat spot, play a scene: they face each other,
   bubbles in turn, the lines go to the activity log.
 - **Done when:** an hour with the office open has believable conversations within budget.
-- _As built (approved):_ in `world/groups.ts`. The chat spot is the water
-  cooler, the one place idle workers stand and talk; the sofa's console shouts stay
-  canned. When two or three meet there, the chat asks chatter (`staff.writer`, set by
+- _As built (approved):_ in `world/groups.ts`. There are two chat
+  spots: the water cooler, and the sofa in front of the TV, where they talk over the
+  console (gamepads out, eyes on the screen; its canned lines are the game shouts). The
+  scene is told which (`spot`), and the topics suit it: office and kitchen things at
+  the cooler, games, films and shows on the sofa. When two or three meet at one, the
+  chat asks chatter (`staff.writer`, set by
   the page) for a scene of about six lines. It waits up to 6 s for it, then plays the
   lines in turn. Each line stays up 2.4 s plus 70 ms a character, and lines by anyone
-  who has walked off are skipped. Everyone in the chat faces the others (along
+  who has walked off are skipped. At the cooler everyone faces the others (along
   whichever way the rest are further), so the one at the top turns to the room. When
   the scene runs out and they're still there, it asks for one more (two per chat at
   most), given the chat's last eight lines: it carries on from them, with no greeting
@@ -629,13 +632,22 @@ favourite spots.
   unless the client actually calls: it doesn't while the page is hidden, chatter is
   off or over budget, or within a minute of a failure. This fixed a chat that began
   at load with the tab hidden staying canned throughout. The log has one entry per
-  chat, "Mira and Gus are chatting at the water cooler", with the scene's lines under
+  chat, "Mira and Gus are chatting at the water cooler" (or "got the console out"), with the scene's lines under
   it as they're said (the last ten). Canned lines stay out of the log. Lines aren't cut. A bubble
   takes about 48 characters (Haiku runs over the 36 it's asked for now and then), and
   a line running a word or two past that stays whole. One running three or more words
   past it is said in two or three bubbles by the same speaker. The break goes after
   the last sentence that fits, else after a comma, else between words. Only what three
-  bubbles can't hold is cut, with "…". Checked in
+  bubbles can't hold is cut, with "…". Broken between words, the first bubble keeps
+  to 48 characters, so a word isn't left on its own. So the chats don't all sound
+  alike, each scene is given a shape picked from 24 (news and reactions, a friendly
+  disagreement, a story told in pieces, a tiny mystery…), and the ten topics the office
+  talked about last, to steer clear of: the scene names its own `topic` for that. The
+  three fallback topics rotate, none offered again within three scenes. About one scene
+  in three, one of the workers has a small thing going on in their day (new squeaky
+  shoes, a move next month), the same all day. The prompt says a personality is how
+  someone talks, not a catchphrase to repeat, and that nobody off the roster works
+  there. Checked in
   the dev app: in-character scenes at the cooler (lunch plans before noon, the mug in
   the sink, Ada's kitchen rota, Pip's spells), a follow-up that carries on, a third
   worker joining mid-chat and getting lines, and about 500 tokens a scene once the

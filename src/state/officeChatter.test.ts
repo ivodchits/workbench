@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import type { ChatterRequest } from "../remote/chatter";
-import { LINE_CHARS, MAX_LINES, SYSTEM, TOPICS, budgetTokens, cleanScene, cleanText, fits, sample, sceneInput, splitText } from "./officeChatter";
+import { ANGLES, LINE_CHARS, MAX_LINES, SYSTEM, TODAY, TOPICS, budgetTokens, cleanScene, cleanText, fits, offerTopics, sample, sceneInput, splitText, todayOf, topicsFor } from "./officeChatter";
 
 const request: ChatterRequest = {
   day: "2026-10-28",
@@ -52,10 +52,55 @@ describe("the chatter prompt", () => {
     expect(sceneInput(request, [], [])).toContain("Projects: nothing new.");
   });
 
+  it("picks topics that suit the spot: office things at the cooler, games and films on the sofa", () => {
+    expect(topicsFor("sofa")).toBe(TOPICS.sofa);
+    expect(topicsFor("cooler")).toBe(TOPICS.cooler);
+    expect(topicsFor(undefined)).toBe(TOPICS.cooler);
+    expect(topicsFor("__proto__")).toBe(TOPICS.cooler);
+    expect(TOPICS.sofa.some((t) => t.includes("film"))).toBe(true);
+  });
+
+  it("mixes each scene up: a shape, each one's day, and what to steer clear of", () => {
+    const text = sceneInput(request, [], ["lunch"], { angle: ANGLES[0], recent: ["Gus's squeaky shoes", "the <mug>"], today: "mira" });
+    expect(text).toContain(`Shape of the scene: ${ANGLES[0]}.`);
+    expect(text).toContain("The office has lately talked about: Gus's squeaky shoes; the mug. Steer clear of those.");
+    expect(text).toContain(`- mira (Mira): free, between sessions (Open space). Today they ${todayOf("mira", request.day)}.`);
+    // Only the one it's told about.
+    expect(text).toContain("- felix (Felix): working on Demiurge · fix the build (Demiurge).\n");
+    expect(sceneInput(request, [], [])).not.toContain("Today they");
+    // A follow-up may stay on its own topic.
+    expect(sceneInput({ ...request, said: ["Mira: Tea?"] }, [], [], { recent: ["tea"] })).toContain("Steer clear of those, unless carrying on.");
+    expect(sceneInput(request, [], [])).not.toContain("Shape of the scene");
+  });
+
+  it("gives each worker one thing going on in their day, the same all day", () => {
+    expect(todayOf("mira", "2026-10-28")).toBe(todayOf("mira", "2026-10-28"));
+    expect(TODAY).toContain(todayOf("mira", "2026-10-28"));
+    const days = Array.from({ length: 14 }, (_, d) => todayOf("mira", `2026-11-${String(d + 1).padStart(2, "0")}`));
+    expect(new Set(days).size).toBeGreaterThan(5);
+    const people = ["mira", "felix", "rhea", "pip", "gus", "ada"].map((id) => todayOf(id, "2026-10-28"));
+    expect(new Set(people).size).toBeGreaterThan(3);
+  });
+
+  it("offers topics not offered lately, while there are others", () => {
+    const lately: string[] = [];
+    const pool = TOPICS.cooler;
+    const first = offerTopics(pool, Math.random, lately);
+    const second = offerTopics(pool, Math.random, lately);
+    const third = offerTopics(pool, Math.random, lately);
+    expect(new Set([...first, ...second, ...third]).size).toBe(9);
+    expect(offerTopics(["a", "b", "c"], Math.random, ["a"])).toEqual(["a", "b", "c"]);
+  });
+
+  it("asks for variety, and a topic to remember the scene by", () => {
+    expect(SYSTEM).toContain("not a catchphrase");
+    expect(SYSTEM).toContain("- topic:");
+  });
+
   it("samples topics without repeats", () => {
     let n = 0;
     const random = () => [0.1, 0.1, 0.5, 0.9][n++ % 4];
-    const picked = sample(TOPICS, 3, random);
+    const picked = sample(TOPICS.cooler, 3, random);
     expect(new Set(picked).size).toBe(3);
     expect(sample(["a"], 3)).toEqual(["a"]);
   });
@@ -88,6 +133,10 @@ describe("cleaning a scene", () => {
     expect(words.length).toBe(2);
     expect(words.join(" ")).toBe("I drew the chatter architecture on the whiteboard last night after everyone went home");
     for (const p of words) expect(fits(p)).toBe(true);
+    // Broken between words, it doesn't leave a word on its own.
+    const orphan = splitText("Naturally. I figured the worst bit was best tackled while fresh.");
+    expect(orphan).toHaveLength(2);
+    expect(orphan[1].split(" ").length).toBeGreaterThan(2);
   });
 
   it("keeps a line that runs over by only a word or two whole", () => {
@@ -107,7 +156,7 @@ describe("cleaning a scene", () => {
   });
 
   it("splits a scene's long line into turns of the same speaker", () => {
-    const scene = cleanScene({ lines: [{ speaker: "mira", text: "A big head with a bow tie, which is exactly the look it's going for" }, { speaker: "felix", text: "Ha!" }], mood: null }, ["mira", "felix"]);
+    const scene = cleanScene({ lines: [{ speaker: "mira", text: "A big head with a bow tie, which is exactly the look it's going for" }, { speaker: "felix", text: "Ha!" }], mood: null, topic: "a hat" }, ["mira", "felix"]);
     expect(scene?.lines.map((l) => l.speaker)).toEqual(["mira", "mira", "felix"]);
   });
 
@@ -121,15 +170,16 @@ describe("cleaning a scene", () => {
           { speaker: "felix", text: "🙂" },
         ],
         mood: "chatty",
+        topic: "  tea’s rivals 🙂 ",
       },
       ["mira", "felix"],
     );
-    expect(scene).toEqual({ lines: [{ speaker: "mira", text: "Tea?" }, { speaker: "felix", text: "Coffee!" }], mood: "chatty" });
-    expect(cleanScene({ lines: [{ speaker: "mira", text: "Hi" }], mood: null }, ["mira", "felix"])).toBeNull();
+    expect(scene).toEqual({ lines: [{ speaker: "mira", text: "Tea?" }, { speaker: "felix", text: "Coffee!" }], mood: "chatty", topic: "tea's rivals" });
+    expect(cleanScene({ lines: [{ speaker: "mira", text: "Hi" }], mood: null, topic: "" }, ["mira", "felix"])).toBeNull();
   });
 
   it("keeps at most the longest scene", () => {
     const lines = Array.from({ length: 12 }, (_, n) => ({ speaker: n % 2 ? "mira" : "felix", text: `line ${n}` }));
-    expect(cleanScene({ lines, mood: null }, ["mira", "felix"])?.lines).toHaveLength(MAX_LINES);
+    expect(cleanScene({ lines, mood: null, topic: "" }, ["mira", "felix"])?.lines).toHaveLength(MAX_LINES);
   });
 });

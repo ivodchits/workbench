@@ -92,14 +92,15 @@ describe("scenes at the water cooler", () => {
     expect(facings([{ id: "alone", x: 0, y: 0 }]).size).toBe(0);
   });
 
-  /** An afternoon with `writer` writing the cooler's scenes, stepped as the page steps
-   *  it, letting the writer's promises settle between steps. */
-  async function run(minutes: number, seed: number, writer: SceneWriter | null) {
+  /** An afternoon with `writer` writing the cooler's scenes (and the sofa's, with
+   *  `sofa`), stepped as the page steps it, letting the writer's promises settle between
+   *  steps. Without `sofa` the events are the cooler's alone. */
+  async function run(minutes: number, seed: number, writer: SceneWriter | null, sofa = false) {
     const world = createWorld(office);
     const staff = testStaff();
     staff.hour = () => 15;
     staff.random = dice(seed);
-    staff.writer = writer;
+    staff.writer = writer && (sofa ? writer : (ids, spot, said) => (spot === "cooler" ? writer(ids, spot, said) : Promise.resolve(null)));
     let ms = 0;
     seatSessions(office, world, staff, snapshot(["a", "b", "c"].map((id) => instance(id, "misc"))), ms, () => 0);
     const events: GroupEvent[] = [];
@@ -113,8 +114,9 @@ describe("scenes at the water cooler", () => {
       stepWalkers(world, office, (ms += 100));
       behave(office, world, staff, ms);
       // A chat's key says when it began (it may have been before this step).
-      for (const e of staff.events) if (e.kind === "chat" && !e.line) starts.push(Number(e.key.slice("chat:".length)));
-      events.push(...staff.events);
+      const mine = staff.events.filter((e) => sofa || (e.kind === "chat" && e.key.startsWith("chat:cooler:")));
+      for (const e of mine) if (e.kind === "chat" && !e.line) starts.push(Number(e.key.split(":").pop()));
+      events.push(...mine);
       staff.events.length = 0;
       const chatting = world.workers.filter((w) => staff.idle.get(w.worker.id)?.activity === "cooler" && staff.idle.get(w.worker.id)?.until !== null && !w.walk);
       if (chatting.length >= 2) {
@@ -169,6 +171,26 @@ describe("scenes at the water cooler", () => {
     expect(followUp).toBeDefined();
     for (const l of followUp!) expect(l).toMatch(/^[A-Z][a-z]+: Line \d by [a-z]+$/);
   }, 60_000);
+
+  it("has the sofa chat over the console too, telling the writer where", async () => {
+    const spots = new Set<string>();
+    const writer: SceneWriter = async (ids, spot) => {
+      spots.add(spot);
+      return { lines: sceneFor(ids, 3).lines.map((l) => ({ ...l, text: `${l.text} at ${spot}` })), mood: null };
+    };
+    let sofaLines = 0;
+    for (const seed of [2, 3, 4]) {
+      const { events } = await run(30, seed, writer, true);
+      const heads = new Map(events.flatMap((e) => (e.kind === "chat" ? [[e.key, e.text] as const] : [])));
+      for (const e of events) {
+        if (e.kind !== "chat" || !e.line?.endsWith("at sofa")) continue;
+        sofaLines++;
+        expect(heads.get(e.key)).toMatch(/got the console out$/);
+      }
+    }
+    expect(spots).toEqual(new Set(["cooler", "sofa"]));
+    expect(sofaLines).toBeGreaterThan(0);
+  }, 120_000);
 
   it("waits a moment for a scene, then fills in with canned lines", async () => {
     const slow: SceneWriter = () => new Promise(() => {});

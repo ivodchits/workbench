@@ -208,14 +208,14 @@ const chatterPanel = createChatterPanel(
     const free = freeWorkers();
     if (free.length < 2) return null;
     const ids = free.sort(() => Math.random() - 0.5).slice(0, 2 + Math.floor(Math.random() * 2));
-    return { ids, place: "the water cooler" };
+    return { ids, spot: Math.random() < 0.5 ? "cooler" : "sofa" };
   },
-  (ids, place) => chatter.scene(chatterRequest(ids, place), true),
+  (ids, spot) => chatter.scene(chatterRequest(ids, spot), true),
 );
 chatterPanel.update();
 void chatter.refresh();
-// The water cooler's chats play scenes when chatter has one (O4.2).
-setSceneWriter((ids, place, said) => chatter.scene({ ...chatterRequest(ids, place, 6), said }));
+// The chats at the cooler and on the sofa play scenes when chatter has one (O4.2).
+setSceneWriter((ids, spot, said) => chatter.scene({ ...chatterRequest(ids, spot, 6), said }));
 
 /** How often Workbench's cost is asked, while the HUD or the stats show it; its CPU is
  *  the average since the last ask. */

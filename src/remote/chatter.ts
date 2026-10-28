@@ -7,6 +7,13 @@
 export const MOODS = ["chatty", "funny", "gossipy", "excited", "tired", "tense"] as const;
 export type Mood = (typeof MOODS)[number];
 
+/** Where chats happen (O4.2), and how a scene is told where it is. */
+export const CHAT_PLACES = {
+  cooler: "the water cooler in the kitchen",
+  sofa: "the sofa in front of the lounge TV, playing a game on the console together",
+} as const;
+export type ChatSpot = keyof typeof CHAT_PLACES;
+
 export interface ChatterSpeaker {
   /** A roster id (`office/roster.ts`): the webview knows each one's name and persona. */
   id: string;
@@ -21,6 +28,8 @@ export interface ChatterRequest {
   time: string;
   /** Where they meet: "the water cooler". */
   place: string;
+  /** Which chat spot that is, for the topics to suit it; the cooler when unset. */
+  spot?: ChatSpot;
   /** Two or three. */
   speakers: ChatterSpeaker[];
   /** Project ids worth talking about (their sessions' and rooms'), at most four. */
@@ -41,6 +50,8 @@ export interface SceneLine {
 export interface Scene {
   lines: SceneLine[];
   mood: Mood | null;
+  /** What it was about, in a few words; null when the model didn't say. */
+  topic?: string | null;
 }
 
 export interface ChatterSettings {

@@ -5,19 +5,19 @@
 // itself when enough people are there (`idle.ts` draws people to company), keeps them
 // long enough to be worth it, and tells the activity log.
 //
-// A chat plays a scene written for who's there (O4.2, `staff.writer`: chatter, O4.1),
-// its lines one after another and into the log, then asks for one more if the chat
-// goes on. Until one comes, or without one (chatter off, over budget, failed), it's
-// canned lines, which the log leaves out.
+// A chat, at the cooler or over the console, plays a scene written for who's there and
+// where (O4.2, `staff.writer`: chatter, O4.1), its lines one after another and into the
+// log, then asks for one more if the chat goes on. Until one comes, or without one
+// (chatter off, over budget, failed), it's canned lines, which the log leaves out.
 
 import type { Anim, Dir } from "../art/characters";
-import type { Scene, SceneLine } from "../../remote/chatter";
+import type { ChatSpot, Scene, SceneLine } from "../../remote/chatter";
 import type { WorkerEntity, World } from "./entities";
 import type { Staff } from "./sessions";
 
-/** Writes a scene for these workers at this place, carrying on from what the chat has
+/** Writes a scene for these workers at this spot, carrying on from what the chat has
  *  said so far (`Mira: Tea?`); null when there's none. */
-export type SceneWriter = (ids: string[], place: string, said: string[]) => Promise<Scene | null>;
+export type SceneWriter = (ids: string[], spot: ChatSpot, said: string[]) => Promise<Scene | null>;
 
 /** What goes in the activity log. A `chat` is one entry per chat, by `key`: `text` is
  *  its head, and each scene line said (`line`) is added under it. */
@@ -75,8 +75,6 @@ export const LINE_PER_CHAR = 70;
 export const SCENE_WAIT = 6000;
 /** Scenes a chat asks for, at most. */
 export const SCENES_PER_CHAT = 2;
-/** Where the chat is, for the scene. */
-const COOLER = "the water cooler in the kitchen";
 /** Log lines kept for the page to take. */
 const EVENTS_MAX = 20;
 
@@ -94,6 +92,7 @@ export interface KickerMatch {
 
 /** A chat under way. */
 export interface Chat {
+  spot: ChatSpot;
   /** When the next line is due, and who said the last. */
   next: number;
   last: string | null;
@@ -111,11 +110,18 @@ export interface Chat {
 
 export interface Games {
   kicker: KickerMatch | null;
-  chat: Chat | null;
-  console: { next: number; last: string | null } | null;
+  /** The chats under way, by spot: the sofa's is the console session's. */
+  chats: Partial<Record<ChatSpot, Chat>>;
 }
 
-export const noGames = (): Games => ({ kicker: null, chat: null, console: null });
+export const noGames = (): Games => ({ kicker: null, chats: {} });
+
+/** How each spot's chat goes: its head in the log, its canned lines and the gap after
+ *  one, and how long it keeps those in it once it starts. */
+const SPOTS: Record<ChatSpot, { head: (names: string) => string; canned: readonly string[]; gap: readonly [number, number]; keeps: number }> = {
+  cooler: { head: (n) => `${n} are chatting at the water cooler`, canned: CHAT_LINES, gap: [4000, 6500], keeps: CHAT_MIN },
+  sofa: { head: (n) => `${n} got the console out`, canned: GAME_LINES, gap: [8000, 17_000], keeps: CONSOLE_MIN },
+};
 
 /** The score at `ms`: west, east. */
 export function kickerScore(m: KickerMatch, ms: number): [number, number] {
@@ -202,7 +208,7 @@ function say(staff: Staff, w: WorkerEntity, text: string, ms: number, lasts = SA
   staff.saying.set(w.worker.id, ms + lasts);
 }
 
-const chatHead = (ws: readonly WorkerEntity[]) => `${names(ws)} are chatting at the water cooler`;
+const chatHead = (chat: Chat, ws: readonly WorkerEntity[]) => SPOTS[chat.spot].head(names(ws));
 
 /** How long a scene's line stays up. */
 export const lineFor = (text: string) => LINE_FOR + LINE_PER_CHAR * text.length;
@@ -228,14 +234,14 @@ function askScene(staff: Staff, chat: Chat, ws: readonly WorkerEntity[], ms: num
   void staff
     .writer(
       ws.map((w) => w.worker.id),
-      COOLER,
+      chat.spot,
       [...chat.said],
     )
     .catch(() => null)
     .then((scene) => {
       chat.waiting = null;
       // The chat may be over, or a new one begun.
-      if (scene && staff.games.chat === chat) {
+      if (scene && staff.games.chats[chat.spot] === chat) {
         chat.asked++;
         chat.lines.push(...scene.lines);
       }
@@ -245,7 +251,7 @@ function askScene(staff: Staff, chat: Chat, ws: readonly WorkerEntity[], ms: num
     });
 }
 
-/** One turn of the water cooler's chat: the scene's next line by someone there, else
+/** One turn of a chat: the scene's next line by someone there, else
  *  a canned one (but not while a scene is on its way). True when someone spoke. */
 function chatTurn(staff: Staff, chat: Chat, ws: readonly WorkerEntity[], ms: number): boolean {
   if (ms < chat.next) return false;
@@ -259,7 +265,7 @@ function chatTurn(staff: Staff, chat: Chat, ws: readonly WorkerEntity[], ms: num
     say(staff, w, line.text, ms, lasts);
     const said = `${w.worker.name}: ${line.text}`;
     chat.said.push(said);
-    staff.events.push({ kind: "chat", key: chat.key, text: chatHead(ws), line: said });
+    staff.events.push({ kind: "chat", key: chat.key, text: chatHead(chat, ws), line: said });
     chat.next = ms + lasts + 400 + staff.random() * 600;
     chat.last = w.worker.id;
     // The scene's over and they're still at it: ask for the next.
@@ -268,8 +274,9 @@ function chatTurn(staff: Staff, chat: Chat, ws: readonly WorkerEntity[], ms: num
   }
   if (chat.waiting !== null && ms - chat.waiting < SCENE_WAIT) return false;
   const w = speaker(ws, chat.last, staff.random);
-  say(staff, w, pick(CHAT_LINES, staff.random), ms);
-  chat.next = ms + 4000 + staff.random() * 2500;
+  const { canned, gap } = SPOTS[chat.spot];
+  say(staff, w, pick(canned, staff.random), ms);
+  chat.next = ms + gap[0] + staff.random() * (gap[1] - gap[0]);
   chat.last = w.worker.id;
   if (chat.missed) askScene(staff, chat, ws, ms);
   return true;
@@ -306,36 +313,26 @@ export function playGroups(world: World, staff: Staff, ms: number): boolean {
     }
   }
 
-  // The water cooler.
-  const chatting = present(world, staff, "cooler");
-  if (chatting.length >= 2) {
-    if (!g.chat) {
-      g.chat = { next: ms + 1500, last: null, asked: 0, waiting: null, missed: false, lines: [], said: [], key: `chat:${ms}` };
-      keep(staff, chatting, ms + CHAT_MIN);
-      staff.events.push({ kind: "chat", key: g.chat.key, text: chatHead(chatting), line: null });
-      askScene(staff, g.chat, chatting, ms);
+  // The water cooler's chat, standing face to face; the sofa's, over the console, eyes
+  // on the TV.
+  for (const spot of ["cooler", "sofa"] as const) {
+    const ws = present(world, staff, spot);
+    if (ws.length < 2) {
+      delete g.chats[spot];
+      continue;
     }
-    for (const [id, dir] of facings(chatting.map((w) => ({ id: w.worker.id, x: w.x, y: w.y })))) staff.groupFace.set(id, dir);
-    said = chatTurn(staff, g.chat, chatting, ms) || said;
-  } else g.chat = null;
-
-  // The console on the sofa.
-  const playing = present(world, staff, "sofa");
-  if (playing.length >= 2) {
-    if (!g.console) {
-      g.console = { next: ms + 6000, last: null };
-      keep(staff, playing, ms + CONSOLE_MIN);
-      staff.events.push({ kind: "fun", text: `${names(playing)} got the console out` });
+    let chat = g.chats[spot];
+    if (!chat) {
+      chat = g.chats[spot] = { spot, next: ms + 1500, last: null, asked: 0, waiting: null, missed: false, lines: [], said: [], key: `chat:${spot}:${ms}` };
+      keep(staff, ws, ms + SPOTS[spot].keeps);
+      staff.events.push({ kind: "chat", key: chat.key, text: chatHead(chat, ws), line: null });
+      askScene(staff, chat, ws, ms);
     }
-    for (const w of playing) poses.set(w.worker.id, "gamepad");
-    if (ms >= g.console.next) {
-      const w = speaker(playing, g.console.last, staff.random);
-      say(staff, w, pick(GAME_LINES, staff.random), ms);
-      said = true;
-      g.console = { next: ms + 8000 + staff.random() * 9000, last: w.worker.id };
-    }
-  } else g.console = null;
-  world.tv = g.console !== null;
+    if (spot === "sofa") for (const w of ws) poses.set(w.worker.id, "gamepad");
+    else for (const [id, dir] of facings(ws.map((w) => ({ id: w.worker.id, x: w.x, y: w.y })))) staff.groupFace.set(id, dir);
+    said = chatTurn(staff, chat, ws, ms) || said;
+  }
+  world.tv = g.chats.sofa !== undefined;
 
   // The kicker.
   const atTable = present(world, staff, "kicker");

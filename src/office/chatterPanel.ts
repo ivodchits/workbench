@@ -3,7 +3,7 @@
 // free workers and shows it. Built once, so its controls survive the snapshots that
 // rebuild the stats above it.
 
-import type { Scene } from "../remote/chatter";
+import { CHAT_PLACES, type ChatSpot, type Scene } from "../remote/chatter";
 import { el } from "../pwa/dom";
 import { formatTokens } from "../util/format";
 import type { Chatter } from "./chatter";
@@ -15,7 +15,7 @@ export interface ChatterPanel {
 }
 
 /** Workers who'd say a scene "try a scene" asks for, and where. */
-export type Tryout = () => { ids: string[]; place: string } | null;
+export type Tryout = () => { ids: string[]; spot: ChatSpot } | null;
 
 const nameOf = (id: string) => ROSTER.find((w) => w.id === id)?.name ?? id;
 
@@ -26,7 +26,7 @@ function numberInput(min: number, max: number, step: number): HTMLInputElement {
   return i;
 }
 
-export function createChatterPanel(root: HTMLElement, chatter: Chatter, tryout: Tryout, ask: (ids: string[], place: string) => Promise<Scene | null>): ChatterPanel {
+export function createChatterPanel(root: HTMLElement, chatter: Chatter, tryout: Tryout, ask: (ids: string[], spot: ChatSpot) => Promise<Scene | null>): ChatterPanel {
   const on = el("input");
   on.type = "checkbox";
   const onLabel = el("label", "toggle");
@@ -67,8 +67,8 @@ export function createChatterPanel(root: HTMLElement, chatter: Chatter, tryout: 
     const t = tryout();
     if (!t) return say("Nobody's free to chat.");
     asking = tryBtn.disabled = true;
-    say(`Asking for ${t.ids.map(nameOf).join(", ")} at ${t.place}…`);
-    void ask(t.ids, t.place)
+    say(`Asking for ${t.ids.map(nameOf).join(", ")} at ${CHAT_PLACES[t.spot]}…`);
+    void ask(t.ids, t.spot)
       .then((scene) => {
         if (!scene) return say(whyNot());
         const list = el("ul", "lines");
