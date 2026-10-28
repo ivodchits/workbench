@@ -779,6 +779,41 @@ survive a move between devices.
 - **Done when:** a seed always generates the same sectors; difficulty rises with distance;
   a computer-flown ship survives longer on easy sectors than hard ones; a live play feels
   right.
+- _As built (approved; live test owed):_ `games/starrun/`, the first cartridge in the Duckbox
+  menu. The run is 160×224 and scrolls 0.75 px a step. A sector is 800 px, about 18
+  seconds, and its name blinks as you enter it. Each sector is generated from the run's seed
+  and its own number (`sectors.ts`). It is a squadron, an asteroid field or a mix, and the
+  first is always a gentle squadron. Its heat sets everything: 5 formations, rising to 14;
+  8 rocks, rising to 36; and the enemies' speed, toughness, rate of fire and shot speed
+  all rise to a ceiling about sector 15. Four enemies come in as the sectors go on:
+  - darts, in a line, a vee or a weaving column, shooting straight down from sector 4;
+  - swoops, weaving across from a side;
+  - gunners, which come down, stop to fire aimed shots, then go on;
+  - divers, which turn and dive at you.
+  Asteroids come in three sizes and split as you shoot them, each one lumpy in its own
+  way. You fly with the arrows, WASD or a stick, hold A to fire, and hold B to fly slow.
+  Start pauses. You have three lives. A hit flashes the ship and gives you two seconds
+  where nothing touches you, and clears the shots close by. Points come for kills and for
+  each sector reached. Game over shows the score, the sector reached and the best (or
+  "new best!"), and Start flies again on a new seed. The console now hands a cartridge
+  its best to beat (`make(best)`). `autopilot` flies the ship: it tries every direction a
+  little way ahead and takes the safest. Tests:
+  - a seed's sectors are always the same and another seed's differ;
+  - the heat rises, with the threat of sectors 6–8 over twice that of 0–2 and 14–16
+    higher again;
+  - spawns stay in their sector and on the screen;
+  - the gunner's stop, the scroll and spawning, and the points for a sector;
+  - flying and firing, a kill, an asteroid's split, and a life lost then the safe moment;
+  - game over (a press held from before doesn't restart it), the best carried on, and pause;
+  - the same run step for step from a seed and pad;
+  - the autopilot, looking again only every 12 steps the way a player reacts, flies all
+    of 3,000 steps unhit from sector 1 in every one of 12 seeds, but is hit in most runs
+    from sector 19, and flies over 1.5 times longer early on. Reacting at once, it dodges
+    almost everything, so the difficulty is tuned for a player, not for it.
+  Checked in headless Chrome against the dev page: the menu with Star run first, the
+  sector banner, darts in vees and lines, asteroids, firing, the score and a life lost,
+  pause, and Esc to the menu.
+  **Owed:** a live play to judge the feel and the pace.
 
 #### Step O5.3c — Star run: perks and bosses
 - **Build:** pickups dropped by enemies and asteroids: spread shot, rapid fire, a shield, a
@@ -906,7 +941,7 @@ closed, open and still, and open and busy.
 - [x] O5.1 Game overlay (live test and gamepad owed)
 - [x] O5.2 Kicker (live test and gamepad owed)
 - [x] O5.3a Console shell
-- [ ] O5.3b Star run: flying and shooting
+- [x] O5.3b Star run: flying and shooting (live play owed)
 - [ ] O5.3c Star run: perks and bosses
 - [ ] O5.3d Emulator
 - [ ] O5.3e Saves shared with RetroArch

@@ -17,7 +17,8 @@ export interface Cartridge {
   help: string;
   /** Whether it keeps a best score (from its game's `score`). */
   scored?: boolean;
-  make(): Game;
+  /** A new game; `best` is the score it has to beat. */
+  make(best: number): Game;
 }
 
 /** Where the bests are kept, by cartridge id. */
@@ -88,7 +89,7 @@ export function stepConsole(s: ConsoleState, pad: Pad, save: (best: Record<strin
     s.note = { text: "THE LIBRARY IS EMPTY FOR NOW", until: s.t + NOTE_STEPS };
     return;
   }
-  Object.assign(s, { phase: "play", t: 0, playing: { cart, game: cart.make() }, note: null });
+  Object.assign(s, { phase: "play", t: 0, playing: { cart, game: cart.make(s.best[cart.id] ?? 0) }, note: null });
 }
 
 /** Esc or Back: out of a cartridge to the menu (true), or not taken, to turn off. */

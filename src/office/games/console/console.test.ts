@@ -8,15 +8,17 @@ import { BOOT_STEPS, CONSOLE_H, CONSOLE_W, backConsole, consoleGame, consoleStat
 const idle = readPad(new Set());
 const press = (more: Partial<Pad>): Pad => ({ ...idle, ...more });
 
-/** A cartridge whose score is the steps it has run, and which says when it's stopped. */
-function counter(id: string, stops: string[] = []): Cartridge {
+/** A cartridge whose score is the steps it has run, and which says when it's stopped and
+ *  the best it was given to beat. */
+function counter(id: string, stops: string[] = [], given: number[] = []): Cartridge {
   return {
     id,
     title: id,
     label: ["#000", "#fff"],
     help: `${id} keys`,
     scored: true,
-    make(): Game {
+    make(best): Game {
+      given.push(best);
       let n = 0;
       return {
         w: 100,
@@ -103,7 +105,8 @@ describe("the TV console", () => {
 
   it("keeps the best, not the last, and brings it back next time", () => {
     const { store, saved } = memory({ a: 40 });
-    const s = consoleState([counter("a")], store.load());
+    const given: number[] = [];
+    const s = consoleState([counter("a", [], given)], store.load());
     const save = (b: Record<string, number>) => store.save(b);
     Object.assign(s, { phase: "menu", held: { a: false, start: false, dir: 0 } });
     stepConsole(s, press({ a: true }), save);
@@ -116,10 +119,12 @@ describe("the TV console", () => {
     // Turned off mid-game, it's still kept.
     leave(s, save);
     expect(saved[saved.length - 1]).toEqual({ a: 60 });
+    // Each game is given the best to beat.
+    expect(given).toEqual([40, 40]);
   });
 
-  it("has the pad test among its cartridges", () => {
-    expect(CARTRIDGES.map((c) => c.id)).toContain("pad-test");
+  it("has Star run and the pad test among its cartridges", () => {
+    expect(CARTRIDGES.map((c) => c.id)).toEqual(["star-run", "pad-test"]);
     const ids = CARTRIDGES.map((c) => c.id);
     expect(new Set(ids).size).toBe(ids.length);
   });
