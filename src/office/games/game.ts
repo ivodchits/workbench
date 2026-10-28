@@ -1,6 +1,6 @@
-// What a game in the overlay is (office plan O5.1), and the test game the TV and the
-// kicker open until their own (O5.2, O5.3): a dot steered round a field, with lamps
-// for the buttons held and the controller in use, to try the input.
+// What a game in the overlay is (office plan O5.1), and the test game the TV opens
+// until its own (O5.3): a dot steered round a field, with lamps for the buttons held
+// and the controller in use, to try the input.
 
 import { textBitmap } from "../art/font";
 import { cached } from "../canvas";

@@ -15,7 +15,7 @@ const gamepad = (axes: number[], pressed: number[] = [], mapping = "standard"): 
 describe("the pad", () => {
   it("reads the keyboard", () => {
     const pad = readPad(new Set(["ArrowLeft", "KeyS", "KeyZ", "Enter"]));
-    expect(pad).toEqual({ x: -1, y: 1, a: true, b: false, start: true, back: false, gamepad: null });
+    expect(pad).toMatchObject({ x: -1, y: 1, a: true, b: false, start: true, back: false, gamepad: null });
     expect(readPad(new Set(["ArrowLeft", "ArrowRight"])).x).toBe(0);
     expect(PAD_KEYS.has("Space")).toBe(true);
     expect(PAD_KEYS.has("Escape")).toBe(false);
@@ -30,6 +30,22 @@ describe("the pad", () => {
     // Without the standard mapping, only A and B are trusted.
     expect(readPad(new Set(), [gamepad([0, 0], [1, 8], "")])).toMatchObject({ b: true, back: false });
     expect(readPad(new Set(), [null]).gamepad).toBeNull();
+  });
+});
+
+describe("the pad, for two hands", () => {
+  it("reads WASD as the left hand and IJKL or the arrows as the right, Q/E and U/O moving them", () => {
+    const pad = readPad(new Set(["KeyW", "KeyD", "KeyK", "KeyJ", "KeyE", "KeyU"]));
+    expect(pad).toMatchObject({ left: { x: 1, y: -1 }, right: { x: -1, y: 1 }, move: { left: 1, right: -1 } });
+    expect(readPad(new Set(["ArrowDown", "KeyK", "ArrowLeft"])).right).toEqual({ x: -1, y: 1 });
+    for (const key of ["KeyQ", "KeyE", "KeyU", "KeyO", "KeyI", "KeyJ", "KeyK", "KeyL"]) expect(PAD_KEYS.has(key)).toBe(true);
+  });
+
+  it("reads the d-pad and left stick as the left hand, the face buttons and right stick as the right", () => {
+    // Y up, A down, X left, B right; a hand's bumper moves it outward, its trigger inward.
+    expect(readPad(new Set(), [gamepad([0, 0, 0, 0], [12, 1, 3, 4])])).toMatchObject({ left: { x: 0, y: -1 }, right: { x: 1, y: -1 }, move: { left: -1, right: 0 } });
+    expect(readPad(new Set(), [gamepad([-0.5, 0, 0, 0.8], [7, 6])])).toMatchObject({ left: { x: -0.5, y: 0 }, right: { x: 0, y: 0.8 }, move: { left: 1, right: -1 }, gamepad: "Test pad" });
+    expect(readPad(new Set(), [gamepad([0, 0], [5])]).move).toEqual({ left: 0, right: 1 });
   });
 });
 

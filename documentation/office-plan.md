@@ -683,6 +683,39 @@ favourite spots.
 
 ### Step O5.2 — Kicker
 - **Build:** a small top-down foosball game against the computer.
+- _As built (approved; live test owed):_ `games/kicker.ts`, opened from the kicker. The table is
+  seen from above, you (blue) against the computer (red), first to five; which end you
+  defend is drawn at random and every rematch swaps it. Four rods a side, interleaved as on a real table: goalie 1, defence 2,
+  midfield 5, attack 3. You hold two rods at once, one per hand, each moved along your
+  rods on its own and never crossing (the left hand's rod is always left of the right
+  hand's). They start with the goalie in the hand nearer your goal and midfield in the
+  other: from the right goal the right hand has the goalie. The pad grew a two-hand reading for
+  it (`pad.ts`): WASD, the d-pad or the left stick is the left hand, with Q/E to move it
+  along; IJKL (or the arrows), A/B/X/Y as a diamond or the right stick is the right,
+  with U/O beside it; on a gamepad each hand's bumper moves it outward and its trigger
+  inward. Up and down slides a rod; left and right swings its men that way on a spring,
+  toward the other goal to kick. It's physical: a foot hits the ball with the
+  speed it really has, so a swing from a wind-up is a hard shot, a swing from rest a soft one and a still foot a wall that
+  bounces it back, and sliding the rod as you hit it angles the shot. Swung far either
+  way the feet lift and the ball rolls under. Your rods out of hand stay where you left
+  them. The computer plays all four of its rods, a touch slower than you and late on
+  where the ball is going; it winds up only from behind the ball and not at one coming
+  in fast, keeps raised feet up over a ball (stepping the rod aside first) and lifts to
+  let its own shots through. A serve rolls in from a side wall, top and bottom in turn;
+  a ball lying dead for three seconds is served again. Enter or Start pauses and, once
+  over, starts again. Tests: the table (every rod's reach across the field and the
+  goalies' across the goal, no strip between rods out of reach), the hands moving
+  along without crossing, the swing spring, a still foot bouncing the ball, a wound-up
+  shot beating one from rest, rolling under raised feet, a goal and the serve after it, the ends beside
+  the goal, the dead-ball serve, three minutes of computer-against-computer staying on
+  the table, the computer beating a player who does nothing, pause and restart,
+  your end by chance and swapped each rematch, the left end mirrored (hands, kicking
+  right, scoring right), the hands' keys and buttons. Tuned headless: computer against computer comes out even over
+  40 games (16–24, goals 145–165, about 2½ minutes a game); against a player who does
+  nothing it wins all 40, mostly 5–0 or 5–1, in about two minutes, from either end.
+  Checked in the dev page: the kicker opens its game, the table drawn at either end.
+  **Owed:** a live play (the feel of the slide and swing, the computer's strength, the
+  hands' switching) and a real gamepad; the browser tab used was hidden, so no frames ran.
 
 ### Step O5.3 — TV: retro console emulator (may need 2 passes)
 - **Build:** NES/SNES/Game Boy/GBA/Mega Drive through Nostalgist.js (libretro cores compiled to
@@ -774,7 +807,7 @@ closed, open and still, and open and busy.
 - [x] O4.1 Chatter service
 - [x] O4.2 Playing scenes
 - [x] O5.1 Game overlay (live test and gamepad owed)
-- [ ] O5.2 Kicker
+- [x] O5.2 Kicker (live test and gamepad owed)
 - [ ] O5.3 TV: retro console emulator
 - [ ] O5.4 Whiteboard Pictionary with Duck
 - [ ] O5.5 Morning standup

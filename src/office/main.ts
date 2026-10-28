@@ -58,6 +58,7 @@ import { showStats } from "./stats";
 import { createChatter } from "./chatter";
 import { createChatterPanel } from "./chatterPanel";
 import { testGame, type GameDef } from "./games/game";
+import { kickerGame } from "./games/kicker";
 import { createGameOverlay } from "./games/overlay";
 import type { GameProp } from "./games/props";
 
@@ -98,10 +99,10 @@ let hireTarget: HireTarget | null = null;
 let hoverDesk: number | null = null;
 let dropDesk: number | null = null;
 
-/** What each game prop opens: the test game till their own (O5.2, O5.3). */
+/** What each game prop opens: the kicker its own (O5.2), the TV the test game till O5.3. */
 const GAMES: Record<GameProp, GameDef> = {
   tv: testGame("The TV", "#7fd1ff"),
-  kicker: testGame("Kicker", "#89b482"),
+  kicker: kickerGame,
 };
 const games = createGameOverlay(document.querySelector<HTMLElement>("#game")!, () => loop.invalidate());
 const GAME_NAMES: Record<GameProp, string> = { tv: "The TV", kicker: "The kicker" };
