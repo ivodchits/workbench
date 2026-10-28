@@ -60,7 +60,12 @@ import { showStats } from "./stats";
 import { createChatter } from "./chatter";
 import { createChatterPanel } from "./chatterPanel";
 import type { GameDef } from "./games/game";
-import { consoleGame } from "./games/console/console";
+import { consoleGame, pageStore } from "./games/console/console";
+import { emulatorGame } from "./games/emulator/emulator";
+import { launchRetroArch } from "./games/emulator/retroarch";
+import { tvScreen } from "./games/emulator/screen";
+import { TV_EVERY } from "./world/render";
+import { linkShelf } from "./games/emulator/shelf";
 import { CARTRIDGES } from "./games/console/cartridges";
 import { kickerGame } from "./games/kicker";
 import { createGameOverlay } from "./games/overlay";
@@ -103,9 +108,11 @@ let hireTarget: HireTarget | null = null;
 let hoverDesk: number | null = null;
 let dropDesk: number | null = null;
 
+/** The TV's Library (O5.3d): your games, through the office's listener. */
+const shelf = linkShelf((path, init) => link.request(path, init));
 /** What each game prop opens: the kicker its own (O5.2), the TV its console (O5.3a). */
 const GAMES: Record<GameProp, GameDef> = {
-  tv: consoleGame(CARTRIDGES),
+  tv: consoleGame(CARTRIDGES, pageStore, { shelf, play: (entry, fresh) => emulatorGame(entry, shelf, launchRetroArch, fresh) }),
   kicker: kickerGame,
 };
 const games = createGameOverlay(document.querySelector<HTMLElement>("#game")!, () => {
@@ -120,14 +127,18 @@ const loop = startLoop({
     return changed && !games.open;
   },
   draw: (ms) => {
-    // Still behind a game: it has the frames.
-    if (games.open) return Infinity;
+    // Still behind a game: it has the frames. Only a Library game on the TV shows
+    // there too, now and then.
+    if (games.open && !tvScreen.get()) return Infinity;
     const next = drawOffice(ctx, view.paused ? view.pausedAt : ms, view);
     present();
     placeAsk();
+    if (games.open) return TV_EVERY;
     return view.paused ? Infinity : next;
   },
 });
+// The TV comes on with a Library game, and goes back when it ends.
+tvScreen.listen(() => loop.invalidate());
 const linkEl = document.querySelector<HTMLElement>("#link")!;
 const statsEl = document.querySelector<HTMLElement>("#stats")!;
 const roomsEl = document.querySelector<HTMLElement>("#rooms")!;

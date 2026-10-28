@@ -3,7 +3,8 @@
 // the page is hidden. It reads the keyboard and gamepads as one pad (pad.ts). It closes
 // on ✕, Esc, a gamepad's Back, or a click on the dimmed office; Esc and Back go to the
 // game first, which may take them (the TV console back to its menu). The office's own
-// picture stays still behind it till then (the page holds its drawing).
+// picture stays still behind it till then (the page holds its drawing). ⛶ or F fills
+// the screen with it (O5.3d), still scaled by whole pixels.
 
 import { el } from "../../pwa/dom";
 import { STEP_MS, type Game, type GameDef } from "./game";
@@ -29,8 +30,11 @@ export function createGameOverlay(root: HTMLElement, closed: () => void): GameOv
   const close = el("button", "close", "✕");
   close.type = "button";
   close.title = "close (Esc)";
+  const full = el("button", "close", "⛶");
+  full.type = "button";
+  full.title = "fill the screen (F)";
   const head = el("header");
-  head.append(title, close);
+  head.append(title, full, close);
   const screen = el("canvas");
   const help = el("p", "muted");
   const box = el("div", "window");
@@ -81,7 +85,7 @@ export function createGameOverlay(root: HTMLElement, closed: () => void): GameOv
     let stepped = false;
     while (due >= STEP_MS) {
       const pad = readPad(keys, gamepads());
-      const pressed = pad.back && !backHeld;
+      const pressed = pad.back && !backHeld && !current.game.keepsBack;
       backHeld = pad.back;
       if (pressed) {
         back();
@@ -108,8 +112,15 @@ export function createGameOverlay(root: HTMLElement, closed: () => void): GameOv
     raf = undefined;
   }
 
+  /** Fills the screen with the game, or stops doing so. */
+  function fullscreen(): void {
+    if (document.fullscreenElement) void document.exitFullscreen().catch(() => {});
+    else void root.requestFullscreen?.().catch(() => {});
+  }
+
   function shut(): void {
     if (!current) return;
+    if (document.fullscreenElement === root) void document.exitFullscreen().catch(() => {});
     halt();
     current.game.stop?.();
     current = null;
@@ -122,6 +133,11 @@ export function createGameOverlay(root: HTMLElement, closed: () => void): GameOv
     if (!current) return;
     if (e.key === "Escape") {
       if (e.type === "keydown" && !e.repeat) back();
+      e.preventDefault();
+      return;
+    }
+    if (e.code === "KeyF") {
+      if (e.type === "keydown" && !e.repeat) fullscreen();
       e.preventDefault();
       return;
     }
@@ -138,6 +154,10 @@ export function createGameOverlay(root: HTMLElement, closed: () => void): GameOv
   document.addEventListener("visibilitychange", () => (document.hidden ? halt() : run()));
   new ResizeObserver(fit).observe(root);
   close.addEventListener("click", shut);
+  full.addEventListener("click", () => {
+    fullscreen();
+    full.blur();
+  });
   root.addEventListener("click", (e) => e.target === root && shut());
   root.hidden = true;
 

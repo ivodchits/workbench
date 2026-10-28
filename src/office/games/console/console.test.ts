@@ -3,7 +3,8 @@ import { describe, expect, it } from "vitest";
 import type { Game } from "../game";
 import { readPad, type Pad } from "../pad";
 import { CARTRIDGES } from "./cartridges";
-import { BOOT_STEPS, CONSOLE_H, CONSOLE_W, backConsole, consoleGame, consoleState, leave, stepConsole, type BestStore, type Cartridge } from "./console";
+import type { LibraryEntry, Listing } from "../emulator/shelf";
+import { BOOT_STEPS, CONSOLE_H, CONSOLE_W, backConsole, consoleGame, consoleState, leave, stepConsole, type BestStore, type Cartridge, type Library } from "./console";
 
 const idle = readPad(new Set());
 const press = (more: Partial<Pad>): Pad => ({ ...idle, ...more });
@@ -127,5 +128,134 @@ describe("the TV console", () => {
     expect(CARTRIDGES.map((c) => c.id)).toEqual(["star-run", "pad-test"]);
     const ids = CARTRIDGES.map((c) => c.id);
     expect(new Set(ids).size).toBe(ids.length);
+  });
+});
+
+const flush = () => new Promise((r) => setTimeout(r, 0));
+
+/** A Library with these games, a folder chosen as `next` when asked, and its games
+ *  logging what they're asked to do. */
+function shelfOf(games: LibraryEntry[], next: Listing | null = null) {
+  const log: string[] = [];
+  let listing: Listing = { folder: games.length ? "G:/games" : null, games };
+  const library: Library = {
+    shelf: {
+      list: async () => (log.push("list"), structuredClone(listing)),
+      choose: async () => (log.push("choose"), next && (listing = next), structuredClone(listing)),
+    },
+    play(entry, fresh) {
+      log.push(`play ${entry.path}${fresh ? " fresh" : ""}`);
+      let done = false;
+      return {
+        w: 320,
+        h: 224,
+        keepsBack: true,
+        get done() {
+          return done;
+        },
+        step: (pad) => void (pad.start && (done = true)),
+        draw: () => {},
+        stop: () => void log.push(`stop ${entry.path}`),
+      };
+    },
+  };
+  return { library, log };
+}
+
+const game = (path: string, more: Partial<LibraryEntry> = {}): LibraryEntry => ({ path, title: path, system: "md", size: 100, state: false, ...more });
+
+/** A console at its menu with the Library chosen and open. */
+async function inLibrary(library: Library) {
+  const s = consoleState([counter("a")], {}, library);
+  Object.assign(s, { phase: "menu", at: 1, held: { a: false, b: false, start: false, dir: 0 } });
+  stepConsole(s, press({ a: true }));
+  await flush();
+  stepConsole(s, idle);
+  return s;
+}
+
+describe("the TV console's Library", () => {
+  it("lists the games in the folder, and moves through them and the folder row", async () => {
+    const { library, log } = shelfOf([game("a.md"), game("b.nes", { system: "nes" })]);
+    const s = await inLibrary(library);
+    expect(s.phase).toBe("library");
+    expect(log).toEqual(["list"]);
+    expect(s.lib.status).toBe("ready");
+    expect(s.lib.listing.games.map((g) => g.path)).toEqual(["a.md", "b.nes"]);
+    const down = press({ y: 1 });
+    for (const at of [1, 2, 0]) {
+      stepConsole(s, down);
+      stepConsole(s, idle);
+      expect(s.lib.at).toBe(at);
+    }
+  });
+
+  it("plays a game with A, resuming it, and comes back to the Library with it marked", async () => {
+    const { library, log } = shelfOf([game("a.md")]);
+    const s = await inLibrary(library);
+    const tv = consoleGame([], memory().store, library).make();
+    expect(tv.keepsBack).toBe(false);
+    stepConsole(s, press({ a: true }));
+    expect(s.phase).toBe("play");
+    expect(log).toEqual(["list", "play a.md"]);
+    expect(s.playing!.game.keepsBack).toBe(true);
+    // Esc goes back to the Library, not the menu; the game leaves a state behind.
+    expect(backConsole(s)).toBe(true);
+    expect(s.phase).toBe("library");
+    expect(log).toEqual(["list", "play a.md", "stop a.md"]);
+    expect(s.lib.listing.games[0].state).toBe(true);
+    // Esc again: the menu.
+    expect(backConsole(s)).toBe(true);
+    expect(s.phase).toBe("menu");
+  });
+
+  it("starts a game over with B", async () => {
+    const { library, log } = shelfOf([game("a.md", { state: true })]);
+    const s = await inLibrary(library);
+    stepConsole(s, press({ b: true }));
+    expect(log).toEqual(["list", "play a.md fresh"]);
+  });
+
+  it("leaves a game that asks to go", async () => {
+    const { library, log } = shelfOf([game("a.md")]);
+    const s = await inLibrary(library);
+    stepConsole(s, press({ a: true }));
+    stepConsole(s, press({ start: true }));
+    expect(s.phase).toBe("library");
+    expect(log).toContain("stop a.md");
+  });
+
+  it("won't play an empty file", async () => {
+    const { library, log } = shelfOf([game("empty.md", { size: 0 })]);
+    const s = await inLibrary(library);
+    stepConsole(s, press({ a: true }));
+    expect(s.phase).toBe("library");
+    expect(s.note?.text).toBe("THAT FILE IS EMPTY");
+    expect(log).toEqual(["list"]);
+  });
+
+  it("chooses the folder from its last row, then lists what's in it", async () => {
+    const chosen: Listing = { folder: "C:/roms", games: [game("x.md")] };
+    const { library, log } = shelfOf([], chosen);
+    const s = await inLibrary(library);
+    expect(s.lib.listing.folder).toBeNull();
+    expect(s.lib.at).toBe(0);
+    stepConsole(s, press({ a: true }));
+    expect(s.lib.choosing).toBe(true);
+    // Nothing more is taken while the dialog is up.
+    stepConsole(s, idle);
+    stepConsole(s, press({ a: true }));
+    expect(log).toEqual(["list", "choose"]);
+    await flush();
+    expect(s.lib.choosing).toBe(false);
+    expect(s.lib.listing).toEqual(chosen);
+  });
+
+  it("stays empty with a note when there's no Library to read", () => {
+    const s = consoleState([counter("a")]);
+    Object.assign(s, { phase: "menu", at: 1, held: { a: false, b: false, start: false, dir: 0 } });
+    stepConsole(s, press({ a: true }));
+    expect(s.phase).toBe("menu");
+    expect(s.note?.text).toBe("THE LIBRARY IS EMPTY FOR NOW");
   });
 });

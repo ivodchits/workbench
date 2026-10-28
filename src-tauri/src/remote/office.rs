@@ -21,6 +21,8 @@
 //!   other sockets.
 //! - `GET`/`PUT`/`POST /office/api/chatter` — chatter's settings and budget, and a
 //!   scene written for idle workers who meet (O4.1, [`chatter`]).
+//! - `/office/api/core/…`, `/office/api/library…` — the TV's Library (O5.3d,
+//!   [`library`]): the built-in emulator cores, your game images and their save states.
 //!
 //! A debug build starts the listener with the app and leaves a reusable URL in the
 //! app-data dir ([`DEV_URL_FILE`]), so a tool can open the office without a click.
@@ -35,7 +37,7 @@ use std::sync::{Arc, Mutex};
 
 use axum::body::Bytes;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
-use axum::extract::{Query, Request, State};
+use axum::extract::{DefaultBodyLimit, Query, Request, State};
 use axum::http::{header, HeaderMap, StatusCode};
 use axum::middleware::{self, Next};
 use axum::response::{Html, IntoResponse, Redirect, Response};
@@ -53,6 +55,7 @@ use super::transcript::{self, TranscriptQuery};
 use super::RemoteState;
 
 mod chatter;
+mod library;
 mod stats;
 
 /// Where the office listens; a debug build apart from a release, like the phone's
@@ -218,6 +221,14 @@ fn router(state: Arc<RemoteState>, port: u16) -> Router {
         .route("/office/api/transcript", get(api_transcript))
         .route("/office/api/assistant", get(api_assistant))
         .route("/office/api/chatter", get(chatter::get).put(chatter::put).post(chatter::ask))
+        .route("/office/api/core/{name}/{part}", get(library::core))
+        .route("/office/api/library", get(library::get))
+        .route("/office/api/library/folder", post(library::choose))
+        .route("/office/api/library/rom", get(library::rom))
+        .route(
+            "/office/api/library/state",
+            get(library::get_state).put(library::put_state).layer(DefaultBodyLimit::max(library::STATE_MAX)),
+        )
         .with_state(state)
         .layer(middleware::from_fn_with_state(port, host_guard))
 }

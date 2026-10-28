@@ -630,5 +630,6 @@ export function autopilot(s: RunState): Pad {
     right: { x: 0, y: 0 },
     move: { left: 0, right: 0 },
     gamepad: null,
+    retro: new Set(),
   };
 }

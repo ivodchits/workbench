@@ -756,6 +756,16 @@ body.below #side {
   display: none;
 }
 
+#game:fullscreen {
+  background: #000;
+}
+
+#game:fullscreen .window {
+  background: transparent;
+  border-color: transparent;
+  box-shadow: none;
+}
+
 #game .window {
   display: flex;
   flex-direction: column;

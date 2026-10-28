@@ -20,6 +20,7 @@ import { SIM_STEP } from "../loop";
 import { frameAt, play, type Playing } from "./anim";
 import { ballAt, kickerScore, type KickerMatch } from "./groups";
 import { SKY_COLORS, hoursOf, officeTime, skyAt } from "./ambience";
+import { tvScreen } from "../games/emulator/screen";
 import type { Budget, Bubble, Contractor, DuckEntity, Entity, Screen, WorkerEntity, World } from "./entities";
 
 export const OFFICE_W = MAP_W * TILE;
@@ -87,6 +88,10 @@ export interface Renderer {
 const FIELD = { x: 3, y: 3, w: 32, h: 10 };
 /** How often a kicker match is redrawn: the ball moves. */
 const BALL_EVERY = 60;
+/** The TV's screen inside its sprite, where a Library game shows (O5.3d), and how often
+ *  it is redrawn then. */
+const TV_SCREEN = { x: 4, y: 2, w: 28, h: 13 };
+export const TV_EVERY = 100;
 
 export function createRenderer(office: OfficeMap): Renderer {
   /** The world being drawn, for the furniture that shows its state. */
@@ -132,7 +137,20 @@ export function createRenderer(office: OfficeMap): Renderer {
     if (p.id === "tvOn") {
       const on = still(p);
       const off = still(p, PROPS.tvOff, "tvOff");
-      return { base: p.base, draw: (ctx, ms) => (drawing?.tv ? on : off).draw(ctx, ms) };
+      return {
+        base: p.base,
+        draw: (ctx, ms) => {
+          const picture = tvScreen.get();
+          if (!picture) return (drawing?.tv ? on : off).draw(ctx, ms);
+          on.draw(ctx, ms);
+          // The game, shrunk to the screen: smoothed, so it reads as a picture.
+          ctx.save();
+          ctx.imageSmoothingEnabled = true;
+          ctx.drawImage(picture, p.x + TV_SCREEN.x, p.y + TV_SCREEN.y, TV_SCREEN.w, TV_SCREEN.h);
+          ctx.restore();
+          return TV_EVERY;
+        },
+      };
     }
     if (p.id === "kicker") {
       const table = still(p);

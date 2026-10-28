@@ -7,6 +7,12 @@
 // or the right stick the right. Each hand also moves left or right along a row of
 // things (the kicker's rods): Q and E for the left, U and O for the right; on a
 // gamepad each hand's bumper moves it outward and its trigger inward.
+//
+// The emulator (O5.3d) reads the pad as RetroArch's RetroPad (`retro`): a gamepad's
+// buttons by where they sit (the bottom one is B, the right A, the left Y, the top X,
+// then the bumpers, triggers, Back as Select and Start), and the keyboard as RetroArch
+// lays it out: the arrows, Z for B, X for A, A for Y, S for X, Q and W the bumpers,
+// Enter Start and right Shift Select.
 
 export interface Pad {
   /** Steering, -1 (left, up) to 1 (right, down). */
@@ -23,7 +29,13 @@ export interface Pad {
   move: { left: number; right: number };
   /** The gamepad that last had anything pressed, by its name; null for the keyboard. */
   gamepad: string | null;
+  /** The RetroPad's buttons held, for the emulator. */
+  retro: ReadonlySet<RetroButton>;
 }
+
+export type RetroButton =
+  | "b" | "a" | "y" | "x" | "l" | "r" | "l2" | "r2" | "l3" | "r3"
+  | "select" | "start" | "up" | "down" | "left" | "right";
 
 /** The parts of a `Gamepad` read, so tests can make one. */
 export interface PadLike {
@@ -48,8 +60,29 @@ const KEYS = {
   hands: ["KeyI", "KeyJ", "KeyK", "KeyL", "KeyQ", "KeyE", "KeyU", "KeyO"],
 } as const;
 
+/** The RetroPad's keys, RetroArch's own. */
+const RETRO_KEYS: Readonly<Record<string, RetroButton>> = {
+  ArrowUp: "up",
+  ArrowDown: "down",
+  ArrowLeft: "left",
+  ArrowRight: "right",
+  KeyZ: "b",
+  KeyX: "a",
+  KeyA: "y",
+  KeyS: "x",
+  KeyQ: "l",
+  KeyW: "r",
+  Enter: "start",
+  ShiftRight: "select",
+};
+
+/** A standard gamepad's buttons as the RetroPad's, by index. */
+const RETRO_BUTTONS: readonly RetroButton[] = ["b", "a", "y", "x", "l", "r", "l2", "r2", "select", "start", "l3", "r3", "up", "down", "left", "right"];
+/** How far the left stick goes before it presses the d-pad. */
+const RETRO_STICK = 0.5;
+
 /** Every key the pad reads (by `KeyboardEvent.code`): the page leaves them to the game. */
-export const PAD_KEYS: ReadonlySet<string> = new Set(Object.values(KEYS).flat());
+export const PAD_KEYS: ReadonlySet<string> = new Set([...Object.values(KEYS).flat(), ...Object.keys(RETRO_KEYS)]);
 
 // The standard mapping's buttons.
 const A = 0;
@@ -88,7 +121,10 @@ export function readPad(codes: ReadonlySet<string>, gamepads: readonly (PadLike 
     },
     move: { left: axis("KeyE", "KeyQ"), right: axis("KeyO", "KeyU") },
     gamepad: null,
+    retro: new Set(),
   };
+  const retro = new Set<RetroButton>();
+  for (const code of codes) if (RETRO_KEYS[code]) retro.add(RETRO_KEYS[code]);
   for (const g of gamepads) {
     if (!g) continue;
     const on = (n: number) => g.mapping === "standard" && !!g.buttons[n]?.pressed;
@@ -111,6 +147,15 @@ export function readPad(codes: ReadonlySet<string>, gamepads: readonly (PadLike 
     pad.b ||= b;
     pad.start ||= on(START);
     pad.back ||= on(BACK);
+    RETRO_BUTTONS.forEach((name, n) => {
+      if (g.mapping === "standard" ? on(n) : n < 2 && g.buttons[n]?.pressed) retro.add(name);
+    });
+    const [sx = 0, sy = 0] = g.axes;
+    if (sx <= -RETRO_STICK) retro.add("left");
+    if (sx >= RETRO_STICK) retro.add("right");
+    if (sy <= -RETRO_STICK) retro.add("up");
+    if (sy >= RETRO_STICK) retro.add("down");
   }
+  pad.retro = retro;
   return pad;
 }

@@ -56,6 +56,9 @@ export interface Link {
   /** A scene for workers who meet, or why there's none; null when Workbench can't be
    *  reached. */
   askScene(req: ChatterRequest): Promise<ChatterAnswer | null>;
+  /** A signed-in request to `/office/api/<path>` (the TV's Library, O5.3d): its
+   *  response, or null with no session or when Workbench can't be reached. */
+  request(path: string, init?: RequestInit): Promise<Response | null>;
   /** A socket on `/office/api/<path>` with these query parameters (the transcript's),
    *  signed in; null before there is a session. */
   socket(path: string, params: Record<string, string>): WebSocket | null;
@@ -177,6 +180,15 @@ export function connect(onState: (state: LinkState) => void): Link {
   })();
 
   return {
+    async request(path, init = {}) {
+      const session = await ready;
+      if (!session) return null;
+      try {
+        return await fetch(`${API}/${path}`, { ...init, headers: { ...init.headers, Authorization: `Bearer ${session}` } });
+      } catch {
+        return null;
+      }
+    },
     send(action) {
       if (socket?.readyState !== WebSocket.OPEN) return false;
       socket.send(JSON.stringify(action));

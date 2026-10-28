@@ -893,6 +893,61 @@ survive a move between devices.
   office shows the actual picture. Save states are kept per game, in the office only.
 - **Done when:** a Mega Drive image from the Drive (e.g. Sunset Riders) plays at full speed
   with a gamepad; closing it frees the core; a save state comes back after a reload.
+- _As built (approved; live test owed):_ `games/emulator/`, the listener's
+  `remote/office/library.rs`, and Nostalgist.js pinned at 0.23.0.
+  - **Cores:** five, from Nostalgist's own RetroArch build (v1.22.2): Genesis Plus GX,
+    FCEUmm, snes9x, Gambatte and mGBA. Their zips (about 6 MB) are built into Workbench
+    (`src-tauri/resources/cores/`, with their hashes), and the listener unpacks a core
+    when a game asks for it. Nothing is fetched from the web.
+  - **The Library:** the folder is chosen from the Library's last row, in a folder
+    dialog on the PC, and kept in the app DB. The Library lists the games under it, four
+    folders deep, each with its system: `.md`/`.gen`/`.smd`/`.bin` (not beside a
+    `.cue`), `.nes`, `.sfc`/`.smc`, `.gb`/`.gbc`, `.gba`, and zips holding one of them.
+    It gets its image from the listener, out of its zip if zipped, and only from under
+    the folder.
+  - **Playing:** A plays a game, resuming it, and B starts it over. RetroArch runs off
+    screen at the system's size: square pixels, 320×224 for the Mega Drive. Each step the
+    overlay copies the picture and scales it by whole pixels, and ⛶ or F fills the screen.
+    The pad reaches the core as RetroArch's keys:
+    - the keyboard as RetroArch lays it out: the arrows, Z X A S, Q W, Enter and right
+      Shift;
+    - a gamepad by where each button sits;
+    - RetroArch reads no keys or gamepads of its own.
+    Buttons held from the menu count only once they're let go.
+  - **Leaving:** Back on a gamepad is Select; Back with Start, or Esc, goes back to the
+    Library. Leaving keeps a save state in app data (`office-states/`, one per game),
+    then exits the core and removes its canvas. A dot in the Library marks the games
+    that resume.
+  - **The TV:** while a game runs, the TV in the office shows it, shrunk into its screen
+    and redrawn ten times a second behind the overlay.
+  - **Other changes:** the font gained brackets, `&`, `+` and `_`, for game names.
+  - **Tests:**
+    - the pad as a RetroPad, from the keys and a gamepad;
+    - a Library game: loading, presses as they change (not those held from the menu),
+      Select with Start, the state kept and then the core freed (even when keeping it
+      fails), resuming or starting over, no core left running when left while loading,
+      and failures named;
+    - the listing read;
+    - the console's Library: listing and moving, play and back to it marked, B fresh, a
+      game asking to go, an empty file refused, the folder chosen, and no Library still
+      saying it's empty;
+    - Rust: the systems by extension, a scan with zips opened and a CD's `.bin` skipped,
+      reading only inside the folder, state names, every built-in core unpacking, and the
+      ROM name header.
+  - **Checked against the dev app in headless Chrome,** with free homebrew from
+    retrobrews kept outside the repo:
+    - Bottled (`.md`) from its title into the game;
+    - Errorrush out of a zip;
+    - Ambushed on the NES at 256×240;
+    - leaving and reopening resumes where it was, with the core's canvas gone in between;
+    - the TV in the office shows the game;
+    - with a fake gamepad, its Start starts the game while a non-standard pad's is
+      ignored; Back alone keeps the game; Back with Start leaves.
+  - **Found:** the Drive's game files are all **empty**: Drive itself reports 0 bytes for
+    Sunset Riders and the rest. The Library lists them as "EMPTY FILE" and won't start
+    them. Putting real copies there is the user's to do.
+  **Owed:** a live play of a Mega Drive game with a real gamepad, judging full speed and
+  sound, once a real image is in the folder.
 
 #### Step O5.3e — Saves shared with RetroArch
 - **Build:** in-game saves live in RetroArch's own saves folder on the PC. The office finds
@@ -1001,7 +1056,7 @@ closed, open and still, and open and busy.
 - [x] O5.3a Console shell
 - [x] O5.3b Star run: flying and shooting (live play owed)
 - [x] O5.3c Star run: perks and bosses (live play owed)
-- [ ] O5.3d Emulator
+- [x] O5.3d Emulator (live play with a real image and gamepad owed)
 - [ ] O5.3e Saves shared with RetroArch
 - [ ] O5.3f PlayStation and PSP (stretch)
 - [ ] O5.4 Whiteboard Pictionary with Duck

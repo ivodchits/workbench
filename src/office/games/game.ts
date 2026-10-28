@@ -23,6 +23,11 @@ export interface Game {
   back?(): boolean;
   /** Lets go of whatever it holds; the overlay is closing. */
   stop?(): void;
+  /** A gamepad's Back is the game's own (the emulator's Select), not Back: only Esc
+   *  then goes to `back`. */
+  readonly keepsBack?: boolean;
+  /** The game asks to be left (the emulator's Back with Start); the console goes back. */
+  readonly done?: boolean;
 }
 
 export interface GameDef {

@@ -33,6 +33,28 @@ describe("the pad", () => {
   });
 });
 
+describe("the pad, as a RetroPad", () => {
+  const held = (codes: string[], pads: PadLike[] = []) => [...readPad(new Set(codes), pads).retro].sort();
+
+  it("reads the keyboard as RetroArch lays it out", () => {
+    expect(held(["ArrowUp", "ArrowLeft", "KeyZ", "KeyX", "KeyA", "KeyS", "KeyQ", "KeyW", "Enter", "ShiftRight"])).toEqual(
+      ["a", "b", "l", "left", "r", "select", "start", "up", "x", "y"],
+    );
+    expect(held(["ShiftLeft", "Space", "KeyD"])).toEqual([]);
+    for (const key of ["KeyA", "KeyS", "KeyQ", "KeyW", "ShiftRight"]) expect(PAD_KEYS.has(key)).toBe(true);
+  });
+
+  it("reads a gamepad's buttons by where they sit, and its stick as the d-pad", () => {
+    expect(held([], [gamepad([0, 0], [0, 1, 2, 3])])).toEqual(["a", "b", "x", "y"]);
+    expect(held([], [gamepad([0, 0], [4, 5, 6, 7, 8, 9, 10, 11])])).toEqual(["l", "l2", "l3", "r", "r2", "r3", "select", "start"]);
+    expect(held([], [gamepad([0, 0], [12, 15])])).toEqual(["right", "up"]);
+    expect(held([], [gamepad([-0.7, 0.6])])).toEqual(["down", "left"]);
+    expect(held([], [gamepad([0.3, 0])])).toEqual([]);
+    // Without the standard mapping, only the first two.
+    expect(held([], [gamepad([0, 0], [0, 1, 9], "")])).toEqual(["a", "b"]);
+  });
+});
+
 describe("the pad, for two hands", () => {
   it("reads WASD as the left hand and IJKL or the arrows as the right, Q/E and U/O moving them", () => {
     const pad = readPad(new Set(["KeyW", "KeyD", "KeyK", "KeyJ", "KeyE", "KeyU"]));
