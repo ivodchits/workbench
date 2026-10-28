@@ -39,6 +39,8 @@ export interface View {
   selected?: string | null;
   /** A free desk to start a session at (O3.2), outlined. */
   desk?: number | null;
+  /** Whose bubble is being answered (O3.3), as `hover`: their tag shows. */
+  asking?: string | null;
 }
 
 /** A piece of furniture: drawn at its depth, animated or still. */
@@ -65,8 +67,20 @@ const SCREEN_PROP: Record<Screen, PropName> = { off: "monitorOff", code: "monito
 /** A contractor's tag: no shirt, so a neutral rim. */
 const CONTRACTOR_RIM = "#8e8e9e";
 
+/** Where a bubble asking for you (`!`, `?`) was drawn, in office pixels, and whose it
+ *  is: a worker's id, or a contractor's desk as `desk:<index>` (O3.3). */
+export interface AskBubble {
+  id: string;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
 export interface Renderer {
   draw(ctx: CanvasRenderingContext2D, world: World, ms: number, view?: View): number;
+  /** The bubbles asking for you as last drawn, back to front. */
+  asks(): readonly AskBubble[];
 }
 
 /** The kicker's playing field inside its sprite: where the ball runs. */
@@ -153,9 +167,12 @@ export function createRenderer(office: OfficeMap): Renderer {
 
 
 
+  let asks: AskBubble[] = [];
   return {
+    asks: () => asks,
     draw(ctx, world, ms, view = {}) {
       ctx.imageSmoothingEnabled = false;
+      asks = [];
       ctx.drawImage((floors ??= floorLayer(office)), 0, 0);
       drawing = world;
 
@@ -183,8 +200,8 @@ export function createRenderer(office: OfficeMap): Renderer {
       for (const item of items) next = Math.min(next, item.draw(ctx, ms));
       if (view.desk != null) outlineDesk(ctx, office.seats[view.desk]);
 
-      for (const c of world.contractors) next = Math.min(next, drawContractorTag(ctx, office, c, view, ms));
-      for (const { e, at } of people.sort((a, b) => a.at.y - b.at.y)) next = Math.min(next, drawOverhead(ctx, e, at, view, ms));
+      for (const c of world.contractors) next = Math.min(next, drawContractorTag(ctx, office, c, view, ms, asks));
+      for (const { e, at } of people.sort((a, b) => a.at.y - b.at.y)) next = Math.min(next, drawOverhead(ctx, e, at, view, ms, asks));
       if (world.kicker && kickerTable) next = Math.min(next, drawScore(ctx, world.kicker, kickerTable.x + kickerTable.prop.w / 2, kickerTable.y - 1, ms));
       if (view.overlay) drawOverlay(ctx, office, world);
       return next;
@@ -275,18 +292,20 @@ function drawDuck(ctx: CanvasRenderingContext2D, d: DuckEntity, at: Point, ms: n
   return next;
 }
 
-/** Stacked up from the top of the head: the name tag, the status icon, the bubble.
+/** Stacked up from the top of the head: the bubble (or the status icon), then the name
+ *  tag, so a tag showing on hover never moves the bubble out from under the pointer.
  *  Returns how long until a pulsing bubble flashes. */
-function drawOverhead(ctx: CanvasRenderingContext2D, e: Entity, at: Point, view: View, ms: number): number {
+function drawOverhead(ctx: CanvasRenderingContext2D, e: Entity, at: Point, view: View, ms: number, asks: AskBubble[]): number {
   const layers: HTMLCanvasElement[] = [];
+  const bubble = e.bubble ? bubbleImage(e.bubble, ms) : null;
+  if (bubble) layers.push(bubble);
   if (e.kind === "worker") {
     const w = e.worker;
-    if (view.tags || view.hover === w.id || view.selected === w.id) {
+    if (e.overhead && !e.bubble) layers.push(cached(`icon/${e.overhead}`, () => statusIcon(e.overhead!)));
+    if (view.tags || view.hover === w.id || view.selected === w.id || view.asking === w.id) {
       layers.push(cached(`tag/${w.id}/${e.tag}`, () => nameTag(w.name, w.look.top.base, e.tag)));
     }
-    if (e.overhead && !e.bubble) layers.push(cached(`icon/${e.overhead}`, () => statusIcon(e.overhead!)));
   }
-  if (e.bubble) layers.push(bubbleImage(e.bubble, ms));
   if (!layers.length) return Infinity;
 
   // Duck's head fills its frame; a worker's starts a pixel or two down.
@@ -297,18 +316,20 @@ function drawOverhead(ctx: CanvasRenderingContext2D, e: Entity, at: Point, view:
     const y = Math.max(0, bottom - img.height);
     ctx.drawImage(img, x, y);
     bottom = y - 1;
+    if (e.kind === "worker" && img === bubble && asking(e.bubble)) asks.push({ id: e.worker.id, x, y, w: img.width, h: img.height });
   }
   return pulseIn(e.bubble, ms);
 }
 
-/** Over a contractor's laptop: "Remote contractor" when tags show or it's hovered, and
- *  the bubble when the session needs you. */
-function drawContractorTag(ctx: CanvasRenderingContext2D, office: OfficeMap, c: Contractor, view: View, ms: number): number {
+/** Over a contractor's laptop: the bubble when the session needs you, and above it
+ *  "Remote contractor" when tags show or it's hovered. */
+function drawContractorTag(ctx: CanvasRenderingContext2D, office: OfficeMap, c: Contractor, view: View, ms: number, asks: AskBubble[]): number {
   const layers: HTMLCanvasElement[] = [];
-  if (view.tags || view.hover === `desk:${c.desk}`) {
+  const bubble = c.bubble ? bubbleImage(c.bubble, ms) : null;
+  if (bubble) layers.push(bubble);
+  if (view.tags || view.hover === `desk:${c.desk}` || view.asking === `desk:${c.desk}`) {
     layers.push(cached(`tag/contractor/${c.tag}`, () => nameTag("Remote contractor", CONTRACTOR_RIM, c.tag)));
   }
-  if (c.bubble) layers.push(bubbleImage(c.bubble, ms));
   const m = office.seats[c.desk].monitor;
   let bottom = m.y + 4;
   for (const img of layers) {
@@ -316,6 +337,7 @@ function drawContractorTag(ctx: CanvasRenderingContext2D, office: OfficeMap, c: 
     const y = Math.max(0, bottom - img.height);
     ctx.drawImage(img, x, y);
     bottom = y - 1;
+    if (img === bubble && asking(c.bubble)) asks.push({ id: `desk:${c.desk}`, x, y, w: img.width, h: img.height });
   }
   return pulseIn(c.bubble, ms);
 }
@@ -342,6 +364,9 @@ function bubbleImage(b: Bubble, ms: number): HTMLCanvasElement {
   const tone = b.pulse && Math.floor(ms / PULSE_MS) % 2 === 1 ? "needs" : b.tone;
   return cached(`bubble/${tone}/${b.text}`, () => speechBubble(b.text, tone));
 }
+
+/** A session's `!` or `?`: not something said. */
+const asking = (b: Bubble | null) => !!b && b.tone !== "say";
 
 const pulseIn = (b: Bubble | null, ms: number) => (b?.pulse ? PULSE_MS - (ms % PULSE_MS) : Infinity);
 

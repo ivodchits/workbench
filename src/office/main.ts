@@ -4,7 +4,9 @@
 // they are and what their session is doing; clicking one opens their session in the
 // sidebar (panel.ts), clicking Duck opens a chat with Duck there (duckChat.ts, O3.1),
 // dragging a free worker onto a free desk (or clicking a free desk) opens a form there
-// to start a session at it (hireForm.ts, O3.2), and clicking the floor or Esc closes it. With the walk grid on
+// to start a session at it (hireForm.ts, O3.2), and clicking the floor or Esc closes it.
+// Clicking a `!` or `?` bubble opens its choice card right there instead (askCard.ts,
+// O3.3), and leaves the sidebar alone. With the walk grid on
 // (`G`) a click is the debug one instead: pick a worker, then send them walking. With
 // nobody picked the sidebar shows the stats (stats.ts) and the room each project sits in.
 
@@ -17,6 +19,8 @@ import {
   DUCK_ID,
   OFFICE_H,
   OFFICE_W,
+  askAt,
+  askOf,
   clickOffice,
   drawOffice,
   deskOffer,
@@ -37,6 +41,7 @@ import {
   workerAt,
   workerFree,
 } from "./liveOffice";
+import { createAskCard } from "./askCard";
 import { createDuckChat } from "./duckChat";
 import { createHireForm, type HireTarget } from "./hireForm";
 import { ROSTER } from "./roster";
@@ -70,6 +75,7 @@ const view = {
   hover: null as string | null,
   selected: null as string | null,
   desk: null as number | null,
+  asking: null as string | null,
   paused: false,
   pausedAt: 0,
 };
@@ -86,6 +92,7 @@ const loop = startLoop({
   draw: (ms) => {
     const next = drawOffice(ctx, view.paused ? view.pausedAt : ms, view);
     present();
+    placeAsk();
     return view.paused ? Infinity : next;
   },
 });
@@ -107,6 +114,7 @@ const link = connect((state) => {
   officeSnapshot(state.snapshot);
   showRooms(roomsEl, state.snapshot.projects, roomOf, pickRoom);
   hireForm.update(state.snapshot);
+  if (ask.id) ask.update(whoAt(ask.id));
   showSelected();
   showTip();
 });
@@ -118,6 +126,13 @@ const hireForm = createHireForm(document.querySelector<HTMLElement>("#hire")!, l
   seated: hired,
   started: (who) => select(who),
   roomOf,
+});
+const ask = createAskCard(document.querySelector<HTMLElement>("#ask")!, link, {
+  close: () => openAsk(null),
+  open: (id) => {
+    openAsk(null);
+    select(id);
+  },
 });
 const duckChat = createDuckChat(document.querySelector<HTMLElement>("#duck")!, link, () => select(null), (turn) => {
   duckChatTurn(turn);
@@ -151,6 +166,26 @@ function openHire(desk: number, worker: string | null): void {
   const w = ROSTER.find((r) => r.id === id);
   hireTarget = { desk, worker: w ? { id: w.id, name: w.name } : null, room: offer.room };
   select(HIRE_ID);
+}
+
+/** Opens the choice card by `id`'s bubble, or closes it for null. */
+function openAsk(id: string | null): void {
+  ask.show(id, id ? whoAt(id) : null);
+  view.asking = ask.id;
+  placeAsk();
+  showTip();
+  loop.invalidate();
+}
+
+/** Keeps the choice card by its bubble, which moves with whoever is asking. */
+function placeAsk(): void {
+  const a = ask.id ? askOf(ask.id) : null;
+  if (!a) return;
+  const rect = canvas.getBoundingClientRect();
+  const box = stage.getBoundingClientRect();
+  const sx = rect.width / OFFICE_W;
+  const sy = rect.height / OFFICE_H;
+  ask.place(rect.left - box.left + (a.x + a.w / 2) * sx, rect.top - box.top + a.y * sy, rect.top - box.top + (a.y + a.h) * sy, box.width, box.height);
 }
 
 function select(id: string | null): void {
@@ -218,6 +253,10 @@ const watchRatio = () => matchMedia(`(resolution: ${devicePixelRatio}dppx)`).add
 watchRatio();
 
 addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && ask.id) {
+    openAsk(null);
+    return;
+  }
   if (e.key === "Escape" && view.selected) {
     select(null);
     return;
@@ -250,13 +289,14 @@ let pointer: { x: number; y: number } | null = null;
 /** The tooltip for whoever is hovered, by the pointer. */
 function showTip(): void {
   const duck = view.hover === DUCK_ID;
-  const who = view.hover && pointer && !view.overlay && !duck && !drag?.moved ? whoAt(view.hover) : null;
+  const who = view.hover && pointer && !view.overlay && !duck && !drag?.moved && view.hover !== ask.id ? whoAt(view.hover) : null;
   const desk = !view.hover && !drag && hoverDesk !== null;
   tip.hidden = !((who || duck || desk) && pointer && !view.overlay);
   if (tip.hidden || !pointer) return;
   const free = who && !who.instance && who.worker && workerFree(who.worker.id);
+  const hint = free ? "drag onto a free desk: a new session" : hoverAsk ? "click the bubble to answer here" : null;
   const lines = who
-    ? [...tooltipLines(who, performance.now()), ...(free ? ["drag onto a free desk: a new session"] : [])]
+    ? [...tooltipLines(who, performance.now()), ...(hint ? [hint] : [])]
     : duck
       ? ["Duck", `${duckDoing()} · click to talk`]
       : ["A free desk", "click to start a session here"];
@@ -277,10 +317,16 @@ function showTip(): void {
 // The "for how long" moves on.
 setInterval(() => !tip.hidden && showTip(), 1000);
 
-/** Hovering a worker shows their name tag and the tooltip; a free desk is outlined. */
+/** The pointer is on a bubble asking for you. */
+let hoverAsk = false;
+
+/** Hovering a worker (or their bubble) shows their name tag and the tooltip; a free
+ *  desk is outlined. */
 function hoverAt(e: PointerEvent | null): void {
   pointer = e && { x: e.clientX, y: e.clientY };
-  const id = e ? workerAt(...sceneAt(e)) : null;
+  const bubble = e && !view.overlay ? askAt(...sceneAt(e)) : null;
+  hoverAsk = !!bubble;
+  const id = bubble?.id ?? (e ? workerAt(...sceneAt(e)) : null);
   const desk = e && !id && !view.overlay ? freeDeskAt(...sceneAt(e)) : null;
   canvas.style.cursor = id || desk !== null || (view.overlay && view.selected) ? "pointer" : "";
   const moved = id !== view.hover || desk !== hoverDesk;
@@ -336,6 +382,10 @@ canvas.addEventListener("click", (e) => {
     return;
   }
   if (view.paused) return;
+  // Any click closes the choice card; one on a bubble opens it there.
+  const bubble = view.overlay ? null : askAt(...sceneAt(e));
+  if (bubble || ask.id) openAsk(bubble?.id ?? null);
+  if (bubble) return;
   if (view.overlay) {
     view.selected = clickOffice(view.selected, ...sceneAt(e), performance.now());
     loop.invalidate();

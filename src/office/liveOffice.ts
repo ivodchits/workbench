@@ -18,7 +18,7 @@ import { debugClick, deskAt } from "./world/debug";
 import { createWorld, onDuck, workerAt as hit } from "./world/entities";
 import type { TurnState } from "../assistant/protocol";
 import { stepWalkers } from "./world/move";
-import { OFFICE_H, OFFICE_W, createRenderer, type View } from "./world/render";
+import { OFFICE_H, OFFICE_W, createRenderer, type AskBubble, type View } from "./world/render";
 import { budgetOf } from "./world/ambience";
 import { behave } from "./world/behave";
 import { createStaff, seatSessions, whoIs, type Staff } from "./world/sessions";
@@ -219,6 +219,23 @@ export function workerAt(x: number, y: number): string | null {
   const desk = deskAt(office, { x, y });
   return desk !== undefined && world.contractors.some((c) => c.desk === desk) ? `desk:${desk}` : null;
 }
+
+/** Slack round a bubble for the pointer, in office pixels: they're small. */
+const ASK_SLACK = 2;
+
+/** The bubble asking for you (`!`, `?`) at (x, y) in office pixels, the front one, as
+ *  last drawn. */
+export function askAt(x: number, y: number): AskBubble | null {
+  const asks = renderer.asks();
+  for (let n = asks.length - 1; n >= 0; n--) {
+    const a = asks[n];
+    if (x >= a.x - ASK_SLACK && x < a.x + a.w + ASK_SLACK && y >= a.y - ASK_SLACK && y < a.y + a.h + ASK_SLACK) return a;
+  }
+  return null;
+}
+
+/** Where `id`'s bubble asking for you was last drawn, if it's up. */
+export const askOf = (id: string): AskBubble | null => renderer.asks().find((a) => a.id === id) ?? null;
 
 export function drawOffice(ctx: CanvasRenderingContext2D, ms: number, view: View = {}): number {
   return renderer.draw(ctx, world, ms, view);

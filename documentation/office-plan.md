@@ -563,6 +563,15 @@ favourite spots.
 ### Step O3.3 — Answering from the bubbles
 - **Build:** clicking a `!`/`?` bubble opens the choice card right there.
 - **Done when:** a prompt is answered with two clicks without opening the sidebar.
+- _As built (approved):_ `askCard.ts`. The renderer records where each `!`/`?` bubble
+  was drawn (`Renderer.asks()`; `askAt` in `liveOffice.ts` hit-tests it, with a little
+  slack). Clicking one opens a card by the bubble (above it, else below), out of the
+  sidebar: the phone's compact choice card (`pwa/choice.ts`) answering with `choose`, or
+  approve / deny when Workbench has no card for the prompt. It follows the bubble, closes
+  once the session stops asking, on ✕, Esc or any other click; "session ›" opens the
+  session in the sidebar. Hovering a bubble adds "click the bubble to answer here" to the
+  tooltip. The name tag now stacks above the bubble (or status icon), so the tag that
+  shows on hover never moves the bubble out from under the pointer.
 
 ## Phase O4 — Chatter
 
@@ -675,7 +684,7 @@ closed, open and still, and open and busy.
 - [x] O2.4 Ambience
 - [x] O3.1 Duck in the boss office
 - [x] O3.2 Giving tasks
-- [ ] O3.3 Answering from the bubbles
+- [x] O3.3 Answering from the bubbles
 - [ ] O4.1 Chatter service
 - [ ] O4.2 Playing scenes
 - [ ] O5.1 Game overlay

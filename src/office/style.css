@@ -114,7 +114,7 @@ body {
   display: none;
 }
 
-:is(#session, #duck, #hire) {
+:is(#session, #duck, #hire, #ask) {
   flex: 1;
   min-height: 0;
   display: flex;
@@ -123,44 +123,44 @@ body {
 }
 
 /* Over any part's own display. */
-:is(#session, #duck, #hire)[hidden],
-:is(#session, #duck, #hire) [hidden],
-:is(#session, #duck, #hire) .hidden {
+:is(#session, #duck, #hire, #ask)[hidden],
+:is(#session, #duck, #hire, #ask) [hidden],
+:is(#session, #duck, #hire, #ask) .hidden {
   display: none !important;
 }
 
-:is(#session, #duck, #hire) header {
+:is(#session, #duck, #hire, #ask) header {
   position: relative;
   padding-right: 28px;
 }
 
-:is(#session, #duck, #hire) h2 {
+:is(#session, #duck, #hire, #ask) h2 {
   margin: 0;
   color: var(--text);
 }
 
-:is(#session, #duck, #hire) header p {
+:is(#session, #duck, #hire, #ask) header p {
   margin: 0;
   overflow-wrap: anywhere;
 }
 
-:is(#session, #duck, #hire) .what {
+:is(#session, #duck, #hire, #ask) .what {
   color: var(--muted);
 }
 
-:is(#session, #duck, #hire) .state.phase-needs_you {
+:is(#session, #duck, #hire, #ask) .state.phase-needs_you {
   color: var(--needs);
 }
 
-:is(#session, #duck, #hire) .state.phase-working {
+:is(#session, #duck, #hire, #ask) .state.phase-working {
   color: var(--duck);
 }
 
-:is(#session, #duck, #hire) .state.phase-done {
+:is(#session, #duck, #hire, #ask) .state.phase-done {
   color: var(--done);
 }
 
-:is(#session, #duck, #hire) button {
+:is(#session, #duck, #hire, #ask) button {
   font: inherit;
   color: var(--text);
   background: var(--night);
@@ -170,18 +170,18 @@ body {
   cursor: pointer;
 }
 
-:is(#session, #duck, #hire) button:hover {
+:is(#session, #duck, #hire, #ask) button:hover {
   border-color: var(--muted);
 }
 
-:is(#session, #duck, #hire) .close {
+:is(#session, #duck, #hire, #ask) .close {
   position: absolute;
   top: 0;
   right: 0;
   padding: 0 6px;
 }
 
-:is(#session, #duck, #hire) .wb-chc {
+:is(#session, #duck, #hire, #ask) .wb-chc {
   max-height: 45%;
   overflow-y: auto;
   border: 1px solid var(--needs);
@@ -189,31 +189,31 @@ body {
 }
 
 /* No terminal here: those answers are Workbench's. */
-:is(#session, #duck, #hire) .wb-chc-bar button:not(.wb-chc-deny),
-:is(#session, #duck, #hire) .wb-chc-note button {
+:is(#session, #duck, #hire, #ask) .wb-chc-bar button:not(.wb-chc-deny),
+:is(#session, #duck, #hire, #ask) .wb-chc-note button {
   display: none;
 }
 
-:is(#session, #duck, #hire) .needs {
+:is(#session, #duck, #hire, #ask) .needs {
   display: flex;
   align-items: center;
   gap: 8px;
   color: var(--needs);
 }
 
-:is(#session, #duck, #hire) .needs span {
+:is(#session, #duck, #hire, #ask) .needs span {
   margin-right: auto;
 }
 
-:is(#session, #duck, #hire) .needs .ok {
+:is(#session, #duck, #hire, #ask) .needs .ok {
   border-color: var(--done);
 }
 
-:is(#session, #duck, #hire) .needs .no {
+:is(#session, #duck, #hire, #ask) .needs .no {
   border-color: var(--needs);
 }
 
-:is(#session, #duck, #hire) .scroll {
+:is(#session, #duck, #hire, #ask) .scroll {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
@@ -224,18 +224,18 @@ body {
   font-size: 12px;
 }
 
-:is(#session, #duck, #hire) .jump {
+:is(#session, #duck, #hire, #ask) .jump {
   align-self: center;
   margin-top: -36px;
 }
 
-:is(#session, #duck, #hire) .composer {
+:is(#session, #duck, #hire, #ask) .composer {
   display: flex;
   flex-direction: column;
   gap: 6px;
 }
 
-:is(#session, #duck, #hire) textarea {
+:is(#session, #duck, #hire, #ask) textarea {
   resize: vertical;
   min-height: 3.2em;
   font: inherit;
@@ -246,23 +246,23 @@ body {
   padding: 4px 6px;
 }
 
-:is(#session, #duck, #hire) textarea:focus {
+:is(#session, #duck, #hire, #ask) textarea:focus {
   outline: none;
   border-color: var(--duck);
 }
 
-:is(#session, #duck, #hire) .buttons {
+:is(#session, #duck, #hire, #ask) .buttons {
   display: flex;
   justify-content: flex-end;
   gap: 6px;
 }
 
-:is(#session, #duck, #hire) .send {
+:is(#session, #duck, #hire, #ask) .send {
   border-color: var(--duck);
   color: var(--duck);
 }
 
-:is(#session, #duck, #hire) .stop {
+:is(#session, #duck, #hire, #ask) .stop {
   margin-right: auto;
   color: var(--needs);
 }
@@ -629,4 +629,68 @@ body.below #side {
 #hire button:disabled {
   opacity: 0.5;
   cursor: default;
+}
+
+/* A bubble's choice card (O3.3), by the bubble. */
+#ask {
+  position: absolute;
+  width: min(320px, calc(100% - 12px));
+  max-height: 60%;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 6px 8px 8px;
+  background: rgb(21 19 27 / 0.97);
+  border: 1px solid var(--needs);
+  border-radius: 6px;
+  box-shadow: 0 4px 16px rgb(0 0 0 / 0.5);
+  font: 12px/1.45 var(--mono);
+  color: var(--text);
+  z-index: 2;
+}
+
+#ask[hidden] {
+  display: none;
+}
+
+#ask header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+#ask header .who {
+  margin-right: auto;
+  color: var(--needs);
+}
+
+#ask header button {
+  padding: 0 6px;
+}
+
+#ask header .close {
+  position: static;
+}
+
+#ask .wb-chc {
+  min-height: 0;
+  max-height: none;
+  overflow-y: auto;
+  border: none;
+  padding: 0;
+  background: transparent;
+}
+
+#ask .wb-chc.hidden,
+#ask .needs[hidden] {
+  display: none;
+}
+
+#ask .pwa-chc-summary {
+  color: var(--muted);
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  word-break: break-word;
 }
