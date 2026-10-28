@@ -38,6 +38,8 @@ import {
   stepOffice,
   whoAt,
   workedToday,
+  chatterRequest,
+  freeWorkers,
   workerAt,
   workerFree,
 } from "./liveOffice";
@@ -49,6 +51,8 @@ import type { Cost } from "./net";
 import { createPanel } from "./panel";
 import { showLink, showRooms } from "./sidebar";
 import { showStats } from "./stats";
+import { createChatter } from "./chatter";
+import { createChatterPanel } from "./chatterPanel";
 
 const canvas = document.querySelector<HTMLCanvasElement>("#office")!;
 const stage = document.querySelector<HTMLElement>("#stage")!;
@@ -194,6 +198,21 @@ function select(id: string | null): void {
   loop.invalidate();
 }
 startOffice(link, () => loop.invalidate());
+
+const chatter = createChatter(link, () => chatterPanel.update());
+const chatterPanel = createChatterPanel(
+  document.querySelector<HTMLElement>("#chatter")!,
+  chatter,
+  () => {
+    const free = freeWorkers();
+    if (free.length < 2) return null;
+    const ids = free.sort(() => Math.random() - 0.5).slice(0, 2 + Math.floor(Math.random() * 2));
+    return { ids, place: "the water cooler" };
+  },
+  (ids, place) => chatter.scene(chatterRequest(ids, place), true),
+);
+chatterPanel.update();
+void chatter.refresh();
 
 /** How often Workbench's cost is asked, while the HUD or the stats show it; its CPU is
  *  the average since the last ask. */

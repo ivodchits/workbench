@@ -160,7 +160,7 @@ body {
   color: var(--done);
 }
 
-:is(#session, #duck, #hire, #ask) button {
+:is(#session, #duck, #hire, #ask, #chatter) button {
   font: inherit;
   color: var(--text);
   background: var(--night);
@@ -170,7 +170,7 @@ body {
   cursor: pointer;
 }
 
-:is(#session, #duck, #hire, #ask) button:hover {
+:is(#session, #duck, #hire, #ask, #chatter) button:hover {
   border-color: var(--muted);
 }
 
@@ -426,13 +426,41 @@ h2 {
   padding: 2px 0;
 }
 
-.rooms select {
+.rooms select,
+#chatter :is(select, input[type="number"]) {
   font: inherit;
   color: inherit;
   background: var(--night);
   border: 1px solid var(--rim);
   border-radius: 4px;
   padding: 1px 4px;
+}
+
+#chatter .row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  padding: 2px 0;
+}
+
+#chatter input[type="number"] {
+  width: 90px;
+}
+
+#chatter :disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+#chatter .lines {
+  list-style: none;
+  margin: 6px 0 0;
+  padding: 0;
+}
+
+#chatter .lines li {
+  padding: 1px 0;
 }
 
 .keys {

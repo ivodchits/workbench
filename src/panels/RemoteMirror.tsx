@@ -24,6 +24,7 @@ import { useRegistry } from "../state/registry";
 import { useConsoles } from "../state/consoles";
 import { onStatusTransition, useLiveStatuses } from "../state/status";
 import { officeDuck } from "../state/officeDuck";
+import { startOfficeChatter } from "../state/officeChatter";
 import { useDuckState } from "./Assistant/duckState";
 import { useSpeechState } from "./Assistant/replySpeech";
 import { useUsageLimits } from "../state/usageLimits";
@@ -125,6 +126,9 @@ export default function RemoteMirror(): null {
   // The phone's server, or the office (office plan O0.2): both read this snapshot.
   const running = (server?.running || server?.office) ?? false;
   const commits = useCommits(registry.projects, running);
+  // The office's chatter (O4.1) is written here, while its listener is up.
+  const office = server?.office ?? false;
+  useEffect(() => (office ? startOfficeChatter() : undefined), [office]);
   const duckStore = useDuckState();
   const speech = useSpeechState();
   // Kept as a string so a streaming reply, which changes the store many times a

@@ -19,6 +19,8 @@
 //!   over the same bridge ([`assistant::relay`]), as the device `office`: the webview
 //!   takes it for you at the desktop, not a phone (`remoteBridge.ts`). Auth as the
 //!   other sockets.
+//! - `GET`/`PUT`/`POST /office/api/chatter` — chatter's settings and budget, and a
+//!   scene written for idle workers who meet (O4.1, [`chatter`]).
 //!
 //! A debug build starts the listener with the app and leaves a reusable URL in the
 //! app-data dir ([`DEV_URL_FILE`]), so a tool can open the office without a click.
@@ -50,6 +52,7 @@ use super::server::{bearer, subprotocol_token, SUBPROTOCOL};
 use super::transcript::{self, TranscriptQuery};
 use super::RemoteState;
 
+mod chatter;
 mod stats;
 
 /// Where the office listens; a debug build apart from a release, like the phone's
@@ -66,6 +69,7 @@ const PREFS_MAX: usize = 64 * 1024;
 #[derive(Default)]
 pub(super) struct Office {
     inner: Mutex<OfficeInner>,
+    chatter: chatter::Chatter,
 }
 
 #[derive(Default)]
@@ -213,6 +217,7 @@ fn router(state: Arc<RemoteState>, port: u16) -> Router {
         .route("/office/api/ws", get(api_ws))
         .route("/office/api/transcript", get(api_transcript))
         .route("/office/api/assistant", get(api_assistant))
+        .route("/office/api/chatter", get(chatter::get).put(chatter::put).post(chatter::ask))
         .with_state(state)
         .layer(middleware::from_fn_with_state(port, host_guard))
 }
@@ -430,6 +435,13 @@ pub fn office_open(state: tauri::State<'_, Arc<RemoteState>>) -> Result<String, 
     }
     st.app.opener().open_url(&url, None::<&str>).map_err(|e| e.to_string())?;
     Ok(url)
+}
+
+/// The webview's answer to an `office-chatter` request (O4.1): `{scene, tokens}`, or
+/// `{error, tokens}`.
+#[tauri::command]
+pub fn office_chatter_reply(state: tauri::State<'_, Arc<RemoteState>>, id: u64, reply: Value) {
+    state.office.chatter.reply(id, reply);
 }
 
 /// A repo's commits, as the office shows them.

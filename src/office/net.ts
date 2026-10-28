@@ -4,9 +4,12 @@
 // connect and on every change, and actions back up it — plus one for the transcript the
 // sidebar shows (O1.5), on the phone's terms. The same snapshot and actions
 // as the phone (`src/remote/protocol.ts`). The page's own settings (`prefs`) are kept by
-// Workbench too, in its DB, so they outlive the tab.
+// Workbench too, in its DB, so they outlive the tab; so are chatter's settings (O4.1),
+// whose scenes it asks for here.
 
+import type { ChatterAnswer, ChatterRequest, ChatterSettings } from "../remote/chatter";
 import type { RemoteAction, RemoteSnapshot } from "../remote/protocol";
+import type { ChatterState } from "./chatter";
 
 const API = "/office/api";
 const SESSION_KEY = "wb-office-session";
@@ -46,6 +49,13 @@ export interface Link {
   prefs(): Promise<Record<string, unknown> | null>;
   /** Replace the saved settings; false when that didn't work. */
   savePrefs(prefs: Record<string, unknown>): Promise<boolean>;
+  /** Chatter's settings and usage (O4.1); null when they can't be had. */
+  chatter(): Promise<ChatterState | null>;
+  /** Change some of chatter's settings; the new state, or null. */
+  setChatter(patch: Partial<ChatterSettings>): Promise<ChatterState | null>;
+  /** A scene for workers who meet, or why there's none; null when Workbench can't be
+   *  reached. */
+  askScene(req: ChatterRequest): Promise<ChatterAnswer | null>;
   /** A socket on `/office/api/<path>` with these query parameters (the transcript's),
    *  signed in; null before there is a session. */
   socket(path: string, params: Record<string, string>): WebSocket | null;
@@ -140,6 +150,22 @@ export function connect(onState: (state: LinkState) => void): Link {
     };
   };
 
+  /** A signed-in JSON call; its answer, or null when it failed. */
+  const call = async <T>(method: string, path: string, body?: unknown): Promise<T | null> => {
+    const session = await ready;
+    if (!session) return null;
+    try {
+      const res = await fetch(`${API}/${path}`, {
+        method,
+        headers: { Authorization: `Bearer ${session}`, ...(body !== undefined && { "Content-Type": "application/json" }) },
+        body: body === undefined ? undefined : JSON.stringify(body),
+      });
+      return res.ok ? ((await res.json()) as T) : null;
+    } catch {
+      return null;
+    }
+  };
+
   void (async () => {
     onState({ kind: "connecting" });
     const token = takeLaunchToken();
@@ -189,6 +215,9 @@ export function connect(onState: (state: LinkState) => void): Link {
         return false;
       }
     },
+    chatter: () => call<ChatterState>("GET", "chatter"),
+    setChatter: (patch) => call<ChatterState>("PUT", "chatter", patch),
+    askScene: (req) => call<ChatterAnswer>("POST", "chatter", req),
     socket(path, params) {
       return session ? socketTo(path, params) : null;
     },

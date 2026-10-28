@@ -19,7 +19,9 @@ import { createWorld, onDuck, workerAt as hit } from "./world/entities";
 import type { TurnState } from "../assistant/protocol";
 import { stepWalkers } from "./world/move";
 import { OFFICE_H, OFFICE_W, createRenderer, type AskBubble, type View } from "./world/render";
-import { budgetOf } from "./world/ambience";
+import { budgetOf, officeTime } from "./world/ambience";
+import type { ChatterRequest } from "../remote/chatter";
+import { sceneRequest } from "./chatter";
 import { behave } from "./world/behave";
 import { createStaff, seatSessions, whoIs, type Staff } from "./world/sessions";
 import { deskFree, isFree, workerFor } from "./world/hire";
@@ -165,6 +167,13 @@ export const whoAt = (id: string): Who | null => whoIs(staff, id);
 
 export const clickOffice = (picked: string | null, x: number, y: number, ms: number): string | null =>
   debugClick(office, world, picked, x, y, ms, (w) => staff.loose.set(w.worker.id, ms));
+
+/** The workers with no session now. */
+export const freeWorkers = (): string[] => ROSTER.map((w) => w.id).filter(workerFree);
+
+/** A chatter request (O4.1) for `ids` meeting at `place`, now by the office's clock. */
+export const chatterRequest = (ids: readonly string[], place: string): ChatterRequest =>
+  sceneRequest(ids, place, whoAt, latest, roomOf, officeTime());
 
 /** A free desk at (x, y) in office pixels: nothing sits there, nor is on its way. */
 export function freeDeskAt(x: number, y: number): number | null {

@@ -337,6 +337,7 @@ pub fn run() {
             remote::remote_push_snapshot,
             remote::office::office_open,
             remote::office::office_commits,
+            remote::office::office_chatter_reply,
             remote::remote_devices_list,
             remote::remote_approve_device,
             remote::remote_revoke_device,

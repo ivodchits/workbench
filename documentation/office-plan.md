@@ -582,6 +582,34 @@ favourite spots.
   topics. Cached system prompt; budget (calls/hour, tokens/day) in settings; only while the
   office is visible; canned lines when off or over budget.
 - **Done when:** scenes come back valid; the budget holds; turning it off costs nothing.
+- _As built (approved):_ `remote/chatter.ts` (the shapes), the Rust core's
+  `remote/office/chatter.rs`, the webview's `state/officeChatter.ts`, the page's
+  `chatter.ts` and `chatterPanel.ts`. The page names who meets where (roster ids and
+  what each is up to), when, and the projects in the air: their sessions', then their
+  rooms', the latest committed to first. The Rust core is the gate: chatter on, under
+  the hour's calls and the day's tokens, no other call out; otherwise it answers `off`,
+  `hour`, `day` or `busy` and nothing reaches the webview. Past it, the request goes to
+  the webview as an `office-chatter` event, and the answer comes back through
+  `office_chatter_reply` (30 s at most). The webview adds each project's three latest
+  session titles and its commits from the past week, and three random topics. It calls
+  Haiku (Sonnet by the setting; purpose `office_chatter`) with structured output: lines
+  of `{speaker, text}` and a mood. The system prompt holds the whole roster and the
+  rules and never changes, so it's cached: about 1.9k tokens for the first call, then
+  about 500. Lines by anyone not in the scene are dropped, characters the pixel font
+  can't draw are taken out, and the rare overlong line is cut at a word. The settings
+  (`office.chatter`: on, model, calls an hour, tokens a day; default on, Haiku, 20,
+  50k) and the ledger (`office.chatter.usage`) are kept in the DB's `meta`. The day is
+  the page's local date, and a cached read counts at a tenth, as it's priced. A call's
+  tokens are known only after it, so a day can end one call over. The page asks nothing
+  while chatter is off or the tab is hidden. After a spent hour it waits five minutes,
+  after a spent day until the next, and after a failure a minute. Whenever it gets no
+  scene it falls back to canned lines. The sidebar's **Chatter** section has the
+  switch, the model, the two limits, what's been spent, and "Try a scene" (two or three
+  free workers at the water cooler). Playing scenes in the office is O4.2. Checked in
+  the dev app with real calls: valid, in-character scenes, one on a real commit; `off`
+  with nothing spent; `hour` at a cap of one. Tests: the settings and the budget
+  (Rust); the prompt, the cleaning, the budget's count; the request and the client's
+  waiting.
 
 ### Step O4.2 — Playing scenes
 - **Build:** when 2–3 idle workers meet at a chat spot, play a scene: they face each other,
@@ -685,7 +713,7 @@ closed, open and still, and open and busy.
 - [x] O3.1 Duck in the boss office
 - [x] O3.2 Giving tasks
 - [x] O3.3 Answering from the bubbles
-- [ ] O4.1 Chatter service
+- [x] O4.1 Chatter service
 - [ ] O4.2 Playing scenes
 - [ ] O5.1 Game overlay
 - [ ] O5.2 Kicker
