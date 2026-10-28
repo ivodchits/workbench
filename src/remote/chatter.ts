@@ -27,6 +27,9 @@ export interface ChatterRequest {
   projects: string[];
   /** About how many lines. */
   lines: number;
+  /** What this chat has said so far ("Mira: Tea?"), newest last: the scene carries on
+   *  from it. Empty for a chat just begun. */
+  said?: string[];
 }
 
 export interface SceneLine {

@@ -40,6 +40,7 @@ import {
   workedToday,
   chatterRequest,
   freeWorkers,
+  setSceneWriter,
   workerAt,
   workerFree,
 } from "./liveOffice";
@@ -213,6 +214,8 @@ const chatterPanel = createChatterPanel(
 );
 chatterPanel.update();
 void chatter.refresh();
+// The water cooler's chats play scenes when chatter has one (O4.2).
+setSceneWriter((ids, place, said) => chatter.scene({ ...chatterRequest(ids, place, 6), said }));
 
 /** How often Workbench's cost is asked, while the HUD or the stats show it; its CPU is
  *  the average since the last ask. */

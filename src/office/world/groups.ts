@@ -1,13 +1,27 @@
 // Things idle workers do together (office plan O2.2), on top of the idle planner: two or
-// three at the water cooler chat (canned lines in bubbles, in turns); two at the kicker
-// play a match to five, the ball running and the score over the table, and the winner
-// cheers; two or more on the sofa get the console out, the TV on. Each starts by itself
-// when enough people are there (`idle.ts` draws people to company), keeps them long
-// enough to be worth it, and tells the activity log.
+// three at the water cooler chat, facing each other, in bubbles in turn; two at the
+// kicker play a match to five, the ball running and the score over the table, and the
+// winner cheers; two or more on the sofa get the console out, the TV on. Each starts by
+// itself when enough people are there (`idle.ts` draws people to company), keeps them
+// long enough to be worth it, and tells the activity log.
+//
+// A chat plays a scene written for who's there (O4.2, `staff.writer`: chatter, O4.1),
+// its lines one after another and into the log, then asks for one more if the chat
+// goes on. Until one comes, or without one (chatter off, over budget, failed), it's
+// canned lines, which the log leaves out.
 
-import type { Anim } from "../art/characters";
+import type { Anim, Dir } from "../art/characters";
+import type { Scene, SceneLine } from "../../remote/chatter";
 import type { WorkerEntity, World } from "./entities";
 import type { Staff } from "./sessions";
+
+/** Writes a scene for these workers at this place, carrying on from what the chat has
+ *  said so far (`Mira: Tea?`); null when there's none. */
+export type SceneWriter = (ids: string[], place: string, said: string[]) => Promise<Scene | null>;
+
+/** What goes in the activity log. A `chat` is one entry per chat, by `key`: `text` is
+ *  its head, and each scene line said (`line`) is added under it. */
+export type GroupEvent = { kind: "fun"; text: string } | { kind: "chat"; key: string; text: string; line: string | null };
 
 export const CHAT_LINES: readonly string[] = [
   "Coffee's better today.",
@@ -53,6 +67,16 @@ export const CHAT_MIN = 90_000;
 export const CONSOLE_MIN = 3 * 60_000;
 /** A bubble stays up this long. */
 export const SAY_FOR = 3200;
+/** A scene's line stays up this long, and this much more a character, so a longer
+ *  one can be read. */
+export const LINE_FOR = 2400;
+export const LINE_PER_CHAR = 70;
+/** A chat waits for its scene this long before filling in with canned lines. */
+export const SCENE_WAIT = 6000;
+/** Scenes a chat asks for, at most. */
+export const SCENES_PER_CHAT = 2;
+/** Where the chat is, for the scene. */
+const COOLER = "the water cooler in the kitchen";
 /** Log lines kept for the page to take. */
 const EVENTS_MAX = 20;
 
@@ -68,9 +92,26 @@ export interface KickerMatch {
   reported?: boolean;
 }
 
+/** A chat under way. */
+export interface Chat {
+  /** When the next line is due, and who said the last. */
+  next: number;
+  last: string | null;
+  /** Scenes had so far; when the ask now out went out (null with none out); and
+   *  whether the last ask got none, so the next canned line asks again. */
+  asked: number;
+  waiting: number | null;
+  missed: boolean;
+  /** The scene's lines still to say, and those said ("Mira: Tea?"). */
+  lines: SceneLine[];
+  said: string[];
+  /** The log entry the scene's lines go under. */
+  key: string;
+}
+
 export interface Games {
   kicker: KickerMatch | null;
-  chat: { next: number; last: string | null } | null;
+  chat: Chat | null;
   console: { next: number; last: string | null } | null;
 }
 
@@ -156,9 +197,82 @@ function keep(staff: Staff, ws: readonly WorkerEntity[], until: number): void {
   }
 }
 
-function say(staff: Staff, w: WorkerEntity, text: string, ms: number): void {
+function say(staff: Staff, w: WorkerEntity, text: string, ms: number, lasts = SAY_FOR): void {
   w.bubble = { text, tone: "say" };
-  staff.saying.set(w.worker.id, ms + SAY_FOR);
+  staff.saying.set(w.worker.id, ms + lasts);
+}
+
+const chatHead = (ws: readonly WorkerEntity[]) => `${names(ws)} are chatting at the water cooler`;
+
+/** How long a scene's line stays up. */
+export const lineFor = (text: string) => LINE_FOR + LINE_PER_CHAR * text.length;
+
+/** Each one in a group facing the rest: along whichever way the others are further. */
+export function facings(ws: readonly { id: string; x: number; y: number }[]): Map<string, Dir> {
+  const out = new Map<string, Dir>();
+  for (const w of ws) {
+    const others = ws.filter((o) => o.id !== w.id);
+    if (!others.length) continue;
+    const dx = others.reduce((s, o) => s + o.x, 0) / others.length - w.x;
+    const dy = others.reduce((s, o) => s + o.y, 0) / others.length - w.y;
+    out.set(w.id, Math.abs(dx) >= Math.abs(dy) ? (dx < 0 ? "left" : "right") : dy < 0 ? "up" : "down");
+  }
+  return out;
+}
+
+/** Asks for the chat's next scene; its lines join the chat if it's still on. */
+function askScene(staff: Staff, chat: Chat, ws: readonly WorkerEntity[], ms: number): void {
+  if (!staff.writer || chat.asked >= SCENES_PER_CHAT || chat.waiting !== null) return;
+  chat.waiting = ms;
+  chat.missed = false;
+  void staff
+    .writer(
+      ws.map((w) => w.worker.id),
+      COOLER,
+      [...chat.said],
+    )
+    .catch(() => null)
+    .then((scene) => {
+      chat.waiting = null;
+      // The chat may be over, or a new one begun.
+      if (scene && staff.games.chat === chat) {
+        chat.asked++;
+        chat.lines.push(...scene.lines);
+      }
+      // None this time (the page hidden, chatter off or over budget, a failure): the
+      // next canned line asks again. Only a call the client makes costs anything.
+      if (!scene) chat.missed = true;
+    });
+}
+
+/** One turn of the water cooler's chat: the scene's next line by someone there, else
+ *  a canned one (but not while a scene is on its way). True when someone spoke. */
+function chatTurn(staff: Staff, chat: Chat, ws: readonly WorkerEntity[], ms: number): boolean {
+  if (ms < chat.next) return false;
+  const here = new Map(ws.map((w) => [w.worker.id, w]));
+  // Lines by someone who's gone are skipped.
+  while (chat.lines.length && !here.has(chat.lines[0].speaker)) chat.lines.shift();
+  const line = chat.lines.shift();
+  if (line) {
+    const w = here.get(line.speaker)!;
+    const lasts = lineFor(line.text);
+    say(staff, w, line.text, ms, lasts);
+    const said = `${w.worker.name}: ${line.text}`;
+    chat.said.push(said);
+    staff.events.push({ kind: "chat", key: chat.key, text: chatHead(ws), line: said });
+    chat.next = ms + lasts + 400 + staff.random() * 600;
+    chat.last = w.worker.id;
+    // The scene's over and they're still at it: ask for the next.
+    if (!chat.lines.length) askScene(staff, chat, ws, ms);
+    return true;
+  }
+  if (chat.waiting !== null && ms - chat.waiting < SCENE_WAIT) return false;
+  const w = speaker(ws, chat.last, staff.random);
+  say(staff, w, pick(CHAT_LINES, staff.random), ms);
+  chat.next = ms + 4000 + staff.random() * 2500;
+  chat.last = w.worker.id;
+  if (chat.missed) askScene(staff, chat, ws, ms);
+  return true;
 }
 
 /** The next to speak: anyone but whoever spoke last. */
@@ -178,6 +292,7 @@ export function playGroups(world: World, staff: Staff, ms: number): boolean {
   const g = staff.games;
   const poses = staff.groupPose;
   poses.clear();
+  staff.groupFace.clear();
   const byId = new Map(world.workers.map((w) => [w.worker.id, w]));
 
   // Bubbles run out.
@@ -195,16 +310,13 @@ export function playGroups(world: World, staff: Staff, ms: number): boolean {
   const chatting = present(world, staff, "cooler");
   if (chatting.length >= 2) {
     if (!g.chat) {
-      g.chat = { next: ms + 1500, last: null };
+      g.chat = { next: ms + 1500, last: null, asked: 0, waiting: null, missed: false, lines: [], said: [], key: `chat:${ms}` };
       keep(staff, chatting, ms + CHAT_MIN);
-      staff.events.push({ kind: "fun", text: `${names(chatting)} are chatting at the water cooler` });
+      staff.events.push({ kind: "chat", key: g.chat.key, text: chatHead(chatting), line: null });
+      askScene(staff, g.chat, chatting, ms);
     }
-    if (ms >= g.chat.next) {
-      const w = speaker(chatting, g.chat.last, staff.random);
-      say(staff, w, pick(CHAT_LINES, staff.random), ms);
-      said = true;
-      g.chat = { next: ms + 4000 + staff.random() * 2500, last: w.worker.id };
-    }
+    for (const [id, dir] of facings(chatting.map((w) => ({ id: w.worker.id, x: w.x, y: w.y })))) staff.groupFace.set(id, dir);
+    said = chatTurn(staff, g.chat, chatting, ms) || said;
   } else g.chat = null;
 
   // The console on the sofa.

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import type { ChatterRequest } from "../remote/chatter";
-import { LINE_CHARS, MAX_LINES, SYSTEM, TOPICS, budgetTokens, cleanScene, cleanText, sample, sceneInput } from "./officeChatter";
+import { LINE_CHARS, MAX_LINES, SYSTEM, TOPICS, budgetTokens, cleanScene, cleanText, fits, sample, sceneInput, splitText } from "./officeChatter";
 
 const request: ChatterRequest = {
   day: "2026-10-28",
@@ -40,6 +40,12 @@ describe("the chatter prompt", () => {
     expect(text.match(/<\/project>/g)).toHaveLength(1);
   });
 
+  it("has a follow-up carry on from what the chat has said", () => {
+    expect(sceneInput(request, [], [])).not.toContain("Carry on");
+    const text = sceneInput({ ...request, said: ["Mira: Tea?", "Felix: Coffee!"] }, [], []);
+    expect(text).toContain("- Mira: Tea?\n- Felix: Coffee!\nCarry on from there");
+  });
+
   it("asks for a sensible number of lines", () => {
     expect(sceneInput({ ...request, lines: 50 }, [], [])).toContain(`Lines: about ${MAX_LINES}`);
     expect(sceneInput({ ...request, lines: 0 }, [], [])).toContain("Lines: about 4");
@@ -68,12 +74,41 @@ describe("cleaning a scene", () => {
     expect(cleanText("it’s fine...")).toBe("it's fine…");
   });
 
-  it("cuts long lines at a word", () => {
-    const t = cleanText("This is a rather long line that will certainly not fit in one small bubble at all");
-    expect(t.length).toBeLessThanOrEqual(LINE_CHARS);
-    expect(t.endsWith("…")).toBe(true);
-    expect(t).not.toMatch(/\s…$/);
-    expect(cleanText(`${"x".repeat(LINE_CHARS - 8)} merge. Then more words here`)).not.toMatch(/\.…$/);
+  it("says a long line in two bubbles, broken where a speaker would pause", () => {
+    expect(splitText("Short and sweet.")).toEqual(["Short and sweet."]);
+    expect(splitText("Juno, your balance opinions are wild. Do you have a lunch order for the soup place?")).toEqual([
+      "Juno, your balance opinions are wild.",
+      "Do you have a lunch order for the soup place?",
+    ]);
+    expect(splitText("A big head with a bow tie, which is exactly the look it's going for")).toEqual([
+      "A big head with a bow tie,",
+      "which is exactly the look it's going for",
+    ]);
+    const words = splitText("I drew the chatter architecture on the whiteboard last night after everyone went home");
+    expect(words.length).toBe(2);
+    expect(words.join(" ")).toBe("I drew the chatter architecture on the whiteboard last night after everyone went home");
+    for (const p of words) expect(fits(p)).toBe(true);
+  });
+
+  it("keeps a line that runs over by only a word or two whole", () => {
+    const two = `${"x".repeat(LINE_CHARS - 6)} one two three`;
+    expect(two.split(" ").length).toBe(4);
+    expect(splitText(two)).toEqual([two]);
+    expect(splitText("Did anyone notice the coffee machine is humming a tune?")).toEqual(["Did anyone notice the coffee machine is humming a tune?"]);
+    const three = `${"x".repeat(LINE_CHARS - 2)} one two three`;
+    expect(splitText(three)).toHaveLength(2);
+  });
+
+  it("cuts only what three bubbles can't hold", () => {
+    const pieces = splitText(Array.from({ length: 40 }, (_, i) => `word${i}`).join(" "));
+    expect(pieces).toHaveLength(3);
+    expect(pieces[2].endsWith("…")).toBe(true);
+    for (const p of pieces) expect(fits(p)).toBe(true);
+  });
+
+  it("splits a scene's long line into turns of the same speaker", () => {
+    const scene = cleanScene({ lines: [{ speaker: "mira", text: "A big head with a bow tie, which is exactly the look it's going for" }, { speaker: "felix", text: "Ha!" }], mood: null }, ["mira", "felix"]);
+    expect(scene?.lines.map((l) => l.speaker)).toEqual(["mira", "mira", "felix"]);
   });
 
   it("drops lines by anyone not there, and scenes with too little left", () => {

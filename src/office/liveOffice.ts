@@ -22,6 +22,7 @@ import { OFFICE_H, OFFICE_W, createRenderer, type AskBubble, type View } from ".
 import { budgetOf, officeTime } from "./world/ambience";
 import type { ChatterRequest } from "../remote/chatter";
 import { sceneRequest } from "./chatter";
+import type { SceneWriter } from "./world/groups";
 import { behave } from "./world/behave";
 import { createStaff, seatSessions, whoIs, type Staff } from "./world/sessions";
 import { deskFree, isFree, workerFor } from "./world/hire";
@@ -107,7 +108,7 @@ export function startOffice(l: Link, changed: () => void): void {
   void l.prefs().then((saved) => {
     const rooms = Object.fromEntries(Object.entries((saved?.rooms ?? {}) as Record<string, unknown>).filter(([, t]) => isTeam(t))) as Record<string, Team>;
     const sticky = Object.fromEntries(Object.entries((saved?.sticky ?? {}) as Record<string, unknown>).filter(([, w]) => typeof w === "string")) as Record<string, string>;
-    staff = { ...createStaff({ rooms, sticky }), duckDoing: staff.duckDoing };
+    staff = { ...createStaff({ rooms, sticky }), duckDoing: staff.duckDoing, writer: staff.writer };
     // A bubble up now would never come down: the old staff kept its time.
     for (const w of world.workers) if (w.bubble?.tone === "say") w.bubble = null;
     const t = saved?.today as { day?: unknown; ids?: unknown } | undefined;
@@ -147,7 +148,12 @@ export function stepOffice(ms: number): boolean {
   const changed = (loaded && behave(office, world, staff, ms)) || walked;
   // What idle workers got up to together goes in the log.
   if (staff.events.length) {
-    log = addToLog(log, staff.events.map((e) => ({ at: Date.now(), ...e })));
+    log = addToLog(
+      log,
+      staff.events.map((e) =>
+        e.kind === "chat" ? { at: Date.now(), kind: e.kind, text: e.text, key: e.key, lines: e.line ? [e.line] : [] } : { at: Date.now(), ...e },
+      ),
+    );
     staff.events.length = 0;
   }
   return changed;
@@ -171,9 +177,14 @@ export const clickOffice = (picked: string | null, x: number, y: number, ms: num
 /** The workers with no session now. */
 export const freeWorkers = (): string[] => ROSTER.map((w) => w.id).filter(workerFree);
 
+/** Who writes the water cooler's scenes (O4.2): chatter, by way of the page. */
+export function setSceneWriter(writer: SceneWriter | null): void {
+  staff.writer = writer;
+}
+
 /** A chatter request (O4.1) for `ids` meeting at `place`, now by the office's clock. */
-export const chatterRequest = (ids: readonly string[], place: string): ChatterRequest =>
-  sceneRequest(ids, place, whoAt, latest, roomOf, officeTime());
+export const chatterRequest = (ids: readonly string[], place: string, lines?: number): ChatterRequest =>
+  sceneRequest(ids, place, whoAt, latest, roomOf, officeTime(), lines);
 
 /** A free desk at (x, y) in office pixels: nothing sits there, nor is on its way. */
 export function freeDeskAt(x: number, y: number): number | null {

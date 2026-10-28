@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import type { RemoteChoice, RemoteProject } from "../remote/protocol";
-import { LOG_MAX, addToLog, logEvents } from "./log";
+import { CHAT_LINES_MAX, LOG_MAX, addToLog, logEvents } from "./log";
 import { commitsToday, fullest, phaseCounts } from "./stats";
 import { instance, snapshot } from "./world/fixtures";
 
@@ -40,6 +40,18 @@ describe("the activity log", () => {
     for (let n = 3; n < 20; n++) log = addToLog(log, [entry(n)]);
     expect(log).toHaveLength(LOG_MAX);
     expect(log[0].text).toBe("19");
+  });
+
+  it("gathers a chat's lines under its one entry, which stays where it is", () => {
+    const chat = (lines: string[]) => ({ at: 1, kind: "chat" as const, text: "Mira and Gus are chatting", key: "chat:1", lines });
+    let log = addToLog([], [chat([])]);
+    log = addToLog(log, [{ at: 2, kind: "work", text: "Felix got to work" }, chat(["Mira: Tea?"])]);
+    log = addToLog(log, [chat(["Gus: Always."])]);
+    expect(log.map((e) => e.text)).toEqual(["Felix got to work", "Mira and Gus are chatting"]);
+    expect(log[1].lines).toEqual(["Mira: Tea?", "Gus: Always."]);
+    for (let n = 0; n < 20; n++) log = addToLog(log, [chat([`Gus: ${n}`])]);
+    expect(log[1].lines).toHaveLength(CHAT_LINES_MAX);
+    expect(log[1].lines?.[CHAT_LINES_MAX - 1]).toBe("Gus: 19");
   });
 });
 

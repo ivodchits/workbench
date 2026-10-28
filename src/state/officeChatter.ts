@@ -19,12 +19,19 @@ import { MOODS, type ChatterReply, type ChatterRequest, type Scene } from "../re
 import { getRegistry } from "./registry";
 
 export const PURPOSE = "office_chatter";
-/** A line goes in a small speech bubble. The prompt asks for 36 characters; Haiku
- *  runs over now and then, so the cut is kept for what's clearly too long. */
-export const LINE_CHARS = 60;
+/** A bubble holds about this much. The prompt asks for 36 characters; Haiku runs over
+ *  now and then. A line a word or two longer stays whole; one running further on is
+ *  said in two or three bubbles (`splitText`). */
+export const LINE_CHARS = 48;
+/** Words past `LINE_CHARS` a bubble still takes. */
+const SLACK_WORDS = 2;
+/** Bubbles one line may take; past that (rare), it's cut short. */
+const PIECES_MAX = 3;
 export const MIN_LINES = 2;
 export const MAX_LINES = 8;
 const MAX_TOKENS = 600;
+/** Lines of the chat so far a follow-up scene is given. */
+const SAID_MAX = 8;
 
 const SceneSchema = z.object({
   lines: z.array(z.object({ speaker: z.string(), text: z.string() })),
@@ -116,6 +123,14 @@ export function sceneInput(req: ChatterRequest, news: ProjectNews[], topics: str
     "",
     projects.length ? `Projects:\n${projects.join("\n")}` : "Projects: nothing new.",
     "",
+    ...(req.said?.length
+      ? [
+          "They've been talking a while; the last lines were:",
+          ...req.said.slice(-SAID_MAX).map((l) => `- ${fence(l)}`),
+          "Carry on from there: no greetings, and nothing they've already said.",
+          "",
+        ]
+      : []),
     `Topics, if nothing else comes up: ${topics.join("; ")}.`,
   ].join("\n");
 }
@@ -123,28 +138,72 @@ export function sceneInput(req: ChatterRequest, news: ProjectNews[], topics: str
 /** Characters the office's pixel font has (it shows capitals only). */
 const UNDRAWABLE = /[^A-Za-z0-9 !?.,'\-:/…]/g;
 
-/** One line as the bubble can show it: plain characters, at most `LINE_CHARS`. */
+/** A line in characters the bubble can show. */
 export function cleanText(text: string): string {
-  const s = text
+  return text
     .replace(/[‘’`´]/g, "'")
     .replace(/[–—]/g, "-")
     .replace(/\.\.\./g, "…")
     .replace(UNDRAWABLE, "")
     .replace(/\s+/g, " ")
     .trim();
-  if (s.length <= LINE_CHARS) return s;
-  const cut = s.slice(0, LINE_CHARS - 1);
-  const space = cut.lastIndexOf(" ");
-  return `${cut.slice(0, space > LINE_CHARS / 2 ? space : cut.length).replace(/[\s.,:;!?'-]+$/, "")}…`;
 }
 
-/** The scene with only lines by `speakers`, cleaned, at most `MAX_LINES`; null when
- *  fewer than `MIN_LINES` are left. */
+/** Whether `s` fits one bubble: at most `SLACK_WORDS` words end past `LINE_CHARS`. */
+export function fits(s: string): boolean {
+  let end = -1;
+  let over = 0;
+  for (const word of s.split(" ")) {
+    end += word.length + 1;
+    if (end > LINE_CHARS) over++;
+  }
+  return over <= SLACK_WORDS;
+}
+
+/** Where to break `s` (too long for a bubble): the last place whose first part still
+ *  fits one, after a sentence if there's one, else after a comma or the like, else
+ *  between words; null when no first part fits. */
+function breakAt(s: string): number | null {
+  const after = (re: RegExp) => {
+    let at: number | null = null;
+    for (const m of s.matchAll(re)) {
+      const end = m.index + m[0].length;
+      if (end >= 12 && fits(s.slice(0, end))) at = end;
+    }
+    return at;
+  };
+  return after(/[.!?…](?= )/g) ?? after(/[,;:](?= )|(?<= )-(?= )/g) ?? after(/\S(?= )/g);
+}
+
+/** A line as the bubbles it's said in: one, or for a long one, pieces broken where
+ *  a speaker would pause, at most `PIECES_MAX` (only what they can't hold is cut,
+ *  with "…"). */
+export function splitText(text: string): string[] {
+  const pieces: string[] = [];
+  let rest = text;
+  while (!fits(rest) && pieces.length < PIECES_MAX - 1) {
+    const at = breakAt(rest);
+    if (at === null) break;
+    pieces.push(rest.slice(0, at).trim());
+    rest = rest.slice(at).trim();
+  }
+  if (!fits(rest)) {
+    const words = rest.split(" ");
+    while (words.length > 1 && !fits(`${words.join(" ")}…`)) words.pop();
+    rest = `${words.join(" ").replace(/[\s.,:;!?'-]+$/, "")}…`;
+  }
+  return [...pieces, rest].filter(Boolean);
+}
+
+/** The scene with only lines by `speakers`, cleaned, at most `MAX_LINES` of them, a
+ *  long one split over bubbles; null when fewer than `MIN_LINES` are left. */
 export function cleanScene(raw: z.infer<typeof SceneSchema>, speakers: readonly string[]): Scene | null {
   const lines = raw.lines
     .map((l) => ({ speaker: l.speaker.trim().toLowerCase(), text: cleanText(l.text) }))
     .filter((l) => speakers.includes(l.speaker) && l.text)
-    .slice(0, MAX_LINES);
+    .slice(0, MAX_LINES)
+    // A long line is said in turns of the same speaker's bubbles.
+    .flatMap((l) => splitText(l.text).map((text) => ({ speaker: l.speaker, text })));
   return lines.length >= MIN_LINES ? { lines, mood: raw.mood } : null;
 }
 

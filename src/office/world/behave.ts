@@ -363,7 +363,7 @@ function idle(office: OfficeMap, staff: Staff, w: WorkerEntity, ms: number, inst
     return toDesk(office, w, w.home, ms);
   }
   const spot = office.spots.find((p) => p.id === state.place)!;
-  const face = doing.face ?? spot.dir;
+  const face = staff.groupFace.get(id) ?? doing.face ?? spot.dir;
   // A pose drawn only one way (watering faces up) would turn them from what they're at.
   stand(office, w, spot, face, ANIMS[anim].dirs.includes(face) ? anim : "idle", ms, instant, there, spot.kind === "sit");
 }

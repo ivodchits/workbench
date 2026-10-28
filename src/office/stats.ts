@@ -124,6 +124,12 @@ export function showStats(root: HTMLElement, s: Stats): void {
     for (const e of s.log) {
       const li = el("li", `log-${e.kind}`);
       li.append(el("span", "muted", clock(e.at)), el("span", "", e.text));
+      // A chat's scene, line by line as it's said.
+      if (e.lines?.length) {
+        const said = el("ul", "said");
+        for (const l of e.lines) said.append(el("li", "", l));
+        li.append(said);
+      }
       list.append(li);
     }
     parts.push(list);

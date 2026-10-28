@@ -7,8 +7,8 @@
 // changed since the last snapshot can set off a reaction (reactions.ts). A session
 // started from the office goes to the desk and worker it was asked for (hire.ts).
 
-import type { Anim } from "../art/characters";
-import { noGames, type Games } from "./groups";
+import type { Anim, Dir } from "../art/characters";
+import { noGames, type Games, type GroupEvent, type SceneWriter } from "./groups";
 import type { RemoteInstance, RemoteSnapshot } from "../../remote/protocol";
 import type { TagGlyph } from "../art/labels";
 import type { Who } from "../describe";
@@ -70,10 +70,15 @@ export interface Staff {
   games: Games;
   /** Poses the group activities ask of their players, by worker id. */
   groupPose: Map<string, Anim>;
+  /** Which way they ask them to face (a chat: toward the others), by worker id. */
+  groupFace: Map<string, Dir>;
+  /** Writes a scene for workers who meet (chatter, O4.1); null plays canned lines. */
+  writer: SceneWriter | null;
   /** When each bubble a group put up comes down, by worker id. */
   saying: Map<string, number>;
-  /** What happened worth a line in the activity log, until the page takes it. */
-  events: { kind: "fun"; text: string }[];
+  /** What happened worth a line in the activity log, until the page takes it; a
+   *  scene's lines (`chat`) gather under one entry by `key`. */
+  events: GroupEvent[];
   /** Each project's commits today, as last seen (`reactions.ts`). */
   commits: Map<string, number>;
   /** Workers cheering a commit, till when, by worker id. */
@@ -118,6 +123,8 @@ export function createStaff(saved: { sticky?: Record<string, string>; rooms?: Re
     random: Math.random,
     games: noGames(),
     groupPose: new Map(),
+    groupFace: new Map(),
+    writer: null,
     saying: new Map(),
     events: [],
     commits: new Map(),

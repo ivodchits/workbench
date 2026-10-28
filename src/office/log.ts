@@ -6,17 +6,22 @@ import type { RemoteInstance, RemoteSnapshot } from "../remote/protocol";
 import { titleOf } from "./describe";
 
 /** The kinds tint the log's lines. */
-export type LogKind = "sit" | "work" | "needs" | "done" | "leave" | "commit" | "fun";
+export type LogKind = "sit" | "work" | "needs" | "done" | "leave" | "commit" | "fun" | "chat";
 
 export interface LogEntry {
   /** Epoch ms. */
   at: number;
   kind: LogKind;
   text: string;
+  /** A chat's (O4.2): which one, and its scene's lines so far. */
+  key?: string;
+  lines?: string[];
 }
 
 /** Lines kept. */
 export const LOG_MAX = 8;
+/** A chat's lines kept, the latest. */
+export const CHAT_LINES_MAX = 10;
 
 const ASKS: Record<string, string> = { permission: "wants permission", question: "has a question", plan: "has a plan ready" };
 
@@ -53,7 +58,14 @@ function needsWhat(i: RemoteInstance): string {
   return asks ? `: ${asks}` : "";
 }
 
-/** `log` with `entries` added, newest first, at most [`LOG_MAX`]. */
+/** `log` with `entries` added, newest first, at most [`LOG_MAX`]. An entry with the
+ *  `key` of one already there adds its lines to that one, which stays where it is. */
 export function addToLog(log: readonly LogEntry[], entries: readonly LogEntry[]): LogEntry[] {
-  return [...[...entries].reverse(), ...log].slice(0, LOG_MAX);
+  const out = [...log];
+  for (const e of entries) {
+    const at = e.key === undefined ? -1 : out.findIndex((o) => o.key === e.key);
+    if (at === -1) out.unshift(e);
+    else out[at] = { ...out[at], lines: [...(out[at].lines ?? []), ...(e.lines ?? [])].slice(-CHAT_LINES_MAX) };
+  }
+  return out.slice(0, LOG_MAX);
 }

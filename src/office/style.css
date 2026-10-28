@@ -608,8 +608,27 @@ body.below #side {
   color: var(--needs);
 }
 
-#stats .log-fun > :last-child {
+#stats .log-fun > :last-child,
+#stats .log-chat > :nth-child(2) {
   color: var(--duck);
+}
+
+/* A chat's lines (O4.2), under its entry. */
+#stats .log > li {
+  flex-wrap: wrap;
+}
+
+#stats .log .said {
+  flex-basis: 100%;
+  list-style: none;
+  margin: 0 0 2px;
+  padding: 0 0 0 44px;
+  color: var(--muted);
+}
+
+#stats .log .said li {
+  display: block;
+  padding: 0;
 }
 
 #stats .log-done > :last-child,
