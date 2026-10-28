@@ -2,6 +2,8 @@
 // run's seed one sector at a time, so a seed always flies the same. A sector is a list of
 // spawns by distance — asteroid fields and enemy formations on their flight paths — and
 // its number sets the heat: how many, how fast, how tough and how often they shoot.
+// Sectors come in zones of three (O5.3c), each with its own palette and its own mix of
+// enemies, and a boss at the end of each; the zone's last sector clears out early for it.
 
 export const SR_W = 160;
 export const SR_H = 224;
@@ -9,6 +11,13 @@ export const SR_H = 224;
 export const SECTOR_LEN = 800;
 /** The first stretch of a sector stays empty while its name shows. */
 const QUIET = 60;
+
+/** Sectors in a zone; a boss waits at the end of the last. */
+export const ZONE_SECTORS = 3;
+/** How many palettes the zones go through (they're drawn in `draw.ts`). */
+export const PALETTES = 5;
+/** Distance the last sector of a zone keeps clear before the boss. */
+const BOSS_CLEAR = 220;
 
 /** Dice from a seed (mulberry32): the same rolls every time. */
 export function dice(seed: number): () => number {
@@ -118,6 +127,27 @@ export function heat(n: number): Heat {
 
 const BASE_HP: Record<EnemyKind, number> = { dart: 1, swoop: 1, gunner: 4, diver: 2 };
 
+export interface Zone {
+  /** Its palette, never the one before's; the first zone's is always the first. */
+  palette: number;
+  /** How likely each kind of enemy is, of those come in yet. */
+  weights: Record<EnemyKind, number>;
+}
+
+/** Zone `z` of the run seeded `seed`: two kinds of enemy it favours, and its look. */
+export function zoneOf(seed: number, z: number): Zone {
+  const weights: Record<EnemyKind, number> = { dart: 1, swoop: 1, gunner: 1, diver: 1 };
+  if (z === 0) return { palette: 0, weights };
+  const roll = dice(mix(mix(seed, 104729), z));
+  const kinds = ["dart", "swoop", "gunner", "diver"] as const;
+  const first = Math.floor(roll() * 4);
+  const second = (first + 1 + Math.floor(roll() * 3)) % 4;
+  weights[kinds[first]] = 3;
+  weights[kinds[second]] = 2;
+  const before = zoneOf(seed, z - 1).palette;
+  return { palette: (before + 1 + Math.floor(roll() * (PALETTES - 1))) % PALETTES, weights };
+}
+
 /** Where a path has got to `t` steps after it came on, ignoring a dive. */
 export function pathAt(p: Path, t: number): { x: number; y: number } {
   let down = t;
@@ -134,10 +164,16 @@ export function sector(seed: number, n: number): Sector {
   const between = (lo: number, hi: number) => lo + roll() * (hi - lo);
   const pick = <T>(xs: readonly T[]): T => xs[Math.floor(roll() * xs.length)];
   const h = heat(n);
+  const { weights } = zoneOf(seed, Math.floor(n / ZONE_SECTORS));
+  const pickKind = (): EnemyKind => {
+    let r = roll() * h.kinds.reduce((sum, k) => sum + weights[k], 0);
+    for (const k of h.kinds) if ((r -= weights[k]) < 0) return k;
+    return h.kinds[h.kinds.length - 1];
+  };
   const r = roll();
   const kind: Sector["kind"] = n === 0 || r < 0.45 ? "squadron" : r < 0.7 ? "field" : "mixed";
   const spawns: Spawn[] = [];
-  const span = SECTOR_LEN - QUIET;
+  const span = SECTOR_LEN - QUIET - ((n + 1) % ZONE_SECTORS === 0 ? BOSS_CLEAR : 0);
 
   const enemy = (at: number, k: EnemyKind, path: Path): EnemySpawn => {
     const fire = k === "gunner" ? h.fire : k === "dart" && n >= 3 ? h.fire * 2 : k === "swoop" && n >= 5 ? h.fire * 2 : 0;
@@ -148,7 +184,7 @@ export function sector(seed: number, n: number): Sector {
   const waves = kind === "field" ? Math.max(1, Math.round(h.waves / 3)) : h.waves;
   for (let i = 0; i < waves; i++) {
     const at = QUIET + ((i + 0.2 + roll() * 0.6) * span) / waves;
-    const k = pick(h.kinds);
+    const k = pickKind();
     const vy = h.speed * between(0.8, 1.2);
     if (k === "dart") {
       const form = pick(["line", "vee", "column"] as const);

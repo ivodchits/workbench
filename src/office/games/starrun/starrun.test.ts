@@ -21,7 +21,7 @@ function firstHit(seed: number, from: number, cap = 3000): number {
   for (let n = 0; n < cap; n++) {
     if (n % 12 === 0) pad = autopilot(s);
     stepRun(s, pad);
-    if (s.lives < LIVES) return n;
+    if (s.hits > 0) return n;
   }
   return cap;
 }

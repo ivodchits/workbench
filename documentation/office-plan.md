@@ -824,6 +824,64 @@ survive a move between devices.
   own palette and enemy mix.
 - **Done when:** a boss from a seed is always the same and beatable; perks stack and drop
   back on a hit; a live play.
+- _As built (approved; live test owed):_ `games/starrun/boss.ts`, with the perks in `starrun.ts`.
+  Sectors come in zones of three. The last sector of a zone clears out early, then the
+  scroll holds (the stars fly on) while the boss comes in under a blinking WARNING, its
+  health bar filling. It is built from the run's seed and the zone's number:
+  - a hull mirrored down the middle, its width eased row by row between a few made-up
+    widths, with a notch or two cut in;
+  - cores (one, then two, then three) and turrets sitting on its underside facing you, so
+    a shot from below meets them before the hull;
+  - turret pairs, each pair with a pattern: aimed, fan, stream, ring and spiral, the first
+    two from the start and one more each zone, the newest on the first pair. From zone 2 a
+    middle gun fires aimed shots.
+  Further on, a boss is bigger, with more turrets and core health, and its shots come
+  faster, thicker and sooner. Below half health it fires faster still. Shots stop on the
+  hull, and only the cores count toward its health. A turret can be shot out for points.
+  When the last core goes, its shots go with it. It shudders, sinks and bursts for two
+  seconds, scores 1,000 times the zone, and leaves a spread, a shield and a rapid behind.
+  Then the next zone begins under "ZONE n". It has its own palette (space, stars, rocks,
+  and the boss's hull and core glow, out of five, never the one before) and favours two
+  kinds of enemy.
+  Enemies, rocks and shot-out turrets drop perks by chance: gunners often, darts rarely,
+  and small rocks never. A perk is a capsule with its sign, falling slowly and blinking
+  near the bottom:
+  - spread: two shots, then three, then five fanned;
+  - rapid: shots sooner, 7 steps down to 3;
+  - shield: a ring round the ship per hit it will take;
+  - bomb: at once clears every enemy, rock and shot on screen, and takes 15% off a boss's
+    cores and 10 off its turrets, though it never finishes a boss;
+  - magnet: 15 seconds of pulling perks in from 80 px, up to 30;
+  - life: up to five.
+  The gun and shields go to level 3; past a ceiling a perk scores 500. A hit the shield
+  takes costs nothing more. Otherwise it costs a life and a level off the higher of the
+  two guns. Pips under the score show the gun's levels and the shields, with a bar for the
+  magnet. The autopilot now aims where a boss's nearest core will be, keeps off its hull,
+  and goes for perks close by.
+  Tests:
+  - a boss is the same from the same seed and zone, and differs by either;
+  - every hull is mirrored, with its cores clear underneath and turrets on the hull, over
+    10 zones of 6 seeds;
+  - zone 7's bosses are bigger, with more guns and core health, and with 4 or more
+    patterns against zone 1's 2 at most;
+  - the scroll holds through a fight; a shot on the hull does nothing; the last core
+    clears the shots and scores; the boss dies, drops its three perks, the zone goes up
+    and the scroll goes on into the next sector;
+  - turrets shot out (one by a shot, the rest by a bomb) fire no more;
+  - the computer, reacting every 12 steps with a gun at half the zone's number, beats
+    every boss of zones 1–6 on 6 seeds, the zone 1 bosses without a hit, and the bosses of
+    zones 5–6 hit it more than those of 1–2;
+  - a boss fight goes the same step for step;
+  - spread volleys of 1, 2, 3 and 5, and rapid fire over half as fast again;
+  - stacking to the ceilings, then scoring;
+  - a shield taking a hit, then levels off the higher gun on each hit after;
+  - a bomb clearing the screen, while leaving a boss's cores at 1;
+  - the magnet pulling a perk in;
+  - drops from a computer-flown run, the same each time.
+  Checked in headless Chrome by drawing set-up runs with the dev server's modules: a boss
+  coming in, fights in zones 1, 3, 5 and 8 in their palettes, a death, the "ZONE 2" banner,
+  and the perks with the shield rings and pips.
+  **Owed:** a live play.
 
 #### Step O5.3d — Emulator
 - **Build:** the Library plays your game images through Nostalgist.js (RetroArch's
@@ -942,7 +1000,7 @@ closed, open and still, and open and busy.
 - [x] O5.2 Kicker (live test and gamepad owed)
 - [x] O5.3a Console shell
 - [x] O5.3b Star run: flying and shooting (live play owed)
-- [ ] O5.3c Star run: perks and bosses
+- [x] O5.3c Star run: perks and bosses (live play owed)
 - [ ] O5.3d Emulator
 - [ ] O5.3e Saves shared with RetroArch
 - [ ] O5.3f PlayStation and PSP (stretch)
