@@ -179,6 +179,11 @@ export const clickOffice = (picked: string | null, x: number, y: number, ms: num
 export const freeWorkers = (): string[] => ROSTER.map((w) => w.id).filter(workerFree);
 
 /** Who writes the chats' scenes (O4.2): chatter, by way of the page. */
+/** You're playing on the TV (O5.3a), or have stopped: idle workers come to watch. */
+export function setWatching(on: boolean): void {
+  staff.watching = on ? (staff.watching ?? performance.now()) : null;
+}
+
 export function setSceneWriter(writer: SceneWriter | null): void {
   staff.writer = writer;
 }

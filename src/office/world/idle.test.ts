@@ -5,9 +5,9 @@ import { buildOffice } from "../map/build";
 import { TRAVEL_MAX, behave } from "./behave";
 import { createWorld } from "./entities";
 import { dice, instance, snapshot, testStaff } from "./fixtures";
-import { ACTIVITIES, LIKED, activity, dayPart, pickIdle, type PickInput } from "./idle";
+import { ACTIVITIES, LIKED, WATCHING, activity, dayPart, pickIdle, type PickInput } from "./idle";
 import { stepWalkers } from "./move";
-import { seatSessions } from "./sessions";
+import { seatSessions, type Staff } from "./sessions";
 
 const office = buildOffice();
 
@@ -58,6 +58,12 @@ describe("picking what to do", () => {
     expect(tally({ part: "lunch" })("snack")).toBeGreaterThan(day("snack") * 2);
   });
 
+  it("comes to watch the TV while you play on it", () => {
+    const watch = ACTIVITIES.filter((a) => a.watch).map((a) => a.id);
+    expect(watch).toEqual(["sofa", "beanbag"]);
+    for (const id of watch) expect(tally({ watching: true })(id) / tally({})(id)).toBeGreaterThan(WATCHING * 0.4);
+  });
+
   it("uses their own desk only when it may, and gives up with nowhere free", () => {
     expect(tally({ homeOk: false })("desk")).toBe(0);
     expect(pickIdle({ ...base, homeOk: false, free: () => false })).toBeNull();
@@ -77,7 +83,7 @@ describe("picking what to do", () => {
 describe("an idle office", () => {
   /** Twelve idle workers (or fewer, with sessions) for `minutes`, stepped like the page;
    *  checks every step that no two hold one place or stand on one spot. */
-  function live(minutes: number, hour: number, sessions: string[] = [], seed = 3) {
+  function live(minutes: number, hour: number, sessions: string[] = [], seed = 3, each?: (ms: number, staff: Staff) => void) {
     const world = createWorld(office);
     const staff = testStaff();
     staff.hour = () => hour;
@@ -91,6 +97,7 @@ describe("an idle office", () => {
     let steps = 0;
     for (const end = minutes * 60_000; ms < end; ) {
       stepWalkers(world, office, (ms += 100));
+      each?.(ms, staff);
       behave(office, world, staff, ms);
       steps++;
       const held = [...staff.spots.values()];
@@ -142,6 +149,19 @@ describe("an idle office", () => {
       expect(seat.y, seat.id).toBeLessThan(under!.base);
     }
     // Getting up again: the night runs above move everyone on, sofa and all.
+  });
+
+  it("gathers on the sofa and the beanbags while you play on the TV, hands free", () => {
+    const start = 2 * 60_000;
+    const { world, staff } = live(4, 10, [], 5, (ms, staff) => {
+      if (ms === start) staff.watching = ms;
+    });
+    const watching = ["sofa-1", "sofa-2", "sofa-3", "beanbag-1", "beanbag-2"];
+    for (const spot of watching) expect([...staff.spots.values()], spot).toContain(spot);
+    const there = world.workers.filter((w) => watching.includes(staff.idle.get(w.worker.id)?.place ?? "") && staff.idle.get(w.worker.id)!.until !== null);
+    expect(there.length).toBeGreaterThanOrEqual(4);
+    expect(world.tv).toBe(true);
+    for (const w of there) expect(staff.groupPose.get(w.worker.id)).toBeUndefined();
   });
 
   it("does what the activity says once there", () => {

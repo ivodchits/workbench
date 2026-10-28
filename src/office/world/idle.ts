@@ -6,7 +6,8 @@
 // thing twice running, and only where nobody else already is: each spot (or desk) is
 // held by one person from the moment they choose it. Social activities (the cooler,
 // the sofa, the kicker) draw people to where someone already is, so groups form
-// (`groups.ts`, O2.2). A new activity is one more entry in `ACTIVITIES` (and, for a new
+// (`groups.ts`, O2.2). While you play on the TV (O5.3a) the places that face it draw a
+// crowd to watch. A new activity is one more entry in `ACTIVITIES` (and, for a new
 // place, a spot in `map/office.ts`).
 
 import type { Anim, Dir } from "../art/characters";
@@ -38,6 +39,8 @@ export interface IdleActivity {
   /** Better with company: likelier with others already at it (and, for one that needs
    *  a partner, unlikely to be started alone). */
   social?: "joins" | "needs";
+  /** Somewhere to watch the TV from, while you play on it. */
+  watch?: boolean;
 }
 
 const MIN = 60_000;
@@ -49,10 +52,10 @@ export const ACTIVITIES: readonly IdleActivity[] = [
   { id: "snack", at: ["fridge"], anim: "idle", face: "up", lasts: [0.4 * MIN, 1 * MIN], weight: 1, times: { lunch: 4, night: 0.5 }, kitchen: true },
   { id: "dishes", at: ["sink"], anim: "tinker", face: "up", lasts: [1 * MIN, 2 * MIN], weight: 1, times: { lunch: 2 }, kitchen: true },
   { id: "cooler", at: ["cooler", "cooler-2", "cooler-3"], anim: "drink", lasts: [2 * MIN, 5 * MIN], weight: 3, times: { lunch: 2, ...BUSY_PLACE }, kitchen: true, social: "joins" },
-  { id: "sofa", at: ["sofa-1", "sofa-2", "sofa-3"], anim: "relax", face: "up", lasts: [3 * MIN, 8 * MIN], weight: 2, times: QUIET, social: "joins" },
+  { id: "sofa", at: ["sofa-1", "sofa-2", "sofa-3"], anim: "relax", face: "up", lasts: [3 * MIN, 8 * MIN], weight: 2, times: QUIET, social: "joins", watch: true },
   // Waiting for an opponent; a match (groups.ts) keeps them as long as it lasts.
   { id: "kicker", at: ["kicker-w", "kicker-e"], anim: "idle", lasts: [1.5 * MIN, 2 * MIN], weight: 1.5, times: BUSY_PLACE, social: "needs" },
-  { id: "beanbag", at: ["beanbag-1", "beanbag-2"], anim: "relax", face: "up", lasts: [3 * MIN, 6 * MIN], weight: 1.5, times: QUIET },
+  { id: "beanbag", at: ["beanbag-1", "beanbag-2"], anim: "relax", face: "up", lasts: [3 * MIN, 6 * MIN], weight: 1.5, times: QUIET, watch: true },
   { id: "window", at: ["window-lounge", "window-demiurge", "window-demiurge-2"], anim: "idle", face: "up", lasts: [1 * MIN, 4 * MIN], weight: 1.5, times: QUIET },
   { id: "books", at: ["books-demiurge", "books-boss"], anim: "file", face: "up", lasts: [1 * MIN, 3 * MIN], weight: 1.5 },
   { id: "plants", at: ["plant-demiurge", "plant-demiurge-tall", "plant-lounge", "plant-lounge-tall", "plant-kitchen"], anim: "tinker", lasts: [0.5 * MIN, 1.5 * MIN], weight: 1 },
@@ -70,6 +73,8 @@ export const LIKED = 3;
 export const COMPANY = 4;
 /** How much less likely one that needs a partner is with nobody there. */
 export const ALONE = 0.3;
+/** How much likelier somewhere to watch the TV from is while you play on it. */
+export const WATCHING = 8;
 
 export interface Pick {
   activity: IdleActivity;
@@ -92,6 +97,8 @@ export interface PickInput {
   free: (spot: string) => boolean;
   /** How many others are at (or on their way to) an activity, by its id. */
   company?: (activity: string) => number;
+  /** You're playing on the TV. */
+  watching?: boolean;
   random: () => number;
   activities?: readonly IdleActivity[];
 }
@@ -109,7 +116,8 @@ export function pickIdle(input: PickInput): Pick | null {
     if (input.company?.(a.id)) return a.social === "needs" ? COMPANY * 3 : COMPANY;
     return a.social === "needs" ? ALONE : 1;
   };
-  const weight = (a: IdleActivity) => a.weight * (input.likes.includes(a.id) ? LIKED : 1) * (a.times?.[input.part] ?? 1) * social(a);
+  const watch = (a: IdleActivity) => (input.watching && a.watch ? WATCHING : 1);
+  const weight = (a: IdleActivity) => a.weight * (input.likes.includes(a.id) ? LIKED : 1) * (a.times?.[input.part] ?? 1) * social(a) * watch(a);
   const total = pool.reduce((sum, a) => sum + weight(a), 0);
   if (total <= 0) return null;
   let r = input.random() * total;

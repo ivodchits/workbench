@@ -10,7 +10,8 @@
 // (`G`) a click is the debug one instead: pick a worker, then send them walking. With
 // nobody picked the sidebar shows the stats (stats.ts) and the room each project sits in.
 // Clicking the TV or the kicker opens a game over the dimmed office (games/, O5.1); the
-// office keeps stepping behind it but isn't drawn till it closes.
+// office keeps stepping behind it but isn't drawn till it closes. The TV's is a games
+// console (games/console/, O5.3a), and while you play on it idle workers come to watch.
 
 import { fitSize, sideLayout } from "./canvas";
 import { startHud } from "./hud";
@@ -44,6 +45,7 @@ import {
   chatterRequest,
   freeWorkers,
   setSceneWriter,
+  setWatching,
   workerAt,
   workerFree,
 } from "./liveOffice";
@@ -57,7 +59,9 @@ import { showLink, showRooms } from "./sidebar";
 import { showStats } from "./stats";
 import { createChatter } from "./chatter";
 import { createChatterPanel } from "./chatterPanel";
-import { testGame, type GameDef } from "./games/game";
+import type { GameDef } from "./games/game";
+import { consoleGame } from "./games/console/console";
+import { CARTRIDGES } from "./games/console/cartridges";
 import { kickerGame } from "./games/kicker";
 import { createGameOverlay } from "./games/overlay";
 import type { GameProp } from "./games/props";
@@ -99,12 +103,15 @@ let hireTarget: HireTarget | null = null;
 let hoverDesk: number | null = null;
 let dropDesk: number | null = null;
 
-/** What each game prop opens: the kicker its own (O5.2), the TV the test game till O5.3. */
+/** What each game prop opens: the kicker its own (O5.2), the TV its console (O5.3a). */
 const GAMES: Record<GameProp, GameDef> = {
-  tv: testGame("The TV", "#7fd1ff"),
+  tv: consoleGame(CARTRIDGES),
   kicker: kickerGame,
 };
-const games = createGameOverlay(document.querySelector<HTMLElement>("#game")!, () => loop.invalidate());
+const games = createGameOverlay(document.querySelector<HTMLElement>("#game")!, () => {
+  setWatching(false);
+  loop.invalidate();
+});
 const GAME_NAMES: Record<GameProp, string> = { tv: "The TV", kicker: "The kicker" };
 
 const loop = startLoop({
@@ -449,6 +456,7 @@ canvas.addEventListener("click", (e) => {
   if (game) {
     hoverAt(null);
     games.show(GAMES[game]);
+    setWatching(game === "tv");
   } else if (desk !== null) openHire(desk, null);
   else select(id);
 });

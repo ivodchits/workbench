@@ -89,6 +89,8 @@ export interface Staff {
   duckDoing: DuckDoing;
   /** Sessions started from the office, on their way to their desks. */
   hires: Hire[];
+  /** Since when you've been playing on the TV (sim ms); null when you aren't. */
+  watching: number | null;
 }
 
 /** An idle worker's activity: where, and until when once they got there. */
@@ -132,6 +134,7 @@ export function createStaff(saved: { sticky?: Record<string, string>; rooms?: Re
     trip: null,
     duckDoing: { state: "idle", chat: "idle" },
     hires: [],
+    watching: null,
   };
 }
 

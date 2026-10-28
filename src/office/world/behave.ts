@@ -338,7 +338,9 @@ function idle(office: OfficeMap, staff: Staff, w: WorkerEntity, ms: number, inst
     !!s &&
     ((s.until !== null && ms >= s.until) ||
       (s.until === null && ms - s.since > TRAVEL_MAX) ||
-      (s.place === "home" && (!homeOk || deskTaken(staff, w.home, id))));
+      (s.place === "home" && (!homeOk || deskTaken(staff, w.home, id))) ||
+      // You've started playing on the TV: everyone thinks again, likelier to come watch.
+      (staff.watching !== null && s.since < staff.watching && !activity(s.activity)?.watch));
   if (!s || over) {
     staff.idle.delete(id);
     staff.spots.delete(id);
@@ -381,6 +383,7 @@ function startIdle(office: OfficeMap, staff: Staff, w: WorkerEntity, ms: number,
     homeOk: homeOk && !deskTaken(staff, w.home, id),
     free: (spot) => known.has(spot) && !held.has(spot),
     company: (a) => [...staff.idle].filter(([who, s]) => who !== id && s.activity === a).length,
+    watching: staff.watching !== null,
     random: staff.random,
   });
   const state: IdleState = pick

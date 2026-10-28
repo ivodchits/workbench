@@ -717,13 +717,110 @@ favourite spots.
   **Owed:** a live play (the feel of the slide and swing, the computer's strength, the
   hands' switching) and a real gamepad; the browser tab used was hidden, so no frames ran.
 
-### Step O5.3 — TV: retro console emulator (may need 2 passes)
-- **Build:** NES/SNES/Game Boy/GBA/Mega Drive through Nostalgist.js (libretro cores compiled to
-  WebAssembly), cores **bundled locally** and loaded only when you start playing. ROMs come
-  from a folder you choose in settings (served by the office listener); no ROMs ship with
-  Workbench. Save states, gamepad, fullscreen. While you play, idle workers gather on the sofa,
-  and the TV sprite shows the actual game picture.
-- **Done when:** a homebrew ROM plays at full speed with a gamepad; closing it frees the core.
+### Step O5.3 — TV: the office console (split into O5.3a–f)
+The TV is a games console with two halves: **our own minigames**, written in the office's
+code and added to over time, and **an emulator** for your own game images. Saves made on the
+TV carry over to RetroArch on Steam and on your phone. Decided (2026-10-28):
+- **Save sync goes through Syncthing.** The office reads and writes the saves in the PC's
+  RetroArch saves folder (RetroArch on Steam). Syncthing-Fork on Android keeps that folder in
+  step with the phone's RetroArch, directly between the two devices with no cloud.
+  Workbench writes no sync code of its own.
+- **RetroArch on every device**, so a system uses the same libretro core everywhere.
+  Mega Drive uses Genesis Plus GX.
+- **Only in-game saves (`.srm`) travel.** Save states depend on the exact core build, so the
+  office keeps its own save states locally.
+
+Researched: [RetroArch Cloud Sync](https://docs.libretro.com/guides/retroarch-cloud-sync/)
+works over WebDAV only and is reported unreliable on Android
+([#16847](https://github.com/libretro/RetroArch/issues/16847)). Syncthing on handhelds is
+the common setup, using Syncthing-Fork on Android since the original app was discontinued.
+Folder-sync apps for Google Drive work but are slower and need the cloud. Save states don't
+survive a move between devices.
+
+#### Step O5.3a — Console shell
+- **Build:** clicking the TV boots a console: a short boot logo, then a menu of cartridges.
+  The menu lists the authored games (a registry, `games/console/`, where each game is a
+  `GameDef` with a title, a cartridge label and its own best scores) and a **Library** entry
+  for the emulator (empty until O5.3d). Adding a game means adding a module and one registry
+  line. The pad drives the menu, and Esc or Back goes from a game to the menu, then off. While
+  you play, idle workers drift to the sofa and beanbags to watch. The test game moves into
+  the menu as "Pad test".
+- **Done when:** the TV opens the menu; a game starts from it, returns to it, and keeps its best
+  score after a reload; idle workers gather to watch.
+- _As built (approved):_ `games/console/`. The TV opens **Duckbox**: its logo
+  drops in with a little duck in sunglasses and "press start", and after two seconds or a
+  press it shows the menu, a column of cartridges with each label in its own colours and
+  the best score on it. The Library comes last and for now only says it's empty. Up and
+  down (held, it repeats) choose, and A, Z, Space, Enter or Start plays. A cartridge
+  plays at its own size and the overlay follows it, along with its keys under the picture.
+  Esc or Back takes it out to the menu, and from the menu turns the console off. For this
+  the overlay now offers Esc and Back to the game first (`Game.back`), and a game may
+  change its size and help as it goes. A cartridge (`cartridges.ts`) is an id, a title,
+  label colours, its keys and `make()`. One that keeps a score reads its game's `score`,
+  and the best is kept in the page's storage. The test game is the first cartridge,
+  "Pad test". While you play, idle workers come to watch: whoever is idle thinks again
+  at once, with the sofa and the beanbags eight times likelier. The TV is on, and those
+  on the sofa watch with their hands free, not holding the controllers they use when
+  they play themselves. Tests: the boot (by time, or sooner on a press, not on one held
+  at open), the menu's moves and repeat and wrap, the empty Library, a cartridge at its
+  own size and help, Back to the menu (with the game stopped) and then not taken, a held
+  button not restarting a game, the best kept (not the last) and saved on leaving, the
+  watch places likelier, and an idle office filling the sofa and beanbags once you play,
+  with the TV on and hands free (failing without it). Checked in headless Chrome against the dev page:
+  the boot, the menu, the Library's note, the pad test with its help, and Esc to the menu
+  and Esc again to close.
+
+#### Step O5.3b — Star run: the flying and shooting
+- **Build:** the first authored game, a vertical scroller. A ship flies up an endless
+  scrolling starfield and shoots at enemies and asteroids. Everything ahead is generated from
+  a seed, sector by sector: asteroid fields, enemy formations and their flight paths, with
+  the mix and pace rising with distance. Lives, a score, a short invulnerability after a hit,
+  and a game-over screen with the best run.
+- **Done when:** a seed always generates the same sectors; difficulty rises with distance;
+  a computer-flown ship survives longer on easy sectors than hard ones; a live play feels
+  right.
+
+#### Step O5.3c — Star run: perks and bosses
+- **Build:** pickups dropped by enemies and asteroids: spread shot, rapid fire, a shield, a
+  bomb that clears the screen, a magnet, and extra lives. Weapons go up in levels and lose one
+  when you're hit. A **boss** guards the end of every few sectors. Each boss is built from a
+  seed out of parts (a hull, turrets and weak points) with attack patterns that grow with
+  distance, and has a health bar and a death sequence. A new boss starts a new zone with its
+  own palette and enemy mix.
+- **Done when:** a boss from a seed is always the same and beatable; perks stack and drop
+  back on a hit; a live play.
+
+#### Step O5.3d — Emulator
+- **Build:** the Library plays your game images through Nostalgist.js (RetroArch's
+  libretro cores compiled to WebAssembly). The cores are **bundled locally** and loaded only
+  when you start a game, starting with Mega Drive (Genesis Plus GX), then NES, SNES, Game Boy
+  and Game Boy Advance. The images come from a folder you choose, served by the office
+  listener, and zips are opened. No images ship with Workbench. The pad maps to the RetroPad.
+  The game is integer-scaled in the overlay and can go fullscreen. The TV sprite in the
+  office shows the actual picture. Save states are kept per game, in the office only.
+- **Done when:** a Mega Drive image from the Drive (e.g. Sunset Riders) plays at full speed
+  with a gamepad; closing it frees the core; a save state comes back after a reload.
+
+#### Step O5.3e — Saves shared with RetroArch
+- **Build:** in-game saves live in RetroArch's own saves folder on the PC. The office finds
+  it from RetroArch's config (Steam install, `savefile_directory`, and the "sort saves by
+  core" setting), or from a folder set by hand. The `.srm` is read when a game starts and
+  written on every in-game save and on close, under the name RetroArch gives it. If the
+  file on disk changed underneath a running game (Syncthing brought a newer save from the
+  phone), the office asks which copy to keep and backs up the other, never silently
+  overwriting either. A setup note covers Syncthing-Fork on Android, the folder pair, and
+  the RetroArch settings that must match (the same core, saves sorted the same way).
+- **Done when:** a save made on the TV loads in RetroArch on Steam and on the phone, and one
+  made on the phone loads on the TV; a conflict is offered, not lost.
+
+#### Step O5.3f — PlayStation and PSP (stretch)
+- **Build:** PS1 through a libretro core (PCSX ReARMed), with the BIOS from RetroArch's
+  system folder. PSP through PPSSPP, which needs WebAssembly threads, so the listener serves
+  the office page cross-origin isolated (COOP/COEP headers). Measure whether either runs at
+  full speed here. The big `.7z` images in the Drive look like PS2 games, which are out of
+  reach in a browser.
+- **Done when:** a PS1 game plays, and PSP is either working or written up as not viable
+  with the reason.
 
 ### Step O5.4 — Whiteboard Pictionary with Duck
 - **Build:** you draw, Duck guesses — or Duck draws (its drawing tools) and you guess.
@@ -808,7 +905,12 @@ closed, open and still, and open and busy.
 - [x] O4.2 Playing scenes
 - [x] O5.1 Game overlay (live test and gamepad owed)
 - [x] O5.2 Kicker (live test and gamepad owed)
-- [ ] O5.3 TV: retro console emulator
+- [x] O5.3a Console shell
+- [ ] O5.3b Star run: flying and shooting
+- [ ] O5.3c Star run: perks and bosses
+- [ ] O5.3d Emulator
+- [ ] O5.3e Saves shared with RetroArch
+- [ ] O5.3f PlayStation and PSP (stretch)
 - [ ] O5.4 Whiteboard Pictionary with Duck
 - [ ] O5.5 Morning standup
 - [ ] O5.6 D&D table

@@ -1,7 +1,8 @@
 // Things idle workers do together (office plan O2.2), on top of the idle planner: two or
 // three at the water cooler chat, facing each other, in bubbles in turn; two at the
 // kicker play a match to five, the ball running and the score over the table, and the
-// winner cheers; two or more on the sofa get the console out, the TV on. Each starts by
+// winner cheers; two or more on the sofa get the console out, the TV on (while you play
+// on it, O5.3a, they just watch). Each starts by
 // itself when enough people are there (`idle.ts` draws people to company), keeps them
 // long enough to be worth it, and tells the activity log.
 //
@@ -328,11 +329,12 @@ export function playGroups(world: World, staff: Staff, ms: number): boolean {
       staff.events.push({ kind: "chat", key: chat.key, text: chatHead(chat, ws), line: null });
       askScene(staff, chat, ws, ms);
     }
-    if (spot === "sofa") for (const w of ws) poses.set(w.worker.id, "gamepad");
+    // Watching you play, their hands are free.
+    if (spot === "sofa" && staff.watching === null) for (const w of ws) poses.set(w.worker.id, "gamepad");
     else for (const [id, dir] of facings(ws.map((w) => ({ id: w.worker.id, x: w.x, y: w.y })))) staff.groupFace.set(id, dir);
     said = chatTurn(staff, chat, ws, ms) || said;
   }
-  world.tv = g.chats.sofa !== undefined;
+  world.tv = g.chats.sofa !== undefined || staff.watching !== null;
 
   // The kicker.
   const atTable = present(world, staff, "kicker");

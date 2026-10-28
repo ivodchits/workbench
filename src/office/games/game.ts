@@ -1,18 +1,26 @@
-// What a game in the overlay is (office plan O5.1), and the test game the TV opens
-// until its own (O5.3): a dot steered round a field, with lamps for the buttons held
-// and the controller in use, to try the input.
+// What a game in the overlay is (office plan O5.1), and the pad test, one of the TV
+// console's cartridges (O5.3a): a dot steered round a field, with lamps for the
+// buttons held and the controller in use, to try the input.
 
 import { textBitmap } from "../art/font";
 import { cached } from "../canvas";
 import type { Pad } from "./pad";
 
 export interface Game {
-  /** The picture's size in game pixels; the overlay scales it up by whole pixels. */
+  /** The picture's size in game pixels; the overlay scales it up by whole pixels. It
+   *  may change (the console takes a cartridge's size), and the overlay follows. */
   readonly w: number;
   readonly h: number;
+  /** What to press now, when it isn't the def's (the console's cartridge's). */
+  readonly help?: string;
+  /** The score so far, for the best the console keeps. */
+  readonly score?: number;
   /** One fixed step (`STEP_MS`) with the pad as it is now. */
   step(pad: Pad): void;
   draw(ctx: CanvasRenderingContext2D): void;
+  /** Esc or Back was pressed: true when the game took it (the console goes back to its
+   *  menu); otherwise the overlay closes. */
+  back?(): boolean;
   /** Lets go of whatever it holds; the overlay is closing. */
   stop?(): void;
 }

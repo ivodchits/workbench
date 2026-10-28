@@ -1,8 +1,9 @@
 // The game overlay (office plan O5.1): a game opened from a prop plays in a window over
 // the dimmed office, scaled up by whole pixels, on its own 60 Hz loop that stops while
 // the page is hidden. It reads the keyboard and gamepads as one pad (pad.ts). It closes
-// on ✕, Esc, a gamepad's Back, or a click on the dimmed office; the office's own picture
-// stays still behind it till then (the page holds its drawing).
+// on ✕, Esc, a gamepad's Back, or a click on the dimmed office; Esc and Back go to the
+// game first, which may take them (the TV console back to its menu). The office's own
+// picture stays still behind it till then (the page holds its drawing).
 
 import { el } from "../../pwa/dom";
 import { STEP_MS, type Game, type GameDef } from "./game";
@@ -45,6 +46,25 @@ export function createGameOverlay(root: HTMLElement, closed: () => void): GameOv
   /** Back was held: it has to be let go before it closes, so one held at open doesn't. */
   let backHeld = true;
 
+  /** Follows the game's size and help, which may change as it goes (the console). */
+  function follow(): void {
+    if (!current) return;
+    const { game, def } = current;
+    if (screen.width !== game.w || screen.height !== game.h) {
+      screen.width = game.w;
+      screen.height = game.h;
+      fit();
+    }
+    const says = game.help ?? def.help;
+    if (help.textContent !== says) help.textContent = says;
+  }
+
+  /** Esc or Back: to the game first (the console's menu), else closing. */
+  function back(): void {
+    if (current?.game.back?.()) follow();
+    else shut();
+  }
+
   function fit(): void {
     if (!current) return;
     const { w, h } = current.game;
@@ -61,13 +81,19 @@ export function createGameOverlay(root: HTMLElement, closed: () => void): GameOv
     let stepped = false;
     while (due >= STEP_MS) {
       const pad = readPad(keys, gamepads());
-      if (pad.back && !backHeld) return shut();
+      const pressed = pad.back && !backHeld;
       backHeld = pad.back;
-      current.game.step(pad);
+      if (pressed) {
+        back();
+        if (!current) return;
+      } else current.game.step(pad);
       due -= STEP_MS;
       stepped = true;
     }
-    if (stepped) current.game.draw(ctx);
+    if (stepped) {
+      follow();
+      current.game.draw(ctx);
+    }
   }
 
   function run(): void {
@@ -95,7 +121,7 @@ export function createGameOverlay(root: HTMLElement, closed: () => void): GameOv
   const onKey = (e: KeyboardEvent) => {
     if (!current) return;
     if (e.key === "Escape") {
-      if (e.type === "keydown") shut();
+      if (e.type === "keydown" && !e.repeat) back();
       e.preventDefault();
       return;
     }
@@ -124,12 +150,10 @@ export function createGameOverlay(root: HTMLElement, closed: () => void): GameOv
       const game = def.make();
       current = { def, game };
       title.textContent = def.title;
-      help.textContent = def.help;
-      screen.width = game.w;
-      screen.height = game.h;
       keys.clear();
       backHeld = true;
       root.hidden = false;
+      follow();
       fit();
       game.draw(ctx);
       // Keys go to the game, not to whatever had focus.
