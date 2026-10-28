@@ -11,6 +11,8 @@
 // `!`/`?` bubble, or the status icon (the working one only away from the desk). Anyone
 // with nothing to do (no session, or wandered off from one) is the idle planner's
 // (O2.1, `idle.ts`): an activity at a time, somewhere free, moving on every so often.
+// Someone given a session from the office (O3.2, `hire.ts`) goes to its desk and sits
+// waiting there till it starts.
 //
 // A change of activity only moves someone once it has held for a moment, and nobody
 // leaves the rack or the whiteboard straight after getting there, so a session
@@ -26,6 +28,7 @@ import { seatedAt, setAnim, type Bubble, type Screen, type WorkerEntity, type Wo
 import { playGroups } from "./groups";
 import { duckRounds } from "./reactions";
 import { duckAtDesk } from "./boss";
+import { hireOf } from "./hire";
 import { activity, dayPart, pickIdle } from "./idle";
 import { enter, landing, walkTo } from "./move";
 import type { IdleState, Staff } from "./sessions";
@@ -125,7 +128,17 @@ export function behave(office: OfficeMap, world: World, staff: Staff, ms: number
       continue;
     }
     const job = staff.jobs.get(id);
-    if (!job) {
+    const hire = job ? undefined : hireOf(staff, id);
+    if (hire) {
+      staff.plans.delete(id);
+      w.tag = null;
+      w.overhead = null;
+      if (isStatusBubble(w.bubble)) w.bubble = null;
+      leaveIdle(staff, id);
+      staff.spots.delete(id);
+      if (w.seat === hire.desk && !w.walk) pose(w, "relax", "up", ms);
+      else toDesk(office, w, hire.desk, ms);
+    } else if (!job) {
       staff.plans.delete(id);
       w.tag = null;
       w.overhead = null;
@@ -307,9 +320,10 @@ function leaveIdle(staff: Staff, id: string): void {
   staff.spots.delete(id);
 }
 
-/** Whether `desk` has a session on it, or someone else holds it. */
+/** Whether `desk` has a session on it (or on its way), or someone else holds it. */
 function deskTaken(staff: Staff, desk: number, id: string): boolean {
   for (const s of staff.seating.values()) if (s.desk === desk) return true;
+  if (staff.hires.some((h) => h.desk === desk)) return true;
   for (const [who, held] of staff.spots) if (who !== id && held === `desk:${desk}`) return true;
   return false;
 }

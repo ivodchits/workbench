@@ -110,11 +110,11 @@ body {
   overflow: hidden;
 }
 
-#side.open > :not(h1, #session, #duck) {
+#side.open > :not(h1, #session, #duck, #hire) {
   display: none;
 }
 
-:is(#session, #duck) {
+:is(#session, #duck, #hire) {
   flex: 1;
   min-height: 0;
   display: flex;
@@ -123,44 +123,44 @@ body {
 }
 
 /* Over any part's own display. */
-:is(#session, #duck)[hidden],
-:is(#session, #duck) [hidden],
-:is(#session, #duck) .hidden {
+:is(#session, #duck, #hire)[hidden],
+:is(#session, #duck, #hire) [hidden],
+:is(#session, #duck, #hire) .hidden {
   display: none !important;
 }
 
-:is(#session, #duck) header {
+:is(#session, #duck, #hire) header {
   position: relative;
   padding-right: 28px;
 }
 
-:is(#session, #duck) h2 {
+:is(#session, #duck, #hire) h2 {
   margin: 0;
   color: var(--text);
 }
 
-:is(#session, #duck) header p {
+:is(#session, #duck, #hire) header p {
   margin: 0;
   overflow-wrap: anywhere;
 }
 
-:is(#session, #duck) .what {
+:is(#session, #duck, #hire) .what {
   color: var(--muted);
 }
 
-:is(#session, #duck) .state.phase-needs_you {
+:is(#session, #duck, #hire) .state.phase-needs_you {
   color: var(--needs);
 }
 
-:is(#session, #duck) .state.phase-working {
+:is(#session, #duck, #hire) .state.phase-working {
   color: var(--duck);
 }
 
-:is(#session, #duck) .state.phase-done {
+:is(#session, #duck, #hire) .state.phase-done {
   color: var(--done);
 }
 
-:is(#session, #duck) button {
+:is(#session, #duck, #hire) button {
   font: inherit;
   color: var(--text);
   background: var(--night);
@@ -170,18 +170,18 @@ body {
   cursor: pointer;
 }
 
-:is(#session, #duck) button:hover {
+:is(#session, #duck, #hire) button:hover {
   border-color: var(--muted);
 }
 
-:is(#session, #duck) .close {
+:is(#session, #duck, #hire) .close {
   position: absolute;
   top: 0;
   right: 0;
   padding: 0 6px;
 }
 
-:is(#session, #duck) .wb-chc {
+:is(#session, #duck, #hire) .wb-chc {
   max-height: 45%;
   overflow-y: auto;
   border: 1px solid var(--needs);
@@ -189,31 +189,31 @@ body {
 }
 
 /* No terminal here: those answers are Workbench's. */
-:is(#session, #duck) .wb-chc-bar button:not(.wb-chc-deny),
-:is(#session, #duck) .wb-chc-note button {
+:is(#session, #duck, #hire) .wb-chc-bar button:not(.wb-chc-deny),
+:is(#session, #duck, #hire) .wb-chc-note button {
   display: none;
 }
 
-:is(#session, #duck) .needs {
+:is(#session, #duck, #hire) .needs {
   display: flex;
   align-items: center;
   gap: 8px;
   color: var(--needs);
 }
 
-:is(#session, #duck) .needs span {
+:is(#session, #duck, #hire) .needs span {
   margin-right: auto;
 }
 
-:is(#session, #duck) .needs .ok {
+:is(#session, #duck, #hire) .needs .ok {
   border-color: var(--done);
 }
 
-:is(#session, #duck) .needs .no {
+:is(#session, #duck, #hire) .needs .no {
   border-color: var(--needs);
 }
 
-:is(#session, #duck) .scroll {
+:is(#session, #duck, #hire) .scroll {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
@@ -224,18 +224,18 @@ body {
   font-size: 12px;
 }
 
-:is(#session, #duck) .jump {
+:is(#session, #duck, #hire) .jump {
   align-self: center;
   margin-top: -36px;
 }
 
-:is(#session, #duck) .composer {
+:is(#session, #duck, #hire) .composer {
   display: flex;
   flex-direction: column;
   gap: 6px;
 }
 
-:is(#session, #duck) textarea {
+:is(#session, #duck, #hire) textarea {
   resize: vertical;
   min-height: 3.2em;
   font: inherit;
@@ -246,23 +246,23 @@ body {
   padding: 4px 6px;
 }
 
-:is(#session, #duck) textarea:focus {
+:is(#session, #duck, #hire) textarea:focus {
   outline: none;
   border-color: var(--duck);
 }
 
-:is(#session, #duck) .buttons {
+:is(#session, #duck, #hire) .buttons {
   display: flex;
   justify-content: flex-end;
   gap: 6px;
 }
 
-:is(#session, #duck) .send {
+:is(#session, #duck, #hire) .send {
   border-color: var(--duck);
   color: var(--duck);
 }
 
-:is(#session, #duck) .stop {
+:is(#session, #duck, #hire) .stop {
   margin-right: auto;
   color: var(--needs);
 }
@@ -587,4 +587,46 @@ body.below #side {
 #stats .log-done > :last-child,
 #stats .log-commit > :last-child {
   color: var(--done);
+}
+
+/* The new-session form (O3.2). */
+#hire .field {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+#hire select {
+  font: inherit;
+  color: inherit;
+  background: var(--night);
+  border: 1px solid var(--rim);
+  border-radius: 4px;
+  padding: 3px 4px;
+}
+
+#hire select:focus {
+  outline: none;
+  border-color: var(--duck);
+}
+
+#hire .check {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+#hire .msg {
+  margin: 0;
+  min-height: 1.2em;
+  color: var(--muted);
+}
+
+#hire .msg.error {
+  color: var(--needs);
+}
+
+#hire button:disabled {
+  opacity: 0.5;
+  cursor: default;
 }

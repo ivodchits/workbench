@@ -68,7 +68,7 @@ export function createPanel(root: HTMLElement, link: Link, onClose: () => void):
   buttons.append(stop, interrupt, send);
   const composer = el("div", "composer");
   composer.append(text, buttons);
-  const free = el("p", "muted free", "No session: free for the next one.");
+  const free = el("p", "muted free", "No session: drag them onto a free desk to give them one.");
 
   root.replaceChildren(head, card.root, needs, scroll, jump, composer, free);
 

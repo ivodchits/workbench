@@ -3,7 +3,8 @@
 // Workbench. Sessions drive the workers (liveOffice.ts). Hovering a worker shows who
 // they are and what their session is doing; clicking one opens their session in the
 // sidebar (panel.ts), clicking Duck opens a chat with Duck there (duckChat.ts, O3.1),
-// and clicking the floor or Esc closes it. With the walk grid on
+// dragging a free worker onto a free desk (or clicking a free desk) opens a form there
+// to start a session at it (hireForm.ts, O3.2), and clicking the floor or Esc closes it. With the walk grid on
 // (`G`) a click is the debug one instead: pick a worker, then send them walking. With
 // nobody picked the sidebar shows the stats (stats.ts) and the room each project sits in.
 
@@ -18,8 +19,12 @@ import {
   OFFICE_W,
   clickOffice,
   drawOffice,
+  deskOffer,
   duckChatTurn,
   duckDoing,
+  freeDeskAt,
+  hire,
+  hired,
   nameOf,
   officeLog,
   officeSnapshot,
@@ -30,8 +35,11 @@ import {
   whoAt,
   workedToday,
   workerAt,
+  workerFree,
 } from "./liveOffice";
 import { createDuckChat } from "./duckChat";
+import { createHireForm, type HireTarget } from "./hireForm";
+import { ROSTER } from "./roster";
 import type { Cost } from "./net";
 import { createPanel } from "./panel";
 import { showLink, showRooms } from "./sidebar";
@@ -56,7 +64,22 @@ function present(): void {
   shown.drawImage(scene, 0, 0, canvas.width, canvas.height);
 }
 
-const view = { overlay: false, tags: false, hover: null as string | null, selected: null as string | null, paused: false, pausedAt: 0 };
+const view = {
+  overlay: false,
+  tags: false,
+  hover: null as string | null,
+  selected: null as string | null,
+  desk: null as number | null,
+  paused: false,
+  pausedAt: 0,
+};
+/** `view.selected` while the new-session form is open. */
+const HIRE_ID = "hire";
+/** The desk the form is for, the free desk under the pointer, and the one a dragged
+ *  worker is over. */
+let hireTarget: HireTarget | null = null;
+let hoverDesk: number | null = null;
+let dropDesk: number | null = null;
 
 const loop = startLoop({
   step: () => !view.paused && stepOffice(performance.now()),
@@ -83,24 +106,51 @@ const link = connect((state) => {
   snapshot = state.snapshot;
   officeSnapshot(state.snapshot);
   showRooms(roomsEl, state.snapshot.projects, roomOf, pickRoom);
+  hireForm.update(state.snapshot);
   showSelected();
   showTip();
 });
 const panel = createPanel(document.querySelector<HTMLElement>("#session")!, link, () => select(null));
+const hireForm = createHireForm(document.querySelector<HTMLElement>("#hire")!, link, {
+  close: () => select(null),
+  // Whoever was offered may have been given something else meanwhile.
+  sent: (requestId, t) => hire(requestId, t.worker && workerFree(t.worker.id) ? t.worker.id : deskOffer(t.desk).worker, t.desk),
+  seated: hired,
+  started: (who) => select(who),
+  roomOf,
+});
 const duckChat = createDuckChat(document.querySelector<HTMLElement>("#duck")!, link, () => select(null), (turn) => {
   duckChatTurn(turn);
   loop.invalidate();
 });
 
-/** The session of whoever is picked, or the chat with Duck, in the sidebar. A pick
- *  made for the debug click (with the walk grid on) isn't one. */
+/** The session of whoever is picked, the chat with Duck, or the new-session form, in
+ *  the sidebar. A pick made for the debug click (with the walk grid on) isn't one. */
 function showSelected(): void {
   const duck = view.selected === DUCK_ID && !view.overlay;
-  const who = view.selected && !view.overlay && !duck ? whoAt(view.selected) : null;
-  side.classList.toggle("open", !!who || duck);
+  const hiring = view.selected === HIRE_ID && !view.overlay ? hireTarget : null;
+  const who = view.selected && !view.overlay && !duck && !hiring ? whoAt(view.selected) : null;
+  side.classList.toggle("open", !!who || duck || !!hiring);
   panel.show(who);
   duckChat.show(duck);
-  if (!who && !duck) showStatsNow();
+  hireForm.show(hiring);
+  outline();
+  if (!who && !duck && !hiring) showStatsNow();
+}
+
+/** The desk outlined: the one a worker is dragged over, the form's, or the free one
+ *  under the pointer. */
+function outline(): void {
+  view.desk = dropDesk ?? (view.selected === HIRE_ID && hireTarget ? hireTarget.desk : hoverDesk);
+}
+
+/** Opens the new-session form for `desk`, with `worker` or whoever the desk suggests. */
+function openHire(desk: number, worker: string | null): void {
+  const offer = deskOffer(desk);
+  const id = worker ?? offer.worker;
+  const w = ROSTER.find((r) => r.id === id);
+  hireTarget = { desk, worker: w ? { id: w.id, name: w.name } : null, room: offer.room };
+  select(HIRE_ID);
 }
 
 function select(id: string | null): void {
@@ -172,7 +222,8 @@ addEventListener("keydown", (e) => {
     select(null);
     return;
   }
-  if (e.ctrlKey || e.metaKey || e.altKey || e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
+  const typing = e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement || e.target instanceof HTMLSelectElement;
+  if (e.ctrlKey || e.metaKey || e.altKey || typing) return;
   const key = e.key.toLowerCase();
   if (key === "g") {
     view.overlay = !view.overlay;
@@ -199,10 +250,16 @@ let pointer: { x: number; y: number } | null = null;
 /** The tooltip for whoever is hovered, by the pointer. */
 function showTip(): void {
   const duck = view.hover === DUCK_ID;
-  const who = view.hover && pointer && !view.overlay && !duck ? whoAt(view.hover) : null;
-  tip.hidden = !(who || (duck && pointer && !view.overlay));
+  const who = view.hover && pointer && !view.overlay && !duck && !drag?.moved ? whoAt(view.hover) : null;
+  const desk = !view.hover && !drag && hoverDesk !== null;
+  tip.hidden = !((who || duck || desk) && pointer && !view.overlay);
   if (tip.hidden || !pointer) return;
-  const lines = who ? tooltipLines(who, performance.now()) : ["Duck", `${duckDoing()} · click to talk`];
+  const free = who && !who.instance && who.worker && workerFree(who.worker.id);
+  const lines = who
+    ? [...tooltipLines(who, performance.now()), ...(free ? ["drag onto a free desk: a new session"] : [])]
+    : duck
+      ? ["Duck", `${duckDoing()} · click to talk`]
+      : ["A free desk", "click to start a session here"];
   tip.replaceChildren(
     ...lines.map((text, n) => {
       const line = document.createElement("div");
@@ -220,27 +277,74 @@ function showTip(): void {
 // The "for how long" moves on.
 setInterval(() => !tip.hidden && showTip(), 1000);
 
-/** Hovering a worker shows their name tag and the tooltip. */
+/** Hovering a worker shows their name tag and the tooltip; a free desk is outlined. */
 function hoverAt(e: PointerEvent | null): void {
   pointer = e && { x: e.clientX, y: e.clientY };
   const id = e ? workerAt(...sceneAt(e)) : null;
-  canvas.style.cursor = id || (view.overlay && view.selected) ? "pointer" : "";
-  const moved = id !== view.hover;
+  const desk = e && !id && !view.overlay ? freeDeskAt(...sceneAt(e)) : null;
+  canvas.style.cursor = id || desk !== null || (view.overlay && view.selected) ? "pointer" : "";
+  const moved = id !== view.hover || desk !== hoverDesk;
   view.hover = id;
+  hoverDesk = desk;
+  outline();
   showTip();
   if (moved) loop.invalidate();
 }
 
-canvas.addEventListener("pointermove", hoverAt);
-canvas.addEventListener("pointerleave", () => hoverAt(null));
+/** A free worker held down, and whether they've been dragged yet. */
+let drag: { id: string; x: number; y: number; moved: boolean } | null = null;
+/** A drag just ended: the click it makes isn't one. */
+let dropped = false;
+/** Further than this (page pixels) and a press is a drag. */
+const DRAG_PX = 4;
+
+canvas.addEventListener("pointerdown", (e) => {
+  if (view.paused || view.overlay || e.button !== 0) return;
+  const id = workerAt(...sceneAt(e));
+  if (!id || !workerFree(id)) return;
+  drag = { id, x: e.clientX, y: e.clientY, moved: false };
+  canvas.setPointerCapture(e.pointerId);
+});
+canvas.addEventListener("pointermove", (e) => {
+  if (!drag) return hoverAt(e);
+  if (!drag.moved && Math.hypot(e.clientX - drag.x, e.clientY - drag.y) < DRAG_PX) return;
+  drag.moved = true;
+  pointer = { x: e.clientX, y: e.clientY };
+  dropDesk = freeDeskAt(...sceneAt(e));
+  view.hover = drag.id;
+  canvas.style.cursor = dropDesk !== null ? "copy" : "grabbing";
+  outline();
+  showTip();
+  loop.invalidate();
+});
+const endDrag = (e: PointerEvent, drop: boolean) => {
+  const d = drag;
+  drag = null;
+  if (!d?.moved) return;
+  dropped = true;
+  const desk = drop ? freeDeskAt(...sceneAt(e)) : null;
+  dropDesk = null;
+  if (desk !== null) openHire(desk, d.id);
+  hoverAt(e);
+};
+canvas.addEventListener("pointerup", (e) => endDrag(e, true));
+canvas.addEventListener("pointercancel", (e) => endDrag(e, false));
+canvas.addEventListener("pointerleave", () => !drag && hoverAt(null));
 canvas.addEventListener("click", (e) => {
+  if (dropped) {
+    dropped = false;
+    return;
+  }
   if (view.paused) return;
   if (view.overlay) {
     view.selected = clickOffice(view.selected, ...sceneAt(e), performance.now());
     loop.invalidate();
     return;
   }
-  // A worker (or a contractor's desk) opens their session, Duck a chat; anywhere else
-  // closes it.
-  select(workerAt(...sceneAt(e)));
+  // A worker (or a contractor's desk) opens their session, Duck a chat, a free desk the
+  // new-session form; anywhere else closes it.
+  const id = workerAt(...sceneAt(e));
+  const desk = id ? null : freeDeskAt(...sceneAt(e));
+  if (desk !== null) openHire(desk, null);
+  else select(id);
 });

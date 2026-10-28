@@ -547,6 +547,18 @@ favourite spots.
   prompt, worktree, model) → `create` action. The worker walks to the desk and is bound when
   the instance appears (matched by `requestId`).
 - **Done when:** a session started from the office runs in Workbench with that worker on it.
+- _As built (approved):_ `world/hire.ts`, `hireForm.ts`. Drag a free worker onto a free
+  desk, or click a free desk (hovering one outlines it): the sidebar opens a form for it,
+  naming who'll take it — the one dragged, else the desk's owner if free, else the
+  nearest free worker of the room's team, else anyone free, else a contractor. Project
+  (those in the desk's room first, the one committed to latest picked), first prompt
+  (Ctrl+Enter), model and worktree; it sends the phone's `create` action, with "send
+  again" (same request id) when Workbench doesn't answer. Once sent, the desk and worker
+  are held (`assign` gets them as `held`): the worker walks over and waits there, and
+  when the request's instance is live it's seated with them, whatever room its project
+  sits in, and the sidebar turns to its session. A failed request, one Workbench never
+  heard of in 20 s, or 5 minutes without its instance lets them go. A free worker's
+  panel and tooltip say they can be dragged.
 
 ### Step O3.3 — Answering from the bubbles
 - **Build:** clicking a `!`/`?` bubble opens the choice card right there.
@@ -662,7 +674,7 @@ closed, open and still, and open and busy.
 - [x] O2.3 Reactions
 - [x] O2.4 Ambience
 - [x] O3.1 Duck in the boss office
-- [ ] O3.2 Giving tasks
+- [x] O3.2 Giving tasks
 - [ ] O3.3 Answering from the bubbles
 - [ ] O4.1 Chatter service
 - [ ] O4.2 Playing scenes

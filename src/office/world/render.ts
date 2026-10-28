@@ -14,7 +14,7 @@ import { DUCK_ANIMS, DUCK_H, DUCK_W, duckFrame } from "../art/duck";
 import { nameTag, speechBubble, statusIcon } from "../art/labels";
 import { PROPS, clockAt, floorTile, propFrame, type PropName } from "../art/props";
 import { cached } from "../canvas";
-import { WALK_CELL, type OfficeMap, type Point } from "../map/build";
+import { WALK_CELL, type OfficeMap, type Point, type Seat } from "../map/build";
 import { MAP_H, MAP_W, TILE } from "../map/office";
 import { SIM_STEP } from "../loop";
 import { frameAt, play, type Playing } from "./anim";
@@ -37,6 +37,8 @@ export interface View {
   hover?: string | null;
   /** The worker a debug click sends walking, by id: their tag shows too. */
   selected?: string | null;
+  /** A free desk to start a session at (O3.2), outlined. */
+  desk?: number | null;
 }
 
 /** A piece of furniture: drawn at its depth, animated or still. */
@@ -179,6 +181,7 @@ export function createRenderer(office: OfficeMap): Renderer {
       ];
       items.sort((a, b) => a.base - b.base);
       for (const item of items) next = Math.min(next, item.draw(ctx, ms));
+      if (view.desk != null) outlineDesk(ctx, office.seats[view.desk]);
 
       for (const c of world.contractors) next = Math.min(next, drawContractorTag(ctx, office, c, view, ms));
       for (const { e, at } of people.sort((a, b) => a.at.y - b.at.y)) next = Math.min(next, drawOverhead(ctx, e, at, view, ms));
@@ -315,6 +318,21 @@ function drawContractorTag(ctx: CanvasRenderingContext2D, office: OfficeMap, c: 
     bottom = y - 1;
   }
   return pulseIn(c.bubble, ms);
+}
+
+/** A dotted outline round a desk, its chair and monitor. */
+function outlineDesk(ctx: CanvasRenderingContext2D, seat: Seat): void {
+  const top = seat.monitor.y - 1;
+  const h = seat.sit.base + 5 - top;
+  ctx.fillStyle = "#ffd75e";
+  for (let x = seat.desk.x - 1; x <= seat.desk.x + 32; x += 2) {
+    ctx.fillRect(x, top, 1, 1);
+    ctx.fillRect(x, top + h - 1, 1, 1);
+  }
+  for (let y = top; y < top + h; y += 2) {
+    ctx.fillRect(seat.desk.x - 1, y, 1, 1);
+    ctx.fillRect(seat.desk.x + 32, y, 1, 1);
+  }
 }
 
 /** A pulsing bubble flashes between its own tone and "needs" this often. */

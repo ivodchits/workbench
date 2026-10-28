@@ -6,6 +6,8 @@
 // click from O1.2 still works: a moved worker goes back to work a moment after
 // getting there. Each snapshot also adds to the activity log and to today's count of
 // sessions that worked (O1.6), which is saved with the settings so a reload keeps it.
+// Sessions started from the office (O3.2) are held at their desk with their worker
+// (world/hire.ts) till they show up.
 
 import type { RemoteSnapshot } from "../remote/protocol";
 import { buildOffice } from "./map/build";
@@ -20,6 +22,7 @@ import { OFFICE_H, OFFICE_W, createRenderer, type View } from "./world/render";
 import { budgetOf } from "./world/ambience";
 import { behave } from "./world/behave";
 import { createStaff, seatSessions, whoIs, type Staff } from "./world/sessions";
+import { deskFree, isFree, workerFor } from "./world/hire";
 import type { Who } from "./describe";
 
 export { OFFICE_H, OFFICE_W };
@@ -162,6 +165,36 @@ export const whoAt = (id: string): Who | null => whoIs(staff, id);
 
 export const clickOffice = (picked: string | null, x: number, y: number, ms: number): string | null =>
   debugClick(office, world, picked, x, y, ms, (w) => staff.loose.set(w.worker.id, ms));
+
+/** A free desk at (x, y) in office pixels: nothing sits there, nor is on its way. */
+export function freeDeskAt(x: number, y: number): number | null {
+  const desk = deskAt(office, { x, y });
+  return desk !== undefined && deskFree(staff, desk) ? desk : null;
+}
+
+/** Whether worker `id` has nothing to do (so can be given a session). */
+export const workerFree = (id: string): boolean => world.workers.some((w) => w.worker.id === id) && isFree(staff, id);
+
+/** Who'd take a session at `desk` (null for a contractor), and the room it's in. */
+export function deskOffer(desk: number): { worker: string | null; room: Team } {
+  const room = office.seats[desk].room;
+  return { worker: workerFor(office, world, staff, desk), room: isTeam(room) ? room : "open" };
+}
+
+/** Holds `desk` and `worker` for the session `requestId` will start: they walk over. */
+export function hire(requestId: string, worker: string | null, desk: number): void {
+  staff.hires = [...staff.hires.filter((h) => h.requestId !== requestId), { requestId, worker, desk, at: performance.now() }];
+  onChange();
+}
+
+/** The instance `requestId` started, once it's seated: who's on it, as `workerAt`
+ *  names them (a worker's id, or `desk:<index>` for a contractor). */
+export function hired(requestId: string): string | null {
+  const id = latest?.created.find((c) => c.requestId === requestId)?.instanceId;
+  const s = id ? staff.seating.get(id) : undefined;
+  if (!s) return null;
+  return s.worker ?? (s.desk !== null ? `desk:${s.desk}` : null);
+}
 
 /** Duck's id for `workerAt`. */
 export const DUCK_ID = "duck";

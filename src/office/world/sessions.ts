@@ -4,7 +4,8 @@
 // doing; one whose session ended packs up and goes to the kitchen; whoever has nothing
 // to do stands about the kitchen and the lounge. On the first snapshot everyone is
 // simply where they belong, nobody walks. A contractor's desk gets a laptop. What
-// changed since the last snapshot can set off a reaction (reactions.ts).
+// changed since the last snapshot can set off a reaction (reactions.ts). A session
+// started from the office goes to the desk and worker it was asked for (hire.ts).
 
 import type { Anim } from "../art/characters";
 import { noGames, type Games } from "./groups";
@@ -18,6 +19,7 @@ import { assign, type Seating } from "./assign";
 import { behave, doing, type Plan } from "./behave";
 import { react, type DuckTrip } from "./reactions";
 import type { DuckDoing } from "./boss";
+import { bindHires, type Hire } from "./hire";
 import type { World } from "./entities";
 
 /** The rail's glyph for a session's phase. */
@@ -80,6 +82,8 @@ export interface Staff {
   trip: DuckTrip | null;
   /** What Duck is doing (`boss.ts`): the snapshot's word, and the office chat's turn. */
   duckDoing: DuckDoing;
+  /** Sessions started from the office, on their way to their desks. */
+  hires: Hire[];
 }
 
 /** An idle worker's activity: where, and until when once they got there. */
@@ -120,6 +124,7 @@ export function createStaff(saved: { sticky?: Record<string, string>; rooms?: Re
     cheers: new Map(),
     trip: null,
     duckDoing: { state: "idle", chat: "idle" },
+    hires: [],
   };
 }
 
@@ -127,6 +132,8 @@ export function createStaff(saved: { sticky?: Record<string, string>; rooms?: Re
  *  the sticky map changed (worth saving). */
 export function seatSessions(office: OfficeMap, world: World, staff: Staff, snapshot: RemoteSnapshot, ms: number, random?: () => number): boolean {
   const live = snapshot.instances.filter((i) => i.live);
+  const stickyBefore = JSON.stringify(staff.sticky);
+  const held = bindHires(staff, snapshot, ms);
   const { seating, sticky } = assign({
     seats: office.seats,
     sessions: live,
@@ -134,9 +141,10 @@ export function seatSessions(office: OfficeMap, world: World, staff: Staff, snap
     sticky: staff.sticky,
     current: staff.seating,
     known: new Set(snapshot.instances.map((i) => i.id)),
+    held,
     random,
   });
-  const stickyChanged = JSON.stringify(sticky) !== JSON.stringify(staff.sticky);
+  const stickyChanged = JSON.stringify(sticky) !== stickyBefore;
   const instant = !staff.started;
   staff.started = true;
   staff.duckDoing = { ...staff.duckDoing, state: snapshot.duck.state };

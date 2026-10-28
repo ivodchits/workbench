@@ -12,6 +12,8 @@
 //   takes a free desk nearest the room, the open space's spare desks first.
 // - With all twelve busy, a session gets a contractor: a desk without a worker (a
 //   laptop on it), or no desk at all once those run out too.
+// - A session started from the office (O3.2, `hire.ts`) has its desk and worker held
+//   for it while it's on its way: nobody else is given them.
 
 import type { Point, Seat } from "../map/build";
 import { ROSTER, type Team, type Worker } from "../roster";
@@ -41,6 +43,8 @@ export interface AssignInput {
   current: ReadonlyMap<string, Seating>;
   /** Every instance Workbench still has, live or not: sticky entries for the rest go. */
   known: ReadonlySet<string>;
+  /** Desks and workers held for sessions on their way. */
+  held?: readonly Seating[];
   random?: () => number;
 }
 
@@ -85,6 +89,10 @@ export function assign(input: AssignInput): Assignment {
   for (const s of sessions) {
     const was = current.get(s.id);
     if (was?.worker) take(s.id, was.worker, was.desk);
+  }
+  for (const h of input.held ?? []) {
+    if (h.worker) busy.add(h.worker);
+    if (h.desk !== null) used.add(h.desk);
   }
 
   /** Free, and not the home desk of someone free (they'll want it). */
