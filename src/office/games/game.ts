@@ -28,6 +28,14 @@ export interface Game {
   readonly keepsBack?: boolean;
   /** The game asks to be left (the emulator's Back with Start); the console goes back. */
   readonly done?: boolean;
+  /** The pointer (mouse, pen or touch) on the picture, at (x, y) in game pixels: held
+   *  down, moved, or let go (O5.4's whiteboard). */
+  pointer?(kind: "down" | "move" | "up", x: number, y: number): void;
+  /** A key pressed (`KeyboardEvent.key`, with Ctrl or Cmd held): true when the game
+   *  took it, as typing, so it isn't the pad's. Esc is never offered. */
+  key?(key: string, ctrl: boolean): boolean;
+  /** The pointer's look over the picture now ("crosshair"); the default otherwise. */
+  readonly cursor?: string;
 }
 
 export interface GameDef {

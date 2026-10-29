@@ -21,6 +21,7 @@ import { frameAt, play, type Playing } from "./anim";
 import { ballAt, kickerScore, type KickerMatch } from "./groups";
 import { SKY_COLORS, hoursOf, officeTime, skyAt } from "./ambience";
 import { tvScreen } from "../games/emulator/screen";
+import { boardScreen } from "../games/screen";
 import type { Budget, Bubble, Contractor, DuckEntity, Entity, Screen, WorkerEntity, World } from "./entities";
 
 export const OFFICE_W = MAP_W * TILE;
@@ -91,6 +92,9 @@ const BALL_EVERY = 60;
 /** The TV's screen inside its sprite, where a Library game shows (O5.3d), and how often
  *  it is redrawn then. */
 const TV_SCREEN = { x: 4, y: 2, w: 28, h: 13 };
+/** The standing whiteboard's writing area (`whiteboardStand`), and Pictionary's board
+ *  in it (O5.4): 3:2, as tall as it goes. */
+const STAND_BOARD = { x: 2 + Math.round((28 - 20) / 2), y: 2, w: 20, h: 13 };
 export const TV_EVERY = 100;
 
 export function createRenderer(office: OfficeMap): Renderer {
@@ -131,6 +135,22 @@ export function createRenderer(office: OfficeMap): Renderer {
           board.draw(ctx, ms);
           if (drawing) drawBudget(ctx, drawing.budget, p.x, p.y);
           return Infinity;
+        },
+      };
+    }
+    if (p.id === "whiteboardStand") {
+      const stand = still(p);
+      return {
+        base: p.base,
+        draw: (ctx, ms) => {
+          const next = stand.draw(ctx, ms);
+          const board = boardScreen.get();
+          if (!board) return next;
+          ctx.save();
+          ctx.imageSmoothingEnabled = true;
+          ctx.drawImage(board, p.x + STAND_BOARD.x, p.y + STAND_BOARD.y, STAND_BOARD.w, STAND_BOARD.h);
+          ctx.restore();
+          return TV_EVERY;
         },
       };
     }

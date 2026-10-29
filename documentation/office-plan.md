@@ -1073,6 +1073,49 @@ survive a move between devices.
 
 ### Step O5.4 — Whiteboard Pictionary with Duck
 - **Build:** you draw, Duck guesses — or Duck draws (its drawing tools) and you guess.
+- _As built (approved):_ `games/pictionary/` on the page (`pictionary.ts`, the
+  rules; `draw.ts`, the picture; `board.ts`, the strokes; `words.ts`; `whiteboard.ts`, the
+  game), `remote/pictionary.ts` (the shapes), the Rust core's `remote/office/pictionary.rs`
+  and the webview's `state/officePictionary.ts`. Clicking the meeting room's standing
+  whiteboard opens it in the game overlay; while it's open the office's whiteboard shows
+  the board in small. A menu picks the way round:
+  - **You draw, Duck guesses.** You're given a word (121 easy ones, each with the
+    other names that count) and draw it with the mouse, a pen or a finger in four marker
+    colours, with undo (Ctrl+Z), clear and give up. Whenever you pause after drawing
+    (¾ s, and at least 4 s since its last look), Duck is shown a PNG of the board and
+    guesses, a new guess each time, saying something with it; at most 12 guesses a
+    round, and it stops trying after three failed looks.
+  - **Duck draws, you guess.** Duck picks a word (from a random category, not one of the
+    latest rounds') and draws it as polylines in marker colours on a 300×200 board; the
+    strokes come back in one answer and are drawn one by one, at a pace that takes at
+    most 40 s. You type guesses (Enter says one). A letter of the word shows at half time
+    and another at three quarters, never all of it.
+  - A round is 90 s. A guess counts if it names the word or one of its other names,
+    with more said ("a red apple") or a plural, and a slip of one letter in a word of
+    five or more. The score is rounds won of those played; Esc goes back to the menu, and
+    an answer that comes back for a round already left is dropped.
+  - Not Duck's `draw` tool, as the plan put it: that starts a drawing worker and takes
+    minutes for a finished picture, and the game needs a word drawn in seconds, stroke by
+    stroke. Instead the page asks `POST /office/api/pictionary`; the Rust core lets one
+    call out at a time and hands it to the webview (`office-pictionary`, answered by
+    `office_pictionary_reply`, 90 s at most), which asks Sonnet through Duck's API client
+    (purpose `office_pictionary`) with structured output: low effort for a guess, medium
+    for a drawing (at low its drawings didn't read). No budget of its own beyond Duck's:
+    it's a game you choose to play, and the menu says Duck asks Claude a few times a round.
+  - The overlay grew two hooks for it (`Game.pointer`, `Game.key`): the pointer on the
+    picture in game pixels, held to the picture while pressed, and keys taken as typing
+    before the pad's. The TV's picture store became `games/screen.ts`, shared with the
+    whiteboard.
+  - Tests: checking guesses (articles, plurals, other names, slips, not another word),
+    the board's lines, Duck's strokes scaled; you drawing, undo and clear; Duck looking
+    only after a pause and only at something new, winning, its guess and error limits,
+    time up and giving up, a late answer dropped, words not repeated; Duck's drawing in
+    order a little each step, typed guesses, the letters shown, no drawing; the webview's
+    cleaning and the request; the Rust core's one call at a time and its answers.
+  - **Checked against the dev app in headless Chrome, with real calls:** a drawn sun was
+    guessed "sun" ("Easy! It's the sun! Duck is a genius."); Duck drew a sandcastle with a
+    flag over the sea, a fish with bubbles, and a soccer ball on grass, each recognisable,
+    in about 20–30 s from asking; the stand's whiteboard showed the board.
 
 ### Step O5.5 — Morning standup
 - **Build:** on request, idle workers gather at the standup table in Duck's office; each summarises yesterday's
@@ -1160,7 +1203,7 @@ closed, open and still, and open and busy.
 - [x] O5.3d Emulator
 - [x] O5.3e Saves shared with RetroArch
 - [x] O5.3f PlayStation and PSP (stretch)
-- [ ] O5.4 Whiteboard Pictionary with Duck
+- [x] O5.4 Whiteboard Pictionary with Duck
 - [ ] O5.5 Morning standup
 - [ ] O5.6 D&D table
 - [ ] O5.7 Meeting room: pitch an idea

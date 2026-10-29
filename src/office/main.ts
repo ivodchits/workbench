@@ -69,6 +69,8 @@ import { linkShelf } from "./games/emulator/shelf";
 import { CARTRIDGES } from "./games/console/cartridges";
 import { kickerGame } from "./games/kicker";
 import { createGameOverlay } from "./games/overlay";
+import { pictionaryGame } from "./games/pictionary/whiteboard";
+import { boardScreen } from "./games/screen";
 import type { GameProp } from "./games/props";
 
 const canvas = document.querySelector<HTMLCanvasElement>("#office")!;
@@ -113,16 +115,18 @@ const shelf = linkShelf(
   (path, init) => link.request(path, init),
   (path) => link.signed(path),
 );
-/** What each game prop opens: the kicker its own (O5.2), the TV its console (O5.3a). */
+/** What each game prop opens: the kicker its own (O5.2), the TV its console (O5.3a),
+ *  the meeting room's whiteboard Pictionary with Duck (O5.4). */
 const GAMES: Record<GameProp, GameDef> = {
   tv: consoleGame(CARTRIDGES, pageStore, { shelf, play: (entry, fresh) => emulatorGame(entry, shelf, launchRetroArch, fresh) }),
   kicker: kickerGame,
+  whiteboard: pictionaryGame((req) => link.pictionary(req)),
 };
 const games = createGameOverlay(document.querySelector<HTMLElement>("#game")!, () => {
   setWatching(false);
   loop.invalidate();
 });
-const GAME_NAMES: Record<GameProp, string> = { tv: "The TV", kicker: "The kicker" };
+const GAME_NAMES: Record<GameProp, string> = { tv: "The TV", kicker: "The kicker", whiteboard: "Pictionary with Duck" };
 
 const loop = startLoop({
   step: () => {
@@ -130,9 +134,9 @@ const loop = startLoop({
     return changed && !games.open;
   },
   draw: (ms) => {
-    // Still behind a game: it has the frames. Only a Library game on the TV shows
-    // there too, now and then.
-    if (games.open && !tvScreen.get()) return Infinity;
+    // Still behind a game: it has the frames. Only a Library game on the TV, or
+    // Pictionary's board on the whiteboard, shows there too, now and then.
+    if (games.open && !tvScreen.get() && !boardScreen.get()) return Infinity;
     const next = drawOffice(ctx, view.paused ? view.pausedAt : ms, view);
     present();
     placeAsk();
@@ -142,6 +146,7 @@ const loop = startLoop({
 });
 // The TV comes on with a Library game, and goes back when it ends.
 tvScreen.listen(() => loop.invalidate());
+boardScreen.listen(() => loop.invalidate());
 const linkEl = document.querySelector<HTMLElement>("#link")!;
 const statsEl = document.querySelector<HTMLElement>("#stats")!;
 const roomsEl = document.querySelector<HTMLElement>("#rooms")!;

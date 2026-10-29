@@ -8,6 +8,7 @@
 // whose scenes it asks for here.
 
 import type { ChatterAnswer, ChatterRequest, ChatterSettings } from "../remote/chatter";
+import type { PictionaryAnswer, PictionaryRequest } from "../remote/pictionary";
 import type { RemoteAction, RemoteSnapshot } from "../remote/protocol";
 import type { ChatterState } from "./chatter";
 
@@ -56,6 +57,9 @@ export interface Link {
   /** A scene for workers who meet, or why there's none; null when Workbench can't be
    *  reached. */
   askScene(req: ChatterRequest): Promise<ChatterAnswer | null>;
+  /** Duck's guess at the whiteboard, or a word it draws (O5.4); null when Workbench
+   *  can't be reached. */
+  pictionary(req: PictionaryRequest): Promise<PictionaryAnswer | null>;
   /** A signed-in request to `/office/api/<path>` (the TV's Library, O5.3d): its
    *  response, or null with no session or when Workbench can't be reached. */
   request(path: string, init?: RequestInit): Promise<Response | null>;
@@ -237,6 +241,7 @@ export function connect(onState: (state: LinkState) => void): Link {
     chatter: () => call<ChatterState>("GET", "chatter"),
     setChatter: (patch) => call<ChatterState>("PUT", "chatter", patch),
     askScene: (req) => call<ChatterAnswer>("POST", "chatter", req),
+    pictionary: (req) => call<PictionaryAnswer>("POST", "pictionary", req),
     socket(path, params) {
       return session ? socketTo(path, params) : null;
     },

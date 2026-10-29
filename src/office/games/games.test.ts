@@ -93,11 +93,16 @@ describe("the game props", () => {
   const office = buildOffice();
   const at = (id: string) => office.props.find((p) => p.id === id)!;
 
-  it("are the TV and the kicker", () => {
+  it("are the TV, the kicker and the meeting room's whiteboard", () => {
     const tv = at("tvOn");
     const kicker = at("kicker");
+    const board = at("whiteboardStand");
     expect(gamePropAt(office, tv.x + 2, tv.y + 2)).toBe("tv");
     expect(gamePropAt(office, kicker.x + kicker.prop.w / 2, kicker.y + kicker.prop.h / 2)).toBe("kicker");
+    expect(gamePropAt(office, board.x + 10, board.y + 6)).toBe("whiteboard");
+    // The one on Demiurge's wall isn't a game.
+    const wall = at("whiteboard");
+    expect(gamePropAt(office, wall.x + 4, wall.y + 4)).toBeNull();
     const sofa = at("sofa");
     expect(gamePropAt(office, sofa.x + 2, sofa.y + sofa.prop.h - 2)).toBeNull();
   });

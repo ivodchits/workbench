@@ -4,7 +4,8 @@
 // on ✕, Esc, a gamepad's Back, or a click on the dimmed office; Esc and Back go to the
 // game first, which may take them (the TV console back to its menu). The office's own
 // picture stays still behind it till then (the page holds its drawing). ⛶ or F fills
-// the screen with it (O5.3d), still scaled by whole pixels.
+// the screen with it (O5.3d), still scaled by whole pixels. A game may also take the
+// pointer on its picture and keys as typing (O5.4's whiteboard).
 
 import { el } from "../../pwa/dom";
 import { STEP_MS, type Game, type GameDef } from "./game";
@@ -62,6 +63,8 @@ export function createGameOverlay(root: HTMLElement, closed: () => void): GameOv
     }
     const says = game.help ?? def.help;
     if (help.textContent !== says) help.textContent = says;
+    const cursor = game.cursor ?? "";
+    if (screen.style.cursor !== cursor) screen.style.cursor = cursor;
   }
 
   /** Esc or Back: to the game first (the console's menu), else closing. */
@@ -144,6 +147,12 @@ export function createGameOverlay(root: HTMLElement, closed: () => void): GameOv
       e.preventDefault();
       return;
     }
+    // Typing for the game, say a guess, before the pad or F.
+    if (e.type === "keydown" && current.game.key?.(e.key, e.ctrlKey || e.metaKey)) {
+      e.preventDefault();
+      follow();
+      return;
+    }
     if (e.code === "KeyF") {
       if (e.type === "keydown" && !e.repeat) fullscreen();
       e.preventDefault();
@@ -161,6 +170,22 @@ export function createGameOverlay(root: HTMLElement, closed: () => void): GameOv
   addEventListener("blur", () => keys.clear());
   document.addEventListener("visibilitychange", () => (document.hidden ? halt() : run()));
   new ResizeObserver(fit).observe(root);
+  /** The pointer on the picture, in game pixels; held, it stays the picture's even
+   *  off it, so a stroke let go outside doesn't click the dimmed office. */
+  const onPointer = (kind: "down" | "move" | "up") => (e: PointerEvent) => {
+    const game = current?.game;
+    if (!game?.pointer || (kind === "down" && e.button !== 0)) return;
+    const r = screen.getBoundingClientRect();
+    if (kind === "down") screen.setPointerCapture(e.pointerId);
+    game.pointer(kind, ((e.clientX - r.left) / r.width) * game.w, ((e.clientY - r.top) / r.height) * game.h);
+    e.preventDefault();
+    follow();
+  };
+  screen.style.touchAction = "none";
+  screen.addEventListener("pointerdown", onPointer("down"));
+  screen.addEventListener("pointermove", onPointer("move"));
+  screen.addEventListener("pointerup", onPointer("up"));
+  screen.addEventListener("pointercancel", onPointer("up"));
   close.addEventListener("click", shut);
   full.addEventListener("click", () => {
     fullscreen();
