@@ -46,6 +46,9 @@ import {
   freeWorkers,
   setSceneWriter,
   setWatching,
+  standup,
+  standupNotes,
+  standupTableAt,
   workerAt,
   workerFree,
 } from "./liveOffice";
@@ -59,6 +62,7 @@ import { showLink, showRooms } from "./sidebar";
 import { showStats } from "./stats";
 import { createChatter } from "./chatter";
 import { createChatterPanel } from "./chatterPanel";
+import { createStandupPanel } from "./standupPanel";
 import type { GameDef } from "./games/game";
 import { consoleGame, pageStore } from "./games/console/console";
 import { emulatorGame } from "./games/emulator/emulator";
@@ -263,6 +267,10 @@ void chatter.refresh();
 // The chats at the cooler and on the sofa play scenes when chatter has one (O4.2).
 setSceneWriter((ids, spot, said) => chatter.scene({ ...chatterRequest(ids, spot, 6), said }));
 
+// The standup (O5.5): called from the sidebar or by clicking the table in Duck's office.
+const standupPanel = createStandupPanel(document.querySelector<HTMLElement>("#standup")!, (fresh) => standup(fresh), standupNotes);
+setInterval(() => standupPanel.update(), 1000);
+
 /** How often Workbench's cost is asked, while the HUD or the stats show it; its CPU is
  *  the average since the last ask. */
 const COST_EVERY_MS = 3000;
@@ -362,7 +370,8 @@ function showTip(): void {
   const who = view.hover && pointer && !view.overlay && !duck && !drag?.moved && view.hover !== ask.id ? whoAt(view.hover) : null;
   const desk = !view.hover && !drag && hoverDesk !== null;
   const game = !view.hover && !drag ? hoverGame : null;
-  tip.hidden = !((who || duck || desk || game) && pointer && !view.overlay);
+  const table = !view.hover && !drag && !game && hoverTable;
+  tip.hidden = !((who || duck || desk || game || table) && pointer && !view.overlay);
   if (tip.hidden || !pointer) return;
   const free = who && !who.instance && who.worker && workerFree(who.worker.id);
   const hint = free ? "drag onto a free desk: a new session" : hoverAsk ? "click the bubble to answer here" : null;
@@ -372,7 +381,9 @@ function showTip(): void {
       ? ["Duck", `${duckDoing()} · click to talk`]
       : game
         ? [GAME_NAMES[game], "click to play"]
-        : ["A free desk", "click to start a session here"];
+        : table
+          ? ["The standup table", standupNotes()?.on ? "a standup is under way" : "click for a standup: what got done yesterday"]
+          : ["A free desk", "click to start a session here"];
   tip.replaceChildren(
     ...lines.map((text, n) => {
       const line = document.createElement("div");
@@ -393,6 +404,7 @@ setInterval(() => !tip.hidden && showTip(), 1000);
 /** The pointer is on a bubble asking for you; on a prop that opens a game. */
 let hoverAsk = false;
 let hoverGame: GameProp | null = null;
+let hoverTable = false;
 
 /** Hovering a worker (or their bubble) shows their name tag and the tooltip; a free
  *  desk is outlined. */
@@ -403,7 +415,8 @@ function hoverAt(e: PointerEvent | null): void {
   const id = bubble?.id ?? (e ? workerAt(...sceneAt(e)) : null);
   const desk = e && !id && !view.overlay ? freeDeskAt(...sceneAt(e)) : null;
   const game = e && !id && desk === null && !view.overlay ? gameAt(...sceneAt(e)) : null;
-  canvas.style.cursor = id || desk !== null || game || (view.overlay && view.selected) ? "pointer" : "";
+  hoverTable = !!e && !id && desk === null && !game && !view.overlay && standupTableAt(...sceneAt(e));
+  canvas.style.cursor = id || desk !== null || game || hoverTable || (view.overlay && view.selected) ? "pointer" : "";
   const moved = id !== view.hover || desk !== hoverDesk;
   hoverGame = game;
   view.hover = id;
@@ -472,7 +485,11 @@ canvas.addEventListener("click", (e) => {
   const id = workerAt(...sceneAt(e));
   const desk = id ? null : freeDeskAt(...sceneAt(e));
   const game = id || desk !== null ? null : gameAt(...sceneAt(e));
-  if (game) {
+  if (!id && desk === null && !game && standupTableAt(...sceneAt(e))) {
+    standup();
+    standupPanel.update();
+    loop.invalidate();
+  } else if (game) {
     hoverAt(null);
     games.show(GAMES[game]);
     setWatching(game === "tv");

@@ -1120,6 +1120,56 @@ survive a move between devices.
 ### Step O5.5 — Morning standup
 - **Build:** on request, idle workers gather at the standup table in Duck's office; each summarises yesterday's
   sessions of their project (Haiku over transcripts).
+- _As built (approved):_ `world/standup.ts` on the page (the gathering and the
+  script), `standupPanel.ts` (the sidebar), `remote/standup.ts` (the shapes), the Rust
+  core's `remote/office/standup.rs` and the webview's `state/officeStandup.ts`.
+  - **Calling it:** click the table in Duck's office (its tooltip says so), or "Call a
+    standup" in the sidebar's new **Standup** section. Every free worker (no session,
+    none on its way) takes one of the eight places round the table, nearest first; Duck
+    says "Standup! Gather round." Nobody free: the sidebar says so.
+  - **The reports:** the page asks `POST /office/api/standup` with its date. The Rust
+    core keeps one call out at a time and hands it to the webview (`office-standup`,
+    answered by `office_standup_reply`, 2 minutes at most). The webview takes the day to
+    report on: yesterday, else the day of the latest session touched in the week
+    before ("on Friday"). It lists each local project's sessions from its folder
+    (`list_project_sessions`) and reads those touched since that day began by session id
+    (a new `transcript_read_session_back`: an id, never a path), only that day's part
+    (`readPlainText` gained `until`), about 36k characters a project shared among its
+    sessions. The six busiest projects get one Haiku call each, in parallel (purpose
+    `office_standup`, cached system prompt, structured output): two or three lines on
+    what got done, "we" for the team, and one on what's next or null. Projects on a
+    remote host aren't read. A project whose call fails is left out; all failing is an
+    error. The answer is kept for the page's date (`office.standup` in `meta`), so a
+    second standup that day costs nothing; "Read again" asks afresh. Like Pictionary,
+    it's asked for by a click, so there's no budget beyond Duck's.
+  - **The standup:** it starts once everyone's at the table (or after 40 s) and the
+    reports are in. Duck chairs from the boss desk, in its own bubbles: "Standup time!",
+    "What got done yesterday?", then calls on each project's reporter ("Mira,
+    workbench?"). That's someone who last had one of the project's sessions, else
+    someone of its room's team, else whoever has reported least. They say the lines in
+    bubbles, then "Next: …". Duck ends with "Thanks, team!" and they go back to idling,
+    the kitchen first. Anyone given a session leaves for it, and someone still at the
+    table says their lines. With no sessions in the week: "A quiet week. Back to work!";
+    without reports (an error, or nothing after 2½ minutes): "Lost my notes. Another
+    day!". The log gets "Standup in Duck's office: …"; the sidebar keeps the notes, with
+    each project, its reporter, what got done and what's next.
+  - **Tests:**
+    - Page: the table, places for the free workers only (eight at most, none when nobody
+      is free), who reports what, a whole standup in a stepped office (gathered before
+      the first line, the order of Duck's and the reporters' lines, the end), waiting for
+      the reports and giving up, nothing to report, starting without a latecomer, a
+      reporter given a session mid-report, everyone gone.
+    - Webview: the day (yesterday, only its part of a session that ran on; the latest
+      day of the week; none, with no call), the busiest projects first with all their
+      sessions, a failed report left out, the cleaning, the fenced input.
+    - Plain text: `until`.
+    - Rust: the date, the answer kept for its day only, the replies, one call at a time,
+      a session id that's never a path.
+  - **Checked against the dev app in headless Chrome, with real calls:** eight workers
+    gathered round the table. Yesterday's three projects (workbench, claude_home,
+    llm-ttrpg) were reported, true to the day's sessions ("We fixed queued prompts sent
+    during compaction", "Next: Try a real compact with a queued prompt"). Duck chaired,
+    and the notes stayed in the sidebar after it ended.
 
 ### Step O5.6 — D&D table (stretch, may need several passes)
 - **Build:** an LLM dungeon master, idle workers as the party with their personas, a saved
@@ -1204,7 +1254,7 @@ closed, open and still, and open and busy.
 - [x] O5.3e Saves shared with RetroArch
 - [x] O5.3f PlayStation and PSP (stretch)
 - [x] O5.4 Whiteboard Pictionary with Duck
-- [ ] O5.5 Morning standup
+- [x] O5.5 Morning standup
 - [ ] O5.6 D&D table
 - [ ] O5.7 Meeting room: pitch an idea
 - [ ] O6.1 Settings

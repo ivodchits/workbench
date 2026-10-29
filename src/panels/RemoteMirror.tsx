@@ -26,6 +26,7 @@ import { onStatusTransition, useLiveStatuses } from "../state/status";
 import { officeDuck } from "../state/officeDuck";
 import { startOfficeChatter } from "../state/officeChatter";
 import { startOfficePictionary } from "../state/officePictionary";
+import { startOfficeStandup } from "../state/officeStandup";
 import { useDuckState } from "./Assistant/duckState";
 import { useSpeechState } from "./Assistant/replySpeech";
 import { useUsageLimits } from "../state/usageLimits";
@@ -131,6 +132,7 @@ export default function RemoteMirror(): null {
   const office = server?.office ?? false;
   useEffect(() => (office ? startOfficeChatter() : undefined), [office]);
   useEffect(() => (office ? startOfficePictionary() : undefined), [office]);
+  useEffect(() => (office ? startOfficeStandup() : undefined), [office]);
   const duckStore = useDuckState();
   const speech = useSpeechState();
   // Kept as a string so a streaming reply, which changes the store many times a

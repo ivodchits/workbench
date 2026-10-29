@@ -160,7 +160,7 @@ body {
   color: var(--done);
 }
 
-:is(#session, #duck, #hire, #ask, #chatter) button {
+:is(#session, #duck, #hire, #ask, #chatter, #standup) button {
   font: inherit;
   color: var(--text);
   background: var(--night);
@@ -170,7 +170,7 @@ body {
   cursor: pointer;
 }
 
-:is(#session, #duck, #hire, #ask, #chatter) button:hover {
+:is(#session, #duck, #hire, #ask, #chatter, #standup) button:hover {
   border-color: var(--muted);
 }
 
@@ -451,6 +451,31 @@ h2 {
 #chatter :disabled {
   opacity: 0.5;
   cursor: default;
+}
+
+#standup .row {
+  display: flex;
+  gap: 8px;
+  padding: 2px 0;
+}
+
+#standup :disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+#standup h3 {
+  font-size: inherit;
+  margin: 8px 0 2px;
+}
+
+#standup .lines {
+  margin: 0;
+  padding-left: 16px;
+}
+
+#standup .lines .next {
+  color: var(--muted);
 }
 
 #chatter .lines {

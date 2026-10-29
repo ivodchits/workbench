@@ -28,6 +28,7 @@ import { seatedAt, setAnim, type Bubble, type Screen, type WorkerEntity, type Wo
 import { playGroups } from "./groups";
 import { duckRounds } from "./reactions";
 import { duckAtDesk } from "./boss";
+import { playStandup } from "./standup";
 import { hireOf } from "./hire";
 import { activity, dayPart, pickIdle } from "./idle";
 import { enter, landing, walkTo } from "./move";
@@ -143,8 +144,10 @@ export function behave(office: OfficeMap, world: World, staff: Staff, ms: number
       w.tag = null;
       w.overhead = null;
       if (isStatusBubble(w.bubble)) w.bubble = null;
+      const standup = staff.standup?.seats.get(id);
+      if (standup) atStandup(office, staff, w, standup, ms, instant);
       // Nothing to do yet, after the start: just let go, so the kitchen first.
-      idle(office, staff, w, ms, instant, !instant && !staff.idle.has(id), true);
+      else idle(office, staff, w, ms, instant, !instant && !staff.idle.has(id), true);
     } else {
       const since = staff.phases.get(job.instance.id);
       const want = doing(job.instance, job.instance.phase === "done" && since ? ms - since.at : 0);
@@ -161,6 +164,7 @@ export function behave(office: OfficeMap, world: World, staff: Staff, ms: number
   const tv = world.tv;
   const kicker = world.kicker;
   if (playGroups(world, staff, ms) || world.tv !== tv || world.kicker !== kicker) changed = true;
+  if (playStandup(office, world, staff, ms)) changed = true;
   if (duckRounds(office, world, staff, ms)) changed = true;
   if (duckAtDesk(world, staff, ms)) changed = true;
   showScreens(office, world, staff);
@@ -368,6 +372,16 @@ function idle(office: OfficeMap, staff: Staff, w: WorkerEntity, ms: number, inst
   const face = staff.groupFace.get(id) ?? doing.face ?? spot.dir;
   // A pose drawn only one way (watering faces up) would turn them from what they're at.
   stand(office, w, spot, face, ANIMS[anim].dirs.includes(face) ? anim : "idle", ms, instant, there, spot.kind === "sit");
+}
+
+/** Gets `w` to their place at the standup's table (O5.5, `standup.ts`), facing it:
+ *  whatever they were up to is let go. */
+function atStandup(office: OfficeMap, staff: Staff, w: WorkerEntity, place: string, ms: number, instant: boolean): void {
+  const spot = office.spots.find((p) => p.id === place);
+  if (!spot) return;
+  leaveIdle(staff, w.worker.id);
+  staff.spots.set(w.worker.id, place);
+  stand(office, w, spot, spot.dir, "idle", ms, instant);
 }
 
 /** Picks `w`'s next activity and holds its place; with nothing free, a short wait. */

@@ -204,7 +204,8 @@ function keep(staff: Staff, ws: readonly WorkerEntity[], until: number): void {
   }
 }
 
-function say(staff: Staff, w: WorkerEntity, text: string, ms: number, lasts = SAY_FOR): void {
+/** `w` says `text` in a bubble, for `lasts` ms. */
+export function say(staff: Staff, w: WorkerEntity, text: string, ms: number, lasts = SAY_FOR): void {
   w.bubble = { text, tone: "say" };
   staff.saying.set(w.worker.id, ms + lasts);
 }

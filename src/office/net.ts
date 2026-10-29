@@ -9,6 +9,7 @@
 
 import type { ChatterAnswer, ChatterRequest, ChatterSettings } from "../remote/chatter";
 import type { PictionaryAnswer, PictionaryRequest } from "../remote/pictionary";
+import type { StandupAnswer, StandupRequest } from "../remote/standup";
 import type { RemoteAction, RemoteSnapshot } from "../remote/protocol";
 import type { ChatterState } from "./chatter";
 
@@ -60,6 +61,8 @@ export interface Link {
   /** Duck's guess at the whiteboard, or a word it draws (O5.4); null when Workbench
    *  can't be reached. */
   pictionary(req: PictionaryRequest): Promise<PictionaryAnswer | null>;
+  /** What each project got done the day before, for the standup (O5.5). */
+  standup(req: StandupRequest): Promise<StandupAnswer | null>;
   /** A signed-in request to `/office/api/<path>` (the TV's Library, O5.3d): its
    *  response, or null with no session or when Workbench can't be reached. */
   request(path: string, init?: RequestInit): Promise<Response | null>;
@@ -242,6 +245,7 @@ export function connect(onState: (state: LinkState) => void): Link {
     setChatter: (patch) => call<ChatterState>("PUT", "chatter", patch),
     askScene: (req) => call<ChatterAnswer>("POST", "chatter", req),
     pictionary: (req) => call<PictionaryAnswer>("POST", "pictionary", req),
+    standup: (req) => call<StandupAnswer>("POST", "standup", req),
     socket(path, params) {
       return session ? socketTo(path, params) : null;
     },

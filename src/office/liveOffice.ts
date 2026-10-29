@@ -27,6 +27,8 @@ import { behave } from "./world/behave";
 import { createStaff, seatSessions, whoIs, type Staff } from "./world/sessions";
 import { deskFree, isFree, workerFor } from "./world/hire";
 import { gamePropAt, type GameProp } from "./games/props";
+import { callStandup, standupTable, type Reported } from "./world/standup";
+import type { StandupResult } from "../remote/standup";
 import type { Who } from "./describe";
 
 export { OFFICE_H, OFFICE_W };
@@ -226,6 +228,56 @@ export function hired(requestId: string): string | null {
   if (!s) return null;
   return s.worker ?? (s.desk !== null ? `desk:${s.desk}` : null);
 }
+
+/** The latest standup's notes (O5.5): what was reported, by whom, and when it was. */
+export interface StandupNotes {
+  /** The day of the standup, `YYYY-MM-DD`. */
+  today: string;
+  result: StandupResult | null;
+  error: string | null;
+  reported: Reported[];
+  /** It's still going. */
+  on: boolean;
+}
+let notes: StandupNotes | null = null;
+
+/** Calls a standup (O5.5): the free workers gather in Duck's office, and Workbench is
+ *  asked what each project got done. "on": one is going already; "nobody": nobody's
+ *  free. `fresh` reads the transcripts again rather than today's kept answer. */
+export function standup(fresh = false): "started" | "on" | "nobody" {
+  if (staff.standup) return "on";
+  const s = callStandup(office, world, staff, performance.now(), latest?.instances);
+  if (!s) return "nobody";
+  staff.standup = s;
+  const today = dayOf(officeTime().getTime());
+  notes = { today, result: null, error: null, reported: [], on: true };
+  const mine = notes;
+  void (link?.standup({ today, fresh }) ?? Promise.resolve(null)).then((a) => {
+    if (a?.status === "ok") s.result = a.result;
+    else s.error = a?.status === "error" ? a.message : a ? "a standup is being put together already" : "Workbench can't be reached";
+    mine.result = s.result;
+    mine.error = s.error;
+    onChange();
+  });
+  onChange();
+  return "started";
+}
+
+/** The latest standup's notes, null before the first. */
+export function standupNotes(): StandupNotes | null {
+  if (notes) {
+    const s = staff.standup;
+    notes.on = !!s;
+    if (s?.script) notes.reported = s.reported;
+  }
+  return notes;
+}
+
+const table = standupTable(office);
+
+/** Whether (x, y) in office pixels is on the standup's table. */
+export const standupTableAt = (x: number, y: number): boolean =>
+  !!table && x >= table.x && x < table.x + table.prop.w && y >= table.y && y < table.y + table.prop.h;
 
 /** Duck's id for `workerAt`. */
 export const DUCK_ID = "duck";

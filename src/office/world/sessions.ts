@@ -21,6 +21,7 @@ import { react, type DuckTrip } from "./reactions";
 import type { DuckDoing } from "./boss";
 import { bindHires, type Hire } from "./hire";
 import type { World } from "./entities";
+import type { Standup } from "./standup";
 
 /** The rail's glyph for a session's phase. */
 const TAG: Record<string, TagGlyph> = { working: "working", needs_you: "needs", done: "done", idle: "idle", ended: "ended" };
@@ -91,6 +92,8 @@ export interface Staff {
   hires: Hire[];
   /** Since when you've been playing on the TV (sim ms); null when you aren't. */
   watching: number | null;
+  /** The standup in Duck's office (O5.5), while there's one. */
+  standup: Standup | null;
 }
 
 /** An idle worker's activity: where, and until when once they got there. */
@@ -135,6 +138,7 @@ export function createStaff(saved: { sticky?: Record<string, string>; rooms?: Re
     duckDoing: { state: "idle", chat: "idle" },
     hires: [],
     watching: null,
+    standup: null,
   };
 }
 

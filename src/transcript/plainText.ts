@@ -23,6 +23,9 @@ export interface PlainTextOptions {
   maxChars: number;
   /** Only items dated after this (epoch ms), for a summary of what's new (W3). */
   since?: number;
+  /** Only items dated before this (epoch ms): one day's, for the office's standup
+   *  (O5.5). Undated items ride with their turn. */
+  until?: number;
 }
 
 export interface PlainText {
@@ -95,14 +98,14 @@ export function itemText(item: Item): string | null {
  *  offset (the end when omitted). */
 export async function readPlainText(
   readBack: (before?: number) => Promise<TranscriptPage>,
-  { maxItems, maxChars, since }: PlainTextOptions,
+  { maxItems, maxChars, since, until }: PlainTextOptions,
 ): Promise<PlainText> {
   const transcript = createTranscript();
   let before: number | undefined;
   let session: string | null | undefined;
   let more = false;
   const shown = () =>
-    transcript.items.filter((i) => itemText(i) !== null).length;
+    transcript.items.filter((i) => itemText(i) !== null && !(until !== undefined && (at(i) ?? -Infinity) >= until)).length;
   for (let n = 0; n < MAX_PAGES; n++) {
     const page = await readBack(before);
     if (session !== undefined && page.sessionId !== session) break;
@@ -116,6 +119,11 @@ export async function readPlainText(
   }
 
   let items = transcript.items;
+  if (until !== undefined) {
+    // Up to the first item dated at or after `until`.
+    const end = items.findIndex((i) => (at(i) ?? -Infinity) >= until);
+    if (end >= 0) items = items.slice(0, end);
+  }
   if (since !== undefined) {
     // From the first item dated after `since`; undated items ride with their turn.
     const first = items.findIndex((i) => (at(i) ?? -Infinity) > since);

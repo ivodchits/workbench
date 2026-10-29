@@ -111,4 +111,24 @@ describe("readPlainText", () => {
     expect(out.items).toBeLessThan(full.items);
     expect(await readPlainText(reader(sessionLines, 20).read, { ...all, since: last })).toMatchObject({ text: "", items: 0 });
   });
+
+  it("with `until`, keeps only earlier items, and with both, the window between", async () => {
+    const stamps = sessionLines
+      .map((l) => (JSON.parse(l) as { timestamp?: string }).timestamp)
+      .filter((t): t is string => !!t)
+      .map((t) => Date.parse(t));
+    const first = Math.min(...stamps);
+    const from = stamps[Math.floor(stamps.length * 0.3)];
+    const to = stamps[Math.floor(stamps.length * 0.6)];
+    const before = await readPlainText(reader(sessionLines, 20).read, { ...all, until: to });
+    expect(before.items).toBeGreaterThan(0);
+    expect(before.lastAt).toBeLessThan(to);
+    expect(before.text).not.toMatch(/AFTERCOMPACT/);
+    const window = await readPlainText(reader(sessionLines, 20).read, { ...all, since: from, until: to });
+    expect(window.items).toBeGreaterThan(0);
+    expect(window.items).toBeLessThan(before.items);
+    expect(window.lastAt).toBeGreaterThan(from);
+    expect(window.lastAt).toBeLessThan(to);
+    expect(await readPlainText(reader(sessionLines, 20).read, { ...all, until: first })).toMatchObject({ text: "", items: 0 });
+  });
 });

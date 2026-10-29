@@ -23,6 +23,8 @@
 //!   scene written for idle workers who meet (O4.1, [`chatter`]).
 //! - `POST /office/api/pictionary` — Duck's guess at your drawing, or a word it draws
 //!   (O5.4, [`pictionary`]).
+//! - `POST /office/api/standup` — what each project got done the day before, for the
+//!   morning standup (O5.5, [`standup`]).
 //! - `/office/api/core/…`, `/office/api/library…` — the TV's Library (O5.3d,
 //!   [`library`]): the built-in emulator cores, your game images and their save states;
 //!   `/office/api/library/save…` their in-game saves, shared with RetroArch (O5.3e, [`saves`]);
@@ -63,6 +65,7 @@ mod disc;
 mod library;
 mod pictionary;
 mod saves;
+mod standup;
 mod stats;
 
 /// Where the office listens; a debug build apart from a release, like the phone's
@@ -81,6 +84,7 @@ pub(super) struct Office {
     inner: Mutex<OfficeInner>,
     chatter: chatter::Chatter,
     pictionary: pictionary::Pictionary,
+    standup: standup::Standup,
 }
 
 #[derive(Default)]
@@ -230,6 +234,7 @@ fn router(state: Arc<RemoteState>, port: u16) -> Router {
         .route("/office/api/assistant", get(api_assistant))
         .route("/office/api/chatter", get(chatter::get).put(chatter::put).post(chatter::ask))
         .route("/office/api/pictionary", post(pictionary::ask).layer(DefaultBodyLimit::max(pictionary::REQUEST_MAX)))
+        .route("/office/api/standup", post(standup::ask))
         .route("/office/api/core/{name}/{part}", get(library::core))
         .route("/office/api/library", get(library::get))
         .route("/office/api/library/folder", post(library::choose))
@@ -475,6 +480,13 @@ pub fn office_chatter_reply(state: tauri::State<'_, Arc<RemoteState>>, id: u64, 
 #[tauri::command]
 pub fn office_pictionary_reply(state: tauri::State<'_, Arc<RemoteState>>, id: u64, reply: Value) {
     state.office.pictionary.reply(id, reply);
+}
+
+/// The webview's answer to an `office-standup` request (O5.5): `{result}`, or
+/// `{error}`.
+#[tauri::command]
+pub fn office_standup_reply(state: tauri::State<'_, Arc<RemoteState>>, id: u64, reply: Value) {
+    state.office.standup.reply(id, reply);
 }
 
 /// A repo's commits, as the office shows them.

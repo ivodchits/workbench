@@ -9,6 +9,7 @@ import type { DuckActivity } from "../../remote/protocol";
 import type { DuckAnim } from "../art/duck";
 import { setDuckAnim, type Bubble, type World } from "./entities";
 import type { Staff } from "./sessions";
+import { duckLine } from "./standup";
 
 /** What Duck is doing, as far as the office knows: the snapshot's word for it, and the
  *  turn in the thread open in the office's chat. */
@@ -32,7 +33,10 @@ const sameBubble = (a: Bubble | null, b: Bubble | null) => a?.text === b?.text &
 export function duckAtDesk(world: World, staff: Staff, ms: number): boolean {
   const d = world.duck;
   if (staff.trip || d.walk) return false;
-  const want = mood(staff.duckDoing);
+  // Chairing the standup (O5.5), when nothing else has it.
+  const chair = duckLine(staff, ms);
+  const busy = mood(staff.duckDoing);
+  const want = chair && busy.anim === "idle" && !busy.bubble ? { anim: "speak" as const, bubble: { text: chair, tone: "say" as const } } : busy;
   let changed = false;
   if (d.anim !== want.anim) {
     setDuckAnim(d, want.anim, ms);

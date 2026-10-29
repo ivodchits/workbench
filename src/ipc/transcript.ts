@@ -123,6 +123,16 @@ export function readTranscriptBack(
   return invoke("transcript_read_back", { instanceId, beforeOffset, maxBytes });
 }
 
+/** `readTranscriptBack` for any session by its id, not an instance's current one:
+ *  the office's standup (O5.5) reads yesterday's sessions. */
+export function readSessionBack(
+  sessionId: string,
+  beforeOffset?: number,
+  maxBytes?: number,
+): Promise<TranscriptPage> {
+  return invoke("transcript_read_session_back", { sessionId, beforeOffset, maxBytes });
+}
+
 /** Subscribe to appended lines for every followed instance. */
 export function onTranscriptAppended(cb: (e: TranscriptAppended) => void): Promise<UnlistenFn> {
   return listen<TranscriptAppended>("transcript-appended", (event) => cb(event.payload));

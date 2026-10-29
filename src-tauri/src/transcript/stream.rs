@@ -779,6 +779,28 @@ pub fn transcript_read_back(
     page(session_id, path, |p| read_back(p, before_offset, page_bytes(max_bytes)))
 }
 
+/// A session id names a transcript file, never a path: a UUID's letters, digits and
+/// dashes.
+fn session_id_ok(id: &str) -> bool {
+    !id.is_empty() && id.len() <= 64 && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+}
+
+/// Like [`transcript_read_back`], for any session by its id rather than an
+/// instance's current one: the office's standup (O5.5) reads yesterday's sessions,
+/// which may belong to no instance now.
+#[tauri::command(async)]
+pub fn transcript_read_session_back(
+    session_id: String,
+    before_offset: Option<u64>,
+    max_bytes: Option<u64>,
+) -> Result<Page, String> {
+    if !session_id_ok(&session_id) {
+        return Err("not a session id".into());
+    }
+    let path = claude_projects_dir().and_then(|dir| resolve_transcript(&dir, &session_id));
+    page(Some(session_id), path, |p| read_back(p, before_offset, page_bytes(max_bytes)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1029,5 +1051,15 @@ mod tests {
         )
         .is_none());
         assert!(accept_hook_path(projects, r"C:\Users\dev\.claude\projects-evil\x.jsonl").is_none());
+    }
+
+    #[test]
+    fn a_session_id_is_never_a_path() {
+        assert!(session_id_ok("3207f8d2-4bff-442e-af33-c8c79f1116b0"));
+        assert!(!session_id_ok(""));
+        assert!(!session_id_ok("../secrets"));
+        assert!(!session_id_ok(r"..\x"));
+        assert!(!session_id_ok("a/b"));
+        assert!(!session_id_ok(&"a".repeat(65)));
     }
 }
