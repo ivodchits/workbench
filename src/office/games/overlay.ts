@@ -21,7 +21,8 @@ export interface GameOverlay {
 const MAX_CATCH_UP = 5;
 /** Room kept round the window, and taken by its header and help line, in CSS pixels. */
 const MARGIN = 24;
-const CHROME_H = 64;
+/** The window's title bar and padding, before the help under the game is counted. */
+const CHROME_H = 40;
 
 const gamepads = (): readonly (PadLike | null)[] => (typeof navigator.getGamepads === "function" ? navigator.getGamepads() : []);
 
@@ -69,12 +70,19 @@ export function createGameOverlay(root: HTMLElement, closed: () => void): GameOv
     else shut();
   }
 
+  /** The largest whole-pixel scale at which the window, as wide as the game with its
+   *  help wrapped under it, fits. */
   function fit(): void {
     if (!current) return;
     const { w, h } = current.game;
-    const scale = Math.max(1, Math.floor(Math.min((root.clientWidth - 2 * MARGIN) / w, (root.clientHeight - 2 * MARGIN - CHROME_H) / h)));
-    screen.style.width = `${w * scale}px`;
-    screen.style.height = `${h * scale}px`;
+    const room = root.clientHeight - 2 * MARGIN;
+    let scale = Math.max(1, Math.floor(Math.min((root.clientWidth - 2 * MARGIN) / w, (room - CHROME_H) / h)));
+    for (;;) {
+      screen.style.width = `${w * scale}px`;
+      screen.style.height = `${h * scale}px`;
+      if (scale === 1 || box.offsetHeight <= room) break;
+      scale--;
+    }
   }
 
   function frame(now: number): void {
