@@ -7699,7 +7699,7 @@ dependencies = [
 
 [[package]]
 name = "workbench"
-version = "2.1.2"
+version = "2.2.0"
 dependencies = [
  "aes-gcm",
  "axum",
