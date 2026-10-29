@@ -47,7 +47,8 @@ use super::library::{folder, inside, listing, rom_name, system_of_file, GameQuer
 const SAVES_KEY: &str = "office.saves";
 const OWN_DIR: &str = "office-saves";
 const BACKUP_DIR: &str = "office-save-backups";
-/// The largest save taken (a GBA's flash is 128 KB; this is plenty).
+/// The largest save taken (a GBA's flash or a PlayStation memory card is 128 KB; this
+/// is plenty).
 pub(super) const SAVE_MAX: usize = 1024 * 1024;
 const VERSION: &str = "x-save-version";
 
@@ -59,6 +60,7 @@ fn core_dir(system: &str) -> &'static str {
         "snes" => "Snes9x",
         "gb" => "Gambatte",
         "gba" => "mGBA",
+        "ps" => "PCSX-ReARMed",
         _ => "Other",
     }
 }
@@ -103,7 +105,7 @@ fn dirs_of(ra_dir: &Path, cfg: &HashMap<String, String>) -> SaveDirs {
 }
 
 /// RetroArch's config on this PC: Steam's install, else a standalone one's.
-fn retroarch() -> Option<(PathBuf, HashMap<String, String>)> {
+pub(super) fn retroarch() -> Option<(PathBuf, HashMap<String, String>)> {
     let mut dirs: Vec<PathBuf> = crate::assistant::steam::steam_root()
         .map(|root| crate::assistant::steam::libraries(&root).into_iter().map(|l| l.join("steamapps").join("common").join("RetroArch")).collect())
         .unwrap_or_default();

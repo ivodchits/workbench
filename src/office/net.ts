@@ -59,6 +59,10 @@ export interface Link {
   /** A signed-in request to `/office/api/<path>` (the TV's Library, O5.3d): its
    *  response, or null with no session or when Workbench can't be reached. */
   request(path: string, init?: RequestInit): Promise<Response | null>;
+  /** The URL of `/office/api/<path>` and the headers that sign a request to it, for one
+   *  that can't wait on a promise (a disc read as the core goes, O5.3f); null before
+   *  there is a session. */
+  signed(path: string): { url: string; headers: Record<string, string> } | null;
   /** A socket on `/office/api/<path>` with these query parameters (the transcript's),
    *  signed in; null before there is a session. */
   socket(path: string, params: Record<string, string>): WebSocket | null;
@@ -188,6 +192,9 @@ export function connect(onState: (state: LinkState) => void): Link {
       } catch {
         return null;
       }
+    },
+    signed(path) {
+      return session ? { url: `${API}/${path}`, headers: { Authorization: `Bearer ${session}` } } : null;
     },
     send(action) {
       if (socket?.readyState !== WebSocket.OPEN) return false;

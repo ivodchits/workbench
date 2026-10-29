@@ -11,6 +11,9 @@
 //! - `GET`/`PUT /office/api/library/state?path=` — the game's save state, kept in the
 //!   app-data dir (`office-states/`), never beside the image.
 //!
+//! A PlayStation disc (O5.3f) is listed by its `.cue` (or `.chd`, `.pbp`) and read in
+//! pieces through `disc.rs`, never whole.
+//!
 //! The folder lives in the app DB's `meta` table (`office.library`). Only files under
 //! it are read. No images ship with Workbench. In-game saves are RetroArch's, shared
 //! with it (`saves.rs`, O5.3e); a save state notes which of them it was kept with.
@@ -52,10 +55,11 @@ const CORES: &[(&str, &[u8])] = &[
     ("snes9x", include_bytes!("../../../resources/cores/snes9x_libretro.zip")),
     ("gambatte", include_bytes!("../../../resources/cores/gambatte_libretro.zip")),
     ("mgba", include_bytes!("../../../resources/cores/mgba_libretro.zip")),
+    ("pcsx_rearmed", include_bytes!("../../../resources/cores/pcsx_rearmed_libretro.zip")),
 ];
 
 /// The system a file is for, by its extension; `bin` only when no `.cue` sits beside
-/// it (a CD's track, not a cartridge).
+/// it (a CD's track, not a cartridge). A disc's the PlayStation's.
 fn system_of(name: &str, cue_beside: bool) -> Option<&'static str> {
     let ext = Path::new(name).extension()?.to_str()?.to_ascii_lowercase();
     Some(match ext.as_str() {
@@ -65,6 +69,7 @@ fn system_of(name: &str, cue_beside: bool) -> Option<&'static str> {
         "sfc" | "smc" => "snes",
         "gb" | "gbc" => "gb",
         "gba" => "gba",
+        "cue" | "chd" | "pbp" => "ps",
         _ => return None,
     })
 }
@@ -81,7 +86,8 @@ struct Entry {
     state: bool,
 }
 
-/// What a zip holds that a core plays: the first such entry's name and system.
+/// What a zip holds that a core plays: the first such entry's name and system (never a
+/// disc, which is read in pieces).
 fn zipped(bytes: impl Read + std::io::Seek) -> Option<(String, &'static str)> {
     let mut zip = zip::ZipArchive::new(bytes).ok()?;
     (0..zip.len()).find_map(|i| {
@@ -90,7 +96,7 @@ fn zipped(bytes: impl Read + std::io::Seek) -> Option<(String, &'static str)> {
             return None;
         }
         let name = f.name().rsplit('/').next()?.to_string();
-        system_of(&name, false).map(|s| (name, s))
+        system_of(&name, false).filter(|&s| s != "ps").map(|s| (name, s))
     })
 }
 
@@ -132,6 +138,7 @@ fn scan(root: &Path, states: &Path) -> Vec<Entry> {
                 system_of(&name, cue)
             };
             let Some(system) = system else { continue };
+            let size = if system == "ps" { super::disc::disc_size(&e.path()) } else { size };
             let Ok(rel) = e.path().strip_prefix(root).map(|p| p.to_string_lossy().replace('\\', "/")) else { continue };
             let state = state_file(states, &rel).is_file();
             out.push(Entry { path: rel, title: stem, system, size, state });
@@ -407,6 +414,8 @@ mod tests {
         assert_eq!(system_of("a.smc", false), Some("snes"));
         assert_eq!(system_of("a.gbc", false), Some("gb"));
         assert_eq!(system_of("a.gba", false), Some("gba"));
+        assert_eq!(system_of("a.cue", false), Some("ps"));
+        assert_eq!(system_of("a.CHD", false), Some("ps"));
         assert_eq!(system_of("a.iso", false), None);
         assert_eq!(system_of("desktop.ini", false), None);
     }
@@ -422,12 +431,15 @@ mod tests {
         std::fs::write(root.join("Tank.zip"), zip_of("inner/tank.nes", b"nes")).unwrap();
         std::fs::write(root.join("notes.zip"), zip_of("readme.txt", b"hi")).unwrap();
         std::fs::write(root.join("ps/game.bin"), b"cd").unwrap();
-        std::fs::write(root.join("ps/game.cue"), b"cue").unwrap();
+        std::fs::write(root.join("ps/game.cue"), b"FILE \"game.bin\" BINARY\n").unwrap();
+        std::fs::write(root.join("disc.zip"), zip_of("x.cue", b"cue")).unwrap();
         std::fs::create_dir_all(&states).unwrap();
         std::fs::write(state_file(&states, "sega/Sunset Riders (USA).md"), b"s").unwrap();
         let found = scan(&root, &states);
         let got: Vec<_> = found.iter().map(|e| (e.path.as_str(), e.system, e.state)).collect();
-        assert_eq!(got, vec![("sega/Sunset Riders (USA).md", "md", true), ("Tank.zip", "nes", false)]);
+        assert_eq!(got, vec![("sega/Sunset Riders (USA).md", "md", true), ("Tank.zip", "nes", false), ("ps/game.cue", "ps", false)]);
+        // A disc's size is its tracks' and its cue's.
+        assert_eq!(found[2].size, 2 + 23);
         assert_eq!(found[0].title, "Sunset Riders (USA)");
         assert_eq!(found[0].size, 3);
         let (name, bytes) = read_rom(&root.join("Tank.zip")).unwrap();

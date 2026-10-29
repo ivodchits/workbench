@@ -9,13 +9,16 @@
 // only over the copy it was read as. If that copy changed meanwhile (Syncthing brought
 // the phone's), the game pauses and asks which to keep, the other being backed up. A
 // save state kept with an older save than the folder's isn't resumed over it.
+//
+// A disc (the PlayStation, O5.3f) comes as its tracks, read in pieces as the core goes,
+// with RetroArch's BIOS for it when there is one.
 
 import { textBitmap } from "../../art/font";
 import { cached } from "../../canvas";
 import type { Game } from "../game";
 import type { Pad, RetroButton } from "../pad";
 import { tvScreen } from "./screen";
-import type { Files, LibraryEntry, Save } from "./shelf";
+import type { Files, LibraryEntry, Rom, Save } from "./shelf";
 import { SYSTEMS } from "./systems";
 
 /** A running core, as the game uses it. */
@@ -36,7 +39,9 @@ export interface Emu {
 
 export type Launch = (opts: {
   core: { name: string; js: Blob; wasm: Blob };
-  rom: { name: string; bytes: Blob };
+  rom: Rom;
+  /** The system's BIOS, when it takes one and there is one. */
+  bios: { name: string; bytes: Blob } | null;
   /** The in-game save to start with. */
   save: Uint8Array | null;
   w: number;
@@ -95,7 +100,7 @@ export function emulatorGame(entry: LibraryEntry, files: Files, launch: Launch, 
   /** The TV's save, which the disk's changed under; A and B as they were held; and
    *  whether an answer is being carried out. */
   let conflict: { bytes: Uint8Array; held: { a: boolean; b: boolean } | null; busy: boolean } | null = null;
-  let loaded: { core: { js: Blob; wasm: Blob }; rom: { name: string; bytes: Blob } } | null = null;
+  let loaded: { core: { js: Blob; wasm: Blob }; rom: Rom; bios: { name: string; bytes: Blob } | null } | null = null;
 
   /** Left while it loaded (a check the compiler can't narrow away across awaits). */
   const left = () => phase === "closed";
@@ -107,10 +112,10 @@ export function emulatorGame(entry: LibraryEntry, files: Files, launch: Launch, 
 
   /** Starts the core with `save`, then puts it where `state` was. */
   const boot = async (save: Uint8Array | null, state: Blob | null) => {
-    const { core, rom } = loaded!;
+    const { core, rom, bios } = loaded!;
     let started: Emu;
     try {
-      started = await launch({ core: { name: sys.core, ...core }, rom, save, w: sys.w, h: sys.h });
+      started = await launch({ core: { name: sys.core, ...core }, rom, bios, save, w: sys.w, h: sys.h });
     } catch (e) {
       console.warn("[library] the core didn't start:", e);
       if (!left()) fail("THE CORE WOULDN'T START");
@@ -132,16 +137,19 @@ export function emulatorGame(entry: LibraryEntry, files: Files, launch: Launch, 
   };
 
   const ready = (async () => {
-    const [core, rom, kept, save] = await Promise.all([
+    const [core, rom, kept, save, bios] = await Promise.all([
       files.core(sys.core),
-      files.rom(entry.path),
+      sys.disc ? files.disc(entry.path) : files.rom(entry.path),
       fresh || !entry.state ? null : files.state(entry.path),
       files.save(entry.path),
+      sys.disc ? files.bios() : null,
     ]);
     if (left()) return;
     if (!core) return fail("THE CORE WOULDN'T LOAD");
-    if (!rom || rom.bytes.size === 0) return fail(rom ? "THE FILE IS EMPTY" : "THE GAME COULDN'T BE READ");
-    loaded = { core, rom };
+    if (!rom) return fail("THE GAME COULDN'T BE READ");
+    const empty = rom.parts ? rom.parts.some((p) => p.size === 0) : rom.bytes.size === 0;
+    if (empty) return fail("THE FILE IS EMPTY");
+    loaded = { core, rom, bios };
     disk = save;
     // A state from before the save changed elsewhere would play the old save's game.
     const outdated = !!kept && !!save && kept.save !== "" && kept.save !== save.version;

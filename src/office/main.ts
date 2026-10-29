@@ -109,7 +109,10 @@ let hoverDesk: number | null = null;
 let dropDesk: number | null = null;
 
 /** The TV's Library (O5.3d): your games, through the office's listener. */
-const shelf = linkShelf((path, init) => link.request(path, init));
+const shelf = linkShelf(
+  (path, init) => link.request(path, init),
+  (path) => link.signed(path),
+);
 /** What each game prop opens: the kicker its own (O5.2), the TV its console (O5.3a). */
 const GAMES: Record<GameProp, GameDef> = {
   tv: consoleGame(CARTRIDGES, pageStore, { shelf, play: (entry, fresh) => emulatorGame(entry, shelf, launchRetroArch, fresh) }),

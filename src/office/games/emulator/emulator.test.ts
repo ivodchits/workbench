@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { readPad, type Pad, type RetroButton } from "../pad";
+import { lazyPart } from "./disc";
 import { SAVE_EVERY, emulatorGame, type Emu, type Launch } from "./emulator";
 import { tvScreen } from "./screen";
 import { readListing, type Files, type LibraryEntry } from "./shelf";
@@ -27,6 +28,11 @@ function fakeFiles(more: Partial<Files> = {}, onDisk: string | null = null) {
   const files: Files = {
     core: async (name) => (log.push(`core ${name}`), { js: new Blob(["js"]), wasm: new Blob(["wasm"]) }),
     rom: async (path) => (log.push(`rom ${path}`), { name: "game.md", bytes: new Blob(["rom"]) }),
+    disc: async (path) => (
+      log.push(`disc ${path}`),
+      { name: "game.cue", bytes: new Blob(["FILE"]), parts: [lazyPart("game.bin", 2352, { now: () => null, later: async () => null })] }
+    ),
+    bios: async () => (log.push("bios"), { name: "scph5501.bin", bytes: new Blob(["bios"]) }),
     state: async (path) => (log.push(`state ${path}`), { state: new Blob(["saved"]), save: "" }),
     keep: async (path, state, save) => (kept.set(path, { state, save }), true),
     save: async () => ({ bytes: disk.text === null ? null : bytes(disk.text), version: version() }),
@@ -59,9 +65,10 @@ function fakeLaunch() {
     resume: () => void log.push("resume"),
     exit: () => void log.push("exit"),
   };
-  const launch: Launch = vi.fn(async (opts) => {
+  const launch: Launch = vi.fn(async (opts: Parameters<Launch>[0]) => {
     core.sram = str(opts.save);
-    log.push(`launch ${opts.core.name} ${opts.rom.name} ${opts.w}x${opts.h}${opts.save ? ` with ${core.sram}` : ""}`);
+    const extra = [...(opts.rom.parts ?? []).map((p) => `+${p.name}`), ...(opts.bios ? [`bios ${opts.bios.name}`] : [])];
+    log.push(`launch ${opts.core.name} ${opts.rom.name} ${opts.w}x${opts.h}${opts.save ? ` with ${core.sram}` : ""}${extra.map((x) => ` ${x}`).join("")}`);
     return emu;
   });
   return { launch, log, emu, picture, core };
@@ -184,15 +191,38 @@ describe("a Library game", () => {
       [{ rom: async () => ({ name: "x.md", bytes: new Blob([]) }) }, null, "empty"],
       [{ rom: async () => null }, null, "read"],
       [{}, () => Promise.reject(new Error("no webgl")), "start"],
+      // A disc with an empty track (a cloud copy that never uploaded), or none at all.
+      [{ disc: async () => ({ name: "x.cue", bytes: new Blob(["FILE"]), parts: [lazyPart("x.bin", 0, { now: () => null, later: async () => null })] }) }, null, "empty track"],
+      [{ disc: async () => null }, null, "no disc"],
     ];
     for (const [more, launch, why] of cases) {
-      const g = emulatorGame(entry(), fakeFiles(more).files, launch ?? fakeLaunch().launch);
+      const disc = why.includes("disc") || why.includes("track");
+      const g = emulatorGame(entry(disc ? { system: "ps", path: "ps/x.cue" } : {}), fakeFiles(more).files, launch ?? fakeLaunch().launch);
       await g.ready;
       expect(g.phase, why).toBe("failed");
       expect(g.keepsBack).toBe(false);
       g.stop!();
       await flush();
     }
+  });
+});
+
+describe("a Library game on a disc", () => {
+  it("gets its tracks and the BIOS, and starts with them at the PlayStation's size", async () => {
+    const { files, log: asked } = fakeFiles();
+    const { launch, log } = fakeLaunch();
+    const g = emulatorGame(entry({ system: "ps", path: "ps/CTR/game.cue" }), files, launch);
+    await g.ready;
+    expect(asked).toEqual(["core pcsx_rearmed", "disc ps/CTR/game.cue", "bios"]);
+    expect(log).toEqual(["launch pcsx_rearmed game.cue 320x240 +game.bin bios scph5501.bin"]);
+    expect(g.phase).toBe("running");
+  });
+
+  it("starts without a BIOS when there's none", async () => {
+    const { files } = fakeFiles({ bios: async () => null });
+    const { launch, log } = fakeLaunch();
+    await emulatorGame(entry({ system: "ps", path: "ps/game.cue" }), files, launch).ready;
+    expect(log).toEqual(["launch pcsx_rearmed game.cue 320x240 +game.bin"]);
   });
 });
 

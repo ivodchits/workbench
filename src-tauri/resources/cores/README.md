@@ -13,7 +13,8 @@ when a game starts. They are Nostalgist.js's own RetroArch build, the one its
 | snes9x | SNES | `0d50b0e18607af87c0c6ed2d9068fcfd19514be09b004068c2b5f06783499ef4` |
 | gambatte | Game Boy | `a4c40420e8997fb35fe1054452b52c965cc8dd0ab202908e4609f72d560cf5a3` |
 | mgba | Game Boy Advance | `d195371c3ea626c9246e9d3ab82ded4d93f3f99f85634af1588724cc44d47644` |
+| pcsx_rearmed | PlayStation | `4c058822c08d38df709e8a03a0e3a4209d178bada0478996a46d2cf058d6a530` |
 
-Each core keeps its own licence (Genesis Plus GX and snes9x are non-commercial); Workbench
+Each core keeps its own licence (Genesis Plus GX and snes9x are non-commercial; PCSX ReARMed is GPL); Workbench
 is a personal tool and doesn't sell them. To update, fetch the same files from a newer
 tag together with a matching Nostalgist, and replace the hashes here.

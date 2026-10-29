@@ -31,6 +31,7 @@ The Library's last row says where saves go. Choose it to set another folder by h
 | SNES | Snes9x (current, not 2002/2005/2010) | `Snes9x` |
 | Game Boy / Color | Gambatte | `Gambatte` |
 | Game Boy Advance | mGBA | `mGBA` |
+| PlayStation | PCSX ReARMed (memory card 1) | `PCSX-ReARMed` |
 
 ## Syncthing
 

@@ -5,10 +5,12 @@
 // keeping its drawing, lets them). The pad reaches the core as RetroArch's keys
 // (`pressDown`/`pressUp`); RetroArch reads no keys of its own, nor gamepads. The in-game
 // save (O5.3e) goes in as Nostalgist's `sram` and comes out of RetroArch's own file,
-// flushed when asked.
+// flushed when asked. A disc's tracks (O5.3f) are files in RetroArch's own file system
+// whose reads go to the listener a piece at a time.
 
 import { Nostalgist } from "nostalgist";
 
+import type { Part } from "./disc";
 import type { Emu, Launch } from "./emulator";
 
 /** RetroArch's settings beyond Nostalgist's: square pixels filling the canvas, and no
@@ -28,13 +30,57 @@ const CONFIG = {
   input_player1_r3: "y",
 };
 
-/** Where Nostalgist's RetroArch keeps its files, the saves under it by core. */
+/** Where Nostalgist's RetroArch keeps its files, the saves under it by core, and the
+ *  game's files. */
 const SAVES_DIR = "/home/web_user/retroarch/userdata/saves";
+const CONTENT_DIR = "/home/web_user/retroarch/userdata/content";
+
+/** The file reads of Emscripten's in-memory file system. */
+interface StreamOps {
+  read(stream: unknown, buffer: Int8Array, offset: number, length: number, position: number): number;
+  mmap(...args: unknown[]): unknown;
+}
 
 interface Fs {
   readdir(path: string): string[];
   analyzePath(path: string): { exists: boolean };
   readFile(path: string): Uint8Array;
+  writeFile(path: string, data: Uint8Array): void;
+  unlink(path: string): void;
+  lookupPath(path: string): { node: { usedBytes: number; stream_ops: StreamOps } };
+  ErrnoError: new (errno: number) => Error;
+}
+
+/** Emscripten's EIO and ENODEV. */
+const EIO = 29;
+const ENODEV = 43;
+
+/** Puts `part` in `dir` as a file whose reads go to it, never held whole. */
+function lazyFile(fs: Fs, dir: string, part: Part): void {
+  const path = `${dir}/${part.name}`;
+  if (fs.analyzePath(path).exists) fs.unlink(path);
+  fs.writeFile(path, new Uint8Array(0));
+  const { node } = fs.lookupPath(path);
+  node.usedBytes = part.size;
+  node.stream_ops = {
+    ...node.stream_ops,
+    read(_stream, buffer, offset, length, position) {
+      const n = Math.max(0, Math.min(part.size - position, length));
+      if (n === 0) return 0;
+      let bytes: Uint8Array;
+      try {
+        bytes = part.read(position, position + n);
+      } catch (e) {
+        console.warn("[library] a disc read failed:", e);
+        throw new fs.ErrnoError(EIO);
+      }
+      buffer.set(bytes, offset);
+      return n;
+    },
+    mmap() {
+      throw new fs.ErrnoError(ENODEV);
+    },
+  };
 }
 
 /** The file named `name` in `dir` or a folder in it. */
@@ -51,7 +97,7 @@ function findIn(fs: Fs, dir: string, name: string): string | null {
 
 const frame = () => new Promise((r) => requestAnimationFrame(r));
 
-export const launchRetroArch: Launch = async ({ core, rom, save, w, h }) => {
+export const launchRetroArch: Launch = async ({ core, rom, bios, save, w, h }) => {
   const canvas = document.createElement("canvas");
   canvas.width = w;
   canvas.height = h;
@@ -68,7 +114,12 @@ export const launchRetroArch: Launch = async ({ core, rom, save, w, h }) => {
       respondToGlobalEvents: false,
       core: { name: core.name, js: core.js, wasm: core.wasm },
       rom: { fileName: rom.name, fileContent: rom.bytes },
+      ...(bios ? { bios: { fileName: bios.name, fileContent: bios.bytes } } : {}),
       ...(save ? { sram: new Blob([save as BlobPart]) } : {}),
+      beforeLaunch(n) {
+        // The disc's tracks, over the empty stand-in for a big first file.
+        for (const part of rom.parts ?? []) lazyFile(n.getEmscriptenFS() as unknown as Fs, CONTENT_DIR, part);
+      },
       retroarchConfig: CONFIG,
     });
     canvas.blur();

@@ -1025,6 +1025,51 @@ survive a move between devices.
   reach in a browser.
 - **Done when:** a PS1 game plays, and PSP is either working or written up as not viable
   with the reason.
+- _As built (approved):_ the listener's `remote/office/disc.rs`, and the page's
+  `games/emulator/disc.ts`, with the disc wired through `shelf.ts`, `emulator.ts` and
+  `retroarch.ts`.
+  - **The core:** PCSX ReARMed from Nostalgist's own build (the same tag as the
+    others), built in beside them (`resources/cores/`, its hash in the README).
+  - **The games:** a `.cue` (its `.bin` tracks not listed apart), a `.chd` or a `.pbp`
+    is a PS1 game ("PS1" in the Library). Its size is all its files'; with any of them
+    empty it shows as "EMPTY FILE".
+  - **Read in pieces:** a disc is hundreds of megabytes, so the page never holds it.
+    - The listener lists a disc's files (the cue and the tracks it names, found
+      whatever their case, only beside it) and serves byte ranges of them, 8 MB at most.
+    - Each track is a file in RetroArch's own file system whose reads go to the
+      listener: a 1 MB piece fetched there and then, since the core can't wait on a
+      promise (a synchronous request, signed with the session through `Link.signed`).
+      The next piece is fetched ahead in the background, and the last 48 are kept.
+    - A cue comes whole; a `.chd` or `.pbp` is all pieces.
+  - **The BIOS:** RetroArch's system folder (`system_directory`) is searched for one
+    PCSX ReARMed takes (`scph5501.bin`, `scph1001.bin`, …), and it's handed to the
+    core. There's none here, so the core uses its own stand-in BIOS. CTR runs on it.
+  - **Saves:** the memory card is the in-game save, in `PCSX-ReARMed\<game>.srm`, the
+    same as RetroArch's. Save states work as for the other systems (CTR's is 1.4 MB).
+  - **PSP: not viable.** Nostalgist's RetroArch build has no PPSSPP core: its 80-odd
+    cores include PCSX ReARMed but nothing for the PSP. PPSSPP's libretro core isn't
+    built for WebAssembly upstream. It would need threads (so a cross-origin isolated
+    page, COOP/COEP) and a GLES3 renderer ported to WebGL2, which is a port of the
+    emulator, not a step here.
+  - **The PS2 images** stay out of reach, as planned.
+  - **Tests:**
+    - Page: the lazy track (reads across pieces, each fetched once, the next ahead,
+      stopping at the end, throwing on a failed read, keeping only the latest); a disc
+      game getting its tracks and BIOS and starting at 320×240; starting without a
+      BIOS; an empty track or an unreadable disc refused.
+    - Rust: a cue's tracks (quoted or not, several), a disc's files found whatever
+      their case and never outside its folder, its size (0 with an empty track),
+      ranges, the BIOS in RetroArch's system folder, PS1 by extension, and a cue in a
+      zip not taken.
+  - **Checked against the dev app in headless Chrome,** with the real discs on the Drive:
+    - all seven listed as PS1;
+    - CTR (606 MB) booted to the Naughty Dog intro and on into Adventure mode's
+      garage. It held a steady 60 fps throughout, no frame over 17 ms, with the page's
+      heap at about 46 MB;
+    - leaving kept a state and the memory card (in a scratch saves folder), and
+      reopening resumed mid-intro.
+  **Live:** played by the user on the TV. One game froze once and stayed frozen, even
+  resumed from its state; the cause isn't known; a state kept while frozen resumes frozen, so "B: start over" gets out of it.
 
 ### Step O5.4 — Whiteboard Pictionary with Duck
 - **Build:** you draw, Duck guesses — or Duck draws (its drawing tools) and you guess.
@@ -1114,7 +1159,7 @@ closed, open and still, and open and busy.
 - [x] O5.3c Star run: perks and bosses
 - [x] O5.3d Emulator
 - [x] O5.3e Saves shared with RetroArch
-- [ ] O5.3f PlayStation and PSP (stretch)
+- [x] O5.3f PlayStation and PSP (stretch)
 - [ ] O5.4 Whiteboard Pictionary with Duck
 - [ ] O5.5 Morning standup
 - [ ] O5.6 D&D table

@@ -23,7 +23,8 @@
 //!   scene written for idle workers who meet (O4.1, [`chatter`]).
 //! - `/office/api/core/…`, `/office/api/library…` — the TV's Library (O5.3d,
 //!   [`library`]): the built-in emulator cores, your game images and their save states;
-//!   `/office/api/library/save…` their in-game saves, shared with RetroArch (O5.3e, [`saves`]).
+//!   `/office/api/library/save…` their in-game saves, shared with RetroArch (O5.3e, [`saves`]);
+//!   `/office/api/library/disc…` and `…/bios` a PlayStation disc, read in pieces (O5.3f, [`disc`]).
 //!
 //! A debug build starts the listener with the app and leaves a reusable URL in the
 //! app-data dir ([`DEV_URL_FILE`]), so a tool can open the office without a click.
@@ -56,6 +57,7 @@ use super::transcript::{self, TranscriptQuery};
 use super::RemoteState;
 
 mod chatter;
+mod disc;
 mod library;
 mod saves;
 mod stats;
@@ -227,6 +229,9 @@ fn router(state: Arc<RemoteState>, port: u16) -> Router {
         .route("/office/api/library", get(library::get))
         .route("/office/api/library/folder", post(library::choose))
         .route("/office/api/library/rom", get(library::rom))
+        .route("/office/api/library/disc", get(disc::get))
+        .route("/office/api/library/disc/part", get(disc::part))
+        .route("/office/api/library/bios", get(disc::bios))
         .route(
             "/office/api/library/state",
             get(library::get_state).put(library::put_state).layer(DefaultBodyLimit::max(library::STATE_MAX)),

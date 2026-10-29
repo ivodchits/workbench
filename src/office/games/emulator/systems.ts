@@ -1,8 +1,9 @@
 // The systems the TV's Library plays (office plan O5.3d), each through one libretro
 // core — the one RetroArch uses on every device, so in-game saves carry over (O5.3e).
 // A system's picture is its widest usual mode; the overlay scales it by whole pixels.
+// The PlayStation's games are discs (O5.3f), read in pieces as the core goes.
 
-export type SystemId = "md" | "nes" | "snes" | "gb" | "gba";
+export type SystemId = "md" | "nes" | "snes" | "gb" | "gba" | "ps";
 
 export interface System {
   /** As the Library shows it. */
@@ -11,6 +12,8 @@ export interface System {
   core: string;
   w: number;
   h: number;
+  /** Its games are discs, never fetched whole. */
+  disc?: boolean;
 }
 
 export const SYSTEMS: Readonly<Record<SystemId, System>> = {
@@ -19,6 +22,7 @@ export const SYSTEMS: Readonly<Record<SystemId, System>> = {
   snes: { name: "SNES", core: "snes9x", w: 256, h: 224 },
   gb: { name: "GAME BOY", core: "gambatte", w: 160, h: 144 },
   gba: { name: "GBA", core: "mgba", w: 240, h: 160 },
+  ps: { name: "PS1", core: "pcsx_rearmed", w: 320, h: 240, disc: true },
 };
 
 export const isSystem = (id: unknown): id is SystemId => typeof id === "string" && Object.prototype.hasOwnProperty.call(SYSTEMS, id);
