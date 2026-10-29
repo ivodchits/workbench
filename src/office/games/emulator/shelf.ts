@@ -1,6 +1,7 @@
 // The Library's games as the listener has them (office plan O5.3d,
 // `src-tauri/src/remote/office/library.rs`): the folder you chose and what's in it,
-// each game's image, its core, and its save state.
+// each game's image, its core, and its save state; and its in-game save, which is
+// RetroArch's (O5.3e, `saves.rs`).
 
 import type { Link } from "../../net";
 import { isSystem, type SystemId } from "./systems";
@@ -22,21 +23,49 @@ export interface Listing {
   games: LibraryEntry[];
   /** The folder is gone (a drive not mounted). */
   missing?: boolean;
+  /** Where in-game saves go. */
+  saves?: SavesPlace;
 }
+
+export interface SavesPlace {
+  /** The folder; null when they go beside each game. */
+  folder: string | null;
+  /** Found in RetroArch's config, chosen by hand, or the office's own for want of one. */
+  from: "retroarch" | "hand" | "office";
+}
+
+/** An in-game save as it is on disk: its bytes (null for none yet) and its version. */
+export interface Save {
+  bytes: Uint8Array | null;
+  version: string;
+}
+
+/** A save written, its version now; or not, the file having changed to `changed`. */
+export type Written = { version: string } | { changed: string };
 
 /** What the emulator needs from the listener. */
 export interface Files {
   core(name: string): Promise<{ js: Blob; wasm: Blob } | null>;
   rom(path: string): Promise<{ name: string; bytes: Blob } | null>;
-  state(path: string): Promise<Blob | null>;
-  /** Keeps a save state; false when it wasn't kept. */
-  keep(path: string, state: Blob): Promise<boolean>;
+  /** The save state, and the in-game save's version it was kept with ("" unknown). */
+  state(path: string): Promise<{ state: Blob; save: string } | null>;
+  /** Keeps a save state, noting the in-game save's version; false when it wasn't kept. */
+  keep(path: string, state: Blob, save: string): Promise<boolean>;
+  /** The in-game save; null when saves can't be reached. */
+  save(path: string): Promise<Save | null>;
+  /** Writes the in-game save over version `base` only, unless `force` (keeping the
+   *  copy on disk as a backup); null when it couldn't be written. */
+  write(path: string, bytes: Uint8Array, base: string, force?: boolean): Promise<Written | null>;
+  /** Keeps the TV's copy as a backup, the one on disk being taken instead. */
+  backUp(path: string, bytes: Uint8Array): Promise<boolean>;
 }
 
 export interface Shelf extends Files {
   list(): Promise<Listing | null>;
   /** Asks for a folder, in a dialog on the PC; the listing after. */
   choose(): Promise<Listing | null>;
+  /** Asks for the saves folder the same way. */
+  chooseSaves(): Promise<Listing | null>;
 }
 
 type Request = Link["request"];
@@ -46,9 +75,14 @@ export function readListing(v: unknown): Listing | null {
   if (!v || typeof v !== "object") return null;
   const o = v as Record<string, unknown>;
   const games = Array.isArray(o.games) ? o.games : [];
+  const saves = o.saves as Record<string, unknown> | null | undefined;
+  const from = saves?.from;
   return {
     folder: typeof o.folder === "string" ? o.folder : null,
     missing: o.missing === true,
+    ...(from === "retroarch" || from === "hand" || from === "office"
+      ? { saves: { folder: typeof saves!.folder === "string" ? saves!.folder : null, from } }
+      : {}),
     games: games.flatMap((g: Record<string, unknown>) =>
       g && typeof g.path === "string" && typeof g.title === "string" && isSystem(g.system)
         ? [{ path: g.path, title: g.title, system: g.system, size: Number(g.size) || 0, state: g.state === true }]
@@ -70,6 +104,7 @@ export function linkShelf(request: Request): Shelf {
   return {
     list: () => json("library"),
     choose: () => json("library/folder", { method: "POST" }),
+    chooseSaves: () => json("library/saves", { method: "POST" }),
     async core(name) {
       const [js, wasm] = await Promise.all([blob(`core/${name}/js`), blob(`core/${name}/wasm`)]);
       return js && wasm ? { js: js.blob, wasm: wasm.blob } : null;
@@ -81,10 +116,30 @@ export function linkShelf(request: Request): Shelf {
       return { name: name ? decodeURIComponent(name) : (path.split("/").pop() ?? "game"), bytes: got.blob };
     },
     async state(path) {
-      return (await blob(`library/state${q(path)}`))?.blob ?? null;
+      const got = await blob(`library/state${q(path)}`);
+      return got && { state: got.blob, save: got.res.headers.get("x-save-version") ?? "" };
     },
-    async keep(path, state) {
-      const res = await request(`library/state${q(path)}`, { method: "PUT", body: state });
+    async keep(path, state, save) {
+      const res = await request(`library/state${q(path)}`, { method: "PUT", body: state, headers: { "x-save-version": save } });
+      return !!res?.ok;
+    },
+    async save(path) {
+      const res = await request(`library/save${q(path)}`);
+      const version = res?.ok ? res.headers.get("x-save-version") : null;
+      if (!res || !version) return null;
+      const bytes = new Uint8Array(await res.arrayBuffer());
+      return { bytes: version === "none" ? null : bytes, version };
+    },
+    async write(path, bytes, base, force = false) {
+      const headers: Record<string, string> = { "x-save-base": base };
+      if (force) headers["x-save-force"] = "1";
+      const res = await request(`library/save${q(path)}`, { method: "PUT", body: bytes, headers });
+      const version = res?.headers.get("x-save-version");
+      if (!res || !version) return null;
+      return res.ok ? { version } : res.status === 409 ? { changed: version } : null;
+    },
+    async backUp(path, bytes) {
+      const res = await request(`library/save/backup${q(path)}`, { method: "PUT", body: bytes });
       return !!res?.ok;
     },
   };

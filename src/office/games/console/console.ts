@@ -4,7 +4,7 @@
 // out to the menu, and from the menu turns the console off. Each cartridge's best score
 // is kept (in the page's storage) and shown on its label. The Library lists the games
 // in the folder you chose; A plays one (resuming it where you left it), B starts it
-// over, and its last row chooses the folder.
+// over, and its last rows choose the folder and where in-game saves go (O5.3e).
 
 import { textBitmap } from "../../art/font";
 import { cached } from "../../canvas";
@@ -36,7 +36,7 @@ export interface BestStore {
 
 /** The Library's games and how one is played; without it the Library stays empty. */
 export interface Library {
-  shelf: Pick<Shelf, "list" | "choose">;
+  shelf: Pick<Shelf, "list" | "choose" | "chooseSaves">;
   play(entry: LibraryEntry, fresh: boolean): Game;
 }
 
@@ -59,7 +59,8 @@ const BACK_HELP = " · Esc or Back: to the menu";
 export interface LibraryView {
   status: "loading" | "ready" | "failed";
   listing: Listing;
-  /** The choice: a game's index, or `games.length` for the folder row. */
+  /** The choice: a game's index, `games.length` for the folder row, or one more for
+   *  the saves row. */
   at: number;
   /** A folder dialog is open on the PC. */
   choosing: boolean;
@@ -108,8 +109,11 @@ function shelve(s: ConsoleState, listing: Listing | null): void {
     s.lib.status = "failed";
     return;
   }
-  const at = listing.games.findIndex((g) => g.path === was);
-  s.lib = { ...s.lib, status: "ready", listing, at: at >= 0 ? at : Math.min(s.lib.at, listing.games.length) };
+  const old = s.lib.listing.games.length;
+  const found = listing.games.findIndex((g) => g.path === was);
+  // On a game, the same game; on the saves row, still that row.
+  const at = found >= 0 ? found : s.lib.at > old ? listing.games.length + 1 : Math.min(s.lib.at, listing.games.length);
+  s.lib = { ...s.lib, status: "ready", listing, at };
 }
 
 /** Asks for the Library's listing again. */
@@ -161,15 +165,16 @@ export function stepConsole(s: ConsoleState, pad: Pad, save: (best: Record<strin
 
 function stepLibrary(s: ConsoleState, dir: number, press: boolean, pressB: boolean): void {
   const { games } = s.lib.listing;
-  const count = games.length + 1;
+  const count = games.length + 2;
   if (dir) s.lib.at = (s.lib.at + dir + count) % count;
   if (!(press || pressB) || !s.library || s.lib.choosing) return;
   const entry = games[s.lib.at];
   if (!entry) {
     if (!press) return;
+    const saves = s.lib.at > games.length;
     s.lib.choosing = true;
-    say(s, "CHOOSE THE FOLDER IN THE WINDOW ON THE PC");
-    void s.library.shelf.choose().then((l) => {
+    say(s, saves ? "CHOOSE THE SAVES FOLDER ON THE PC" : "CHOOSE THE FOLDER IN THE WINDOW ON THE PC");
+    void (saves ? s.library.shelf.chooseSaves() : s.library.shelf.choose()).then((l) => {
       s.lib.choosing = false;
       s.note = null;
       shelve(s, l);
@@ -350,6 +355,16 @@ function drawMenu(ctx: CanvasRenderingContext2D, s: ConsoleState): void {
 const LIB_ROW_H = 13;
 const LIB_TOP = 44;
 
+/** Where in-game saves go, in a few words. */
+function savesShown(listing: Listing): string {
+  const saves = listing.saves;
+  if (!saves) return "NOT SHARED";
+  if (!saves.folder) return "BESIDE EACH GAME";
+  if (saves.from === "retroarch") return "RETROARCH'S FOLDER";
+  if (saves.from === "office") return "THE OFFICE'S OWN";
+  return saves.folder.split("\\").join("/").toUpperCase();
+}
+
 function drawLibrary(ctx: CanvasRenderingContext2D, s: ConsoleState): void {
   drawHeading(ctx, "LIBRARY");
   const { listing, status, at } = s.lib;
@@ -358,6 +373,7 @@ function drawLibrary(ctx: CanvasRenderingContext2D, s: ConsoleState): void {
   const rows = [
     ...listing.games.map((g) => ({ title: g.title.toUpperCase(), tag: g.size === 0 ? "EMPTY FILE" : SYSTEMS[g.system].name, mark: g.state && g.size > 0, empty: g.size === 0 })),
     { title: listing.folder ? "CHOOSE ANOTHER FOLDER…" : "CHOOSE THE FOLDER…", tag: "", mark: false, empty: false },
+    { title: `SAVES: ${savesShown(listing)}`, tag: "CHANGE…", mark: false, empty: false },
   ];
   const fits = Math.floor((CONSOLE_H - LIB_TOP - 22) / LIB_ROW_H);
   const first = firstShown(rows.length, fits, at);

@@ -893,7 +893,7 @@ survive a move between devices.
   office shows the actual picture. Save states are kept per game, in the office only.
 - **Done when:** a Mega Drive image from the Drive (e.g. Sunset Riders) plays at full speed
   with a gamepad; closing it frees the core; a save state comes back after a reload.
-- _As built (approved; live test owed):_ `games/emulator/`, the listener's
+- _As built (approved):_ `games/emulator/`, the listener's
   `remote/office/library.rs`, and Nostalgist.js pinned at 0.23.0.
   - **Cores:** five, from Nostalgist's own RetroArch build (v1.22.2): Genesis Plus GX,
     FCEUmm, snes9x, Gambatte and mGBA. Their zips (about 6 MB) are built into Workbench
@@ -946,8 +946,8 @@ survive a move between devices.
   - **Found:** the Drive's game files are all **empty**: Drive itself reports 0 bytes for
     Sunset Riders and the rest. The Library lists them as "EMPTY FILE" and won't start
     them. Putting real copies there is the user's to do.
-  **Owed:** a live play of a Mega Drive game with a real gamepad, judging full speed and
-  sound, once a real image is in the folder.
+  **Live:** played by the user with real images (re-copied from the phone, the Drive's
+  being 0-byte).
 
 #### Step O5.3e — Saves shared with RetroArch
 - **Build:** in-game saves live in RetroArch's own saves folder on the PC. The office finds
@@ -960,6 +960,65 @@ survive a move between devices.
   the RetroArch settings that must match (the same core, saves sorted the same way).
 - **Done when:** a save made on the TV loads in RetroArch on Steam and on the phone, and one
   made on the phone loads on the TV; a conflict is offered, not lost.
+- _As built (approved):_ the listener's `remote/office/saves.rs`, the game's
+  save handling in `games/emulator/`, and the setup note
+  `documentation/retroarch-saves-sync.md`.
+  - **The folder:**
+    - **Found:** RetroArch's `retroarch.cfg`, from Steam's libraries (found through
+      `assistant/steam.rs`), else `%APPDATA%\RetroArch`.
+    - **Where:** `savefile_directory`, `:` meaning RetroArch's own folder. `default` or
+      `savefiles_in_content_dir` puts saves beside the game.
+    - **Sorting:** by the content's folder, then the core's name, as the two sort
+      settings say.
+    - **By hand:** the Library's new last row, "SAVES: …  CHANGE…", picks a folder in a
+      dialog (`office.saves`). It takes the place of `savefile_directory` and keeps
+      the config's sorting.
+    - **Fallback:** with neither, saves go to `office-saves/` in app data.
+    - **Here:** Steam's RetroArch, `…\RetroArch\saves\<core>\`.
+  - **The name:** RetroArch's own: the image's name without its extension, the image
+    inside a zip for a zipped one, in the core's folder (`Genesis Plus GX`, `FCEUmm`,
+    `Snes9x`, `Gambatte`, `mGBA`).
+  - **Reading and writing:**
+    - **At start:** the save is read and handed to the core as Nostalgist's `sram`.
+    - **While playing:** every two seconds the game has RetroArch flush its save
+      (`_cmd_savefiles`) and reads the file. If it changed, it's written, with
+      "SAVED" shown.
+    - **On leaving:** written once more.
+    - **Each write** goes over the version the page last had (a hash), or the
+      listener answers 409. It's whole or not at all (`.part`, then renamed).
+    - **States:** RetroArch's `block_sram_overwrite` keeps a resumed save state
+      from undoing the save.
+  - **A conflict:**
+    - **The question:** the game pauses: "THE SAVE CHANGED IN THE FOLDER". A or
+      Start keeps the TV's; B takes the folder's and starts the game again from it.
+      Buttons held as it asks count only once let go.
+    - **Backups:** the copy not taken goes to `office-save-backups/` in app data,
+      never into the synced folder.
+    - **Left while asking:** the folder's copy stays and the TV's is backed up.
+    - **States:** each save state notes the save version it was kept with. A state
+      older than the folder's save isn't resumed: "THE SAVE CHANGED ELSEWHERE: STARTED
+      FROM IT".
+  - **Tests:**
+    - Page: starting with the folder's save or none, writing only when changed,
+      writing on leaving with the state's version, a conflict kept on A/Start and on
+      B (backups, relaunch with the folder's), leaving while asking, an outdated
+      state not resumed, playing on unshared, the listing's saves, and the Library's
+      saves row.
+    - Rust: reading the config (Steam's, a folder of your own, `default`, beside the
+      game), RetroArch's naming with each sorting, and writing only over the version
+      it had (a conflict, the same bytes, forced with a backup).
+  - **Checked against the dev app in headless Chrome:**
+    - The listing found Steam's RetroArch saves folder.
+    - Then, with a scratch saves folder set by hand, a test NES cartridge with battery
+      RAM that adds one to its save on each boot:
+      - the first save was written as `FCEUmm/counter.srm` (8 KB);
+      - a newer save put in from outside was started from, not resumed over;
+      - a conflict asked, leaving the folder's copy alone;
+      - Enter kept the TV's (the folder's backed up);
+      - leaving while asking backed up the TV's;
+      - B took the folder's, and the game booted from it.
+    - The real RetroArch folder wasn't written to.
+  **Live:** tested by the user across the TV, Steam's RetroArch and the phone.
 
 #### Step O5.3f — PlayStation and PSP (stretch)
 - **Build:** PS1 through a libretro core (PCSX ReARMed), with the BIOS from RetroArch's
@@ -1056,8 +1115,8 @@ closed, open and still, and open and busy.
 - [x] O5.3a Console shell
 - [x] O5.3b Star run: flying and shooting (live play owed)
 - [x] O5.3c Star run: perks and bosses (live play owed)
-- [x] O5.3d Emulator (live play with a real image and gamepad owed)
-- [ ] O5.3e Saves shared with RetroArch
+- [x] O5.3d Emulator
+- [x] O5.3e Saves shared with RetroArch
 - [ ] O5.3f PlayStation and PSP (stretch)
 - [ ] O5.4 Whiteboard Pictionary with Duck
 - [ ] O5.5 Morning standup

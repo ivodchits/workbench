@@ -22,7 +22,8 @@
 //! - `GET`/`PUT`/`POST /office/api/chatter` — chatter's settings and budget, and a
 //!   scene written for idle workers who meet (O4.1, [`chatter`]).
 //! - `/office/api/core/…`, `/office/api/library…` — the TV's Library (O5.3d,
-//!   [`library`]): the built-in emulator cores, your game images and their save states.
+//!   [`library`]): the built-in emulator cores, your game images and their save states;
+//!   `/office/api/library/save…` their in-game saves, shared with RetroArch (O5.3e, [`saves`]).
 //!
 //! A debug build starts the listener with the app and leaves a reusable URL in the
 //! app-data dir ([`DEV_URL_FILE`]), so a tool can open the office without a click.
@@ -41,7 +42,7 @@ use axum::extract::{DefaultBodyLimit, Query, Request, State};
 use axum::http::{header, HeaderMap, StatusCode};
 use axum::middleware::{self, Next};
 use axum::response::{Html, IntoResponse, Redirect, Response};
-use axum::routing::{get, post};
+use axum::routing::{get, post, put};
 use axum::{Json, Router};
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -56,6 +57,7 @@ use super::RemoteState;
 
 mod chatter;
 mod library;
+mod saves;
 mod stats;
 
 /// Where the office listens; a debug build apart from a release, like the phone's
@@ -229,6 +231,9 @@ fn router(state: Arc<RemoteState>, port: u16) -> Router {
             "/office/api/library/state",
             get(library::get_state).put(library::put_state).layer(DefaultBodyLimit::max(library::STATE_MAX)),
         )
+        .route("/office/api/library/save", get(saves::get_save).put(saves::put_save).layer(DefaultBodyLimit::max(saves::SAVE_MAX)))
+        .route("/office/api/library/save/backup", put(saves::put_backup).layer(DefaultBodyLimit::max(saves::SAVE_MAX)))
+        .route("/office/api/library/saves", post(saves::choose))
         .with_state(state)
         .layer(middleware::from_fn_with_state(port, host_guard))
 }

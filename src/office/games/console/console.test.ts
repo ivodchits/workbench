@@ -142,6 +142,7 @@ function shelfOf(games: LibraryEntry[], next: Listing | null = null) {
     shelf: {
       list: async () => (log.push("list"), structuredClone(listing)),
       choose: async () => (log.push("choose"), next && (listing = next), structuredClone(listing)),
+      chooseSaves: async () => (log.push("choose saves"), (listing = { ...listing, saves: { folder: "D:/Sync/saves", from: "hand" } }), structuredClone(listing)),
     },
     play(entry, fresh) {
       log.push(`play ${entry.path}${fresh ? " fresh" : ""}`);
@@ -175,7 +176,7 @@ async function inLibrary(library: Library) {
 }
 
 describe("the TV console's Library", () => {
-  it("lists the games in the folder, and moves through them and the folder row", async () => {
+  it("lists the games in the folder, and moves through them, the folder row and the saves row", async () => {
     const { library, log } = shelfOf([game("a.md"), game("b.nes", { system: "nes" })]);
     const s = await inLibrary(library);
     expect(s.phase).toBe("library");
@@ -183,7 +184,7 @@ describe("the TV console's Library", () => {
     expect(s.lib.status).toBe("ready");
     expect(s.lib.listing.games.map((g) => g.path)).toEqual(["a.md", "b.nes"]);
     const down = press({ y: 1 });
-    for (const at of [1, 2, 0]) {
+    for (const at of [1, 2, 3, 0]) {
       stepConsole(s, down);
       stepConsole(s, idle);
       expect(s.lib.at).toBe(at);
@@ -249,6 +250,22 @@ describe("the TV console's Library", () => {
     await flush();
     expect(s.lib.choosing).toBe(false);
     expect(s.lib.listing).toEqual(chosen);
+  });
+
+  it("chooses the saves folder from the row after, and stays on that row", async () => {
+    const { library, log } = shelfOf([game("a.md")]);
+    const s = await inLibrary(library);
+    for (let n = 0; n < 2; n++) {
+      stepConsole(s, press({ y: 1 }));
+      stepConsole(s, idle);
+    }
+    expect(s.lib.at).toBe(2);
+    stepConsole(s, press({ a: true }));
+    expect(s.note?.text).toMatch(/SAVES/);
+    await flush();
+    expect(log).toEqual(["list", "choose saves"]);
+    expect(s.lib.listing.saves).toEqual({ folder: "D:/Sync/saves", from: "hand" });
+    expect(s.lib.at).toBe(2);
   });
 
   it("stays empty with a note when there's no Library to read", () => {

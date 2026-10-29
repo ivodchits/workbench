@@ -12,7 +12,8 @@
 //!   app-data dir (`office-states/`), never beside the image.
 //!
 //! The folder lives in the app DB's `meta` table (`office.library`). Only files under
-//! it are read. No images ship with Workbench.
+//! it are read. No images ship with Workbench. In-game saves are RetroArch's, shared
+//! with it (`saves.rs`, O5.3e); a save state notes which of them it was kept with.
 
 use std::io::{Cursor, Read};
 use std::path::{Component, Path, PathBuf};
@@ -41,6 +42,8 @@ pub(super) const STATE_MAX: usize = 32 * 1024 * 1024;
 /// How deep, and how many files, a scan of the folder goes.
 const SCAN_DEPTH: usize = 4;
 const SCAN_FILES: usize = 4000;
+/// The header naming an in-game save's version (`saves.rs`).
+const SAVE_VERSION: &str = "x-save-version";
 
 /// The cores built in, by the name Nostalgist knows them by.
 const CORES: &[(&str, &[u8])] = &[
@@ -140,7 +143,7 @@ fn scan(root: &Path, states: &Path) -> Vec<Entry> {
 
 /// `rel` under `root`, when it names a file there: no `..`, no absolute part, and
 /// nowhere else once links are followed.
-fn inside(root: &Path, rel: &str) -> Option<PathBuf> {
+pub(super) fn inside(root: &Path, rel: &str) -> Option<PathBuf> {
     let rel = Path::new(rel);
     if rel.components().any(|c| !matches!(c, Component::Normal(_))) {
         return None;
@@ -158,7 +161,7 @@ fn state_file(states: &Path, rel: &str) -> PathBuf {
     states.join(format!("{name}.state"))
 }
 
-fn folder(state: &RemoteState) -> Option<PathBuf> {
+pub(super) fn folder(state: &RemoteState) -> Option<PathBuf> {
     let saved = state.app.state::<crate::db::Db>().meta_get(FOLDER_KEY).ok()??;
     let v: serde_json::Value = serde_json::from_str(&saved).ok()?;
     v.get("folder")?.as_str().map(PathBuf::from)
@@ -169,16 +172,17 @@ fn states_dir(state: &RemoteState) -> Option<PathBuf> {
 }
 
 /// The folder and its games, scanned off the async threads (a cloud drive is slow).
-async fn listing(state: &Arc<RemoteState>) -> Response {
+pub(super) async fn listing(state: &Arc<RemoteState>) -> Response {
+    let saves = super::saves::save_dirs(state).map(|d| super::saves::shown(&d));
     let Some(root) = folder(state) else {
-        return Json(json!({ "folder": null, "games": [] })).into_response();
+        return Json(json!({ "folder": null, "games": [], "saves": saves })).into_response();
     };
     let Some(states) = states_dir(state) else { return StatusCode::INTERNAL_SERVER_ERROR.into_response() };
     let shown = root.to_string_lossy().into_owned();
     let found = tokio::task::spawn_blocking(move || root.is_dir().then(|| scan(&root, &states))).await;
     match found {
-        Ok(Some(games)) => ([(header::CACHE_CONTROL, "no-store")], Json(json!({ "folder": shown, "games": games }))).into_response(),
-        Ok(None) => Json(json!({ "folder": shown, "games": [], "missing": true })).into_response(),
+        Ok(Some(games)) => ([(header::CACHE_CONTROL, "no-store")], Json(json!({ "folder": shown, "games": games, "saves": saves }))).into_response(),
+        Ok(None) => Json(json!({ "folder": shown, "games": [], "missing": true, "saves": saves })).into_response(),
         Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     }
 }
@@ -217,7 +221,25 @@ pub(super) async fn choose(State(state): State<Arc<RemoteState>>, headers: Heade
 
 #[derive(Deserialize)]
 pub(super) struct GameQuery {
-    path: String,
+    pub(super) path: String,
+}
+
+/// The name of the image `file` is, or holds if a zip.
+pub(super) fn rom_name(file: &Path) -> Option<String> {
+    let name = file.file_name()?.to_string_lossy().into_owned();
+    if !name.to_ascii_lowercase().ends_with(".zip") {
+        return Some(name);
+    }
+    std::fs::File::open(file).ok().and_then(zipped).map(|(n, _)| n)
+}
+
+/// The system of the game `file` is, or holds if a zip.
+pub(super) fn system_of_file(file: &Path) -> Option<&'static str> {
+    let name = file.file_name()?.to_string_lossy().into_owned();
+    if name.to_ascii_lowercase().ends_with(".zip") {
+        return std::fs::File::open(file).ok().and_then(zipped).map(|(_, s)| s);
+    }
+    system_of(&name, false)
 }
 
 /// The image's bytes and its file name; a zip gives its first image.
@@ -282,8 +304,17 @@ pub(super) async fn get_state(State(state): State<Arc<RemoteState>>, headers: He
         return StatusCode::UNAUTHORIZED.into_response();
     }
     let Some(states) = states_dir(&state) else { return StatusCode::INTERNAL_SERVER_ERROR.into_response() };
-    match std::fs::read(state_file(&states, &q.path)) {
-        Ok(bytes) => ([(header::CONTENT_TYPE, "application/octet-stream"), (header::CACHE_CONTROL, "no-store")], bytes).into_response(),
+    let file = state_file(&states, &q.path);
+    match std::fs::read(&file) {
+        Ok(bytes) => {
+            // The in-game save's version when the state was kept (O5.3e).
+            let save = std::fs::read_to_string(file.with_extension("save")).unwrap_or_default();
+            let mut res = ([(header::CONTENT_TYPE, "application/octet-stream"), (header::CACHE_CONTROL, "no-store")], bytes).into_response();
+            if let Ok(v) = header::HeaderValue::from_str(save.trim()) {
+                res.headers_mut().insert(SAVE_VERSION, v);
+            }
+            res
+        }
         Err(_) => StatusCode::NOT_FOUND.into_response(),
     }
 }
@@ -305,7 +336,11 @@ pub(super) async fn put_state(State(state): State<Arc<RemoteState>>, headers: He
         // Whole or not at all: written aside, then moved over the old one.
         let part = file.with_extension("part");
         std::fs::write(&part, &body)?;
-        std::fs::rename(&part, &file)
+        std::fs::rename(&part, &file)?;
+        // Which in-game save it goes with, so a newer one from elsewhere isn't resumed
+        // over (O5.3e).
+        let save = headers.get(SAVE_VERSION).and_then(|v| v.to_str().ok()).unwrap_or("");
+        std::fs::write(file.with_extension("save"), save)
     });
     match written {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
