@@ -662,7 +662,7 @@ favourite spots.
 - **Build:** clicking a prop opens a game overlay over the dimmed office; keyboard and gamepad
   input (Gamepad API); the office render pauses while it's open.
 - **Done when:** a dummy game opens from the TV and the kicker and closes cleanly.
-- _As built (approved; live test owed):_ `games/` on the office page. Hovering the TV or the
+- _As built (approved):_ `games/` on the office page. Hovering the TV or the
   kicker says "click to play"; clicking it opens its game in a window over the dimmed
   office (`overlay.ts`), scaled up by whole pixels, on its own 60 Hz loop that stops
   while the page is hidden. The office keeps stepping behind it (walks and chats go
@@ -677,13 +677,11 @@ favourite spots.
   browser hides them and it's keyboard only. Tests: the keyboard and gamepad reading
   (deadzone, d-pad, a non-standard pad), the test game's steering, the props' hit test.
   Checked in the dev page: the TV and the kicker open their game, Esc and a click on the
-  dimmed office close it. **Owed:** a live play test (the dot steering, the office
-  still behind the game and back after it) and a real gamepad; the browser tab used
-  was hidden, so no frames ran. To be done with the later games.
+  dimmed office close it. **Live:** played by the user, with a gamepad.
 
 ### Step O5.2 — Kicker
 - **Build:** a small top-down foosball game against the computer.
-- _As built (approved; live test owed):_ `games/kicker.ts`, opened from the kicker. The table is
+- _As built (approved):_ `games/kicker.ts`, opened from the kicker. The table is
   seen from above, you (blue) against the computer (red), first to five; which end you
   defend is drawn at random and every rematch swaps it. Four rods a side, interleaved as on a real table: goalie 1, defence 2,
   midfield 5, attack 3. You hold two rods at once, one per hand, each moved along your
@@ -714,8 +712,7 @@ favourite spots.
   40 games (16–24, goals 145–165, about 2½ minutes a game); against a player who does
   nothing it wins all 40, mostly 5–0 or 5–1, in about two minutes, from either end.
   Checked in the dev page: the kicker opens its game, the table drawn at either end.
-  **Owed:** a live play (the feel of the slide and swing, the computer's strength, the
-  hands' switching) and a real gamepad; the browser tab used was hidden, so no frames ran.
+  **Live:** played by the user, with a gamepad.
 
 ### Step O5.3 — TV: the office console (split into O5.3a–f)
 The TV is a games console with two halves: **our own minigames**, written in the office's
@@ -779,7 +776,7 @@ survive a move between devices.
 - **Done when:** a seed always generates the same sectors; difficulty rises with distance;
   a computer-flown ship survives longer on easy sectors than hard ones; a live play feels
   right.
-- _As built (approved; live test owed):_ `games/starrun/`, the first cartridge in the Duckbox
+- _As built (approved):_ `games/starrun/`, the first cartridge in the Duckbox
   menu. The run is 160×224 and scrolls 0.75 px a step. A sector is 800 px, about 18
   seconds, and its name blinks as you enter it. Each sector is generated from the run's seed
   and its own number (`sectors.ts`). It is a squadron, an asteroid field or a mix, and the
@@ -813,7 +810,7 @@ survive a move between devices.
   Checked in headless Chrome against the dev page: the menu with Star run first, the
   sector banner, darts in vees and lines, asteroids, firing, the score and a life lost,
   pause, and Esc to the menu.
-  **Owed:** a live play to judge the feel and the pace.
+  **Live:** played by the user.
 
 #### Step O5.3c — Star run: perks and bosses
 - **Build:** pickups dropped by enemies and asteroids: spread shot, rapid fire, a shield, a
@@ -824,7 +821,7 @@ survive a move between devices.
   own palette and enemy mix.
 - **Done when:** a boss from a seed is always the same and beatable; perks stack and drop
   back on a hit; a live play.
-- _As built (approved; live test owed):_ `games/starrun/boss.ts`, with the perks in `starrun.ts`.
+- _As built (approved):_ `games/starrun/boss.ts`, with the perks in `starrun.ts`.
   Sectors come in zones of three. The last sector of a zone clears out early, then the
   scroll holds (the stars fly on) while the boss comes in under a blinking WARNING, its
   health bar filling. It is built from the run's seed and the zone's number:
@@ -881,7 +878,7 @@ survive a move between devices.
   Checked in headless Chrome by drawing set-up runs with the dev server's modules: a boss
   coming in, fights in zones 1, 3, 5 and 8 in their palettes, a death, the "ZONE 2" banner,
   and the perks with the shield rings and pips.
-  **Owed:** a live play.
+  **Live:** played by the user.
 
 #### Step O5.3d — Emulator
 - **Build:** the Library plays your game images through Nostalgist.js (RetroArch's
@@ -1110,11 +1107,11 @@ closed, open and still, and open and busy.
 - [x] O3.3 Answering from the bubbles
 - [x] O4.1 Chatter service
 - [x] O4.2 Playing scenes
-- [x] O5.1 Game overlay (live test and gamepad owed)
-- [x] O5.2 Kicker (live test and gamepad owed)
+- [x] O5.1 Game overlay
+- [x] O5.2 Kicker
 - [x] O5.3a Console shell
-- [x] O5.3b Star run: flying and shooting (live play owed)
-- [x] O5.3c Star run: perks and bosses (live play owed)
+- [x] O5.3b Star run: flying and shooting
+- [x] O5.3c Star run: perks and bosses
 - [x] O5.3d Emulator
 - [x] O5.3e Saves shared with RetroArch
 - [ ] O5.3f PlayStation and PSP (stretch)
