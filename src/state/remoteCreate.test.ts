@@ -5,9 +5,11 @@ import {
   asksForPassword,
   beginCreate,
   getCreated,
+  inputEmpty,
   inputHolds,
   promptBoxReady,
   resetCreated,
+  screenAtRest,
   trustDialogOffset,
   updateCreate,
 } from "./remoteCreate";
@@ -137,6 +139,71 @@ describe("inputHolds", () => {
     expect(inputHolds(READY, "hello")).toBe(false);
     expect(inputHolds(box("❯ something else"), "hello")).toBe(false);
     expect(inputHolds(TRUST, "hello")).toBe(false);
+  });
+});
+
+/** Session "2" while `/compact` ran (Claude Code 2.1.314, 2026-10-30), trimmed. */
+const COMPACTING = [
+  "  refactoring: the slow AbilitySynthesizerTests and the Balance run that's still owed.",
+  "",
+  "✻ Crunched for 1m 51s · done 1:28 PM",
+  "",
+  "❯ /compact",
+  "",
+  "✽ Compacting conversation… (15s · ↓ 1.0k tokens)",
+  "",
+  RULE,
+  "❯",
+  RULE,
+  "  Opus 5.5  ·  agent/2  ·  $14.07",
+  "  ⏵⏵ auto mode on (shift+tab to cycle)",
+];
+
+/** The same session once the compaction was over: at rest, its box empty. */
+const COMPACTED = [
+  "❯ /compact",
+  "  ⎿  Compacted (ctrl+o to see full summary)",
+  "     PreCompact [http://127.0.0.1:48970/__workbench_hook] completed successfully",
+  "     PostCompact [http://127.0.0.1:48970/__workbench_hook] completed successfully",
+  "  ⎿  Referenced file docs/plans/Refactoring_From_Audit.md",
+  "  ⎿  Read src/Demiurge.Core/Defs/Synthesis/RedressRates.cs (74 lines)",
+  "",
+  RULE,
+  "❯",
+  RULE,
+  "  Opus 5.5  ·  agent/2  ·  $14.23",
+  "  ⏵⏵ auto mode on (shift+tab to cycle)",
+];
+
+describe("screenAtRest", () => {
+  it("sees Claude Code at rest after a turn or a compaction", () => {
+    expect(screenAtRest(COMPACTED)).toBe(true);
+    expect(screenAtRest(READY)).toBe(true);
+  });
+
+  it("is false while the spinner runs, or with no box to read", () => {
+    expect(screenAtRest(COMPACTING)).toBe(false);
+    const working = [...COMPACTED.slice(0, 6), "* Fermenting… (running Stop hooks… 0/2 · 1s · ↓1 tokens)", "  ⎿  Tip: Use /feedback", ...COMPACTED.slice(6)];
+    expect(screenAtRest(working)).toBe(false);
+    expect(screenAtRest([...COMPACTED.slice(0, -1), "  esc to interrupt"])).toBe(false);
+    expect(screenAtRest(TRUST)).toBe(false);
+    expect(screenAtRest(MCP)).toBe(false);
+  });
+});
+
+describe("inputEmpty", () => {
+  it("is true for a bare box or its placeholder, false with text or no box", () => {
+    expect(inputEmpty(COMPACTED)).toBe(true);
+    expect(inputEmpty(READY)).toBe(true);
+    expect(inputEmpty([RULE, "❯ continue with R1", RULE])).toBe(false);
+    expect(inputEmpty(TRUST)).toBe(false);
+  });
+
+  it("reads a long prompt wrapped over many rows in a narrow console", () => {
+    const rows = Array.from({ length: 9 }, (_, i) => `  wrapped row ${i}`);
+    const wrapped = [RULE, "❯ Write the remaining refactoring work from the audit", ...rows, RULE];
+    expect(inputEmpty(wrapped)).toBe(false);
+    expect(inputHolds(wrapped, "Write the remaining refactoring work from the audit into a plan")).toBe(true);
   });
 });
 

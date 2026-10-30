@@ -18,6 +18,13 @@
 //   could answer: that one waits like the rest.
 // - Typed prompts whose Enter wasn't taken get up to two more Enters while the box
 //   holds text. A prompt still not taken is reported, never claimed as sent.
+// - A slash command runs in Claude Code itself and fires no `UserPromptSubmit`
+//   (a `/compact` only starts compacting), so its leaving the box, or the
+//   compaction starting, says it was taken. Before, every `/compact` sent this way
+//   was reported unsent while it compacted.
+// - Nothing waits on a single event: what's waiting is looked at again every few
+//   seconds, so a turn end that was missed, or that came while the session was
+//   still compacting, can't strand it.
 // - A headless worker (step D4) has no box: its prompts go in as protocol messages,
 //   the first one with its launch, and the same hook says they were taken.
 //
@@ -65,6 +72,11 @@ const ENTER_RETRIES = 2;
  *  (`remoteActions.ts`, READY_SETTLE_MS: the TUI draws it before it takes input). */
 const READY_SETTLE_MS = 1_000;
 const POLL_MS = 250;
+/** How often a line with prompts waiting is looked at again. */
+const PUMP_WATCH_MS = 2_000;
+/** A prompt taken by a sign other than its hook (a slash command like `/model`,
+ *  which starts no turn) holds the line this long, or until the session moves. */
+const IN_TURN_GRACE_MS = 5_000;
 const TRUST_KEY_GAP_MS = 400;
 const TRUST_KEYS_MAX = 6;
 const DOWN_KEY = new Uint8Array([0x1b, 0x5b, 0x42]);
@@ -85,6 +97,8 @@ interface Line {
   busy: boolean;
   /** Taken; their turn hasn't ended yet, so the next ones wait. */
   inTurn: boolean;
+  /** When the last prompt was taken (epoch ms). */
+  takenAt: number;
   waiting: Item[];
 }
 
@@ -93,7 +107,7 @@ const lines = new Map<string, Line>();
 function line(id: string): Line {
   let l = lines.get(id);
   if (!l) {
-    l = { busy: false, inTurn: false, waiting: [] };
+    l = { busy: false, inTurn: false, takenAt: 0, waiting: [] };
     lines.set(id, l);
   }
   return l;
@@ -101,17 +115,23 @@ function line(id: string): Line {
 
 // ── the "taken" signal ──────────────────────────────────────────────────────
 
-const takers = new Map<string, Set<() => void>>();
+/** How Claude Code showed it took input: its hook (or the turn starting), or a
+ *  compaction starting, which only a `/compact` counts on. */
+type Sign = "prompt" | "compact";
+
+const takers = new Map<string, Set<(sign: Sign) => void>>();
 let listening = false;
 
 function listen(): void {
   if (listening) return;
   listening = true;
   void onHookEvent((env) => {
-    if (env.event.hook_event_name === "UserPromptSubmit") taken(env.instanceId);
+    const name = env.event.hook_event_name;
+    if (name === "UserPromptSubmit") taken(env.instanceId, "prompt");
+    else if (name === "PreCompact") taken(env.instanceId, "compact");
   }).catch(() => {});
   onStatusTransition((id, phase) => {
-    if (phase === "working") taken(id);
+    if (phase === "working") taken(id, "prompt");
     // The turn is over: what's waiting may go.
     if (phase === "done" || phase === "idle" || phase === "ended") turnEnded(id);
     // Waiting on a prompt no more: a `now` prompt held back for it may go in.
@@ -123,12 +143,13 @@ function listen(): void {
   });
 }
 
-function taken(id: string): void {
-  for (const f of takers.get(id) ?? []) f();
+function taken(id: string, sign: Sign): void {
+  for (const f of takers.get(id) ?? []) f(sign);
 }
 
-/** Resolves true when Claude Code takes a prompt in `id`, false after `ms`. */
-function whenTaken(id: string, ms: number): { promise: Promise<boolean>; cancel: () => void } {
+/** Resolves true when Claude Code takes a prompt in `id`, false after `ms`.
+ *  `compact`: a compaction starting counts too (the prompt is a `/compact`). */
+function whenTaken(id: string, ms: number, compact = false): { promise: Promise<boolean>; cancel: () => void } {
   let done: (v: boolean) => void = () => {};
   const promise = new Promise<boolean>((r) => (done = r));
   const set = takers.get(id) ?? new Set();
@@ -138,7 +159,9 @@ function whenTaken(id: string, ms: number): { promise: Promise<boolean>; cancel:
     set.delete(on);
     done(v);
   };
-  const on = () => finish(true);
+  const on = (sign: Sign) => {
+    if (sign === "prompt" || compact) finish(true);
+  };
   const timer = setTimeout(() => finish(false), ms);
   set.add(on);
   return { promise, cancel: () => finish(false) };
@@ -153,20 +176,33 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
  *  and the hook comes only then. */
 async function typeIn(id: string, text: string, midTurn: boolean): Promise<Outcome> {
   if (isHeadless(id)) return sendIn(id, text, midTurn);
-  const t = whenTaken(id, ENTER_RETRY_MS * (ENTER_RETRIES + 1) + 1_000);
+  const command = isCommand(text);
+  const t = whenTaken(id, ENTER_RETRY_MS * (ENTER_RETRIES + 1) + 1_000, COMPACT_COMMAND.test(text.trimStart()));
   submitPrompt(id, text);
   for (let i = 0; i <= ENTER_RETRIES; i++) {
     if (await Promise.race([t.promise, sleep(ENTER_RETRY_MS).then(() => false)])) return { ok: true };
     const screen = readScreen(id);
-    if (midTurn && screen && !inputHolds(screen, text)) {
+    if ((midTurn || command) && screen && !inputHolds(screen, text)) {
       t.cancel();
       return { ok: true };
     }
     if (i === ENTER_RETRIES) break;
-    if (screen && inputHasText(screen)) void ptyWrite(id, ENTER_KEY).catch(() => {});
+    if (screen ? inputHasText(screen) : blindEnterSafe(id, command, midTurn)) void ptyWrite(id, ENTER_KEY).catch(() => {});
   }
   t.cancel();
   return { ok: false, why: "it was typed into the session's prompt box, but Claude Code didn't take it" };
+}
+
+/** A slash command: Claude Code runs it itself, with no `UserPromptSubmit`. */
+const isCommand = (text: string) => text.trimStart().startsWith("/");
+const COMPACT_COMMAND = /^\/compact\b/;
+
+/** With no screen to see the box by, whether a second Enter is still safe: the
+ *  session is between turns as it was (nothing took the prompt, so no permission
+ *  prompt can have opened), and the prompt isn't a command, which may have opened
+ *  a picker the Enter would answer. */
+function blindEnterSafe(id: string, command: boolean, midTurn: boolean): boolean {
+  return !command && !midTurn && atRest(getLiveStatuses().get(id));
 }
 
 /** Type `text` into a running session's prompt box, outside Duck's lines (the
@@ -260,7 +296,10 @@ async function run(batch: Item[], how: How, l: Line): Promise<void> {
   }
   l.busy = false;
   // A prompt into a running turn doesn't start a turn of its own.
-  if (out.ok && how !== "midTurn") l.inTurn = true;
+  if (out.ok && how !== "midTurn") {
+    l.inTurn = true;
+    l.takenAt = Date.now();
+  }
   for (const i of batch) i.settle(out);
   pump(id);
 }
@@ -283,7 +322,11 @@ function pump(id: string): void {
     void run(l.waiting.splice(0), "launch", l);
     return;
   }
-  if (!l.inTurn && atRest(getLiveStatuses().get(id))) {
+  const rest = atRest(getLiveStatuses().get(id));
+  // Taken a while ago, and the session never left rest: that prompt started no
+  // turn (a command), or its turn's end was missed.
+  if (l.inTurn && rest && Date.now() - l.takenAt >= IN_TURN_GRACE_MS) l.inTurn = false;
+  if (!l.inTurn && rest) {
     void run(l.waiting.splice(0), "typed", l);
     return;
   }
@@ -292,6 +335,35 @@ function pump(id: string): void {
   if (now.length === 0) return;
   l.waiting = l.waiting.filter((i) => !i.now);
   void run(now, "midTurn", l);
+}
+
+let watchTimer: ReturnType<typeof setInterval> | null = null;
+
+/** Look at every line with prompts waiting every few seconds, while there are any:
+ *  the turn's end (or the compaction's) is the usual trigger, and this is for one
+ *  that was missed. */
+function watch(): void {
+  if (watchTimer) return;
+  watchTimer = setInterval(() => {
+    let any = false;
+    for (const [id, l] of lines) {
+      if (l.waiting.length === 0) continue;
+      any = true;
+      pump(id);
+    }
+    if (!any && watchTimer) {
+      clearInterval(watchTimer);
+      watchTimer = null;
+    }
+  }, PUMP_WATCH_MS);
+}
+
+/** True while Duck's delivery holds a prompt for `id`: being typed in, or waiting
+ *  for the turn to end. Until then the session isn't really done with its work:
+ *  `wait_for_session` and the autopilot hold off. */
+export function promptPending(id: string): boolean {
+  const l = lines.get(id);
+  return !!l && (l.busy || l.waiting.length > 0);
 }
 
 function turnEnded(id: string): void {
@@ -316,5 +388,6 @@ export function deliverPrompt(target: Target, text: string, opts: { now?: boolea
   const running = target.running();
   l.waiting.push(item);
   pump(id);
+  if (l.waiting.length > 0) watch();
   return { state: l.waiting.includes(item) ? "queued" : running ? "sent" : "starting", done };
 }

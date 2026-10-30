@@ -208,6 +208,13 @@ export interface WorkbenchPort {
    *  Duck's trust watcher answers on its own is never reported, and one it leaves
    *  to the user is reported once it has decided (`holdNeedsYou`). */
   onPhase(cb: PhaseListener): () => void;
+  /** Hear each session's compaction end, with the phase it's back in. A `/compact`
+   *  from rest ends with no phase change (and no `Stop`), so `onPhase` never hears
+   *  it: whatever waits for the session to be at rest needs this too. */
+  onCompactionEnd(cb: (instanceId: string, phase: SessionPhase) => void): () => void;
+  /** True while Duck's delivery still holds a prompt for the session: being typed
+   *  in, or waiting for its turn to end. Its phase doesn't show it yet. */
+  promptPending(instanceId: string): boolean;
   /** Hear each new session the user starts (the rail, the phone), not Duck's own
    *  (step H8: the project's reminders come up). */
   onSessionYouStarted(cb: (instanceId: string, projectId: string) => void): () => void;

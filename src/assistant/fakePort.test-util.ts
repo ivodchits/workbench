@@ -102,6 +102,10 @@ export interface FakePort extends WorkbenchPort {
   calls: { name: string; args: unknown[] }[];
   /** Fire a phase change at the `onPhase` listeners. */
   phase(instanceId: string, phase: SessionPhase, prev?: SessionPhase): void;
+  /** Fire a compaction's end at the `onCompactionEnd` listeners. */
+  compactionEnds(instanceId: string, phase: SessionPhase): void;
+  /** Sessions `promptPending` says hold a prompt. */
+  pending: Set<string>;
   /** End a task run, for its `onTaskEnd` listeners. */
   endTask(taskId: string, end: Partial<TaskEnd>): void;
   /** Set a session's open prompt (null closes it) and tell the `onChoices`
@@ -153,6 +157,7 @@ export function session(
 
 export function fakePort(data: FakePortData = {}): FakePort {
   const listeners = new Set<PhaseListener>();
+  const compactionListeners = new Set<(id: string, phase: SessionPhase) => void>();
   const choiceListeners = new Set<() => void>();
   const taskEnds = new Map<string, (end: TaskEnd) => void>();
   const pluginsOf = (projectId: string) => (data.plugins ??= {})[projectId];
@@ -330,6 +335,19 @@ export function fakePort(data: FakePortData = {}): FakePort {
     },
     phase(id, phase, prev) {
       for (const l of [...listeners]) l(id, phase, prev ?? null);
+    },
+    onCompactionEnd(cb) {
+      compactionListeners.add(cb);
+      return () => {
+        compactionListeners.delete(cb);
+      };
+    },
+    compactionEnds(id, phase) {
+      for (const l of [...compactionListeners]) l(id, phase);
+    },
+    pending: new Set<string>(),
+    promptPending(id) {
+      return this.pending.has(id);
     },
     onSessionYouStarted: () => () => {},
 

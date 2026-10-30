@@ -38,6 +38,7 @@ import { loadKeymap } from "./keyboard/keymap";
 import { registerCommand, runCommand } from "./keyboard/bus";
 import { getHookServerStatus, onHookEvent } from "./ipc/hooks";
 import { initStatusEngine } from "./state/status";
+import { initStatusWatchdog } from "./state/statusWatchdog";
 import { initPendingChoices } from "./state/pendingChoice";
 import { initChoiceWatch } from "./state/choiceWatch";
 import { initHeadless } from "./state/headless";
@@ -89,6 +90,8 @@ function App() {
   // idempotent + app-lifetime, so no cleanup — see their init functions.
   useEffect(() => {
     initStatusEngine();
+    // Settles a card whose turn-end or post-compact hook never came.
+    initStatusWatchdog();
     initPendingChoices();
     // Keep each pending prompt's options and outcome current with no card on
     // screen, for the phone (step R5).

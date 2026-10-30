@@ -20,6 +20,7 @@ import {
   killSession,
   resumeSession,
   sendPrompt,
+  ALREADY_GRACE_MS,
   waitForSession,
   writeNote,
 } from "./act";
@@ -276,6 +277,71 @@ describe("wait_for_session", () => {
     // Just started, no phase yet: it waits rather than refusing.
     const fresh = await run(waitForSession, { session: "old" });
     expect(fresh.out).toMatchObject({ watching: "either" });
+  });
+});
+
+describe("wait_for_session around compactions and prompts", () => {
+  const withSession = (extra: Partial<Parameters<typeof session>[0]>) => {
+    const d = data();
+    d.sessions!.push(session({ id: "i9", projectId: "p1", title: "plans", phase: "done", ...extra }));
+    return d;
+  };
+  /** Start the tool; it may sleep (the grace before "already"), so time is moved on. */
+  async function start(input: unknown, d: FakePortData, before?: (port: ReturnType<typeof fakePort>) => void) {
+    vi.useFakeTimers();
+    const port = fakePort(d);
+    before?.(port);
+    const ctx = toolCtx(port);
+    const pending = waitForSession.run(waitForSession.schema.parse(input), ctx) as Promise<Record<string, unknown>>;
+    await vi.advanceTimersByTimeAsync(ALREADY_GRACE_MS);
+    return { out: await pending, port, ctx };
+  }
+
+  it("waits out a compaction a finished turn is running, and tells when it ends", async () => {
+    const d = withSession({ compacting: true });
+    const { out, port, ctx } = await start({ session: "plans", until: "done" }, d);
+    expect(out).toMatchObject({ watching: "done" });
+    // A phase event while it still compacts isn't the end.
+    port.phase("i9", "done", "done");
+    expect(ctx.posted).toEqual([]);
+    d.sessions!.find((x) => x.id === "i9")!.compacting = false;
+    port.compactionEnds("i9", "done");
+    expect(ctx.posted).toHaveLength(1);
+    expect(ctx.posted[0]).toMatch(/^Session "plans" \(Backend, id i9\) is now done\./);
+  });
+
+  it("isn't already done while a prompt of Duck's is still going in", async () => {
+    const d = withSession({});
+    const { out, port, ctx } = await start({ session: "plans", until: "done" }, d, (p) => p.pending.add("i9"));
+    expect(out).toMatchObject({ watching: "done" });
+    // The prompt goes in, the turn runs and ends.
+    port.pending.delete("i9");
+    port.phase("i9", "working", "done");
+    port.phase("i9", "done", "working");
+    expect(ctx.posted).toHaveLength(1);
+  });
+
+  it("sees a prompt sent alongside it start a turn before calling it already done", async () => {
+    const d = withSession({});
+    const s = d.sessions!.find((x) => x.id === "i9")!;
+    vi.useFakeTimers();
+    const port = fakePort(d);
+    const ctx = toolCtx(port);
+    const pending = waitForSession.run(waitForSession.schema.parse({ session: "plans", until: "done" }), ctx) as Promise<Record<string, unknown>>;
+    s.phase = "working"; // the prompt sent in the same batch was taken meanwhile
+    await vi.advanceTimersByTimeAsync(ALREADY_GRACE_MS);
+    expect(await pending).toMatchObject({ watching: "done" });
+
+    const quiet = withSession({});
+    expect((await start({ session: "plans", until: "done" }, quiet)).out).toEqual({ session: "plans", already: "done" });
+  });
+
+  it("notices on its own look an end its events didn't tell", async () => {
+    const d = withSession({ compacting: true });
+    const { ctx } = await start({ session: "plans", until: "done" }, d);
+    d.sessions!.find((x) => x.id === "i9")!.compacting = false; // no event came
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(ctx.posted).toHaveLength(1);
   });
 });
 
