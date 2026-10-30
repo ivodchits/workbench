@@ -40,6 +40,7 @@ import {
 } from "../ipc/pty";
 import { deletePastedImages, pastedImageDir } from "../ipc/os";
 import { encodePaste, promptChunks } from "../state/composer";
+import { inputEmpty } from "../state/remoteCreate";
 import { markInterrupted } from "../state/status";
 import { mirrorInstanceTaskNote } from "../state/registry";
 import { takeLaunchPrompt } from "../state/launchPrompt";
@@ -758,6 +759,11 @@ function inputAttachments(screen: string[]): number {
  *  drawing — the Ctrl+U burst makes the TUI take the Enter as part of the paste,
  *  and the prompt sits in the input unsent. 30 ms was enough in a scratch PTY. */
 const CLEAR_SETTLE_MS = 50;
+/** With no screen to watch the clear land on, how long it gets instead. */
+const CLEAR_BLIND_SETTLE_MS = 300;
+/** How long to wait for the box to show the clear, and how often to look. */
+const CLEAR_WAIT_MS = 1_000;
+const CLEAR_POLL_MS = 25;
 /** How long a pasted prompt is left before its Enter, for the same reason: read in
  *  one chunk with the paste by a busy TUI (finishing a compaction, say), the Enter
  *  becomes a newline in the input instead of a submit. */
@@ -765,9 +771,28 @@ const PASTE_SETTLE_MS = 50;
 
 const settle = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
-/** Empty the TUI's input (`CLEAR_INPUT_KEY`), then give it a moment to settle. */
-function clearInput(instanceId: string): Promise<void> {
-  return ptyWrite(instanceId, CLEAR_INPUT_KEY).then(() => settle(CLEAR_SETTLE_MS));
+/**
+ * Empty the TUI's input (`CLEAR_INPUT_KEY`) when it holds something, and see the
+ * TUI take the clear before the prompt goes in. A burst the TUI reads together
+ * with the paste — it's busy (starting, finishing a compaction) — is taken as part
+ * of the paste: Claude Code says "Removed 32 invisible characters · review and
+ * press Enter to send" and ignores the Enter, so the prompt sits in the box. In a
+ * scratch PTY (Claude Code 2.1.314) that lost the Enter of a prompt sent at
+ * PostCompact in about four runs out of ten, and never without the burst. So an
+ * empty box gets no burst, and a full one is pasted into only once it shows empty.
+ */
+async function clearInput(instanceId: string): Promise<void> {
+  const screen = readScreen(instanceId);
+  if (screen && inputEmpty(screen)) return;
+  await ptyWrite(instanceId, CLEAR_INPUT_KEY);
+  if (!screen) return settle(CLEAR_BLIND_SETTLE_MS);
+  const end = Date.now() + CLEAR_WAIT_MS;
+  while (Date.now() < end) {
+    await settle(CLEAR_POLL_MS);
+    const now = readScreen(instanceId);
+    if (!now || inputEmpty(now)) break;
+  }
+  await settle(CLEAR_SETTLE_MS);
 }
 
 /**

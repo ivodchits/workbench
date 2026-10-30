@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  AT_REST_REVIEW_MS,
   createAutopilot,
   detectChecklist,
   inWindow,
@@ -425,6 +426,60 @@ describe("autopilot", () => {
 /** Local time on 2026-10-21. */
 const at = (h: number, m = 0, day = 21) => new Date(2026, 9, day, h, m).getTime();
 
+describe("turn ends that never come", () => {
+  it("started while a /compact runs, reviews once the compaction ends (no Stop follows one)", async () => {
+    const t = setup();
+    t.s.compacting = true; // a finished turn, compacting: the phase still reads done
+    await start(t);
+    await flush();
+    expect(t.asked).toHaveLength(0);
+    expect(t.ap.get("w")).toMatchObject({ state: "running", doing: "working" });
+
+    t.s.compacting = false;
+    t.port.compactionEnds("w", "done");
+    await flush();
+    expect(t.asked).toHaveLength(1);
+    expect(t.calls("sendPrompt")).toEqual([["w", "continue the implementation"]]);
+  });
+
+  it("leaves a compaction it runs itself to its own wait, and a mid-turn one to the turn's end", async () => {
+    const t = setup({ phase: "working" });
+    await start(t);
+    t.port.compactionEnds("w", "working");
+    await flush();
+    expect(t.asked).toHaveLength(0);
+  });
+
+  it("reviews a session that sits at rest with no turn end heard (the watchdog)", async () => {
+    const t = setup({ at: at(9) });
+    await start(t);
+    await flush();
+    expect(t.calls("sendPrompt")).toHaveLength(1);
+    // The prompt was taken and its turn ran, but its Stop never arrived: the
+    // session reads done with nothing telling the autopilot.
+    await t.tick(at(9, 10));
+    expect(t.asked).toHaveLength(1);
+    await t.tick(at(9, 10) + AT_REST_REVIEW_MS);
+    expect(t.asked).toHaveLength(2);
+    expect(t.notices.some((n) => n.includes("no turn end was heard"))).toBe(true);
+    expect(t.calls("sendPrompt")).toHaveLength(2);
+  });
+
+  it("doesn't review while a prompt of its own, or Duck's, is still going in", async () => {
+    const t = setup({ at: at(9) });
+    await start(t);
+    await flush();
+    t.port.pending.add("w");
+    await t.tick(at(9, 10));
+    await t.tick(at(9, 20));
+    expect(t.asked).toHaveLength(1);
+    t.port.pending.delete("w");
+    await t.tick(at(9, 21));
+    await t.tick(at(9, 23));
+    expect(t.asked).toHaveLength(2);
+  });
+});
+
 describe("unattended runs (P2)", () => {
   it("detects the checklist from the plan's format", () => {
     expect(detectChecklist(PLAN)).toEqual([
@@ -581,6 +636,8 @@ describe("unattended runs (P2)", () => {
       await flush();
     }
     expect(t.ap.get("w")?.turnTimes).toHaveLength(2);
+    // The third turn is under way (at rest, the watchdog would review it instead).
+    t.s.phase = "working";
     // The third has run 25 minutes: under 3× the median (30).
     await t.tick(at(9, 45));
     expect(t.asked.filter((a) => a.purpose === "autopilot-stall")).toHaveLength(0);

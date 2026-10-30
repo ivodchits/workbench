@@ -142,6 +142,9 @@ const STALL_MIN_MS = 10 * 60_000;
 const TURN_TIMES = 20;
 /** How often running and waiting runs are looked at (stalls, resumes). */
 const TICK_MS = 60_000;
+/** A running autopilot whose session has sat at rest this long with no turn end
+ *  heard reviews it anyway (the watchdog, checked on the tick). */
+export const AT_REST_REVIEW_MS = 60_000;
 
 export const COMPACT_POLICIES = ["review", "always", "never"] as const;
 export type CompactPolicy = (typeof COMPACT_POLICIES)[number];
@@ -585,6 +588,8 @@ export function createAutopilot(deps: AutopilotDeps): AutopilotManager {
   const told = new Map<string, string>();
   /** Sessions whose long turn is being checked on. */
   const checking = new Set<string>();
+  /** When the tick first saw a running session at rest, waiting for a turn end. */
+  const restSince = new Map<string, number>();
   let disposed = false;
 
   function save(a: Autopilot): Autopilot {
@@ -615,9 +620,10 @@ export function createAutopilot(deps: AutopilotDeps): AutopilotManager {
 
   const title = (id: string) => port.listSessions().find((s) => s.id === id)?.title ?? id;
   const phaseOf = (id: string): SessionPhase | null => port.listSessions().find((s) => s.id === id)?.phase ?? null;
+  /** Between turns: not compacting, and no prompt of Duck's on its way in. */
   const atRest = (id: string) => {
     const s = port.listSessions().find((x) => x.id === id);
-    return !!s && !s.compacting && (s.phase === "done" || s.phase === "idle");
+    return !!s && !s.compacting && (s.phase === "done" || s.phase === "idle") && !port.promptPending(id);
   };
 
   /** Pause on something that needs you: the thread hears it and you get an alert. */
@@ -928,12 +934,35 @@ export function createAutopilot(deps: AutopilotDeps): AutopilotManager {
     else update(id, { held: null, doing: phase === "needs_you" ? "waiting" : "working" });
   }
 
-  /** The runs' timers: due resumes and stall checks. */
+  /**
+   * The watchdog: a run waiting on its session's turn (or question) whose session
+   * has been at rest since the last tick reviews the turn as if its end had been
+   * heard. The end can go unheard: a `/compact` ends with no turn end at all, and a
+   * hook can go missing. True when it started a review.
+   */
+  function restWatch(a: Autopilot, t: number): boolean {
+    const id = a.instanceId;
+    const waiting = a.state === "running" && (a.doing === "working" || a.doing === "waiting") && !busy.has(id);
+    if (!waiting || !atRest(id)) {
+      restSince.delete(id);
+      return false;
+    }
+    const since = restSince.get(id) ?? t;
+    restSince.set(id, since);
+    if (t - since < AT_REST_REVIEW_MS) return false;
+    restSince.delete(id);
+    log(id, { kind: "note", stepId: a.step, summary: "The session is at rest, but no turn end was heard; reviewing its last turn.", reason: null, compacted: null, prompt: null });
+    void review(id);
+    return true;
+  }
+
+  /** The runs' timers: due resumes, the watchdog and stall checks. */
   function tick(): void {
     if (disposed) return;
     const t = now();
     for (const a of [...all.values()]) {
       const id = a.instanceId;
+      if (restWatch(a, t)) continue;
       if (a.state === "paused" && a.resumeAt !== null && t >= a.resumeAt) void wake(id);
       else if (a.state === "running" && a.doing === "working" && a.turnStarted !== null && !busy.has(id)) {
         if (t >= (a.stallCheckAt ?? a.turnStarted + stallAfter(a.turnTimes))) void stallCheck(id);
@@ -1059,6 +1088,14 @@ export function createAutopilot(deps: AutopilotDeps): AutopilotManager {
     } else if (phase === "working" && a.doing !== "working") update(id, { doing: "working" });
   });
 
+  // A compaction from rest (a /compact the user or Duck sent) ends with no turn end:
+  // a run started meanwhile, or waiting on that turn, reviews it now.
+  const offCompaction = port.onCompactionEnd((id, phase) => {
+    const a = all.get(id);
+    if (!a || a.state !== "running" || busy.has(id)) return;
+    if ((phase === "done" || phase === "idle") && atRest(id)) void review(id);
+  });
+
   const offTick = (deps.every ?? everyInterval)(TICK_MS, tick);
 
   return {
@@ -1175,6 +1212,7 @@ export function createAutopilot(deps: AutopilotDeps): AutopilotManager {
       disposed = true;
       offTick();
       offPhase();
+      offCompaction();
       offBack();
       listeners.clear();
     },

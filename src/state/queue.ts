@@ -59,6 +59,11 @@ export function cancelQueued(instanceId: string): void {
   notify();
 }
 
+/** Every queued prompt, outside React (the delivery's periodic look). */
+export function allQueued(): QueuedPrompt[] {
+  return [...queue.values()];
+}
+
 /** Read a queued prompt outside React (the Stop-transition firing path). */
 export function getQueued(instanceId: string): QueuedPrompt | undefined {
   return queue.get(instanceId);

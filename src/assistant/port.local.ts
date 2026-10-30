@@ -38,7 +38,7 @@ import { readTranscript, readTranscriptBack } from "../ipc/transcript";
 import { readLastResponse } from "../transcript/feed";
 import { getSessionContext, getUsageLimits } from "../ipc/usageLimits";
 import { startPluginRunFor } from "../panels/pluginRun";
-import { deliverPrompt } from "../state/promptOutbox";
+import { deliverPrompt, promptPending } from "../state/promptOutbox";
 import { lastTypedAt, readScreen, readTail, release, submitPrompt } from "../panels/terminalPool";
 import { setAutopilotBadge } from "../state/autopilotBadges";
 import { alertAbout } from "../state/notifications";
@@ -496,6 +496,8 @@ export const localPort: WorkbenchPort = {
         if (tell && getLiveStatuses().get(id)?.phase === "needs_you") cb(id, phase, prev);
       });
     }),
+  onCompactionEnd: (cb) => onCompactionEnd((id, live) => cb(id, live.phase)),
+  promptPending,
 
   async listPlugins(projectId) {
     await loadPlugins(projectId);

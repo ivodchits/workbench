@@ -164,7 +164,7 @@ status dot.
 | `Stop` | finished its turn | ○ **Done / your move** |
 | `SubagentStart` / `SubagentStop` | helper agent activity | nested spinner under the card |
 | `SessionStart` (`source: startup` / `resume`) | session began/restored | register card; can set `sessionTitle` |
-| `PreCompact` | compacting context | transient "compacting…" state |
+| `PreCompact` / `PostCompact` | compacting context | transient "compacting…" overlay; `PostCompact` lifts it (a `/compact` has no `Stop`, so its end is `PostCompact`) |
 | `SessionEnd` | session closed | mark card closed |
 
 > Prefer `PermissionRequest` / `PermissionDenied` (dedicated, structured) over inferring

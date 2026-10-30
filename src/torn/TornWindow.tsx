@@ -24,6 +24,7 @@ import { GLYPH } from "../theme";
 import { initAppearance } from "../state/appearance";
 import { initPendingChoices } from "../state/pendingChoice";
 import { initStatusEngine, useLiveStatuses } from "../state/status";
+import { initStatusWatchdog } from "../state/statusWatchdog";
 import { loadTemplatesFor } from "../state/templates";
 import { initViewModes, setViewMode, toggleViewMode, useViewMode } from "../state/viewMode";
 import { loadKeymap, matchCommand } from "../keyboard/keymap";
@@ -75,6 +76,7 @@ function TornWindow({ params }: { params: TornParams }) {
     if (!isConsole) return;
     void initViewModes();
     initStatusEngine();
+    initStatusWatchdog();
     initPendingChoices();
     void loadKeymap();
     void loadTemplatesFor(null);

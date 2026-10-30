@@ -8,7 +8,7 @@
 
 import { readScreen } from "./terminalPool";
 import { typePrompt } from "../state/promptOutbox";
-import { atRest, cancelQueued, getQueued, setQueued } from "../state/queue";
+import { allQueued, atRest, cancelQueued, getQueued, setQueued } from "../state/queue";
 import { promptBoxReady } from "../state/remoteCreate";
 import { getLiveStatuses, onCompactionEnd, onStatusTransition } from "../state/status";
 
@@ -83,6 +83,32 @@ function watchStart(instanceId: string): void {
 let users = 0;
 let unsubscribe: (() => void) | null = null;
 
+/** How often queued prompts are looked at, and how long their session has to have
+ *  been at rest for the look to send one. */
+const QUEUE_WATCH_MS = 1_000;
+const QUEUE_REST_MS = 2_000;
+
+/**
+ * Send what's queued for a session that has sat at rest for a moment. The turn's
+ * end and the compaction's end send it at once; this is for one whose moment was
+ * missed. Only sessions with a live status: one that hasn't sent a hook yet is
+ * `watchStart`'s. Exported for tests.
+ */
+export function lookAtQueue(restSince: Map<string, number>, now: number): void {
+  const live = getLiveStatuses();
+  for (const { instanceId: id } of allQueued()) {
+    if (!live.has(id) || watching.has(id) || !atRest(live.get(id))) {
+      restSince.delete(id);
+      continue;
+    }
+    const since = restSince.get(id) ?? now;
+    restSince.set(id, since);
+    if (now - since < QUEUE_REST_MS) continue;
+    restSince.delete(id);
+    deliverQueued(id);
+  }
+}
+
 /** Send the prompt queued for `instanceId`, if any. Cleared first, so the prompt's
  *  own later Stop can't re-fire a stale entry. Also the queue's "force send": typed
  *  into a working TUI, the prompt goes into Claude Code's own queue, which takes it
@@ -108,9 +134,12 @@ export function initQueueDelivery(): () => void {
     const offCompaction = onCompactionEnd((instanceId, live) => {
       if (atRest(live)) deliverQueued(instanceId);
     });
+    const restSince = new Map<string, number>();
+    const look = setInterval(() => lookAtQueue(restSince, Date.now()), QUEUE_WATCH_MS);
     unsubscribe = () => {
       offTransition();
       offCompaction();
+      clearInterval(look);
     };
   }
   let held = true;

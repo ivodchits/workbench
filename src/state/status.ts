@@ -31,6 +31,15 @@
 //
 // Repaints are **debounced** (~150 ms): high-frequency tool events coalesce into
 // one repaint, while attention/turn-boundary transitions bypass it (instant).
+//
+// What Claude Code actually sends (checked against 2.1.314 in a scratch PTY,
+// 2026-10-30): a `/compact` fires `PreCompact` and `PostCompact` only, with no
+// `UserPromptSubmit` before it and no `Stop` after it, so a compaction is not a
+// turn and a session that compacts from rest is back at rest at `PostCompact`.
+// `SessionStart` never arrives over an http hook (not at startup, not for a
+// compaction), so nothing may wait on it. Hooks can still go missing (the app was
+// restarted mid-turn, a POST failed), so `statusWatchdog.ts` settles a card whose
+// screen has sat at an idle prompt box for a while (`reconcileStatus`).
 
 import { useSyncExternalStore } from "react";
 import { onHookEvent, type HookEnvelope, type HookEvent } from "../ipc/hooks";
@@ -162,7 +171,8 @@ export function reduceStatus(
       // PostCompact. It isn't a new turn: a mid-turn auto-compaction must leave a
       // working card working, or a queued prompt would be delivered mid-turn. Nor
       // is compaction over yet: the TUI is still finishing it, and a prompt typed
-      // now can sit in the box unsent. `PostCompact` lifts the overlay.
+      // now can sit in the box unsent. `PostCompact` lifts the overlay. (Over an
+      // http hook no `SessionStart` arrives at all today; kept for one that does.)
       if (event.source === "compact") return keep();
       return to("idle", true, { subagents: 0, activity: null });
     case "SessionEnd": {
@@ -280,6 +290,10 @@ export function onCompactionEnd(cb: CompactionEndListener): () => void {
 // `latest` is the authoritative state, updated synchronously on every event.
 // `committed` is what React sees via getSnapshot; it only advances on a flush
 // (instant, or the debounce timer firing), which is how repaints coalesce.
+// Code outside React reads `latest` (`getLiveStatuses`): the listeners run before
+// the flush, and one reading `committed` there saw the card as it was *before*
+// the event it was hearing about — the queue saw a just-finished turn as still
+// working and kept its prompt, which then waited for a transition that never came.
 
 let latest: ReadonlyMap<string, LiveStatus> = new Map();
 let committed = latest;
@@ -311,12 +325,8 @@ function scheduleFlush(): void {
   }, DEBOUNCE_MS);
 }
 
-/** Fold one accepted hook event into the store. */
-export function ingestHookEvent(envelope: HookEnvelope): void {
-  const { instanceId, receivedAt, event } = envelope;
-  const prev = latest.get(instanceId);
-  const { entry, instant } = reduceStatus(prev, event, receivedAt);
-  if (entry === prev) return; // no observable change (e.g. tool churn under needs-you)
+/** Store `entry` for `instanceId`, tell the listeners what changed, and repaint. */
+function commit(instanceId: string, prev: LiveStatus | undefined, entry: LiveStatus, instant: boolean): void {
   const next = new Map(latest);
   next.set(instanceId, entry);
   latest = next;
@@ -330,6 +340,39 @@ export function ingestHookEvent(envelope: HookEnvelope): void {
   }
   if (instant) flushNow();
   else scheduleFlush();
+}
+
+/** Fold one accepted hook event into the store. */
+export function ingestHookEvent(envelope: HookEnvelope): void {
+  const { instanceId, receivedAt, event } = envelope;
+  const prev = latest.get(instanceId);
+  const { entry, instant } = reduceStatus(prev, event, receivedAt);
+  if (entry === prev) return; // no observable change (e.g. tool churn under needs-you)
+  commit(instanceId, prev, entry, instant);
+}
+
+/**
+ * Settle a card whose hooks went missing: the watchdog (`statusWatchdog.ts`) saw
+ * its screen at an idle prompt box, with no spinner, for a while. A stuck
+ * compaction overlay lifts (its `PostCompact` was lost); a stuck "working" turns
+ * done (its `Stop` was lost). Listeners hear it as they would the hook, so a
+ * queued prompt goes in and the autopilot reviews the turn. A resting or
+ * needs-you card is left alone. Returns whether anything changed.
+ */
+export function reconcileStatus(instanceId: string, at: number = Math.floor(Date.now() / 1000)): boolean {
+  const prev = latest.get(instanceId);
+  if (!prev || (prev.phase !== "working" && !prev.compacting)) return false;
+  const phase: StatusPhase = prev.phase === "working" ? "done" : prev.phase;
+  const entry: LiveStatus = {
+    ...prev,
+    phase,
+    compacting: false,
+    subagents: phase === "done" ? 0 : prev.subagents,
+    updatedAt: at,
+    reason: "reconciled",
+  };
+  commit(instanceId, prev, entry, true);
+  return true;
 }
 
 /**
@@ -393,9 +436,10 @@ function getSnapshot(): ReadonlyMap<string, LiveStatus> {
   return committed;
 }
 
-/** Read live status outside React (e.g. keyboard-command handlers). */
+/** Read live status outside React (e.g. keyboard-command handlers, the prompt
+ *  queues): the latest state, including an event still waiting for its repaint. */
 export function getLiveStatuses(): ReadonlyMap<string, LiveStatus> {
-  return committed;
+  return latest;
 }
 
 /** Subscribe a component to the live status map (keyed by instance id). */

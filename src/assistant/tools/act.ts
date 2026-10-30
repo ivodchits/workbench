@@ -414,10 +414,24 @@ export function clearWatches(): void {
   for (const stop of [...watches.values()]) stop();
 }
 
+/** Before answering "already done": a prompt sent in the same batch of calls may
+ *  not have reached the session yet (Duck's calls run side by side). */
+export const ALREADY_GRACE_MS = 1_500;
+/** How often a watch looks again, for an end its events didn't tell. */
+const WATCH_LOOK_MS = 5_000;
+
+/** Where the session is for a watch: at rest only when it isn't compacting and no
+ *  prompt of Duck's is on its way in (its phase doesn't show those yet). A `/compact`
+ *  from a finished turn leaves the phase at done throughout. */
+const settledAs = (port: WorkbenchPort, s: SessionRef): SessionPhase | null =>
+  s.compacting || port.promptPending(s.id) ? null : s.phase;
+
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
 export const waitForSession = defineTool({
   name: "wait_for_session",
   description:
-    "Watch a session and get told when it finishes its turn (done), starts waiting on the user (needs_you), or either. Returns at once; the news arrives later as a <workbench_event> message, and then you tell the user. Use it for \"tell me when it's done\". Watches don't survive an app restart.",
+    "Watch a session and get told when it finishes its turn (done), starts waiting on the user (needs_you), or either. A compaction isn't the end: a session that is compacting, or that a prompt of yours is still going into, is waited for. Returns at once; the news arrives later as a <workbench_event> message, and then you tell the user. Use it for \"tell me when it's done\". Watches don't survive an app restart.",
   schema: z.object({
     ...sessionArgs,
     until: z.enum(["done", "needs_you", "either"]).default("either"),
@@ -431,33 +445,60 @@ export const waitForSession = defineTool({
   }),
   tier: "reversible",
   trust: onSession,
-  run({ session, project, until, timeoutMin }, ctx: ToolContext) {
+  async run({ session, project, until, timeoutMin }, ctx: ToolContext) {
     const { port, threadId } = ctx;
-    const s = findSession(port, session, project);
+    let s = findSession(port, session, project);
+    const current = () => port.listSessions().find((x) => x.id === s.id);
+    const there = (x: SessionRef | undefined) => {
+      const phase = x ? settledAs(port, x) : null;
+      return phase !== null && phase !== "working" && reached(until, phase);
+    };
     // A session that has just started reports no phase yet ("offline"): wait
     // anyway, the timeout covers one that never runs.
-    if (s.phase !== "working" && reached(until, s.phase))
-      return { session: s.title, already: s.phase };
+    if (there(s)) {
+      // A finished turn may be about to take a prompt sent alongside this call.
+      if (s.phase === "done" || s.phase === "idle") await sleep(ALREADY_GRACE_MS);
+      s = current() ?? s;
+      if (there(s)) return { session: s.title, already: s.phase };
+    }
 
     const key = `${threadId}:${s.id}`;
     watches.get(key)?.();
     const name = `"${s.title}" (${projectName(port, s)}, id ${s.id})`;
-    const off = port.onPhase((id, phase) => {
-      if (id !== s.id || !reached(until, phase)) return;
+    const tell = (phase: SessionPhase) => {
       stop();
-      const now = port.listSessions().find((x) => x.id === id);
+      const now = current();
       const why = phase === "needs_you" && now?.choice ? `: ${choiceLine(now.choice)}` : "";
       ctx.later(`Session ${name} is now ${phase}${why}. The user asked to be told.`);
+    };
+    const off = port.onPhase((id, phase) => {
+      if (id !== s.id || !reached(until, phase)) return;
+      // Done while it still compacts, or before Duck's prompt went in: not yet.
+      const now = current();
+      if (phase !== "ended" && now && settledAs(port, now) === null) return;
+      tell(phase);
     });
+    // A compaction from rest ends with no phase change.
+    const offCompaction = port.onCompactionEnd((id) => {
+      const now = current();
+      if (id === s.id && now && there(now)) tell(now.phase);
+    });
+    // And for anything both missed (a prompt that wasn't taken, say).
+    const look = setInterval(() => {
+      const now = current();
+      if (now && there(now)) tell(now.phase);
+    }, WATCH_LOOK_MS);
     const timer = setTimeout(() => {
       stop();
-      const now = port.listSessions().find((x) => x.id === s.id);
+      const now = current();
       ctx.later(
-        `Session ${name} is still ${now?.phase ?? "unknown"} after ${timeoutMin} minutes; stopped watching it.`,
+        `Session ${name} is still ${now?.compacting ? "compacting" : (now?.phase ?? "unknown")} after ${timeoutMin} minutes; stopped watching it.`,
       );
     }, timeoutMin * 60_000);
     function stop() {
       off();
+      offCompaction();
+      clearInterval(look);
       clearTimeout(timer);
       if (watches.get(key) === stop) watches.delete(key);
     }

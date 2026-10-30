@@ -158,7 +158,7 @@ export const listProjects = defineTool({
 export const listSessions = defineTool({
   name: "list_sessions",
   description:
-    "The Claude Code sessions in Workbench, with each one's live phase: working, needs_you (waiting on a prompt the user must answer; `needs` says what), done (finished its turn, the user's move), idle, ended, or offline (not running). Also its task, worktree branch and last activity. Call it fresh whenever the user asks what is going on or which sessions need them: phases change by the minute, so never rely on an earlier call.",
+    "The Claude Code sessions in Workbench, with each one's live phase: working, needs_you (waiting on a prompt the user must answer; `needs` says what), done (finished its turn, the user's move), idle, ended, or offline (not running); `compacting` while it compacts its context, which isn't over yet even when the phase reads done. Also its task, worktree branch and last activity. Call it fresh whenever the user asks what is going on or which sessions need them: phases change by the minute, so never rely on an earlier call.",
   schema: z.object({
     project: projectArg
       .optional()

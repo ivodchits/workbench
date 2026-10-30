@@ -82,15 +82,25 @@ export function promptBoxReady(screen: readonly string[]): boolean {
   return promptRow(screen) !== null;
 }
 
-/** The prompt box's caret row, or null when the screen shows no prompt box. */
-function promptRow(screen: readonly string[]): string | null {
+/** How far below the caret row the box's closing rule may be: a long prompt wraps
+ *  over many rows in a narrow console (the transcript view's hidden terminal). */
+const BOX_ROWS_MAX = 24;
+
+/** The row of the prompt box's caret, or -1 when the screen shows no prompt box. */
+function promptRowAt(screen: readonly string[]): number {
   for (let y = 1; y < screen.length; y++) {
     if (!PROMPT_ROW.test(screen[y]) || !RULE.test(screen[y - 1])) continue;
-    for (let below = y + 1; below < Math.min(screen.length, y + 6); below++) {
-      if (RULE.test(screen[below])) return screen[y];
+    for (let below = y + 1; below < Math.min(screen.length, y + 1 + BOX_ROWS_MAX); below++) {
+      if (RULE.test(screen[below])) return y;
     }
   }
-  return null;
+  return -1;
+}
+
+/** The prompt box's caret row, or null when the screen shows no prompt box. */
+function promptRow(screen: readonly string[]): string | null {
+  const y = promptRowAt(screen);
+  return y < 0 ? null : screen[y];
 }
 
 const squash = (s: string) => s.replace(/\s+/g, " ").trim();
@@ -120,6 +130,45 @@ export function inputHolds(screen: readonly string[], text: string): boolean {
 export function inputHasText(screen: readonly string[]): boolean {
   const row = promptRow(screen);
   return row !== null && squash(row.replace(PROMPT_ROW, "")) !== "";
+}
+
+/** The empty box's placeholder (`Try "fix typecheck errors"`). */
+const PLACEHOLDER = /^Try ".*"$/;
+
+/**
+ * True when the screen shows the prompt box with nothing typed in it: bare, or
+ * showing its placeholder. False with text in it, and when there's no box (a
+ * dialog, a console this window can't read): then it isn't known to be empty.
+ */
+export function inputEmpty(screen: readonly string[]): boolean {
+  const row = promptRow(screen);
+  if (row === null) return false;
+  const input = squash(row.replace(PROMPT_ROW, ""));
+  return input === "" || PLACEHOLDER.test(input);
+}
+
+/** Claude Code's spinner row while it works or compacts: a glyph, a verb with an
+ *  ellipsis, then its parenthesis (`✽ Compacting conversation… (15s · ↓ 1.0k
+ *  tokens)`, `* Fermenting… (running Stop hooks… 0/2 · 1s)`). A finished turn's
+ *  line (`✻ Crunched for 1m 51s · done 1:28 PM`) has no ellipsis. */
+const SPINNER_ROW = /^\s*\S\s+\S[^…]*…\s*\(/;
+/** How many rows above the prompt box the spinner may sit (tips go under it). */
+const SPINNER_ROWS_ABOVE = 8;
+
+/**
+ * True when the screen shows Claude Code at rest: its prompt box, with no
+ * spinner just above it and no "esc to interrupt". The watchdog's check that a
+ * turn or a compaction is over when its hook never came; anything it can't read
+ * (a dialog, a picker, the transcript mode) is not at rest.
+ */
+export function screenAtRest(screen: readonly string[]): boolean {
+  const y = promptRowAt(screen);
+  if (y < 0) return false;
+  if (screen.some((row) => /esc to interrupt/i.test(row))) return false;
+  for (let above = Math.max(0, y - 1 - SPINNER_ROWS_ABOVE); above < y - 1; above++) {
+    if (SPINNER_ROW.test(screen[above])) return false;
+  }
+  return true;
 }
 
 const TRUST_YES = /Yes, I trust this folder/;

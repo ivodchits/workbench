@@ -370,7 +370,7 @@ filesystem path. There is no `draggable` / `dataTransfer` use anywhere in `src/`
   | `PostToolUseFailure` | `error`, `is_interrupt`. Fires for a tool that ran and failed, **not** for a denial. |
   | `Stop` | `last_assistant_message`, `background_tasks`. |
   | `SubagentStart` / `SubagentStop` | `agent_id`, `agent_type`; stop adds `agent_transcript_path`. Tool events from inside a subagent carry `agent_id`. |
-  | `PreCompact` / `PostCompact` | `trigger`; post adds `compact_summary`. |
+  | `PreCompact` / `PostCompact` | `trigger`; post adds `compact_summary`. A `/compact` fires these two only: no `UserPromptSubmit` before it and no `Stop` after it (Claude Code 2.1.314, scratch PTY, 2026-10-30), so it is not a turn. |
   | `SessionStart` | **Never arrived** over the HTTP hook, at startup or after `/clear`. |
   | `PermissionDenied`, `StopFailure` | Not seen. |
 
