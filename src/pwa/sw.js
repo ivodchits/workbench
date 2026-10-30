@@ -2,18 +2,23 @@
 //
 // Its jobs are **installability + an offline shell**, and showing the desktop's
 // pushes (step R6) while the page is closed. The live data (statuses,
-// usage, actions) all flows over the WebSocket / `/api` and is never cached — when the
-// desktop Workbench is off, the cached shell still loads and the page shows "offline"
-// (the §11 "just shows offline" case) instead of a browser error screen.
+// usage, actions) all flows over the WebSocket / `/api` and is never cached here —
+// the page keeps its own copy of what it was last shown (`store.ts`). When the
+// desktop Workbench is off, the cached shell still loads and the page shows what
+// it kept, marked offline, instead of a browser error screen.
 //
 // Strategy:
 //   • Precache the static shell (the page, manifest, icons) on install.
 //   • `/api/*` and `/pair` → network only, never cached (auth + live state must be fresh).
-//   • Everything else (navigations + static assets) → network-first, falling back to the
-//     cache so the app opens with no connection.
+//   • Everything else (navigations + static assets) → stale-while-revalidate: the
+//     cached copy at once, so the page opens without waiting on the desktop (over
+//     Funnel, the page alone is a long download), and refreshed from the network
+//     behind it for the next open. With nothing cached, the network.
 //
 // The build (`vite.pwa.config.js`) writes the cache name: it carries a hash of the
-// shell, so any change to the page or its assets drops the old cache on activate.
+// shell, so any change to the page or its assets makes a new worker, which
+// precaches the new shell and drops the old cache on activate; the page hears the
+// new worker take over and offers a reload (`main.ts`).
 //
 // Sharing to Duck (assistant plan R3): Android posts a share to `/share` (the
 // manifest's `share_target`). A navigation can't carry the device token, so the
@@ -50,16 +55,28 @@ self.addEventListener("fetch", (event) => {
   // Never cache the live data plane — let it hit the network (and fail cleanly when off).
   if (url.pathname.startsWith("/api") || url.pathname === "/pair") return;
 
-  // Network-first so an updated shell propagates; fall back to cache (then the cached
-  // index for a bare navigation) when the desktop is unreachable.
+  // A navigation is the one page, whatever its query (`/?duck=chat`) or hash.
+  const key = req.mode === "navigate" ? "/" : req;
+  // The copy for the cache is taken before the page can read the answer.
+  let copy = null;
+  const refresh = fetch(req).then((res) => {
+    if (res.ok) copy = res.clone();
+    return res;
+  });
+  // Kept for the next open; the worker stays up until it is written.
+  event.waitUntil(
+    refresh
+      .then(() => copy && caches.open(CACHE).then((c) => c.put(key, copy)))
+      .catch(() => {}),
+  );
   event.respondWith(
-    fetch(req)
-      .then((res) => {
-        const copy = res.clone();
-        caches.open(CACHE).then((c) => c.put(req, copy));
-        return res;
-      })
-      .catch(() => caches.match(req).then((hit) => hit || caches.match("/"))),
+    caches.match(key).then((hit) => {
+      if (hit) {
+        refresh.catch(() => {}); // offline: the cached copy is all there is
+        return hit;
+      }
+      return refresh.catch(() => caches.match("/").then((home) => home || Response.error()));
+    }),
   );
 });
 
