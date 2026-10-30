@@ -142,6 +142,10 @@ export interface RemoteSnapshot {
   duck: RemoteDuck;
   /** Recent `create` requests, newest first. */
   created: RemoteCreated[];
+  /** Duck's threads and when each last changed (epoch ms), for the phone's unread
+   *  dot on its Duck button while Duck's own socket is closed; absent from older
+   *  desktops. */
+  duckThreads?: { id: string; updated: number }[];
 }
 
 /** The action set a remote client can drive (design §11 "Expose:"). */

@@ -14,7 +14,7 @@ import "./style.css";
 import { initConsole, openConsole, updateConsole } from "./console";
 import { initDashboard } from "./dashboard";
 import { $ } from "./dom";
-import { duckOnStart, initDuck, launchDuck, openDuck, takeLaunchThread } from "./duck";
+import { duckOnStart, initDuck, launchDuck, noteDuckThreads, openDuck, takeLaunchThread } from "./duck";
 import { takeLaunch } from "./launch";
 import { checkAccess, connect, forget, isPaired, loadToken, pair } from "./net";
 import { initNewSession, openNewSession } from "./newSession";
@@ -98,6 +98,7 @@ function showApp(): void {
       dashboard(snap);
       newSession(snap);
       notes.snapshot(snap);
+      noteDuckThreads(snap.duckThreads);
       updateConsole();
       if (launch && snap.instances.some((i) => i.id === launch)) {
         openConsole(launch);

@@ -176,6 +176,8 @@ export default function RemoteMirror(): null {
       autopilots: duckStore.autopilots,
     }),
   );
+  // The phone's unread dot on its Duck button: each thread's last change.
+  const duckThreadsKey = JSON.stringify(duckStore.threads.map((t) => ({ id: t.id, updated: t.updated })));
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
@@ -244,6 +246,7 @@ export default function RemoteMirror(): null {
           commitsToday: commits.get(p.id)?.since ?? null,
         })),
         duck: JSON.parse(duckKey) as RemoteDuck,
+        duckThreads: JSON.parse(duckThreadsKey) as { id: string; updated: number }[],
         created: [...created],
       };
       void remotePushSnapshot(JSON.stringify(snapshot)).catch(() => {});
@@ -254,7 +257,7 @@ export default function RemoteMirror(): null {
         timer.current = null;
       }
     };
-  }, [running, registry, consoles, statuses, limits, alerts, notif, created, choices, commits, latest, duckKey]);
+  }, [running, registry, consoles, statuses, limits, alerts, notif, created, choices, commits, latest, duckKey, duckThreadsKey]);
 
   return null;
 }

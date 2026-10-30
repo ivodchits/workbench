@@ -51,6 +51,13 @@ header { display: flex; align-items: center; justify-content: space-between; gap
   display: inline-flex; align-items: center; justify-content: center;
 }
 #duckBtn svg { display: block; }
+/* A thread with news (unread marks): a dot on the Duck button, and on the thread
+   picker for any thread but the one open. */
+#duckBtn { position: relative; }
+#duckBtn.unread::after, #duck-thread.unread::after {
+  content: ""; position: absolute; top: 5px; right: 5px; width: 9px; height: 9px;
+  border-radius: 50%; background: var(--accent); box-shadow: 0 0 0 2px var(--bg);
+}
 #newBtn { min-height: 38px; padding: 6px 12px; font-size: 13px; color: var(--accent); border-color: var(--accent); }
 #conn.live { color: var(--done); }
 #conn.off { color: var(--needs); }
@@ -347,7 +354,7 @@ body .wb-tx-open-plan { display: none; }
 #duck-overlay.hidden, #duck-chat.hidden, #duck-dock.hidden, .duck-panel.hidden, #duck-avatar.hidden { display: none; }
 #duck-head { display: flex; align-items: center; gap: 6px; margin-bottom: 4px; }
 #duck-head button { min-height: 38px; padding: 6px 10px; }
-#duck-thread { flex: 1; min-width: 0; text-align: left; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; background: transparent; border-color: transparent; }
+#duck-thread { position: relative; flex: 1; min-width: 0; text-align: left; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; background: transparent; border-color: transparent; }
 #duck-conn { font-size: 12px; white-space: nowrap; }
 #duck-conn.live { color: var(--done); }
 #duck-conn.off { color: var(--needs); }
@@ -447,6 +454,11 @@ button.duck-file:active { border-color: var(--accent); }
 #duck-thread-list button.current { border-color: var(--accent); }
 #duck-thread-list .dot { width: 1em; }
 #duck-thread-list .name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#duck-thread-list .unread .name { font-weight: 700; }
+#duck-thread-list .new {
+  align-self: center; min-width: 1.6em; padding: 0 6px; border-radius: 9px; font-size: 11px; font-weight: 700;
+  line-height: 18px; text-align: center; background: var(--accent); color: var(--bg);
+}
 #duck-thread-list .when, .duck-decision .when { color: var(--dim); font-size: 12px; white-space: nowrap; }
 #duck-pause { color: var(--needs); border-color: var(--needs); font-weight: 600; }
 
