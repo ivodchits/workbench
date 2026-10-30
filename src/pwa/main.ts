@@ -18,7 +18,7 @@ import { duckOnStart, initDuck, launchDuck, openDuck, takeLaunchThread } from ".
 import { takeLaunch } from "./launch";
 import { checkAccess, connect, forget, isPaired, loadToken, pair } from "./net";
 import { initNewSession, openNewSession } from "./newSession";
-import { initNotes } from "./notes";
+import { initNotes, openNotes } from "./notes";
 import { initPush, takeLaunchInstance } from "./push";
 
 /** How often the waiting view asks whether the desktop has decided. */
@@ -72,8 +72,8 @@ function showApp(): void {
   show("app");
   const dashboard = initDashboard({
     console: (id) => openConsole(id),
-    terminal: (id) => openConsole(id, "terminal"),
     newSession: openNewSession,
+    notes: openNotes,
   });
   const newSession = initNewSession(openConsole);
   const notes = initNotes();

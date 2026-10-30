@@ -101,6 +101,11 @@ function showView(which: "list" | "note"): void {
   $("notes-back").classList.toggle("hidden", which !== "note");
 }
 
+/** Open a project's notes over the dashboard (a card's pencil, or the notes bar). */
+export function openNotes(id: string): void {
+  void openProject(id);
+}
+
 async function openProject(id: string): Promise<void> {
   projectId = id;
   note = null;

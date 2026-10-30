@@ -2,50 +2,56 @@
 
 import type { RateLimits } from "../ipc/usageLimits";
 import type { RemoteInstance, RemoteSnapshot } from "../remote/protocol";
-import { createChoiceCard, type ChoiceCardView } from "./choice";
 import { $, el } from "./dom";
 import {
   attentionLine,
   byAttention,
+  cardStatus,
   countdown,
   glyphOf,
   metaLine,
   phaseOf,
   projectLabel,
+  sinceText,
   unusedProjects,
   waitMins,
 } from "./format";
-import { action } from "./net";
+
+/** The pencil on a card's notes button; fixed markup, never data. */
+const PENCIL =
+  '<svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true" fill="none" stroke="currentColor" ' +
+  'stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20h4L19 9l-4-4L4 16v4z"/>' +
+  '<path d="M13.5 6.5l4 4"/></svg>';
 
 interface Card {
   card: HTMLElement;
+  open: HTMLButtonElement;
   dot: HTMLElement;
-  title: HTMLElement;
-  badge: HTMLElement;
+  phase: HTMLElement;
+  when: HTMLElement;
+  body: HTMLElement;
   note: HTMLElement;
   stuck: HTMLElement;
   meta: HTMLElement;
-  approve: HTMLElement;
-  /** What it asks, when the desktop knows (step R5); else `approve` is shown. */
-  choice: ChoiceCardView;
-  // The attention cues of the last snapshot, so the ticker can repaint the badge.
+  // The last snapshot's cues, so the ticker can repaint the time between them.
   attn: boolean;
   needsSince: number | null;
-  escalated: boolean;
+  at: number | null;
+  /** What the body last drew, so an unchanged snapshot leaves it alone. */
+  drawn: string;
 }
 
-// Cards are reconciled in place, never rebuilt. Snapshots arrive every couple of
-// seconds (token ticks); replacing the DOM would blur a textarea mid-prompt and
-// close the on-screen keyboard. Moving a live element with appendChild keeps focus,
-// so reordering is safe.
+// Cards are reconciled in place, never rebuilt, so a snapshot every couple of
+// seconds (token ticks) doesn't redraw the list under a finger. Moving a live
+// element with appendChild keeps it, so reordering is safe.
 const cards = new Map<string, Card>();
 
-/** What a card can open: an instance's console (on its terminal, to answer a
- *  prompt there), or the new-session sheet. */
+/** What a card can open: an instance's console, the new-session sheet, or a
+ *  project's notes. */
 export interface Openers {
   console: (id: string) => void;
-  terminal: (id: string) => void;
   newSession: (projectId: string) => void;
+  notes: (projectId: string) => void;
 }
 
 let lastSnap: RemoteSnapshot | null = null;
@@ -58,99 +64,93 @@ export function instance(id: string): RemoteInstance | undefined {
   return lastSnap?.instances.find((it) => it.id === id);
 }
 
-function buildCard(id: string, open: Openers): Card {
-  const dot = el("span");
-  const title = el("span", "title");
-  const badge = el("span", "badge hidden", "needs you");
-  // Another session in this card's project (step R7), with no project to pick.
-  const here = el("button", "here", "+");
-  here.type = "button";
-  here.title = here.ariaLabel = "new session in this project";
-  here.onclick = () => {
+/** A small corner button on a card that acts on its project, not its session. */
+function cornerButton(cls: string, label: string, run: (projectId: string) => void, id: string): HTMLButtonElement {
+  const b = el("button", cls);
+  b.type = "button";
+  b.title = b.ariaLabel = label;
+  b.onclick = (e) => {
+    // Above the card's own tap target; never let it open the console too.
+    e.stopPropagation();
     const projectId = instance(id)?.projectId;
-    if (projectId) open.newSession(projectId);
+    if (projectId) run(projectId);
   };
+  return b;
+}
+
+function buildCard(id: string, open: Openers): Card {
+  // The title is the card's button: stretched over the whole card (`::after` in the
+  // stylesheet), so a tap anywhere opens the console, and a screen reader meets one
+  // plain button named by the session rather than a clickable div.
+  const title = el("button", "title");
+  title.type = "button";
+  title.onclick = () => open.console(id);
+  const notes = cornerButton("corner", "notes for this project", open.notes, id);
+  notes.innerHTML = PENCIL;
+  // Another session in this card's project (step R7), with no project to pick.
+  const here = cornerButton("corner", "new session in this project", open.newSession, id);
+  here.textContent = "+";
   const h2 = el("h2");
-  h2.append(dot, title, badge, here);
+  h2.append(title, notes, here);
+
+  // The phase in colour, and how long since it last did anything.
+  const dot = el("span", "dot");
+  const phase = el("span", "phase");
+  const when = el("span", "when");
+  const state = el("div", "state");
+  state.append(dot, phase, when);
+  const body = el("div", "status");
 
   const note = el("div", "note");
   // Possibly-stuck flag (step 4.6): a working card past the desktop threshold.
   const stuck = el("div", "stuck note hidden", "⚠ possibly stuck — working longer than usual");
   const meta = el("div", "meta");
 
-  // What it is waiting on, with its real answers (step R5).
-  const choice = createChoiceCard(true, {
-    choose: (choiceId, option) => action({ type: "choose", instanceId: id, choiceId, option }),
-    terminal: () => open.terminal(id),
-  });
-
-  // Prominent approve / deny — the one thing a phone is really for. Shown only
-  // when this instance is waiting on you and the desktop can't say on what.
-  const approve = el("div", "approve hidden");
-  const ok = el("button", "ok", "✓ approve");
-  ok.onclick = () => action({ type: "approve", instanceId: id });
-  const no = el("button", "no", "✗ deny");
-  no.onclick = () => action({ type: "deny", instanceId: id });
-  approve.append(ok, no);
-
-  const prompt = el("div", "prompt");
-  const text = el("textarea");
-  text.placeholder = "send a prompt…";
-  text.rows = 1;
-  const send = el("button", "", "send");
-  send.onclick = () => {
-    const body = text.value.trim();
-    if (!body) return;
-    action({ type: "prompt", instanceId: id, text: body });
-    text.value = "";
-  };
-  prompt.append(text, send);
-
-  const secondary = el("div", "secondary");
-  // Open the mirrored live console for this instance (step 4.5).
-  const consoleBtn = el("button", "", "console");
-  consoleBtn.onclick = () => open.console(id);
-  secondary.append(consoleBtn);
-  for (const type of ["interrupt", "start", "stop"] as const) {
-    const b = el("button", "", type);
-    b.onclick = () => action({ type, instanceId: id });
-    secondary.append(b);
-  }
-
   const card = el("div", "card");
-  card.append(h2, note, stuck, meta, choice.root, approve, prompt, secondary);
+  card.append(h2, state, body, note, stuck, meta);
   return {
-    card, dot, title, badge, note, stuck, meta, approve, choice,
-    attn: false, needsSince: null, escalated: false,
+    card, open: title, dot, phase, when, body, note, stuck, meta,
+    attn: false, needsSince: null, at: null, drawn: "",
   };
 }
 
-/** Paint the needs-you badge with its live "waiting Nm" and escalation emphasis.
- *  Apart from `updateCard` so the ticker can refresh the time between snapshots. */
-function paintBadge(c: Card): void {
-  if (!c.attn) return;
-  const m = waitMins(c.needsSince, nowSecs());
-  c.badge.textContent = m != null ? `needs you · ${m}m` : "needs you";
-  c.badge.classList.toggle("hot", c.escalated);
+/** Paint the live time: how long a needs-you has waited, else how long since the
+ *  session last did anything. Apart from `updateCard` so the ticker can refresh it
+ *  between snapshots. */
+function paintWhen(c: Card): void {
+  const now = nowSecs();
+  const m = c.attn ? waitMins(c.needsSince, now) : null;
+  const since = sinceText(c.at, now);
+  c.when.textContent = m != null ? `waiting ${m}m` : since === "now" ? "just now" : since ? `${since} ago` : "";
 }
 
 function updateCard(c: Card, it: RemoteInstance): void {
-  const [glyph, cls] = glyphOf(it);
+  const [glyph] = glyphOf(it);
+  const st = cardStatus(it);
   const attn = phaseOf(it) === "needs_you";
-  c.dot.className = "dot " + cls;
+  const escalated = attn && !!it.escalated;
+  c.card.className = `card ${st.cls}` + (attn ? " attn" : "") + (escalated ? " escalated" : "");
+  c.open.textContent = it.title || "(untitled)";
+  c.dot.className = "dot " + st.cls;
   c.dot.textContent = glyph;
-  c.title.textContent = it.title || "(untitled)";
+  c.phase.className = "phase " + st.cls + (escalated ? " hot" : "");
+  c.phase.textContent = st.label;
   c.attn = attn;
   c.needsSince = it.needsSince || null;
-  c.escalated = !!it.escalated;
-  c.badge.classList.toggle("hidden", !attn);
-  c.card.classList.toggle("attn", attn);
-  // Escalated (step 4.6): waited past the desktop threshold.
-  c.card.classList.toggle("escalated", attn && c.escalated);
-  const choice = attn ? (it.choice ?? null) : null;
-  c.choice.update(choice);
-  c.approve.classList.toggle("hidden", !attn || choice !== null);
-  paintBadge(c);
+  c.at = it.latest?.at ?? null;
+  paintWhen(c);
+
+  const key = [st.kind, st.name, st.text].join("\n");
+  if (key !== c.drawn) {
+    c.drawn = key;
+    c.body.className = `status ${st.kind}`;
+    const parts: (string | HTMLElement)[] = [];
+    if ((st.kind === "tool" || st.kind === "ask") && st.name) parts.push(el("span", "tname", st.name), " ");
+    if (st.kind === "prompt") parts.push(el("span", "tname", "›"), " ");
+    parts.push(st.text);
+    c.body.replaceChildren(...parts);
+  }
+
   c.note.textContent = it.taskNote || "";
   c.stuck.classList.toggle("hidden", !it.stuck);
   c.meta.textContent = metaLine(it);
@@ -246,12 +246,12 @@ export function initDashboard(open: Openers): (snap: RemoteSnapshot) => void {
     if (lastSnap) render(lastSnap, open);
   };
 
-  // Keep the usage countdowns and the "waiting Nm" badges (step 4.6) ticking
+  // Keep the usage countdowns and the cards' "waiting Nm" (step 4.6) and "ago" ticking
   // between snapshots: a held prompt emits no new state to push.
   setInterval(() => {
     if (!lastSnap) return;
     renderUsage(lastSnap.usageLimits);
-    for (const c of cards.values()) paintBadge(c);
+    for (const c of cards.values()) paintWhen(c);
   }, 1000);
 
   return (snap) => {

@@ -65,6 +65,21 @@ export interface RemoteInstance {
   stuck: boolean;
   /** The prompt it is waiting on, when the desktop knows what it asks (step R5). */
   choice: RemoteChoice | null;
+  /** What it did last, for the card's status lines; absent from older desktops. */
+  latest?: RemoteLatest;
+}
+
+/** A session's latest activity, as the phone's dashboard card shows it. */
+export interface RemoteLatest {
+  /** The latest tool call this turn: its title ("Bash", "Edit") and one-line
+   *  target; null between turns or before the first. */
+  tool: { name: string; target: string } | null;
+  /** The prompt that started this turn, cut short. */
+  prompt: string | null;
+  /** The start of the last reply, cut short. */
+  reply: string | null;
+  /** When the session last did anything (epoch seconds), if known. */
+  at: number | null;
 }
 
 /** A project the phone can start a session in (step R7). */

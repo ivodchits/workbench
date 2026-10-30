@@ -1,9 +1,10 @@
 import { describe, expect, it } from "vitest";
 
-import type { RemoteCreated, RemoteInstance } from "../remote/protocol";
+import type { RemoteChoice, RemoteCreated, RemoteInstance } from "../remote/protocol";
 import {
   attentionLine,
   byAttention,
+  cardStatus,
   countdown,
   createStatus,
   glyphOf,
@@ -11,6 +12,7 @@ import {
   newRequestId,
   phaseOf,
   projectLabel,
+  sinceText,
   unusedProjects,
   waitMins,
 } from "./format";
@@ -152,5 +154,70 @@ describe("new session", () => {
     expect(newRequestId(1, () => 0.5)).toBe(newRequestId(1, () => 0.5));
     expect(newRequestId(1, () => 0.5)).not.toBe(newRequestId(1, () => 0.25));
     expect(newRequestId(1, () => 0.5)).not.toBe(newRequestId(2, () => 0.5));
+  });
+});
+
+describe("cardStatus", () => {
+  const latest = (over: Partial<NonNullable<RemoteInstance["latest"]>>) => ({
+    tool: null,
+    prompt: null,
+    reply: null,
+    at: null,
+    ...over,
+  });
+  const choice = (over: Partial<RemoteChoice>): RemoteChoice => ({
+    id: "c",
+    kind: "permission",
+    toolName: "Bash",
+    input: { command: "npm test", description: "Run the tests" },
+    questions: [],
+    options: [],
+    terminalOnly: null,
+    sent: null,
+    ...over,
+  });
+
+  it("says what a needs-you asks", () => {
+    expect(cardStatus(inst({ phase: "needs_you", choice: choice({}) }))).toMatchObject({
+      label: "needs you",
+      cls: "needs",
+      kind: "ask",
+      name: "Bash",
+      text: "Run the tests",
+    });
+    const q = choice({ kind: "question", questions: [{ question: "Which one?" }, { question: "And?" }] as RemoteChoice["questions"] });
+    expect(cardStatus(inst({ phase: "needs_you", choice: q })).text).toBe("Which one? (+1 more)");
+    expect(cardStatus(inst({ phase: "needs_you" })).text).toBe("waiting on a prompt in its terminal");
+  });
+
+  it("shows a working session's tool call, else its prompt", () => {
+    const tool = { name: "Edit", target: "…/src/a.ts" };
+    expect(cardStatus(inst({ phase: "working", latest: latest({ tool, prompt: "fix it" }) }))).toMatchObject({
+      kind: "tool",
+      name: "Edit",
+      text: "…/src/a.ts",
+    });
+    expect(cardStatus(inst({ phase: "working", latest: latest({ prompt: "fix it" }) }))).toMatchObject({ kind: "prompt", text: "fix it" });
+    expect(cardStatus(inst({ phase: "working", compacting: true, latest: latest({ tool }) })).kind).toBe("quiet");
+  });
+
+  it("shows the last reply once the turn is over, and copes with an older desktop", () => {
+    expect(cardStatus(inst({ phase: "done", latest: latest({ reply: "All green." }) }))).toMatchObject({
+      label: "done",
+      kind: "reply",
+      text: "All green.",
+    });
+    expect(cardStatus(inst({ phase: "done" }))).toMatchObject({ kind: "quiet", text: "finished its turn" });
+    expect(cardStatus(inst({ phase: null, live: false, status: "idle" })).text).toBe("not running");
+  });
+});
+
+describe("sinceText", () => {
+  it("rounds down to the largest unit", () => {
+    expect(sinceText(null, 100)).toBe("");
+    expect(sinceText(95, 100)).toBe("now");
+    expect(sinceText(50, 100)).toBe("50s");
+    expect(sinceText(0.5, 3 * 3600 + 1)).toBe("3h");
+    expect(sinceText(1, 2 * 86400 + 5)).toBe("2d");
   });
 });
