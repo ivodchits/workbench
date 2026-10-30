@@ -45,7 +45,7 @@ button:disabled { opacity: 0.5; }
 
 /* ── header / attention banner ─────────────────────────── */
 header { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
-#conn { font-size: 12px; white-space: nowrap; margin-left: auto; }
+#conn { font-size: 12px; white-space: nowrap; margin-left: auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; cursor: pointer; }
 #duckBtn {
   min-height: 46px; min-width: 52px; padding: 4px 10px; border-color: #6b5a1f;
   display: inline-flex; align-items: center; justify-content: center;
@@ -61,6 +61,7 @@ header { display: flex; align-items: center; justify-content: space-between; gap
 #newBtn { min-height: 38px; padding: 6px 12px; font-size: 13px; color: var(--accent); border-color: var(--accent); }
 #conn.live { color: var(--done); }
 #conn.off { color: var(--needs); }
+#conn.wait { color: var(--dim); }
 .attention {
   margin: 12px 0 4px; padding: 12px 14px; border: 1px solid var(--line);
   border-radius: 8px; font-size: 15px; font-weight: 600;
@@ -518,3 +519,34 @@ button.duck-file:active { border-color: var(--accent); }
 .duck-sketch .bar button.close { border: none; font-size: 22px; }
 .duck-sketch .bar .gap { flex: 1; }
 .duck-sketch canvas { flex: 1; min-height: 0; width: 100%; touch-action: none; }
+
+/* ── offline: what waits to sync (outbox) ──────────────── */
+#tx-pending { display: flex; flex-direction: column; gap: 6px; margin: 8px 0; }
+#tx-pending.hidden { display: none; }
+#tx-pending .pending {
+  align-self: flex-end; max-width: 88%; padding: 6px 10px; border: 1px dashed var(--line);
+  border-radius: 8px; background: #181a1f;
+}
+#tx-pending .pending .text { white-space: pre-wrap; word-break: break-word; }
+#tx-pending .pending.failed, .duck-user.pending.failed .bubble { border-color: var(--needs); }
+#tx-pending .foot, .pending-foot { display: flex; align-items: center; gap: 8px; margin-top: 4px; font-size: 11px; color: var(--dim); }
+#tx-pending .foot .state, .pending-foot .state { flex: 1; }
+#tx-pending .foot button, .pending-foot button { min-height: 28px; padding: 2px 10px; font-size: 12px; }
+.duck-user.pending .bubble { border-style: dashed; opacity: 0.85; }
+#notes-list button.pending .when { color: var(--working); }
+
+/* ── offline strip: on every screen while offline ──────── */
+#offline-strip {
+  position: fixed; top: 0; left: 0; right: 0; z-index: 100;
+  display: flex; align-items: center; gap: 8px;
+  height: calc(34px + env(safe-area-inset-top, 0px)); padding: env(safe-area-inset-top, 0px) 10px 0;
+  background: #3a2330; color: #ffd6e6; border-bottom: 1px solid var(--needs); font-size: 12.5px;
+}
+#offline-strip.hidden { display: none; }
+#offline-strip-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: pointer; }
+#offline-strip button { min-height: 26px; padding: 2px 10px; font-size: 12px; background: transparent; color: #ffd6e6; border-color: var(--needs); }
+/* The page and each overlay start below it (they pad by --safe-t). */
+body.offline { --safe-t: calc(env(safe-area-inset-top, 0px) + 34px); }
+/* Offline, a card's phase is the last one synced: say so (its "N ago" stays true,
+   it counts from the session's own time). */
+body.offline #list .card .state .phase::after { content: " · cached"; color: var(--dim); font-weight: 400; }

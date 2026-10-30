@@ -13,6 +13,13 @@
 // The address is the Funnel one (`https://<pc>.<tailnet>.ts.net`). With
 // Tailscale on, the same name resolves to the tailnet address (MagicDNS), so
 // the phone goes the short way without a second address.
+//
+// Once Workbench's page is kept here (its service worker has it; the page says
+// so through the app, `offline_put("shell")`), an unreachable PC opens that page
+// anyway, marked offline (`?offline=1`): the sessions, Duck's threads and notes
+// as they were cached, with what's written there waiting to sync. The page's
+// offline strip leads back here (`?brain=1`) for the phone brain. Before the
+// page is kept, the phone brain is what an unreachable PC gets, as before.
 
 import { fastPath } from "../../src/pwa/fastPath";
 import * as app from "../../src/pwa/native";
@@ -21,6 +28,14 @@ import type { DuckEvent } from "../../src/assistant/protocol";
 import type { StoredMessage } from "../../src/ipc/assistant";
 
 const $ = <T extends HTMLElement = HTMLElement>(id: string) => document.getElementById(id) as T;
+
+/** The origin whose page the app has in its cache, as the page reported it. */
+async function keptShell(): Promise<string | null> {
+  return app.offlineGet("shell").catch(() => null);
+}
+
+/** Sent back from the page's offline strip: stay with the phone brain. */
+const brainAsked = new URLSearchParams(location.search).has("brain");
 
 function show(id: "setup" | "checking" | "offline"): void {
   for (const s of ["setup", "checking", "offline"]) $(s).hidden = s !== id;
@@ -41,16 +56,31 @@ async function reachable(address: string): Promise<boolean> {
   }
 }
 
-async function start(): Promise<void> {
+/** Open Workbench's page; `stay` keeps the phone brain when the PC doesn't
+ *  answer (asked for it, or trying again from here). */
+async function start(stay = false): Promise<void> {
   const address = await app.savedAddress();
   if (!address) {
     show("setup");
+    return;
+  }
+  const kept = (await keptShell()) === address;
+  $("kept").hidden = !kept;
+  if (stay && brainAsked && $("offline").hidden) {
+    // Straight from the page's strip: it just found the PC unreachable.
+    show("offline");
+    await openBrain();
     return;
   }
   show("checking");
   if (await reachable(address)) {
     // What opened the app waits in the app for the desktop's page to take it.
     location.replace(`${address}/`);
+    return;
+  }
+  if (kept && !stay) {
+    // The cached page, saying it's offline; the phone brain is a tap away there.
+    location.replace(`${address}/?offline=1`);
     return;
   }
   show("offline");
@@ -244,7 +274,7 @@ $("save").onclick = () => {
     $("setup-msg").textContent = "That's not it: it's an https address ending in .ts.net.";
     return;
   }
-  void app.saveAddress(address).then(start);
+  void app.saveAddress(address).then(() => start());
 };
 $("speak").onclick = () => void speak();
 $("send").onclick = () => {
@@ -255,7 +285,10 @@ $("send").onclick = () => {
 $("say").onkeydown = (e) => {
   if (e.key === "Enter") $("send").click();
 };
-$("retry").onclick = () => void start();
+$("retry").onclick = () => void start(true);
+$("kept").onclick = () => {
+  void app.savedAddress().then((a) => a && location.replace(`${a}/?offline=1`));
+};
 $("fresh").onclick = () => {
   brain?.fresh();
   void showThread(null);
@@ -292,4 +325,4 @@ void app.onLaunch((l) => {
   if (l.kind === "assist" || l.kind === "listen") void speak();
   else if (l.kind === "talk") note("Conversation mode needs Workbench; the Speak button works here.");
 });
-void start();
+void start(brainAsked);

@@ -80,7 +80,11 @@ import {
 import { fastPath } from "./fastPath";
 import { SpeechQueue } from "./speechQueue";
 import { micAvailable, record, type Recording } from "./mic";
-import { api, ApiError, checkAccess, openSocket } from "./net";
+import { api, ApiError, backoff, checkAccess, openSocket, ready } from "./net";
+import { flash, outbox } from "./link";
+import { arrivedIn, cacheOf, isEcho, seeded, validCache } from "./duckOffline";
+import type { OutboxItem } from "./outbox";
+import { load, saver } from "./store";
 import { SHARE_ASKS, shareBody, shareLines, shareMessage, STATUS_ASK, takeShare, TASK_LEAD, type Launch } from "./launch";
 import { createUploader } from "./uploads";
 import { pastedName, readyImage } from "./images";
@@ -91,7 +95,13 @@ import { openSketch } from "./sketch";
 import { sizeText, type AttachmentRef } from "../assistant/attachments";
 import { AFTER_MS, BEFORE_MS, createVoiceFiles, pillText, type Sent } from "../assistant/voiceFiles";
 
-const RECONNECT_MS = 2000;
+/** Failed tries since Duck's socket was last up: the next wait grows (`net.backoff`). */
+let retries = 0;
+/** Where Duck's threads are kept on the phone (`duckOffline.ts`). */
+const CACHE_KEY = "duck";
+const keepCache = saver(CACHE_KEY, 2000);
+/** The composer's unsent text, kept across reloads. */
+const DRAFT_KEY = "wb-duck-draft";
 const STICK_PX = 48;
 /** Held this long, the mic sends on release; a shorter press toggles. */
 const HOLD_MS = 350;
@@ -477,17 +487,26 @@ let onLive: (() => void) | null = null;
 
 function connect(): void {
   if (ws || !shown || (document.hidden && !talkAway())) return;
+  // Retrying while offline still says offline, not a "connecting…" every few seconds.
+  if (!$("duck-conn").classList.contains("off")) paintConn("connecting…");
+  // A device key's session first (`net.ready`), shared with the dashboard.
+  void ready().then(connectNow, connectNow);
+}
+
+function connectNow(): void {
+  if (ws || !shown || (document.hidden && !talkAway())) return;
   const socket = openSocket("/api/assistant");
   ws = socket;
   let opened = false;
-  paintConn("connecting…");
   socket.onopen = () => {
     opened = true;
+    retries = 0;
     paintConn("● live", "live");
     post({ type: "sync" });
     if (view.current) post({ type: "thread.open", threadId: view.current });
     void duckApp.connected();
     void pumpUploads();
+    void outbox.flush(); // what was written offline
     const then = onLive;
     onLive = null;
     then?.();
@@ -496,16 +515,17 @@ function connect(): void {
     if (ws !== socket) return;
     ws = null;
     uploader.drop();
+    outbox.unconfirmed("duck", "the link dropped before Duck had it");
     paintConn("○ offline", "off");
     if (talk || talkStarting) endTalk("The connection dropped, so conversation mode is off.");
     if (!shown || (document.hidden && !talkAway())) return;
     if (opened) {
-      retry = setTimeout(connect, RECONNECT_MS);
+      retry = setTimeout(connect, backoff(retries++));
       return;
     }
     void checkAccess().then((access) => {
       if (access === "refused" || access === "pending") deps.refused();
-      else retry = setTimeout(connect, RECONNECT_MS);
+      else retry = setTimeout(connect, backoff(retries++));
     });
   };
   socket.onerror = () => socket.close();
@@ -609,7 +629,19 @@ function onFrame(f: RemoteDuckFrame): void {
   if (r.adopted) {
     adopting = false;
     store(THREAD_KEY, view.current);
+    // Messages written offline for the new thread go to it.
+    for (const it of outbox.find("duck", (x) => x.threadId === null && x.state === "pending"))
+      outbox.update(it.id, { threadId: view.current });
+    void outbox.flush();
   }
+  if (f.type === "message") {
+    const m = f.message;
+    const echo = outbox.find("duck", (it) => it.state === "sent" && isEcho(it, m))[0];
+    if (echo) outbox.confirm(echo.id);
+  } else if (f.type === "history") {
+    for (const it of arrivedIn(outbox.find("duck"), f.threadId, f.messages)) outbox.confirm(it.id);
+  }
+  if (view.threads !== before.threads || view.messages !== before.messages || view.current !== before.current) keepCache(cacheOf(view));
   if (seen && f.type === "message") {
     const m = f.message;
     setSeen(viewing() === m.threadId ? markSeen(seen, m.threadId, m.ts) : noteMessage(seen, m));
@@ -673,6 +705,7 @@ function speakNative(f: RemoteDuckFrame): void {
 function openThread(id: string | null): void {
   view = { ...view, current: id };
   store(THREAD_KEY, id);
+  keepCache(cacheOf(view));
   stuck = true;
   if (id) post({ type: "thread.open", threadId: id });
   // The tap-to-talk screen stays until it's tapped.
@@ -746,12 +779,24 @@ function sendComposer(): void {
       void sendOrRun(text.value, dictated);
       text.value = "";
       fitComposer();
+      return;
+    }
+    // Anything else waits in the outbox (not a share or files: those stay here).
+    if (!shared && !staged.length && text.value.trim()) {
+      outbox.add({ kind: "duck", threadId: view.current, text: text.value.trim() });
+      text.value = "";
+      store(DRAFT_KEY, null);
+      dictated = false;
+      fitComposer();
+      stuck = true;
+      flash("offline — message kept, sends when back");
     }
     return;
   }
   if (shared) sendShare(text.value, dictated);
   else void sendOrRun(text.value, dictated);
   text.value = "";
+  store(DRAFT_KEY, null);
   dictated = false;
   fitComposer();
 }
@@ -1316,19 +1361,62 @@ function paintItems(): void {
   list.replaceChildren();
   const id = view.current;
   if (!id) {
-    list.append(el("div", "duck-empty muted", "A new thread. Ask Duck anything about your sessions."));
+    const waiting = outbox.find("duck", (x) => x.threadId === null);
+    if (!waiting.length) list.append(el("div", "duck-empty muted", "A new thread. Ask Duck anything about your sessions."));
+    for (const it of waiting) list.append(pendingView(it));
     return;
   }
   const messages = view.messages[id];
   if (!messages) {
-    list.append(el("div", "duck-empty muted", "loading…"));
+    list.append(el("div", "duck-empty muted", ws?.readyState === WebSocket.OPEN ? "loading…" : "not kept on this phone — it loads when Workbench is back"));
+    for (const it of outbox.find("duck", (x) => x.threadId === id)) list.append(pendingView(it));
     return;
   }
   const active = (view.states[id] ?? "idle") !== "idle";
   for (const it of toItems(messages)) list.append(itemView(it, active));
   // The thread's autopilots, last: where each run is, with its buttons.
   for (const a of view.autopilots.filter((x) => x.threadId === id)) list.append(autopilotCard(a));
+  for (const it of outbox.find("duck", (x) => x.threadId === id)) list.append(pendingView(it));
   if (stuck) toEnd();
+}
+
+/** A message written offline, still in the outbox: how it stands, and for one
+ *  that may not have arrived, send it again or take it back to edit. */
+function pendingView(it: Extract<OutboxItem, { kind: "duck" }>): HTMLElement {
+  const wrap = el("div", `duck-user pending ${it.state}`);
+  const box = el("div", "bubble", it.text);
+  wrap.append(box);
+  const label =
+    it.state === "failed"
+      ? `✗ ${it.error ?? "not sent"}`
+      : it.state === "sent"
+        ? "✓ sent — waiting for Duck"
+        : it.state === "sending"
+          ? "⟳ sending…"
+          : "⧗ waiting to send";
+  const foot = el("div", "src pending-foot");
+  foot.append(el("span", "state", label));
+  if (it.state === "failed") {
+    const again = el("button", "", "send again");
+    again.type = "button";
+    again.onclick = () => outbox.retry(it.id);
+    foot.append(again);
+  }
+  if (it.state === "failed" || it.state === "pending") {
+    const back = el("button", "", "edit");
+    back.type = "button";
+    back.onclick = () => {
+      const text = $<HTMLTextAreaElement>("duck-text");
+      text.value = text.value.trim() ? `${text.value}\n${it.text}` : it.text;
+      store(DRAFT_KEY, text.value);
+      outbox.remove(it.id);
+      fitComposer();
+      text.focus();
+    };
+    foot.append(back);
+  }
+  box.append(foot);
+  return wrap;
 }
 
 function autopilotCard(a: AutopilotView): HTMLElement {
@@ -1694,8 +1782,8 @@ function fitComposer(): void {
 /** Open Duck, on `threadId` when given. */
 export function openDuck(threadId?: string): void {
   if (threadId) {
-    if (view.synced && view.threads.some((t) => t.id === threadId)) openThread(threadId);
-    else wantThread = threadId;
+    if (view.threads.some((t) => t.id === threadId)) openThread(threadId);
+    if (!view.synced || !view.threads.some((t) => t.id === threadId)) wantThread = threadId;
   }
   if (!shown) {
     shown = true;
@@ -1782,6 +1870,27 @@ export function takeLaunchThread(): string | null {
  *  task's card); `refused` is the device losing access. */
 export function initDuck(d: typeof deps): void {
   deps = d;
+  // What was kept, until Duck's socket syncs (`duckOffline.ts`).
+  void load<unknown>(CACHE_KEY).then((kept) => {
+    if (!validCache(kept) || view.synced) return;
+    view = seeded(view, kept);
+    paint("open");
+  });
+  outbox.handle("duck", async (it) => {
+    if (it.kind !== "duck") return { failed: "not a Duck message" };
+    if (ws?.readyState !== WebSocket.OPEN) return "wait";
+    if (it.threadId === null) {
+      // A new thread, one at a time: the rest follow it once Duck names it (and
+      // the view takes it, unless another thread was opened meanwhile).
+      if (adopting) return "wait";
+      if (view.current === null) adopting = true;
+    }
+    post({ type: "send", threadId: it.threadId, text: it.text });
+    return "sent";
+  });
+  outbox.subscribe(() => {
+    if (shown && panel === "chat") paintItems();
+  });
   seen = loadSeen();
   duckApp.initApp({
     post,
@@ -1881,8 +1990,14 @@ export function initDuck(d: typeof deps): void {
   });
 
   const text = $<HTMLTextAreaElement>("duck-text");
+  try {
+    text.value = localStorage.getItem(DRAFT_KEY) ?? "";
+  } catch {
+    // no storage
+  }
   text.addEventListener("input", () => {
     if (!text.value.trim()) dictated = false;
+    store(DRAFT_KEY, text.value.trim() ? text.value : null);
     fitComposer();
   });
   text.addEventListener("keydown", (e) => {
@@ -1973,6 +2088,7 @@ export function initDuck(d: typeof deps): void {
       stopAvatar();
       disconnect();
     } else {
+      retries = 0;
       connect();
       startAvatar();
       seeCurrent();

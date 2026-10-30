@@ -8,13 +8,22 @@
 // desktop answers with the note as it is now and this shows both — keep mine as a
 // new note, overwrite, or drop mine. Nothing is overwritten unseen. Typed text is
 // kept on the device until it is saved, and offered again after a reload.
+//
+// Offline, the counts, each list and each note read are kept on the phone
+// (`store.ts`) and shown when the desktop can't be reached. A save or a quick
+// note made then waits in the outbox (`outbox.ts`) and goes when the link is
+// back, the save still naming its base revision: one that meets a newer note
+// stays, its text kept as the draft, for this conflict view to settle.
 
 import { renderMarkdown } from "../panels/Editor/markdown";
 import type { RemoteSnapshot } from "../remote/protocol";
 import { $, el } from "./dom";
 import { projectLabel } from "./format";
-import { action, api, ApiError } from "./net";
+import { age, outbox } from "./link";
+import { action, api, ApiError, unreachable } from "./net";
 import { dropDraft, loadDraft, nameFromText, saveDraft } from "./noteText";
+import type { OutboxItem } from "./outbox";
+import { load, save as keep } from "./store";
 
 interface NoteMeta {
   id: string;
@@ -41,6 +50,23 @@ let note: Note | null = null;
 let editing = false;
 let conflict: Conflict | null = null;
 
+// What is kept on the phone, by key.
+const COUNTS_KEY = "notes-counts";
+const listKey = (project: string) => `notes-list:${project}`;
+const noteKey = (project: string, id: string) => `note:${project}:${id}`;
+/** A kept copy, with when it was the desktop's. */
+interface Kept<T> {
+  value: T;
+  at: number;
+}
+
+const offline = unreachable;
+
+/** The waiting saves and quick notes of a project. */
+const waitingSaves = (project: string, id?: string) =>
+  outbox.find("noteSave", (it) => it.projectId === project && (id === undefined || it.noteId === id));
+const waitingCreates = (project: string) => outbox.find("noteCreate", (it) => it.projectId === project);
+
 const dirty = () => editing && note !== null && $<HTMLTextAreaElement>("note-edit").value !== note.content;
 
 function message(text: string): void {
@@ -50,7 +76,7 @@ function message(text: string): void {
 }
 
 function errorText(e: unknown): string {
-  return e instanceof ApiError ? e.message : "Can’t reach Workbench — try again when it’s back.";
+  return !unreachable(e) && e instanceof ApiError ? e.message : "Can’t reach Workbench — try again when it’s back.";
 }
 
 function ago(ms: number): string {
@@ -67,6 +93,7 @@ async function refreshCounts(): Promise<void> {
   try {
     const list = await api<{ projectId: string; count: number }[]>("/api/notes");
     counts = new Map(list.map((c) => [c.projectId, c.count]));
+    void keep(COUNTS_KEY, list);
   } catch {
     return; // offline: keep the last counts
   }
@@ -118,11 +145,20 @@ async function openProject(id: string): Promise<void> {
 
 async function loadList(): Promise<void> {
   if (!projectId) return;
+  const id = projectId;
   try {
-    notes = await api<NoteMeta[]>("/api/notes/list", { query: { project: projectId } });
+    notes = await api<NoteMeta[]>("/api/notes/list", { query: { project: id } });
+    void keep(listKey(id), { value: notes, at: Date.now() } satisfies Kept<NoteMeta[]>);
   } catch (e) {
-    message(errorText(e));
-    return;
+    const kept = offline(e) ? await load<Kept<NoteMeta[]>>(listKey(id)) : undefined;
+    if (projectId !== id) return;
+    if (kept) {
+      notes = kept.value;
+      message(`Workbench can’t be reached — the list as it was ${age(kept.at)}.`);
+    } else {
+      notes = [];
+      message(errorText(e));
+    }
   }
   renderList();
 }
@@ -130,18 +166,47 @@ async function loadList(): Promise<void> {
 function renderList(): void {
   const q = $<HTMLInputElement>("notes-filter").value.trim().toLowerCase();
   $("notes-filter").classList.toggle("hidden", notes.length <= 4);
-  $("notes-empty").classList.toggle("hidden", notes.length > 0);
+  const made = projectId ? waitingCreates(projectId) : [];
+  $("notes-empty").classList.toggle("hidden", notes.length + made.length > 0);
   $("notes-list").replaceChildren(
+    // Quick notes made offline, not on the desktop yet.
+    ...made.map((it) => {
+      const b = el("button", "pending");
+      b.type = "button";
+      b.append(el("span", "name", it.name), el("span", "when", pendingLabel(it)));
+      b.onclick = () => waitingNote(it);
+      return b;
+    }),
     ...notes
       .filter((n) => !q || n.id.toLowerCase().includes(q))
       .map((n) => {
         const b = el("button");
         b.type = "button";
-        b.append(el("span", "name", n.id), el("span", "when", ago(n.modified)));
+        const waiting = projectId ? waitingSaves(projectId, n.id)[0] : undefined;
+        b.append(el("span", "name", n.id), el("span", "when", waiting ? pendingLabel(waiting) : ago(n.modified)));
+        if (waiting) b.classList.add("pending");
         b.onclick = () => void openNote(n.id);
         return b;
       }),
   );
+}
+
+/** How a waiting item stands, shortly. */
+function pendingLabel(it: OutboxItem): string {
+  return it.state === "failed" ? "✗ not synced" : it.state === "sending" ? "⟳ syncing" : "⧗ waiting";
+}
+
+/** A quick note made offline: its text, with a way to take it back. */
+function waitingNote(it: Extract<OutboxItem, { kind: "noteCreate" }>): void {
+  const why = it.state === "failed" ? ` It wasn’t added: ${it.error ?? "refused"}.` : " It goes to Workbench when it’s back.";
+  if (window.confirm(`“${it.name}” waits on this phone.${why}\n\nOK keeps it; Cancel takes it back into the quick-note field.`)) {
+    if (it.state === "failed") outbox.retry(it.id);
+    return;
+  }
+  const field = $<HTMLTextAreaElement>("notes-quick");
+  field.value = field.value.trim() ? `${field.value}\n${it.content}` : it.content;
+  outbox.remove(it.id);
+  renderList();
 }
 
 async function addQuick(): Promise<void> {
@@ -155,7 +220,15 @@ async function addQuick(): Promise<void> {
     field.value = "";
     await openNote(made.id);
   } catch (e) {
-    message(errorText(e));
+    if (!offline(e)) {
+      message(errorText(e));
+      return;
+    }
+    // Kept for when Workbench is back.
+    outbox.add({ kind: "noteCreate", projectId, name: nameFromText(text), content: text + "\n" });
+    field.value = "";
+    message("Kept on the phone — it’s added when Workbench is back.");
+    renderList();
   }
 }
 
@@ -163,17 +236,35 @@ async function addQuick(): Promise<void> {
 
 async function openNote(id: string): Promise<void> {
   if (!projectId) return;
+  const project = projectId;
   let read: Note;
+  let keptAt: number | null = null;
   try {
-    read = await api<Note>("/api/notes/read", { query: { project: projectId, id } });
+    read = await api<Note>("/api/notes/read", { query: { project, id } });
+    void keep(noteKey(project, id), { value: read, at: Date.now() } satisfies Kept<Note>);
   } catch (e) {
-    message(errorText(e));
-    return;
+    const kept = offline(e) ? await load<Kept<Note>>(noteKey(project, id)) : undefined;
+    if (!kept) {
+      message(offline(e) ? "Workbench can’t be reached, and this note isn’t kept on the phone yet." : errorText(e));
+      return;
+    }
+    read = kept.value;
+    keptAt = kept.at;
   }
+  if (projectId !== project) return;
   note = read;
   editing = false;
   conflict = null;
-  message("");
+  const waiting = waitingSaves(project, id)[0];
+  message(
+    waiting
+      ? waiting.state === "failed"
+        ? `Your edit didn’t sync: ${waiting.error ?? "refused"}. Restore it below to settle it.`
+        : "Your edit waits on this phone and goes when Workbench is back."
+      : keptAt !== null
+        ? `Workbench can’t be reached — the note as it was ${age(keptAt)}.`
+        : "",
+  );
   $("notes-title").textContent = read.id;
   showView("note");
   renderNote();
@@ -255,10 +346,26 @@ async function save(overwrite = false): Promise<boolean> {
     note = { ...note, content, revision };
     conflict = null;
     dropDraft(projectId, note.id);
+    settled(projectId, note);
     editing = false;
     renderNote();
     return true;
   } catch (e) {
+    if (offline(e)) {
+      // Kept as the draft, and in line for when Workbench is back.
+      const body = { projectId, noteId: note.id, content, base: overwrite ? null : note.revision };
+      const already = waitingSaves(projectId, note.id)[0];
+      if (already) {
+        outbox.update(already.id, body);
+        if (already.state === "failed") outbox.retry(already.id);
+      } else outbox.add({ kind: "noteSave", ...body });
+      saveDraft(projectId, note.id, { content, base: note.revision });
+      editing = false;
+      note = { ...note, content };
+      renderNote();
+      message("Saved on the phone — it goes to Workbench when it’s back.");
+      return true;
+    }
     if (e instanceof ApiError && e.status === 409) {
       conflict = { theirs: (e.body.current as Note | null) ?? null };
       message(""); // the conflict says it, with the versions
@@ -277,6 +384,7 @@ async function keepMineAsNew(): Promise<void> {
       body: { project: projectId, name: `${old} (phone)`, content },
     });
     dropDraft(projectId, old);
+    for (const it of waitingSaves(projectId, old)) outbox.remove(it.id);
     await openNote(made.id);
   } catch (e) {
     message(errorText(e));
@@ -286,6 +394,7 @@ async function keepMineAsNew(): Promise<void> {
 async function dropMine(): Promise<void> {
   if (!note || !projectId) return;
   dropDraft(projectId, note.id);
+  for (const it of waitingSaves(projectId, note.id)) outbox.remove(it.id);
   editing = false;
   conflict = null;
   if (await exists(note.id)) await openNote(note.id);
@@ -406,6 +515,51 @@ async function changed(id: string): Promise<void> {
   }
 }
 
+/** A save of `n` went through: the kept copy is the desktop's again, and
+ *  nothing about it waits any more. */
+function settled(project: string, n: Note): void {
+  void keep(noteKey(project, n.id), { value: n, at: Date.now() } satisfies Kept<Note>);
+  for (const it of waitingSaves(project, n.id)) if (it.state !== "sending") outbox.remove(it.id);
+}
+
+// The outbox's senders for notes (`link.ts` flushes them when the link is back).
+outbox.handle("noteSave", async (it) => {
+  if (it.kind !== "noteSave") return { failed: "not a note" };
+  try {
+    const { revision } = await api<{ revision: string }>("/api/notes/save", {
+      body: { project: it.projectId, id: it.noteId, content: it.content, base: it.base },
+    });
+    dropDraft(it.projectId, it.noteId);
+    const saved = { id: it.noteId, content: it.content, revision };
+    void keep(noteKey(it.projectId, it.noteId), { value: saved, at: Date.now() } satisfies Kept<Note>);
+    if (note && projectId === it.projectId && note.id === it.noteId && !editing) {
+      note = saved;
+      renderNote();
+      message("");
+    }
+    return "done";
+  } catch (e) {
+    if (offline(e)) return "wait";
+    if (e instanceof ApiError && e.status === 409) {
+      const theirs = (e.body.current as Note | null) ?? null;
+      if (theirs && theirs.content === it.content) return "done"; // it got there already
+      // The draft keeps the text; opening the note offers it back against theirs.
+      return { failed: theirs ? "the note changed on the desktop" : "the note was deleted on the desktop" };
+    }
+    return { failed: errorText(e) };
+  }
+});
+
+outbox.handle("noteCreate", async (it) => {
+  if (it.kind !== "noteCreate") return { failed: "not a note" };
+  try {
+    await api<Note>("/api/notes/create", { body: { project: it.projectId, name: it.name, content: it.content } });
+    return "done";
+  } catch (e) {
+    return offline(e) ? "wait" : { failed: errorText(e) };
+  }
+});
+
 /** Wire the notes screens; returns what the snapshot and the socket feed. */
 export function initNotes(): {
   snapshot: (s: RemoteSnapshot) => void;
@@ -426,6 +580,15 @@ export function initNotes(): {
   $("note-overwrite").onclick = () => void save(true);
   $("note-drop").onclick = () => void dropMine();
   // Every keystroke is kept on the device until it is saved.
+  // What was kept, until the desktop answers.
+  void load<{ projectId: string; count: number }[]>(COUNTS_KEY).then((list) => {
+    if (!list || counts.size) return;
+    counts = new Map(list.map((c) => [c.projectId, c.count]));
+    renderBar();
+  });
+  outbox.subscribe(() => {
+    if (projectId && !note) renderList();
+  });
   $<HTMLTextAreaElement>("note-edit").oninput = () => {
     if (note && projectId) {
       saveDraft(projectId, note.id, { content: $<HTMLTextAreaElement>("note-edit").value, base: note.revision });

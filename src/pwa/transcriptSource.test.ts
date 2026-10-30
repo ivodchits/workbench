@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { TranscriptFrame } from "../remote/protocol";
 import { createFeed } from "../transcript/feed";
+import { fresh, type TranscriptCache } from "./transcriptCache";
 import { transcriptSource, type SocketLike } from "./transcriptSource";
 
 class FakeSocket implements SocketLike {
@@ -135,6 +136,97 @@ describe("phone transcript source", () => {
     expect(sockets[0].sent).toHaveLength(1);
     sockets[0].close();
     await tick();
+    expect(feed.loading).toBe(false);
+    expect(feed.hasEarlier).toBe(true);
+    feed.stop();
+  });
+});
+
+describe("phone transcript source with a kept tail", () => {
+  let sockets: FakeSocket[];
+  let saved: TranscriptCache[];
+  const source = (initial: TranscriptCache | null) =>
+    transcriptSource("i1", {
+      open: (params) => {
+        const s = new FakeSocket(params);
+        sockets.push(s);
+        return s;
+      },
+      retryMs: 10,
+      waitMs: 100,
+      cache: { initial, save: (c) => saved.push(c) },
+    });
+
+  beforeEach(() => {
+    sockets = [];
+    saved = [];
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  });
+  afterEach(() => vi.useRealTimers());
+
+  it("keeps what it sees: history pages and live lines", async () => {
+    const feed = createFeed(source(null), () => {});
+    await tick();
+    sockets[0].open();
+    sockets[0].frame({ type: "start", sessionId: "s1", offset: 100 });
+    await tick();
+    sockets[0].frame({ type: "page", id: 1, sessionId: "s1", lines: [user("a", "earlier")], offset: 0, nextOffset: 100, end: 100 });
+    await tick();
+    sockets[0].frame({ type: "lines", sessionId: "s1", lines: [user("b", "live")], offset: 100, nextOffset: 180 });
+    const last = saved[saved.length - 1];
+    expect(last).toMatchObject({ sessionId: "s1", start: 0, end: 180 });
+    expect(last.chunks.flatMap((c) => c.lines)).toHaveLength(2);
+    feed.stop();
+  });
+
+  it("opens on the kept tail at once, offline, and resumes after it", async () => {
+    let kept = fresh("s1", 40);
+    kept = { ...kept, end: 120, chunks: [{ offset: 40, nextOffset: 120, lines: [user("a", "kept one"), user("b", "kept two")] }] };
+    const feed = createFeed(source(kept), () => {});
+    await tick();
+    // Shown before any socket opened.
+    expect(feed.items).toHaveLength(2);
+    expect(feed.ready).toBe(true);
+    expect(sockets[0].params).toEqual({ instance: "i1", session: "s1", offset: "120" });
+    // The earlier history waits for the socket…
+    expect(feed.hasEarlier).toBe(true);
+    const more = feed.loadEarlier();
+    sockets[0].open();
+    sockets[0].frame({ type: "resume", sessionId: "s1", offset: 120 });
+    await tick();
+    expect(sockets[0].sent).toEqual([{ type: "back", id: 1, before: 40 }]);
+    sockets[0].frame({ type: "page", id: 1, sessionId: "s1", lines: [user("z", "older")], offset: 0, nextOffset: 40, end: 120 });
+    await more;
+    expect(feed.items).toHaveLength(3);
+    // …and the live stream goes on from the cache's end.
+    sockets[0].frame({ type: "lines", sessionId: "s1", lines: [user("c", "new")], offset: 120, nextOffset: 150 });
+    expect(feed.items).toHaveLength(4);
+    expect(saved[saved.length - 1]).toMatchObject({ start: 0, end: 150 });
+    feed.stop();
+  });
+
+  it("starts over from the desktop's copy when the kept tail can't be resumed", async () => {
+    const kept = { ...fresh("s1", 0), end: 50, chunks: [{ offset: 0, nextOffset: 50, lines: [user("a", "stale")] }] };
+    const changes: string[] = [];
+    const feed = createFeed(source(kept), (why) => changes.push(why));
+    await tick();
+    expect(feed.items).toHaveLength(1);
+    sockets[0].open();
+    sockets[0].frame({ type: "start", sessionId: "s2", offset: 0 });
+    await tick();
+    expect(changes).toContain("reset");
+    expect(feed.items).toHaveLength(0);
+    expect(saved[saved.length - 1]).toMatchObject({ sessionId: "s2", start: 0, end: 0 });
+    feed.stop();
+  });
+
+  it("gives up on a history read when the socket doesn't come up", async () => {
+    const kept = { ...fresh("s1", 40), end: 80, chunks: [{ offset: 40, nextOffset: 80, lines: [user("a", "kept")] }] };
+    const feed = createFeed(source(kept), () => {});
+    await tick();
+    const more = feed.loadEarlier();
+    vi.advanceTimersByTime(150);
+    await more;
     expect(feed.loading).toBe(false);
     expect(feed.hasEarlier).toBe(true);
     feed.stop();
