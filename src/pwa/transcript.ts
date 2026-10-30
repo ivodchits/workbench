@@ -8,6 +8,11 @@
 // can't say what is asked, the needs-you row — and the composer, which sends the
 // dashboard's ordinary `prompt` action, with any pictures and files attached by 📎
 // or a paste (`sessionFiles`).
+//
+// Offline first: the tail of each session's transcript is kept on the phone
+// (`transcriptCache`), so a console opens on it at once and the socket resumes
+// after it; unsent text is kept per session across reloads; and a prompt that
+// couldn't go waits in the outbox, shown under the conversation until it does.
 
 import { sizeText } from "../assistant/attachments";
 import type { RemoteInstance } from "../remote/protocol";
@@ -18,7 +23,11 @@ import { $, el } from "./dom";
 import { phaseOf } from "./format";
 import { pastedName, readyImage, SESSION_IMAGE_MAX } from "./images";
 import { createStaging, promptWith, uploadToSession } from "./sessionFiles";
-import { action, openSocket } from "./net";
+import { outbox } from "./link";
+import { action, openSocket, ready } from "./net";
+import type { OutboxItem } from "./outbox";
+import { drop, load, save, saver } from "./store";
+import { valid, type TranscriptCache } from "./transcriptCache";
 import { transcriptSource } from "./transcriptSource";
 
 /** Closer than this to the end counts as "at the bottom". */
@@ -32,8 +41,66 @@ let renderer: TranscriptRenderer | null = null;
 /** The reader was at the end as of their last scroll. */
 let stuck = true;
 let live: RemoteInstance | undefined;
-/** Unsent text per instance, kept while the overlay is closed or switched. */
-const drafts = new Map<string, string>();
+/** Unsent text per instance, kept while the overlay is closed or switched, and
+ *  on the device across reloads. */
+const drafts = {
+  key: (id: string) => `wb-tx-draft:${id}`,
+  get(id: string): string | undefined {
+    try {
+      return localStorage.getItem(this.key(id)) ?? undefined;
+    } catch {
+      return undefined;
+    }
+  },
+  set(id: string, text: string): void {
+    try {
+      localStorage.setItem(this.key(id), text);
+    } catch {
+      // no storage: kept while the page is open, in the field
+    }
+  },
+  delete(id: string): void {
+    try {
+      localStorage.removeItem(this.key(id));
+    } catch {
+      // nothing kept
+    }
+  },
+};
+
+// ── the kept tails ──
+
+/** Sessions whose tails are kept, at most; the least recently seen go first. */
+const TAILS_MAX = 12;
+const TAIL_INDEX = "tx-index";
+const tailKey = (id: string) => `tx:${id}`;
+const tailSavers = new Map<string, (c: TranscriptCache) => void>();
+
+function keepTail(id: string): (c: TranscriptCache) => void {
+  let fn = tailSavers.get(id);
+  if (!fn) {
+    const write = saver(tailKey(id), 2000);
+    fn = (c) => {
+      write(c);
+      void noteTail(id, c.at);
+    };
+    tailSavers.set(id, fn);
+  }
+  return fn;
+}
+
+/** Record that `id`'s tail was kept now, and let the oldest tails go. */
+async function noteTail(id: string, at: number): Promise<void> {
+  const index = { ...((await load<Record<string, number>>(TAIL_INDEX)) ?? {}), [id]: at };
+  const old = Object.entries(index)
+    .sort((a, b) => b[1] - a[1])
+    .slice(TAILS_MAX);
+  for (const [gone] of old) {
+    delete index[gone];
+    void drop(tailKey(gone));
+  }
+  await save(TAIL_INDEX, index);
+}
 let onLink: (text: string) => void = () => {};
 /** The feed's connection state, as last reported. */
 let linkText = "";
@@ -203,17 +270,24 @@ export function showTranscript(id: string, it: RemoteInstance | undefined): void
     current = id;
     stuck = true;
     renderer = createRenderer($("tx-list"));
-    const source = transcriptSource(id, {
-      open: (params) => openSocket("/api/transcript", params),
-      onLink: (up) => report(up ? "● live" : "○ reconnecting…"),
-    });
     report("connecting…");
-    feed = createFeed(source, changed);
     const text = $<HTMLTextAreaElement>("tx-text");
     text.value = drafts.get(id) ?? "";
     fitComposer();
     paintFiles();
-    changed("reset");
+    paintPending();
+    // The kept tail first, if there is one: shown at once, resumed after.
+    void load<unknown>(tailKey(id)).then((kept) => {
+      if (current !== id || feed) return;
+      const source = transcriptSource(id, {
+        open: (params) => openSocket("/api/transcript", params),
+        onLink: (up) => report(up ? "● live" : "○ reconnecting…"),
+        ready,
+        cache: { initial: valid(kept) ? kept : null, save: keepTail(id) },
+      });
+      feed = createFeed(source, changed);
+      changed("reset");
+    });
   } else {
     onLink(linkText); // back from the terminal: say where the feed stands
   }
@@ -240,6 +314,49 @@ export function hideTranscript(): void {
   renderer?.clear();
   renderer = null;
   current = null;
+  $("tx-pending").replaceChildren();
+}
+
+/** The prompts to the open session still waiting in the outbox, under the
+ *  conversation: retry or discard one that failed (its text goes back to the
+ *  composer, never away). */
+function paintPending(): void {
+  const box = $("tx-pending");
+  const items = current ? outbox.find("prompt", (it) => it.instanceId === current) : [];
+  box.replaceChildren(...items.map(pendingRow));
+  box.classList.toggle("hidden", items.length === 0);
+  if (stuck) toEnd();
+}
+
+function pendingRow(it: Extract<OutboxItem, { kind: "prompt" }>): HTMLElement {
+  const row = el("div", `pending ${it.state}`);
+  row.append(el("div", "text", it.text));
+  const label =
+    it.state === "failed" ? `✗ not sent — ${it.error ?? "refused"}` : it.state === "sending" ? "⟳ sending…" : "⧗ waiting to send";
+  const foot = el("div", "foot");
+  foot.append(el("span", "state", label));
+  if (it.state === "failed" || it.state === "pending") {
+    if (it.state === "failed") {
+      const again = el("button", "", "retry");
+      again.type = "button";
+      again.onclick = () => outbox.retry(it.id);
+      foot.append(again);
+    }
+    const back = el("button", "", "edit");
+    back.type = "button";
+    back.title = "take it back into the composer";
+    back.onclick = () => {
+      const text = $<HTMLTextAreaElement>("tx-text");
+      text.value = text.value.trim() ? `${text.value}\n${it.text}` : it.text;
+      if (current) drafts.set(current, text.value);
+      outbox.remove(it.id);
+      fitComposer();
+      text.focus();
+    };
+    foot.append(back);
+  }
+  row.append(foot);
+  return row;
 }
 
 /** Wire the view's controls. `link` shows its connection state; `terminal` switches
@@ -268,6 +385,7 @@ export function initTranscript(link: (text: string) => void, terminal: () => voi
     if (link && !/^(https?:|mailto:)/i.test(link.getAttribute("href") ?? "")) e.preventDefault();
   });
   $("tx-earlier").onclick = () => void feed?.loadEarlier();
+  outbox.subscribe(paintPending);
   $("tx-jump").onclick = () => {
     stuck = true;
     setAway(false);
