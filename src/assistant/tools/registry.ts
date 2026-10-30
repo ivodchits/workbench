@@ -78,6 +78,8 @@ export interface ToolContext {
   request: string | null;
   /** A file this thread has (step G1): sent by the user, or made by a worker. */
   attachment?: (id: string) => AttachmentRef | undefined;
+  /** Copy files into a session's working directory; the full paths written. */
+  toSession?: (dir: string, files: readonly AttachmentRef[]) => Promise<string[]>;
   /** Show something in the thread that the model never sees (a note-edit chip). */
   notice(n: Notice): Promise<void>;
   /** Post a follow-up into the thread later, as a Workbench event that starts a

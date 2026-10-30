@@ -17,6 +17,9 @@ import {
   clearWatches,
   createSession,
   deleteNote,
+  disposeWorktree,
+  lossOf,
+  filesLine,
   killSession,
   resumeSession,
   sendPrompt,
@@ -109,6 +112,48 @@ describe("action tools", () => {
       d: { ...data(), delivery: "queued" },
     });
     expect(queued.out.delivery).toMatch(/^queued: .*together with anything else waiting/);
+  });
+
+  it("send_prompt copies the thread's files into the session's folder and names their paths", async () => {
+    const shot = { id: "f1", name: "shot.png", mime: "image/png", size: 10 };
+    const spec = { id: "f2", name: "spec.pdf", mime: "application/pdf", size: 20 };
+    const port = fakePort(data());
+    const copied: { dir: string; names: string[] }[] = [];
+    const ctx = {
+      ...toolCtx(port),
+      attachment: (id: string) => [shot, spec].find((f) => f.id === id),
+      toSession: (dir: string, files: readonly { name: string }[]) => {
+        copied.push({ dir, names: files.map((f) => f.name) });
+        return Promise.resolve(files.map((f) => `${dir}/.duck-attachments/${f.name}`));
+      },
+    };
+    const input = sendPrompt.schema.parse({ session: "tests", text: "fix the overlap", files: ["f1", "f2", "f1"] });
+    const out = (await sendPrompt.run(input, ctx)) as { files: string[] };
+    expect(copied).toEqual([{ dir: "C:/src/p1", names: ["shot.png", "spec.pdf"] }]);
+    const paths = ["C:/src/p1/.duck-attachments/shot.png", "C:/src/p1/.duck-attachments/spec.pdf"];
+    expect(port.calls).toEqual([
+      { name: "sendPrompt", args: ["i2", `fix the overlap\n\n${filesLine(paths)}`] },
+    ]);
+    expect(filesLine(paths)).toBe(`Attached files (read with your Read tool):\n- ${paths[0]}\n- ${paths[1]}`);
+    expect(out.files).toEqual(paths);
+    expect(sendPrompt.describe!(input, port, undefined)).toBe('Send to "tests" with 2 files: fix the overlap');
+
+    // A file the thread doesn't have, and a session on another machine, send nothing.
+    await expect(
+      sendPrompt.run(sendPrompt.schema.parse({ session: "tests", text: "x", files: ["nope"] }), ctx),
+    ).rejects.toThrow(/no file nope/);
+    const remote = fakePort({
+      ...data(),
+      sessions: [session({ id: "r1", projectId: "p2", title: "box", phase: "idle" })],
+    });
+    await expect(
+      sendPrompt.run(sendPrompt.schema.parse({ session: "box", text: "x", files: ["f1"] }), {
+        ...ctx,
+        port: remote,
+      }),
+    ).rejects.toThrow(/another machine/);
+    expect(remote.calls).toEqual([]);
+    expect(copied).toHaveLength(1);
   });
 
   it("create_session hands a session over to Duck only on the user's own words (T3)", async () => {
@@ -210,6 +255,65 @@ describe("action tools", () => {
     expect(out).toEqual({ session: "old", killed: true });
     expect(port.listSessions().map((s) => s.id)).not.toContain("i3");
     await expect(run(killSession, { session: "wt" }, { d })).rejects.toThrow(/worktree/);
+  });
+
+  describe("dispose_worktree", () => {
+    const clean = { worktree: "C:/wt/x", branch: "agent/x", base: "main", unmerged: 0, commits: [], dirty: [] };
+    const lossy = { ...clean, unmerged: 2, commits: ["abc123 half the fix", "def456 wip"], dirty: ["src/a.ts"] };
+    const withWt = (loss: typeof clean) => {
+      const d = data();
+      d.sessions!.push(session({ id: "i4", projectId: "p1", title: "wt", worktreeBranch: "agent/x" }));
+      d.losses = { i4: loss };
+      return d;
+    };
+    const r = createRegistry(ACT_TOOLS);
+    /** The call as the engine makes it: prepare, the tier, the card, then run. */
+    async function call(input: object, d: FakePortData, request: string | null = null) {
+      const port = fakePort(d);
+      const prepared = await disposeWorktree.prepare!(disposeWorktree.schema.parse(input), port);
+      const tier = r.callTier("dispose_worktree", input, port, prepared);
+      const card = disposeWorktree.describe!(disposeWorktree.schema.parse(input), port, prepared);
+      const ctx = { ...toolCtx(port), request, prepared };
+      const out = (await disposeWorktree.run(disposeWorktree.schema.parse(input), ctx)) as Record<string, unknown>;
+      return { port, tier, card, out };
+    }
+
+    it("removes a merged, clean worktree at once and says what went", async () => {
+      const { port, tier, card, out } = await call({ session: "wt" }, withWt(clean));
+      expect(tier).toBe("reversible");
+      expect(card).toBe('End "wt", remove its worktree and delete agent/x (merged into main, nothing uncommitted)');
+      expect(port.calls).toEqual([{ name: "disposeWorktree", args: ["i4", false] }]);
+      expect(out).toEqual({
+        session: "wt",
+        removed: { worktree: "C:/wt/x", branch: "agent/x", session: true },
+        checkedAgainst: "main",
+        lost: "nothing: the branch was merged and the worktree clean",
+      });
+      expect(port.listSessions().map((s) => s.id)).not.toContain("i4");
+    });
+
+    it("refuses unmerged or dirty work, naming it, before any card", async () => {
+      const unforced = call({ session: "wt" }, withWt(lossy));
+      await expect(unforced).rejects.toThrow(
+        "Not removed: 2 commits on agent/x not in main (abc123 half the fix; def456 wip), and 1 uncommitted or untracked file (src/a.ts).",
+      );
+      // force alone isn't enough: it needs the user's words.
+      await expect(call({ session: "wt", force: true }, withWt(lossy))).rejects.toThrow(/needs the user's own words/);
+      expect(lossOf(clean)).toBeNull();
+    });
+
+    it("forces it only on the user's own words, and the card says what it destroys", async () => {
+      const words = "remove the wt worktree even though it isn't merged";
+      const request = `Ok, ${words}, I don't need that work.`;
+      const { port, tier, card, out } = await call({ session: "wt", force: true, grantedBy: words }, withWt(lossy), request);
+      expect(tier).toBe("consequential");
+      expect(card).toMatch(/DESTROYING 2 commits on agent\/x not in main .*src\/a\.ts/);
+      expect(port.calls).toEqual([{ name: "disposeWorktree", args: ["i4", true] }]);
+      expect(out.lost).toMatch(/^2 commits/);
+      // Words the user didn't say force nothing.
+      const said = call({ session: "wt", force: true, grantedBy: words }, withWt(lossy), "clean up the sessions");
+      await expect(said).rejects.toThrow(/doesn't contain/);
+    });
   });
 
   it("resume_session passes the chosen conversation on", async () => {

@@ -30,6 +30,7 @@ import {
   imageGenerate,
   imageKey,
   attachPrepare,
+  attachToSession,
   attachPrune,
   onUsage,
   replayCalls,
@@ -961,7 +962,11 @@ export function initAssistant(): Promise<void> {
       }),
     );
     const engine = createEngine({
-      attachments: { prepare: attachPrepare, data: attachData },
+      attachments: {
+        prepare: attachPrepare,
+        data: attachData,
+        toSession: (dir, files) => attachToSession(dir, files.map((f) => [f.id, f.name])),
+      },
       tasks,
       drawings,
       images: { key: imageKey, generate: imageGenerate },

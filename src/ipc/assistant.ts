@@ -268,6 +268,28 @@ export const attachData = (id: string, name: string, kind: "image" | "document")
 /** Copy attachments into a task folder's `inputs/`; the names written. */
 export const attachInputs = (workspace: string, folder: string, files: [string, string][]): Promise<string[]> =>
   invoke("assistant_attach_inputs", { workspace, folder, files });
+/** Copy attachments into a session's working directory, in its git-ignored
+ *  `.duck-attachments/`; the full paths written. */
+export const attachToSession = (dir: string, files: [string, string][]): Promise<string[]> =>
+  invoke("assistant_attach_to_session", { dir, files });
+/** What removing a session's worktree would lose (`dispose_worktree`). */
+export interface WorktreeCheck {
+  branch: string;
+  /** The project's main branch it's checked against. */
+  base: string;
+  /** Commits on the branch the main branch doesn't have. */
+  unmerged: number;
+  /** The newest of them (at most 10), `<short sha> <subject>`. */
+  commits: string[];
+  /** Uncommitted and untracked files in the worktree. */
+  dirty: string[];
+}
+export const worktreeCheck = (repoRoot: string, worktreePath: string, branch: string): Promise<WorktreeCheck> =>
+  invoke("assistant_worktree_check", { repoRoot, worktreePath, branch });
+/** Remove the worktree and delete its branch; git checks again first, and refuses
+ *  (naming what would be lost) unless nothing would be or `force`. */
+export const worktreeDispose = (repoRoot: string, worktreePath: string, branch: string, force: boolean): Promise<WorktreeCheck> =>
+  invoke("assistant_worktree_dispose", { repoRoot, worktreePath, branch, force });
 /** A task's `outputs/`, stored as attachments. */
 export const attachOutputs = (workspace: string, folder: string): Promise<StoredFile[]> =>
   invoke("assistant_attach_outputs", { workspace, folder });

@@ -19,13 +19,13 @@ import "./style.css";
 import { initConsole, openConsole, updateConsole } from "./console";
 import { initDashboard } from "./dashboard";
 import { $ } from "./dom";
-import { duckOnStart, initDuck, launchDuck, openDuck, takeLaunchThread } from "./duck";
+import { duckOnStart, initDuck, launchDuck, noteDuckThreads, openDuck, takeLaunchThread } from "./duck";
 import { takeLaunch } from "./launch";
 import { initLink, offerUpdate, setLink } from "./link";
 import { inApp, offlinePut } from "./native";
 import { checkAccess, connect, forget, isPaired, loadToken, pair } from "./net";
 import { initNewSession, openNewSession } from "./newSession";
-import { initNotes } from "./notes";
+import { initNotes, openNotes } from "./notes";
 import { initPush, takeLaunchInstance } from "./push";
 import type { RemoteSnapshot } from "../remote/protocol";
 import { load, saver } from "./store";
@@ -88,8 +88,8 @@ async function showApp(): Promise<void> {
   show("app");
   const dashboard = initDashboard({
     console: (id) => openConsole(id),
-    terminal: (id) => openConsole(id, "terminal"),
     newSession: openNewSession,
+    notes: openNotes,
   });
   const newSession = initNewSession(openConsole);
   const notes = initNotes();
@@ -108,6 +108,7 @@ async function showApp(): Promise<void> {
     dashboard(snap);
     newSession(snap);
     notes.snapshot(snap);
+    noteDuckThreads(snap.duckThreads);
     updateConsole();
     if (launch && snap.instances.some((i) => i.id === launch)) {
       openConsole(launch);

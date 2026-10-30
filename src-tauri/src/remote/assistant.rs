@@ -508,6 +508,46 @@ pub(super) async fn image(
         .into_response()
 }
 
+/// Any stored attachment, for the phone to save (a worker's outputs, G1). Always
+/// a download of opaque bytes: a file a worker wrote is never rendered on the
+/// phone's origin. Images to look at go through `image`.
+pub(super) async fn file(
+    State(state): State<Arc<RemoteState>>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    Path((id, name)): Path<(String, String)>,
+) -> Response {
+    if let Err(refusal) = authed(&state, bearer(&headers).as_deref(), &client_addr(peer, &headers)) {
+        return refusal;
+    }
+    let Ok(data) = state.app.path().app_data_dir() else { return StatusCode::NOT_FOUND.into_response() };
+    let root = crate::assistant::attachments::root(&data);
+    let Ok(path) = crate::assistant::attachments::file_of(&root, &id, &name) else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    let Ok(bytes) = tokio::fs::read(&path).await else { return StatusCode::NOT_FOUND.into_response() };
+    (
+        [
+            (header::CONTENT_TYPE, "application/octet-stream".to_string()),
+            (header::CONTENT_DISPOSITION, format!("attachment; filename=\"{}\"", ascii_name(&name))),
+            (header::CACHE_CONTROL, "private, max-age=86400".to_string()),
+            (header::X_CONTENT_TYPE_OPTIONS, "nosniff".to_string()),
+        ],
+        bytes,
+    )
+        .into_response()
+}
+
+/// A file name safe inside a quoted `Content-Disposition` filename.
+fn ascii_name(name: &str) -> String {
+    let clean = crate::assistant::attachments::clean_name(name);
+    let safe: String = clean
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() || " ._-()".contains(c) { c } else { '_' })
+        .collect();
+    if safe.trim().is_empty() { "file".into() } else { safe }
+}
+
 /// Send one of Duck's frames to the phones: to socket `conn`, or to all of them.
 /// A no-op while the server is off.
 #[tauri::command]
@@ -539,6 +579,14 @@ pub fn assistant_remote_push(app: AppHandle, thread_id: String, title: String, b
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn download_names_stay_inside_their_quotes() {
+        assert_eq!(ascii_name("dashboard-preview.png"), "dashboard-preview.png");
+        assert_eq!(ascii_name("a\"b;c.txt"), "a_b_c.txt");
+        assert_eq!(ascii_name("отчёт.pdf"), "_____.pdf");
+        assert_eq!(ascii_name("../x.csv"), "x.csv");
+    }
 
     #[test]
     fn audio_frames_are_speech_or_gaps() {

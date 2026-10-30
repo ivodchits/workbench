@@ -55,6 +55,7 @@ mod timings;
 mod trust;
 mod usage;
 pub mod workspace;
+pub mod worktrees;
 pub mod youtube;
 
 use std::sync::Arc;
@@ -938,6 +939,31 @@ pub async fn assistant_attach_data(app: AppHandle, id: String, name: String, kin
 pub fn assistant_attach_inputs(app: AppHandle, workspace: String, folder: String, files: Vec<(String, String)>) -> Result<Vec<String>, String> {
     let f = workspace::task_folder(&workspace::resolve(Some(&workspace))?, &folder)?;
     attachments::copy_into(&attachments_root(&app)?, &files, &f.join("inputs"))
+}
+
+/// Copy attachments into a session's working directory (`dir`), in its
+/// git-ignored `.duck-attachments/`; returns the full paths written.
+#[tauri::command]
+pub fn assistant_attach_to_session(app: AppHandle, dir: String, files: Vec<(String, String)>) -> Result<Vec<String>, String> {
+    let paths = attachments::copy_to_session(&attachments_root(&app)?, &files, std::path::Path::new(&dir))?;
+    Ok(paths.into_iter().map(|p| p.to_string_lossy().into_owned()).collect())
+}
+
+/// What removing a session's worktree would lose (`dispose_worktree`).
+#[tauri::command]
+pub async fn assistant_worktree_check(repo_root: String, worktree_path: String, branch: String) -> Result<worktrees::Check, String> {
+    tauri::async_runtime::spawn_blocking(move || worktrees::check(std::path::Path::new(&repo_root), std::path::Path::new(&worktree_path), &branch))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+/// Remove a session's worktree and its branch: refused, saying what would be
+/// lost, unless nothing would be or `force`.
+#[tauri::command]
+pub async fn assistant_worktree_dispose(repo_root: String, worktree_path: String, branch: String, force: bool) -> Result<worktrees::Check, String> {
+    tauri::async_runtime::spawn_blocking(move || worktrees::dispose(std::path::Path::new(&repo_root), std::path::Path::new(&worktree_path), &branch, force))
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 /// The files a worker left in its task folder's `outputs/`, stored as attachments.

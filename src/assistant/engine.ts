@@ -1705,6 +1705,7 @@ export function createEngine(deps: EngineDeps): Engine {
           memoryOff: memoryOff(store.loaded(threadId)),
           request: lastUserText(store.loaded(threadId)),
           attachment: (id) => findAttachment(store.loaded(threadId), id),
+          toSession: deps.attachments?.toSession,
           startThread: (words, opts) => split(threadId, words, opts),
           threads: threadMoves(threadId),
           prepared,

@@ -17,7 +17,8 @@
 import { z } from "zod";
 import { isStale } from "../../ipc/notes";
 import { DUCK_PERMISSION_MODES, SESSION_MODELS } from "../../util/models";
-import type { PromptDelivery, SessionPhase, SessionRef, WorkbenchPort } from "../port";
+import { MAX_ATTACHMENTS } from "../attachments";
+import type { PromptDelivery, SessionPhase, SessionRef, WorkbenchPort, WorktreeLoss } from "../port";
 import type { NoteEdit } from "../protocol";
 import { quotes } from "../trust/mandate";
 import {
@@ -85,7 +86,7 @@ const onSessionGranted = (
 export const sendPrompt = defineTool({
   name: "send_prompt",
   description:
-    "Send a prompt to a Workbench session, as if the user typed it. A session between turns gets it now; a session that isn't running is started with it, continuing its last conversation. For a session mid-turn, choose `when`: `now` puts it into the running turn, read at the session's next step (a correction, a constraint, an answer to what it is doing, a stop or change of direction); `after_turn` (the default) waits for the turn to end (new work that shouldn't disturb the current task). Prompts waiting for the same turn end go in together as one. Put several requests for one session into one prompt yourself. Write the prompt as the user would: say what to do, not who is asking.",
+    "Send a prompt to a Workbench session, as if the user typed it. A session between turns gets it now; a session that isn't running is started with it, continuing its last conversation. For a session mid-turn, choose `when`: `now` puts it into the running turn, read at the session's next step (a correction, a constraint, an answer to what it is doing, a stop or change of direction); `after_turn` (the default) waits for the turn to end (new work that shouldn't disturb the current task). Prompts waiting for the same turn end go in together as one. Put several requests for one session into one prompt yourself. Write the prompt as the user would: say what to do, not who is asking. `files`: ids of attachments in this thread (from <attachment id=…>, or files a worker made) to hand the session: images, PDFs, text, any file. They are copied into the session's folder (.duck-attachments/, ignored by git) and the prompt ends with their paths, so Claude Code reads them itself. Pass the id rather than describing or copying out what's in the file.",
   schema: z.object({
     ...sessionArgs,
     text: z.string().trim().min(1).max(20_000).describe("The prompt."),
@@ -93,23 +94,59 @@ export const sendPrompt = defineTool({
       .enum(["now", "after_turn"])
       .optional()
       .describe("For a session mid-turn: into the running turn, or after it (default)."),
+    files: z
+      .array(z.string().trim().min(1))
+      .max(MAX_ATTACHMENTS)
+      .optional()
+      .describe("Attachment ids to copy into the session's folder; the prompt names their paths."),
   }),
   tier: "reversible",
-  describe({ session, project, text }, port) {
+  describe({ session, project, text, files }, port) {
     const s = findSession(port, session, project);
-    return `Send to "${s.title}": ${cut(text, 240)}`;
+    const n = new Set(files ?? []).size;
+    return `Send to "${s.title}"${n ? ` with ${n} file${n === 1 ? "" : "s"}` : ""}: ${cut(text, 240)}`;
   },
   trust: (input, port) => ({ ...onSession(input, port), texts: [input.text] }),
   timeoutMs: 20_000,
-  async run({ session, project, text, when }, { port, later }) {
+  async run({ session, project, text, when, files }, { port, later, attachment, toSession }) {
     const s = findSession(port, session, project);
-    const delivery = await port.sendPrompt(s.id, text, {
+    const paths = files?.length ? await filesFor(port, s, files, attachment, toSession) : [];
+    const delivery = await port.sendPrompt(s.id, paths.length ? `${text}\n\n${filesLine(paths)}` : text, {
       now: when === "now",
       onFailed: (why) => later(`The prompt sent to "${s.title}" didn't go in: ${why}.`),
     });
-    return { session: s.title, id: s.id, delivery: DELIVERY[delivery] };
+    return {
+      session: s.title,
+      id: s.id,
+      delivery: DELIVERY[delivery],
+      ...(paths.length && { files: paths }),
+    };
   },
 });
+
+/** What the prompt ends with when files go along: their paths, one a line. */
+export const filesLine = (paths: readonly string[]) =>
+  `Attached file${paths.length === 1 ? "" : "s"} (read with your Read tool):\n${paths.map((p) => `- ${p}`).join("\n")}`;
+
+/** Copy the thread's files `ids` into the session's working directory; the paths. */
+async function filesFor(
+  port: WorkbenchPort,
+  s: SessionRef,
+  ids: readonly string[],
+  attachment: ToolContext["attachment"],
+  toSession: ToolContext["toSession"],
+): Promise<string[]> {
+  const refs = [...new Set(ids)].map((id) => {
+    const f = attachment?.(id);
+    if (!f) throw new Error(`There is no file ${id} in this thread: use the id from its <attachment> tag.`);
+    return f;
+  });
+  if (port.listProjects().find((p) => p.id === s.projectId)?.remote)
+    throw new Error(`"${s.title}" runs on another machine: files can only go to a session on this computer.`);
+  if (!toSession) throw new Error("Files can't be sent to sessions here.");
+  if (!s.workingDir) throw new Error(`"${s.title}" has no folder to put the files in.`);
+  return toSession(s.workingDir, refs);
+}
 
 export const createSession = defineTool({
   name: "create_session",
@@ -358,7 +395,7 @@ export const stopSession = defineTool({
 export const killSession = defineTool({
   name: "kill_session",
   description:
-    "Kill a session: end its Claude Code process and remove it from the rail for good (the rail's \"kill instance\"). Use it to clear away sessions that are finished or dead; use stop_session to keep one around for later. Its past conversations stay on disk. Refused for a session with a worktree, and for a remote one in tmux: the user does those from the rail.",
+    "Kill a session: end its Claude Code process and remove it from the rail for good (the rail's \"kill instance\"). Use it to clear away sessions that are finished or dead; use stop_session to keep one around for later. Its past conversations stay on disk. Refused for a session with a worktree (use dispose_worktree), and for a remote one in tmux: the user does that from the rail.",
   schema: z.object({ ...sessionArgs, grantedBy: grantArg }),
   tier: "consequential",
   describe({ session, project }, port) {
@@ -369,6 +406,68 @@ export const killSession = defineTool({
     const s = findSession(port, session, project);
     await port.killSession(s.id);
     return { session: s.title, killed: true };
+  },
+});
+
+/** What removing a worktree would lose, in a sentence's words; null for nothing. */
+export function lossOf(l: WorktreeLoss): string | null {
+  const parts: string[] = [];
+  if (l.unmerged)
+    parts.push(`${l.unmerged} commit${l.unmerged === 1 ? "" : "s"} on ${l.branch} not in ${l.base} (${l.commits.join("; ")}${l.unmerged > l.commits.length ? "; …" : ""})`);
+  if (l.dirty.length)
+    parts.push(`${l.dirty.length} uncommitted or untracked file${l.dirty.length === 1 ? "" : "s"} (${cut(l.dirty.join(", "), 400)})`);
+  return parts.length ? parts.join(", and ") : null;
+}
+
+const disposeSchema = z.object({
+  ...sessionArgs,
+  force: z
+    .boolean()
+    .optional()
+    .describe("Remove it even with unmerged commits or uncommitted files. Only with `grantedBy`."),
+  grantedBy: grantArg,
+});
+
+export const disposeWorktree = defineTool<typeof disposeSchema, WorktreeLoss>({
+  name: "dispose_worktree",
+  description:
+    "Clean up after a session that works in its own git worktree: end it, remove the worktree folder and delete its branch, and take it off the rail (kill_session refuses such sessions). It runs at once only when git confirms nothing would be lost: every commit of the branch is in the project's main branch and the worktree has no uncommitted or untracked files. Otherwise it is refused with exactly what would be lost; tell the user, and suggest merging (or committing) first. Only when the user has explicitly said to remove it anyway (\"remove it even though it isn't merged\", \"throw that work away\") pass `force: true` with their words quoted in `grantedBy`; the call then names the commits and files it will destroy. Never force on your own judgment.",
+  schema: disposeSchema,
+  tier: "consequential",
+  // Nothing to lose: it runs like any reversible clean-up. Anything else asks.
+  tierFor: (_input, _port, loss) => (loss && !lossOf(loss) ? "reversible" : "consequential"),
+  async prepare({ session, project, force, grantedBy }, port) {
+    const s = findSession(port, session, project);
+    const loss = await port.worktreeLoss(s.id);
+    const lost = lossOf(loss);
+    if (lost && !force)
+      throw new Error(`Not removed: ${lost}. Merge or commit it first, or remove it anyway only if the user explicitly says to (force, with their words in grantedBy).`);
+    if (lost && !grantedBy?.trim())
+      throw new Error(`Not removed: forcing it would destroy ${lost}, and that needs the user's own words allowing it in grantedBy.`);
+    return loss;
+  },
+  describe({ session, project }, port, loss) {
+    const s = findSession(port, session, project);
+    const lost = lossOf(loss);
+    return `End "${s.title}", remove its worktree and delete ${loss.branch}${lost ? `, DESTROYING ${lost}` : ` (merged into ${loss.base}, nothing uncommitted)`}`;
+  },
+  trust: onSessionGranted,
+  timeoutMs: 60_000,
+  async run({ session, project, force, grantedBy }, { port, request, prepared }) {
+    const s = findSession(port, session, project);
+    // Losing work needs the user's own words, checked here as well as by the gate.
+    const forced = !!force && !!lossOf(prepared) && !!grantedBy && quotes(request, grantedBy);
+    if (lossOf(prepared) && !forced)
+      throw new Error(`Not removed: the user's latest message doesn't contain "${cut(grantedBy ?? "", 80)}", and forcing it would destroy ${lossOf(prepared)}.`);
+    // git checks again: work made since the card was shown is never lost unforced.
+    const done = await port.disposeWorktree(s.id, forced);
+    const lost = lossOf(done);
+    return {
+      session: s.title,
+      removed: { worktree: done.worktree, branch: done.branch, session: true },
+      checkedAgainst: done.base,
+      ...(lost ? { lost } : { lost: "nothing: the branch was merged and the worktree clean" }),
+    };
   },
 });
 
@@ -652,6 +751,7 @@ export const ACT_TOOLS = [
   interruptSession,
   stopSession,
   killSession,
+  disposeWorktree,
   openPanel,
   waitForSession,
   createNote,

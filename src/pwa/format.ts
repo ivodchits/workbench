@@ -1,7 +1,13 @@
 // The dashboard's wording and ordering rules, apart from the DOM so they can be
 // tested on their own.
 
-import type { RemoteCreated, RemoteInstance, RemoteProject, RemoteSnapshot } from "../remote/protocol";
+import type {
+  RemoteChoice,
+  RemoteCreated,
+  RemoteInstance,
+  RemoteProject,
+  RemoteSnapshot,
+} from "../remote/protocol";
 
 /** What a card shows for a phase: its glyph and the class that colours it. */
 const GLYPH: Record<string, [glyph: string, cls: string]> = {
@@ -111,4 +117,86 @@ export function createStatus(rec: RemoteCreated): string {
  *  context, which plain HTTP on a tailnet address is not. */
 export function newRequestId(now = Date.now(), rand = Math.random): string {
   return `${now.toString(36)}-${Math.floor(rand() * 2 ** 32).toString(36)}`;
+}
+
+/** What a dashboard card says about where its session is, at a glance:
+ *  - `tool` — the call it is on, one monospace line;
+ *  - `ask` — what it waits on you for;
+ *  - `reply` — the start of its last answer;
+ *  - `prompt` — what it was asked, before its first tool call;
+ *  - `quiet` — a plain word when there is nothing better. */
+export interface CardStatus {
+  /** The phase in words. */
+  label: string;
+  /** The class that colours it (as `glyphOf`). */
+  cls: string;
+  kind: "tool" | "ask" | "reply" | "prompt" | "quiet";
+  /** A tool call's title ("Bash", "Edit"), for `tool` and a permission `ask`. */
+  name: string;
+  text: string;
+}
+
+const LABEL: Record<string, string> = {
+  working: "working",
+  needs_you: "needs you",
+  done: "done",
+  idle: "idle",
+  ended: "ended",
+};
+
+function str(v: unknown): string {
+  return typeof v === "string" ? v : "";
+}
+
+/** One line on what a pending prompt asks. */
+export function askLine(c: RemoteChoice): { name: string; text: string } {
+  if (c.kind === "question") {
+    const more = c.questions.length > 1 ? ` (+${c.questions.length - 1} more)` : "";
+    return { name: "", text: (c.questions[0]?.question ?? "a question") + more };
+  }
+  if (c.kind === "plan") return { name: "", text: "its plan is ready for review" };
+  const i = c.input;
+  const target =
+    c.toolName === "Bash"
+      ? str(i.description) || str(i.command).split("\n")[0]
+      : str(i.file_path) || str(i.path) || str(i.url) || str(i.pattern) || str(i.query);
+  return { name: c.toolName, text: target };
+}
+
+export function cardStatus(it: RemoteInstance): CardStatus {
+  const phase = phaseOf(it);
+  const [, cls] = glyphOf(it);
+  const label = LABEL[phase] ?? "idle";
+  const last = it.latest;
+  const is = (kind: CardStatus["kind"], text: string, name = ""): CardStatus => ({ label, cls, kind, name, text });
+
+  if (phase === "needs_you") {
+    if (it.choice) {
+      const a = askLine(it.choice);
+      return is("ask", a.text, a.name);
+    }
+    if (last?.tool) return is("ask", last.tool.target, last.tool.name);
+    return is("ask", "waiting on a prompt in its terminal");
+  }
+  if (phase === "working") {
+    if (it.compacting) return is("quiet", "compacting the conversation…");
+    if (last?.tool) return is("tool", last.tool.target, last.tool.name);
+    if (last?.prompt) return is("prompt", last.prompt);
+    return is("quiet", "thinking…");
+  }
+  if (last?.reply) return is("reply", last.reply);
+  if (phase === "done") return is("quiet", "finished its turn");
+  if (phase === "ended" || !it.live) return is("quiet", "not running");
+  return is("quiet", "ready for a prompt");
+}
+
+/** "now", "40s", "12m", "3h", "2d" since an epoch-seconds instant. */
+export function sinceText(at: number | null | undefined, nowSecs: number): string {
+  if (!at) return "";
+  const s = Math.max(0, Math.floor(nowSecs - at));
+  if (s < 10) return "now";
+  if (s < 60) return `${s}s`;
+  if (s < 3600) return `${Math.floor(s / 60)}m`;
+  if (s < 86400) return `${Math.floor(s / 3600)}h`;
+  return `${Math.floor(s / 86400)}d`;
 }

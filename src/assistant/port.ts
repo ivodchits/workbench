@@ -304,6 +304,14 @@ export interface WorkbenchPort {
    *  its branch, that base, and the files (committed or not). Throws for a session
    *  without a worktree. */
   worktreeChanges(instanceId: string): Promise<WorktreeChanges>;
+  /** What removing the session's worktree would lose (`dispose_worktree`): commits
+   *  not in the project's main branch, and uncommitted or untracked files. Throws
+   *  for a session without a worktree or in a remote project. */
+  worktreeLoss(instanceId: string): Promise<WorktreeLoss>;
+  /** End the session, remove its worktree and delete its branch, and take it off
+   *  the rail. git checks again first: refused, naming what would be lost, unless
+   *  nothing would be or `force`. Returns the check it went on. */
+  disposeWorktree(instanceId: string, force: boolean): Promise<WorktreeLoss>;
   /** The rail's "merge and remove the worktree": its branch is merged into the
    *  project's current branch, the worktree and branch go, and the session works
    *  in the project root again. Throws git's message on a conflict or a dirty
@@ -348,6 +356,21 @@ export interface WorktreeChanges {
   uncommitted: string[];
   insertions: number;
   deletions: number;
+}
+
+/** What removing a worktree would lose. */
+export interface WorktreeLoss {
+  /** The worktree's folder. */
+  worktree: string;
+  branch: string;
+  /** The project's main branch it's checked against. */
+  base: string;
+  /** Commits on the branch the main branch doesn't have. */
+  unmerged: number;
+  /** The newest of them (at most 10), `<short sha> <subject>`. */
+  commits: string[];
+  /** Uncommitted and untracked files in the worktree. */
+  dirty: string[];
 }
 
 /** A session's autopilot as its card shows it. */
