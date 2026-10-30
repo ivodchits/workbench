@@ -362,6 +362,25 @@ pub fn copy_into(root: &Path, files: &[(String, String)], dest: &Path) -> Result
     Ok(names)
 }
 
+/// The folder in a session's working directory that Duck's files go to.
+pub const SESSION_DIR: &str = ".duck-attachments";
+
+/// Copy attachments into a session's working directory, in `.duck-attachments/`,
+/// which ignores itself in git (its own `.gitignore` of `*`), so the repo's own
+/// files are never touched. Returns the full paths written.
+pub fn copy_to_session(root: &Path, files: &[(String, String)], dir: &Path) -> Result<Vec<PathBuf>, String> {
+    if !dir.is_absolute() || !dir.is_dir() {
+        return Err(format!("{} isn't a folder on this computer", dir.display()));
+    }
+    let dest = dir.join(SESSION_DIR);
+    std::fs::create_dir_all(&dest).map_err(|e| format!("cannot create {}: {e}", dest.display()))?;
+    let ignore = dest.join(".gitignore");
+    if !ignore.exists() {
+        std::fs::write(&ignore, "# Files Duck sent to this session.\n*\n").map_err(|e| format!("cannot write {}: {e}", ignore.display()))?;
+    }
+    Ok(copy_into(root, files, &dest)?.into_iter().map(|n| dest.join(n)).collect())
+}
+
 /// Store every file directly in `dir` (a task's `outputs/`), at most `max`.
 pub fn store_folder(root: &Path, dir: &Path, max: usize) -> Result<Vec<Stored>, String> {
     let Ok(entries) = std::fs::read_dir(dir) else { return Ok(Vec::new()) };
@@ -483,6 +502,23 @@ mod tests {
         assert_eq!(stored.len(), 1);
         assert_eq!(stored[0].name, "merged.xlsx");
         assert!(stored[0].mime.contains("spreadsheet"));
+    }
+
+    #[test]
+    fn copies_into_a_session_folder_git_ignores() {
+        let root = tmp();
+        let shot = store_bytes(&root, "shot.png", b"PNG").unwrap();
+        let project = tmp();
+        let files = [(shot.id.clone(), shot.name.clone())];
+        let paths = copy_to_session(&root, &files, &project).unwrap();
+        let dest = project.join(SESSION_DIR);
+        assert_eq!(paths, vec![dest.join("shot.png")]);
+        assert_eq!(std::fs::read(&paths[0]).unwrap(), b"PNG");
+        assert!(std::fs::read_to_string(dest.join(".gitignore")).unwrap().lines().any(|l| l == "*"));
+        // Sent again: a new name, never over the earlier copy.
+        assert_eq!(copy_to_session(&root, &files, &project).unwrap(), vec![dest.join("shot (2).png")]);
+        assert!(copy_to_session(&root, &files, &project.join("missing")).is_err());
+        assert!(copy_to_session(&root, &files, Path::new("relative")).is_err());
     }
 
     #[test]

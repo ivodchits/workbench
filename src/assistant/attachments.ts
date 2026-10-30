@@ -40,6 +40,9 @@ export interface AttachmentHost {
   prepare(id: string, name: string): Promise<PreparedFile>;
   /** An image's or a PDF's bytes as sent, base64. */
   data(id: string, name: string, kind: "image" | "document"): Promise<string>;
+  /** Copy files into a session's working directory (`send_prompt` `files`), in its
+   *  git-ignored `.duck-attachments/`; the full paths written. */
+  toSession?(dir: string, files: readonly AttachmentRef[]): Promise<string[]>;
 }
 
 /** No attachment store (the phone's offline brain): every file is referenced. */

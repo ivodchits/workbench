@@ -4,7 +4,7 @@
 
 import { homeDir } from "@tauri-apps/api/path";
 
-import { getSpend, mandateGet, mandateSet, workerRegister } from "../ipc/assistant";
+import { getSpend, mandateGet, mandateSet, workerRegister, worktreeCheck, worktreeDispose } from "../ipc/assistant";
 import {
   gitBranches,
   gitLog,
@@ -32,7 +32,7 @@ import {
   pluginsWrite,
 } from "../ipc/plugins";
 import { ptyWrite } from "../ipc/pty";
-import type { Instance } from "../ipc/registry";
+import type { Instance, Project } from "../ipc/registry";
 import { answerPermission, holdPermissions } from "../ipc/hooks";
 import { readTranscript, readTranscriptBack } from "../ipc/transcript";
 import { readLastResponse } from "../transcript/feed";
@@ -117,6 +117,16 @@ function instance(id: string): Instance {
   const i = getRegistry().instances.find((x) => x.id === id);
   if (!i) throw new Error(`no session with id ${id}`);
   return i;
+}
+
+/** A session that works in a worktree on this computer, and its project. */
+function worktreeOf(id: string): { i: Instance & { branch: string }; project: Project } {
+  const i = instance(id);
+  const project = getRegistry().projects.find((p) => p.id === i.projectId);
+  if (!project) throw new Error(`no project with id ${i.projectId}`);
+  if (!i.worktreeOn || !i.branch) throw new Error(`"${i.title}" doesn't work in a worktree.`);
+  if (project.remoteSshDest) throw new Error(`"${i.title}" is in a remote project: remove its worktree from the rail.`);
+  return { i: { ...i, branch: i.branch }, project };
 }
 
 const running = (id: string) =>
@@ -434,11 +444,36 @@ export const localPort: WorkbenchPort = {
     await whenShellRunning(shellId);
     await ptyWrite(shellId, new TextEncoder().encode(`${command}\r`));
   },
+  async worktreeLoss(id) {
+    const { i, project } = worktreeOf(id);
+    return { worktree: i.workingDir, ...(await worktreeCheck(project.rootPath, i.workingDir, i.branch)) };
+  },
+  async disposeWorktree(id, force) {
+    const { i, project } = worktreeOf(id);
+    if (i.remoteTmuxSession) throw new Error(`"${i.title}" runs in a tmux session: kill it from the rail.`);
+    // A live console holds the folder open, which blocks removal on Windows.
+    const live = getOpenConsoles().some((c) => c.instanceId === id && c.status !== "dormant");
+    closeConsole(id);
+    release(id);
+    let c;
+    try {
+      c = await worktreeDispose(project.rootPath, i.workingDir, i.branch, force);
+    } catch (e) {
+      if (live) openConsole(i);
+      throw e;
+    }
+    // Then the rail's kill path, as `killSession`.
+    closeDiff(diffIdFor(id));
+    await deleteInstance(id);
+    forgetMandate(id);
+    await renumberInstances(i.projectId);
+    return { worktree: i.workingDir, ...c };
+  },
   async killSession(id) {
     const i = instance(id);
     if (i.worktreeOn)
       throw new Error(
-        `"${i.title}" has a worktree, which killing it would leave on disk. Ask the user to remove the worktree from the rail first, or to kill it there.`,
+        `"${i.title}" has a worktree, which killing it would leave on disk: use dispose_worktree, which removes the worktree and its branch too.`,
       );
     const project = getRegistry().projects.find((p) => p.id === i.projectId);
     if (project?.remoteSshDest && i.remoteTmuxSession)

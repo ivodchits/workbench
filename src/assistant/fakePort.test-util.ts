@@ -23,6 +23,7 @@ import type {
   TaskRun,
   WorkbenchPort,
   WorktreeChanges,
+  WorktreeLoss,
 } from "./port";
 import type { Notice } from "./protocol";
 import { DEFAULT_SETTINGS, type DuckSettings } from "./settings";
@@ -73,6 +74,8 @@ export interface FakePortData {
   changes?: Record<string, WorktreeChanges>;
   /** `mergeWorktree` fails with this. */
   mergeError?: string;
+  /** What `worktreeLoss` answers, per session id; none: no worktree. */
+  losses?: Record<string, WorktreeLoss>;
 }
 
 export interface FakePlugins {
@@ -514,6 +517,18 @@ export function fakePort(data: FakePortData = {}): FakePort {
       const c = data.changes?.[id];
       if (!c) throw new Error(`"${sessionOf(id).title}" doesn't work in a worktree.`);
       return c;
+    },
+    async worktreeLoss(id) {
+      const l = data.losses?.[id];
+      if (!l) throw new Error(`"${sessionOf(id).title}" doesn't work in a worktree.`);
+      return l;
+    },
+    async disposeWorktree(id, force) {
+      const l = await port.worktreeLoss(id);
+      if (!force && (l.unmerged || l.dirty.length)) throw new Error("not removed: work would be lost");
+      record("disposeWorktree", id, force);
+      data.sessions = data.sessions?.filter((x) => x.id !== id);
+      return l;
     },
     async mergeWorktree(id) {
       record("mergeWorktree", id);
