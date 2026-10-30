@@ -101,6 +101,9 @@ rustfft = "6"
 sonora = "0.2"
 # What Workbench and its sessions cost, for the office's HUD (office plan O0.4).
 sysinfo = { version = "0.39.6", default-features = false, features = ["system"] }
+# One release Workbench at a time: a second launch shows the first one's window
+# instead of starting a rival for the hook, mobile and office ports.
+tauri-plugin-single-instance = "2"
 
 # Windows-only: intercept WebView2 accelerator keys so we can suppress the engine's
 # built-in reload shortcuts (F5 / Ctrl+R / Ctrl+Shift+R), which would otherwise

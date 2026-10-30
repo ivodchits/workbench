@@ -33,7 +33,17 @@ use tauri::Manager;
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     shutdown::keep_stdio_to_self();
-    tauri::Builder::default()
+    let mut builder = tauri::Builder::default();
+    // One release instance (2026-10-29): a second launch only shows the first one's
+    // window. Two had split the sessions' hooks between them and left the phone on
+    // the one with no window. First plugin, so the second launch stops before any
+    // setup. Not in a debug build: it shares the identifier and runs beside a release.
+    if !cfg!(debug_assertions) {
+        builder = builder.plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            window::show_main(app);
+        }));
+    }
+    builder
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_store::Builder::default().build())
         .plugin(tauri_plugin_dialog::init())
@@ -491,6 +501,17 @@ pub fn run() {
             attention::update_tray_usage,
             badge::set_tray_dot,
         ])
+        // Closing the main window quits, the tray's Exit way. Left to Tauri, the
+        // hidden voice overlay kept the event loop alive: a windowless Workbench
+        // still serving the hooks and the phone, and the next launch a second one.
+        .on_window_event(|win, event| {
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                if win.label() == "main" {
+                    api.prevent_close();
+                    shutdown::exit(win.app_handle());
+                }
+            }
+        })
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
         .run(|app, event| {
