@@ -1,7 +1,7 @@
 {
   "name": "workbench",
   "private": true,
-  "version": "2.2.0",
+  "version": "2.2.1",
   "type": "module",
   "scripts": {
     "dev": "npm run build:pwa && npm run build:office && vite",
