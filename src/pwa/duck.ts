@@ -85,6 +85,8 @@ import { SHARE_ASKS, shareBody, shareLines, shareMessage, STATUS_ASK, takeShare,
 import { createUploader } from "./uploads";
 import { pastedName, readyImage } from "./images";
 import { showDrawing, shownDrawing } from "./drawingView";
+import { openFile, opensAsPicture } from "./fileOpen";
+import { anyUnread, loadSeen, markSeen, noteMessage, prune, saveSeen, unreadOf, type Seen, type ThreadStamp } from "./unread";
 import { openSketch } from "./sketch";
 import { sizeText, type AttachmentRef } from "../assistant/attachments";
 import { AFTER_MS, BEFORE_MS, createVoiceFiles, pillText, type Sent } from "../assistant/voiceFiles";
@@ -179,6 +181,47 @@ setEchoPath(prefs.echoPath);
 let view: DuckView = emptyView();
 let adopting = false;
 let shown = false;
+
+/** What of Duck's threads this phone has seen (the unread marks). */
+let seen: Seen | null = null;
+/** The threads as the dashboard's snapshot has them: fresh while Duck's socket
+ *  is closed, for the Duck button's dot. */
+let snapThreads: readonly ThreadStamp[] | null = null;
+
+function setSeen(next: Seen): void {
+  if (next === seen) return;
+  seen = next;
+  saveSeen(next);
+}
+
+/** The thread being looked at right now, if any. */
+function viewing(): string | null {
+  return shown && !document.hidden && panel === "chat" ? view.current : null;
+}
+
+/** Mark the thread on screen seen, up to its last change. */
+function seeCurrent(): void {
+  const id = viewing();
+  const t = id ? view.threads.find((x) => x.id === id) : undefined;
+  if (seen && t) setSeen(markSeen(seen, t.id, t.updated));
+}
+
+/** The unread dots: on the Duck button (any thread), and on the thread picker
+ *  (any thread but the one open). */
+function paintUnread(): void {
+  if (!seen) return;
+  const rows = view.synced && shown ? view.threads : (snapThreads ?? view.threads);
+  $("duckBtn").classList.toggle("unread", anyUnread(seen, rows));
+  $("duck-thread").classList.toggle("unread", anyUnread(seen, view.threads, view.current));
+}
+
+/** The dashboard's latest list of Duck's threads (the snapshot's `duckThreads`). */
+export function noteDuckThreads(threads: readonly ThreadStamp[] | undefined): void {
+  if (!threads) return;
+  snapThreads = threads;
+  if (seen) setSeen(prune(seen, threads.map((t) => t.id)));
+  paintUnread();
+}
 let panel: "chat" | "threads" | "decisions" | "settings" | "tap" = "chat";
 let ws: WebSocket | null = null;
 let retry: ReturnType<typeof setTimeout> | null = null;
@@ -365,9 +408,19 @@ function takeRecentStaged(ms: number): AttachmentRef[] {
   return recent;
 }
 
-/** A file's chip: its thumbnail or a sign, its name and size; × when staged. */
+/** A file's chip: its thumbnail or a sign, its name and size; × when staged. In
+ *  the thread it is a button: a picture opens full screen, anything else saves. */
 function fileChip(f: AttachmentRef, remove?: () => void): HTMLElement {
-  const chip = el("span", "duck-file");
+  const chip = el(remove ? "span" : "button", "duck-file");
+  if (chip instanceof HTMLButtonElement) {
+    chip.type = "button";
+    chip.title = `${f.name} · ${opensAsPicture(f.mime) ? "tap to view" : "tap to save"}`;
+    chip.onclick = () =>
+      openFile(f, (why) => {
+        filesError = why;
+        paintFiles();
+      });
+  }
   if (f.thumb?.startsWith("data:image/jpeg;base64,")) {
     const img = document.createElement("img");
     img.src = f.thumb;
@@ -557,6 +610,10 @@ function onFrame(f: RemoteDuckFrame): void {
     adopting = false;
     store(THREAD_KEY, view.current);
   }
+  if (seen && f.type === "message") {
+    const m = f.message;
+    setSeen(viewing() === m.threadId ? markSeen(seen, m.threadId, m.ts) : noteMessage(seen, m));
+  } else if (seen && f.type === "threads") setSeen(prune(seen, view.threads.map((t) => t.id)));
   if (r.fx.open) openThread(r.fx.open);
   if (r.fx.refetch && view.current) post({ type: "thread.open", threadId: view.current });
   if (f.type === "goThread" && f.surface === "phone" && view.threads.some((t) => t.id === f.threadId)) {
@@ -1209,6 +1266,8 @@ function paint(why: string, before?: DuckView): void {
   if (panel === "decisions") paintDecisions();
   if (panel === "settings") paintSettings();
   if (panel === "chat") {
+    // On screen, so seen: opened, come back to, or written in as you watch.
+    seeCurrent();
     const id = view.current;
     const changed =
       !before ||
@@ -1227,6 +1286,7 @@ function paint(why: string, before?: DuckView): void {
     paintInstall();
   }
   paintVoice();
+  paintUnread();
   duckApp.widgetLine(widgetText());
 }
 
@@ -1519,13 +1579,20 @@ function paintThreads(): void {
   list.replaceChildren();
   const waiting = new Set(view.asks.map((a) => a.threadId));
   for (const t of view.threads) {
-    const b = el("button", t.id === view.current ? "current" : "");
+    const news = seen ? unreadOf(seen, t) : { unread: false, n: 0 };
+    const b = el("button", (t.id === view.current ? "current" : "") + (news.unread ? " unread" : ""));
     b.type = "button";
     b.append(
       el("span", "needs dot", waiting.has(t.id) ? "●" : (view.states[t.id] ?? "idle") !== "idle" ? "◐" : ""),
       el("span", "name", t.title || "untitled"),
-      el("span", "when", formatAgo(Math.floor(t.updated / 1000))),
     );
+    // New since this phone last looked: a count when it heard them come in.
+    if (news.unread) {
+      const tag = el("span", "new", news.n ? String(news.n) : "new");
+      tag.setAttribute("aria-label", news.n ? `${news.n} new` : "new messages");
+      b.append(tag);
+    }
+    b.append(el("span", "when", formatAgo(Math.floor(t.updated / 1000))));
     b.onclick = () => openThread(t.id);
     list.append(b);
   }
@@ -1648,6 +1715,7 @@ function closeDuck(): void {
   hush();
   stopAvatar();
   disconnect();
+  paintUnread();
 }
 
 /** Duck is the start view (the "the app opens on" setting). */
@@ -1714,6 +1782,7 @@ export function takeLaunchThread(): string | null {
  *  task's card); `refused` is the device losing access. */
 export function initDuck(d: typeof deps): void {
   deps = d;
+  seen = loadSeen();
   duckApp.initApp({
     post,
     live: () => ws?.readyState === WebSocket.OPEN,
@@ -1906,6 +1975,8 @@ export function initDuck(d: typeof deps): void {
     } else {
       connect();
       startAvatar();
+      seeCurrent();
+      paintUnread();
     }
   });
   if ("serviceWorker" in navigator) {

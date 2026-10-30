@@ -14,11 +14,19 @@
 // needless IPC while remote access is off (the default). Mounted once from
 // `App.tsx` (main window only).
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { officeCommits, type RepoCommits } from "../ipc/office";
-import type { Project } from "../ipc/registry";
+import type { Instance, Project } from "../ipc/registry";
 import { remotePushSnapshot } from "../ipc/remote";
+import { readTranscriptBack } from "../ipc/transcript";
 import type { RemoteChoice, RemoteDuck, RemoteSnapshot } from "../remote/protocol";
+import { readLastResponse } from "../transcript/feed";
+import {
+  getLatestActivity,
+  initLatestActivity,
+  onLatestActivity,
+  seedReply,
+} from "../state/latestActivity";
 import { useChoiceStates, type PendingChoice } from "../state/pendingChoice";
 import { useRegistry } from "../state/registry";
 import { useConsoles } from "../state/consoles";
@@ -115,6 +123,28 @@ function useCommits(projects: readonly Project[], on: boolean): ReadonlyMap<stri
   return commits;
 }
 
+/** Each session's latest tool call, prompt and reply (the phone's cards), followed
+ *  from mount; a session with no turn since the app started has its last reply read
+ *  from its transcript once, while `on`. */
+function useLatest(instances: readonly Instance[], on: boolean) {
+  useEffect(() => initLatestActivity(), []);
+  const latest = useSyncExternalStore(onLatestActivity, getLatestActivity);
+  const asked = useRef(new Set<string>());
+  useEffect(() => {
+    if (!on) return;
+    for (const i of instances) {
+      if (!i.lastSessionId || latest.has(i.id) || asked.current.has(i.id)) continue;
+      asked.current.add(i.id);
+      readLastResponse((before) => readTranscriptBack(i.id, before))
+        .then((text) => {
+          if (text) seedReply(i.id, text, i.lastActivityAt ?? Math.floor(Date.now() / 1000));
+        })
+        .catch(() => {});
+    }
+  }, [instances, latest, on]);
+  return latest;
+}
+
 export default function RemoteMirror(): null {
   const registry = useRegistry();
   const consoles = useConsoles();
@@ -128,6 +158,7 @@ export default function RemoteMirror(): null {
   // The phone's server, or the office (office plan O0.2): both read this snapshot.
   const running = (server?.running || server?.office) ?? false;
   const commits = useCommits(registry.projects, running);
+  const latest = useLatest(registry.instances, running);
   // The office's chatter (O4.1) is written here, while its listener is up.
   const office = server?.office ?? false;
   useEffect(() => (office ? startOfficeChatter() : undefined), [office]);
@@ -145,6 +176,8 @@ export default function RemoteMirror(): null {
       autopilots: duckStore.autopilots,
     }),
   );
+  // The phone's unread dot on its Duck button: each thread's last change.
+  const duckThreadsKey = JSON.stringify(duckStore.threads.map((t) => ({ id: t.id, updated: t.updated })));
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
@@ -170,6 +203,7 @@ export default function RemoteMirror(): null {
         instances: registry.instances.map((i) => {
           const live = statuses.get(i.id);
           const pending = choices.get(i.id)?.pending ?? null;
+          const last = latest.get(i.id);
           return {
             id: i.id,
             projectId: i.projectId,
@@ -194,6 +228,12 @@ export default function RemoteMirror(): null {
             stuck: withAlerts && alerts.stuck.has(i.id),
             // Only while it is waiting: a prompt outlives needs-you by a moment.
             choice: live?.phase === "needs_you" && pending ? remoteChoice(pending) : null,
+            latest: {
+              tool: last?.tool ?? null,
+              prompt: last?.prompt ?? null,
+              reply: last?.reply ?? null,
+              at: live?.updatedAt ?? last?.at ?? i.lastActivityAt,
+            },
           };
         }),
         // What the phone can start a session in (step R7), in the rail's order.
@@ -206,6 +246,7 @@ export default function RemoteMirror(): null {
           commitsToday: commits.get(p.id)?.since ?? null,
         })),
         duck: JSON.parse(duckKey) as RemoteDuck,
+        duckThreads: JSON.parse(duckThreadsKey) as { id: string; updated: number }[],
         created: [...created],
       };
       void remotePushSnapshot(JSON.stringify(snapshot)).catch(() => {});
@@ -216,7 +257,7 @@ export default function RemoteMirror(): null {
         timer.current = null;
       }
     };
-  }, [running, registry, consoles, statuses, limits, alerts, notif, created, choices, commits, duckKey]);
+  }, [running, registry, consoles, statuses, limits, alerts, notif, created, choices, commits, latest, duckKey, duckThreadsKey]);
 
   return null;
 }
