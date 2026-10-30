@@ -8,7 +8,7 @@ import {
   type FakePortData,
 } from "../fakePort.test-util";
 import { createPolicy } from "../policy";
-import type { ChoiceRef } from "../port";
+import type { ChoiceRef, WorktreeLoss } from "../port";
 import { DEFAULT_SETTINGS } from "../settings";
 import {
   ACT_TOOLS,
@@ -258,9 +258,9 @@ describe("action tools", () => {
   });
 
   describe("dispose_worktree", () => {
-    const clean = { worktree: "C:/wt/x", branch: "agent/x", base: "main", unmerged: 0, commits: [], dirty: [] };
+    const clean: WorktreeLoss = { worktree: "C:/wt/x", branch: "agent/x", base: "main", unmerged: 0, commits: [], dirty: [] };
     const lossy = { ...clean, unmerged: 2, commits: ["abc123 half the fix", "def456 wip"], dirty: ["src/a.ts"] };
-    const withWt = (loss: typeof clean) => {
+    const withWt = (loss: WorktreeLoss) => {
       const d = data();
       d.sessions!.push(session({ id: "i4", projectId: "p1", title: "wt", worktreeBranch: "agent/x" }));
       d.losses = { i4: loss };
