@@ -123,6 +123,7 @@ async fn run(listener: std::net::TcpListener, state: Arc<RemoteState>) -> std::i
         )
         .route("/api/assistant/tts/{id}", get(super::assistant::tts))
         .route("/api/assistant/image/{id}/{name}", get(super::assistant::image))
+        .route("/api/assistant/file/{id}/{name}", get(super::assistant::file))
         // Project notes (step R8), through the N1 notes module.
         .route("/api/notes", get(super::notes::counts))
         .route("/api/notes/list", get(super::notes::list))

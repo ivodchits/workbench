@@ -1,5 +1,6 @@
 // A drawing on the phone (step G3): full screen, with pinch zoom and pan, and the
-// versions to step through. The PNG is the desktop's render, fetched from
+// versions to step through. A picture from the thread (a worker's output) opens in
+// the same viewer. The PNG is the desktop's render, fetched from
 // `GET /api/assistant/image/{id}/{name}` with the device token; nothing Duck's
 // worker wrote runs here.
 
@@ -86,6 +87,7 @@ export function showDrawing(
   root.append(bar, stage);
   document.body.append(root);
   overlay = root;
+  const fit = zoomable(stage, img);
 
   if (version.png)
     pngUrl(version.png).then(
@@ -103,7 +105,10 @@ export function showDrawing(
       },
       (e: unknown) => (note.textContent = e instanceof Error ? e.message : String(e)),
     );
+}
 
+/** Pinch, pan and double-tap-to-fit for `img` in `stage`; returns the fit. */
+function zoomable(stage: HTMLElement, img: HTMLImageElement): () => void {
   // Pinch and pan: the pointers down now, and the view they started from.
   let view = { x: 0, y: 0, k: 1 };
   const apply = () => (img.style.transform = `translate(${view.x}px, ${view.y}px) scale(${view.k})`);
@@ -144,5 +149,43 @@ export function showDrawing(
   };
   stage.addEventListener("pointerup", up);
   stage.addEventListener("pointercancel", up);
-  stage.addEventListener("dblclick", fit);
+  stage.addEventListener("dblclick", fit);  return fit;
+}
+
+/** A picture from the thread (a worker's output, G1), full screen with the same
+ *  pinch and pan; `save` offers it as a download. */
+export function showPicture(name: string, url: Promise<string>, save: () => void): void {
+  closeDrawing();
+  const root = el("div", "duck-drawing");
+  const bar = el("div", "bar");
+  const title = el("span", "title", name);
+  title.title = name;
+  const keep = el("button", "", "save");
+  keep.type = "button";
+  keep.onclick = save;
+  const x = el("button", "close", "×");
+  x.type = "button";
+  x.setAttribute("aria-label", "close");
+  x.onclick = closeDrawing;
+  bar.append(title, keep, x);
+  const stage = el("div", "stage");
+  const img = el("img");
+  img.alt = name;
+  img.draggable = false;
+  const note = el("div", "note", "loading…");
+  stage.append(img, note);
+  root.append(bar, stage);
+  document.body.append(root);
+  overlay = root;
+  const fit = zoomable(stage, img);
+  url.then(
+    (u) => {
+      img.onload = () => {
+        note.remove();
+        fit();
+      };
+      img.src = u;
+    },
+    (e: unknown) => (note.textContent = e instanceof Error ? e.message : String(e)),
+  );
 }

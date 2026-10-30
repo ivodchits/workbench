@@ -85,6 +85,7 @@ import { SHARE_ASKS, shareBody, shareLines, shareMessage, STATUS_ASK, takeShare,
 import { createUploader } from "./uploads";
 import { pastedName, readyImage } from "./images";
 import { showDrawing, shownDrawing } from "./drawingView";
+import { openFile, opensAsPicture } from "./fileOpen";
 import { openSketch } from "./sketch";
 import { sizeText, type AttachmentRef } from "../assistant/attachments";
 import { AFTER_MS, BEFORE_MS, createVoiceFiles, pillText, type Sent } from "../assistant/voiceFiles";
@@ -365,9 +366,19 @@ function takeRecentStaged(ms: number): AttachmentRef[] {
   return recent;
 }
 
-/** A file's chip: its thumbnail or a sign, its name and size; × when staged. */
+/** A file's chip: its thumbnail or a sign, its name and size; × when staged. In
+ *  the thread it is a button: a picture opens full screen, anything else saves. */
 function fileChip(f: AttachmentRef, remove?: () => void): HTMLElement {
-  const chip = el("span", "duck-file");
+  const chip = el(remove ? "span" : "button", "duck-file");
+  if (chip instanceof HTMLButtonElement) {
+    chip.type = "button";
+    chip.title = `${f.name} · ${opensAsPicture(f.mime) ? "tap to view" : "tap to save"}`;
+    chip.onclick = () =>
+      openFile(f, (why) => {
+        filesError = why;
+        paintFiles();
+      });
+  }
   if (f.thumb?.startsWith("data:image/jpeg;base64,")) {
     const img = document.createElement("img");
     img.src = f.thumb;

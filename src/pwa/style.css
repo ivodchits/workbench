@@ -371,9 +371,12 @@ body .wb-tx-open-plan { display: none; }
 .duck-files { display: flex; flex-wrap: wrap; gap: 4px; padding: 2px 0; }
 #duck-staged { padding: 4px 8px; }
 .duck-user .bubble .duck-files { margin-bottom: 4px; }
-.duck-file { display: inline-flex; align-items: center; gap: 6px; max-width: 220px; padding: 2px 6px; border: 1px solid var(--line); border-radius: 6px; background: var(--wb-bg); font-size: 12px; }
+.duck-file { display: inline-flex; align-items: center; gap: 6px; max-width: min(100%, 340px); padding: 2px 6px; border: 1px solid var(--line); border-radius: 6px; background: var(--wb-bg); font-size: 12px; }
+/* In the thread a chip opens its file: sized for a thumb, not a pointer. */
+button.duck-file { min-height: 40px; padding: 4px 8px; color: var(--fg); text-align: left; cursor: pointer; }
+button.duck-file:active { border-color: var(--accent); }
 .duck-file img { width: 28px; height: 28px; object-fit: cover; border-radius: 3px; }
-.duck-file .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.duck-file .name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .duck-file .size { color: var(--wb-textFaint); white-space: nowrap; }
 .duck-file button { background: none; border: none; color: var(--wb-textFaint); padding: 0 2px; }
 #duck-staged .duck-turnfiles { width: 100%; color: var(--wb-accent); font-size: 12px; }
