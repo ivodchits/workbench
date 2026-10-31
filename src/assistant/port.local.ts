@@ -45,7 +45,16 @@ import { alertAbout } from "../state/notifications";
 import { atRest } from "../state/queue";
 import { setActiveProject } from "../state/activeProject";
 import { newShell, whenShellRunning } from "../state/shells";
-import { teardownWorktree } from "../state/worktree";
+import {
+  attachWorktree,
+  isConsoleLive,
+  projectWorktrees,
+  sameDir,
+  teardownWorktree,
+  type WorktreeUse,
+} from "../state/worktree";
+import { resolveWorktree, type WorktreeEntry } from "../ipc/git";
+import { listProjectSessions } from "../ipc/sessions";
 import {
   closeConsole,
   getOpenConsoles,
@@ -95,6 +104,7 @@ import type {
   TaskEnd,
   TaskRun,
   WorkbenchPort,
+  WorktreeRef,
 } from "./port";
 
 function choiceRef(p: PendingChoice): ChoiceRef {
@@ -119,6 +129,45 @@ function instance(id: string): Instance {
   return i;
 }
 
+function localProject(projectId: string): Project {
+  const project = getRegistry().projects.find((p) => p.id === projectId);
+  if (!project) throw new Error(`no project with id ${projectId}`);
+  if (project.remoteSshDest) throw new Error(`${project.name} is a remote project: worktrees are local only.`);
+  return project;
+}
+
+/** A worktree as Duck sees it: who works there and its past conversations. */
+async function worktreeRef(w: WorktreeEntry, users?: WorktreeUse["sessions"]): Promise<WorktreeRef> {
+  const sessions = users ?? getRegistry().instances.filter((i) => sameDir(i.workingDir, w.path));
+  const past = await listProjectSessions(w.path).catch(() => []);
+  return {
+    path: w.path,
+    branch: w.branch,
+    lastCommit: `${w.head} ${w.subject}`.trim(),
+    committedAt: w.committedAt,
+    sessions: sessions.map((i) => ({ id: i.id, title: i.title, running: isConsoleLive(i.id) })),
+    conversations: past.slice(0, 5).map(({ sessionId, firstPrompt, modifiedAt }) => ({ sessionId, firstPrompt, modifiedAt })),
+    conversationCount: past.length,
+  };
+}
+
+/** Which folder of `project` (its own or one of its worktrees) holds conversation
+ *  `sessionId`; null when none does, or the folders couldn't be read. */
+async function conversationFolder(
+  project: Project,
+  sessionId: string,
+): Promise<{ label: string; worktree: string | null } | null> {
+  const has = async (dir: string) =>
+    (await listProjectSessions(dir).catch(() => [])).some((s) => s.sessionId === sessionId);
+  if (await has(project.rootPath)) return { label: `the project's own folder ${project.rootPath}`, worktree: null };
+  const worktrees = await projectWorktrees(project).catch(() => []);
+  for (const w of worktrees) {
+    if (await has(w.path))
+      return { label: `the worktree ${w.path}${w.branch ? ` (branch ${w.branch})` : ""}`, worktree: w.branch ?? w.path };
+  }
+  return null;
+}
+
 /** A session that works in a worktree on this computer, and its project. */
 function worktreeOf(id: string): { i: Instance & { branch: string }; project: Project } {
   const i = instance(id);
@@ -126,6 +175,10 @@ function worktreeOf(id: string): { i: Instance & { branch: string }; project: Pr
   if (!project) throw new Error(`no project with id ${i.projectId}`);
   if (!i.worktreeOn || !i.branch) throw new Error(`"${i.title}" doesn't work in a worktree.`);
   if (project.remoteSshDest) throw new Error(`"${i.title}" is in a remote project: remove its worktree from the rail.`);
+  if (!i.worktreeOwned)
+    throw new Error(
+      `"${i.title}" works in a worktree Workbench didn't make (${i.workingDir}), which is never removed with it: kill_session ends the session and leaves the worktree as it is.`,
+    );
   return { i: { ...i, branch: i.branch }, project };
 }
 
@@ -259,6 +312,7 @@ export const localPort: WorkbenchPort = {
           compacting: s?.compacting ?? false,
           subagents: s?.subagents ?? 0,
           worktreeBranch: i.worktreeOn ? i.branch : null,
+          worktreeOwned: !i.worktreeOn || i.worktreeOwned,
           model: effectiveModel(i, projects.find((p) => p.id === i.projectId)),
           permissionMode:
             i.permissionMode ?? projects.find((p) => p.id === i.projectId)?.defaultPermissionMode ?? null,
@@ -304,12 +358,29 @@ export const localPort: WorkbenchPort = {
     });
     return d.state;
   },
-  async createSession({ projectId, title, prompt, worktree, model, permissionMode, mandate, worker, trustFolder, headless }) {
+  async createSession({
+    projectId,
+    title,
+    prompt,
+    worktree,
+    existingWorktree,
+    shareWorktree,
+    resume,
+    model,
+    permissionMode,
+    mandate,
+    worker,
+    trustFolder,
+    headless,
+  }) {
     const project = getRegistry().projects.find((p) => p.id === projectId);
     if (!project) throw new Error(`no project with id ${projectId}`);
     const { instance: i, message } = await startNewSession(project, {
       title,
       worktree,
+      existingWorktree,
+      shareWorktree,
+      resume,
       model,
       permissionMode,
       beforeLaunch: async (inst) => {
@@ -333,10 +404,27 @@ export const localPort: WorkbenchPort = {
   startSession(id) {
     show(instance(id));
   },
-  resumeSession(id, sessionId) {
+  async resumeSession(id, sessionId) {
     const i = instance(id);
     if (!sessionId && !i.lastSessionId)
       throw new Error(`"${i.title}" has no past session to resume.`);
+    // Claude Code looks a conversation up in the folder it runs in: one from
+    // another folder of the project would fail with "No conversation found".
+    const project = getRegistry().projects.find((p) => p.id === i.projectId);
+    if (sessionId && project && !project.remoteSshDest) {
+      const here = await listProjectSessions(i.workingDir).catch(() => null);
+      if (here && !here.some((s) => s.sessionId === sessionId)) {
+        const elsewhere = await conversationFolder(project, sessionId);
+        if (elsewhere)
+          throw new Error(
+            `Conversation ${sessionId} belongs to ${elsewhere.label}, not to "${i.title}"'s folder ${i.workingDir}. ${
+              elsewhere.worktree
+                ? `Point the session there first (attach_worktree with worktree "${elsewhere.worktree}" and resume), or start one there (create_session with existingWorktree and resume).`
+                : `Detach the session from its worktree in the rail first, or resume it in a session that works in the project's folder.`
+            }`,
+          );
+      }
+    }
     setActiveProject(i.projectId);
     resumeConsole(i, sessionId);
     activatePanel(i.id);
@@ -444,6 +532,23 @@ export const localPort: WorkbenchPort = {
     await whenShellRunning(shellId);
     await ptyWrite(shellId, new TextEncoder().encode(`${command}\r`));
   },
+  async listWorktrees(projectId) {
+    const project = localProject(projectId);
+    const list = await projectWorktrees(project);
+    return Promise.all(list.map((w) => worktreeRef(w, w.sessions)));
+  },
+  async findWorktree(projectId, target) {
+    const project = localProject(projectId);
+    return worktreeRef(await resolveWorktree(project.rootPath, target));
+  },
+  async attachWorktree(id, target, { share, resume }) {
+    const i = instance(id);
+    const project = localProject(i.projectId);
+    if (resume) setActiveProject(i.projectId); // as `resumeSession` shows it
+    const { worktree, resumed } = await attachWorktree(i, project, target, { share, resume });
+    if (resumed) activatePanel(id);
+    return { worktree: await worktreeRef(worktree), resumed };
+  },
   async worktreeLoss(id) {
     const { i, project } = worktreeOf(id);
     return { worktree: i.workingDir, ...(await worktreeCheck(project.rootPath, i.workingDir, i.branch)) };
@@ -471,7 +576,8 @@ export const localPort: WorkbenchPort = {
   },
   async killSession(id) {
     const i = instance(id);
-    if (i.worktreeOn)
+    // A worktree it was opened in isn't its own: it stays, as it was before.
+    if (i.worktreeOn && i.worktreeOwned)
       throw new Error(
         `"${i.title}" has a worktree, which killing it would leave on disk: use dispose_worktree, which removes the worktree and its branch too.`,
       );

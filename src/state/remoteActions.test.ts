@@ -32,6 +32,7 @@ vi.mock("./activeProject", () => ({ setActiveProject: (id: string) => calls.push
 vi.mock("./dock", () => ({ activatePanel: (id: string) => calls.push(`activate ${id}`) }));
 vi.mock("./consoles", () => ({
   openConsole: (i: Instance) => calls.push(`open ${i.id} ${i.workingDir}`),
+  resumeConsole: (i: Instance) => calls.push(`resume ${i.id} ${i.workingDir} ${i.lastSessionId}`),
   closeConsole: vi.fn(),
 }));
 vi.mock("./worktree", () => ({
@@ -39,6 +40,15 @@ vi.mock("./worktree", () => ({
     if (worktreeError) throw worktreeError;
     instances = instances.map((x) => (x.id === i.id ? { ...x, worktreeOn: true, workingDir: "/wt" } : x));
     return { skipped: true, copiedEnv: [], command: null, output: "", exitCode: null, failed: false };
+  },
+  attachWorktree: async (i: Instance, _p: Project, target: string, o: { share?: boolean }) => {
+    if (worktreeError) throw worktreeError;
+    calls.push(`attach ${i.id} ${target}${o.share ? " shared" : ""}`);
+    const lastSessionId = target === "agent/empty" ? null : "s-old";
+    instances = instances.map((x) =>
+      x.id === i.id ? { ...x, worktreeOn: true, worktreeOwned: false, workingDir: `/wt/${target}`, lastSessionId } : x,
+    );
+    return { worktree: {}, conversations: lastSessionId ? 1 : 0 };
   },
 }));
 vi.mock("../panels/terminalPool", () => ({
@@ -70,7 +80,7 @@ vi.mock("./registry", () => ({
 
 import { ptyWrite } from "../ipc/pty";
 import { answerPermission, type HookEvent } from "../ipc/hooks";
-import { answerChoiceText, handleRemoteAction } from "./remoteActions";
+import { answerChoiceText, handleRemoteAction, startNewSession } from "./remoteActions";
 import { clearPendingChoice, getPendingChoice, ingestChoiceEvent, setTerminalOptions } from "./pendingChoice";
 import { cancelQueued, getQueued } from "./queue";
 import { getCreated, resetCreated } from "./remoteCreate";
@@ -335,5 +345,52 @@ describe("answering a prompt from the phone", () => {
     handleRemoteAction({ type: "choose", instanceId: "i1", choiceId: id, option: 1 });
     handleRemoteAction({ type: "approve", instanceId: "i1" });
     expect(written()).toEqual([]);
+  });
+});
+
+describe("a new session in an existing worktree", () => {
+  beforeEach(() => {
+    calls.length = 0;
+    projects = [{ id: "p1", name: "proj", rootPath: "/root" } as Project];
+    instances = [];
+    worktreeError = null;
+  });
+
+  it("opens it in that worktree, a fresh conversation by default", async () => {
+    const { instance } = await startNewSession(projects[0], { existingWorktree: "agent/2" });
+    expect(instance.workingDir).toBe("/wt/agent/2");
+    expect(calls).toEqual(["add i1 3", "attach i1 agent/2", "project p1", "open i1 /wt/agent/2", "activate i1"]);
+  });
+
+  it("continues the worktree's newest conversation when asked", async () => {
+    await startNewSession(projects[0], { existingWorktree: "agent/2", resume: true });
+    expect(calls).toContain("resume i1 /wt/agent/2 s-old");
+    expect(calls.some((c) => c.startsWith("open"))).toBe(false);
+  });
+
+  it("starts fresh when asked to resume a worktree with no conversations", async () => {
+    await startNewSession(projects[0], { existingWorktree: "agent/empty", resume: true });
+    expect(calls).toContain("open i1 /wt/agent/empty");
+  });
+
+  it("passes the share confirmation on", async () => {
+    await startNewSession(projects[0], { existingWorktree: "agent/2", shareWorktree: true });
+    expect(calls).toContain("attach i1 agent/2 shared");
+  });
+
+  it("removes the session again when the worktree is refused", async () => {
+    worktreeError = new Error("/elsewhere isn't a worktree of /root");
+    await expect(startNewSession(projects[0], { existingWorktree: "/elsewhere" })).rejects.toThrow(
+      "Could not open the worktree: /elsewhere isn't a worktree of /root",
+    );
+    expect(instances).toEqual([]);
+    expect(calls).toEqual(["add i1 3", "delete i1"]);
+  });
+
+  it("refuses a new and an existing worktree at once", async () => {
+    await expect(startNewSession(projects[0], { worktree: true, existingWorktree: "agent/2" })).rejects.toThrow(
+      "not both",
+    );
+    expect(calls).toEqual([]);
   });
 });

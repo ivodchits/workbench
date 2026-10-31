@@ -17,7 +17,7 @@ import type { RemoteChooseAction, RemoteCreateAction } from "../remote/protocol"
 import { addInstance, deleteInstance, getRegistry, nextInstanceTitle, sessionYouStarted } from "./registry";
 import { markInterrupted } from "./status";
 import { getPendingChoice, markChoiceSent, takeHold } from "./pendingChoice";
-import { closeConsole, openConsole } from "./consoles";
+import { closeConsole, openConsole, resumeConsole } from "./consoles";
 import { answerHeadless, interruptHeadless, isHeadless } from "./headless";
 import { setActiveProject } from "./activeProject";
 import { activatePanel } from "./dock";
@@ -31,7 +31,7 @@ import {
   trustDialogOffset,
   updateCreate,
 } from "./remoteCreate";
-import { provisionWorktree } from "./worktree";
+import { attachWorktree, provisionWorktree } from "./worktree";
 import { readScreen, release, submitPrompt, submitToTerminal } from "../panels/terminalPool";
 
 /** Execute one remote action against its target instance. Exported for direct testing
@@ -234,6 +234,14 @@ export async function startNewSession(
   opts: {
     title?: string;
     worktree?: boolean;
+    /** Open it in this existing worktree of the project (its folder or branch)
+     *  instead of the project root or a new worktree; see `attachWorktree`. */
+    existingWorktree?: string;
+    /** Let it into an existing worktree another running session works in. */
+    shareWorktree?: boolean;
+    /** With `existingWorktree`: continue the newest conversation Claude Code has
+     *  there instead of starting a fresh one (a fresh one when there is none). */
+    resume?: boolean;
     model?: string | null;
     permissionMode?: string | null;
     /** Awaited after the instance exists and before its console opens (so before
@@ -246,6 +254,8 @@ export async function startNewSession(
   },
   onCreated?: (instanceId: string) => void,
 ): Promise<{ instance: Instance; message: string | null }> {
+  if (opts.worktree && opts.existingWorktree)
+    throw new Error("Choose a new worktree or an existing one, not both.");
   const title = opts.title?.trim() || nextInstanceTitle(getRegistry().instances, project.id);
   let instance: Instance;
   try {
@@ -275,7 +285,19 @@ export async function startNewSession(
     }
     const id = instance.id;
     instance = getRegistry().instances.find((i) => i.id === id) ?? instance;
+  } else if (opts.existingWorktree) {
+    try {
+      await attachWorktree(instance, project, opts.existingWorktree, { share: opts.shareWorktree });
+    } catch (e) {
+      await deleteInstance(instance.id).catch(() => {});
+      throw new Error(`Could not open the worktree: ${errorText(e)}`);
+    }
+    const id = instance.id;
+    instance = getRegistry().instances.find((i) => i.id === id) ?? instance;
   }
+  // Continue the worktree's newest conversation, when it has one.
+  const launch = (i: Instance, o?: { background?: boolean }) =>
+    opts.resume && opts.existingWorktree && i.lastSessionId ? resumeConsole(i, undefined, o) : openConsole(i, o);
 
   if (opts.beforeLaunch) {
     try {
@@ -287,12 +309,12 @@ export async function startNewSession(
   }
 
   if (opts.background) {
-    openConsole(instance, { background: true });
+    launch(instance, { background: true });
     return { instance, message };
   }
   // As the rail does it: show the project, open the console, focus its panel.
   setActiveProject(project.id);
-  openConsole(instance);
+  launch(instance);
   activatePanel(instance.id);
   return { instance, message };
 }

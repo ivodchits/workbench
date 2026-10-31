@@ -256,6 +256,13 @@ const MIGRATIONS: &[&str] = &[
     r#"
     ALTER TABLE remote_devices ADD COLUMN public_key TEXT;
     "#,
+    // v16 -> v17: whether Workbench made an instance's worktree. A session can also
+    // open a worktree that already existed (one a killed session left behind); such
+    // a worktree is never removed with the session. Rows before this were all
+    // provisioned by Workbench, hence the default.
+    r#"
+    ALTER TABLE instances ADD COLUMN worktree_owned INTEGER NOT NULL DEFAULT 1;
+    "#,
 ];
 
 /// Apply any migrations the database hasn't seen yet, advancing

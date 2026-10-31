@@ -8,12 +8,13 @@ import {
   type FakePortData,
 } from "../fakePort.test-util";
 import { createPolicy } from "../policy";
-import type { ChoiceRef, WorktreeLoss } from "../port";
+import type { ChoiceRef, WorktreeLoss, WorktreeRef } from "../port";
 import { DEFAULT_SETTINGS } from "../settings";
 import {
   ACT_TOOLS,
   answerChoice,
   appendNote,
+  attachWorktree,
   clearWatches,
   createSession,
   deleteNote,
@@ -27,6 +28,7 @@ import {
   waitForSession,
   writeNote,
 } from "./act";
+import { listWorktrees } from "./read";
 import { createRegistry, type ToolDef } from "./registry";
 
 const choice: ChoiceRef = {
@@ -512,5 +514,138 @@ describe("policy without a trust store", () => {
     expect(call("create_session", { project: "p" }, "reversible")).toBe("run");
     expect(call("create_session", { prompt: "fix it" }, "reversible")).toBe("ask");
     expect(call("open_panel", {}, "reversible")).toBe("run");
+  });
+});
+
+describe("existing worktrees", () => {
+  const wt2: WorktreeRef = {
+    path: "C:/r/.workbench/worktrees/2",
+    branch: "agent/2",
+    lastCommit: "abc1234 half the fix",
+    committedAt: 1_700_000_000,
+    sessions: [],
+    conversations: [{ sessionId: "s-2", firstPrompt: "fix the auth redirect", modifiedAt: 1_700_000_000 }],
+    conversationCount: 1,
+  };
+  const withWorktrees = (running = false): FakePortData => {
+    const d = data();
+    d.worktrees = { p1: [{ ...wt2, sessions: running ? [{ id: "i2", title: "tests", running: true }] : [] }] };
+    return d;
+  };
+  const r = createRegistry([...ACT_TOOLS, listWorktrees]);
+  /** The call as the engine makes it: prepare, the tier, the card, then run. */
+  async function call(tool: ToolDef, input: object, d: FakePortData) {
+    const port = fakePort(d);
+    const parsed = tool.schema.parse(input);
+    const prepared = await tool.prepare!(parsed, port);
+    const tier = r.callTier(tool.name, input, port, prepared);
+    const card = tool.describe!(parsed, port, prepared);
+    const out = (await tool.run(parsed, { ...toolCtx(port), prepared })) as Record<string, unknown>;
+    return { port, tier, card, out };
+  }
+
+  it("create_session opens a session in an existing worktree, by branch, and can resume there", async () => {
+    const { port, tier, card, out } = await call(
+      createSession,
+      { project: "Backend", existingWorktree: "agent/2", resume: true },
+      withWorktrees(),
+    );
+    expect(tier).toBe("reversible");
+    expect(card).toBe(
+      "Start a session in Backend in the existing worktree C:/r/.workbench/worktrees/2 (agent/2), continuing its last conversation",
+    );
+    expect(port.calls[0].args[0]).toMatchObject({
+      projectId: "p1",
+      existingWorktree: "C:/r/.workbench/worktrees/2",
+      shareWorktree: false,
+      resume: true,
+    });
+    expect(out).toMatchObject({ worktree: "C:/r/.workbench/worktrees/2 (agent/2)", resumed: "s-2" });
+  });
+
+  it("create_session refuses a worktree a running session uses, and asks the user to share it", async () => {
+    await expect(call(createSession, { project: "Backend", existingWorktree: "agent/2" }, withWorktrees(true))).rejects.toThrow(
+      /in use by "tests".*shareWorktree/,
+    );
+    const shared = await call(
+      createSession,
+      { project: "Backend", existingWorktree: "agent/2", shareWorktree: true },
+      withWorktrees(true),
+    );
+    expect(shared.tier).toBe("consequential");
+    expect(shared.card).toMatch(/SHARING it with "tests"/);
+    expect(shared.port.calls[0].args[0]).toMatchObject({ shareWorktree: true });
+  });
+
+  it("create_session refuses what isn't the project's worktree, and bad combinations", async () => {
+    const d = withWorktrees();
+    await expect(call(createSession, { project: "Backend", existingWorktree: "C:/elsewhere" }, d)).rejects.toThrow(
+      "isn't a worktree",
+    );
+    await expect(call(createSession, { project: "Backend", existingWorktree: "agent/2", worktree: true }, d)).rejects.toThrow(
+      "not both",
+    );
+    await expect(call(createSession, { project: "Backend", resume: true }, d)).rejects.toThrow("existingWorktree");
+    await expect(
+      call(createSession, { project: "Backend", existingWorktree: "agent/2", resume: true, prompt: "go" }, d),
+    ).rejects.toThrow("send_prompt");
+    await expect(call(createSession, { project: "Box", existingWorktree: "agent/2" }, d)).rejects.toThrow("remote");
+  });
+
+  it("create_session without a worktree is unchanged", async () => {
+    const { tier, port } = await call(createSession, { project: "Backend", worktree: true }, withWorktrees());
+    expect(tier).toBe("reversible");
+    expect(port.calls[0].args[0]).toMatchObject({ worktree: true });
+    expect(port.calls[0].args[0]).not.toHaveProperty("existingWorktree");
+  });
+
+  it("attach_worktree moves a stopped session at once, a running one on a card", async () => {
+    const stopped = await call(attachWorktree, { session: "old", worktree: "C:/r/.workbench/worktrees/2", resume: true }, withWorktrees());
+    expect(stopped.tier).toBe("reversible");
+    expect(stopped.card).toBe('Move "old" in the worktree C:/r/.workbench/worktrees/2 (agent/2), continuing its last conversation');
+    expect(stopped.port.calls).toEqual([
+      { name: "attachWorktree", args: ["i3", "C:/r/.workbench/worktrees/2", { share: false, resume: true }] },
+    ]);
+    expect(stopped.out).toEqual({
+      session: "old",
+      worktree: "C:/r/.workbench/worktrees/2 (agent/2)",
+      conversations: 1,
+      resumed: "s-2",
+    });
+    const running = await call(attachWorktree, { session: "tests", worktree: "agent/2" }, withWorktrees());
+    expect(running.tier).toBe("consequential");
+    expect(running.card).toMatch(/^Restart "tests"/);
+  });
+
+  it("attach_worktree doesn't count the session itself as another user", async () => {
+    const { tier } = await call(attachWorktree, { session: "tests", worktree: "agent/2" }, withWorktrees(true));
+    expect(tier).toBe("consequential"); // it's running, not shared
+    await expect(call(attachWorktree, { session: "old", worktree: "agent/2" }, withWorktrees(true))).rejects.toThrow(
+      /in use by "tests"/,
+    );
+  });
+
+  it("kill_session ends a session in a worktree it was opened in, leaving the worktree", async () => {
+    const d = data();
+    d.sessions!.push(session({ id: "i4", projectId: "p1", title: "two", worktreeBranch: "agent/2", worktreeOwned: false }));
+    const { port, out } = await run(killSession, { session: "two" }, { d });
+    expect(port.calls).toEqual([{ name: "killSession", args: ["i4"] }]);
+    expect(out).toEqual({ session: "two", killed: true });
+  });
+
+  it("list_worktrees shows each worktree's branch, sessions and conversations", async () => {
+    const d = withWorktrees(true);
+    const port = fakePort(d);
+    const out = (await listWorktrees.run(listWorktrees.schema.parse({ project: "Backend" }), toolCtx(port))) as {
+      worktrees: Record<string, unknown>[];
+    };
+    expect(out.worktrees[0]).toMatchObject({
+      path: "C:/r/.workbench/worktrees/2",
+      branch: "agent/2",
+      lastCommit: "abc1234 half the fix",
+      sessions: ['"tests" (i2, running)'],
+      conversations: 1,
+    });
+    expect((out.worktrees[0].recent as { sessionId: string }[])[0].sessionId).toBe("s-2");
   });
 });

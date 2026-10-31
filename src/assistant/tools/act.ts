@@ -18,7 +18,7 @@ import { z } from "zod";
 import { isStale } from "../../ipc/notes";
 import { DUCK_PERMISSION_MODES, SESSION_MODELS } from "../../util/models";
 import { MAX_ATTACHMENTS } from "../attachments";
-import type { PromptDelivery, SessionPhase, SessionRef, WorkbenchPort, WorktreeLoss } from "../port";
+import type { PromptDelivery, SessionPhase, SessionRef, WorkbenchPort, WorktreeLoss, WorktreeRef } from "../port";
 import type { NoteEdit } from "../protocol";
 import { quotes } from "../trust/mandate";
 import {
@@ -148,45 +148,115 @@ async function filesFor(
   return toSession(s.workingDir, refs);
 }
 
-export const createSession = defineTool({
+/** An existing worktree a call targets, and the running sessions already in it. */
+interface WorktreeTarget {
+  worktree: WorktreeRef;
+  running: string[];
+}
+
+/** The worktree `target` names in `projectId`, refused while another running
+ *  session works there unless the call shares it (which then asks the user). */
+async function worktreeTarget(
+  port: WorkbenchPort,
+  projectId: string,
+  target: string,
+  share: boolean | undefined,
+  exceptId?: string,
+): Promise<WorktreeTarget> {
+  const worktree = await port.findWorktree(projectId, target);
+  const running = worktree.sessions.filter((s) => s.running && s.id !== exceptId).map((s) => `"${s.title}"`);
+  if (running.length && !share)
+    throw new Error(
+      `${worktree.path} is in use by ${running.join(", ")}, running there: two sessions in one worktree can overwrite each other's edits. Ask the user; only if they want it shared, call again with shareWorktree: true (they confirm it on a card).`,
+    );
+  return { worktree, running };
+}
+
+const worktreeLine = (w: WorktreeRef) => `${w.path}${w.branch ? ` (${w.branch})` : ""}`;
+
+const sharedNote = (t: WorktreeTarget | undefined) =>
+  t?.running.length ? `, SHARING it with ${t.running.join(", ")}, running there` : "";
+
+const existingWorktreeArg = z
+  .string()
+  .max(1000)
+  .describe("An existing worktree of the project, by its folder or its branch (list_worktrees gives them).");
+const shareWorktreeArg = z
+  .boolean()
+  .optional()
+  .describe(
+    "Let it into a worktree another running session works in. Only when the user wants that; they confirm it on a card.",
+  );
+
+const createSchema = z.object({
+  project: projectArg,
+  prompt: z
+    .string()
+    .max(20_000)
+    .optional()
+    .describe("The first prompt, sent once Claude Code is ready."),
+  title: z
+    .string()
+    .max(80)
+    .optional()
+    .describe("The session's title; defaults to the next free number."),
+  worktree: z
+    .boolean()
+    .optional()
+    .describe("Isolate it in a new git worktree (local projects only)."),
+  existingWorktree: existingWorktreeArg
+    .optional()
+    .describe(
+      "Open it in a worktree the project already has (its folder or branch, from list_worktrees) instead of the project root or a new worktree: how work left in a worktree by a killed or lost session goes on, on the same branch. Not with `worktree`.",
+    ),
+  resume: z
+    .boolean()
+    .optional()
+    .describe(
+      "With existingWorktree: continue the newest Claude Code conversation in that worktree instead of a fresh one. Not with `prompt` (send it once it has resumed).",
+    ),
+  shareWorktree: shareWorktreeArg,
+  model: z.enum([...SESSION_MODELS, "project"]).optional(),
+  permissionMode: z.enum([...DUCK_PERMISSION_MODES, "project"]).optional(),
+  delegatedBy: z
+    .string()
+    .max(500)
+    .optional()
+    .describe("The user's own words handing the session over to you, quoted from their latest message."),
+});
+
+export const createSession = defineTool<typeof createSchema, WorktreeTarget | undefined>({
   name: "create_session",
   description:
-    "Start a new Workbench session (a Claude Code console) in a project, optionally with a first prompt and in its own git worktree. Leave `model` out for coding or other professional work: it then runs on the coding model from Duck's settings. Pass `project` to use the project's own default model instead, or a model name when the user asks for one. `permissionMode` works the same way: leave it out for Duck's coding setting, `project` for the project's default, or a mode when the user asks for one (`acceptEdits` takes file edits without asking, `plan` only plans). When the user hands the session over to you (\"handle its questions\", \"don't bother me with it\"), quote those words of theirs in `delegatedBy`: you then answer its questions for them, and leave only the serious ones to them. The new session gets the focus, as when the user makes one.",
-  schema: z.object({
-    project: projectArg,
-    prompt: z
-      .string()
-      .max(20_000)
-      .optional()
-      .describe("The first prompt, sent once Claude Code is ready."),
-    title: z
-      .string()
-      .max(80)
-      .optional()
-      .describe("The session's title; defaults to the next free number."),
-    worktree: z
-      .boolean()
-      .optional()
-      .describe("Isolate it in a new git worktree (local projects only)."),
-    model: z.enum([...SESSION_MODELS, "project"]).optional(),
-    permissionMode: z.enum([...DUCK_PERMISSION_MODES, "project"]).optional(),
-    delegatedBy: z
-      .string()
-      .max(500)
-      .optional()
-      .describe("The user's own words handing the session over to you, quoted from their latest message."),
-  }),
+    "Start a new Workbench session (a Claude Code console) in a project, optionally with a first prompt, in its own new git worktree (`worktree`), or in a worktree the project already has (`existingWorktree`, e.g. to carry on a killed session's work on its branch; `resume` continues that worktree's last conversation). Leave `model` out for coding or other professional work: it then runs on the coding model from Duck's settings. Pass `project` to use the project's own default model instead, or a model name when the user asks for one. `permissionMode` works the same way: leave it out for Duck's coding setting, `project` for the project's default, or a mode when the user asks for one (`acceptEdits` takes file edits without asking, `plan` only plans). When the user hands the session over to you (\"handle its questions\", \"don't bother me with it\"), quote those words of theirs in `delegatedBy`: you then answer its questions for them, and leave only the serious ones to them. The new session gets the focus, as when the user makes one.",
+  schema: createSchema,
   tier: "reversible",
+  // Sharing a worktree with a running session is the user's call.
+  tierFor: (_input, _port, target) => (target?.running.length ? "consequential" : "reversible"),
   // A worktree's setup command (an install) can take a while.
   timeoutMs: 90_000,
-  describe({ project, prompt }, port) {
+  async prepare({ project, worktree, existingWorktree, resume, prompt, shareWorktree }, port) {
     const p = findProject(port, project);
-    return `Start a session in ${p.name}${prompt?.trim() ? ` and send: ${cut(prompt, 240)}` : ""}`;
+    if ((worktree || existingWorktree) && p.remote)
+      throw new Error(`${p.name} is a remote project: worktrees are local only.`);
+    if (worktree && existingWorktree) throw new Error("Give `worktree` (a new one) or `existingWorktree`, not both.");
+    if (resume && !existingWorktree)
+      throw new Error("`resume` goes with `existingWorktree`; to continue a session on the rail, use resume_session.");
+    if (resume && prompt?.trim())
+      throw new Error("Resume first, then send the prompt with send_prompt: not both in create_session.");
+    return existingWorktree ? worktreeTarget(port, p.id, existingWorktree, shareWorktree) : undefined;
+  },
+  describe({ project, prompt, resume }, port, target) {
+    const p = findProject(port, project);
+    const where = target
+      ? ` in the existing worktree ${worktreeLine(target.worktree)}${resume ? ", continuing its last conversation" : ""}${sharedNote(target)}`
+      : "";
+    return `Start a session in ${p.name}${where}${prompt?.trim() ? ` and send: ${cut(prompt, 240)}` : ""}`;
   },
   trust: (input, port) => ({ ...onProject(input, port), texts: input.prompt ? [input.prompt] : [] }),
   async run(
-    { project, prompt, title, worktree, model, permissionMode, delegatedBy },
-    { port, settings, request, threadId, reminders },
+    { project, prompt, title, worktree, resume, model, permissionMode, delegatedBy },
+    { port, settings, request, threadId, reminders, prepared },
   ) {
     // Handed over only on the user's own words (step T3).
     const delegated = !!delegatedBy?.trim() && quotes(request, delegatedBy);
@@ -201,6 +271,12 @@ export const createSession = defineTool({
       title,
       prompt,
       worktree,
+      // The folder found before the card, so the session lands where it said.
+      ...(prepared && {
+        existingWorktree: prepared.worktree.path,
+        shareWorktree: prepared.running.length > 0,
+        resume,
+      }),
       model: m,
       permissionMode: mode,
       // What the session is for, in the user's words: its prompts are judged by it.
@@ -212,7 +288,12 @@ export const createSession = defineTool({
       project: p.name,
       model: m ?? "the project's default",
       permissionMode: mode ?? "the project's default",
-      worktree: worktree ?? null,
+      worktree: prepared ? worktreeLine(prepared.worktree) : (worktree ?? null),
+      resumed:
+        prepared && resume
+          ? (prepared.worktree.conversations[0]?.sessionId ??
+            "nothing: the worktree had no conversations, so it started fresh")
+          : null,
       prompt: prompt?.trim() ? "sent once Claude Code is ready (queued on its card if it never is)" : null,
       delegated: delegatedBy?.trim()
         ? delegated
@@ -243,7 +324,7 @@ export const startSession = defineTool({
 export const resumeSession = defineTool({
   name: "resume_session",
   description:
-    "Relaunch a session's console on a past Claude Code conversation: `sessionId` if given, else its most recent one. A session that is running is restarted, which the user must confirm.",
+    "Relaunch a session's console on a past Claude Code conversation: `sessionId` if given, else its most recent one. A session that is running is restarted, which the user must confirm. Claude Code finds a conversation only in the folder it ran in: one from a worktree is refused here, naming the worktree; attach_worktree (with resume) moves the session there first.",
   schema: z.object({
     ...sessionArgs,
     sessionId: z.string().optional().describe("A past Claude Code session id."),
@@ -258,9 +339,9 @@ export const resumeSession = defineTool({
     return `${isLive(s) ? "Restart" : "Resume"} "${s.title}" on ${sessionId ? `session ${sessionId}` : "its last conversation"}`;
   },
   trust: onSessionGranted,
-  run({ session, project, sessionId }, { port }) {
+  async run({ session, project, sessionId }, { port }) {
     const s = findSession(port, session, project);
-    port.resumeSession(s.id, sessionId);
+    await port.resumeSession(s.id, sessionId);
     return { session: s.title, id: s.id, resumed: sessionId ?? "the last conversation" };
   },
 });
@@ -392,10 +473,57 @@ export const stopSession = defineTool({
   },
 });
 
+const attachSchema = z.object({
+  ...sessionArgs,
+  worktree: existingWorktreeArg,
+  resume: z
+    .boolean()
+    .optional()
+    .describe("Continue the newest Claude Code conversation in that worktree once it's there."),
+  shareWorktree: shareWorktreeArg,
+});
+
+export const attachWorktree = defineTool<typeof attachSchema, WorktreeTarget>({
+  name: "attach_worktree",
+  description:
+    "Point a session on the rail at a worktree its project already has (by folder or branch, from list_worktrees), so it works there and finds the Claude Code conversations it had there. Use it when a session came back in the wrong folder (resuming then fails with \"No conversation found\") or should carry on work left in a worktree. The worktree isn't the session's own: removing the session never removes it. A running session restarts in the worktree, which the user confirms. Refused for a worktree another running session works in, unless the user wants it shared (shareWorktree).",
+  schema: attachSchema,
+  tier: "reversible",
+  tierFor({ session, project }, port, target) {
+    return isLive(findSession(port, session, project)) || target?.running.length ? "consequential" : "reversible";
+  },
+  async prepare({ session, project, worktree, shareWorktree }, port) {
+    const s = findSession(port, session, project);
+    if (port.listProjects().find((p) => p.id === s.projectId)?.remote)
+      throw new Error(`"${s.title}" is in a remote project: worktrees are local only.`);
+    return worktreeTarget(port, s.projectId, worktree, shareWorktree, s.id);
+  },
+  describe({ session, project, resume }, port, target) {
+    const s = findSession(port, session, project);
+    return `${isLive(s) ? "Restart" : "Move"} "${s.title}" in the worktree ${worktreeLine(target.worktree)}${
+      resume ? ", continuing its last conversation" : ""
+    }${sharedNote(target)}`;
+  },
+  trust: onSessionGranted,
+  async run({ session, project, resume }, { port, prepared }) {
+    const s = findSession(port, session, project);
+    const done = await port.attachWorktree(s.id, prepared.worktree.path, {
+      share: prepared.running.length > 0,
+      resume,
+    });
+    return compact({
+      session: s.title,
+      worktree: worktreeLine(done.worktree),
+      conversations: done.worktree.conversationCount,
+      resumed: resume ? (done.resumed ?? "nothing: the worktree has no conversations") : null,
+    });
+  },
+});
+
 export const killSession = defineTool({
   name: "kill_session",
   description:
-    "Kill a session: end its Claude Code process and remove it from the rail for good (the rail's \"kill instance\"). Use it to clear away sessions that are finished or dead; use stop_session to keep one around for later. Its past conversations stay on disk. Refused for a session with a worktree (use dispose_worktree), and for a remote one in tmux: the user does that from the rail.",
+    "Kill a session: end its Claude Code process and remove it from the rail for good (the rail's \"kill instance\"). Use it to clear away sessions that are finished or dead; use stop_session to keep one around for later. Its past conversations stay on disk. Refused for a session in a worktree Workbench made for it (use dispose_worktree), and for a remote one in tmux: the user does that from the rail. A session opened in an existing worktree can be killed: that worktree stays as it is.",
   schema: z.object({ ...sessionArgs, grantedBy: grantArg }),
   tier: "consequential",
   describe({ session, project }, port) {
@@ -431,7 +559,7 @@ const disposeSchema = z.object({
 export const disposeWorktree = defineTool<typeof disposeSchema, WorktreeLoss>({
   name: "dispose_worktree",
   description:
-    "Clean up after a session that works in its own git worktree: end it, remove the worktree folder and delete its branch, and take it off the rail (kill_session refuses such sessions). It runs at once only when git confirms nothing would be lost: every commit of the branch is in the project's main branch and the worktree has no uncommitted or untracked files. Otherwise it is refused with exactly what would be lost; tell the user, and suggest merging (or committing) first. Only when the user has explicitly said to remove it anyway (\"remove it even though it isn't merged\", \"throw that work away\") pass `force: true` with their words quoted in `grantedBy`; the call then names the commits and files it will destroy. Never force on your own judgment.",
+    "Clean up after a session that works in its own git worktree (one Workbench made for it; a worktree a session was opened in is never removed, kill_session ends that session): end it, remove the worktree folder and delete its branch, and take it off the rail (kill_session refuses such sessions). It runs at once only when git confirms nothing would be lost: every commit of the branch is in the project's main branch and the worktree has no uncommitted or untracked files. Otherwise it is refused with exactly what would be lost; tell the user, and suggest merging (or committing) first. Only when the user has explicitly said to remove it anyway (\"remove it even though it isn't merged\", \"throw that work away\") pass `force: true` with their words quoted in `grantedBy`; the call then names the commits and files it will destroy. Never force on your own judgment.",
   schema: disposeSchema,
   tier: "consequential",
   // Nothing to lose: it runs like any reversible clean-up. Anything else asks.
@@ -751,6 +879,7 @@ export const ACT_TOOLS = [
   interruptSession,
   stopSession,
   killSession,
+  attachWorktree,
   disposeWorktree,
   openPanel,
   waitForSession,
