@@ -75,7 +75,8 @@ import { SketchView } from "./SketchView";
 import { closeSketch, openSketch, useSketchState } from "./sketchState";
 import { OverviewPanel } from "./OverviewView";
 import { DecisionsPanel, TrustPanel } from "./TrustViews";
-import { focusUnlessReading, sendsToComposer, watchSelecting } from "./composerFocus";
+import { focusUnlessReading, isSelecting, sendsToComposer, watchSelecting } from "./composerFocus";
+import { holdSelection, restoreSelection, type HeldSelection } from "../../util/keepSelection";
 import type { ThreadRow } from "../../ipc/assistant";
 import {
   answer,
@@ -837,6 +838,18 @@ function ThreadBody({ duck }: { duck: DuckState }) {
   const provisional = id ? duck.provisional[id] : "";
   const state = id ? (duck.states[id] ?? "idle") : "idle";
 
+  // A selection survives the repaint: a streaming reply replaces its HTML on every
+  // delta, and the finished reply mounts in its place. Held as the render starts
+  // (so a selection you've since cleared isn't brought back), restored once it's
+  // committed if the same text is still there.
+  const held = useRef<HeldSelection | null>(null);
+  // Not across a thread switch (`shown` moves to the new thread once it's painted).
+  held.current = ref.current && shown.current === id ? holdSelection(ref.current) : null;
+  useLayoutEffect(() => {
+    if (ref.current) restoreSelection(ref.current, held.current);
+    held.current = null;
+  });
+
   // Switching threads: save the old position, restore the new one (or the end).
   useLayoutEffect(() => {
     const el = ref.current;
@@ -881,7 +894,7 @@ function ThreadBody({ duck }: { duck: DuckState }) {
         <ItemView key={it.key} item={it} active={state !== "idle"} />
       ))}
       {provisional && <UserBubble text={provisional} source="voice" pending />}
-      {streaming && <Reply text={streaming} />}
+      {streaming && <StreamingReply text={streaming} />}
       {state !== "idle" && !streaming && (
         <div style={{ padding: "2px 16px", color: "var(--wb-textFaint)" }}>
           {STATE_LABEL[state]}
@@ -1319,6 +1332,15 @@ function Reply({ text }: { text: string }) {
   );
 }
 
+/** The reply streaming in. While the button is down in the drawer (maybe a drag
+ *  selecting it) it holds still, so the drag keeps its nodes; it catches up on the
+ *  next repaint after. */
+function StreamingReply({ text }: { text: string }) {
+  const painted = useRef(text);
+  if (!isSelecting()) painted.current = text;
+  return <Reply text={painted.current} />;
+}
+
 function ToolChip({
   item,
   active,
@@ -1706,7 +1728,8 @@ function Composer({
     const text = duck.fill?.text;
     if (!text) return;
     setDraft(text);
-    inputRef.current?.focus();
+    // You asked for it ("ask for changes"), but not while you're selecting.
+    focusUnlessReading(inputRef.current);
     // Only a new fill, not a re-render, puts its text in.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [fillSeq, inputRef]);

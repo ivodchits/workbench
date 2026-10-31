@@ -45,6 +45,7 @@ import { markInterrupted } from "../state/status";
 import { mirrorInstanceTaskNote } from "../state/registry";
 import { takeLaunchPrompt } from "../state/launchPrompt";
 import { isHeadless, sendHeadless } from "../state/headless";
+import { duckHoldsFocus } from "../state/focusGuard";
 import { isSpeaking, speak, stopSpeaking } from "../util/speech";
 
 interface TermEntry {
@@ -289,7 +290,7 @@ export function acquire(container: HTMLDivElement, opts: AcquireOptions): void {
   if (existing) {
     container.appendChild(existing.host); // moves it out of any old container
     refit(existing);
-    existing.term.focus();
+    if (mayFocus(container)) existing.term.focus();
     // Re-parenting resets the `.xterm-viewport` DOM scrollTop to 0 while the
     // buffer stays scrolled where it was, so the scrollbar desyncs from the
     // rendered rows (pinned at the top, content showing the old position, and the
@@ -586,7 +587,14 @@ export function acquire(container: HTMLDivElement, opts: AcquireOptions): void {
         release(opts.instanceId); // failed spawn — don't leave a dead entry behind
       });
   });
-  term.focus();
+  if (mayFocus(container)) term.focus();
+}
+
+/** A terminal mounting takes the keyboard, but not out of Duck's drawer (a console
+ *  Duck opens while you're in it), nor when it mounts off screen (Duck's workers
+ *  start in `BackgroundConsoles`, hidden). */
+function mayFocus(container: HTMLElement): boolean {
+  return !container.closest("[aria-hidden='true']") && !duckHoldsFocus();
 }
 
 /** Focus an instance's terminal, if it's in the pool (no-op otherwise). Used by

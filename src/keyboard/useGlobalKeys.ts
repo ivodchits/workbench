@@ -12,6 +12,7 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { isKeymapCapturing, matchCommand } from "./keymap";
 import { overrideKey, runCommand } from "./bus";
 import { dispatch } from "./commands";
+import { markFocusIntent, watchFocusIntent } from "../state/focusGuard";
 
 /** Install the global keymap listener for the lifetime of the app. */
 export function useGlobalKeys(): void {
@@ -24,11 +25,14 @@ export function useGlobalKeys(): void {
       if (!match) return;
       e.preventDefault();
       e.stopPropagation();
+      // A chord is asked for: the focus it moves goes ahead, even out of Duck's drawer.
+      markFocusIntent();
       // An open overlay may mean something else by it (Duck's drawer).
       if (overrideKey(match.command, match.arg)) return;
       dispatch(match);
     };
     document.addEventListener("keydown", onKeyDown, { capture: true });
+    const stopIntent = watchFocusIntent();
 
     // `Ctrl+Shift+R` (resume last session) is a WebView2 reload accelerator the
     // engine consumes before DOM dispatch, so the keymap above never sees it — the
@@ -44,6 +48,7 @@ export function useGlobalKeys(): void {
 
     return () => {
       document.removeEventListener("keydown", onKeyDown, { capture: true });
+      stopIntent();
       cancelled = true;
       unlisten?.();
     };

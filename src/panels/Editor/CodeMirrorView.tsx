@@ -34,6 +34,7 @@ import { useThemeVersion } from "../../state/appearance";
 import { livePreview } from "./livePreview";
 import { persistScroll } from "./scrollMemory";
 import { selectedLines } from "../Diff/commentMarks";
+import { duckHoldsFocus } from "../../state/focusGuard";
 
 /** What the editor panel can read from an open view. */
 export interface CodeMirrorHandle {
@@ -155,7 +156,8 @@ function CodeMirrorView({
       state: EditorState.create({ doc: initialDoc, extensions }),
     });
     viewRef.current = view;
-    view.focus();
+    // Duck opening a file doesn't take the keyboard from its drawer.
+    if (!duckHoldsFocus()) view.focus();
 
     // Remember the scroll offset across tab switches — dockview detaches the panel
     // DOM, which resets the scroller's scrollTop with no event or React lifecycle.

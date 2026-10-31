@@ -16,6 +16,7 @@ import { oneLine, readableInput, toItems, type Item } from "../panels/Assistant/
 import { renderMarkdown } from "../panels/Editor/markdown";
 import type { RemoteDuckFrame, RemoteDuckMessage } from "../remote/protocol";
 import { el } from "../pwa/dom";
+import { keepingSelection } from "../util/keepSelection";
 import { apply, emptyView, type DuckView } from "../pwa/duckStore";
 import type { Link } from "./net";
 
@@ -70,6 +71,8 @@ export function createDuckChat(root: HTMLElement, link: Link, onClose: () => voi
   const scroll = el("div", "scroll");
   const list = el("div");
   const streaming = el("div", "wb-md duck-reply");
+  /** What `streaming` shows, so an unchanged paint leaves its nodes alone. */
+  let streamed = "";
   scroll.append(list, streaming);
   const asks = el("div", "asks");
   const error = el("p", "error");
@@ -189,11 +192,15 @@ export function createDuckChat(root: HTMLElement, link: Link, onClose: () => voi
       pick.value = id ?? "";
     }
     const s = stateOf();
-    if (!before || before.current !== id || (id && (before.messages[id] !== view.messages[id] || (before.states[id] ?? "idle") !== s)))
-      paintItems();
     const live = id ? (view.streaming[id] ?? "") : "";
-    streaming.hidden = !live;
-    if (live) streaming.innerHTML = renderMarkdown(live); // sanitized by DOMPurify in renderMarkdown
+    // A selection in the chat survives the list being rebuilt and the reply growing.
+    keepingSelection(scroll, () => {
+      if (!before || before.current !== id || (id && (before.messages[id] !== view.messages[id] || (before.states[id] ?? "idle") !== s)))
+        paintItems();
+      streaming.hidden = !live;
+      if (live && live !== streamed) streaming.innerHTML = renderMarkdown(live); // sanitized by DOMPurify in renderMarkdown
+      streamed = live;
+    });
     if (!before || before.asks !== view.asks || before.current !== id) paintAsks();
     if (ws?.readyState === WebSocket.OPEN) state.textContent = view.synced ? STATE_LABEL[s] || "here" : "loading…";
     state.className = `state turn-${s}`;
