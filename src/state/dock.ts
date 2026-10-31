@@ -11,6 +11,7 @@
 import type { DockviewApi, IDockviewPanel } from "dockview";
 import { focusTerminal } from "../panels/terminalPool";
 import { focusComposer } from "./composer";
+import { duckHoldsFocus } from "./focusGuard";
 
 let api: DockviewApi | null = null;
 
@@ -101,6 +102,8 @@ export function activatePanel(panelId: string): void {
  */
 export function routePanelFocus(panelId: string): void {
   requestAnimationFrame(() => {
+    // Not out of Duck's drawer, unless you asked (a Duck tool opening a console).
+    if (duckHoldsFocus()) return;
     focusTerminal(panelId); // console + shell (pool keyed by panel id)
     focusComposer(panelId); // a console showing its transcript (no-op otherwise)
     document

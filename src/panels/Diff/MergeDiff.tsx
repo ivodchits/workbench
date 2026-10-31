@@ -42,6 +42,7 @@ import {
 import type { DiffLayout } from "../../ipc/prefs";
 import { codeMirrorTheme, diffTheme } from "../../theme";
 import { useThemeVersion } from "../../state/appearance";
+import { duckHoldsFocus } from "../../state/focusGuard";
 import { forgetScroll, persistScroll } from "../Editor/scrollMemory";
 import { stepChange, textPatch } from "./mergeNav";
 import { commentLines, commentMarks, selectedLines, syncComments, type CommentSpan } from "./commentMarks";
@@ -114,7 +115,8 @@ function goToLine(view: EditorView, line: number): void {
   const doc = view.state.doc;
   const at = doc.line(Math.min(Math.max(line, 1), doc.lines)).from;
   view.dispatch({ selection: { anchor: at }, effects: EditorView.scrollIntoView(at, { y: "center" }) });
-  view.focus();
+  // A diff Duck opens doesn't take the keyboard from its drawer.
+  if (!duckHoldsFocus()) view.focus();
 }
 
 interface MergeDiffProps {

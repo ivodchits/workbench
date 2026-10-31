@@ -64,6 +64,11 @@ export function watchSelecting(root: HTMLElement): () => void {
   };
 }
 
+/** The primary button is down in the drawer: maybe a drag selecting text. */
+export function isSelecting(): boolean {
+  return selecting;
+}
+
 /** You're reading the drawer around `el`: mid-drag, or with text selected in it. */
 export function isReading(el: Element): boolean {
   const root = el.closest("[data-wb-duck]") ?? el;

@@ -62,6 +62,7 @@ import { lineDiff, oneLine, readableInput, reminderFiles, sessionLink, toItems, 
 import { renderMarkdown } from "../panels/Editor/markdown";
 import type { EchoPath, RemoteConvFrame, RemoteConvMessage, RemoteDuckFrame, RemoteDuckMessage, RemoteHostMessage } from "../remote/protocol";
 import { formatAgo } from "../util/format";
+import { keepingSelection } from "../util/keepSelection";
 import { $, el } from "./dom";
 import { apply, emptyView, userText, type DuckView } from "./duckStore";
 import { audioContext, browserOut, fetchPart, playbackLevel, setEchoPath, unlock } from "./duckSpeech";
@@ -1251,6 +1252,9 @@ function paintVoice(): void {
 }
 
 let streamFrame = 0;
+/** What the stream box shows, so an unchanged frame leaves its nodes (and a
+ *  selection in them) alone. */
+let streamPainted = "";
 
 function paintStream(): void {
   if (streamFrame) return;
@@ -1258,8 +1262,12 @@ function paintStream(): void {
     streamFrame = 0;
     const id = view.current;
     const text = id ? (view.streaming[id] ?? "") : "";
-    const box = $("duck-stream");
-    box.innerHTML = text ? renderMarkdown(text) : "";
+    if (text !== streamPainted) {
+      streamPainted = text;
+      const box = $("duck-stream");
+      // A selection in the chat survives the reply growing under it.
+      keepingSelection($("duck-scroll"), () => (box.innerHTML = text ? renderMarkdown(text) : ""));
+    }
     paintStatus();
     if (stuck) toEnd();
   });
@@ -1321,7 +1329,8 @@ function paint(why: string, before?: DuckView): void {
       before.tasks !== view.tasks ||
       before.autopilots !== view.autopilots ||
       (id && (before.states[id] ?? "idle") !== (view.states[id] ?? "idle"));
-    if (changed) paintItems();
+    // The list is rebuilt: a selection in it is put back where it was.
+    if (changed) keepingSelection($("duck-scroll"), paintItems);
     paintStream();
     if (!before || before.asks !== view.asks || why === "open") paintAsks();
     paintSpend();
