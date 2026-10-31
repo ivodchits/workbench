@@ -39,6 +39,38 @@ export function provisionWorktree(
   return invoke("provision_worktree", { repoRoot, slug, baseDir: baseDir ?? null });
 }
 
+// --- existing worktrees -----------------------------------------------------
+
+/** One of a project's worktrees, from `git worktree list`, with its last commit. */
+export interface WorktreeEntry {
+  path: string;
+  /** The branch checked out there; null on a detached HEAD. */
+  branch: string | null;
+  /** Short sha of its HEAD. */
+  head: string;
+  /** Subject of the HEAD commit; empty when it couldn't be read. */
+  subject: string;
+  /** Commit time of HEAD (epoch seconds). */
+  committedAt: number | null;
+  /** The project's own folder, not a linked worktree. */
+  isMain: boolean;
+  locked: boolean;
+  /** Its folder is gone (git would prune it). */
+  missing: boolean;
+}
+
+/** Every worktree of the project at `repoRoot`, its own folder first. */
+export function listWorktrees(repoRoot: string): Promise<WorktreeEntry[]> {
+  return invoke("list_worktrees", { repoRoot });
+}
+
+/** The linked worktree of the project at `repoRoot` that `target` names (its folder
+ *  or its branch). Throws for one that isn't the project's, for the project's own
+ *  folder, and for one whose folder is gone. */
+export function resolveWorktree(repoRoot: string, target: string): Promise<WorktreeEntry> {
+  return invoke("resolve_worktree", { repoRoot, target });
+}
+
 // --- worktree post-create setup + teardown (step 2.5) -----------------------
 
 /** Result of the optional post-create setup run for a fresh worktree (step 2.5). */

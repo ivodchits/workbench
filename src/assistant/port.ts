@@ -70,6 +70,9 @@ export interface SessionRef {
   subagents: number;
   /** The worktree's branch; null when the session works in the project root. */
   worktreeBranch: string | null;
+  /** Its worktree was made by Workbench for it (and goes with it); false for an
+   *  existing worktree it was opened in, which is never removed with it. */
+  worktreeOwned: boolean;
   /** The model it launches on (its own, else the project's default); null for
    *  Claude Code's default. */
   model: string | null;
@@ -149,6 +152,13 @@ export interface WorkbenchPort {
     title?: string;
     prompt?: string;
     worktree?: boolean;
+    /** Open it in this existing worktree of the project (its folder or branch)
+     *  instead of the root or a new one. Refused for a worktree another running
+     *  session works in, unless `shareWorktree`. */
+    existingWorktree?: string;
+    shareWorktree?: boolean;
+    /** With `existingWorktree`: continue its newest conversation there. */
+    resume?: boolean;
     model?: string | null;
     /** What the session is for: the user's request in the thread that started it
      *  (T2's judge reads its prompts against this). */
@@ -165,8 +175,10 @@ export interface WorkbenchPort {
   /** Open (or focus) a session's console, starting a fresh Claude Code session if
    *  none is running. */
   startSession(instanceId: string): void;
-  /** Relaunch the console on a past session: `sessionId`, else its last one. */
-  resumeSession(instanceId: string, sessionId?: string): void;
+  /** Relaunch the console on a past session: `sessionId`, else its last one.
+   *  Refused when `sessionId` is a conversation of another folder of the project
+   *  (Claude Code finds conversations per folder), naming that folder. */
+  resumeSession(instanceId: string, sessionId?: string): Promise<void>;
   /** Answer the prompt `choiceId` with one of its options, with free text (a
    *  single question's "Type something"), or dismiss it. Refused when that prompt
    *  is no longer the open one. Returns what was answered. */
@@ -317,6 +329,22 @@ export interface WorkbenchPort {
    *  in the project root again. Throws git's message on a conflict or a dirty
    *  tree, leaving everything as it was. Returns the branch merged into. */
   mergeWorktree(instanceId: string): Promise<string>;
+  /** The project's git worktrees besides its own folder, with the sessions in each
+   *  and its past conversations. Throws for a remote project or one without git. */
+  listWorktrees(projectId: string): Promise<WorktreeRef[]>;
+  /** The project's worktree `target` names (its folder or its branch); throws for
+   *  one that isn't the project's, for its own folder and for one gone from disk. */
+  findWorktree(projectId: string, target: string): Promise<WorktreeRef>;
+  /** Point a session at an existing worktree of its project (`target`: folder or
+   *  branch), so it works and finds its conversations there; the worktree is never
+   *  removed with it. Refused for a worktree another running session works in,
+   *  unless `share`. With `resume`, continues the newest conversation there. A
+   *  running session restarts there. */
+  attachWorktree(
+    instanceId: string,
+    target: string,
+    opts: { share?: boolean; resume?: boolean },
+  ): Promise<{ worktree: WorktreeRef; resumed: string | null }>;
   /** A new shell in the project's root, running `command` once it's up. */
   runInShell(projectId: string, command: string, label: string): Promise<void>;
 
@@ -356,6 +384,23 @@ export interface WorktreeChanges {
   uncommitted: string[];
   insertions: number;
   deletions: number;
+}
+
+/** One of a project's git worktrees. */
+export interface WorktreeRef {
+  path: string;
+  /** null on a detached HEAD. */
+  branch: string | null;
+  /** Its last commit, `<short sha> <subject>`. */
+  lastCommit: string;
+  /** When that was, epoch seconds. */
+  committedAt: number | null;
+  /** The sessions on the rail working in it. */
+  sessions: { id: string; title: string; running: boolean }[];
+  /** Past Claude Code conversations there, newest first (at most 5). */
+  conversations: { sessionId: string; firstPrompt: string; modifiedAt: number }[];
+  /** How many there are in all. */
+  conversationCount: number;
 }
 
 /** What removing a worktree would lose. */

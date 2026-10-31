@@ -137,6 +137,10 @@ pub struct Instance {
     /// (`claude --permission-mode`, step M4); `None` inherits the project's
     /// `default_permission_mode`.
     pub permission_mode: Option<String>,
+    /// Whether Workbench made this session's worktree (and so may remove it). False
+    /// for a worktree that existed before and was opened as is: removing a session
+    /// never removes such a worktree. Meaningless while `worktree_on` is false.
+    pub worktree_owned: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -237,6 +241,8 @@ pub struct InstancePatch {
     pub model: Option<Option<String>>,
     /// The session's permission mode (step M4), likewise.
     pub permission_mode: Option<Option<String>>,
+    /// Whether Workbench made the session's worktree (see `Instance::worktree_owned`).
+    pub worktree_owned: Option<bool>,
 }
 
 // ---------------------------------------------------------------------------
@@ -554,13 +560,15 @@ fn row_to_instance(r: &Row) -> rusqlite::Result<Instance> {
         remote_tmux_session: r.get(19)?,
         model: r.get(20)?,
         permission_mode: r.get(21)?,
+        worktree_owned: r.get(22)?,
     })
 }
 
 const INSTANCE_COLS: &str = "id, project_id, title, task_note, worktree_on, branch, \
     last_session_id, working_dir, status, input_tokens, output_tokens, \
     cache_creation_tokens, cache_read_tokens, cost_usd, sort_order, created_at, \
-    last_activity_at, task_note_auto, accent, remote_tmux_session, model, permission_mode";
+    last_activity_at, task_note_auto, accent, remote_tmux_session, model, permission_mode, \
+    worktree_owned";
 
 pub fn insert_instance(conn: &Connection, input: NewInstance) -> rusqlite::Result<Instance> {
     // Resolve the parent project once: its root path is the default working dir,
@@ -609,14 +617,15 @@ pub fn insert_instance(conn: &Connection, input: NewInstance) -> rusqlite::Resul
         remote_tmux_session,
         model: clean_model(input.model)?,
         permission_mode: clean_permission_mode(input.permission_mode)?,
+        worktree_owned: true,
     };
     conn.execute(
         "INSERT INTO instances (id, project_id, title, task_note, worktree_on, branch,
             last_session_id, working_dir, status, input_tokens, output_tokens,
             cache_creation_tokens, cache_read_tokens, cost_usd, sort_order, created_at,
             last_activity_at, task_note_auto, accent, remote_tmux_session, model,
-            permission_mode)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22)",
+            permission_mode, worktree_owned)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23)",
         rusqlite::params![
             instance.id,
             instance.project_id,
@@ -640,6 +649,7 @@ pub fn insert_instance(conn: &Connection, input: NewInstance) -> rusqlite::Resul
             instance.remote_tmux_session,
             instance.model,
             instance.permission_mode,
+            instance.worktree_owned,
         ],
     )?;
     Ok(instance)
@@ -740,13 +750,16 @@ pub fn update_instance(
     if let Some(v) = patch.permission_mode {
         i.permission_mode = clean_permission_mode(v)?;
     }
+    if let Some(v) = patch.worktree_owned {
+        i.worktree_owned = v;
+    }
     conn.execute(
         "UPDATE instances SET
             title = ?2, task_note = ?3, worktree_on = ?4, branch = ?5, last_session_id = ?6,
             working_dir = ?7, status = ?8, input_tokens = ?9, output_tokens = ?10,
             cache_creation_tokens = ?11, cache_read_tokens = ?12, cost_usd = ?13,
             sort_order = ?14, last_activity_at = ?15, task_note_auto = ?16, accent = ?17,
-            remote_tmux_session = ?18, model = ?19, permission_mode = ?20
+            remote_tmux_session = ?18, model = ?19, permission_mode = ?20, worktree_owned = ?21
          WHERE id = ?1",
         rusqlite::params![
             i.id,
@@ -769,6 +782,7 @@ pub fn update_instance(
             i.remote_tmux_session,
             i.model,
             i.permission_mode,
+            i.worktree_owned,
         ],
     )?;
     Ok(i)

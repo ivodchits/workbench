@@ -245,6 +245,187 @@ fn ensure_excluded(root: &Path, base: &Path) {
 }
 
 // ---------------------------------------------------------------------------
+// Existing worktrees: opening a session in a worktree that's already there (one a
+// killed session left behind, or one made outside Workbench) instead of a new one.
+// ---------------------------------------------------------------------------
+
+/// One of a project's worktrees, as `git worktree list` knows it, with its last
+/// commit. Which sessions use it is the frontend's to work out (it has the rail).
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorktreeEntry {
+    pub path: String,
+    /// The branch checked out there; `None` on a detached HEAD.
+    pub branch: Option<String>,
+    /// Short sha of its HEAD.
+    pub head: String,
+    /// Subject of the HEAD commit; empty when it couldn't be read.
+    pub subject: String,
+    /// Commit time of HEAD (epoch seconds).
+    pub committed_at: Option<i64>,
+    /// The project's own folder (the main worktree), not a linked one.
+    pub is_main: bool,
+    pub locked: bool,
+    /// Its folder is gone (git would prune it).
+    pub missing: bool,
+}
+
+/// A record of `git worktree list --porcelain`, before the commit is looked up.
+#[derive(Debug, Default, PartialEq)]
+struct PorcelainWorktree {
+    path: String,
+    head: String,
+    branch: Option<String>,
+    bare: bool,
+    locked: bool,
+    prunable: bool,
+}
+
+/// Parse `git worktree list --porcelain`: blank-line separated records, the first
+/// being the main worktree.
+fn parse_worktree_porcelain(out: &str) -> Vec<PorcelainWorktree> {
+    let mut all = Vec::new();
+    let mut cur: Option<PorcelainWorktree> = None;
+    for line in out.lines() {
+        let line = line.trim_end();
+        if let Some(p) = line.strip_prefix("worktree ") {
+            all.extend(cur.take());
+            cur = Some(PorcelainWorktree { path: p.trim().to_owned(), ..Default::default() });
+            continue;
+        }
+        let Some(w) = cur.as_mut() else { continue };
+        if let Some(h) = line.strip_prefix("HEAD ") {
+            w.head = h.trim().to_owned();
+        } else if let Some(b) = line.strip_prefix("branch ") {
+            let b = b.trim();
+            w.branch = Some(b.strip_prefix("refs/heads/").unwrap_or(b).to_owned());
+        } else if line == "bare" {
+            w.bare = true;
+        } else if line == "locked" || line.starts_with("locked ") {
+            w.locked = true;
+        } else if line == "prunable" || line.starts_with("prunable ") {
+            w.prunable = true;
+        } else if line.is_empty() {
+            all.extend(cur.take());
+        }
+    }
+    all.extend(cur);
+    all
+}
+
+/// A path as this OS writes it: git prints forward slashes even on Windows, while
+/// the rest of Workbench (and the worktrees it provisions) use backslashes there.
+fn native_path(p: &str) -> String {
+    if cfg!(windows) {
+        p.replace('/', "\\")
+    } else {
+        p.to_owned()
+    }
+}
+
+/// A path folded for comparison: one separator, no trailing one, and case-folded
+/// on Windows.
+fn path_key(p: &str) -> String {
+    let s = p.trim().replace('\\', "/");
+    let s = s.trim_end_matches('/');
+    if cfg!(windows) {
+        s.to_lowercase()
+    } else {
+        s.to_owned()
+    }
+}
+
+/// Every worktree of the repo at `root`, main one first.
+fn worktrees_of(root: &Path) -> Result<Vec<WorktreeEntry>, String> {
+    let out = git_run(root, &["worktree", "list", "--porcelain"])?;
+    let mut list = Vec::new();
+    for (n, w) in parse_worktree_porcelain(&out).into_iter().enumerate() {
+        if w.bare {
+            continue;
+        }
+        // The objects are shared, so the commit reads from the root even when the
+        // worktree's own folder is gone.
+        let log = (!w.head.is_empty())
+            .then(|| git_stdout(root, &["log", "-1", "--format=%h%x1f%ct%x1f%s", &w.head]))
+            .flatten()
+            .unwrap_or_default();
+        let mut parts = log.trim().splitn(3, '\u{1f}');
+        let short = parts.next().unwrap_or("").to_owned();
+        let committed_at = parts.next().and_then(|t| t.parse().ok());
+        let subject = parts.next().unwrap_or("").to_owned();
+        let path = native_path(&w.path);
+        let missing = w.prunable || !Path::new(&path).is_dir();
+        list.push(WorktreeEntry {
+            head: if short.is_empty() { w.head.chars().take(7).collect() } else { short },
+            subject,
+            committed_at,
+            is_main: n == 0,
+            locked: w.locked,
+            missing,
+            branch: w.branch,
+            path,
+        });
+    }
+    Ok(list)
+}
+
+/// List the worktrees of the project at `repo_root`, main one first, for the
+/// "open in an existing worktree" picker and Duck's `create_session`.
+#[tauri::command]
+pub fn list_worktrees(repo_root: String) -> Result<Vec<WorktreeEntry>, String> {
+    let root = Path::new(&repo_root);
+    if !root.join(".git").exists() {
+        return Err(format!("not a git repository: {repo_root}"));
+    }
+    worktrees_of(root)
+}
+
+/// Find the linked worktree of the project at `repo_root` that `target` names: its
+/// folder, or the branch checked out there (`agent/2` or `refs/heads/agent/2`).
+/// Refused for anything that isn't one of the project's own linked worktrees: a
+/// folder outside it, the project's main folder (that's a session without a
+/// worktree), or a worktree whose folder is gone.
+#[tauri::command]
+pub fn resolve_worktree(repo_root: String, target: String) -> Result<WorktreeEntry, String> {
+    let target = target.trim();
+    if target.is_empty() {
+        return Err("name a worktree: its folder or its branch".into());
+    }
+    let list = list_worktrees(repo_root.clone())?;
+    let want = path_key(target);
+    let branch = target.strip_prefix("refs/heads/").unwrap_or(target);
+    let found = list
+        .iter()
+        .find(|w| path_key(&w.path) == want)
+        .or_else(|| list.iter().find(|w| w.branch.as_deref() == Some(branch)));
+    let Some(w) = found else {
+        let others: Vec<String> = list
+            .iter()
+            .filter(|w| !w.is_main)
+            .map(|w| format!("{} ({})", w.path, w.branch.as_deref().unwrap_or("detached")))
+            .collect();
+        return Err(format!(
+            "{target} isn't a worktree of {repo_root}{}",
+            if others.is_empty() {
+                ": it has no worktrees besides its own folder".to_owned()
+            } else {
+                format!(". Its worktrees: {}", others.join("; "))
+            }
+        ));
+    };
+    if w.is_main {
+        return Err(format!(
+            "{} is the project's own folder, not a separate worktree: start the session without a worktree",
+            w.path
+        ));
+    }
+    if w.missing {
+        return Err(format!("the worktree {} is gone from disk (git would prune it)", w.path));
+    }
+    Ok(w.clone())
+}
+
+// ---------------------------------------------------------------------------
 // Worktree post-create setup (step 2.5) — design §6 "gotcha".
 // ---------------------------------------------------------------------------
 
@@ -2778,6 +2959,76 @@ mod tests {
         assert_eq!(res2.branch, "agent/fix-auth-redirect-2");
         assert_ne!(res.path, res2.path);
 
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn parses_worktree_porcelain_records() {
+        let out = "worktree C:/r/main\nHEAD 1111111111111111111111111111111111111111\nbranch refs/heads/main\n\n\
+                   worktree C:/r/.workbench/worktrees/2\nHEAD 2222222222222222222222222222222222222222\nbranch refs/heads/agent/2\nlocked\n\n\
+                   worktree C:/r/old\nHEAD 3333333333333333333333333333333333333333\ndetached\nprunable gitdir file points to non-existent location\n";
+        let list = parse_worktree_porcelain(out);
+        assert_eq!(list.len(), 3);
+        assert_eq!(list[0].branch.as_deref(), Some("main"));
+        assert_eq!(list[1].path, "C:/r/.workbench/worktrees/2");
+        assert_eq!(list[1].branch.as_deref(), Some("agent/2"));
+        assert!(list[1].locked && !list[1].prunable);
+        assert_eq!(list[2].branch, None);
+        assert!(list[2].prunable);
+    }
+
+    #[test]
+    fn path_key_folds_separators_and_trailing_slash() {
+        assert_eq!(path_key("C:/a/b/"), path_key(r"C:\a\b"));
+        if cfg!(windows) {
+            assert_eq!(path_key(r"C:\A\B"), path_key("c:/a/b"));
+        }
+    }
+
+    #[test]
+    fn lists_and_resolves_existing_worktrees() {
+        let dir = temp_dir("existing");
+        if !init_repo(&dir) {
+            std::fs::remove_dir_all(&dir).ok();
+            return;
+        }
+        let root = dir.to_string_lossy().into_owned();
+        let base = dir.join("worktrees").to_string_lossy().into_owned();
+        let made = provision_worktree(root.clone(), "two".into(), Some(base)).unwrap();
+
+        let list = list_worktrees(root.clone()).unwrap();
+        assert_eq!(list.len(), 2);
+        assert!(list[0].is_main);
+        let wt = &list[1];
+        assert!(!wt.is_main && !wt.missing);
+        assert_eq!(wt.branch.as_deref(), Some("agent/two"));
+        assert_eq!(path_key(&wt.path), path_key(&made.path));
+        assert_eq!(wt.subject, "init");
+        assert!(wt.committed_at.is_some());
+        assert_eq!(wt.head.len(), 7);
+
+        // By branch (bare or as a ref) and by folder, either separator style.
+        for target in ["agent/two", "refs/heads/agent/two", &made.path, &made.path.replace('\\', "/")] {
+            let got = resolve_worktree(root.clone(), target.to_owned()).unwrap();
+            assert_eq!(got.branch.as_deref(), Some("agent/two"), "{target}");
+        }
+
+        // Not a worktree of this project: refused, naming the ones it has.
+        let other = temp_dir("not-a-worktree").to_string_lossy().into_owned();
+        let err = resolve_worktree(root.clone(), other.clone()).unwrap_err();
+        assert!(err.contains("isn't a worktree") && err.contains("agent/two"), "{err}");
+        assert!(resolve_worktree(root.clone(), "agent/nope".into()).is_err());
+        // The project's own folder is a session without a worktree.
+        let err = resolve_worktree(root.clone(), root.clone()).unwrap_err();
+        assert!(err.contains("project's own folder"), "{err}");
+
+        // A worktree whose folder is gone is listed as missing and refused.
+        std::fs::remove_dir_all(&made.path).unwrap();
+        let list = list_worktrees(root.clone()).unwrap();
+        assert!(list[1].missing);
+        assert!(resolve_worktree(root.clone(), "agent/two".into()).unwrap_err().contains("gone"));
+
+        std::fs::remove_dir_all(&other).ok();
         std::fs::remove_dir_all(&dir).ok();
     }
 

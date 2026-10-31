@@ -103,6 +103,7 @@ describe("read tools", () => {
       "list_notes",
       "list_projects",
       "list_sessions",
+      "list_worktrees",
       "read_note",
       "read_session",
       "usage_limits",

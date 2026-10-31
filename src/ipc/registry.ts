@@ -75,6 +75,10 @@ export interface Instance {
   /** The permission mode this session launches and resumes in (step M4); null
    *  inherits the project's `defaultPermissionMode`. */
   permissionMode: string | null;
+  /** Whether Workbench made this session's worktree (and so may remove it); false
+   *  for a worktree that already existed and was opened as is. Only meaningful
+   *  while `worktreeOn`. */
+  worktreeOwned: boolean;
 }
 
 // --- inputs -----------------------------------------------------------------
@@ -159,6 +163,8 @@ export interface InstancePatch {
   /** Set the session's permission mode, or null to inherit the project's (step
    *  M4). Takes effect at its next launch or resume. */
   permissionMode?: string | null;
+  /** Whether Workbench made the session's worktree (see `Instance.worktreeOwned`). */
+  worktreeOwned?: boolean;
 }
 
 // --- groups -----------------------------------------------------------------

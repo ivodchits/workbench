@@ -118,6 +118,8 @@ function sessionSummary(s: SessionRef, projects: ProjectRef[], now: number) {
     needs: s.choice ? choiceLine(s.choice) : null,
     task: s.taskNote,
     worktree: s.worktreeBranch,
+    // Opened in a worktree that was already there: removing the session leaves it.
+    existingWorktree: !!s.worktreeBranch && !s.worktreeOwned,
     model: s.model,
     permissionMode: s.permissionMode,
     // A session Duck started for a worker task (run_task), and which task.
@@ -173,6 +175,35 @@ export const listSessions = defineTool({
       sessions: port
         .listSessions(projectId)
         .map((s) => sessionSummary(s, projects, now)),
+    };
+  },
+});
+
+export const listWorktrees = defineTool({
+  name: "list_worktrees",
+  description:
+    "A project's git worktrees besides its own folder: each one's folder, branch and last commit, the sessions on the rail working in it (and whether they're running), and its past Claude Code conversations (Claude Code keeps them per folder). Use it to find where a killed or lost session worked, before create_session with existingWorktree or attach_worktree. Local projects only.",
+  schema: z.object({ project: projectArg }),
+  tier: "read",
+  async run({ project }, { port }) {
+    const p = findProject(port, project);
+    const now = Date.now();
+    const list = await port.listWorktrees(p.id);
+    return {
+      project: p.name,
+      worktrees: list.map((w) =>
+        compact({
+          path: w.path,
+          branch: w.branch ?? "(detached)",
+          lastCommit: w.lastCommit,
+          committed: w.committedAt ? when(w.committedAt * 1000, now) : null,
+          sessions: w.sessions.map((s) => `"${s.title}" (${s.id}${s.running ? ", running" : ""})`),
+          conversations: w.conversationCount || null,
+          recent: w.conversations.map((c) =>
+            compact({ sessionId: c.sessionId, at: when(c.modifiedAt * 1000, now), firstPrompt: c.firstPrompt.slice(0, 160) }),
+          ),
+        }),
+      ),
     };
   },
 });
@@ -432,6 +463,7 @@ export const duckSpend = defineTool({
 export const READ_TOOLS = [
   listProjects,
   listSessions,
+  listWorktrees,
   getPendingChoice,
   readSession,
   usageLimits,

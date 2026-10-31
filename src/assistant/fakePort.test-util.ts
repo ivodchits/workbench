@@ -24,6 +24,7 @@ import type {
   WorkbenchPort,
   WorktreeChanges,
   WorktreeLoss,
+  WorktreeRef,
 } from "./port";
 import type { Notice } from "./protocol";
 import { DEFAULT_SETTINGS, type DuckSettings } from "./settings";
@@ -76,6 +77,8 @@ export interface FakePortData {
   mergeError?: string;
   /** What `worktreeLoss` answers, per session id; none: no worktree. */
   losses?: Record<string, WorktreeLoss>;
+  /** The worktrees of each project, by project id (`listWorktrees`). */
+  worktrees?: Record<string, WorktreeRef[]>;
 }
 
 export interface FakePlugins {
@@ -148,6 +151,7 @@ export function session(
     compacting: false,
     subagents: 0,
     worktreeBranch: null,
+    worktreeOwned: true,
     model: null,
     permissionMode: null,
     duckTask: null,
@@ -258,7 +262,7 @@ export function fakePort(data: FakePortData = {}): FakePort {
       sessionOf(id);
       record("startSession", id);
     },
-    resumeSession(id, sessionId) {
+    async resumeSession(id, sessionId) {
       sessionOf(id);
       record("resumeSession", id, sessionId);
     },
@@ -291,7 +295,7 @@ export function fakePort(data: FakePortData = {}): FakePort {
     },
     async killSession(id) {
       const s = sessionOf(id);
-      if (s.worktreeBranch) throw new Error(`"${s.title}" has a worktree`);
+      if (s.worktreeBranch && s.worktreeOwned) throw new Error(`"${s.title}" has a worktree`);
       record("killSession", id);
       data.sessions = data.sessions?.filter((x) => x.id !== id);
     },
@@ -534,6 +538,23 @@ export function fakePort(data: FakePortData = {}): FakePort {
       record("mergeWorktree", id);
       if (data.mergeError) throw new Error(data.mergeError);
       return "main";
+    },
+    async listWorktrees(projectId) {
+      return data.worktrees?.[projectId] ?? [];
+    },
+    async findWorktree(projectId, target) {
+      const w = data.worktrees?.[projectId]?.find((x) => x.path === target || x.branch === target);
+      if (!w) throw new Error(`${target} isn't a worktree of the project`);
+      return w;
+    },
+    async attachWorktree(id, target, opts) {
+      const s = sessionOf(id);
+      const w = await port.findWorktree(s.projectId, target);
+      if (!opts.share && w.sessions.some((x) => x.running && x.id !== id))
+        throw new Error(`${w.path} is in use`);
+      record("attachWorktree", id, target, opts);
+      Object.assign(s, { workingDir: w.path, worktreeBranch: w.branch, worktreeOwned: false });
+      return { worktree: w, resumed: opts.resume ? (w.conversations[0]?.sessionId ?? null) : null };
     },
     async runInShell(projectId, command, label) {
       record("runInShell", projectId, command, label);

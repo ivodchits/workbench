@@ -72,6 +72,7 @@ import { updateTrayBadge } from "../../ipc/attention";
 import ProjectDialog from "./ProjectDialog";
 import InstanceCard from "./InstanceCard";
 import Modal from "./Modal";
+import WorktreePicker from "./WorktreePicker";
 
 // Create a new instance with no dialog: the title is the next free integer for the
 // project (1, 2, 3, …), the task note is empty, and the worktree toggle is off —
@@ -107,6 +108,8 @@ function InstanceManager({ onCollapse }: InstanceManagerProps) {
   const [removeProjectTarget, setRemoveProjectTarget] = useState<Project | null>(null);
   const [killTarget, setKillTarget] = useState<Instance | null>(null);
   const [worktreeTarget, setWorktreeTarget] = useState<Instance | null>(null);
+  // "Open in an existing worktree": a new instance (instance null) or one moved there.
+  const [worktreePick, setWorktreePick] = useState<{ project: Project; instance: Instance | null } | null>(null);
   const [remoteSyncTarget, setRemoteSyncTarget] = useState<Project | null>(null);
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
   const [needsYouOnly, setNeedsYouOnly] = useState(false);
@@ -654,6 +657,7 @@ function InstanceManager({ onCollapse }: InstanceManagerProps) {
                       onEdit={() => setEditProjectTarget(p)}
                       onRemove={() => setRemoveProjectTarget(p)}
                       onNewInstance={() => void spawnInstance(p)}
+                      onNewInWorktree={() => setWorktreePick({ project: p, instance: null })}
                       onToggleWorktree={setWorktreeTarget}
                       onKill={setKillTarget}
                     />
@@ -710,8 +714,19 @@ function InstanceManager({ onCollapse }: InstanceManagerProps) {
             instance={worktreeTarget}
             project={projects.find((p) => p.id === worktreeTarget.projectId) ?? null}
             onClose={() => setWorktreeTarget(null)}
+            onPickExisting={(project) => {
+              setWorktreeTarget(null);
+              setWorktreePick({ project, instance: worktreeTarget });
+            }}
           />
         ))}
+      {worktreePick && (
+        <WorktreePicker
+          project={worktreePick.project}
+          instance={worktreePick.instance}
+          onClose={() => setWorktreePick(null)}
+        />
+      )}
     </>
   );
 }
@@ -755,6 +770,8 @@ interface ProjectNodeProps {
   onEdit: () => void;
   onRemove: () => void;
   onNewInstance: () => void;
+  /** A new instance in a worktree the project already has. */
+  onNewInWorktree: () => void;
   onToggleWorktree: (instance: Instance) => void;
   onKill: (instance: Instance) => void;
 }
@@ -783,6 +800,7 @@ function ProjectNode({
   onEdit,
   onRemove,
   onNewInstance,
+  onNewInWorktree,
   onToggleWorktree,
   onKill,
 }: ProjectNodeProps) {
@@ -921,6 +939,7 @@ function ProjectNode({
                   open={menuOpen}
                   setOpen={setMenuOpen}
                   items={[
+                    { label: "new instance in a worktree…", onClick: onNewInWorktree },
                     { label: "notes", onClick: onOpenNotes },
                     { label: "edit CLAUDE.md", onClick: onOpenClaudeMd },
                     { label: "manage MCP servers", onClick: onOpenMcp },
@@ -1027,9 +1046,27 @@ function ProjectNode({
               onKill={() => onKill(i)}
             />
           ))}
-          <button onClick={onNewInstance} style={newInstanceRowStyle}>
-            <span style={{ color: "var(--wb-accent)" }}>+</span> new instance
-          </button>
+          <div style={{ display: "flex", alignItems: "center" }}>
+            <button onClick={onNewInstance} style={{ ...newInstanceRowStyle, flex: 1 }}>
+              <span style={{ color: "var(--wb-accent)" }}>+</span> new instance
+            </button>
+            {!isRemote && (
+              <button
+                onClick={onNewInWorktree}
+                style={{
+                  ...newInstanceRowStyle,
+                  width: "auto",
+                  flexShrink: 0,
+                  whiteSpace: "nowrap",
+                  padding: "4px 11px 8px 6px",
+                  color: "var(--wb-textFaint)",
+                }}
+                title="new instance in a worktree the project already has"
+              >
+                {GLYPH.worktree} in worktree…
+              </button>
+            )}
+          </div>
         </div>
       )}
     </div>
@@ -1643,10 +1680,13 @@ function WorktreeProvision({
   instance,
   project,
   onClose,
+  onPickExisting,
 }: {
   instance: Instance;
   project: Project | null;
   onClose: () => void;
+  /** Switch to picking a worktree the project already has instead. */
+  onPickExisting: (project: Project) => void;
 }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -1789,6 +1829,16 @@ function WorktreeProvision({
           {busy ? "working…" : `${GLYPH.worktree} isolate`}
         </button>
       </div>
+      {project && !project.remoteSshDest && (
+        <div style={{ marginTop: 10, textAlign: "right" }}>
+          <button
+            onClick={() => onPickExisting(project)}
+            style={{ ...confirmButtonStyle, border: "none", background: "transparent", color: "var(--wb-textDim2)" }}
+          >
+            or use an existing worktree…
+          </button>
+        </div>
+      )}
     </Modal>
   );
 }
@@ -1810,7 +1860,10 @@ function WorktreeTeardown({
 }) {
   const [info, setInfo] = useState<TeardownInfo | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
-  const [action, setAction] = useState<TeardownAction>("merge");
+  // A worktree Workbench didn't make (one this instance was opened in) is never
+  // removed from here: detaching is the only way out of it.
+  const own = instance.worktreeOwned;
+  const [action, setAction] = useState<TeardownAction>(own ? "merge" : "detach");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -1918,12 +1971,19 @@ function WorktreeTeardown({
           </div>
         )}
 
+        {!own && (
+          <div style={{ marginTop: 10, color: "var(--wb-textDim2)", fontSize: 11.5 }}>
+            {GLYPH.warn} Workbench didn't make this worktree (the instance was opened in it), so it
+            only detaches from it; merge or remove it yourself.
+          </div>
+        )}
+
         {/* Action picker. */}
         <div style={{ marginTop: 12, display: "flex", flexDirection: "column", gap: 6 }}>
           <TeardownChoice
             checked={action === "merge"}
             onSelect={() => setAction("merge")}
-            disabled={!canIntegrate}
+            disabled={!canIntegrate || !own}
             label={
               <>
                 Merge into{" "}
@@ -1938,7 +1998,7 @@ function WorktreeTeardown({
           <TeardownChoice
             checked={action === "rebase"}
             onSelect={() => setAction("rebase")}
-            disabled={!canIntegrate}
+            disabled={!canIntegrate || !own}
             label={
               <>
                 Rebase onto{" "}
@@ -1953,6 +2013,7 @@ function WorktreeTeardown({
           <TeardownChoice
             checked={action === "discard"}
             onSelect={() => setAction("discard")}
+            disabled={!own}
             label="Discard"
             hint="remove the worktree + branch without integrating — throws the work away"
             danger

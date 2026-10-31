@@ -11,17 +11,27 @@
 // (or discards it), runs `git worktree remove`, and points the instance back at
 // the project root. `revertToRoot` stays as the lightweight "detach, keep on disk"
 // path (the original 2.4 toggle-off behavior).
+//
+// `attachWorktree` points an instance at a worktree that already exists (one a
+// killed session left behind, or one made outside Workbench) instead of making a
+// new one. Claude Code keeps conversations per folder, so this is also how a
+// session gets back to the conversations it had there. Such a worktree isn't the
+// instance's own (`worktreeOwned: false`): nothing here ever removes it.
 
 import {
   integrateWorktree,
+  listWorktrees,
   provisionWorktree as ipcProvisionWorktree,
   removeWorktree,
+  resolveWorktree,
   runWorktreeSetup,
   type SetupResult,
+  type WorktreeEntry,
 } from "../ipc/git";
+import { listProjectSessions } from "../ipc/sessions";
 import { getPref } from "../ipc/prefs";
 import type { Instance, Project } from "../ipc/registry";
-import { closeConsole, getOpenConsoles, openConsole } from "./consoles";
+import { closeConsole, getOpenConsoles, openConsole, resumeConsole } from "./consoles";
 import { getRegistry, updateInstance } from "./registry";
 import { release } from "../panels/terminalPool";
 
@@ -73,6 +83,106 @@ function normalizeDir(path: string): string {
   return path.replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
 }
 
+/** Whether two paths name the same folder (see `normalizeDir`). */
+export function sameDir(a: string, b: string): boolean {
+  return normalizeDir(a) === normalizeDir(b);
+}
+
+/** The instances working in `dir`, except `exceptId`; with `live`, only those it
+ *  says are running. */
+export function sessionsInDir(
+  instances: Instance[],
+  dir: string,
+  opts: { exceptId?: string; live?: (id: string) => boolean } = {},
+): Instance[] {
+  return instances.filter(
+    (i) => i.id !== opts.exceptId && sameDir(i.workingDir, dir) && (!opts.live || opts.live(i.id)),
+  );
+}
+
+/** Whether `instanceId`'s Claude Code is running here (its console is spawning or
+ *  up, not dormant, failed or closed). */
+export function isConsoleLive(instanceId: string): boolean {
+  return getOpenConsoles().some(
+    (c) => c.instanceId === instanceId && (c.status === "spawning" || c.status === "running"),
+  );
+}
+
+/** One of a project's linked worktrees, with the rail's sessions that work in it. */
+export interface WorktreeUse extends WorktreeEntry {
+  /** Every session on the rail in this folder. */
+  sessions: Instance[];
+  /** Those of them that are running. */
+  live: Instance[];
+}
+
+/** The project's linked worktrees (not its own folder), each with the sessions
+ *  that use it. */
+export async function projectWorktrees(project: Project): Promise<WorktreeUse[]> {
+  const list = await listWorktrees(project.rootPath);
+  const { instances } = getRegistry();
+  return list
+    .filter((w) => !w.isMain)
+    .map((w) => {
+      const sessions = sessionsInDir(instances, w.path);
+      return { ...w, sessions, live: sessions.filter((i) => isConsoleLive(i.id)) };
+    });
+}
+
+/** Why a session can't move into a worktree another running session works in. */
+export function sharedWorktreeError(path: string, live: Instance[]): Error {
+  const names = live.map((i) => `"${i.title}"`).join(", ");
+  return new Error(
+    `${path} is in use by ${names}, which ${live.length === 1 ? "is" : "are"} running there: two sessions in one worktree can overwrite each other's edits. Share it only if the user confirms.`,
+  );
+}
+
+/**
+ * Point `instance` at an existing worktree of `project`: `target` is its folder or
+ * its branch. Refused for a remote project, for anything that isn't one of the
+ * project's own linked worktrees, and (unless `share`) for a worktree another
+ * running session works in.
+ *
+ * The worktree isn't the instance's own (`worktreeOwned: false`), so removing the
+ * session never removes it. When the folder changes, `lastSessionId` becomes the
+ * newest conversation Claude Code has there (or none), so a plain resume continues
+ * the worktree's work instead of failing with "No conversation found". With
+ * `resume`, its console then relaunches on that conversation (the session's own
+ * last one when it was already there); otherwise a live console relaunches fresh
+ * in the worktree, as `provisionWorktree` does.
+ *
+ * Returns the worktree, how many past conversations it has, and the one resumed.
+ */
+export async function attachWorktree(
+  instance: Instance,
+  project: Project,
+  target: string,
+  opts: { share?: boolean; resume?: boolean } = {},
+): Promise<{ worktree: WorktreeEntry; conversations: number; resumed: string | null }> {
+  if (project.remoteSshDest) throw new Error(`${project.name} is a remote project: worktrees are local only.`);
+  const worktree = await resolveWorktree(project.rootPath, target);
+  const live = sessionsInDir(getRegistry().instances, worktree.path, {
+    exceptId: instance.id,
+    live: isConsoleLive,
+  });
+  if (live.length && !opts.share) throw sharedWorktreeError(worktree.path, live);
+  const past = await listProjectSessions(worktree.path).catch(() => []);
+  const moved = !sameDir(instance.workingDir, worktree.path);
+  await updateInstance(instance.id, {
+    worktreeOn: true,
+    workingDir: worktree.path,
+    branch: worktree.branch,
+    // Already there (maybe in a worktree Workbench made for it): keep what it was.
+    ...(moved && { worktreeOwned: false, lastSessionId: past[0]?.sessionId ?? null }),
+  });
+  const newest = past[0]?.sessionId ?? null;
+  const resumed = opts.resume ? (moved ? newest : (instance.lastSessionId ?? newest)) : null;
+  const updated = getRegistry().instances.find((i) => i.id === instance.id);
+  if (resumed && updated) resumeConsole(updated, resumed);
+  else if (moved) relaunchLiveConsole(instance.id);
+  return { worktree, conversations: past.length, resumed };
+}
+
 /**
  * If `instanceId` has a *live* (non-dormant) console, restart it so `claude`
  * relaunches in the instance's current working dir. Reads the freshly-reloaded
@@ -111,6 +221,7 @@ export async function provisionWorktree(
     worktreeOn: true,
     workingDir: result.path,
     branch: result.branch,
+    worktreeOwned: true,
   });
 
   // Post-create setup (step 2.5): only call the backend when the project actually
@@ -164,6 +275,11 @@ export async function teardownWorktree(
   project: Project,
   opts: TeardownOptions,
 ): Promise<void> {
+  // Only a worktree Workbench made is ever removed; from any other one, detach.
+  if (!instance.worktreeOwned)
+    throw new Error(
+      `"${instance.title}" works in a worktree Workbench didn't make (${instance.workingDir}), which it never removes: detach the session instead.`,
+    );
   const live = getOpenConsoles().some(
     (c) => c.instanceId === instance.id && c.status !== "dormant",
   );

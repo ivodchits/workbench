@@ -372,6 +372,8 @@ pub fn run() {
             git::worktree_teardown_info,
             git::integrate_worktree,
             git::remove_worktree,
+            git::list_worktrees,
+            git::resolve_worktree,
             git::instance_diff,
             git::instance_file_diff,
             git::instance_file_versions,
