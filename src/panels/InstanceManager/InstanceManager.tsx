@@ -72,6 +72,7 @@ import { updateTrayBadge } from "../../ipc/attention";
 import ProjectDialog from "./ProjectDialog";
 import InstanceCard from "./InstanceCard";
 import Modal from "./Modal";
+import { pickKillTarget } from "./killTarget";
 
 // Create a new instance with no dialog: the title is the next free integer for the
 // project (1, 2, 3, …), the task note is empty, and the worktree toggle is off —
@@ -181,8 +182,13 @@ function InstanceManager({ onCollapse }: InstanceManagerProps) {
         if (proj) newShellForProject(proj);
       }),
       registerCommand("killInstance", () => {
-        const inst = getRegistry().instances.find((i) => i.id === getActiveConsoleId());
-        if (inst) setKillTarget(inst);
+        // Only ever the selected project's focused session — see killTarget.ts.
+        const { instances, projects } = getRegistry();
+        const projectId = getActiveProject();
+        const name = projects.find((p) => p.id === projectId)?.name;
+        const pick = pickKillTarget(instances, projectId, getActiveConsoleId(), name);
+        if (pick.kind === "target") setKillTarget(pick.instance);
+        else flash(pick.reason);
       }),
       // `resumeLastSession` (Ctrl+Shift+R) is owned by `ResumePickerHost`, which
       // opens the session picker instead of blindly resuming the last session.
@@ -1449,8 +1455,19 @@ function KillConfirm({
   return (
     <Modal title="kill instance" onClose={onClose} width={400}>
       <div style={{ fontSize: 12.5, color: "var(--wb-text)", lineHeight: 1.5 }}>
-        Kill <strong style={{ color: "var(--wb-accent)" }}>{instance.title}</strong>? This stops its
-        console and removes the instance from the rail.
+        Kill <strong style={{ color: "var(--wb-accent)" }}>{instance.title}</strong>
+        {project && (
+          <>
+            {" "}in <strong>{project.name}</strong>
+          </>
+        )}
+        ? This stops its console and removes the instance from the rail.
+        {/* Titles are per-project numbers ("1", "2", …), so name enough to tell
+            which session this is before anything is killed. */}
+        <div style={{ marginTop: 8, font: "11px var(--wb-mono)", color: "var(--wb-textDim2)" }}>
+          {instance.taskNote && <div>{instance.taskNote}</div>}
+          <div>{instance.workingDir}</div>
+        </div>
         {remoteSession && (
           <div style={{ marginTop: 8, color: "var(--wb-working)" }}>
             {GLYPH.warn} Its remote tmux session{" "}
