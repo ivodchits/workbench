@@ -165,7 +165,7 @@ const RAW_BINDINGS: RawBinding[] = [
   // and emits a `resume-last-session` event that `useGlobalKeys` routes to this
   // command. The entry stays here as the source of truth for the palette / remap UI.
   { chord: "Ctrl+Shift+R", command: "resumeLastSession", scope: "global", title: "Resume a Claude session…" },
-  { chord: "Ctrl+Shift+K", command: "killInstance", scope: "global", title: "Kill the focused instance" },
+  { chord: "Ctrl+Shift+K", command: "killInstance", scope: "global", title: "Kill the focused instance (selected project only)" },
   { chord: "Ctrl+Shift+D", command: "showDiff", scope: "global", title: "Review changes (diff) for the focused instance" },
   { chord: "Ctrl+Shift+G", command: "openGit", scope: "global", title: "Open the Git panel for the active project" },
   // J for "jot": no meaning to the terminal, the TUI or CodeMirror.
