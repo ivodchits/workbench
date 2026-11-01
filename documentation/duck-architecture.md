@@ -5,9 +5,12 @@ behind each decision are in `assistant-plan.md`. This file describes the code, a
 Duck step updates it as part of its Done when. Duck's self-development sessions (L3)
 read it first.
 
-Last updated: step G6 (2026-10-23). L3 audited it against the code. Since W5 it also
-covers W6, D2, D4, P1, P2, M2, M3, A5, A6, A7, W4, L1, L2, L3, L4, R1, R2, R3, B1, B2, T3, D3, V1 to V7,
-V8, S1, S2, X1, H1 to H5, H7, H8, R4, G1 to G6 and the morning routine. A fresh session changing Duck: read "The shape", then "Where to
+Last updated: the monthly docs clean-up (2026-11-01), checked against the code after
+step G6 and the changes since (files to sessions, disposing of and opening sessions in
+existing worktrees, the phone offline and its pushes, the chat's focus). L3 audited it
+against the code. Since W5 it also covers W6, D2, D4, P1, P2, M2, M3, A5, A6, A7, W4,
+L1, L2, L3, L4, R1, R2, R3, B1, B2, T3, D3, V1 to V7, V8, S1, S2, X1, H1 to H5, H7, H8,
+R4, G1 to G6 and the morning routine. A fresh session changing Duck: read "The shape", then "Where to
 change X" at the end, then the module rows it points to.
 
 ## The shape
@@ -42,8 +45,8 @@ change X" at the end, then the module rows it points to.
 | File | What it is |
 |---|---|
 | `index.ts` | `initAssistant()` (called from `App.tsx` with the other engines) builds the store, the trust store, the registry and the engine; `getDuck()` returns the in-process transport. `endpoint()` maps protocol messages onto the engine and adds the spend (from a `SpendSource`: the ledger commands and `assistant-usage` events) and the trust messages (`trustView()` adds the floor's labels). |
-| `protocol.ts` | The Duck Protocol, version 1: `ClientMessage` (send, stop, confirm, thread.new, thread.delete, thread.compact, sync, thread.open, settings.set, trust.pause, trust.rule.add, trust.rule.remove, trust.mode, trust.floor, trust.decisions, trust.replay, task.close, task.rerun, task.diff (L3: open a change to Duck's branch in the Diff/Review panel), thread.memory (L1: "don't remember this conversation"), L4's thread.keep (the pin that keeps a thread from the clean-up), thread.view (the thread a surface shows: the drawer sends it on every switch, the bridge for each phone), routine.set (pause, resume, delete, run now) and backup.create (the settings' button), autopilot, reader, dnd, and V4's turn.commit / turn.withdraw for a `provisional` send) and `DuckEvent` (threads, history, thread, threadDeleted, message, delta, provisional, withdrawn, goThread, tool, confirm, confirmed, turnState, routing, spend, settings, trust, decisions, decision, tasks, autopilots, routines (L4: every routine as a `RoutineView` and the backup as a `BackupView`), replay, reader, error). A `ConfirmRequest` carries the tool's `summary` and, for a file edit, `review` (each file's before and after, shown as diffs); a `note` notice carries a `NoteEdit` (before, after, revision) and a `plugins` notice a `PluginsEdit` (the plugin file and its scripts, before and after, and the new revision) and a `memory` notice a `MemoryEdit` (`core.md`'s path, before and after, W4) for the drawer's chips. Source `event` marks a follow-up from Workbench, not the user. B2: `hosted.get` (with `refresh`) → `hosted` (`HostedServerView`: the stdio servers Duck could host); a `ConfirmRequest`'s `choices` and `denyLabel`, and `confirm`'s `choice`. `createLocalTransport` stamps `v`. |
-| `settings.ts` | Duck's settings (pref `assistant`): `confirmPrompts` (ask before every prompt sent to a session), `codingModel` (what `create_session` uses for coding work) `answerSessionPrompts` (T2: off by default, which keeps the trust watcher in shadow mode for every project), `codingPermissionMode` (M4), the workers' `maxWorkers`, `headlessWorkers` (D4), `workspace`, `tiers` (D1: each tier's model and effort), `workerIdleStopMinutes` and `closeFinishedHours`, `summaryOnDone` (W3), `planApproval` and `settledPromotions` (T3), `sessionModes` and `sessionModel` (D3: the built-in modes that think on the subscription, and on which model), `announce` and `dndUntil` (V5), `mcpServers` (X1), `mcpHost` and `firefox` (B2: the stdio servers Duck hosts, by name; the bridge's server, the agent profile, the agent's and your browser's names, your sites), `disabledSkills` (S2: skills turned off, by name), `compactAt` (A6: compact a thread past this many input tokens; 0 never), `deleteIdleThreadsDays` (L4: housekeeping deletes threads idle this long; 7, 0 never), `reminderSpellMinutes` (H8: the quiet spell after which the general reminders come up again; 30), and `google` (the Desktop OAuth client id for Drive and Sheets; the first build's `morning.googleClientId` is taken over). Loaded at start, changed only through `settings.set`. |
+| `protocol.ts` | The Duck Protocol, version 1: `ClientMessage` (send, stop, confirm, thread.new, thread.delete, thread.compact, sync, thread.open, settings.set, trust.pause, trust.rule.add, trust.rule.remove, trust.mode, trust.floor, trust.decisions, trust.replay, task.close, task.rerun, task.diff (L3: open a change to Duck's branch in the Diff/Review panel), thread.memory (L1: "don't remember this conversation"), L4's thread.keep (the pin that keeps a thread from the clean-up), thread.view (the thread a surface shows: the drawer sends it on every switch, the bridge for each phone), routine.set (pause, resume, delete, run now) and backup.create (the settings' button), autopilot, reader, dnd, V4's turn.commit / turn.withdraw for a `provisional` send, G2's turn.files (files dropped just after a spoken turn went), T3's trust.promotion.preview, trust.promote and trust.promotion.dismiss, D3's timings.get, and G3's drawing.get, drawing.svg and canvas (the drawing a surface's canvas shows, null when closed)) and `DuckEvent` (threads, history, thread, threadDeleted, message, delta, provisional, withdrawn, goThread, tool, confirm, confirmed, turnState, routing, spend, settings, trust, decisions, decision, tasks, autopilots, routines (L4: every routine as a `RoutineView` and the backup as a `BackupView`), replay, promotions, promotionPreview and promoted (T3), timings (D3), hosted (B2), skills (S2), reader, reminders (H8), drawing (G3) and drawingSvg (the answer to drawing.svg), error). A `ConfirmRequest` carries the tool's `summary` and, for a file edit, `review` (each file's before and after, shown as diffs); a `note` notice carries a `NoteEdit` (before, after, revision) and a `plugins` notice a `PluginsEdit` (the plugin file and its scripts, before and after, and the new revision) and a `memory` notice a `MemoryEdit` (`core.md`'s path, before and after, W4) for the drawer's chips. Source `event` marks a follow-up from Workbench, not the user. B2: `hosted.get` (with `refresh`) → `hosted` (`HostedServerView`: the stdio servers Duck could host); a `ConfirmRequest`'s `choices` and `denyLabel`, and `confirm`'s `choice`. `createLocalTransport` stamps `v`. |
+| `settings.ts` | Duck's settings (pref `assistant`): `confirmPrompts` (ask before every prompt sent to a session), `codingModel` (what `create_session` uses for coding work) `answerSessionPrompts` (T2: off by default, which keeps the trust watcher in shadow mode for every project), `codingPermissionMode` (M4), the workers' `maxWorkers`, `headlessWorkers` (D4), `workspace`, `tiers` (D1: each tier's model and effort), `workerIdleStopMinutes` and `closeFinishedHours`, `summaryOnDone` (W3), `planApproval` and `settledPromotions` (T3), `sessionModes` and `sessionModel` (D3: the built-in modes that think on the subscription, and on which model), `announce` and `dndUntil` (V5), `mcpServers` (X1), `mcpHost` and `firefox` (B2: the stdio servers Duck hosts, by name; the bridge's server, the agent profile, the agent's and your browser's names, your sites), `disabledSkills` (S2: skills turned off, by name), `compactAt` (A6: compact a thread past this many input tokens; 0 never), `deleteIdleThreadsDays` (L4: housekeeping deletes threads idle this long; 7, 0 never), `reminderSpellMinutes` (H8: the quiet spell after which the general reminders come up again; 30), `brainPolicy` (M3: `auto`, `api` or `subscription`), `home` (H2: the place `weather` uses when none is named), `attachmentTokens` (G1: what one message's files may take, 20k), `imageModel` and `imageCapUsd` (G6: the image model and the month's cap, $10), and `google` (the Desktop OAuth client id for Drive and Sheets; the first build's `morning.googleClientId` is taken over). Loaded at start, changed only through `settings.set`. |
 | `policy.ts` | `createPolicy({settings, trust, messages})`: the gate, an adapter over the trust engine. It builds a `TrustRequest`, runs `decide`, applies the rate guard and logs the decision. A `deny` becomes the call's error, and a rate-guard trip a `trust` notice. Without a trust store it is W2's: consequential calls ask, and prompts too when `confirmPrompts` is on. |
 | `trust/rules.ts` | Rules in Claude Code's syntax (`assistant:write_note`, `assistant:answer_choice(question)`, `Bash(npm test:*)`, `Edit(src/**)`, `WebFetch(domain:x)`): `parseRule`, `matches`, `evaluate` (deny > ask > allow, global plus the call's project). |
 | `trust/floor.ts` | `FLOOR`: the always-ask entries as data, each with must-catch and must-pass examples; `floorHit(texts, off, exception?)`. L4: `FLOOR_EXCEPTIONS`, named exceptions a tool claims in its facts (`floorException`): each lets one exact text past one entry, and every other entry still reads it. The only one is `duck-data-push` (`git push origin HEAD (duck-data)` past `push`). |
@@ -82,12 +85,12 @@ change X" at the end, then the module rows it points to.
 | `prompt.ts` | The system prompt and the voice note as built in (L3: the defaults; what a thread runs with comes from `config.ts`), `MAIN_MODEL` / `PRIMITIVE_MODEL`, and `PRIMITIVES` (one frozen prompt per Haiku job; the key is its `x-wb-purpose`). |
 | `config.ts` | Duck's prompts as data (L3): `config/system.md` and `config/voice.md` in the workspace (`CONFIG_FILES`). `createConfig(store)`: `current()` reads them, seeds a missing one with its default (recording the default's hash as the seed), lets a file untouched since its seed follow a new build's default, and falls back to the default for one `problemsWith` refuses (too short or long, or without `SAFETY_RULES` verbatim), saying why; `forThread(id)` returns the thread's pin, or pins it on the files now (`assistant_config_pin`), so a thread's system prompt never changes under its cache. `applyEdits` (each `find` exactly once), `hashOf`, `ipcConfigStore`. |
 | `selfdev.ts` | Duck changing its own code (L3): `SAFETY_PATHS` / `safetyFiles` (the trust engine, `proxy`/`budget`/`key`/`trust.rs`, L4's `gitlane.rs` (the push guard), and `selfdev.ts`, `config.ts`, `tools/improve.ts`), `selfProject` (the project whose folder or name is "workbench", unless named), `improveBrief` (the request, the related `lessons` entries, where to read first, the allowed paths, the safety layer, the test commands, "commit on the branch, don't merge or push", and `result.md`'s contents), `REBUILD`. |
-| `port.ts` / `port.local.ts` | `WorkbenchPort` and its one implementation over the stores. The only file under `src/assistant/` allowed to import `src/state/**` or `src/panels/**`. Members: projects, sessions (live phase, pending choice with its id, worktree, model, last activity), transcript paging, usage limits, a git snapshot of a directory, notes list/read, Duck's spend; and the W2 actions: `sendPrompt` (`state/promptOutbox.ts`: one prompt per turn, confirmed by `UserPromptSubmit`; a stopped session is resumed with the prompt on claude's command line), `createSession` (`startNewSession` from `state/remoteActions`, shared with the phone), start/resume/interrupt/stop/kill, `answerChoice` (refused unless the named prompt is still open), `openPanel`, note writes, `onPhase`, `onSessionYouStarted` (H8: a session you started from the rail or the phone, from `state/registry.ts`; Duck's own aren't told); L3's `worktreeChanges` (`instanceDiff` against the project's current branch, and `gitStatusEntries` in the worktree for what isn't committed), `mergeWorktree` (`teardownWorktree` with a merge into the target `worktreeTeardownInfo` names: the rail's own path), `worktreeLoss` / `disposeWorktree` (`dispose_worktree`: `assistant_worktree_check` / `_dispose` on a local worktree session; the console is closed first so Windows lets the folder go, reopened if git refuses, then the kill path) and `runInShell` (`newShell`, `whenShellRunning`, then the command typed into the PTY); and W5's plugins: `listPlugins` (the parsed file, each plugin's field values as a run sends them, each action's last run), `pluginsText`, `checkPlugins`, `writePlugins`, `readScript` / `writeScript`, `previewPluginAction` (the argv and cwd the backend would spawn, and the confirm question filled in), `runPluginAction` (`startPluginRunFor` in `panels/pluginRun.ts`: no confirm question, refused while running, the project shown first because task panels are drawn for the shown project only) and `onTaskEnd` (from the tasks store; the last lines come from `terminalPool.readTail`); `startPluginsDraft` (`startNewSession` with `beforeLaunch`, which makes the draft and registers the session before its first launch), `readPluginsDraft`, `clearPluginsDraft`; and T2's: `choiceOf`, `onChoices`, `holdNeedsYou` (`state/promptHold.ts`; `onPhase` also waits on it for a fresh needs-you, and drops one Duck answered), `sessionContext` (the stored mandate, else the transcript's first prompt; the latest prompt; the home folder; T3's `delegated`), `noteSession` (`state/trustLines.ts`, the line under the card) and T3's `adviseChoice` (`state/choiceAdvice.ts`, a line on the choice card while that prompt is open). `createSession` and `startPluginsDraft` store a `mandate` (memory and duck.db `meta`). |
+| `port.ts` / `port.local.ts` | `WorkbenchPort` and its one implementation over the stores. The only file under `src/assistant/` allowed to import `src/state/**` or `src/panels/**`. Members: projects, sessions (live phase, pending choice with its id, worktree, model, last activity), transcript paging, usage limits, a git snapshot of a directory, notes list/read, Duck's spend; and the W2 actions: `sendPrompt` (`state/promptOutbox.ts`: one prompt per turn, confirmed by `UserPromptSubmit`; a stopped session is resumed with the prompt on claude's command line), `createSession` (`startNewSession` from `state/remoteActions`, shared with the phone), start/resume/interrupt/stop/kill, `answerChoice` (refused unless the named prompt is still open), `openPanel`, note writes, `onPhase`, `onSessionYouStarted` (H8: a session you started from the rail or the phone, from `state/registry.ts`; Duck's own aren't told); L3's `worktreeChanges` (`instanceDiff` against the project's current branch, and `gitStatusEntries` in the worktree for what isn't committed), `mergeWorktree` (`teardownWorktree` with a merge into the target `worktreeTeardownInfo` names: the rail's own path), `worktreeLoss` / `disposeWorktree` (`dispose_worktree`: `assistant_worktree_check` / `_dispose` on a local worktree session; the console is closed first so Windows lets the folder go, reopened if git refuses, then the kill path); `listWorktrees` (a project's git worktrees besides its own folder, with the sessions in each and its past conversations), `findWorktree` (one by folder or branch; refused when it isn't the project's or is gone) and `attachWorktree` (a session pointed at an existing worktree, never removed with it; refused for one another running session works in unless `share`; `resume` continues its newest conversation) and `runInShell` (`newShell`, `whenShellRunning`, then the command typed into the PTY); and W5's plugins: `listPlugins` (the parsed file, each plugin's field values as a run sends them, each action's last run), `pluginsText`, `checkPlugins`, `writePlugins`, `readScript` / `writeScript`, `previewPluginAction` (the argv and cwd the backend would spawn, and the confirm question filled in), `runPluginAction` (`startPluginRunFor` in `panels/pluginRun.ts`: no confirm question, refused while running, the project shown first because task panels are drawn for the shown project only) and `onTaskEnd` (from the tasks store; the last lines come from `terminalPool.readTail`); `startPluginsDraft` (`startNewSession` with `beforeLaunch`, which makes the draft and registers the session before its first launch), `readPluginsDraft`, `clearPluginsDraft`; and T2's: `choiceOf`, `onChoices`, `holdNeedsYou` (`state/promptHold.ts`; `onPhase` also waits on it for a fresh needs-you, and drops one Duck answered), `sessionContext` (the stored mandate, else the transcript's first prompt; the latest prompt; the home folder; T3's `delegated`), `noteSession` (`state/trustLines.ts`, the line under the card) and T3's `adviseChoice` (`state/choiceAdvice.ts`, a line on the choice card while that prompt is open). `createSession` and `startPluginsDraft` store a `mandate` (memory and duck.db `meta`). |
 | `fakePort.test-util.ts` | `fakePort(data)` and the `project()` / `session()` builders: a port over fixture data for the engine's and the tools' tests. Actions are recorded in `calls`, notes writes keep the revision check, `phase()` fires `onPhase`. `toolCtx(port)` is a tool context that records notices and follow-ups. Plugin files are kept as text with a revision counter (`fakeCheck` stands in for the parser), and `endTask()` ends a run. |
 | `tools/registry.ts` | `defineTool({name, description, schema, tier, tierFor?, prepare?, describe?, review?, trust?, timeoutMs?, run})` and `createRegistry(tools)`: the API tool list sorted by name, built once; `tierOf(name)`, `callTier(name, input, port)` (a tier that depends on the input or state), `prepare(...)` (async work the card needs, before the gate; it gets the settings and the Google host too), `describe(...)` (the confirmation card's sentence), `review(...)` (the card's diffs), `trustFacts(...)` (the call's project, rule specifier, text for the floor, and `asks`), and `toolsFor(names)` (S1: a mode's tools, none deferred, built once per set). `opts.server` (B1) are the API's own tools, sent as they are after the tool search; a mode names them like any other. Tools in `toolset.ts`'s `DEFERRED` (M2: the plugin, autopilot and screen tools and a few rare ones) go out with `defer_loading` and are found with the server's regex tool search, which keeps the fixed prefix small. B2: `setExternal(defs)` replaces the hosted servers' tools, added after Duck's own and always deferred (one of Duck's names is never replaced); `ToolDef.inputSchema` sends a JSON Schema as it is; `tierFor` and `callTier` get the call's `prepared`; `choices` / `denyLabel` give the card buttons in place of allow / deny. H1: `host` (`workbench` by default, `any`, `pc`, `phone`); a `pc` or `phone` tool is declared without `run` (its call goes to `ctx.hosts`), is always deferred, and `toolsOn(tools, host)` names a host's tools. |
 | `tools/getTime.ts` | `get_time` (read tier): the local date, time and zone. |
-| `tools/read.ts` | The W1 read tools: `list_projects`, `list_sessions`, `get_pending_choice`, `read_session`, `usage_limits`, `git_overview`, `list_notes`, `read_note`, `duck_spend`. Compact JSON, empty fields left out; projects and sessions are named by id or name (`findProject` / `findSession`, which list the choices on a miss or an ambiguity). |
-| `tools/act.ts` | The W2 action tools. Reversible: `send_prompt` (with `files`: thread attachment ids copied by `ctx.toSession` into the session's `.duck-attachments/`, the prompt ending with their paths (`filesLine`); refused for a remote project's session), `create_session`, `start_session`, `open_panel`, `wait_for_session`, `create_note`, `append_note`, and `resume_session` on a stopped session. Consequential: `answer_choice`, `interrupt_session`, `stop_session`, `kill_session` (the rail's kill: removes the row; refused with a worktree or a remote tmux session), `dispose_worktree` (see "Disposing of worktrees"; reversible when nothing would be lost, else consequential), `write_note`, `delete_note`, and `resume_session` over a running session. Note writes leave a "Duck edited" chip. Each tool's `trust` names its project. `answer_choice`'s facts carry the prompt's kind as the specifier, the Claude Code call a "yes" would allow (for the floor), and `grantedBy` (never for a "don't ask again" option). `stop_session`, `kill_session`, `resume_session` and `delete_note` take `grantedBy` too: the user's words asking for that call. |
+| `tools/read.ts` | The W1 read tools: `list_projects`, `list_sessions`, `list_worktrees` (a project's other worktrees: folder, branch, last commit, the sessions in each, its past conversations; local projects only), `get_pending_choice`, `read_session`, `usage_limits`, `git_overview`, `list_notes`, `read_note`, `duck_spend` (deferred). Compact JSON, empty fields left out; projects and sessions are named by id or name (`findProject` / `findSession`, which list the choices on a miss or an ambiguity). |
+| `tools/act.ts` | The W2 action tools. Reversible: `send_prompt` (with `files`: thread attachment ids copied by `ctx.toSession` into the session's `.duck-attachments/`, the prompt ending with their paths (`filesLine`); refused for a remote project's session), `create_session` (in a new worktree, or one the project already has with `existingWorktree`, `resume` continuing its newest conversation; consequential when that worktree is shared with a running session, `shareWorktree`), `attach_worktree` (a session on the rail pointed at an existing worktree of its project, by folder or branch; consequential over a running session or a shared worktree; never for a remote project), `start_session`, `open_panel`, `wait_for_session`, `create_note`, `append_note`, and `resume_session` on a stopped session (a conversation from another folder is refused, naming its worktree: `attach_worktree` with `resume` moves the session there first). Consequential: `answer_choice`, `interrupt_session`, `stop_session`, `kill_session` (the rail's kill: removes the row; refused with a worktree or a remote tmux session), `dispose_worktree` (see "Disposing of worktrees"; reversible when nothing would be lost, else consequential), `write_note`, `delete_note` (deferred), and `resume_session` over a running session. Note writes leave a "Duck edited" chip. Each tool's `trust` names its project. `answer_choice`'s facts carry the prompt's kind as the specifier, the Claude Code call a "yes" would allow (for the floor), and `grantedBy` (never for a "don't ask again" option). `stop_session`, `kill_session`, `resume_session` and `delete_note` take `grantedBy` too: the user's words asking for that call. |
 | `tools/plugins.ts` | The W5 toolbar tools. Read: `list_plugins` (fields with values, actions with their `run` template and last run), `read_plugins` (the raw file and its revision). Consequential: `run_plugin_action` and `write_plugins`, whose `prepare` works out the card. A run's card shows the argv after substitution and the cwd; its facts give the specifier `plugin:action`, the argv as a `Bash` call for the floor, `asks` when the file has a confirm question, and `grantedBy`. It is pinned to the file's revision and previewed again just before it starts; its end comes back through `later` with the exit code and last lines. An edit is checked (`plugins_check`) and its base revision compared in `prepare`, so problems come back at their JSON paths before a card; scripts go into `{data}/scripts/` before the file, and a `plugins` chip offers the diff and undo. `delegate_plugins_edit` hands a change that needs the code read to a drafting session (on the coding model, with the `workbench:plugins` skill, allowed to edit only its draft folder) and watches it; `apply_plugins_draft` reads the draft from disk and goes through the same card and write as `write_plugins`. |
 | `summarize.ts` | Session summaries (W3): `createSummarizer({port, backend, call})` reads a session's transcript since its last summary (or a given time) with `readPlainText`'s `since`, makes one Haiku `summary` call, and keeps the last summary per session in duck.db `meta`. `newest` checks a transcript for activity without a call; `withReply` adds a turn's final reply the transcript doesn't have yet. |
 | `tools/summaries.ts` | The W3 tools, over `ctx.summaries`: `summarize_session` and `summarize_activity` ("since I was away"). |
@@ -96,7 +99,7 @@ change X" at the end, then the module rows it points to.
 | `tools/tasks.ts` | The D1 tools, over `ctx.tasks`: `run_task` (reversible; posts the `task` notice that the thread shows as a live card), `task_status`, `task_followup`, `task_close`, `list_tasks`, and D2's `task_rerun` (deferred). `findTask` and `view` are shared with `tools/improve.ts`. |
 | `tools/improve.ts` | L3: `improve_duck(request, scope, effort?)` (reversible): scope `config` returns the prompt files for Duck to draft from; scope `code` starts a `self` code task, tier serious (Opus, `medium` unless named), in a worktree of the Workbench repo, with `improveBrief`. `propose_config_change(file, edits, why)` (consequential, `asks`: always a card): `prepare` makes the edits on the file as it is and checks the result, the card shows the diff (`review`), `run` writes it over the text it was read as and commits it; new threads get it. `merge_duck_change(task, safetyConfirmed)` (consequential, `asks`; deferred): `prepare` reads the branch fresh and refuses an unfinished task, an empty branch or uncommitted files; a branch in the safety layer takes two cards, the second only after the first was confirmed (`firstConfirms`, in memory); then `port.mergeWorktree` and the task closes. `rebuild_duck(build)` (consequential; deferred): `npm run tauri:dev` or `tauri:build` in a new shell in the repo. |
 | `tools/skills.ts` | S2: `load_skill(name)` (read: the body; a skill with `tools:` narrows the rest of the turn through `ctx.narrow`), `draft_skill(name, text, why)` (consequential, deferred, `asks`: the whole `SKILL.md`, checked by `parseSkill` in `prepare`; the card's diff is the file before and after; written over what was read and committed). `splitDraft` reads a draft's frontmatter as `skills.rs` does. |
-| `tools/threads.ts` | Duck's own threads (A5, A7): `start_thread` (the user's own words, cut from their message, go in as its first message; with `go`, the surface moves there), `list_threads`, `go_to_thread` (the surface moves once this reply is over), consequential `delete_thread`, and S1's `switch_mode` (`start_thread` with `go` into a new thread of another mode). |
+| `tools/threads.ts` | Duck's own threads (A5, A7): `start_thread` (the user's own words, cut from their message, go in as its first message; with `go`, the surface moves there), `list_threads`, `go_to_thread` (the surface moves once this reply is over), consequential `delete_thread` (deferred), A6's `compact_thread` (deferred: the thread is compacted once this reply is over), and S1's `switch_mode` (`start_thread` with `go` into a new thread of another mode). |
 | `routines.ts` | Routines (L4): `Schedule` (every hour; a day, a weekday or a date of the month at a time, local; `idle`: after the first idle hour from then on), `Action` (a message to Duck in the routine's thread, a skill to run (S2), a worker task from a brief, or a built-in `job`: `backup`, `housekeeping`, `docs`), `nextSlot`, `isDue` (an idle slot whose day has gone by runs at once), `scheduleText`. `createRoutines({backend, run, idleMs})`: `load` adds the missing `BUILT_IN` routines (hourly backup, Sunday housekeeping, monthly docs; pausable, not deletable), `tick` runs what's due (one run per routine; a missed slot runs once, then the next slot is counted from now), `runNow` (its slot stays), `memo` (a job's state on its record). Records in `routines`. |
 | `housekeeping.ts` | What routines do (L4): `createHousekeeping(deps).run(r)`. A message routine tells its thread (a `<workbench_event>`), a task routine runs a task there; the built-in ones report to one "Housekeeping" thread, made when first needed. **Backup**: `git.status`, then a push only when there's something to push; offline or auth failures are told once as info and as needs-you after a day; rejected or a lock starts a `quiet` standard code task in the Duck project with `repairBrief` (fetch and merge on its branch, never push or force), which Duck merges (`port.mergeWorktree`) and pushes after, telling you only if it's blocked; no remote: a weekly reminder offering `set_up_backup`. **Housekeeping**: `idleThreads` (idle past the setting, not kept, nothing reporting to it, not `busy`, read by the nightly tidy since), deleted through `engine.deleteThread`; `git.housekeep` (the mechanical part); then a `quiet` standard code task with `housekeepingBrief` tidies `memory/` on its branch. Its branch is merged when every file is under `memory/` or `skills/`, all committed, and every entry `git.review` finds dropped is in its `result.json` `removed` with a reason and a source; otherwise the thread gets it for your OK (`merge`). **Docs**: a `self` code task with `DOCS_REQUEST` through `improveBrief`, merged as any change to Duck. `check()` follows the routines' tasks (on every task change). |
 | `tools/routines.ts` | L4, all deferred: `schedule_routine` (reversible: a message or task routine reporting to this thread), `list_routines` (read, with the backup's state), `pause_routine` (pause / resume / delete), `git_push` (consequential: Duck's data repo to `origin` now; no arguments but the fixed repo and remote; trust facts claim the `duck-data-push` floor exception, specifier `duck-data origin`), `set_up_backup(name)` (consequential, `asks`: `gh repo create --private`), `merge_housekeeping(task)` (consequential). `RoutinesHost` is `ctx.routines`. |
@@ -143,8 +146,8 @@ prompt's safety rules cover them.
 
 | File | What it is |
 |---|---|
-| `mod.rs` | `Assistant` state (the DB, the launch token, the HTTP client), `init`, and the Tauri commands. |
-| `key.rs` | The API key in Windows Credential Manager (`duck/anthropic-api-key`, `duck-dev/…` for debug builds), and the Google credentials (`google.rs`). |
+| `mod.rs` | `Assistant` state (the DB, the launch token, the HTTP client), `init`, and the Tauri commands. V2: `record_chirp` and `chirp_chars_this_month`, Chirp speech in `assistant_usage` as `chirp-3-hd` (characters, no cost). |
+| `key.rs` | The API key in Windows Credential Manager (`duck/anthropic-api-key`, `duck-dev/…` for debug builds); the optional keys, one credential for both builds, stored with `cmdkey`: `google_tts` (`duck/google-tts-key`, V2's Chirp), `steam_api` (H2), `youtube_api` (H3) and `gemini_api` (G6); and the Google sign-in's token and client secret (`GOOGLE_TOKEN`, `GOOGLE_SECRET`, for `google.rs`). |
 | `proxy.rs` | `/anthropic/{*path}` on the hook server: token check, CORS for the app's origins, endpoint allow-list, budget check, key swap, streaming forward, usage tap. |
 | `usage.rs` | The price table, the stream meter, and ledger rows. |
 | `budget.rs` | Limits, month-to-date spend, and the cap rule (at the cap only Haiku with a purpose other than `thread` passes). `saved_usd`: this month's subscription-brain turns at their API price (`record_saved`, M3), never part of the spend. `youtube_units_today` (H3): today's free YouTube quota used, from `assistant_quota` (`record_quota`). |
@@ -174,14 +177,14 @@ prompt's safety rules cover them.
 | `sheets.rs` | Google Sheets. Reads: `assistant_sheet_search` (sheets by name), `assistant_sheet_read` (a tab's non-empty cells, shown and as formulas, 150 rows by 26 columns, and its tabs), `assistant_sheet_cells` (given cells, up to 20) and `assistant_sheet_export` (the cells, plus the tab as CSV, the file as xlsx and a JSON sidecar in `<workspace>/data/invoices/`). Only Google Sheets files. The draft: `assistant_sheet_draft` refuses a second draft of a sheet for a month while the first is in Drive, re-reads the original against what the card showed, refuses a formula cell (in the original and the copy), makes the drafts folder once, copies with Drive's `files.copy` and falls back to uploading the xlsx export as a new Sheet, records the file, then sets the cells (`USER_ENTERED`, plain values only) and reads them back. `assistant_sheet_drafts` lists a month's drafts still in Drive. |
 | `skills.rs` | Duck's skills (S2): `skills/<name>/SKILL.md` in the workspace. `list` (cached; a `notify` watcher on `skills/` marks it stale, so an edit is read on the next request), each file's frontmatter fields (`crate::skills::frontmatter`, the skill manager's parser made general), body, text and problems (a folder name that isn't kebab-case, no frontmatter, a `name:` that isn't the folder's, no description, over 64 KB); `write` (over the text it was read as, else "stale:"; the caller commits). Commands `assistant_skills_list`, `assistant_skill_write`. |
 | `config.rs` | Duck's prompt files (L3): `read` (`config/system.md` and `config/voice.md` only, with each one's seed from `meta` `config_seed:<file>`), `write` (over the text it was read as, else "stale:"; records a seed when given; the caller commits), `pin` / `pinned` (a thread's prompts as JSON under their hash; a pinned thread keeps its pin). Commands `assistant_config_read`, `_write`, `_pin`, `_pinned`. |
-| `attachments.rs` | G1: files stored once, at `<app data>/duck-attachments/<id>/<name>` (`duck-attachments.dev` in debug; the id is SHA-256's first 32 hex digits; `clean_name` makes the name one safe path component). `store_bytes` / `store_path` (200 MB at most; a JPEG thumbnail as a data URL for images), `prepare` (how it's sent: an image downscaled once to 1568 px into `.duck/api.png` or `.jpg` (a JPEG stays one), a PDF up to 32 MB and 100 pages (counted from its page objects) as a `document`, UTF-8 text up to 50 KB as text, the rest a `ref`; with a token estimate), `data` (base64 of what's sent), `copy_into` (a task's `inputs/`, a repeated name gets " (2)"), `copy_to_session` (`send_prompt` `files`: into `<working dir>/.duck-attachments/`, which carries its own `.gitignore` of `*`), `store_folder` (a task's `outputs/`, 20 files), `prune` (folders over a week old that no message or task names). Commands `assistant_attach_paths`, `_bytes`, `_prepare`, `_data`, `_inputs`, `_to_session`, `_outputs`, `_prune` (looks the ids up in `assistant_messages` and `assistant_tasks`), and `_drag` (the `drag` crate's OLE drag of the file, on the window's thread). |
+| `attachments.rs` | G1: files stored once, at `<app data>/duck-attachments/<id>/<name>` (`duck-attachments.dev` in debug; the id is SHA-256's first 32 hex digits; `clean_name` makes the name one safe path component). `store_bytes` / `store_path` (200 MB at most; a JPEG thumbnail as a data URL for images), `prepare` (how it's sent: an image downscaled once to 1568 px into `.duck/api.png` or `.jpg` (a JPEG stays one), a PDF up to 32 MB and 100 pages (counted from its page objects) as a `document`, UTF-8 text up to 50 KB as text, the rest a `ref`; with a token estimate), `data` (base64 of what's sent), `copy_into` (a task's `inputs/`, a repeated name gets " (2)"), `copy_to_session` (`send_prompt` `files`: into `<working dir>/.duck-attachments/`, which carries its own `.gitignore` of `*`), `store_folder` (a task's `outputs/`, 20 files), `prune` (folders over a week old that no message or task names). Commands `assistant_attach_paths`, `_bytes`, `_prepare`, `_data`, `_inputs`, `_to_session`, `_outputs`, `_prune` (looks the ids up in `assistant_messages` and `assistant_tasks`), `_save` (G3: a copy where you picked, the canvas's "save as…") and `_drag` (the `drag` crate's OLE drag of the file, on the window's thread). |
 | `db.rs` | `duck.db` / `duck.dev.db` and its append-only migrations; `assistant_google_files` records every Drive file Duck made (the drafts folder, each draft with its source sheet and month). |
 
 ### The desktop surface: `src/panels/Assistant/`
 
 | File | What it is |
 |---|---|
-| `duckState.ts` | The desktop's one subscription to the protocol, an external store shared by the button and the drawer: threads, the open thread, loaded messages, streaming text, turn states, locally queued messages, confirmations, spend. Actions (`sendMessage`, `stopTurn`, `answer`, `openThread`, …) only send protocol messages. Persists `assistantDrawer` prefs (width, open thread, interrupt). |
+| `duckState.ts` | The desktop's one subscription to the protocol, an external store shared by the button and the drawer: threads, the open thread, loaded messages, streaming text, turn states, locally queued messages, confirmations, spend. Actions (`sendMessage`, `stopTurn`, `answer`, `openThread`, …) only send protocol messages. Persists `assistantDrawer` prefs (width, open thread, interrupt, and the ASCII duck's `avatar`: shown, ink, characters, columns, fps). |
 | `view.ts` | `toItems(messages)`: stored messages → display items (user text, reply text, a tool chip with its result attached (B1: a web search or fetch too, its result from the same reply, by `webResultText`; cited text gets numbered links and the reply a "Sources" line), edit chips for notes, the toolbar, the core memory and (H8) reminders (`reminderFiles`: the record as JSON), notices; thinking and system messages hidden). `sessionLink()` reads `#session/<id>` links. |
 | `DuckButton.tsx` | The title-bar button ("D.U.C.K.", the icon beside it): toggles the drawer, the acronym tooltip, a confirmation-count badge, an amber/red tint past the soft limit/cap, ⏸ while trust is paused. |
 | `TrustViews.tsx` | `TrustPanel` (kill switch, rules, project modes, the floor with a typed confirmation) and `DecisionsPanel` (the log with make-a-rule / always-ask, the rule from `suggestRule`; and the replay of the past week with its report). Opened from the settings popover; they take the thread's place. |
@@ -248,9 +251,11 @@ prompt's safety rules cover them.
   `kws.rs`; see "Hey Duck" below).
 - `src-tauri/src/remote/assistant.rs` (R1): the remote server's `/api/assistant`
   WebSocket carrying the Duck Protocol, `/api/assistant/audio` (a phone's speech,
-  transcribed with V1's model) and `/api/assistant/tts/{id}` (a sentence the desktop
-  made for the phone). The phone's PWA (R2) is `src/pwa/`, built into
-  `src-tauri/src/remote/pwa/` (`duck.ts`; conversation mode's mic in `converse.ts`, Duck's
+  transcribed with V1's model), `/api/assistant/tts/{id}` (a sentence the desktop
+  made for the phone), `/api/assistant/image/{id}/{name}` (G3: a drawing's or an
+  attachment's image) and `/api/assistant/file/{id}/{name}` (a file chip's file).
+  The phone's PWA (R2) is `src/pwa/`, built (`vite.pwa.config.js`) into
+  `src-tauri/src/remote/pwa/dist/`, not committed (`duck.ts`; conversation mode's mic in `converse.ts`, Duck's
   voice in `duckSpeech.ts` and `speechQueue.ts`). The `Phone` surface in `assistant.rs`
   is a phone's conversation run: its socket, what it's playing and saying
   (`conv.playing`, `conv.said`), its echo reference and its recording. R3 made the PWA
@@ -263,13 +268,18 @@ prompt's safety rules cover them.
 
 ### `duck.db` tables
 
-- `assistant_usage`: one row per API call.
+- `assistant_usage (ts, model, purpose, in, out, cache_w, cache_r, searches, cost_usd)`:
+  one row per API call; V2 adds one per Chirp speech call (`chirp-3-hd`, `in` counting
+  characters, no cost).
 - `assistant_subscription_usage (ts, model, api_usd)`: one row per subscription-brain turn
   (M3), priced as the API would have; the spend line's "saved".
 - `turn_timings (at, data)`: one row per turn you started (D3), the clock's JSON; 90 days.
 - `mcp_tool_cache (key, tools, at)`: a hosted MCP server's tool list (B2), by a hash of
   its command line.
-- `meta`: budget limits.
+- `meta`: the budget limits (`budget_limits`); the trust engine's kill switch
+  (`assistant_trust_paused`), the floor entries turned off (`assistant_trust_floor_off`)
+  and its seeded flag (`assistant_trust_seeded`) (T1); a session's mandate
+  (`assistant_mandate:<instance>`, T2).
 - `assistant_threads (id, title, mode, created, updated, keep)`; `keep` (L4) is the thread
   list's pin. `mode` is S1's `assistant`, `chat` or `duck`; S1's migration made every
   earlier thread (stored as `chat`, the column's default) `assistant`.
@@ -279,14 +289,23 @@ prompt's safety rules cover them.
 - `assistant_pending (id, thread_id, created, data JSON)`: one row per parked tool batch.
 - `assistant_rules (id, effect, pattern, project_id, created)`: a null project is global.
 - `assistant_decisions (id, ts, thread_id, tool_use_id, project_id, tool, summary, input,
-  decision, layer, reason, rule_id, shadow)`: the audit log, the last 5000 rows, kept
-  after a thread is deleted.
+  decision, layer, reason, rule_id, shadow, answered_by)`: the audit log, the last 5000
+  rows, kept after a thread is deleted. `answered_by` (T4) is how a Claude Code
+  permission prompt was answered, `hook` or `keys`; null for one left to you and for
+  Duck's own calls.
 - `assistant_trust_modes (project_id, mode)`: only projects that aren't `live`.
 - `assistant_tasks (id, data JSON, updated_at)`: worker tasks (D1).
 - `assistant_drawings (id, data JSON, updated_at)`: drawings and their versions (G3).
 - `assistant_image_spend (ts, model, images, usd)`: images from the image model at
   list price (G6), for the spend line's "images".
-- `assistant_autopilots`: one autopilot record per session (P1).
+- `assistant_quota (id, ts, service, units)`: one row per call against a free quota, in
+  the service's own units (H3: YouTube, 101 a search), for the spend line's "today".
+- `assistant_google_files (file_id, kind, name, source, month, url, how, created)`: every
+  Drive file Duck made (the morning routine), the only ones `drive.file` lets it change;
+  `kind` is `folder` (the drafts folder) or `draft` (a copy of `source` for `month`),
+  `how` is `copy` or `upload`.
+- `assistant_autopilots (instance_id, data JSON, updated_at)`: one autopilot record per
+  session (P1).
 - `meta` `assistant_summary:<instance>`: a session's last summary (W3).
 - `meta` `reminder_seen:<id>`: a timed reminder announced, for which time (H8).
 - `meta` `duck_timer:<id>`: a running timer, `{label, ends, length, threadId}` (H4).
@@ -852,8 +871,9 @@ Duck is one tap from its icon.
   keeps title, text and link in its own `wb-share` cache, and sends the page to
   `/?duck=share`. The page opens a new thread with the share above the composer; one tap
   sends it with "summarize", "make a task of it" or "remember it", or with what you
-  type. The message wraps it in `<shared>`, which the safety rules call data. Text and
-  links only: files wait for G1. A share the worker missed lands on the server's
+  type. The message wraps it in `<shared>`, which the safety rules call data. Since G1 a
+  share can carry images and PDFs too (the manifest's `share_target` `files`; see
+  "Attachments"). A share the worker missed lands on the server's
   `/share`, which sends the page to say so.
 - **Start view and install**: Duck's settings on the phone have "the app opens on:
   dashboard / Duck" (`Prefs.openOn`) and "on the home screen" (how to install, the
@@ -884,8 +904,12 @@ CLI's `beforeBuildCommand` runs `npm run build:duck-android`).
 - **The pages.** The APK carries one page, the loader (`duck-android/web/loader.ts`,
   built into `www/`): it keeps Workbench's address (the Funnel one, `*.ts.net`; with
   Tailscale on, MagicDNS sends the same name the short way) and opens the desktop's
-  page there. Unreachable, it stays, and the phone's own recognizer and the fast path
-  still run timers, alarms, the flashlight and media keys. The desktop's page is
+  page there. Unreachable, it opens that page from the phone's cache once the page has
+  said it's kept (`offline_put("shell")`, `keptShell`), marked offline (`?offline=1`):
+  the sessions, Duck's threads and notes as they were, with what's written waiting in
+  the outbox. Its offline strip leads back to the loader (`?brain=1`). Before the page
+  is kept, or from that strip, the loader stays, and the phone's own recognizer and the
+  fast path still run timers, alarms, the flashlight and media keys. The desktop's page is
   `src/pwa/` as before; the capability (`src-tauri/capabilities/default.json`) lets
   `https://*.ts.net` reach the plugin.
 - **The plugin** (`gen/android/app/src/main/java/com/workbench/duck/`, registered in
@@ -912,6 +936,15 @@ CLI's `beforeBuildCommand` runs `npm run build:duck-android`).
   - `Notifications.kt` (the notification listener, also what lets the app see media
     sessions) and `ReminderAlarms.kt` (exact alarms, their notification with Done and
     Snooze, re-armed after a reboot).
+  - `Push.kt`: the desktop's pushes through UnifiedPush. The WebView has no Push API, so
+    a distributor app (ntfy, say) holds the connection and hands the app a Web Push
+    endpoint, which the page (`src/pwa/push.ts`) sends to `/api/push/subscribe` like a
+    browser's; the desktop pushes to it as to a browser. A tap is a `push` launch; a
+    reminder armed in `ReminderAlarms` is left to the alarm.
+- **Offline** (`src/pwa/store.ts`, `outbox.ts`, `duckOffline.ts`, `transcriptCache.ts`):
+  the page opens on the last snapshot; Duck's threads are seeded from what was kept
+  until the socket syncs (the desktop wins); messages, prompts and note edits written
+  offline wait in the outbox and go in order once the link is back.
 - **In the page** (`duckApp.ts`, wired from `duck.ts`):
   - On connect it says `hello` as the phone and serves the calls (`serveHost`).
   - It arms `phone.reminders` and sends the taps kept.
@@ -927,7 +960,8 @@ CLI's `beforeBuildCommand` runs `npm run build:duck-android`).
 
 ## The phone brain (step H7)
 
-When the app can't reach Workbench, the loader runs Duck's own engine on the phone
+When the app can't reach Workbench and has no kept page (or you asked for it from the
+kept page's offline strip, `?brain=1`), the loader runs Duck's own engine on the phone
 (`src/pwa/phoneBrain.ts`, bundled into the APK's one page):
 
 - `createEngine` with the phone's tools (served in the page by `connectLocal`), the
@@ -955,6 +989,9 @@ When the app can't reach Workbench, the loader runs Duck's own engine on the pho
 - `dispose_worktree(session, force?, grantedBy?)` (`tools/act.ts`) ends a session that
   works in its own git worktree, removes the worktree and deletes its branch, and takes
   the session off the rail. `kill_session` still refuses such sessions and points here.
+  A worktree Workbench didn't make (opened with `existingWorktree` or `attach_worktree`,
+  `worktreeOwned` false) is never removed: `dispose_worktree` refuses it, and
+  `kill_session` ends its session and leaves the folder.
 - **Checked by git, not by the model:** `prepare` reads `port.worktreeLoss`
   (`worktrees.rs` `check`): the branch's commits that the project's main branch
   doesn't have, and the worktree's uncommitted and untracked files.
@@ -1085,7 +1122,7 @@ When the app can't reach Workbench, the loader runs Duck's own engine on the pho
   handler goes in `pcHandlers` (`tools/pc.ts`), its Rust beside `steam.rs` / `media.rs`.
 - **What the phone's app can do, or how it's opened**: the tool's declaration in
   `tools/phone.ts`, its Kotlin in `PhoneTools.kt` (and its name in `NAMES`); a new
-  plugin command also goes in `build.rs`'s list and `native.ts`. What the page does
+  plugin command also goes in `duck-android/src-tauri/build.rs`'s list and `native.ts`. What the page does
   with a launch: `duckApp.ts` and `listenOnce` / `talkFromApp` in `duck.ts`; the fast
   path's phrases: `fastPath.ts`.
 - **When a reminder comes up** (the spell, a day's hour, what counts as due, a repeat's
@@ -1150,7 +1187,25 @@ When the app can't reach Workbench, the loader runs Duck's own engine on the pho
   session, `send_prompt` in `tools/act.ts` and `attachments.rs` `copy_to_session`.
 - **Disposing of worktrees**: when removing one counts as safe, `worktrees.rs` `check`;
   the tool's tiers and refusals, `dispose_worktree` in `tools/act.ts`; the console and
-  the kill path, `port.local.ts` `disposeWorktree`.
+  the kill path, `port.local.ts` `disposeWorktree`; which sessions it refuses (a remote
+  project, tmux, a worktree Workbench didn't make), `worktreeOf` in `port.local.ts`.
+- **Sessions in worktrees that already exist**: the tools, `create_session`
+  (`existingWorktree`, `resume`, `shareWorktree`) and `attach_worktree` in
+  `tools/act.ts`, `list_worktrees` in `tools/read.ts`; the port, `listWorktrees` /
+  `findWorktree` / `attachWorktree` in `port.local.ts`; finding one in git,
+  `resolve_worktree` / `list_worktrees` in `src-tauri/src/git/mod.rs`; whether
+  Workbench owns it, `instances.worktree_owned` in `workbench.db`.
+- **Where the keyboard goes and what keeps a selection**: in the drawer,
+  `composerFocus.ts` (`sendsToComposer`, `focusUnlessReading`, `watchSelecting`);
+  outside it, `state/focusGuard.ts` (`duckHoldsFocus`); through a repaint,
+  `util/keepSelection.ts`.
+- **The phone offline**: the device store, `src/pwa/store.ts`; what's written offline,
+  `src/pwa/outbox.ts`; Duck's kept threads, `src/pwa/duckOffline.ts`; a transcript's
+  kept tail, `src/pwa/transcriptCache.ts`; the app opening the kept page,
+  `duck-android/web/loader.ts` (`keptShell`).
+- **Pushes in the Android app**: `Push.kt` (`push_status` / `push_register` /
+  `push_unregister` in `DuckPlugin.kt`, listed in `duck-android/src-tauri/build.rs`);
+  the page's side, `src/pwa/push.ts` and `native.ts`.
 - **The phone brain (H7)**: what it can do, `src/pwa/phoneBrain.ts`; its note,
   `OFFLINE_NOTE` in `src/assistant/offline.ts`; its cap and pricing, `PhoneBrain.kt`;
   the loader's chat, `duck-android/web/loader.ts`; the sync, `duckApp.ts` and the
@@ -1183,7 +1238,7 @@ Both rules are in `prompt.ts`.
 
 - Music and video (H3) live: tested over a fake search and fake hosts; no YouTube key
   is stored yet (`duck/youtube-api-key`), so no real search has run. Playing on the
-  phone waits for H5 (the phone serving `open_on_phone`). Not yet tried by voice: a song
+  phone is served by the app (H5) but hasn't been tried there. Not yet tried by voice: a song
   by name in YouTube Music on the PC and on the phone, a video on the named device.
 
 - Reminders (H8) live: tested over a fake file and the engine. Not yet tried in the
@@ -1195,7 +1250,7 @@ Both rules are in `prompt.ts`.
   timers and the Rust token store. Not yet tried: a reminder set from the drawer
   arriving on the phone as a push on time, one due while the app was closed arriving
   at the next start marked late, Snooze and Done from the notification, a timer by
-  voice. Phone alarms that fire offline are H5's; a calendar mirror isn't built.
+  voice. Phone alarms that fire offline are built with H5 (below); a calendar mirror isn't built.
 
 - The phone's app (R4, H5) built and run on an Android 16 emulator, not yet on the
   phone. Checked there: the loader and the desktop's Funnel page both reach the plugin;
@@ -1207,10 +1262,11 @@ Both rules are in `prompt.ts`.
   the Nothing Phone (2a), pairing from the app, Nothing OS's assistant menus, a
   10-minute walk-and-talk and a 30-minute screen-off session, a Telegram reply, a call
   and a text, the widget on a home screen. Not built: switching to the tailnet's own
-  address (MagicDNS covers it), the screenshot with the gesture (G1), Glyph lights,
+  address (MagicDNS covers it), the screenshot with the gesture (the assist session sends only the screen's text), Glyph lights,
   the widget polling by itself.
 
-- Images (G6): no real request yet (no Gemini API key on this machine).
+- Images (G6), route 1 (the Gemini API on your own key): built; no real request yet (no
+  Gemini API key on this machine, `duck/gemini-api-key`).
 
 - The sketch pad (G5): drawing on it by hand (desktop and phone), "live", and the
   screenshot and photo backgrounds haven't been tried; the sketch and mark-up flows
@@ -1265,7 +1321,7 @@ Both rules are in `prompt.ts`.
 - The phone as an app (R3) on a real phone: built and tested in parts (the key's format
   across WebCrypto and Rust, challenges, sessions, the launch and share parsing), not
   yet tried installed: the shortcuts on a long-press, "Talk to Duck" pinned to the home
-  screen, a page shared from Chrome summarized. Shared files and images wait for G1.
+  screen, a page shared from Chrome summarized. A shared image or PDF (G1) hasn't been tried from another app either.
 
 - Modes in the app (S1): built and tested with the scripted engine, not yet tried live
   (a duck thread asking instead of answering, the wrap-up note, a chat thread). Not
@@ -1273,8 +1329,6 @@ Both rules are in `prompt.ts`.
   phone (its new threads are the assistant's, and its list shows no badge), and starting
   conversation mode by asking for it ("let's talk").
 
-- Duck answering Claude Code questions and plans, and promoting rules into Claude Code's
-  own settings (T3).
 - The phone's echo fix (V7) on a real phone: built, and tested on X0's laptop-speaker
   recording turned into a phone recording, not yet measured on the phone. The
   half-duplex fallback (tap or say "stop" to interrupt) waits for what that shows.
@@ -1285,7 +1339,7 @@ Both rules are in `prompt.ts`.
   temporary repos (the schedule, the push and its classification against a local bare
   remote, the branch review, task retention, the repair and housekeeping flows), not yet
   run in the app. No backup remote exists yet: `set_up_backup` (or the settings' button)
-  runs `gh repo create`, so it waits for you. Skill actions wait for S2.
+  runs `gh repo create`, so it waits for you. A skill routine (S2) hasn't run in the app either.
 - Long-term memory in the app: built and tested (the index, the files and the commits in
   `memory.rs`, the recall note and the tools through the engine), not yet tried in a
   real thread, and the `clear_at` system message not yet sent to the real API. The
@@ -1303,5 +1357,13 @@ Both rules are in `prompt.ts`.
 - The subscription brain in the app: built and tested with a fake process, and the same
   flags tried by hand against a stand-in MCP server (M3's As built), not yet through
   Workbench itself.
+- Duck on the home server (H6): not started, gated on the server existing; it needs a
+  design pass first. Until then the desktop is Duck's only full engine, and the phone
+  brain (H7) its fallback.
+- Recent changes not yet tried by hand: Gmail, Drive and Docs through a real Google
+  Workspace MCP server; a file sent to a session with `send_prompt` `files`;
+  `dispose_worktree` on a merged session; a session opened in an existing worktree
+  (`existingWorktree`, `attach_worktree`); the phone's kept page and outbox with the PC
+  off; a UnifiedPush notification through a distributor on the phone.
 - Running the morning routine's Google half against real Google: sign-in, the copy and the
   cell writes are built and tested with fakes only.

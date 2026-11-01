@@ -1452,9 +1452,9 @@ up ("change this", with a circle around it).
   is updated.
 - **Out of scope:** any UI.
 - **As built (2026-10-18 – 2026-10-19).** The throwaway code and raw data were in a
-  temporary session scratchpad (`x0/`: `rust/`, `api/`, `workers/`, `voice/`, each with a
-  `FINDINGS.md`); everything that matters is summarized here. The voice scripts were kept in
-  `tools/voice-eval/`, with their data (your recordings) in `~/repos/Duck/voice-eval`. Machine:
+  temporary scratchpad (`x0/`: `rust/`, `api/`, `workers/`, `voice/`, each with a
+  `FINDINGS.md`), summarized here. The voice scripts were kept in `tools/voice-eval/`,
+  with their data (your recordings) in `~/repos/Duck/voice-eval`. Machine:
   Ryzen AI 9 HX 370 (12 cores / 24 threads, Zen 5), 31 GB RAM, RTX 4060 Laptop 8 GB (Optimus) +
   Radeon 890M; Claude Code 2.1.303; WebView2 155.
   - **Hidden window:** no throttling after 12.9 minutes with `window.hide()` or `minimize()`:
@@ -1628,12 +1628,11 @@ up ("change this", with a circle around it).
       speaking (you reacted to the on-screen cue in 1.1–1.5 s). Playback → mic delay ~165 ms,
       tracked by AEC3's own estimator.
     - **Headphones** (BlackShark V3 Pro over Bluetooth): the echo at the mic is -66 dBFS,
-      i.e. none, with no false barge-ins. The interruption timing of that run is unusable: the
-      recorder's output position fell ~1 minute behind its cues, though playback sounded
-      clean throughout, so it's a recorder timing quirk on Bluetooth. With no echo it isn't
-      needed.
-    - The barge-in gate and the self-voice check had nothing left to catch on these runs.
-      They stay as insurance for louder volumes and other rooms.
+      i.e. none, with no false barge-ins. That run's interruption timings are unusable (a
+      recorder quirk on Bluetooth: its output position fell ~1 minute behind its cues,
+      though playback sounded clean); with no echo they aren't needed.
+    - The barge-in gate and the self-voice check had nothing left to catch here; they stay
+      as insurance for louder volumes and other rooms.
     - **Windows' communications-mode processing wasn't needed, so it isn't compared.** The
       phone run waits for R2.
     - Laptop mic notes: in exclusive mode the mic array opens only with its 4 native channels
@@ -1702,7 +1701,7 @@ up ("change this", with a circle around it).
   - **Key:** read with `CredReadW` on every proxied request (not cached), so a `cmdkey`
     change applies at once. `assistant_key_set` writes UTF-16LE, `CRED_PERSIST_LOCAL_MACHINE`
     (not roamed). With no key, the proxy answers `401` with the `cmdkey` line to run.
-  - **Proxy:** on the hook server's port; `assistant_proxy_info` → `{baseUrl, token}`.
+  - **Proxy:** on the hook server's port.
     - Forwards only `POST v1/messages`, `POST v1/messages/count_tokens` and `GET v1/models[/id]`.
       Batches, files and the rest are refused, since their usage would bypass the ledger.
     - Body limit 32 MB (axum's default of 2 MB is too small for screenshots).
@@ -1712,9 +1711,8 @@ up ("change this", with a circle around it).
       dropped so the meter reads plain bytes.
   - **Ledger:** a meter rides the response stream and writes the row when the body ends or
     the caller hangs up (a cancelled turn's tokens are billed too), then emits
-    `assistant-usage`.
-    - It reads `message_start.usage` + `message_delta.usage` (cumulative), or a JSON
-      message's `usage`.
+    `assistant-usage`. A JSON (non-streamed) message's `usage` is read too;
+    `message_delta.usage` is cumulative.
     - Prices are from the pricing page (2026-10-19), matched by model prefix. Cache writes
       are priced by TTL (`cache_creation.ephemeral_5m/1h`); web search is $0.01 each;
       Haiku 5.5's >100k-token prompt tier is applied; an unknown model is priced like
@@ -1728,8 +1726,8 @@ up ("change this", with a circle around it).
     `capReached`.
   - **UI:** a **◆ duck** status-bar menu (next to remote / notifications) instead of a
     section in the appearance menu: key present/absent + the `cmdkey` line, an optional
-    password field, the test button, spend by model and purpose, and the budget fields.
-    The test is a plain streamed `fetch` (Haiku, `max_tokens: 1`, thinking off); the SDK
+    password field, the test button, spend by model and purpose, the budget fields. The
+    test is a plain streamed `fetch` (Haiku, `max_tokens: 1`, thinking off); the SDK
     arrives in A2.
   - **Verified:** the test call streamed through and landed as `claude-haiku-5-5 / test`,
     8 in / 1 out, $0.0000013 (8 × $0.10 + 1 × $0.50 per MTok). A wrong token got `401`, a
@@ -1800,49 +1798,39 @@ up ("change this", with a circle around it).
     `port.local.ts`, `client.ts`, `prompt.ts`, `tools/registry.ts`, `tools/getTime.ts`,
     `index.ts` (`initAssistant()`, `getDuck()`). Module map and loop details are in
     `documentation/duck-architecture.md`, started here.
-    - SDK `@anthropic-ai/sdk` 0.135.0 + `zod` 4.
-    - Every request uses `client.beta.messages.stream` with Sonnet 5.5, adaptive
-      thinking, top-level effort `medium`, and `fallbacks: "default"`.
-    - Caching: a 1-hour breakpoint on the system prompt (covering tools + system) plus
-      automatic 1-hour caching for the tail. Longer TTLs must come first, so both are
-      1 hour.
+    - SDK `@anthropic-ai/sdk` 0.135.0 + `zod` 4. Requests go through
+      `client.beta.messages.stream`, with effort `medium` at the top level.
+    - Caching: the 1-hour breakpoint sits on the system prompt (covering tools + system);
+      the tail's automatic caching is 1 hour too, since longer TTLs must come first.
     - Context editing: `clear_tool_uses` past 40k input tokens, keeping 6.
-    - Fixed betas: context management, per-message effort, server-side fallback. The
+    - Fixed betas (context management, per-message effort, server-side fallback), so the
       header is identical on every request.
     - Per-message effort is a mid-conversation system message
       `{content: [], output_config: {effort}}`, appended only when the effort changes, so
       the cache survives.
-    - Stop reasons:
-      - `pause_turn` resends.
-      - `max_tokens` keeps the reply only if it has no tool call.
-      - `refusal` isn't kept and shows `stop_details.explanation`.
-      - `model_context_window_exceeded` shows a notice.
-      - More than 25 rounds stops the turn.
+    - Stop reasons: `pause_turn` resends; `max_tokens` keeps the reply only if it has no
+      tool call; `refusal` isn't kept and shows `stop_details.explanation`;
+      `model_context_window_exceeded` shows a notice. More than 25 rounds stops the turn.
     - Tools: validated with zod, then gated by tier (`tierGate`: consequential → ask; T1
       replaces it).
       - Runnable calls run in parallel, each within its time budget. A timeout aborts the
         tool's signal and becomes an `is_error` result.
-      - All results go back in one user message.
       - A batch with an ask is parked in `assistant_pending` (results so far included).
         `confirm()` resumes it once every ask is answered; a denied call is sent back as
         an error.
-    - Stop:
-      - Mid-stream, the reply's text is kept, and thinking and half-made tool calls are
-        dropped.
-      - Mid-tools, the results are stored and the unfinished ones become "stopped".
-      - While parked, every ask is answered "stopped".
+    - Stop: mid-stream, the reply's text is kept and thinking and half-made tool calls are
+      dropped; mid-tools, the results are stored and the unfinished ones become
+      "stopped"; while parked, every ask is answered "stopped".
     - Messages that arrive mid-turn or while parked are queued per thread, never dropped.
     - Notices (`role: notice`: stopped, cap, refusal, max_tokens, context, error, rounds)
       are shown and never sent. `toApiMessages` filters them out, and also drops a system
       message a failed turn left in front of a user message.
-    - The first message names the thread through the `title` primitive (Haiku, thinking
-      off) via `oneShot`, purpose `title`.
+    - The first message names the thread through the `title` primitive (`oneShot`, Haiku,
+      thinking off, purpose `title`).
   - **Storage:** `duck.db` migration v2 adds `assistant_threads`, `assistant_messages`
     (append-only; a trigger refuses UPDATE, and `append` refuses any `seq` but the next)
-    and `assistant_pending`. Commands:
-    - `assistant_thread_create` / `_list` / `_messages` / `_title`;
-    - `assistant_message_append`;
-    - `assistant_pending_put` / `_list` / `_clear`.
+    and `assistant_pending`. Commands: `assistant_thread_create` / `_list` / `_messages` /
+    `_title`, `assistant_message_append`, `assistant_pending_put` / `_list` / `_clear`.
   - **Boundaries:**
     - The ESLint `no-restricted-imports` override is checked: a probe import of
       `../state/…` and `../../panels/…` fails, and `port.local.ts` is exempt.
@@ -1853,10 +1841,10 @@ up ("change this", with a circle around it).
     - The three no-throttling args (plus wry's defaults, which they replace) go on every
       webview.
     - **The main window is now built in Rust** (`create: false` in `tauri.conf.json`), and
-      tear-offs go through a `window_open_torn` command. The frontend lost
-      `core:webview:allow-create-webview-window`.
-    - Why: WebView2 refuses a second webview on a data folder in use with different args.
-      Found live: the dev build stayed blank next to the installed release, which shares
+      tear-offs go through a `window_open_torn` command; the frontend lost
+      `core:webview:allow-create-webview-window`. Why: WebView2 refuses a second webview
+      on a data folder in use with different args. Found live: the dev build stayed blank
+      next to the installed release, which shares
       `%LOCALAPPDATA%\com.workbench.app\EBWebView`. The tear-offs also share
       `localStorage` (composer drafts) with the main window.
     - Debug builds now use their own folder (`…\com.workbench.app\dev`), so dev and
@@ -1925,28 +1913,26 @@ up ("change this", with a circle around it).
     position.
 - **Out of scope:** voice, the phone.
 - **As built (2026-10-19):**
-  - **Button:** `DuckButton` at the far left of the title bar, labelled "D.U.C.K.", with
-    your duck icon just right of it, outside the button (a CSS mask in the theme's
-    accent; the eyeless version below 20 px, the one with the eye in the drawer header). The tooltip spells out the acronym and shows the bound shortcut.
-    Status light: a red badge counting open confirmations (any thread), and an amber/red
-    tint past the soft limit/cap.
+  - **Button:** `DuckButton`, labelled "D.U.C.K.", with your duck icon just right of it,
+    outside the button (a CSS mask in the theme's accent; the eyeless version below
+    20 px, the one with the eye in the drawer header). The tooltip spells out the acronym
+    and shows the bound shortcut. Status light: a red badge counting open confirmations
+    (any thread), and an amber/red tint past the soft limit/cap.
   - **Hotkey:** `toggleAssistant` defaults to **Ctrl+Shift+Space**, not Ctrl+Space:
     Ctrl+Space is a terminal control code (NUL), PowerShell's MenuComplete, and fails the
     keymap's own global-safety rule. `Space` became a mappable key.
-  - **Drawer** (`src/panels/Assistant/`): left side, over the rail and the dock, resizable,
-    width in prefs. Always mounted, only hidden, so closing and reopening keeps the thread
-    and its scroll; the open thread is restored after a restart. The dock's root got
-    `isolation: isolate`, so floating dock groups stay under the drawer and modals above.
-    - Thread view: markdown replies (`renderMarkdown`: marked + DOMPurify) streaming in,
-      tool chips (name + one-line input, expanding to input and output), notices.
-    - Confirmation cards (Allow / Deny with the exact input); a confirmation in another
-      thread shows as a line that opens it.
-    - Spend line: this turn's cost, month / cap. The protocol gained a `spend` event
-      (on `sync` and after every metered call); `spend.ts` bills each `thread` call to the
-      one turn that is calling.
-    - Composer: Enter sends, Shift+Enter is a newline, Esc stops a running reply (and
-      closes the drawer when idle). A message sent mid-reply shows as a dashed "queued"
-      bubble; the ⚙ setting makes it interrupt instead.
+  - **Drawer** (`src/panels/Assistant/`): over the rail and the dock. Always mounted, only
+    hidden, so closing and reopening keeps the thread and its scroll; the open thread is
+    restored after a restart. The dock's root got `isolation: isolate`, so floating dock
+    groups stay under the drawer and modals above.
+    - Thread view: replies through `renderMarkdown` (marked + DOMPurify), tool chips
+      (name + one-line input), notices.
+    - Confirmation cards show the exact input; a confirmation in another thread shows as
+      a line that opens it.
+    - Spend line: the protocol gained a `spend` event (on `sync` and after every metered
+      call); `spend.ts` bills each `thread` call to the one turn that is calling.
+    - Composer: Esc also closes the drawer when idle. A message sent mid-reply shows as a
+      dashed "queued" bubble; the ⚙ setting makes it interrupt instead.
     - Thread list (▾ on the title) and "+ new" (the thread is created by its first
       message).
     - **"think hard" instead of "Sonnet":** the main thread is already Sonnet, so the
@@ -1958,9 +1944,9 @@ up ("change this", with a circle around it).
     session ids.
   - **Start at login, minimized to the tray:** `tauri-plugin-autostart` **pinned
     `~2.5.1`** (2.6+ needs Tauri 2.12, which would have pulled a wry upgrade into this
-    step), launched with `--minimized`; `window::build_main` then builds the main window
-    hidden. The tray icon had no click action, so a left click now shows the window. The
-    setting is disabled in dev builds (it would register the debug binary).
+    step), launched with `--minimized`, so `window::build_main` builds the main window
+    hidden. The tray icon had no click action; a left click now shows the window.
+    Disabled in dev builds (it would register the debug binary).
   - **Stub:** `test_confirm`, a consequential tool that does nothing, in dev builds only.
   - **Language rule** (from the first live test, where Duck switched to Russian
     mid-thread): Duck always answers in English; you may write English, Russian or
@@ -2020,35 +2006,28 @@ up ("change this", with a circle around it).
     summaries of the other threads (below, with V4).
 - **Depends on:** A3, D1, P1.
 - **As built (2026-10-20):**
-  - **Unread** (`duckState.ts`):
-    - A reply in a thread you aren't looking at counts as one unread per turn. "Looking
-      at" means the drawer is open on that thread in a visible window.
-    - Its first line becomes the thread's news.
-    - Opening the thread clears it. Both are kept in the drawer's prefs across
-      restarts.
-    - Shown as "● n" on Duck's title-bar button, a dot on the thread list's rows, and a
-      count on the header's **all** button.
+  - **Unread** (`duckState.ts`): a reply in a thread you aren't looking at (the drawer
+    open on it in a visible window) counts as one unread per turn, and its first line
+    becomes the thread's news. Opening the thread clears both; they're kept in the
+    drawer's prefs across restarts. Shown as "● n" on Duck's title-bar button, a dot on
+    the thread list's rows, and a count on the header's **all** button.
   - **Breadcrumbs:**
     - A "news in ● workbench plan ● tiny wizard" line under the drawer's header, each a
       click away.
     - A desktop toast "Duck · <thread>" with the news, when such a thread finishes its
-      turn and you aren't watching the drawer.
-    - The autopilot's own alerts already name their session.
-  - **The overview** (`OverviewView.tsx`, the header's **all**):
-    - Every thread with its unread count, its latest news, "replying…", and the
-      autopilots and running tasks it owns.
-    - Ordered unread first, then those at work, then the most recent. A row opens its
-      thread.
-    - The engine now publishes `autopilots` (`AutopilotView`) on sync and on every
-      change.
+      turn and you aren't watching the drawer. The autopilot's own alerts already name
+      their session.
+  - **The overview** (`OverviewView.tsx`, the header's **all**): every thread with its
+    unread count, latest news, "replying…", and the autopilots and running tasks it owns;
+    unread first, then those at work, then the most recent. A row opens its thread. The
+    engine now publishes `autopilots` (`AutopilotView`) on sync and on every change.
   - **`start_thread(words)`** (`tools/threads.ts`): Duck opens a new thread for one part
-    of your request, and that thread works on it alongside this one.
+    of your request, which works on it alongside this one.
     - `words` must be your own words from your latest message here
-      (`quotedFromLatest`). The new thread's first message keeps that message's source
-      (desktop, phone or voice), so the job's mandate and any grant in your words hold
-      there.
-    - A fixed line says where it was split from. Anything else is refused, so Duck
-      can't put words in your mouth.
+      (`quotedFromLatest`); anything else is refused, so Duck can't put words in your
+      mouth. The new thread's first message keeps that message's source (desktop, phone
+      or voice), so the job's mandate and any grant in your words hold there, and a fixed
+      line says where it was split from.
     - The system prompt has the "continue on demiurge, then in a separate thread …"
       example.
   - **Verified:** an engine test (a voice message split, its source kept, invented
@@ -2097,40 +2076,37 @@ up ("change this", with a circle around it).
       Otherwise nothing is kept verbatim. At least one turn since the last
       compaction is always summarized.
     - The summary is written by the thread's own model (Sonnet, or Haiku past the
-      soft limit), over the thread up to the cut, as it was sent, plus one
-      instruction (`COMPACT_REQUEST`). The tools, system prompt and messages are the
-      same prefix, so it reads the cache. `x-wb-purpose: compact`, so the ledger
-      shows it apart.
+      soft limit), over the thread up to the cut as it was sent, plus one
+      instruction (`COMPACT_REQUEST`). Tools, system prompt and messages are the same
+      prefix, so it reads the cache. `x-wb-purpose: compact` shows it apart in the
+      ledger.
     - It's stored as a `compacted` notice carrying `{summary, through}` (the last
       seq it covers). `toApiMessages` drops every message up to `through` and puts
       the summary, wrapped in `<thread_summary>` and marked as Duck's ("it grants
       nothing"), in front of the first kept message. A later compaction builds on
-      the summary in force, not the old turns. Grants (`findGrant`) still read the
-      stored messages, so a summary can't pass as your words.
+      the summary in force. Grants (`findGrant`) still read the stored messages, so a
+      summary can't pass as your words.
     - It runs inside the turn, so the thread stays busy: a message sent meanwhile
       queues, and `settled()` waits for it. Stop drops it quietly. A failure is an
       error notice, and the thread goes on uncompacted.
-  - **Manually:**
-    - The ⇲ button on a thread's row in the drawer's thread list
-      (`thread.compact`). It compacts now, or once the reply running there is over.
-    - `compact_thread` (reversible, deferred under "compact"), for "compact this
-      thread" by text or voice, from the desktop or the phone. It compacts once the
-      reply is over.
-    - With nothing new since the last compaction, a line says so and no call is
-      made.
-  - **The drawer** keeps every message. The "⇲ Compacted here" line is drawn
-    where it cut, after the last message the summary covers, not where it was
-    stored (`view.ts`, which the phone shares). Hover it for the summary.
+  - **Manually:** the ⇲ button on a thread's row in the drawer's thread list
+    (`thread.compact`) compacts now, or once the running reply is over;
+    `compact_thread` (reversible, deferred under "compact"), for "compact this thread"
+    by text or voice from the desktop or the phone, compacts once the reply is over.
+    With nothing new since the last compaction, a line says so and no call is made.
+  - **The drawer:** the "⇲ Compacted here" line is drawn where it cut, after the last
+    message the summary covers, not where it was stored (`view.ts`, which the phone
+    shares). Hover it for the summary.
   - **Left out:** "start fresh with a summary" for a thread that is only a log.
     Compacting such a thread does the same job.
   - **Verified:**
     - 8 new vitest cases:
-      - a thread past the threshold compacts between turns. The summary's request
-        has the same system and tools, the oldest turn and the instruction. The next
-        turn sends the summary plus the last two turns, under the threshold, and the
-        summary carries what that turn asks about (the dog's name, the open item).
-      - a turn too big to keep is summarized whole. A second compaction builds on
-        the first summary.
+      - a thread past the threshold compacts between turns: the summary's request has
+        the same system and tools, the oldest turn and the instruction; the next turn
+        sends the summary plus the last two turns, under the threshold, and the summary
+        carries what that turn asks about (the dog's name, the open item).
+      - a turn too big to keep is summarized whole; a second compaction builds on the
+        first summary.
       - the drawer's compaction runs at once; the tool's runs after its reply.
       - "nothing to compact"; a stop during compaction leaves nothing; 0 is off.
       - the cut never lands on tool results.
@@ -2185,31 +2161,29 @@ up ("change this", with a circle around it).
     - `start_thread` gains `go` and `brief`.
   - The move, in the engine:
     - It's held until the turn is over: after the reply and the turn going idle,
-      the engine emits `goThread {threadId, from, surface}`, then sends the words.
-    - A turn parked on a confirmation keeps its move until it's answered and
-      finished. A stopped turn drops it.
+      the engine emits `goThread {threadId, from, surface}`, then sends the words. A
+      turn parked on a confirmation keeps its move until it's answered and finished;
+      a stopped turn drops it.
     - `surface` is where the user's latest message in the thread came from: `phone`
       or `phone-voice` moves the phones, anything else the desktop.
-    - The words are quoted from your latest message, as `start_thread` does, and go
-      in with your source, so a spoken request's answer is spoken. A line before
-      them says where they came from ("Brought over by Duck from the thread …").
+    - The words go in with your source, so a spoken request's answer is spoken. A line
+      before them says where they came from ("Brought over by Duck from the thread …").
     - `start_thread` with `go` makes the thread at once but starts its turn only
       with the move. The `brief` goes in as the opening's system note, marked as
-      Duck's (`briefNote`). It's never in a user message, so a grant can't be
-      quoted from it.
+      Duck's (`briefNote`), never in a user message, so a grant can't be quoted from
+      it.
     - "Back": each surface keeps the last 5 threads it was moved out of, in the
-      engine (in memory), and "back" goes to the newest of them. A deleted thread
-      leaves the trail. A move you make by clicking isn't in it.
+      engine (in memory), and "back" goes to the newest. A deleted thread leaves the
+      trail. A move you make by clicking isn't in it.
   - The surfaces:
     - The desktop (`duckState.ts`) opens the thread, and the drawer too if the
-      window is visible. Conversation mode's next turn goes there, since turns go
-      to the open thread.
-    - The reply to the words brought over is spoken after the rest of "Moving to
-      …" rather than cutting it (`onUserMessage(…, moved)`).
-    - The phone (`duck.ts`) opens it. If its own voice spoke the reply that moved
-      it, it speaks the next reply there too.
-    - With the desktop's voice, the bridge does the same for the phone the reply
-      was spoken for. A read asked for there plays on that phone.
+      window is visible; conversation mode's next turn goes there, since turns go to
+      the open thread. The reply to the words brought over is spoken after the rest of
+      "Moving to …" rather than cutting it (`onUserMessage(…, moved)`).
+    - The phone (`duck.ts`) opens it, and if its own voice spoke the reply that moved
+      it, speaks the next reply there too. With the desktop's voice, the bridge does
+      the same for the phone the reply was spoken for; a read asked for there plays on
+      that phone.
   - The system prompt gained one line with the three examples ("go to the thread
     with…", "new thread for…, let's talk there", "go back"), and a reminder to ask
     when several threads fit.
@@ -2231,12 +2205,11 @@ up ("change this", with a circle around it).
       the user's own words asked for it (`grantedBy`).
     - Each thread is passed as an id and its title as `list_threads` shows it. One
       whose title doesn't match is refused, so what's deleted is what the card named.
-    - Refused, with the reason, for:
-      - the thread Duck is replying in;
-      - one with a turn running;
-      - one a queued or running worker task, or an autopilot not stopped, reports to.
-    - At most 30 per call. It goes through the engine's `deleteThread`, the drawer's
-      delete, so every surface drops the thread.
+    - Refused, with the reason, for the thread Duck is replying in, one with a turn
+      running, and one a queued or running worker task, or an autopilot not stopped,
+      reports to.
+    - At most 30 per call. It goes through the engine's `deleteThread` (the drawer's
+      delete), so every surface drops the thread.
     - A phone still can't delete a thread directly (`thread.delete` is refused over
       the remote socket), but it can ask Duck, which shows the card.
     - The weekly sweep of old threads is in L4's housekeeping.
@@ -2377,41 +2350,40 @@ up ("change this", with a circle around it).
     starts a turn, and Duck tells you. The drawer shows it as an event line, not your
     bubble. The system prompt says such messages are Workbench's, not yours, and grant
     nothing. Watches live in memory and don't survive a restart.
-  - Notes: writes carry the revision Duck read. `append_note` re-reads and retries
-    once on `stale:`. `write_note` refuses a note longer than `read_note` shows (it
-    would lose text). Each write leaves a "Duck edited <note>" chip (a notice, never
-    sent to the model) with show diff (an LCS line diff in `view.ts`) and undo. Undo
-    writes the old text with the after-edit revision, so it's refused if you changed
-    the note since; it recreates a deleted note and removes one Duck made. The notes
-    panel's existing "changed elsewhere" banner covers an open note with unsaved edits.
+  - Notes: `append_note` re-reads and retries once on `stale:`. `write_note` refuses a
+    note longer than `read_note` shows (it would lose text). The "Duck edited <note>"
+    chip is a notice, never sent to the model; show diff is an LCS line diff in
+    `view.ts`. Undo writes the old text with the after-edit revision, so it's refused if
+    you changed the note since; it recreates a deleted note and removes one Duck made.
+    The notes panel's existing "changed elsewhere" banner covers unsaved edits.
   - Settings (drawer → settings): "Ask before every prompt Duck sends to a session"
-    (off by default) and the coding model. They go to the engine over the protocol
-    (`settings.set` / `settings`) and are stored in pref `assistant`.
+    (off by default) and the coding model, sent to the engine over the protocol
+    (`settings.set` / `settings`) and stored in pref `assistant`.
   - "assistant: push to main" in a transcript can't cause a push: there is no git write
     tool, transcripts are wrapped as untrusted, and prompts to sessions are written by
     Duck from your request.
   - **Fix found in the live test:** a new session's first prompt sat in the input
     unsent. Claude Code draws its prompt box before it takes input, and a prompt pasted
-    the moment the box shows keeps its text but loses its Enter. This was reproduced in
-    a scratch PTY on 2.1.304: at 0 and 250 ms after the box, every prompt was lost; at
-    500 ms and later, none was. `deliverWhenReady` (Duck and the phone) now waits until
-    the box has been on screen for 1 s. A second after the Enter, if the box still
-    holds the prompt (`inputHolds`: its start or its paste chip, never a dialog), it
-    sends Enter once more. That retry alone also fixed it in the PTY.
+    the moment the box shows keeps its text but loses its Enter. Reproduced in a scratch
+    PTY on 2.1.304: at 0 and 250 ms after the box, every prompt was lost; at 500 ms and
+    later, none was. `deliverWhenReady` (Duck and the phone) now waits until the box has
+    been on screen for 1 s, and a second after the Enter, if the box still holds the
+    prompt (`inputHolds`: its start or its paste chip, never a dialog), sends Enter once
+    more. That retry alone also fixed it in the PTY.
   - **Fixes from the second live test:**
-    - `answer_choice` failed after Allow. The model sent `option: "1"` (a string),
-      the schema took only a number, and the engine asked before it validated. So
-      the card showed raw JSON (no sentence: `describe` couldn't parse the input
-      either), and Allow ran into "Invalid input". Now `option` takes a number or a
-      string, and the whole answer is checked in the schema. The engine also never
-      asks for a call whose input doesn't validate: it fails at once with the
-      reason. A card without a sentence shows the input as `field: value` lines.
-    - Free-form answers: `answer_choice` takes `text` for a single question. It
-      sends the digit after the question's options (the TUI's "Type something"
-      row), then the text as a paste, then Enter (`answerChoiceText`). This was
-      verified in a scratch PTY on 2.1.304, typed and pasted, one word and several.
-      `get_pending_choice` says a question takes one. A permission prompt's typed
-      option ("No, and tell Claude…") still goes to the terminal.
+    - `answer_choice` failed after Allow. The model sent `option: "1"` (a string), the
+      schema took only a number, and the engine asked before it validated, so the card
+      showed raw JSON (`describe` couldn't parse the input either) and Allow ran into
+      "Invalid input". Now `option` takes a number or a string, the whole answer is
+      checked in the schema, and the engine never asks for a call whose input doesn't
+      validate: it fails at once with the reason. A card without a sentence shows the
+      input as `field: value` lines.
+    - Free-form answers: `answer_choice` takes `text` for a single question. It sends
+      the digit after the question's options (the TUI's "Type something" row), then the
+      text as a paste, then Enter (`answerChoiceText`); verified in a scratch PTY on
+      2.1.304, typed and pasted, one word and several. `get_pending_choice` says a
+      question takes one. A permission prompt's typed option ("No, and tell Claude…")
+      still goes to the terminal.
     - `wait_for_session` no longer refuses a session with no phase yet (just
       started or resumed). It waits, and the timeout covers one that never runs.
   - **Verified:** 26 new vitest cases (11 for the tools and policy, 3 engine hooks,
@@ -2444,20 +2416,19 @@ up ("change this", with a circle around it).
   - **No second mechanism:** the improvement plan's Track M (a run summary as a Claude
     Code mod) was never built, so W3 is the only summary path.
   - **`src/assistant/summarize.ts`:** `createSummarizer({port, backend, call})`. One
-    Haiku call through `oneShot("summary", …)` (frozen prompt in `PRIMITIVES.summary`,
-    `x-wb-purpose: summary`, structured output `{headline, done[], open_questions[],
-    needs_you}`; `needs_you` is nullable rather than optional). The input is the
-    session's name, task note and state now, the last summary as `<earlier>`
-    background, and the activity as `<activity>` (both fenced, and data).
+    Haiku call through `oneShot("summary", …)` (frozen prompt in `PRIMITIVES.summary`;
+    `needs_you` is nullable rather than optional). The input is the session's name, task
+    note and state now, the last summary as `<earlier>` background, and the activity as
+    `<activity>` (both fenced, and data).
     - **"Since the last summary" is a time, not a byte offset.** `readPlainText` gained
       `since` (epoch ms): it pages back no further than that and keeps only later
       items, and reports `lastAt`, the newest shown item. The transcript reader trims
       and drops lines, so byte offsets can't be matched to items; item times can, and
       they work across `/clear` too.
     - **Stored in duck.db `meta`** (`assistant_summary:<instance>`, JSON `{summary,
-      from, at, made}`, new commands `assistant_summary_get/set`), not only in memory,
-      so the chain survives a restart. Asking again with nothing new returns the stored
-      summary without a call. A window that leaves a gap after `at` ("since I was
+      from, at, made}`, new commands `assistant_summary_get/set`), so the chain survives
+      a restart. Asking again with nothing new returns the stored summary without a
+      call. A window that leaves a gap after `at` ("since I was
       away") isn't stored; one reaching back over it replaces it.
     - At most 40,000 characters of activity (the oldest part is cut and marked):
       about 13k tokens, so a summary costs under $0.002 at Haiku 5.5's prices.
@@ -2472,14 +2443,13 @@ up ("change this", with a circle around it).
     `read_session` and the summaries saw no history. It now falls back to the
     instance's `last_session_id` and finds its file by session id (`stream.rs`
     `current`; the follow logic is unchanged).
-  - **Done alerts:** the setting `summaryOnDone` (Duck's settings, off by default,
-    "Summarize a session when it finishes, for the done alert" in the drawer).
-    `notifications.ts` takes a body maker through the port (`setDoneSummary`); with
-    the setting on, a done alert waits up to 12 s for the turn's headline and
-    otherwise goes out with the last line, as before. A turn that stopped on an error,
-    or a session you're watching or that is Duck's worker, isn't summarized. The
-    Stop hook fires before the final reply reaches the transcript file, so the hook's
-    `last_assistant_message` is passed in and added as the activity's last line
+  - **Done alerts:** the setting `summaryOnDone` ("Summarize a session when it
+    finishes, for the done alert" in the drawer). `notifications.ts` takes a body maker
+    through the port (`setDoneSummary`); with the setting on, a done alert waits up to
+    12 s for the turn's headline, else goes out with the last line, as before. A turn
+    that stopped on an error, or a session you're watching or that is Duck's worker,
+    isn't summarized. The Stop hook fires before the final reply reaches the transcript
+    file, so the hook's `last_assistant_message` is added as the activity's last line
     (`withReply`) when it isn't there yet.
   - **Verified:**
     - Tests: 7 for the summarizer and tools, 1 more for `readPlainText`, 4 for the
@@ -2521,12 +2491,12 @@ up ("change this", with a circle around it).
   queued or starting one that fails later comes back as a `<workbench_event>`.
 - **Duck chooses the timing** (asked for on 2026-10-20: "Duck should decide… I should
   not have to concern myself with this"). `send_prompt` takes `when`: `now` goes into
-  a running turn (Claude Code takes typed input mid-turn and reads it at its next
-  step; taken when the text leaves the box), for corrections, constraints and
-  answers; `after_turn` (default) waits, for new work. The description says which is
-  which and asks Duck to put several requests for one session into one prompt. A
-  `now` prompt never goes into a session waiting on a permission prompt or question
-  (a keystroke could answer it); it waits until the session works again.
+  a running turn (Claude Code reads typed input at its next step; taken when the text
+  leaves the box), for corrections, constraints and answers; `after_turn` (default)
+  waits, for new work. The description says which is which and asks Duck to put
+  several requests for one session into one prompt. A `now` prompt never goes into a
+  session waiting on a permission prompt or question (a keystroke could answer it); it
+  waits until the session works again.
 - **Resumed, not fresh.** `sendPrompt` to a stopped session continues its last
   conversation (`resumeConsole`, now with `background` for workers), and replaces a
   dead console instead of focusing it. `createSession` sets the first prompt as the
@@ -2623,16 +2593,15 @@ up ("change this", with a circle around it).
     options, a text field's pattern, a checkbox's true/false) and laid over the
     toolbar's own; the toolbar keeps its values.
   - **Runs.** New `plugins_preview` returns what `prepare_task` would spawn (the shown
-    argv and the cwd). The card shows it, and the confirm question filled in. A run is
+    argv and the cwd); the card shows it, with the confirm question filled in. A run is
     pinned: `TaskRequest.revision` makes the spawn refuse (`stale:`) if the file changed
     after the card, and the tool previews again just before starting and refuses if the
     argv or cwd moved (a `{branch}` change). The run starts in the action's task panel
-    without the confirm question (the card asked), refused while it is running, and
+    without the confirm question (the card asked), is refused while already running, and
     shows the project, since task panels are drawn for the shown project only. The end
     (exited with its code, stopped, couldn't start, panel closed, run again from the
-    app) comes back as a `<workbench_event>` with the last 15 lines of the terminal,
-    marked as program output. A `long` action is watched quietly: only its end is
-    reported.
+    app) comes back as a `<workbench_event>` with the terminal's last 15 lines, marked as
+    program output. A `long` action is watched quietly: only its end is reported.
   - **Trust.** A run's facts: specifier `plugin:action` (so
     `assistant:run_plugin_action(build:*)` allows a plugin's runs), the argv as a `Bash`
     call for the floor (a `git push` action asks), and `grantedBy`. An action with a
@@ -2644,11 +2613,10 @@ up ("change this", with a circle around it).
     problems, as the parser reports them), `plugins_remove` (delete at a revision, for
     undo), `plugins_script_read` / `plugins_script_write` (one plain file name in
     `{data}/scripts/`, at most 256 KB). `prepare` compares the base revision and checks
-    the text, so a broken edit comes back with its JSON paths and Duck fixes it without
-    a card. Scripts are written before the file. The chip reads "Duck edited the build
-    toolbar" when one plugin changed (else the project's toolbar); undo writes the old
-    file back at the new revision (or removes a file Duck made), then restores each
-    script still as Duck wrote it.
+    the text, so a broken edit comes back with its JSON paths before any card. Scripts
+    are written before the file. The chip names the plugin when one changed (else the
+    project's toolbar); undo writes the old file back at the new revision (or removes a
+    file Duck made), then restores each script still as Duck wrote it.
   - **Delegated edits** (added after the first build, on review: a change that needs
     the project's code read, or a script written, is coding work, and Duck's turns are
     on API credits). `delegate_plugins_edit(project, request)` starts a Claude Code
@@ -2659,13 +2627,13 @@ up ("change this", with a circle around it).
       `workbench:plugins` (`src-tauri/resources/claude-plugin/`: the drafting workflow
       in `SKILL.md`, the file format in `reference.md`). It is written to
       `<app data>/duck-sessions/claude-plugin/workbench/` at start and loaded with
-      `--plugin-dir` by drafting sessions only. Nothing is installed, and neither the
-      repos nor `~/.claude` are touched.
+      `--plugin-dir` by drafting sessions only. Nothing is installed; neither the repos
+      nor `~/.claude` are touched.
     - **The draft.** `<app data>/duck-sessions/plugin-drafts/<project>/`, outside the
-      notes folder (a draft never syncs). It starts as a copy of the live file and
-      scripts; the session edits the copy, and `apply_plugins_draft` reads it from
-      disk, so the file never goes through Duck's tokens. A draft with problems fails
-      before any card, telling Duck to send them to the session.
+      notes folder (a draft never syncs): a copy of the live file and scripts that the
+      session edits. `apply_plugins_draft` reads it from disk, so the file never goes
+      through Duck's tokens. A draft with problems fails before any card, telling Duck to
+      send them to the session.
     - **The session's permissions.** It is registered by instance id (migration v13,
       `plugin_draft_sessions`), so every launch and resume gets `--permission-mode
       default --plugin-dir … --add-dir <draft> --settings <file>`. The settings file
@@ -2830,9 +2798,9 @@ up ("change this", with a circle around it).
     rubber-duck thread (mode `duck`), "think hard" and its forms («подумай как следует»,
     "piénsalo bien", "think it through"), and words for research, comparisons, analysis,
     plans, write-ups and browser chores in English, Russian and Spanish. Workbench events
-    stay `medium` whatever they quote. The engine routes every turn first and emits a
-    `routing` event (model, effort); the drawer's spend line shows "effort: high" and
-    "haiku" chips for the open thread's latest turn.
+    stay `medium` whatever they quote. The engine emits a `routing` event (model, effort)
+    per turn; the drawer's spend line shows "effort: high" and "haiku" chips for the open
+    thread's latest turn.
   - **`haiku_task(instruction, sources[])`** (`tools/haikuTask.ts`): sources are session
     transcripts (worker tasks included, by their session) and notes, read by the tool
     (100k characters a source, 380k in all, under Haiku's long-prompt price step), wrapped
@@ -2855,17 +2823,17 @@ up ("change this", with a circle around it).
     a handoff weren't worth it; M3's switch to another *process* still needs one. The
     first Haiku turn in a thread shows a "$" card (a `budget` notice, never sent).
     "Think hard" (said, or the drawer's toggle, which reads "think hard · sonnet" past the
-    soft limit) sends that message on Sonnet at `high`; its cost shows as "this turn"
-    as before. `SendInput.brain` / the protocol's `send.brain` names a model outright.
-    Haiku turns send no `fallbacks` (it has no server-side fallback). At the cap the proxy
-    refuses `thread` calls as before, so only primitives run.
+    soft limit) sends that message on Sonnet at `high`, its cost shown as "this turn".
+    `SendInput.brain` / the protocol's `send.brain` names a model outright. Haiku turns
+    send no `fallbacks` (it has none server-side). At the cap the proxy refuses `thread`
+    calls as before, so only primitives run.
   - **Projection:** `projectMonth` extrapolates month-to-date from the third day on; the
     spend line shows "· on track for $X", and `duck_spend` returns `onTrackFor`.
   - **Found on the way, fixed:** thinking blocks are bound to the `system` prompt and
     `tools` they were made under, and accounts created after 2026-08-31 (Duck's Console
     org, linked 2026-10-18) get a 400 when an old block is replayed under a changed
-    prefix. Every step that edits Duck's prompt or tools did that to existing threads, and
-    this one changes both. Requests now set `thinking.block_binding.
+    prefix, which every prompt or tools edit does to existing threads (this step changes
+    both). Requests now set `thinking.block_binding.
     prefix_mismatch_behavior: "drop_block"` (beta `thinking-binding-controls-2026-08-01`):
     an old thread loses its earlier thinking after an update instead of failing.
   - **Verified:** vitest 591 (28 new: routing rules in three languages, the engine's
@@ -2933,11 +2901,12 @@ up ("change this", with a circle around it).
 - **Out of scope:** running workers or `haiku_task` through the subscription brain (workers
   already are sessions; primitives stay on Haiku API until the hard cap).
 - **As built (2026-10-22):**
-  - **No `Brain` interface over the engine** (changed from the Build): the API loop stays
-    the engine's own, and a turn picks per turn between it and `brainLoop`. The
-    subscription side is `src/assistant/brain/` (`policy.ts`, `subscription.ts` with the
-    `BrainHost` the engine is given) and two Rust modules; the drawer and the tool
-    registry see no difference. An `ApiBrain` wrapper would only have renamed the loop.
+  - **No `Brain` interface over the engine** (changed from the Build; an `ApiBrain`
+    wrapper would only have renamed the loop): the API loop stays the engine's own, and
+    each turn picks between it and `brainLoop`. The subscription side is
+    `src/assistant/brain/` (`policy.ts`, `subscription.ts` with the `BrainHost` the
+    engine is given) and two Rust modules; the drawer and the tool registry see no
+    difference.
   - **The process** (`subscription_brain.rs`): one `claude -p` per thread on the
     subscription, with the Build's flags plus `--include-partial-messages` (text as it
     comes), `--setting-sources ""` (no hooks or statusline from your settings) and the
@@ -3077,7 +3046,7 @@ up ("change this", with a circle around it).
 - **As built (2026-10-22):**
   - **The tools** (`src/assistant/tools/web.ts`):
     - X0's basic versions, `web_search_20250305` (5 a reply) and `web_fetch_20250910`
-      (8 a reply), as X0 decided for quick lookups.
+      (8 a reply).
     - Search gets the user's timezone as an approximate location, for local answers.
     - A fetched page is cut to 12k tokens (`max_content_tokens`), since it stays in the
       thread.
@@ -3088,15 +3057,13 @@ up ("change this", with a circle around it).
       conversation partner's job. Its prompt moves only real research to an assistant
       thread. The rubber duck doesn't get them.
     - A skill may name them in `tools:` (`TOOL_NAMES`).
-  - **The engine:** nothing to run. The server does the search inside the reply.
-    - A `pause_turn` was already resent, and the reply is stored whole, so its
-      `server_tool_use` and result blocks go back as they came.
-    - While one runs, the thread shows `tool`.
-    - They never reach the gate: they only read, and the API lets a fetch open only a
-      URL already in the conversation.
-  - **Effort:** the plan's "raise to medium when they are used" needed nothing. The
-    assistant and the chat already start at medium (S1), and only the user's own toggle
-    goes lower.
+  - **The engine:** nothing to run; the server does the search inside the reply. A
+    `pause_turn` was already resent, and the reply is stored whole, so its
+    `server_tool_use` and result blocks go back as they came. While one runs, the thread
+    shows `tool`. They never reach the gate: they only read, and the API lets a fetch
+    open only a URL already in the conversation.
+  - **Effort:** "raise to medium when they are used" needed nothing: the assistant and
+    the chat already start at medium (S1), and only the user's own toggle goes lower.
   - **Routing:** the system prompt's rules now give Duck a quick lookup (a fact, a
     release note, one topic's news, what one page says, such as a shared link from R3),
     a few searches at most, citing where the answer came from. Comparing sources, many
@@ -3114,11 +3081,10 @@ up ("change this", with a circle around it).
   - **Haiku past the soft limit** keeps both tools: X0 found Haiku 5.5 takes the basic
     versions.
   - **Not covered:**
-    - A skill's `tools:` narrowing doesn't hold back the server tools. Holding them
-      back would mean dropping them from the request's tool list, which breaks the
-      cache.
-    - The subscription brain (M3) has only its own tools: `mcpTools` passes only tools
-      with a schema.
+    - A skill's `tools:` narrowing doesn't hold back the server tools: that would mean
+      dropping them from the request's tool list, which breaks the cache.
+    - The subscription brain (M3) doesn't get them: `mcpTools` passes only tools with a
+      schema.
   - **Tests:**
     - The registry's lists: the assistant's and the chat's have the web, the duck's
       doesn't, and the limits are as above.
@@ -3377,12 +3343,10 @@ up ("change this", with a circle around it).
     - **The CUDA path is dropped.** ORT's CUDA provider needs cuDNN 9, which this PC has
       only inside Python caches. X0's CUDA timings relied on it.
   - **Downloads** (`voice/assets.rs`) go to `<app local data>/models/` (`models.dev/` in
-    debug). Every file is pinned by URL, size and SHA-256:
-    - the Hugging Face repo at a fixed commit;
-    - Silero VAD v6.2.1 (the X0 model).
-
-    A download goes to a `.part` file and resumes with `Range`, and only a matching
-    hash is renamed into place. Progress comes as `voice-download` events.
+    debug), every file pinned by URL, size and SHA-256 (the Hugging Face repo at a fixed
+    commit; Silero VAD v6.2.1, the X0 model). A download goes to a `.part` file, resumes
+    with `Range`, and only a matching hash is renamed into place. Progress comes as
+    `voice-download` events.
   - **The engine** (`voice/engine.rs`):
     - Silero VAD trims each clip to its speech plus 200 ms each side (`vad.rs`).
     - An empty int8 result is retried once in fp32 when those files are there. On X0's
@@ -3399,36 +3363,31 @@ up ("change this", with a circle around it).
     | GPU fp32, DirectML on the RTX (decoder on the CPU) | 0.21–0.50 s | 0.60–1.10 s | +2.5 GB VRAM, a 2.5 GB download |
 
     - Accuracy is the same on both paths and matches X0: English and Russian nearly
-      exact, mixed sentences with English terms in Cyrillic («колодкод», «Сиай»), which
-      is the name fixer's job in part 2.
+      exact; mixed sentences get English terms in Cyrillic («колодкод», «Сиай»), the
+      name fixer's job in part 2.
     - **So the CPU is the default** (`GpuPref::Never`), and the GPU is opt-in. This
       reverses the design's GPU-first plan, which rested on X0's slow Rust decoder.
-    - Keeping the decoder on DirectML too was no faster, and its first call took 2.5 s
-      to warm up.
+    - The decoder on DirectML too was no faster, and its first call took 2.5 s.
     - Loading takes ~2 s on the CPU and ~6.7 s on the GPU.
   - **Commands:** `voice_status`, `voice_prepare` (download), `voice_preload`,
     `voice_transcribe_wav` (16 kHz WAV, the format R2's phone uploads), `voice_keep_warm`
     and `voice_unload`.
-  - **The UI:** a Voice section in Duck's settings (`VoiceSettings.tsx`) with the GPU
-    choice, the download and its progress, which engine is in use, and "transcribe a
-    WAV file…" to check it.
-  - **Verified:**
-    - 9 Rust unit tests: the duration pick, the vocabulary, the VAD bounds, the
-      provider choice, the pins, the WAV reader;
-    - the network test of the pinned downloads with a resume;
-    - the benchmark above.
-
-    238 Rust tests pass; clippy, tsc and eslint are clean.
+  - **The UI:** a Voice section in Duck's settings (`VoiceSettings.tsx`): the GPU
+    choice, the download and its progress, the engine in use, and "transcribe a WAV
+    file…" to check it.
+  - **Verified:** 9 Rust unit tests (the duration pick, the vocabulary, the VAD bounds,
+    the provider choice, the pins, the WAV reader); the network test of the pinned
+    downloads with a resume; the benchmark above. 238 Rust tests pass; clippy, tsc and
+    eslint are clean.
   - **Not verified yet:** the download of the 670 MB / 2.5 GB model files from inside
     the app (the dev models folder was seeded with hard links to X0's copies), and
     RSS/VRAM returning to baseline after the idle unload.
 - **As built, part 2: push-to-talk (2026-10-20).**
   - **Capture** (`voice/capture.rs`, cpal 0.16):
-    - It reads the chosen microphone, or the default input, mixed to mono and capped at
-      2 minutes.
-    - The audio is resampled to 16 kHz by a Blackman-windowed sinc, which keeps 1 kHz at
-      level and cuts 12 kHz.
-    - The stream lives on its own thread, and only while the key is held.
+    - The chosen microphone, or the default input, mixed to mono and capped at 2
+      minutes, on its own thread and only while the key is held.
+    - Resampled to 16 kHz by a Blackman-windowed sinc, which keeps 1 kHz at level and
+      cuts 12 kHz.
   - **The key:**
     - `tauri-plugin-global-shortcut` 2.3 is registered from Rust, so it works with the
       window in the background or hidden. Its Windows backend registers with
@@ -3462,10 +3421,8 @@ up ("change this", with a circle around it).
     - When it changed something, the message carries `(voice; as heard: "…")`. The
       system prompt tells Duck that spoken messages are transcripts to read generously,
       and to trust the raw words over a correction that looks wrong.
-  - **Verified:**
-    - The resampler test, and 4 vitest cases for the fixer and the message (455 in
-      all).
-    - 239 Rust tests pass; clippy, tsc and eslint are clean.
+  - **Verified:** the resampler test, and 4 vitest cases for the fixer and the message
+    (455 in all). 239 Rust tests pass; clippy, tsc and eslint are clean.
   - **Not verified live (yours to try):**
     - holding the key and the button in the app;
     - the mic indicator only while held;
@@ -3543,9 +3500,8 @@ up ("change this", with a circle around it).
   - Nothing stays resident 5 minutes later.
 - **Out of scope:** voice cloning; wake word.
 - **As built, part 1: the desktop (2026-10-20).** The phone (`GET
-  /api/assistant/tts/<messageId>`, the per-surface setting) needs R1's assistant
-  endpoints, which didn't exist yet, so it moved to R1/R2. R1 built the audio side
-  and R2 the playback and the per-surface setting (see their As built).
+  /api/assistant/tts/<messageId>`, the per-surface setting) needed R1's endpoints, so
+  it moved: R1 built the audio side, R2 the playback and the per-surface setting.
   - **The sidecar** (`voice/sidecar.rs`, `resources/voice-runtime/`):
     - `pyproject.toml` + `uv.lock` (kokoro-onnx 0.4.9, torch 2.8.0+cpu from
       PyTorch's CPU index, Python 3.12) are compiled into the app. "download" writes
@@ -3564,10 +3520,9 @@ up ("change this", with a circle around it).
   - **Measured** (CPU at ~75% from other work): the sidecar starts in 0.3 s. A warm
     Kokoro does 1.6 s of audio in 0.44 s and 4.9 s in 1.8 s. Silero does a short
     sentence in 0.2 s but **takes 10–20 s to load cold** (X0's numbers were on an
-    idle PC). So:
-    - the push-to-talk press **warms** the sidecar (loads Kokoro and runs it once)
-      while you speak, when replies will be spoken;
-    - a spoken message with Cyrillic in it warms Silero too, while Duck thinks.
+    idle PC). So, when replies will be spoken, the push-to-talk press **warms** the
+    sidecar (loads Kokoro and runs it once) while you speak, and a spoken message with
+    Cyrillic in it warms Silero too, while Duck thinks.
   - **Playback** (`voice/playback.rs`): cpal's default output (rodio would bring a
     second cpal), resampled to the device rate. The stream opens only while audio is
     queued, plus a 1.5 s tail. Loudness goes to the webview every 33 ms as
@@ -3603,10 +3558,10 @@ up ("change this", with a circle around it).
     (`VOICE_NOTE`: lead with one or two short speakable English sentences, detail
     after, any quoted Russian written speakably). It goes with the effort change
     when both apply, since a system message must be followed by the reply.
-  - **The duck** talks while audio plays, its beak driven by `tts-level`, and not
-    while text streams under a spoken reply.
+  - **The duck** talks while audio plays, its beak on `tts-level`, not while text
+    streams under a spoken reply.
   - **Ctrl+Shift+L** speaks through the same voice when it's set up, otherwise
-    through `speechSynthesis`.
+    `speechSynthesis`.
   - **Settings** (the voice tab, `SpeechSettings.tsx`): when to speak, local or
     Chirp, the English voice (8 Kokoro voices) and the Russian one (5 Silero
     speakers), the rate (0.8–1.3), the Chirp fallback, the download, and "try
@@ -3839,12 +3794,12 @@ up ("change this", with a circle around it).
     Whisper log-mel front end written out (normalize, 400-point STFT through
     `rustfft`, 80 Slaney mel filters, log10, floor, scale). It matches X0's Python
     to four decimals on a monologue, at ~80 ms a check on one thread.
-    - **fp32, not int8.** The int8 model X0 measured gives different numbers on
-      different ONNX Runtime versions and graph optimizations: one pause read 0.27 on
-      our 1.24.2, 0.68 on X0's 1.31, 0.57 with optimizations off. The fp32 model
-      (Pipecat's "gpu" file, 32 MB) agrees with itself to 1e-5 everywhere. It runs on
-      the CPU, pinned like V1's files (`assets::TURN`). It's fetched when conversation
-      mode first starts, and it's part of the settings' download.
+    - **fp32, not int8.** X0's int8 model gives different numbers on different ONNX
+      Runtime versions and graph optimizations: one pause read 0.27 on our 1.24.2,
+      0.68 on X0's 1.31, 0.57 with optimizations off. The fp32 model (Pipecat's "gpu"
+      file, 32 MB) agrees with itself to 1e-5 everywhere. It runs on the CPU, pinned
+      like V1's files (`assets::TURN`), fetched when conversation mode first starts and
+      part of the settings' download.
     - Re-scored with fp32 (`score_turns.py`, now fp32 on 1.24.2 by default,
       `--model int8` for X0's): patient 17 false ends, all taken back in the grace
       window (X0: 18); strict 1 (X0: 1). X0's policies stand.
@@ -3877,9 +3832,9 @@ up ("change this", with a circle around it).
     voice; "that's all for now / на этом всё" sends what's left and turns the mode
     off.
   - **Provisional turns** (`engine.ts`): a `provisional` send starts the request at
-    once on its opening (your message and the voice note) held in memory. Nothing
-    is stored, and no tool runs, until `turn.commit`. `turn.withdraw` aborts it and
-    keeps nothing (a `withdrawn` event); the merged turn after it is the one kept. A
+    once, its opening (your message and the voice note) held in memory. Nothing is
+    stored, and no tool runs, until `turn.commit`. `turn.withdraw` aborts it and keeps
+    nothing (a `withdrawn` event); the merged turn after it is the one kept. A
     stopped provisional turn is kept, with "Stopped."; an undecided one is kept
     after 15 s. Behind a busy thread a turn waits to be final and goes as a plain
     message.
@@ -3889,9 +3844,9 @@ up ("change this", with a circle around it).
     it. Speakers or unknown (this PC reads "Speakers"): Duck doesn't listen while
     its voice plays, nor for 0.4 s after (half-duplex) until part 2. A setting
     forces either way.
-  - **The key** does what the new setting says: conversation mode on and off (the
-    default, as asked), or one message (V1's toggle or hold). The drawer's mic
-    button follows it ("🎙 talk" / "◉ talking"). A dictation takes the mic from the
+  - **The key** follows the new setting: conversation mode on and off (the default,
+    as asked), or one message (V1's toggle or hold); so does the drawer's mic button
+    ("🎙 talk" / "◉ talking"). A dictation takes the mic from the
     mode, and the mode drops a dictation in progress.
   - **The listening sign** shows while the mic is listened to: from the first frame
     after loading, hidden while Duck's voice plays on speakers, gone when the mode
@@ -3921,12 +3876,9 @@ up ("change this", with a circle around it).
     - talking over Duck on headphones, and the switch from headphones to speakers;
     - CPU while listening in silence (X0's Python: 3.8% of one core);
     - the reply window after a real announcement, and "yes, read it".
-  - **Not built yet:**
-    - echo cancellation (AEC3), the barge-in gate and the self-voice check: part 2
-      (built, below);
-    - the phone's conversation button: part 3 (built, below);
-    - starting it by saying so in push-to-talk ("let's talk"): a tool for Duck,
-      with S1.
+  - **Not built in part 1:** echo cancellation (AEC3), the barge-in gate and the
+    self-voice check (part 2, below); the phone's button (part 3, below); starting it
+    by saying so in push-to-talk ("let's talk"), a tool for Duck, with S1.
 - **As built, part 2: echo cancellation (2026-10-21).** You can talk over Duck on
   speakers too.
   - **AEC3 is `sonora`**, a pure-Rust port of WebRTC's audio processing, not
@@ -3945,7 +3897,7 @@ up ("change this", with a circle around it).
     reference must come from where the samples are played.
   - **The reference** (`voice/aec.rs`, `tap`): the output callback in
     `playback.rs` hands over what it's about to play, silence included, while a
-    canceller runs. While it runs, the speakers' stream is held open
+    canceller runs, and the speakers' stream is held open meanwhile
     (`Player::hold_open`, counted per holder), so the timing stays put between
     replies. A held stream reopens when the default output changes.
   - **The canceller** (`Canceller`): 10 ms chunks at 16 kHz. Before each chunk of
@@ -3987,8 +3939,8 @@ up ("change this", with a circle around it).
     - switching from headphones to speakers mid-conversation.
 - **As built, part 3: the phone (2026-10-21).** A "talk" button beside the phone's
   mic.
-  - **Changed from the plan: the desktop runs the VAD too.** The page doesn't run
-    `@ricky0123/vad-web`. The phone page is one HTML file compiled into the app
+  - **Changed from the plan: the desktop runs the VAD too,** not `@ricky0123/vad-web`
+    in the page. The phone page is one HTML file compiled into the app
     (`include_str!`), and vad-web would add onnxruntime-web's WASM (~10 MB) and a
     model to it. Instead the page streams its mic, and the desktop runs part 1's
     pipeline on it unchanged (Silero, the turn, Smart Turn, Parakeet per stretch,
@@ -4756,9 +4708,9 @@ up ("change this", with a circle around it).
       `voice: true`. A `phone-voice` message gets its names fixed like the desktop's
       dictation (`voiceMessage`, moved into `voiceNames.ts`) and the `VOICE_NOTE`. The
       desktop never speaks a phone's reply out of its speakers.
-  - **Confirmations:** cards go to every surface and the engine already ignores a second
-    answer, so the first answer wins and `confirmed` updates the rest. When a card comes,
-    no phone is connected and the desktop window isn't in focus, it is pushed once
+  - **Confirmations:** cards go to every surface; the engine already ignores a second
+    answer, so the first wins and `confirmed` updates the rest. When a card comes, no
+    phone is connected and the desktop window isn't in focus, it is pushed once
     (`assistant_remote_push`, tag `duck-<thread>`). Tapping the push opens
     `/#duck=<thread>` or posts `open-duck`; the PWA handles that in R2.
   - **`POST /api/assistant/audio`:** bearer auth, a 4 MB body limit on this route only,
@@ -4791,10 +4743,10 @@ up ("change this", with a circle around it).
   - **Verified:**
     - 7 vitest cases (`remoteBridge.test.ts`): what's refused, answers routed to the
       asker, a spoken reply in parts as it streams, parts kept in order when a later
-      sentence is ready first, stop and no-speak, the push. That makes 477 in all;
-      tsc and eslint are clean.
-    - 3 Rust tests: frame routing, the clip limits, and the WAV round trip. That makes
-      243 in all; clippy is clean.
+      sentence is ready first, stop and no-speak, the push (477 in all; tsc and eslint
+      clean).
+    - 3 Rust tests: frame routing, the clip limits, the WAV round trip (243 in all;
+      clippy clean).
     - **Live**, against the dev app with a scripted client (Node's `WebSocket`) and a
       throwaway approved device:
       - no token / a wrong token got 401 on audio and tts, and the WebSocket was refused
@@ -4805,11 +4757,11 @@ up ("change this", with a circle around it).
         0.4 s warm. That's why replies are now spoken a sentence at a time, with the
         voice started with the app;
       - after the change (then a warm-up at start, before keeping it loaded), the
-        voice process was running about 30 s after the dev app started. A five-sentence reply streamed from 1.2 s to 2.7 s after the send.
-        Its parts were ready at 2.7, 3.9, 4.7, 5.1 and 5.4 s (6.4, 6.8, 4.5, 2.4 and
-        1.6 s of audio), so each was ready long before the one before it finished
-        playing. Part 0's WAV (no token: 401) went back through `/audio` and came
-        out as its sentence;
+        voice process was running about 30 s after the dev app started. A
+        five-sentence reply streamed from 1.2 s to 2.7 s after the send. Its parts
+        were ready at 2.7, 3.9, 4.7, 5.1 and 5.4 s (6.4, 6.8, 4.5, 2.4 and 1.6 s of
+        audio), each long before the one before it finished playing. Part 0's WAV
+        (no token: 401) went back through `/audio` and came out as its sentence;
       - one run of the client timed out waiting for a frame and wasn't explained;
         the two runs after it passed;
       - the voice process went with the app when it was closed;
@@ -4966,8 +4918,8 @@ up ("change this", with a circle around it).
     share sheet. G1 adds `files` there and in `takeShare`.
   - **Start view:** the "the app opens on" setting (dashboard / Duck, the phone's Duck
     settings).
-  - **Pushes:** Duck's pushes already named their thread and opened Duck on it (R1, V5),
-    so nothing changed.
+  - **Pushes:** unchanged; Duck's pushes already named their thread and opened Duck on
+    it (R1, V5).
   - **Install hint:**
     - The settings' "on the home screen" says how to install. Installed, it says how to
       use the shortcuts. It keeps the browser's install prompt for a button.
@@ -5103,11 +5055,10 @@ up ("change this", with a circle around it).
       - Frames are 32 ms and go over a channel to the page, which frames them as
         before (`streamNative`).
       - Push-to-talk records through it too, so the mic works on any page.
-    - **The device key and token:**
-      - The device key is a Keystore P-256 key (StrongBox if present, never
-        exportable), signing the same proof as the PWA's. `auth.rs` didn't change,
-        and a copied token alone still opens nothing.
-      - The token is sealed with a Keystore AES key.
+    - **The device key and token:** the key is a Keystore P-256 key (StrongBox if
+      present, never exportable), signing the same proof as the PWA's. `auth.rs` didn't
+      change, and a copied token alone still opens nothing. The token is sealed with a
+      Keystore AES key.
   - **Connectivity:**
     - **A change from the plan:** there's no separate tailnet address to switch to.
       With Tailscale on, MagicDNS resolves the Funnel name (`<pc>.<tailnet>.ts.net`) to
@@ -5133,8 +5084,8 @@ up ("change this", with a circle around it).
     app on the phone (ntfy) holds the connection: Duck registers with it
     (`org.unifiedpush.android:connector` 3.0.10; later ones need Kotlin 2.2) for the
     desktop's VAPID key and gets a Web Push endpoint with its keys, which the page sends to
-    `/api/push/subscribe` like a browser's. The desktop didn't change: it pushes there as
-    to any browser. `Push.kt` shows each push on a "Workbench" channel; a tap opens the
+    `/api/push/subscribe` like a browser's. The desktop didn't change. `Push.kt` shows
+    each push on a "Workbench" channel; a tap opens the
     card or Duck's thread it names (a `push` launch); a reminder whose alarm is armed on
     the phone is left to the alarm. Mute and "send a test" work as in the browser.
 
@@ -5201,12 +5152,12 @@ up ("change this", with a circle around it).
 - **As built (2026-10-20):**
   - **Workspace** (`src-tauri/src/assistant/workspace.rs`): `~/repos/Duck`
     (`Duck.dev` in a debug build) or the folder in Duck's settings. Made on first use
-    with `tasks/` and a `CLAUDE.md` (the worker's role and the result contract; one
-    you've edited is left alone), and registered as the project "Duck" when its first
+    with `tasks/` and a `CLAUDE.md` (the worker's role and the result contract; an
+    edited one is left alone), and registered as the project "Duck" when its first
     worker starts (`port.ensureProject`, once even when workers start together).
-    - **Not a git repo** (left out; the folders are plain files).
-    - **The allow list isn't in the workspace's `.claude/settings.json`**, as planned,
-      but in a per-worker settings file in app data (`duck-sessions[.dev]/workers/
+    - **Not a git repo** (the folders are plain files).
+    - **The allow list isn't in the workspace's `.claude/settings.json`** but in a
+      per-worker settings file in app data (`duck-sessions[.dev]/workers/
       <instance>.json`, passed with `--settings`), so a worker can't rewrite its own
       permissions. Rules are absolute (`Read/Edit/Write(//c/…/Duck/**)`), plus
       `WebSearch`, `WebFetch`, and for a browser task X0's Firefox tools.
@@ -5219,17 +5170,17 @@ up ("change this", with a circle around it).
     - Checked with the CLI first (Haiku, `-p`): `permissionMode: dontAsk`, no MCP
       servers, a write in the workspace allowed, and a write one folder up refused
       ("denied because Claude Code is running in don't ask mode").
-    - **No `effort` column or picker** on instances: effort is a worker's launch
-      flag only.
+    - **No `effort` column or picker** on instances: effort is a worker's launch flag
+      only.
     - A worker's own mode wins over a picked one, as for drafting sessions.
   - **Code tasks** run in the target project's own worktree (`worktree: true`), in the
     project's own mode (so T2 judges their prompts), with the user's MCP servers, and
     `--add-dir <task folder>` plus an allow rule for that folder only. Remote projects
     are refused.
   - **Pre-trust:** no write to `~/.claude.json`. `deliverWhenReady` takes
-    `trustFolder`, which answers the folder-trust dialog by its "Yes, I trust this
-    folder" option (found by its words, since Claude Code has drawn it with Yes first
-    and with No first). Only Duck's workspace asks for it.
+    `trustFolder`, which picks the dialog's "Yes, I trust this folder" by its words
+    (Claude Code has drawn it with Yes first and with No first). Only Duck's workspace
+    asks for it.
   - **Background start:** a worker doesn't switch your project or take the focus.
     `openConsole(…, {background})` opens it unfocused, and `BackgroundConsoles` (mounted
     in `App.tsx`) holds its terminal off screen until it's running, since the dock only
@@ -5238,17 +5189,17 @@ up ("change this", with a circle around it).
   - **Tasks** (`src/assistant/tasks.ts`, `createTaskManager`): records in
     `assistant_tasks` (duck.db, JSON). States: queued, running, done, blocked,
     needs_decision, failed, closed.
-    - **Concurrency:** `maxWorkers` (setting, default 3, up to 5; raised from the planned 2 on 2026-10-20: ~430 MB per worker). A start takes its slot
-      before its first await, so tasks asked for together start side by side, and the
-      rest queue in order.
+    - **Concurrency:** `maxWorkers` (setting, default 3, up to 5; raised from the
+      planned 2 on 2026-10-20: ~430 MB per worker). A start takes its slot before its
+      first await, so tasks asked for together start side by side, and the rest queue
+      in order.
     - **Turn end:** a fresh `result.json` (written after the run began, valid against
       `{status, headline, question?}`) settles the task. Otherwise one nudge prompt,
       then the last reply (`port.lastResponse`) stands in (`resultFrom: "reply"`). A
       session that ends without a result fails the task.
     - **Reporting:** every outcome goes to the asking thread as a
-      `<workbench_event>`, so Duck tells you without being asked. A worker waiting on a
-      prompt is reported once per prompt. Report wording drops the worker's own
-      trailing full stop.
+      `<workbench_event>`. A worker waiting on a prompt is reported once per prompt.
+      Reports drop the worker's own trailing full stop.
     - **Follow-up:** the same session, the task back to running, and only a result
       newer than the follow-up counts.
     - **After a restart:** a task that was running is settled from its result files,
@@ -5359,10 +5310,10 @@ up ("change this", with a circle around it).
       then stands as the result; at most 12 rounds. Streamed, `x-wb-purpose:
       api-worker`.
     - The result goes into `result.md` / `result.json` (new command
-      `assistant_task_write_result`, task folders only), so the rest of the flow is
-      the same. Its cost is estimated from each reply's usage with a small price
-      table mirroring `usage.rs` (the ledger stays the record) and shown on the card:
-      "API · sonnet · high (involved) · 2m · $0.18", with the reason under it.
+      `assistant_task_write_result`, task folders only). Its cost is estimated from
+      each reply's usage with a small price table mirroring `usage.rs` (the ledger
+      stays the record) and shown on the card: "API · sonnet · high (involved) · 2m ·
+      $0.18", with the reason under it.
     - A follow-up re-runs it with the brief, the previous `result.md` and the
       follow-up. Closing aborts it.
     - **Code tasks keep their session** (an API worker has no files to work on), and
@@ -5371,13 +5322,12 @@ up ("change this", with a circle around it).
       queue (`notBefore`): the latest reset of the windows that are over, but read
       again within 15 minutes. The thread is told once.
   - **Duck as the worker's user:** a worker's question goes to its thread with the
-    options and the instruction to answer it as the worker's user when the brief or
-    the conversation settles it, otherwise to ask you and answer with what you say.
-    `answer_choice` is `reversible` for a question in a Duck worker (no card) and
-    takes a `reason`; each answer is kept on the task (`Task.answers`) and shown on
-    its card ("Duck answered: Postgres, because you said earlier…"). Questions the
-    app can't answer (several, multi-select) and plan approvals go to you, with a
-    word on why (T3 isn't built).
+    options and the instruction to answer it when the brief or the conversation
+    settles it, otherwise to ask you and pass on your answer. `answer_choice` is
+    `reversible` for a question in a Duck worker (no card) and takes a `reason`; each
+    answer is kept on the task (`Task.answers`) and shown on its card. Questions the
+    app can't answer (several, multi-select) and plan approvals go to you, with a word
+    on why (T3 isn't built).
   - **Tasks view** in the drawer (the header's "tasks · N"): every task with its
     state, worker, time, cost and headline; "open result" (in the editor of the
     worker's project, the workspace's, or yours, with the preview on), "save to
@@ -5471,7 +5421,8 @@ up ("change this", with a circle around it).
     - a 15-minute session-backed rubber duck, end to end;
     - its numbers against the API's (from "how they compare");
     - the decision: keep it as an option, make it the default, or drop it.
- — Headless workers over stream-json
+
+#### Step D4 — Headless workers over stream-json
 
 - **Goal:** Duck's workers run without a terminal: Claude Code speaking its structured
   protocol (`claude -p --input-format stream-json --output-format stream-json`, as the
@@ -5657,16 +5608,17 @@ up ("change this", with a circle around it).
     entry by, in both languages. Keyword search can't match "notes sync" to
     «синхронизация заметок» by itself, so `remember` asks the model for the words in the
     other language. Any bullet you write yourself is an entry too, with or without the
-    date and the parenthesis. `core.md` isn't indexed again, since every thread starts with
-    it. `journal/` is indexed when L2 writes it.
+    date and the parenthesis. `core.md` isn't indexed again, since every thread starts
+    with it. `journal/` is indexed when L2 writes it.
   - **The index:** FTS5 with `tokenize='trigram'` in `duck.db` (`memory_fts`, and
     `notes_fts` for the project notes, read-only), plus `memory_index_files`, the size
     and time each file was read at. The `notify` watchers only mark `memory/` or the
     notes root dirty, and the next search re-reads the files that changed. Without a
-    watcher every search rescans, which is cheap at this size. A query keeps its words of three letters or
-    more, drops English and Russian stop words and numbers, and cuts a word of five or six
-    letters by one and a longer one by two, so «заметок» finds «заметки» and "notes" finds
-    "note". The words are ORed, and a hit counts how many of them it holds.
+    watcher every search rescans, which is cheap at this size.
+    - A query keeps its words of three letters or more, drops English and Russian stop
+      words and numbers, and cuts a word of five or six letters by one and a longer one
+      by two, so «заметок» finds «заметки» and "notes" finds "note". The words are ORed,
+      and a hit counts how many of them it holds.
   - **Automatic recall:** before each message of yours (not a Workbench event), the
     search runs on its text, waiting at most 1.5 s. Up to 3 hits go in a system message
     after the turn's other one, with `clear_at: "next_user_message"` under the beta. A
@@ -5684,8 +5636,8 @@ up ("change this", with a circle around it).
     Commit hashes, UUIDs and slugs pass.
   - **Lessons:** the prompt asks for a `lessons` entry when you correct Duck, and a
     message that reads like a correction ("no, I meant…", "I said…", «не то», «я же
-    сказал») adds a line saying so to that turn's recall note. The check is a
-    keyword match, not a model call.
+    сказал») adds a line saying so to that turn's recall note (a keyword match, not a
+    model call).
   - **Git:** the workspace becomes a repo (`git init -b main`) on the first change. Each
     change commits only its own files, as `Duck <duck@workbench.local>`, through
     `gitqueue`: `memory: <fact>`, `memory: forgot <query>`, `memory: undo in <file>`, and,
@@ -5697,9 +5649,9 @@ up ("change this", with a circle around it).
     `memoryOff` notice in the thread, and `remember` refuses there. L2's consolidation
     will read the same flag.
   - **Done when:**
-    - Decided in one thread, surfaced later in either language: `memory.rs` tests the index
-      with an English entry tagged in Russian, found by "so, about the notes sync" and by
-      «что там с синхронизацией заметок?». A project note is found by "what did I write
+    - Decided in one thread, surfaced later in either language: `memory.rs` tests the
+      index with an English entry tagged in Russian, found by "so, about the notes sync"
+      and by «что там с синхронизацией заметок?». A project note is found by "what did I write
       about the auth refactor" and labelled `note: Workbench / auth`. `memory.test.ts`
       checks the note in a real engine turn: its position, `clear_at`, and that it is sent
       back unchanged on the next request.
@@ -5841,9 +5793,9 @@ up ("change this", with a circle around it).
 - **Out of scope:** Duck merging or deploying anything on its own; changing Workbench code
   outside Duck's modules unless the request says so (the brief names the allowed paths).
 - **As built (2026-10-22):**
-  - **Built before S2.** L3 depends on S2, which isn't built. That only matters for the
-    cheapest kind of improvement, a skill or mode file, which stays S2's. Config and
-    code changes don't need it.
+  - **Built before S2**, which L3 depends on. That only matters for the cheapest kind of
+    improvement, a skill or mode file, which stays S2's. Config and code changes don't
+    need it.
   - **Prompts as data** (`src/assistant/config.ts`, `src-tauri/src/assistant/config.rs`):
     - The files are `config/system.md` (the system prompt, which holds the routing rules
       and examples) and `config/voice.md` (the spoken-message note), in Duck's workspace.
@@ -5876,11 +5828,10 @@ up ("change this", with a circle around it).
     - The branch is the existing worktree path's `agent/<slug>`, not the plan's
       `duck/<slug>`. A different prefix would have meant a second provisioning path for
       no gain.
-    - The brief (`improveBrief`) has the request, up to 8 related `lessons` entries, and
-      pointers to the architecture doc and the plan. It says which paths are allowed, and
-      `wide` when the request reaches further. It also has the safety layer, the test
-      commands, "commit on this branch; don't merge, don't push", and what `result.md`
-      holds.
+    - The brief (`improveBrief`) has the request, up to 8 related `lessons` entries,
+      pointers to the architecture doc and the plan, the allowed paths (`wide` when the
+      request reaches further), the safety layer, the test commands, "commit on this
+      branch; don't merge, don't push", and what `result.md` holds.
     - The guardrails are pointed to, not pasted: the worker reads the plan's Guardrails
       section itself in the worktree, so the brief can't drift from it.
   - **Safety layer** (`selfdev.ts` `SAFETY_PATHS`):
@@ -5890,8 +5841,8 @@ up ("change this", with a circle around it).
       `tools/improve.ts`.
     - When a change task finishes, its branch is read (`port.worktreeChanges`: the files
       against the repo's current branch, and the ones not committed yet) before the
-      thread is told. The report and the card name the files, and a red "touches the
-      safety layer" badge shows when any of them is in the layer.
+      thread is told. The report and the card name the files, and the card shows the
+      badge when any of them is in the layer.
   - **Review and merge:**
     - The card has "open diff" (the Diff/Review panel on the worktree), "ask for
       changes" (it fills the message box, and Duck passes it on with `task_followup`) and
@@ -5915,8 +5866,7 @@ up ("change this", with a circle around it).
       return `improvements`: changes to Duck that a pattern calls for.
     - These wait in `memory_state:improve_offers`. At most one a week rides in the next
       recall note as a `<duck_suggestion>`: mention it once, offer `improve_duck`, start
-      it only on a yes.
-    - This replaces a separate weekly job.
+      it only on a yes. This replaces a separate weekly job.
   - **`duck-architecture.md`:**
     - Audited against the code: the protocol list was missing `thread.memory`, and the
       tool rows were missing `task_rerun` and `test_announce`.
@@ -6748,12 +6698,11 @@ checked in the scratch PTY first.
     - **What counts.** The newest 2000 decisions are counted. A pattern is `suggestRule`'s:
       a command's first words, a file tool's folder, or a host. It's offered once it was
       approved 3 times in one project by a rule or the judge.
-    - **Shadow counts too.** Shadow decisions count: with `answerSessionPrompts` off (the
-      default), those prompts were answered by you, so they're your approvals.
-    - **What's never offered.** A bare tool name is never offered, and neither are
-      Duck's own tools or questions.
-    - **Where it's offered.** The decisions view lists the offers under "suggested",
-      with the count and an example call.
+    - **Shadow counts too:** with `answerSessionPrompts` off (the default), those
+      prompts were answered by you, so they're your approvals.
+    - **Never offered:** a bare tool name, Duck's own tools, questions.
+    - **Where:** the decisions view lists the offers under "suggested", with the count
+      and an example call.
     - **"add to Claude Code's allow list…"** shows `.claude/settings.local.json` before
       and after as a line diff. "write it" puts the pattern on `permissions.allow` and
       keeps everything else in the file, including its indent.
@@ -6766,8 +6715,8 @@ checked in the scratch PTY first.
         left for you to fix.
     - **"make it a Duck rule"** adds a project allow rule. It isn't offered when an
       allow rule already covers the pattern.
-    - **Settled offers.** Taking an offer either way, or dismissing it, settles it.
-      Settled offers are kept in the setting `settledPromotions`.
+    - **Settled offers:** taking an offer either way, or dismissing it, settles it
+      (kept in the setting `settledPromotions`).
   - **Questions and plans** (`trust/delegate.ts`, `startDelegateWatcher`):
     - **Which sessions.** Every session with a mandate, except autopilot runs (P1
       settles their questions) and Duck's workers (D2: Duck is their user).
@@ -6782,11 +6731,10 @@ checked in the scratch PTY first.
       `ANSWER_SYSTEM`) picks the answer you'd most likely give, by the mandate. The
       question goes inside `<question>`, the task inside `<task>`, and tags inside them
       are defanged.
-      - **A delegated session:** the answer goes in.
-        - A decision row records it: layer `delegated`, its one-sentence reason, the
-          question and the answer. That's the logged rationale.
-        - A line goes under the session's card, and a notice to the thread that
-          started it.
+      - **A delegated session:** the answer goes in. A decision row records it (layer
+        `delegated`, its one-sentence reason, the question and the answer: the logged
+        rationale), a line goes under the session's card, and a notice to the thread
+        that started it.
       - **Any other session:** the pick shows on the choice card as "Duck suggests
         2. Redis: …".
       - **A serious question,** or one only the console can answer (several
@@ -6980,18 +6928,17 @@ checked in the scratch PTY first.
   home and for a named city.
 - **Out of scope:** Steam store prices and wishlists, Big Picture.
 - **As built (2026-10-23):**
-  - **`tools/pc.ts`** declares the `pc` host's tools (deferred, as every host tool
-    is): `steam_library`, `steam_launch`, `steam_install`, `steam_activity`,
-    `media_now_playing`, `media_control`, `open_on_pc`. Their handlers
-    (`pcHandlers`) are served in process from `index.ts` over `ipc/pc.ts`, and check
-    their input against the schema again, as a host does.
-  - **Steam** (`steam.rs`): a small KeyValues parser, Steam's folder from the
-    registry, the libraries from `libraryfolders.vdf`, the games from their
-    manifests. Launch and install open Steam's own links. An installed game is found
+  - **`tools/pc.ts`** declares the `pc` host's tools (deferred): `steam_library`,
+    `steam_launch`, `steam_install`, `steam_activity`, `media_now_playing`,
+    `media_control`, `open_on_pc`. Their handlers (`pcHandlers`) are served in process
+    from `index.ts` over `ipc/pc.ts`, and re-check their input against the schema, as a
+    host does.
+  - **Steam** (`steam.rs`): a small KeyValues parser; the libraries from
+    `libraryfolders.vdf`, the games from their manifests. An installed game is found
     by `rankGames` (the name's start, every word, an acronym, a typo, roman numerals as
-    digits); a game to install is found in the store's search, which needs no key.
-    A weak or close match returns up to five choices with their app ids instead of
-    guessing ("hades" picks Hades over Hades II; "dark souls" asks).
+    digits); a game to install, by the store's search, which needs no key. A weak or
+    close match returns up to five choices with their app ids instead of guessing
+    ("hades" picks Hades over Hades II; "dark souls" asks).
   - **`steam_activity`** is always declared, so the tool list doesn't depend on a
     key. Without `duck/steam-api-key` it says how to store one. The account is the
     one that last signed in (`config/loginusers.vdf`). The key is kept out of errors
@@ -7007,8 +6954,7 @@ checked in the scratch PTY first.
     forecast from the engine's `fetch`. "Portland, Oregon" picks by region or country.
     Without a place it uses the new `home` setting (Home, on the drawer tab).
   - Checked by hand on this PC (ignored tests): the real Steam library reads, and the
-    media sessions answer. The done-when's voice trials (a launch, an install, pausing
-    a YouTube Music tab, the weather for home and a city) wait for the user.
+    media sessions answer. The done-when's voice trials wait for the user.
 
 #### Step H3 — Music and video
 
@@ -7051,22 +6997,17 @@ checked in the scratch PTY first.
     `Spend.youtubeUnitsToday` puts the day's use in the spend line's tooltip ("today
     $… · YouTube search 202 of 10,000 free units") and in `duck_spend`. The day is
     local; YouTube's resets at midnight Pacific.
-  - **Tools** (`tools/media.ts`, deferred):
-    - `play_music {query, id?, on?}` (reversible): the extra `id` plays one of the
-      choices.
-    - `find_video {query}` (read).
-    - `play_video {id, on?}` (reversible).
-
-    They run in the engine and play through the device's own host tool over
-    `ctx.hosts`: `open_on_pc` (H2), or `open_on_phone`. `open_on_phone` is declared
-    here as a `phone` tool, and the phone serves it from H5; until then a phone
-    request says "the phone isn't connected".
+  - **Tools** (`tools/media.ts`, deferred): `play_music {query, id?, on?}`
+    (reversible; the extra `id` plays one of the choices), `find_video {query}`
+    (read), `play_video {id, on?}` (reversible). They run in the engine and play
+    through the device's own host tool over `ctx.hosts`: `open_on_pc` (H2), or
+    `open_on_phone`, declared here as a `phone` tool and served by the phone from H5;
+    until then a phone request says "the phone isn't connected".
   - **Where it plays:** `on` when the user names a device, else where their latest
-    message came from. That is the new `ctx.surface`, from `surfaceOf`.
+    message came from (the new `ctx.surface`, from `surfaceOf`).
   - **Not tried yet:** no YouTube key is stored on this PC, so no real search has
-    run; the tests use a fake search and fake hosts. The done-when's trials (a song
-    on the PC and on the phone, a video on the named device, the quota in the tooltip)
-    wait for the key, the user, and H5 for the phone.
+    run; the tests use a fake search and fake hosts. The done-when's trials wait for
+    the key, the user, and H5 for the phone.
 
 #### Step H8 — Reminders: project and general, with a widget
 
@@ -7178,10 +7119,10 @@ checked in the scratch PTY first.
     `{"reminders": [...]}`, with the record as planned. A due time is a local
     `2026-10-24T10:00`, or a day (`2026-10-24`), which counts as due at 09:00.
     Fields this version doesn't know (H4's `repeat`) are kept on every write.
-    - **Writes:** there is one, `put(id, before, after)`, which replaces, adds or
-      removes one record if it is still `before`; otherwise it fails with `stale:`.
-      That is the revision check, per record rather than per file, so an edit to
-      another reminder doesn't refuse this one.
+    - **Writes:** one, `put(id, before, after)`, replaces, adds or removes one record
+      if it is still `before`, else fails with `stale:`. That is the revision check,
+      per record rather than per file, so an edit to another reminder doesn't refuse
+      this one.
     - **Commits:** each write commits only `reminders.json`, as Duck, through
       `memory::commit`, with messages like `reminders: added "…" (Workbench)`,
       `reminders: done "…"` and `reminders: undo "…"`. Weekly housekeeping also
@@ -7195,12 +7136,11 @@ checked in the scratch PTY first.
   - **The engine's side** (`src/assistant/reminders.ts`): the latest read, matching
     a reminder by its id, its title or the words it holds, the timing rules and the
     clock.
-    - **What comes up:** a reminder with a time comes up only once it's due (in the
-      notes, the project line and Duck's starts). Before that it shows only in the
-      widget and the list.
+    - **What comes up:** a timed reminder comes up (in the notes, the project line and
+      Duck's starts) only once it's due; before that, only the widget and the list
+      show it.
     - **The clock** keeps one timer for the next reminder, waiting at most an hour.
-      Each reminder is announced once for its due. Moved to a new time, it's announced
-      again then.
+      Each reminder is announced once for its due, and again if moved to a new time.
   - **Tools** (`tools/reminders.ts`):
     - `list_reminders`, `add_reminder` and `complete_reminder` load up front;
       `dismiss_reminder` and `edit_reminder` are deferred.
@@ -7228,21 +7168,15 @@ checked in the scratch PTY first.
   - **Timed reminders** go to V5's announcer at `report`, with a notice ("Reminder:
     …", or "Reminder, late (it was due …): …") and the widget's pulse.
   - **The widget** (`RemindersBadge.tsx`):
-    - The red dot shows the count, or "!" for a broken file, in the duck's corner, or
-      the chat's with the duck hidden.
-    - It pulses three times when a reminder comes up.
-    - The list has titles only, sorted timed first, then the shown project's, then
-      general, then other projects'.
+    - The red dot shows the count, or "!" for a broken file, and pulses three times
+      when a reminder comes up.
+    - The list sorts timed first, then the shown project's, then general, then other
+      projects'.
     - It follows the `reminders` event, sent on `sync` and after every change.
   - **On the phone**, the PWA shows the chips; its widget is not built.
-  - **Not tried yet:** the trials in "Done when" (a reminder through Duck, starting
-    sessions from the rail, an announcement two minutes out, the widget, a
-    hand-broken file) wait for you. The tests cover:
-    - the store;
-    - the timing rules;
-    - the clock, including a restart and a reminder moved to a new time;
-    - the tools;
-    - the note through the engine.
+  - **Not tried yet:** the trials in "Done when" wait for you. The tests cover the
+    store, the timing rules, the clock (including a restart and a reminder moved to a
+    new time), the tools, and the note through the engine.
 
 #### Step H4 — Duck's reminders and timers
 
@@ -7286,10 +7220,9 @@ checked in the scratch PTY first.
   - **Tools:** `add_reminder` and `edit_reminder` take `repeat` (null stops it).
     `snooze_reminder(reminder, for? | until?)` defaults to 10 minutes. `set_timer
     (duration, label?)` takes "10m", "1h30m", "90s" or "8 minutes", up to a day.
-    `cancel_timer(timer?)` is also there, since a timer you can't stop is a nuisance.
-    `list_reminders` also lists the running timers with what's left. The new tools,
-    and the H8 ones, are `host: "any"`. `snooze_reminder` and `cancel_timer` are
-    deferred.
+    `cancel_timer(timer?)` was added, since a timer you can't stop is a nuisance.
+    `list_reminders` also lists running timers with what's left. The new tools and the
+    H8 ones are `host: "any"`; `snooze_reminder` and `cancel_timer` are deferred.
   - **Timers** are `duck.db` `meta` rows (`duck_timer:<id>`), not committed. The
     clock rings each once and drops it. One that ran out while the app was closed
     rings at the next start, marked late. Its line goes to the thread it was set in.
@@ -7307,12 +7240,10 @@ checked in the scratch PTY first.
     - A timer's push has no buttons.
   - **Not built:** phone alarms that fire with the server unreachable (H5), the
     calendar mirror, and timers in the widget.
-  - **Not tried yet:** the trials in "Done when" (a push on time, a late one at the
-    next start, Snooze from the notification) wait for you. The tests cover:
-    - the next-occurrence rules and durations;
-    - the clock with a repeat left undone, a snooze and timers (one late);
-    - the tools;
-    - the push token: one use, a day, unknown ones refused.
+  - **Not tried yet:** the trials in "Done when" wait for you. The tests cover the
+    next-occurrence rules and durations; the clock with a repeat left undone, a snooze
+    and timers (one late); the tools; the push token (one use, a day, unknown ones
+    refused).
 
 #### Step H5 — The phone as a host (with R4)
 
@@ -7344,15 +7275,13 @@ checked in the scratch PTY first.
 - **Out of scope:** the accessibility service; Wi-Fi and Bluetooth toggles (not allowed);
   a wake word (not wanted on the phone, 2026-10-20).
 - **As built (2026-10-23), with R4:**
-  - **The tools** are `phone_*` (`tools/phone.ts`), not the plan's bare names:
-    - `set_timer` was already Duck's own timer (H4), so the phone's is
-      `phone_set_timer`.
-    - The rest follow that prefix: `phone_set_alarm`, `phone_show_alarms`,
-      `phone_media_now_playing`, `phone_media_control`, `phone_notifications`,
-      `phone_reply`, `phone_find_contact`, `phone_call`, `phone_send_sms`,
-      `phone_flashlight`, `phone_do_not_disturb`, `phone_volume`, `phone_navigate`
-      and `phone_open_app`.
-    - `open_url` is H3's `open_on_phone`, now served.
+  - **The tools** are `phone_*` (`tools/phone.ts`), not the plan's bare names, since
+    `set_timer` was already Duck's own timer (H4): `phone_set_timer`,
+    `phone_set_alarm`, `phone_show_alarms`, `phone_media_now_playing`,
+    `phone_media_control`, `phone_notifications`, `phone_reply`, `phone_find_contact`,
+    `phone_call`, `phone_send_sms`, `phone_flashlight`, `phone_do_not_disturb`,
+    `phone_volume`, `phone_navigate` and `phone_open_app`. `open_url` is H3's
+    `open_on_phone`, now served.
   - **Calls, texts and replies** are consequential and always ask (`asks`, the
     floor's way), whatever the rules.
   - **A notification's text** comes back wrapped as untrusted, by a new optional
@@ -7360,9 +7289,9 @@ checked in the scratch PTY first.
   - **The phone host** is the page in the app: on each connect it says `hello` with
     the app's tools and runs each call through the plugin. A test checks that the
     Kotlin's list matches the engine's.
-  - **Timers and alarms** go through the Clock app's intents with `EXTRA_SKIP_UI`.
-    - A second request while the Clock's handler is still open reached it as a new
-      intent, which it ignores. Clock requests now start in a fresh task.
+  - **Timers and alarms:** a second Clock request while the Clock's handler was still
+    open reached it as a new intent, which it ignores, so Clock requests now start in a
+    fresh task.
   - **Media:** controlling playback through the media sessions needs notification
     access; without it, play / pause / skip go as media keys.
   - **Special access:** notification access and Do Not Disturb access can't be asked
@@ -7387,17 +7316,14 @@ checked in the scratch PTY first.
     - It's English only, and only the whole utterance counts.
     - With the desktop unreachable, the loader (or the page) hears through the
       phone's own recognizer and runs only those.
-  - **Permissions** (contacts, calls, SMS, mic, notifications) are asked for when a
-    tool first needs one.
-  - **Checked on the emulator:**
-    - a timer and an alarm set without the Clock opening;
-    - volume, flashlight, media keys;
-    - notifications read, then nothing new on the second look;
-    - a reminder ringing in airplane mode, and Snooze tapped (re-armed, the tap kept);
-    - unknown tools and non-http links refused.
-  - **Not tried yet:** the "Done when" on the phone (by voice from the power button:
-    a timer, an alarm, "pause" in YouTube Music, "what did I miss?", a Telegram reply
-    after a card, a reminder in airplane mode), a call, a text.
+  - **Permissions** (contacts, calls, SMS, mic, notifications) are asked for on first
+    use.
+  - **Checked on the emulator:** a timer and an alarm set without the Clock opening;
+    volume, flashlight, media keys; notifications read, then nothing new on the second
+    look; a reminder ringing in airplane mode, and Snooze tapped (re-armed, the tap
+    kept); unknown tools and non-http links refused.
+  - **Not tried yet:** the "Done when" on the phone, by voice from the power button; a
+    call, a text.
 
 #### Step H6 — Duck on the home server
 
@@ -7466,11 +7392,11 @@ checked in the scratch PTY first.
   - **Replies:** text in the loader's chat, and said with the phone's own
     text-to-speech (`Speech`) when you spoke. The fast path still runs first, with no
     model.
-  - **Which brain answers:** the loader's line says Workbench can't be reached and Duck
-    is answering on the phone, with the month's spend against the cap.
-  - **Setting the key:** in the loader ("The phone brain"), or in the desktop's page
-    inside the app (Duck's settings). The key's last four characters and the spend show
-    in both.
+  - **Which brain answers:** the loader's line says Duck is answering on the phone,
+    with the month's spend against the cap.
+  - **Setting the key:** in the loader ("The phone brain"), or in Duck's settings on
+    the desktop's page inside the app; both show the key's last four characters and the
+    spend.
   - **Sync** (`offline.sync` / `offline.synced`, from a phone host that said hello):
     - The app keeps the brain's threads and reminders (`offline:*` in its store).
     - The phone's own reminders are armed as a second alarm list next to the
@@ -7483,22 +7409,21 @@ checked in the scratch PTY first.
     - It answers with the ids taken; the app drops those, and the desktop's list arms
       the reminders from then on.
   - **Limits:**
-    - A Done tapped on an offline reminder's notification while still offline reaches
-      the desktop after the sync, as any tap does, but the phone brain's own list
-      still shows it open until then.
+    - A Done tapped on an offline reminder's notification while offline reaches the
+      desktop after the sync, but the phone brain's own list shows it open until then.
     - An acknowledgement lost between the desktop taking a sync and the app hearing
       it is harmless: reminders and threads already there are skipped by id.
-    - Past 80% of the cap, the switch to Haiku shows the desktop's card, which speaks
-      of "Duck's API budget".
+    - The switch to Haiku shows the desktop's card, which speaks of "Duck's API
+      budget".
   - **Checked on an Android 16 emulator** (a throwaway AVD, removed after):
     - with an unreachable address, the loader answers;
-    - with no key, only the fast path works; a key that isn't `sk-ant-…` is refused;
+    - with no key, only the fast path works (flashlight checked); a key that isn't
+      `sk-ant-…` is refused;
     - with a made-up key, a request went through Kotlin to the real API, and its
       "invalid x-api-key" came back as a line in the chat;
     - with the cap at $0, the cap refusal;
-    - the fast path (flashlight);
     - the conversation kept across an app restart;
-    - the page never sees the key, only its last four characters;
+    - the page sees only the key's last four characters;
     - a new desktop list replaced the desktop's alarms and kept the phone's;
     - the phone's TTS synthesized a reply.
   - **Tested over a scripted API stream:** a voice request adding a reminder and
@@ -7582,10 +7507,9 @@ checked in the scratch PTY first.
       can't end the wrapper);
     - anything else, or anything past the thrift's budget, as a reference: name,
       size, path, and "a worker can: run_task with files".
-  - **The thrift:** Duck reads a message's files itself up to `attachmentTokens`
-    (20k, a setting with no UI yet), in order. The system prompt says what Duck looks
-    at itself and what goes to a worker, with examples. The safety rules now call
-    what's inside an attachment data.
+  - **The thrift:** Duck reads a message's files itself, in order, up to
+    `attachmentTokens` (20k, a setting with no UI yet); the system prompt has the
+    examples. The safety rules now call what's inside an attachment data.
   - **Desktop:**
     - The whole drawer is a drop target: Explorer through `ipc/osDrop` (paths), and
       the editor tree, Diff and Git lists through `state/fileDrag`.
@@ -7635,14 +7559,11 @@ checked in the scratch PTY first.
     build an Excel file. It said so and wrote the merged CSV instead. Making
     spreadsheets needs a shell for those workers (`Bash(python:*)` or broader in
     `workspace.rs` `allow_rules`), which is a trust decision left to you.
-  - **Tested** (Rust and TypeScript):
-    - the store, names, the downscale, text / PDF / other, inputs and outputs, prune;
-    - the thrift and the blocks;
-    - a turn with an image sent the same twice;
-    - a phone upload in parts through the bridge, and its refusals;
-    - `run_task` `files`;
-    - a task's inputs, outputs and report, and the routing to a session;
-    - the chips in the view.
+  - **Tested** (Rust and TypeScript): the store, names, the downscale, text / PDF /
+    other, inputs and outputs, prune; the thrift and the blocks; a turn with an image
+    sent the same twice; a phone upload in parts through the bridge, and its refusals;
+    `run_task` `files`; a task's inputs, outputs and report, and the routing to a
+    session; the chips in the view.
   - **Not tried yet:**
     - paste, drop from Explorer and from the editor tree, and the picker, by hand on
       the desktop (no keys were scripted into your app);
@@ -7736,15 +7657,12 @@ checked in the scratch PTY first.
   - **The receipt:** the voice note asks Duck, when files came and the work goes to a
     worker, to say so in a few words before the call ("Got both, sending them to a
     worker."). The text before a tool call is spoken at once (`onToolStart`).
-  - **Tested:**
-    - the counting in five languages, and what doesn't count;
-    - which turn a drop belongs to, before, during and after;
-    - the wait and its timeout, files still being stored, late drops;
-    - withdrawn words keeping their files, files going back, a reload's turn;
-    - conversation turns carrying files on each send;
-    - the engine's restart with late files (one turn kept, manifest ahead), the
-      follow-up, and a typed message without a manifest;
-    - the phone's `turn.files` (only uploaded files).
+  - **Tested:** the counting in five languages, and what doesn't count; which turn a
+    drop belongs to, before, during and after; the wait and its timeout, files still
+    being stored, late drops; withdrawn words keeping their files, files going back, a
+    reload's turn; conversation turns carrying files on each send; the engine's
+    restart with late files (one turn kept, manifest ahead), the follow-up, and a typed
+    message without a manifest; the phone's `turn.files` (only uploaded files).
   - **Checked live on the dev app,** acting as the phone over its Duck socket (a
     throwaway device row, removed after):
     - **Merged:** a spoken turn went provisionally with the PNG from G1. The CSV was
@@ -7831,9 +7749,8 @@ checked in the scratch PTY first.
     hand-drawn look only on flowcharts and state diagrams, which is Mermaid's limit),
     SVG with a `viewBox` and no script, event attributes, `foreignObject` or external
     references, and Vega-Lite with inline data. Readable at 400 px, shown on white.
-    The workspace `CLAUDE.md` gets a short drawing section only for new workspaces,
-    since an existing one is yours and isn't rewritten; that's why the rules are in
-    each brief.
+    They're in each brief because only new workspaces get a short drawing section in
+    `CLAUDE.md`; an existing one is yours and isn't rewritten.
   - **Over the limits** a drawing waits ("drawing waits for your subscription window
     (resets 14:00)") unless `allowApi`. An API worker hands the source in `result.md` as
     a fenced block, which is written as the version.
@@ -7850,8 +7767,7 @@ checked in the scratch PTY first.
     event opens the canvas on the surface the request came from.
   - **Desktop canvas** (`Canvas.tsx`): above the thread in the drawer, with pan, wheel
     zoom, double-click to fit, the version strip, copy as PNG, save as…, open source in
-    the editor, and ⇱ to pop it out as a dockview tab (`drawing`). A card in the thread
-    opens it.
+    the editor, and ⇱ to pop it out as a dockview tab (`drawing`).
   - **Warm:** while a canvas (the drawer's, or the phone's viewer) shows one of a
     thread's drawings, that thread's drawing worker isn't stopped for being idle (the
     task manager's `keepWarm` hook). A popped-out tab doesn't count yet.
@@ -7859,18 +7775,12 @@ checked in the scratch PTY first.
     (`src/pwa/drawingView.ts`). The `drawing` event carries the version's files by
     reference, and the PNG comes from `GET /api/assistant/image/{id}/{name}` (images
     only, never an SVG, which would be a page on that origin), not inside the event.
-  - **Tested:**
-    - the kinds' helpers (Vega-Lite or Vega, an SVG's size, Mermaid's 100% width,
-      fenced sources);
-    - a drawing from start to card;
-    - an edit going to the warm worker as v2, and a new worker once it's closed;
-    - the fix round, then the failure;
-    - the API worker's fenced source;
-    - warmth while viewed, the tool;
-    - the task manager's wait over the limits, `allowApi`, the report hook and
-      `keepWarm`;
-    - the phone's `canvas` and `drawing.get`;
-    - the Rust sources and records.
+  - **Tested:** the kinds' helpers (Vega-Lite or Vega, an SVG's size, Mermaid's 100%
+    width, fenced sources); a drawing from start to card; an edit going to the warm
+    worker as v2, and a new worker once it's closed; the fix round, then the failure;
+    the API worker's fenced source; warmth while viewed, the tool; the task manager's
+    wait over the limits, `allowApi`, the report hook and `keepWarm`; the phone's
+    `canvas` and `drawing.get`; the Rust sources and records.
   - **Checked live on the dev app,** acting as the phone over its Duck socket (a
     throwaway device row, removed after):
     - **Fixed on the way:** every Mermaid render failed at first ("Cannot read
@@ -7986,7 +7896,6 @@ checked in the scratch PTY first.
   - **Not tried yet:** the class-name rule live (the edit landed after the last run;
     the mind map came back as an SVG).
 
-#### Step G5
 #### Step G5 — Sketch pad on the PC and the phone
 
 - **Goal:** You draw, Duck sees it; Duck draws, you mark it up. Like a whiteboard in a
@@ -8072,7 +7981,6 @@ checked in the scratch PTY first.
     or touch) and on the phone with a finger; "live" while talking; the screenshot
     and photo backgrounds; the dock tab.
 
-#### Step G6
 #### Step G6 — Concept images through your Gemini subscription
 
 - **Goal:** For moods, concepts and anything photoreal, Duck gets a real image model,
