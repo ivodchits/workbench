@@ -1,0 +1,4 @@
+# Tauri regenerates these on a desktop build (editor autocompletion only); the
+# Android and mobile schemas are committed, the desktop ones are not.
+/gen/schemas/desktop-schema.json
+/gen/schemas/windows-schema.json
