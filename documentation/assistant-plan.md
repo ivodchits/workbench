@@ -20,6 +20,12 @@ Companion to `claude-code-workbench-design.md` and `workbench-improvement-plan.m
 working rules: **one step per session**, respect **Depends on**, honor the Definition of
 Done, and append an **As built** note to a step when it lands.
 
+**Docs clean-up marker.** The last monthly docs clean-up (L4's `docs` routine) was
+2026-11-01, commit `0d3582e`; it took every step ticked until then. The next clean-up
+tightens only the As built notes added or changed since that commit
+(`git diff 0d3582e -- documentation/assistant-plan.md`), then moves this marker to its
+own commit.
+
 Origin: research and design session, 2026-10-18, revised the same day after review
 (natural TTS, the Firefox MCP already in use, GPU for speech, Discord dropped, a trust policy
 so the Assistant can approve most things). The research findings (STT and TTS engines,

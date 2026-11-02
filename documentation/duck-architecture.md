@@ -763,7 +763,8 @@ Cheapest first, and always yours to approve:
    `<duck_suggestion>`, and Duck asks before starting anything.
 6. **The monthly docs clean-up** (L4's built-in `docs` routine) is the same path: a
    `self` code task that brings this file and the plan's As-built notes in line with the
-   code, reviewed and merged by you.
+   code, reviewed and merged by you. Where the last one stopped is the "Docs clean-up
+   marker" at the top of `assistant-plan.md` (now commit `0d3582e`, 2026-11-01).
 
 ## Routines, backup and housekeeping (step L4)
 
