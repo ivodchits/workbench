@@ -346,7 +346,7 @@ export async function invoiceSheet(ctx: Pick<ToolContext, "settings" | "google">
         drafts: made.map((d) => ({ name: d.name, link: d.url })),
       };
     return {
-      note: `${due} Offer to draft it. On a yes: find its sheet (a link in its description, else find_sheet by name, else ask the user), read it with read_sheet, work out what changes this month and why (dates, the period, the invoice number, amounts; ask the user for what you can't know), then create_sheet_draft, which shows the user a card.`,
+      note: `${due} Offer to draft it. On a yes: find its sheet (a link in its description, else find_sheet by name, else ask the user), read it with read_sheet, work out what changes this month and why (dates, the period, the invoice number, amounts; ask the user for what you can't know), then create_sheet_draft, which shows the user a card. If the invoice is an .xlsx in Drive rather than a Google Sheet, find the latest with drive_find and drive_copy it under the next invoice's name instead (the original stays as it is).`,
     };
   } catch (e) {
     if (isGoogleExpired(e))

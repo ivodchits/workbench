@@ -132,32 +132,39 @@ pub async fn assistant_sheet_export(
     Ok(SheetExport { sheet, csv, xlsx, sidecar })
 }
 
-struct Google<'a> {
-    client: &'a reqwest::Client,
-    auth: &'a GoogleAuth,
-    client_id: &'a str,
+/// One Google sign-in's calls (also `super::drive`'s).
+pub(super) struct Google<'a> {
+    pub(super) client: &'a reqwest::Client,
+    pub(super) auth: &'a GoogleAuth,
+    pub(super) client_id: &'a str,
 }
 
 impl Google<'_> {
-    async fn get(&self, url: &str) -> Result<Vec<u8>, String> {
+    pub(super) async fn get(&self, url: &str) -> Result<Vec<u8>, String> {
         self.send(reqwest::Method::GET, url, None).await
     }
 
-    async fn send(&self, method: reqwest::Method, url: &str, body: Option<&google::Body>) -> Result<Vec<u8>, String> {
+    pub(super) async fn send(&self, method: reqwest::Method, url: &str, body: Option<&google::Body>) -> Result<Vec<u8>, String> {
         if self.client_id.is_empty() {
             return Err("set the Google OAuth client id first (Duck's settings, morning)".into());
         }
         google::send(self.client, self.auth, self.client_id, method, url, body).await
     }
 
-    async fn json(&self, url: &str) -> Result<Value, String> {
+    pub(super) async fn json(&self, url: &str) -> Result<Value, String> {
         parse_json(&self.get(url).await?)
     }
 
     /// POST `body` as JSON; the reply as JSON.
-    async fn post(&self, url: &str, body: &Value) -> Result<Value, String> {
+    pub(super) async fn post(&self, url: &str, body: &Value) -> Result<Value, String> {
         let body = ("application/json".to_string(), body.to_string().into_bytes());
         parse_json(&self.send(reqwest::Method::POST, url, Some(&body)).await?)
+    }
+
+    /// PATCH `body` as JSON; the reply as JSON.
+    pub(super) async fn patch(&self, url: &str, body: &Value) -> Result<Value, String> {
+        let body = ("application/json".to_string(), body.to_string().into_bytes());
+        parse_json(&self.send(reqwest::Method::PATCH, url, Some(&body)).await?)
     }
 
     /// Whether Duck's file `id` is still in Drive (not trashed, not deleted).
@@ -170,7 +177,7 @@ impl Google<'_> {
     }
 }
 
-fn parse_json(bytes: &[u8]) -> Result<Value, String> {
+pub(super) fn parse_json(bytes: &[u8]) -> Result<Value, String> {
     serde_json::from_slice(bytes).map_err(|_| "Google's reply wasn't JSON".to_string())
 }
 
@@ -549,7 +556,7 @@ fn update_body(tab: &str, updates: &[CellValue]) -> Value {
 }
 
 /// A `multipart/related` upload: the metadata, then the file.
-fn multipart(meta: &Value, mime: &str, bytes: &[u8]) -> google::Body {
+pub(super) fn multipart(meta: &Value, mime: &str, bytes: &[u8]) -> google::Body {
     let boundary = "duck-draft-7f3a9c";
     let mut body = format!(
         "--{boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n{meta}\r\n--{boundary}\r\nContent-Type: {mime}\r\n\r\n"

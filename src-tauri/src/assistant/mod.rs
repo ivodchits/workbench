@@ -47,6 +47,7 @@ mod routines;
 pub mod skills;
 mod summaries;
 pub mod replay;
+pub mod drive;
 pub mod sheets;
 pub mod steam;
 pub mod subscription_brain;

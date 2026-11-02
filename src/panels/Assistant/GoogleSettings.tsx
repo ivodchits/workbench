@@ -1,8 +1,9 @@
 // Duck's Google settings (the "google auth" tab):
 // - Drive and Sheets: the Desktop OAuth client id from the user's own Google Cloud
-//   project, and connecting it in the browser (drive.readonly + drive.file; the
-//   tokens stay in Credential Manager). Duck reads sheets with it and drafts copies
-//   (the morning routine's invoice).
+//   project, and connecting it in the browser (drive.readonly + drive.file, and full
+//   drive, optional, for the Drive file tools; the tokens stay in Credential
+//   Manager). Duck reads sheets with it and drafts copies (the morning routine's
+//   invoice), and finds, copies, renames, moves and trashes Drive files.
 // - Speech: whether the Google key for Chirp voices is stored, and this month's use.
 //   The key itself is only ever stored with `cmdkey`; which voice Duck uses is in the
 //   voice tab.
@@ -97,7 +98,7 @@ export default function GoogleSettings({ settings }: { settings: DuckSettings })
             <button type="button" onClick={() => void connect()} disabled={connecting || !saved} style={button}>
               {connecting ? "waiting for the browser…" : "connect Google"}
             </button>
-            <span style={hint}>(read your Drive; change only files Duck makes)</span>
+            <span style={hint}>(read your Drive; rename, move and trash files only with full Drive access)</span>
           </>
         )}
       </div>
@@ -109,7 +110,9 @@ export default function GoogleSettings({ settings }: { settings: DuckSettings })
       )}
       <div style={hint}>
         Duck reads your sheets with it (the invoice, when it's due) and makes drafts as copies in a Drive folder
-        &quot;Duck drafts&quot;. The original is never changed.
+        &quot;Duck drafts&quot;. The original is never changed. Its Drive tools find and copy files of any kind;
+        renaming, moving or trashing a file Duck didn&apos;t make needs full Drive access, so if you connected before
+        those tools came, disconnect and connect again, and allow it. Trashing and uploading always ask first.
       </div>
       {error && <div style={{ color: "var(--wb-needs)" }}>{error}</div>}
 
