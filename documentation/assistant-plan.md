@@ -21,8 +21,9 @@ working rules: **one step per session**, respect **Depends on**, honor the Defin
 Done, and append an **As built** note to a step when it lands.
 
 **Docs clean-up marker.** The last monthly docs clean-up (L4's `docs` routine) was
-2026-11-01, commit `0d3582e`; it took every step ticked until then. The next clean-up
-tightens only the As built notes added or changed since that commit
+2026-11-01, commit `0d3582e`; it took every step ticked until then, and fixed As built
+statements that later steps had made untrue, so the notes describe the code as it is.
+The next clean-up tightens only the As built notes added or changed since that commit
 (`git diff 0d3582e -- documentation/assistant-plan.md`), then moves this marker to its
 own commit.
 
@@ -1942,12 +1943,11 @@ up ("change this", with a circle around it).
     - Thread list (▾ on the title) and "+ new" (the thread is created by its first
       message).
     - **"think hard" instead of "Sonnet":** the main thread is already Sonnet, so the
-      toggle raises the next message's effort to `high`. The Sonnet toggle waits for M2's
-      Haiku thread.
+      toggle raises the next message's effort to `high`. Past the soft limit, where
+      turns run on Haiku (M2), it reads "think hard · sonnet" and brings Sonnet back.
   - **Session links:** the system prompt asks Duck to link a session it names as
     `[name](#session/<id>)`; clicking one opens that console (`setActiveProject` +
-    `openConsole` + `activatePanel`) and closes the drawer. Live only once W1 gives Duck
-    session ids.
+    `openConsole` + `activatePanel`) and closes the drawer. Duck has the ids since W1.
   - **Start at login, minimized to the tray:** `tauri-plugin-autostart` **pinned
     `~2.5.1`** (2.6+ needs Tauri 2.12, which would have pulled a wry upgrade into this
     step), launched with `--minimized`, so `window::build_main` builds the main window
@@ -2328,7 +2328,9 @@ up ("change this", with a circle around it).
   - `src/assistant/tools/act.ts` has 13 tools, `policy.ts` the gate,
     `settings.ts` Duck's settings. The port grew the actions; `state/remoteActions.ts`
     now exports `startNewSession` and `deliverWhenReady` (the phone's create flow
-    uses them, unchanged in behavior) and `port.local` reuses them.
+    uses them, unchanged in behavior). `port.local` reuses `startNewSession`; Duck's
+    prompts go through `deliverPrompt` (`promptOutbox.ts`) since "Fix after W3", and
+    `deliverWhenReady` is left to the phone and W5's drafting session.
   - **Tiers as planned, with these choices:**
     - `write_note` is always consequential. Whether "you asked for that edit in this
       turn" can't be checked from inside the tool, and a model claim isn't enough.
@@ -2372,7 +2374,7 @@ up ("change this", with a circle around it).
     unsent. Claude Code draws its prompt box before it takes input, and a prompt pasted
     the moment the box shows keeps its text but loses its Enter. Reproduced in a scratch
     PTY on 2.1.304: at 0 and 250 ms after the box, every prompt was lost; at 500 ms and
-    later, none was. `deliverWhenReady` (Duck and the phone) now waits until the box has
+    later, none was. `deliverWhenReady` (then Duck's and the phone's path) now waits until the box has
     been on screen for 1 s, and a second after the Enter, if the box still holds the
     prompt (`inputHolds`: its start or its paste chip, never a dialog), sends Enter once
     more. That retry alone also fixed it in the PTY.
@@ -2812,7 +2814,8 @@ up ("change this", with a circle around it).
     (100k characters a source, 380k in all, under Haiku's long-prompt price step), wrapped
     as untrusted `<source>` data, sent through a new frozen primitive `haiku_task`
     (thinking on, low effort, 4k tokens out). Only the answer and the list of sources read
-    come back. No web pages yet: Duck has no fetch of its own until B1. The system prompt
+    come back. Its sources are sessions and notes only; a web page is B1's `web_fetch`.
+    The system prompt
     sends "more than a screenful" to it, with "summarize all sessions in backend" as the
     example.
   - **Tool search:** 19 rarely used tools are deferred (plugins, autopilot, the
@@ -3082,7 +3085,7 @@ up ("change this", with a circle around it).
       with a "Sources" line.
     - Speech is unchanged: links are added for display only.
   - **Counted:** the proxy's meter already took `server_tool_use.web_search_requests`
-    into `assistant_usage.searches` and priced them ($0.01 each, D2). A fetch costs its
+    into `assistant_usage.searches` and priced them ($0.01 each, A1). A fetch costs its
     tokens only.
   - **Haiku past the soft limit** keeps both tools: X0 found Haiku 5.5 takes the basic
     versions.
@@ -3436,7 +3439,7 @@ up ("change this", with a circle around it).
   - **Known gaps:**
     - No tray-icon state while the window is hidden. The transcript still goes to Duck,
       and the reply waits in the thread.
-    - The double tap for conversation mode is V4.
+    - No double tap: V4 made conversation mode the key's default press instead.
     - No Spanish clips are in the test set yet.
 
 #### Step V2 — Natural spoken replies
@@ -3762,7 +3765,8 @@ up ("change this", with a circle around it).
   - **The listening sign** (V5's overlay) shows whenever the mic is being listened
     to in conversation mode, as it does for push-to-talk, and only then. It isn't
     shown while Duck thinks or speaks with the mic released.
-  - **V5's short reply window** moved here: after a spoken announcement, the mic
+  - **V5's short reply window** moved here (built, then removed in V8): after a
+    spoken announcement, the mic
     opens for ~8 s through this pipeline (VAD, turn detection, echo cancellation).
     A reply goes to the thread as a normal message ("yes, read it" starts
     read-aloud), silence closes it, and the listening sign shows while it's open.
@@ -3858,16 +3862,15 @@ up ("change this", with a circle around it).
     after loading, hidden while Duck's voice plays on speakers, gone when the mode
     stops. Events carry a run number, so a replaced run's late "off" doesn't hide
     the new run's sign.
-  - **The reply window** (V5's): when an announcement has been said in full,
-    `onAnnounced` opens an 8 s window (`voice_reply_window`) through the same
-    pipeline, on the quick policy. A reply opens the announcement's thread and goes
-    there; quiet closes it. Not when the mode is on (it listens anyway).
+  - **The reply window** (V5's, built here as an 8 s window after a spoken
+    announcement) was removed in V8: an announcement no longer turns the mic on
+    (`voice_reply_window` and its setting are gone).
   - **UI:** a line over the composer (getting ready / listening / hearing you /
     sent, keep talking / thinking / speaking / holding) with a level meter; the
     heard words as a dashed bubble during the grace window; the tray tooltip ("Duck
     is listening"); a soft two-note chime as a turn goes out (setting, on); the
     command `toggleConversation` (unbound); settings for the key, the pauses,
-    talking over Duck, the auto-off (5 minutes by default) and the reply window.
+    talking over Duck and the auto-off (5 minutes by default).
   - **Verified:**
     - 9 Rust unit tests for the machine and the controls, 1 for the streaming
       resampler, 2 for the mel front end; ignored tests: Smart Turn against Python,
@@ -3881,7 +3884,6 @@ up ("change this", with a circle around it).
     - resuming in the grace window, live (no duplicate reply in the thread);
     - talking over Duck on headphones, and the switch from headphones to speakers;
     - CPU while listening in silence (X0's Python: 3.8% of one core);
-    - the reply window after a real announcement, and "yes, read it".
   - **Not built in part 1:** echo cancellation (AEC3), the barge-in gate and the
     self-voice check (part 2, below); the phone's button (part 3, below); starting it
     by saying so in push-to-talk ("let's talk"), a tool for Duck, with S1.
@@ -4240,9 +4242,10 @@ up ("change this", with a circle around it).
   - Saying "read it" in the reply window starts read-aloud.
   - Away from the PC, the phone gets the push.
 - **Out of scope:** calendar-aware quiet times (possible later through an MCP server).
-- **As built, part 1 (2026-10-21).** V4 isn't built, so the **short reply window**
-  (the mic open for ~8 s after an announcement, "read it") moved to V4, which brings
-  the VAD, turn detection and echo cancellation it needs. Everything else is built.
+- **As built, part 1 (2026-10-21).** The **short reply window** (the mic open for ~8 s
+  after an announcement, "read it") moved to V4, which brought the VAD, turn detection
+  and echo cancellation it needs; V8 then removed it, so an announcement never turns
+  the mic on. Everything else is built.
   - **Producers and levels:**
     - Background work already reports as a `<workbench_event>` turn in its thread.
       Duck's reply to it is the news, and its headline (`headline`: the first
@@ -4915,13 +4918,13 @@ up ("change this", with a circle around it).
     - The message wraps what was shared in `<shared>`. The safety rules (and so every
       mode's) now call text there data.
     - A link Chrome puts in `text` is said once.
-    - Summarizing a link goes to a worker, as the system prompt already says for
-      anything on the web (Duck has no fetch until B1).
+    - Summarizing a link is Duck's own quick lookup (`web_fetch`, B1); more of the
+      web than one page goes to a worker.
     - The server's `/share` only catches a share the worker missed, and sends the page
       to say it was lost.
-  - **Images aren't shared yet:** the engine has no image blocks until G1, so the
-    manifest accepts title, text and link only, and Duck isn't offered in an image's
-    share sheet. G1 adds `files` there and in `takeShare`.
+  - **Files:** shares took title, text and link only at first (the engine had image
+    blocks for screenshots since V3, but no path for a shared file). G1 added `files`
+    to the manifest and `takeShare`, so images and PDFs can be shared to Duck now.
   - **Start view:** the "the app opens on" setting (dashboard / Duck, the phone's Duck
     settings).
   - **Pushes:** unchanged; Duck's pushes already named their thread and opened Duck on
@@ -4962,7 +4965,7 @@ up ("change this", with a circle around it).
       again there to bind one.
     - Then the three done-when checks: a long-press shows the shortcuts, "Talk to Duck"
       pinned opens on tap-to-talk, and a page shared from Chrome gets a summary.
-  - **R4's gate:** decide after some real use of this. Nothing in R4 is started.
+  - **R4's gate:** R4 was built ahead of it, on request (2026-10-23).
 
 #### Step R4 — Android companion app (gate: R3 sees real use)
 
@@ -5161,7 +5164,8 @@ up ("change this", with a circle around it).
     with `tasks/` and a `CLAUDE.md` (the worker's role and the result contract; an
     edited one is left alone), and registered as the project "Duck" when its first
     worker starts (`port.ensureProject`, once even when workers start together).
-    - **Not a git repo** (the folders are plain files).
+    - **A git repo since L1** (`git init -b main` on its first change; memory and
+      config are committed, see L1 and L4).
     - **The allow list isn't in the workspace's `.claude/settings.json`** but in a
       per-worker settings file in app data (`duck-sessions[.dev]/workers/
       <instance>.json`, passed with `--settings`), so a worker can't rewrite its own
@@ -5234,7 +5238,8 @@ up ("change this", with a circle around it).
       leaving your project. It finished in 1m 14s, and Duck announced the headline
       unprompted. Duck's own turns cost $0.039; the research ran on the subscription.
       A follow-up went into the same session and updated the result. Three haikus asked
-      for at once: two ran together and the third started the moment one finished. The
+      for at once: two ran together and the third started the moment one finished
+      (that run had a limit of 2; the default is now 3). The
       cards kept their "duck ·" mark after a restart, and the card's "close" worked.
   - **Not verified live:** that a worker's done or needs-you raises no toast (the
     path is the same check as `watching()`); a code task; a browser task.
@@ -5297,10 +5302,10 @@ up ("change this", with a circle around it).
   - **Routing:** the system prompt's one offloading line became the rules (what
     Duck does itself, what goes to `run_task`), the "do it here" / "use a worker"
     overrides, and ten examples with their kind and tier (`prompt.ts`; the prefix
-    is re-billed once). `haiku_task` (M2) and Duck's own web tools (B1) don't exist
-    yet, so the rules choose between Duck and `run_task` only, and **a question
-    that needs the web goes to a standard worker** with a brief to keep it short.
-    "A one-URL question stays on the API" waits for B1.
+    is re-billed once). Since M2 and B1 the rules also send reading more than a
+    screenful to `haiku_task`, and a quick lookup (a fact, one page, a shared link) to
+    Duck's own `web_search` / `web_fetch`; **anything needing more of the web
+    (comparing sources, many pages, a report) goes to a worker**.
   - **Tiers:** the card shows `model · effort (tier)` and offers "re-run involved /
     serious". That is `tasks.rerun` and the tool `task_rerun`: a **new task** from
     the stored brief (`Task.brief`) at the next tier, closing the old one. Not a
@@ -5333,7 +5338,8 @@ up ("change this", with a circle around it).
     `reversible` for a question in a Duck worker (no card) and takes a `reason`; each
     answer is kept on the task (`Task.answers`) and shown on its card. Questions the
     app can't answer (several, multi-select) and plan approvals go to you, with a word
-    on why (T3 isn't built).
+    on why. T3's delegated answers and plan reviews leave Duck's workers to this
+    path (Duck is their user).
   - **Tasks view** in the drawer (the header's "tasks · N"): every task with its
     state, worker, time, cost and headline; "open result" (in the editor of the
     worker's project, the workspace's, or yours, with the preview on), "save to
@@ -5653,7 +5659,7 @@ up ("change this", with a circle around it).
     search over memory and notes, and each entry has "edit" (the file in the Duck
     project's editor) and "forget". "Don't remember this conversation" posts a
     `memoryOff` notice in the thread, and `remember` refuses there. L2's consolidation
-    will read the same flag.
+    reads the same flag and skips the thread.
   - **Done when:**
     - Decided in one thread, surfaced later in either language: `memory.rs` tests the
       index with an English entry tagged in Russian, found by "so, about the notes sync"
@@ -6219,8 +6225,8 @@ up ("change this", with a circle around it).
     unattended, a stop with a clear question, and the card's buttons in the app.
   - **Known gaps:**
     - A spoken answer waits for V1 (typed answers through Duck work).
-    - The phone dashboard doesn't show the autopilot yet.
-    - The checklist is the generic default; P2 detects one per plan.
+    - The phone dashboard's autopilot and a checklist per plan (`detectChecklist`)
+      came with P2.
 - **Revised after the first run (2026-10-20):** you found that Duck paused after
   nearly every turn over small questions. Autopilot is meant to leave you out until
   something serious comes up, so it now settles the small ones itself and tells you
@@ -6261,7 +6267,8 @@ up ("change this", with a circle around it).
   - **Verified:** 3 more vitest cases (451 in all) cover:
     - a question answered with an alert, and a serious one pausing with the digest;
     - a turn's decisions reaching the agent, with fix-ups not counted as steps and the
-      four-turn guard;
+      no-progress guard (four turns when tested; now twelve, `TURNS_PER_STEP_MAX`,
+      raised 2026-10-23);
     - the digest on your return, given once.
   - **Not verified live.**
 
@@ -6900,7 +6907,7 @@ checked in the scratch PTY first.
   - **The phone's socket only takes `phone` as a host.** The bridge routes `hello` and
     `device.result` before the phone-message check. A `hello` claiming `pc` is refused,
     so a paired phone can't take over the desktop's tools. `pc` is the desktop's own, in
-    process (`connectLocal` in `index.ts`), with no tools until H2. No Rust change was
+    process (`connectLocal` in `index.ts`); its tools came with H2. No Rust change was
     needed: the server already relays every frame that isn't `conv.*`.
   - **The scripted host is the bridge with a fake link.** The engine tests check four
     things: a call while the phone is away fails, a call after `hello` runs and
@@ -7007,13 +7014,14 @@ checked in the scratch PTY first.
     (reversible; the extra `id` plays one of the choices), `find_video {query}`
     (read), `play_video {id, on?}` (reversible). They run in the engine and play
     through the device's own host tool over `ctx.hosts`: `open_on_pc` (H2), or
-    `open_on_phone`, declared here as a `phone` tool and served by the phone from H5;
-    until then a phone request says "the phone isn't connected".
+    `open_on_phone`, declared here as a `phone` tool and served by the phone's app
+    (H5); with no phone connected a request says "the phone isn't connected".
   - **Where it plays:** `on` when the user names a device, else where their latest
     message came from (the new `ctx.surface`, from `surfaceOf`).
   - **Not tried yet:** no YouTube key is stored on this PC, so no real search has
     run; the tests use a fake search and fake hosts. The done-when's trials wait for
-    the key, the user, and H5 for the phone.
+    the key and the user, and on the phone for the app on a real phone (H5 is
+    emulator only).
 
 #### Step H8 — Reminders: project and general, with a widget
 
@@ -7244,8 +7252,8 @@ checked in the scratch PTY first.
       undo in the thread. Snooze from the notification is 10 minutes. When the post
       fails, the phone shows "Not marked done" (or "Not snoozed") with why.
     - A timer's push has no buttons.
-  - **Not built:** phone alarms that fire with the server unreachable (H5), the
-    calendar mirror, and timers in the widget.
+  - **Not built:** the calendar mirror and timers in the widget. Phone alarms that
+    fire with the server unreachable came with H5 (`ReminderAlarms.kt`).
   - **Not tried yet:** the trials in "Done when" wait for you. The tests cover the
     next-occurrence rules and durations; the clock with a repeat left undone, a snooze
     and timers (one late); the tools; the push token (one use, a day, unknown ones
@@ -7315,7 +7323,8 @@ checked in the scratch PTY first.
     - With the PWA's Web Push also on, a reminder can show twice.
   - **Screen context:** the screen's text goes with the next message within two
     minutes, in `<shared>` (data, not instructions).
-    - **Not built:** the screenshot. Images from the phone wait for G1.
+    - **Not built:** the screenshot (the assist session sends only the screen's text).
+      Other images from the phone come through G1's uploads and shares.
   - **The fast path** (`src/pwa/fastPath.ts`): timers, alarms, the flashlight and
     play / pause / skip / back are parsed on the phone before any model, typed,
     dictated or in conversation mode.
@@ -7847,7 +7856,8 @@ checked in the scratch PTY first.
     sees exactly what you'll see.
     - **Check first:** it renders with the main window minimized. All ten drawings
       below ran with the dev window minimized.
-    - Its limits are G3's: no network in the sandbox, 15 s a render, and the PNG at
+    - Its limits are G3's: no network in the sandbox, 15 s a render (not the Build's
+      5 s; `RENDER_MS`), and the PNG at
       most 2400 px.
   - **`render(file, width?)`** on Duck's MCP server (`mcp_server.rs`):
     - A drawing worker gets a token at registration (`<instance>.render` beside its
@@ -7867,7 +7877,8 @@ checked in the scratch PTY first.
     - at most two fix rounds, then deliver with what's left in the headline.
     - The API worker has no render tool and skips it.
   - **The card** says how often the worker looked ("checked ×3"). The version
-    records `checks` and `ms` (request to picture).
+    records `checks` and `ms` (request to picture). This differs from the Build: the
+    count is every look, not fixes, so a clean pass is ×2 (800 px and 400 px).
   - **Ten varied requests on the dev app** (as the phone, window minimized). Looks
     count the 800 px and 400 px renders, so ×2 means no fix was needed:
 
@@ -7887,9 +7898,9 @@ checked in the scratch PTY first.
     None has broken Mermaid, and none has overlapping labels in the end. Two rule
     fixes came out of it:
     - **Mermaid's mindmap** overlapped leaves and put the root's label off its box
-      (×4, the worker couldn't fix it). The rules now say to draw a mind map as a
+      (×4 in an earlier try, the worker couldn't fix it). The rules now say to draw a mind map as a
       flowchart or an SVG.
-    - **A flowchart's edges came out as thick bands** (×5): the worker had named a
+    - **A flowchart's edges came out as thick bands** (×5, an earlier try): the worker had named a
       classDef `root`, which styles Mermaid's own `g.root` group. The rules now ask
       for prefixed class names.
 
@@ -8289,7 +8300,7 @@ T2 goes live after the replay check in its done-when (the past week's prompts th
 | V2 | Natural spoken replies | ☑ (the phone half built in R1/R2) |
 | V3 | Read-aloud and screen reading | ☑ (the desktop's speakers not tried live) |
 | V4 | Hands-free conversation mode | ☑ (live: talking over Duck on speakers, and the phone, not tried yet) |
-| V5 | Proactive announcements | ☑ (the reply window built with V4) |
+| V5 | Proactive announcements | ☑ (the reply window, built with V4, removed in V8) |
 | V6 | Wake word on the PC (experimental) | ☐ (built 2026-10-22, off by default, sensitivity 0.5 from the sweep; done when measured in your room) |
 | V7 | Duck stops hearing itself on the phone (high priority) | ☐ (built 2026-10-22; done when measured on your phone) |
 | V8 | Announcements don't turn the mic on (small fix) | ☑ |
