@@ -9,16 +9,16 @@
 // Sessions started from the office (O3.2) are held at their desk with their worker
 // (world/hire.ts) till they show up.
 
-import type { RemoteSnapshot } from "../remote/protocol";
+import type { RemoteInstance, RemoteSnapshot } from "../remote/protocol";
 import { buildOffice } from "./map/build";
 import type { Link } from "./net";
 import { addToLog, logEvents, type LogEntry } from "./log";
 import { ROSTER, TEAM_NAMES, type Team } from "./roster";
 import { debugClick, deskAt } from "./world/debug";
-import { createWorld, onDuck, workerAt as hit } from "./world/entities";
+import { createWorld, onDuck, onFernando, setFernandoAnim, workerAt as hit } from "./world/entities";
 import type { TurnState } from "../assistant/protocol";
 import { stepWalkers } from "./world/move";
-import { OFFICE_H, OFFICE_W, createRenderer, type AskBubble, type View } from "./world/render";
+import { FERNANDO_ID, OFFICE_H, OFFICE_W, createRenderer, type AskBubble, type View } from "./world/render";
 import { budgetOf, officeTime } from "./world/ambience";
 import { CHAT_PLACES, type ChatSpot, type ChatterRequest } from "../remote/chatter";
 import { sceneRequest } from "./chatter";
@@ -31,7 +31,7 @@ import { callStandup, standupTable, type Reported } from "./world/standup";
 import type { StandupResult } from "../remote/standup";
 import type { Who } from "./describe";
 
-export { OFFICE_H, OFFICE_W };
+export { FERNANDO_ID, OFFICE_H, OFFICE_W };
 
 /** How long to gather changes to the sticky map before saving it. */
 const SAVE_AFTER = 1000;
@@ -81,17 +81,51 @@ function countToday(snapshot: RemoteSnapshot): boolean {
   return fresh.length > 0;
 }
 
-/** Who has `instanceId` as seated now: a worker's name, "A contractor", or "Someone". */
+/** The Spanish lessons' project (Fernando's): its sessions are his, not a desk's. */
+let spanish: string | null = null;
+
+/** Who has `instanceId` as seated now: a worker's name, "A contractor", or "Someone";
+ *  Fernando for a Spanish lesson. */
 function nameIn(seating: Staff["seating"], instanceId: string): string | null {
+  if (spanish && latest?.instances.some((i) => i.id === instanceId && i.projectId === spanish)) return "Fernando";
   const s = seating.get(instanceId);
   if (!s) return null;
   return s.worker ? (ROSTER.find((w) => w.id === s.worker)?.name ?? s.worker) : "A contractor";
 }
 
+/** Which phase of a Spanish session Fernando shows first: one that needs you, then
+ *  one at work. */
+const FIRST: Record<string, number> = { needs_you: 0, working: 1 };
+
+/** The Spanish lesson going now, if any: the live one that most wants attention. */
+export function spanishSession(): RemoteInstance | null {
+  const mine = (latest?.instances ?? []).filter((i) => spanish && i.projectId === spanish && i.live);
+  return mine.sort((a, b) => (FIRST[a.phase ?? ""] ?? 2) - (FIRST[b.phase ?? ""] ?? 2))[0] ?? null;
+}
+
+/** Fernando acts out his lesson: teaching while it works, waving with a `?` while it
+ *  needs you, standing about otherwise. True when that changed. */
+function actOut(ms: number): boolean {
+  const f = world.fernando;
+  const phase = spanishSession()?.phase;
+  const anim = phase === "needs_you" ? "ask" : phase === "working" ? "teach" : "idle";
+  const bubble = phase === "needs_you" ? "?" : null;
+  if (f.anim === anim && (f.bubble?.text ?? null) === bubble) return false;
+  setFernandoAnim(f, anim, ms);
+  f.bubble = bubble ? { text: bubble, tone: "needs" } : null;
+  return true;
+}
+
+/** The snapshot as the desks see it: without Fernando's sessions. */
+function forDesks(snapshot: RemoteSnapshot): RemoteSnapshot {
+  return spanish ? { ...snapshot, instances: snapshot.instances.filter((i) => i.projectId !== spanish) } : snapshot;
+}
+
 function seat(): void {
   if (!loaded || !latest) return;
   const before = staff.seating;
-  let changed = seatSessions(office, world, staff, latest, performance.now());
+  let changed = seatSessions(office, world, staff, forDesks(latest), performance.now());
+  actOut(performance.now());
   // Someone who just left is named by where they sat before.
   const name = (id: string) => nameIn(staff.seating, id) ?? nameIn(before, id) ?? "Someone";
   if (latest !== logged) log = addToLog(log, logEvents(logged, latest, name, Date.now()));
@@ -125,6 +159,19 @@ export function startOffice(l: Link, changed: () => void): void {
 export function officeSnapshot(snapshot: RemoteSnapshot): void {
   latest = snapshot;
   world.budget = budgetOf(snapshot.usageLimits, Date.now() / 1000);
+  seat();
+}
+
+/** Names the Spanish lessons' project (null: none found): its sessions leave the
+ *  desks and are Fernando's. */
+export function setSpanishProject(id: string | null): void {
+  if (spanish === id) return;
+  spanish = id;
+  for (const i of latest?.instances ?? []) {
+    if (i.projectId !== id) continue;
+    staff.seating.delete(i.id);
+    delete staff.sticky[i.id];
+  }
   seat();
 }
 
@@ -294,10 +341,11 @@ export const duckDoing = (): string => {
 };
 
 /** What's at (x, y) in office pixels, for hover: a worker's id, a contractor's desk
- *  as `desk:<index>`, or Duck (`DUCK_ID`). */
+ *  as `desk:<index>`, Fernando (`FERNANDO_ID`) or Duck (`DUCK_ID`). */
 export function workerAt(x: number, y: number): string | null {
   const w = hit(world, x, y);
   if (w) return w.worker.id;
+  if (onFernando(world, x, y)) return FERNANDO_ID;
   if (onDuck(world, x, y)) return DUCK_ID;
   const desk = deskAt(office, { x, y });
   return desk !== undefined && world.contractors.some((c) => c.desk === desk) ? `desk:${desk}` : null;

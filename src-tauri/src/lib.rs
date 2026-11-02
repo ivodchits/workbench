@@ -353,6 +353,7 @@ pub fn run() {
             remote::office::office_chatter_reply,
             remote::office::office_pictionary_reply,
             remote::office::office_standup_reply,
+            remote::office::office_spanish_reply,
             remote::remote_devices_list,
             remote::remote_approve_device,
             remote::remote_revoke_device,

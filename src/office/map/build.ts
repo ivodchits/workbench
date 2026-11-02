@@ -17,6 +17,7 @@ import {
   DESKS,
   DOOR,
   DUCK_AT,
+  FERNANDO_AT,
   FLOOR_OF,
   LAYOUT,
   MAP_H,
@@ -32,6 +33,8 @@ import {
 } from "./office";
 
 export const WALK_CELL = 8;
+/** Half Fernando's width on the floor, and how deep he stands. */
+const FERNANDO_FOOT = 6;
 
 export interface Point {
   x: number;
@@ -79,6 +82,8 @@ export interface OfficeMap {
   walk: WalkGrid;
   door: Point;
   duck: Point;
+  /** Fernando's feet (he doesn't walk; nobody walks through him). */
+  fernando: Point;
 }
 
 function resolve(ref: PropRef): [string, Prop] {
@@ -129,6 +134,7 @@ export function buildOffice(): OfficeMap {
 
   const foots: Footprint[] = [];
   const props = placements().map((pl) => place(pl, foots));
+  foots.push({ x0: FERNANDO_AT.x - FERNANDO_FOOT, y0: FERNANDO_AT.y - FERNANDO_FOOT, x1: FERNANDO_AT.x + FERNANDO_FOOT, y1: FERNANDO_AT.y });
 
   const seats = DESKS.map(({ room, x, y }, index): Seat => {
     props.push(place({ prop: "desk", x, y }, foots));
@@ -167,6 +173,7 @@ export function buildOffice(): OfficeMap {
     walk: { cols, rows, blocked },
     door: DOOR,
     duck: DUCK_AT,
+    fernando: FERNANDO_AT,
   };
 }
 

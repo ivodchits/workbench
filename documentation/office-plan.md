@@ -1189,6 +1189,55 @@ survive a move between devices.
 - **Done when:** a pitch with 3 participants runs to a summary; the workers sit in the
   meeting room while it runs and go back to idle after; cost per round is shown up front.
 
+### Step O5.8 — Fernando, the Spanish teacher
+- **Build:** a character who stays put, like a prop you click: Fernando, in a sombrero,
+  a poncho and a big mustache, with an idle animation. Clicking him opens **Spanish
+  Lessons** over the office: **New Lesson** (the default) starts a session in the
+  `spanish-lessons` project with its lesson prompt, **Open Session** an empty one, and the
+  session opens right in that window. At the bottom, a **word of the day**, a different one
+  each day, at the level the `spanish-lessons` project records.
+- _As built:_ `art/fernando.ts` (the sprite), `spanish.ts` (the window), `remote/spanish.ts`
+  (the shapes), the Rust core's `remote/office/spanish.rs` and the webview's
+  `state/officeSpanish.ts`.
+  - **Fernando:** 24×33, half again a worker's width for the brim: a straw sombrero with a
+    band in the flag's green, white and red, a black mustache, a striped poncho, boots.
+    He stands in the lounge between the sofa and the kicker (`FERNANDO_AT`, feet at
+    492, 144), and blocks the walk grid there. Idle, he breathes, blinks, twitches his
+    mustache and now and then lifts his hat. He acts out his lesson's session: teaching
+    (a raised hand, talking) while it works, waving with a `?` while it needs you.
+    Hover: his name tag and "Fernando · Spanish teacher".
+  - **His sessions:** the project is the registered local one whose folder is
+    `spanish-lessons` (by folder, not name; `spanish-lessons-anya` isn't it). The page
+    asks which it is once connected; its sessions don't get a desk or a worker
+    (`liveOffice.ts` seats a snapshot without them), the log names them "Fernando", and
+    the new-session form doesn't offer the project.
+  - **The window:** New Lesson sends `create` with ``Run `prompts/lesson.md`.``, the
+    project's own lesson entry point (the daily routine's directive and the plans are its
+    business); Open Session sends `create` with no prompt. Once the session shows up it
+    opens in the window on the sidebar's session panel (transcript, prompt box,
+    interrupt, stop, choices). "← lessons" goes back to the menu and the session goes on;
+    while one is live the menu has "↩ Back to your lesson" first, and reopening the window
+    goes straight back to it. Esc, ✕ or a click on the dimmed office closes it.
+  - **The word of the day:** `POST /office/api/spanish` `{today, word}`; the Rust core
+    hands it to the webview (`office-spanish`, answered by `office_spanish_reply`, a minute
+    at most; calls don't wait on each other). The webview reads the project's
+    `state/profile.json` (level, dialect, native languages, interests, where Spanish is
+    used, the words known from before), `state/srs.json` (the words studied) and
+    `state/progress.json` (the topic in hand), and asks Haiku (purpose `office_spanish`,
+    structured output) for one word new to the learner but at their level, in Mexican
+    usage, on one of 16 themes picked at random: the word, its kind, its meaning, an
+    example at the level with its English, and a tip. The word is kept for the day
+    (`office.spanish` in `meta`) with the latest 60 days' words, which are sent along so
+    they aren't picked again: one Haiku call a day at most.
+  - **Tests:** the sprite (every pose in its frame and colours, symmetric standing, a
+    breath moves only the body); the webview (the project by its folder, the learner from
+    the state files and without them, the input, the cleaning); Rust (the date, the word
+    kept for its day and the recent words always, the recent list capped, the replies).
+    The window was checked in headless Chrome on a mock link: the menu, the word card and a
+    session open in it.
+  - **Live test owed:** in the real app, New Lesson starting a lesson in `spanish-lessons`
+    and opening it in the window, Fernando teaching and asking, and a real word of the day.
+
 ## Phase O6 — Polish
 - **O6.1** Settings page (room mapping, roster names, chatter budget and model, open in browser
   vs window, ROM folder).
@@ -1257,6 +1306,7 @@ closed, open and still, and open and busy.
 - [x] O5.5 Morning standup
 - [ ] O5.6 D&D table
 - [ ] O5.7 Meeting room: pitch an idea
+- [x] O5.8 Fernando, the Spanish teacher (live test owed)
 - [ ] O6.1 Settings
 - [ ] O6.2 Performance pass
 - [ ] O6.3 Docs

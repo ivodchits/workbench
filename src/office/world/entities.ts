@@ -6,6 +6,7 @@
 import type { KickerMatch } from "./groups";
 import { ANIMS, FRAME_H, FRAME_W, type Anim, type Dir } from "../art/characters";
 import { DUCK_ANIMS, DUCK_H, DUCK_W, type DuckAnim, type DuckView } from "../art/duck";
+import { FERNANDO_ANIMS, FERNANDO_H, FERNANDO_W, type FernandoAnim } from "../art/fernando";
 import type { BubbleTone, Overhead, TagGlyph } from "../art/labels";
 import type { OfficeMap, Point, Seat } from "../map/build";
 import { ROSTER, type Team, type Worker } from "../roster";
@@ -67,6 +68,16 @@ export interface DuckEntity extends Body {
 
 export type Entity = WorkerEntity | DuckEntity;
 
+/** Fernando, the Spanish teacher: he stands where he is and acts out his lesson's
+ *  session (teaching while it works, waving while it needs you). */
+export interface FernandoEntity {
+  x: number;
+  y: number;
+  anim: FernandoAnim;
+  playing: Playing;
+  bubble: Bubble | null;
+}
+
 /** What a desk's monitor shows; a contractor's desk has a laptop instead. */
 export type Screen = "off" | "code" | "alert" | "laptop";
 
@@ -81,6 +92,7 @@ export interface Contractor {
 export interface World {
   workers: WorkerEntity[];
   duck: DuckEntity;
+  fernando: FernandoEntity;
   /** By seat index. */
   screens: Screen[];
   contractors: Contractor[];
@@ -113,6 +125,20 @@ export function duckClip(anim: DuckAnim): Clip {
   let clip = clips.get(key);
   if (!clip) clips.set(key, (clip = { durations: DUCK_ANIMS[anim].map((f) => f.ms) }));
   return clip;
+}
+
+export function fernandoClip(anim: FernandoAnim): Clip {
+  const key = `fernando/${anim}`;
+  let clip = clips.get(key);
+  if (!clip) clips.set(key, (clip = { durations: FERNANDO_ANIMS[anim].map((f) => f.ms) }));
+  return clip;
+}
+
+/** Switch Fernando's animation at `ms`; the same one keeps playing undisturbed. */
+export function setFernandoAnim(f: FernandoEntity, anim: FernandoAnim, ms: number): void {
+  if (f.anim === anim) return;
+  f.anim = anim;
+  f.playing = play(fernandoClip(anim), ms);
 }
 
 /** Switch a worker's animation at `ms`; the same one keeps playing undisturbed. */
@@ -181,11 +207,18 @@ export function createWorld(office: OfficeMap, ms = 0): World {
     bubble: null,
     walk: null,
   };
+  const fernando: FernandoEntity = { ...office.fernando, anim: "idle", playing: play(fernandoClip("idle"), ms), bubble: null };
   const screens = office.seats.map((s): Screen => (seated.has(s.index) ? "code" : "off"));
-  return { workers, duck, screens, contractors: [], stepAt: ms, tv: false, kicker: null, budget: { fiveHour: null, sevenDay: null } };
+  return { workers, duck, fernando, screens, contractors: [], stepAt: ms, tv: false, kicker: null, budget: { fiveHour: null, sevenDay: null } };
 }
 
 /** The frontmost worker whose sprite covers (x, y). */
+/** Whether (x, y) is on Fernando. */
+export function onFernando(world: World, x: number, y: number): boolean {
+  const f = world.fernando;
+  return x >= f.x - FERNANDO_W / 2 && x < f.x + FERNANDO_W / 2 && y >= f.y - FERNANDO_H && y < f.y;
+}
+
 /** Whether (x, y) is on Duck. */
 export function onDuck(world: World, x: number, y: number): boolean {
   const d = world.duck;

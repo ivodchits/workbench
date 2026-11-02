@@ -12,6 +12,8 @@
 // Clicking the TV or the kicker opens a game over the dimmed office (games/, O5.1); the
 // office keeps stepping behind it but isn't drawn till it closes. The TV's is a games
 // console (games/console/, O5.3a), and while you play on it idle workers come to watch.
+// Clicking Fernando, the Spanish teacher in the lounge, opens the Spanish lessons over
+// the office (spanish.ts): a new lesson, an empty session, the word of the day.
 
 import { fitSize, sideLayout } from "./canvas";
 import { startHud } from "./hud";
@@ -20,6 +22,7 @@ import { connect } from "./net";
 import { tooltipLines } from "./describe";
 import {
   DUCK_ID,
+  FERNANDO_ID,
   OFFICE_H,
   OFFICE_W,
   askAt,
@@ -45,7 +48,9 @@ import {
   chatterRequest,
   freeWorkers,
   setSceneWriter,
+  setSpanishProject,
   setWatching,
+  spanishSession,
   standup,
   standupNotes,
   standupTableAt,
@@ -63,6 +68,8 @@ import { showStats } from "./stats";
 import { createChatter } from "./chatter";
 import { createChatterPanel } from "./chatterPanel";
 import { createStandupPanel } from "./standupPanel";
+import { createSpanishOverlay, today } from "./spanish";
+import { phaseText } from "./describe";
 import type { GameDef } from "./games/game";
 import { consoleGame, pageStore } from "./games/console/console";
 import { emulatorGame } from "./games/emulator/emulator";
@@ -155,6 +162,14 @@ const linkEl = document.querySelector<HTMLElement>("#link")!;
 const statsEl = document.querySelector<HTMLElement>("#stats")!;
 const roomsEl = document.querySelector<HTMLElement>("#rooms")!;
 let snapshot: Parameters<typeof officeSnapshot>[0] | null = null;
+/** Fernando's project, once Workbench has said which it is. */
+let spanishProject: string | null = null;
+let spanishAsked = false;
+const foundSpanish = (id: string | null) => {
+  spanishProject = id;
+  setSpanishProject(id);
+  loop.invalidate();
+};
 const pickRoom = (id: string, team: Parameters<typeof setRoom>[1]) => {
   setRoom(id, team);
   loop.invalidate();
@@ -167,6 +182,15 @@ const link = connect((state) => {
   }
   snapshot = state.snapshot;
   officeSnapshot(state.snapshot);
+  // Which project's sessions are Fernando's, asked once a connection is up.
+  if (!spanishAsked) {
+    spanishAsked = true;
+    void link.spanish({ today: today(), word: false }).then((a) => {
+      if (a?.status === "ok") foundSpanish(a.result.projectId);
+      else spanishAsked = false;
+    });
+  }
+  spanish.update(state.snapshot);
   showRooms(roomsEl, state.snapshot.projects, roomOf, pickRoom);
   hireForm.update(state.snapshot);
   if (ask.id) ask.update(whoAt(ask.id));
@@ -181,6 +205,7 @@ const hireForm = createHireForm(document.querySelector<HTMLElement>("#hire")!, l
   seated: hired,
   started: (who) => select(who),
   roomOf,
+  hidden: (id) => id === spanishProject,
 });
 const ask = createAskCard(document.querySelector<HTMLElement>("#ask")!, link, {
   close: () => openAsk(null),
@@ -188,6 +213,11 @@ const ask = createAskCard(document.querySelector<HTMLElement>("#ask")!, link, {
     openAsk(null);
     select(id);
   },
+});
+const spanish = createSpanishOverlay(document.querySelector<HTMLElement>("#spanish")!, link, {
+  closed: () => loop.invalidate(),
+  found: (info) => foundSpanish(info.projectId),
+  current: spanishSession,
 });
 const duckChat = createDuckChat(document.querySelector<HTMLElement>("#duck")!, link, () => select(null), (turn) => {
   duckChatTurn(turn);
@@ -331,6 +361,11 @@ watchRatio();
 addEventListener("keydown", (e) => {
   // The game has the keys (and Esc).
   if (games.open) return;
+  // So do the Spanish lessons, but Esc closes them.
+  if (spanish.open) {
+    if (e.key === "Escape") spanish.close();
+    return;
+  }
   if (e.key === "Escape" && ask.id) {
     openAsk(null);
     return;
@@ -367,11 +402,12 @@ let pointer: { x: number; y: number } | null = null;
 /** The tooltip for whoever is hovered, by the pointer. */
 function showTip(): void {
   const duck = view.hover === DUCK_ID;
-  const who = view.hover && pointer && !view.overlay && !duck && !drag?.moved && view.hover !== ask.id ? whoAt(view.hover) : null;
+  const fernando = view.hover === FERNANDO_ID && !drag;
+  const who = view.hover && pointer && !view.overlay && !duck && !fernando && !drag?.moved && view.hover !== ask.id ? whoAt(view.hover) : null;
   const desk = !view.hover && !drag && hoverDesk !== null;
   const game = !view.hover && !drag ? hoverGame : null;
   const table = !view.hover && !drag && !game && hoverTable;
-  tip.hidden = !((who || duck || desk || game || table) && pointer && !view.overlay);
+  tip.hidden = !((who || duck || fernando || desk || game || table) && pointer && !view.overlay);
   if (tip.hidden || !pointer) return;
   const free = who && !who.instance && who.worker && workerFree(who.worker.id);
   const hint = free ? "drag onto a free desk: a new session" : hoverAsk ? "click the bubble to answer here" : null;
@@ -379,6 +415,8 @@ function showTip(): void {
     ? [...tooltipLines(who, performance.now()), ...(hint ? [hint] : [])]
     : duck
       ? ["Duck", `${duckDoing()} · click to talk`]
+      : fernando
+        ? fernandoTip()
       : game
         ? [GAME_NAMES[game], "click to play"]
         : table
@@ -398,6 +436,12 @@ function showTip(): void {
   tip.style.left = `${Math.max(8, x)}px`;
   tip.style.top = `${Math.max(8, y)}px`;
 }
+/** Fernando's tooltip: who he is, and his lesson's state when one is going. */
+function fernandoTip(): string[] {
+  const going = spanishSession();
+  return ["Fernando · Spanish teacher", going ? `lesson: ${phaseText(going)} · click to open` : "click for Spanish lessons"];
+}
+
 // The "for how long" moves on.
 setInterval(() => !tip.hidden && showTip(), 1000);
 
@@ -485,7 +529,11 @@ canvas.addEventListener("click", (e) => {
   const id = workerAt(...sceneAt(e));
   const desk = id ? null : freeDeskAt(...sceneAt(e));
   const game = id || desk !== null ? null : gameAt(...sceneAt(e));
-  if (!id && desk === null && !game && standupTableAt(...sceneAt(e))) {
+  if (id === FERNANDO_ID) {
+    hoverAt(null);
+    select(null);
+    spanish.show();
+  } else if (!id && desk === null && !game && standupTableAt(...sceneAt(e))) {
     standup();
     standupPanel.update();
     loop.invalidate();

@@ -40,6 +40,8 @@ export interface HireHooks {
   /** The session is seated: show it. */
   started(who: string): void;
   roomOf(projectId: string): Team;
+  /** A project not offered here (Fernando's Spanish lessons, which start by him). */
+  hidden?(projectId: string): boolean;
 }
 
 /** The form in `root`. */
@@ -92,7 +94,7 @@ export function createHireForm(root: HTMLElement, link: Link, hooks: HireHooks):
 
   /** The projects, those in the desk's room first, keeping the one picked. */
   function fillProjects(keep: string): void {
-    const projects = snap?.projects ?? [];
+    const projects = (snap?.projects ?? []).filter((p) => !hooks.hidden?.(p.id));
     const here = projects.filter((p) => target && hooks.roomOf(p.id) === target.room);
     const rest = projects.filter((p) => !here.includes(p));
     const group = (label: string, list: typeof projects) => {

@@ -11,6 +11,7 @@
 
 import { FRAME_H, FRAME_W, frame } from "../art/characters";
 import { DUCK_ANIMS, DUCK_H, DUCK_W, duckFrame } from "../art/duck";
+import { FERNANDO_ANIMS, FERNANDO_H, FERNANDO_W, fernandoFrame } from "../art/fernando";
 import { nameTag, speechBubble, statusIcon } from "../art/labels";
 import { PROPS, clockAt, floorTile, propFrame, type PropName } from "../art/props";
 import { cached } from "../canvas";
@@ -22,7 +23,7 @@ import { ballAt, kickerScore, type KickerMatch } from "./groups";
 import { SKY_COLORS, hoursOf, officeTime, skyAt } from "./ambience";
 import { tvScreen } from "../games/emulator/screen";
 import { boardScreen } from "../games/screen";
-import type { Budget, Bubble, Contractor, DuckEntity, Entity, Screen, WorkerEntity, World } from "./entities";
+import type { Budget, Bubble, Contractor, DuckEntity, Entity, FernandoEntity, Screen, WorkerEntity, World } from "./entities";
 
 export const OFFICE_W = MAP_W * TILE;
 export const OFFICE_H = MAP_H * TILE;
@@ -233,6 +234,7 @@ export function createRenderer(office: OfficeMap): Renderer {
           base: at.y,
           draw: (c: CanvasRenderingContext2D, ms: number) => (e.kind === "duck" ? drawDuck(c, e, at, ms) : drawWorker(c, e, at, ms)),
         })),
+        { base: world.fernando.y, draw: (c: CanvasRenderingContext2D, ms: number) => drawFernando(c, world.fernando, ms) },
       ];
       items.sort((a, b) => a.base - b.base);
       for (const item of items) next = Math.min(next, item.draw(ctx, ms));
@@ -240,6 +242,7 @@ export function createRenderer(office: OfficeMap): Renderer {
 
       for (const c of world.contractors) next = Math.min(next, drawContractorTag(ctx, office, c, view, ms, asks));
       for (const { e, at } of people.sort((a, b) => a.at.y - b.at.y)) next = Math.min(next, drawOverhead(ctx, e, at, view, ms, asks));
+      next = Math.min(next, drawFernandoOverhead(ctx, world.fernando, view, ms));
       if (world.kicker && kickerTable) next = Math.min(next, drawScore(ctx, world.kicker, kickerTable.x + kickerTable.prop.w / 2, kickerTable.y - 1, ms));
       if (view.overlay) drawOverlay(ctx, office, world);
       return next;
@@ -328,6 +331,39 @@ function drawDuck(ctx: CanvasRenderingContext2D, d: DuckEntity, at: Point, ms: n
   const img = cached(`duck/${d.anim}/${d.view}/${index}`, () => duckFrame(d.view, DUCK_ANIMS[d.anim][index].pose));
   ctx.drawImage(img, Math.round(at.x - DUCK_W / 2), Math.round(at.y - DUCK_H));
   return next;
+}
+
+/** Fernando's sprite, on a shadow like a standing worker's. */
+function drawFernando(ctx: CanvasRenderingContext2D, f: FernandoEntity, ms: number): number {
+  const { index, next } = frameAt(f.playing, ms);
+  ctx.fillStyle = SHADOW;
+  ctx.beginPath();
+  ctx.ellipse(f.x, f.y - 1, 8, 2, 0, 0, Math.PI * 2);
+  ctx.fill();
+  const img = cached(`fernando/${f.anim}/${index}`, () => fernandoFrame(FERNANDO_ANIMS[f.anim][index].pose));
+  ctx.drawImage(img, Math.round(f.x - FERNANDO_W / 2), Math.round(f.y - FERNANDO_H));
+  return next;
+}
+
+/** Fernando's id for hover and the view. */
+export const FERNANDO_ID = "fernando";
+/** His name tag: the poncho's orange. */
+const FERNANDO_TAG = "#d9623b";
+
+/** Over Fernando: his bubble, and his name tag when he's hovered or tags are on. */
+function drawFernandoOverhead(ctx: CanvasRenderingContext2D, f: FernandoEntity, view: View, ms: number): number {
+  const layers: HTMLCanvasElement[] = [];
+  if (f.bubble) layers.push(bubbleImage(f.bubble, ms));
+  if (view.tags || view.hover === FERNANDO_ID) layers.push(cached("tag/fernando", () => nameTag("Fernando", FERNANDO_TAG, null)));
+  // The brim is a pixel under the frame's top.
+  let bottom = Math.round(f.y) - FERNANDO_H;
+  for (const img of layers) {
+    const x = Math.min(Math.max(0, Math.round(f.x) - Math.floor(img.width / 2)), OFFICE_W - img.width);
+    const y = Math.max(0, bottom - img.height);
+    ctx.drawImage(img, x, y);
+    bottom = y - 1;
+  }
+  return pulseIn(f.bubble, ms);
 }
 
 /** Stacked up from the top of the head: the bubble (or the status icon), then the name

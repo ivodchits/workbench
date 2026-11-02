@@ -30,8 +30,9 @@ export interface Panel {
   show(who: Who | null): void;
 }
 
-/** The panel in `root`; ✕ calls `onClose`. */
-export function createPanel(root: HTMLElement, link: Link, onClose: () => void): Panel {
+/** The panel in `root`; ✕ calls `onClose`. `nameOf` says who the header names (the
+ *  worker and their team by default). */
+export function createPanel(root: HTMLElement, link: Link, onClose: () => void, nameOf: (who: Who) => string = whoText): Panel {
   const close = el("button", "close", "✕");
   close.type = "button";
   close.title = "close (Esc)";
@@ -119,7 +120,7 @@ export function createPanel(root: HTMLElement, link: Link, onClose: () => void):
 
   function paint(who: Who): void {
     const i = who.instance;
-    name.textContent = whoText(who);
+    name.textContent = nameOf(who);
     what.textContent = i ? [i.projectName, titleOf(i), i.branch].filter(Boolean).join(" · ") : "";
     const phase = i ? (i.phase ?? "idle") : null;
     state.className = `state phase-${phase ?? "none"}`;

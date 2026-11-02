@@ -114,7 +114,7 @@ body {
   display: none;
 }
 
-:is(#session, #duck, #hire, #ask) {
+:is(#session, #duck, #hire, #ask, #lesson) {
   flex: 1;
   min-height: 0;
   display: flex;
@@ -123,44 +123,44 @@ body {
 }
 
 /* Over any part's own display. */
-:is(#session, #duck, #hire, #ask)[hidden],
-:is(#session, #duck, #hire, #ask) [hidden],
-:is(#session, #duck, #hire, #ask) .hidden {
+:is(#session, #duck, #hire, #ask, #lesson)[hidden],
+:is(#session, #duck, #hire, #ask, #lesson) [hidden],
+:is(#session, #duck, #hire, #ask, #lesson) .hidden {
   display: none !important;
 }
 
-:is(#session, #duck, #hire, #ask) header {
+:is(#session, #duck, #hire, #ask, #lesson) header {
   position: relative;
   padding-right: 28px;
 }
 
-:is(#session, #duck, #hire, #ask) h2 {
+:is(#session, #duck, #hire, #ask, #lesson) h2 {
   margin: 0;
   color: var(--text);
 }
 
-:is(#session, #duck, #hire, #ask) header p {
+:is(#session, #duck, #hire, #ask, #lesson) header p {
   margin: 0;
   overflow-wrap: anywhere;
 }
 
-:is(#session, #duck, #hire, #ask) .what {
+:is(#session, #duck, #hire, #ask, #lesson) .what {
   color: var(--muted);
 }
 
-:is(#session, #duck, #hire, #ask) .state.phase-needs_you {
+:is(#session, #duck, #hire, #ask, #lesson) .state.phase-needs_you {
   color: var(--needs);
 }
 
-:is(#session, #duck, #hire, #ask) .state.phase-working {
+:is(#session, #duck, #hire, #ask, #lesson) .state.phase-working {
   color: var(--duck);
 }
 
-:is(#session, #duck, #hire, #ask) .state.phase-done {
+:is(#session, #duck, #hire, #ask, #lesson) .state.phase-done {
   color: var(--done);
 }
 
-:is(#session, #duck, #hire, #ask, #chatter, #standup) button {
+:is(#session, #duck, #hire, #ask, #chatter, #standup, #spanish) button {
   font: inherit;
   color: var(--text);
   background: var(--night);
@@ -170,18 +170,18 @@ body {
   cursor: pointer;
 }
 
-:is(#session, #duck, #hire, #ask, #chatter, #standup) button:hover {
+:is(#session, #duck, #hire, #ask, #chatter, #standup, #spanish) button:hover {
   border-color: var(--muted);
 }
 
-:is(#session, #duck, #hire, #ask) .close {
+:is(#session, #duck, #hire, #ask, #lesson) .close {
   position: absolute;
   top: 0;
   right: 0;
   padding: 0 6px;
 }
 
-:is(#session, #duck, #hire, #ask) .wb-chc {
+:is(#session, #duck, #hire, #ask, #lesson) .wb-chc {
   max-height: 45%;
   overflow-y: auto;
   border: 1px solid var(--needs);
@@ -189,31 +189,31 @@ body {
 }
 
 /* No terminal here: those answers are Workbench's. */
-:is(#session, #duck, #hire, #ask) .wb-chc-bar button:not(.wb-chc-deny),
-:is(#session, #duck, #hire, #ask) .wb-chc-note button {
+:is(#session, #duck, #hire, #ask, #lesson) .wb-chc-bar button:not(.wb-chc-deny),
+:is(#session, #duck, #hire, #ask, #lesson) .wb-chc-note button {
   display: none;
 }
 
-:is(#session, #duck, #hire, #ask) .needs {
+:is(#session, #duck, #hire, #ask, #lesson) .needs {
   display: flex;
   align-items: center;
   gap: 8px;
   color: var(--needs);
 }
 
-:is(#session, #duck, #hire, #ask) .needs span {
+:is(#session, #duck, #hire, #ask, #lesson) .needs span {
   margin-right: auto;
 }
 
-:is(#session, #duck, #hire, #ask) .needs .ok {
+:is(#session, #duck, #hire, #ask, #lesson) .needs .ok {
   border-color: var(--done);
 }
 
-:is(#session, #duck, #hire, #ask) .needs .no {
+:is(#session, #duck, #hire, #ask, #lesson) .needs .no {
   border-color: var(--needs);
 }
 
-:is(#session, #duck, #hire, #ask) .scroll {
+:is(#session, #duck, #hire, #ask, #lesson) .scroll {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
@@ -224,18 +224,18 @@ body {
   font-size: 12px;
 }
 
-:is(#session, #duck, #hire, #ask) .jump {
+:is(#session, #duck, #hire, #ask, #lesson) .jump {
   align-self: center;
   margin-top: -36px;
 }
 
-:is(#session, #duck, #hire, #ask) .composer {
+:is(#session, #duck, #hire, #ask, #lesson) .composer {
   display: flex;
   flex-direction: column;
   gap: 6px;
 }
 
-:is(#session, #duck, #hire, #ask) textarea {
+:is(#session, #duck, #hire, #ask, #lesson) textarea {
   resize: vertical;
   min-height: 3.2em;
   font: inherit;
@@ -246,23 +246,23 @@ body {
   padding: 4px 6px;
 }
 
-:is(#session, #duck, #hire, #ask) textarea:focus {
+:is(#session, #duck, #hire, #ask, #lesson) textarea:focus {
   outline: none;
   border-color: var(--duck);
 }
 
-:is(#session, #duck, #hire, #ask) .buttons {
+:is(#session, #duck, #hire, #ask, #lesson) .buttons {
   display: flex;
   justify-content: flex-end;
   gap: 6px;
 }
 
-:is(#session, #duck, #hire, #ask) .send {
+:is(#session, #duck, #hire, #ask, #lesson) .send {
   border-color: var(--duck);
   color: var(--duck);
 }
 
-:is(#session, #duck, #hire, #ask) .stop {
+:is(#session, #duck, #hire, #ask, #lesson) .stop {
   margin-right: auto;
   color: var(--needs);
 }
@@ -841,4 +841,201 @@ body.below #side {
   min-width: 100%;
   font-size: 11px;
   color: var(--muted);
+}
+
+/* Fernando's Spanish lessons, over the dimmed office: the menu with the word of the
+   day, or a session right in the window. */
+#spanish {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  background: rgb(10 9 14 / 0.72);
+  z-index: 3;
+}
+
+#spanish[hidden],
+#spanish [hidden] {
+  display: none !important;
+}
+
+#spanish .window {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  width: min(460px, calc(100% - 32px));
+  max-height: calc(100% - 32px);
+  padding: 12px 14px;
+  background: var(--panel);
+  border: 1px solid var(--rim);
+  border-top: 3px solid #d9623b;
+  border-radius: 6px;
+  box-shadow: 0 6px 24px rgb(0 0 0 / 0.6);
+}
+
+#spanish.in-session .window {
+  width: min(720px, calc(100% - 32px));
+  height: calc(100% - 32px);
+}
+
+#spanish header {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+#spanish h2 {
+  margin: 0;
+  font-size: 15px;
+  color: var(--text);
+}
+
+#spanish .sub {
+  margin-right: auto;
+  color: var(--muted);
+}
+
+#spanish header .close,
+#spanish header .back {
+  padding: 0 6px;
+  color: var(--muted);
+}
+
+#spanish .menu {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+#spanish .options {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+#spanish .option {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  padding: 10px 12px;
+  text-align: left;
+}
+
+#spanish .option span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+#spanish .option.main {
+  border-color: #d9623b;
+}
+
+#spanish .option.main b {
+  color: #f08a5c;
+}
+
+#spanish .option.resume {
+  border-color: var(--duck);
+}
+
+#spanish .option:focus-visible {
+  outline: 1px solid var(--text);
+  outline-offset: 1px;
+}
+
+#spanish .option:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+#spanish .msg {
+  margin: 0;
+  min-height: 1.5em;
+  color: var(--muted);
+}
+
+#spanish .msg.error {
+  color: var(--needs);
+}
+
+#spanish .msg:empty {
+  display: none;
+}
+
+/* The word of the day, at the bottom. */
+#spanish .wotd {
+  margin-top: 4px;
+  padding: 10px 12px;
+  background: var(--night);
+  border: 1px solid var(--rim);
+  border-left: 3px solid #4caf6a;
+  border-radius: 4px;
+}
+
+#spanish .wotd h3 {
+  margin: 0 0 6px;
+  font-size: 11px;
+  font-weight: normal;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+#spanish .wotd p {
+  margin: 0 0 4px;
+}
+
+#spanish .wotd .word {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+}
+
+#spanish .wotd .word b {
+  font-size: 18px;
+  color: var(--duck);
+}
+
+#spanish .wotd .kind {
+  font-size: 12px;
+  color: var(--muted);
+  font-style: italic;
+}
+
+#spanish .wotd .example {
+  display: flex;
+  flex-direction: column;
+  margin-top: 6px;
+}
+
+#spanish .wotd .example .en,
+#spanish .wotd .note {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+#spanish .wotd .note {
+  margin-top: 6px;
+}
+
+#spanish .session {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+#spanish .status {
+  margin: 0;
+  color: var(--muted);
+}
+
+/* The session panel's own close: the window's header has ✕ and ←. */
+#lesson > header .close {
+  display: none;
 }

@@ -261,3 +261,7 @@ export const DOOR = { x: 216, y: 40 } as const;
 
 /** Duck's spot behind the boss desk (the duck's top-left corner). */
 export const DUCK_AT = { x: 280, y: 62 } as const;
+
+/** Where Fernando, the Spanish teacher, stands (his feet): in the lounge, between the
+ *  sofa and the kicker. He stays put; clicking him opens the Spanish lessons. */
+export const FERNANDO_AT = { x: 492, y: 144 } as const;
