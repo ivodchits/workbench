@@ -21,10 +21,10 @@ working rules: **one step per session**, respect **Depends on**, honor the Defin
 Done, and append an **As built** note to a step when it lands.
 
 **Docs clean-up marker.** The last monthly docs clean-up (L4's `docs` routine) was
-2026-11-01, commit `0d3582e`; it took every step ticked until then, and fixed As built
+2026-11-01, commit `342fefc`; it took every step ticked until then, and fixed As built
 statements that later steps had made untrue, so the notes describe the code as it is.
 The next clean-up tightens only the As built notes added or changed since that commit
-(`git diff 0d3582e -- documentation/assistant-plan.md`), then moves this marker to its
+(`git diff 342fefc -- documentation/assistant-plan.md`), then moves this marker to its
 own commit.
 
 Origin: research and design session, 2026-10-18, revised the same day after review
