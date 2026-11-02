@@ -3,6 +3,7 @@
 
 import { ACT_TOOLS } from "./tools/act";
 import { DRAW_TOOLS } from "./tools/draw";
+import { DRIVE_TOOLS } from "./tools/drive";
 import { IMAGE_TOOLS } from "./tools/image";
 import { AUTOPILOT_TOOLS } from "./tools/autopilot";
 import { getTime } from "./tools/getTime";
@@ -55,6 +56,7 @@ export const TOOLS = [
   ...BROWSER_TOOLS,
   ...MORNING_TOOLS,
   ...SHEET_TOOLS,
+  ...DRIVE_TOOLS,
   ...PREP_TOOLS,
   ...MEMORY_TOOLS,
   ...IMPROVE_TOOLS,
@@ -91,6 +93,8 @@ export const DEFERRED = new Set([
   "find_sheet",
   "read_sheet",
   "create_sheet_draft",
+  // Drive files of any kind: found when a file is asked about.
+  ...DRIVE_TOOLS.map((t) => t.name),
   "prep_ahead",
   "merge_duck_change",
   "rebuild_duck",

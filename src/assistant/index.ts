@@ -23,6 +23,15 @@ import {
   sheetRead,
   sheetSearch,
   sheetExport,
+  driveSearch,
+  driveFile,
+  driveCopy,
+  driveRename,
+  driveMove,
+  driveCreateFolder,
+  driveTrash,
+  driveDownload,
+  driveUpload,
   workspacePrepare,
   taskResult,
   attachBytes,
@@ -82,7 +91,7 @@ import { createMemoryHost, type TidyReport } from "./memory";
 import { Consolidation, createConsolidator, type Consolidator } from "./consolidate";
 import { memoryApply, memoryList, memoryStateGet, memoryStateSet } from "../ipc/memory";
 import { createMcpHost } from "./mcp";
-import { createGoogleHost } from "./google";
+import { createDriveHost, createGoogleHost } from "./google";
 import { createRegistry, toolsOn } from "./tools/registry";
 import { connectLocal, createHosts } from "./hosts";
 import { pcHandlers } from "./tools/pc";
@@ -981,7 +990,21 @@ export function initAssistant(): Promise<void> {
       hosts,
       music: youtubeMusic({ search: youtubeSearch }),
       reminders,
-      google: createGoogleHost({ workspacePrepare, sheetExport, sheetCells, sheetDraft, sheetDrafts, sheetSearch, sheetRead }),
+      google: createGoogleHost(
+        { workspacePrepare, sheetExport, sheetCells, sheetDraft, sheetDrafts, sheetSearch, sheetRead },
+        createDriveHost({
+          workspacePrepare,
+          driveSearch,
+          driveFile,
+          driveCopy,
+          driveRename,
+          driveMove,
+          driveCreateFolder,
+          driveTrash,
+          driveDownload,
+          driveUpload,
+        }),
+      ),
       core: createCoreHost(() => settings.get().workspace),
       memory,
       config: createConfig(ipcConfigStore(() => settings.get().workspace)),

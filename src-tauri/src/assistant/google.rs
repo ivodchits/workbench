@@ -1,9 +1,13 @@
-//! Google access for the morning routine (phase 2): the user's own Desktop OAuth
-//! client and one consent for two scopes. `drive.readonly` reads and exports the
-//! invoice sheet; `drive.file` creates files and changes only the ones Duck made.
-//! Together they can't write to the original sheet, so that guarantee is the
-//! credential's, before any check in [`super::sheets`]. `drive` and `spreadsheets`
-//! are never asked for.
+//! Google access for the morning routine (phase 2) and Duck's Drive file tools: the
+//! user's own Desktop OAuth client and one consent. Two scopes are required:
+//! `drive.readonly` reads and exports files; `drive.file` creates files and changes
+//! the ones Duck made. A third, full `drive` ([`DRIVE_FULL`]), is asked for so the
+//! Drive tools ([`super::drive`]) can rename, move and trash the user's own files;
+//! it's optional: unticked in the consent (or a token from before it was asked
+//! for), the rest works and those calls say to reconnect ([`NEEDS_DRIVE`]).
+//! With `drive` granted, the invoice original is kept unchanged by Duck's code (the
+//! draft and `drive_copy` only ever read it), no longer by the credential alone.
+//! `spreadsheets` is never asked for.
 //!
 //! Sign-in is the installed-app flow: a one-shot listener on a loopback port is the
 //! redirect URI, PKCE (S256) guards the code, and the user's browser does the
@@ -32,6 +36,8 @@ pub const SCOPES: [&str; 2] = [
     "https://www.googleapis.com/auth/drive.readonly",
     "https://www.googleapis.com/auth/drive.file",
 ];
+/// Full Drive: rename, move and trash files Duck didn't make. Asked for, not required.
+pub const DRIVE_FULL: &str = "https://www.googleapis.com/auth/drive";
 const AUTH_URL: &str = "https://accounts.google.com/o/oauth2/v2/auth";
 const TOKEN_URL: &str = "https://oauth2.googleapis.com/token";
 const REVOKE_URL: &str = "https://oauth2.googleapis.com/revoke";
@@ -45,6 +51,9 @@ pub const EXPIRED: &str = "google_expired: Google access expired, reconnect in D
 
 /// What a call fails with for a 404: a file that's gone, or that the account can't open.
 pub const NOT_FOUND: &str = "Google can't find that file: check its id, and that the connected account can open it";
+
+/// What a call fails with when the token lacks a scope it needs (full Drive).
+pub const NEEDS_DRIVE: &str = "Duck's Google sign-in doesn't cover this: reconnect Google in Duck's settings (Google Auth) and allow full Drive access";
 
 /// Tauri-managed: the access token in use.
 #[derive(Default)]
@@ -245,8 +254,12 @@ fn api_error(status: u16, body: &[u8]) -> String {
     let msg = serde_json::from_slice::<Value>(body)
         .ok()
         .and_then(|v| v.pointer("/error/message").and_then(Value::as_str).map(str::to_string));
+    let text = String::from_utf8_lossy(body);
     match (status, msg) {
         (404, _) => NOT_FOUND.into(),
+        (403, _) if text.contains("ACCESS_TOKEN_SCOPE_INSUFFICIENT") || text.contains("insufficient authentication scopes") => {
+            NEEDS_DRIVE.into()
+        }
         (_, Some(m)) => format!("Google refused ({status}): {m}"),
         (_, None) => format!("Google answered {status}"),
     }
@@ -363,7 +376,7 @@ fn missing_scope(granted: &str) -> Option<&'static str> {
 }
 
 fn auth_url(client_id: &str, redirect: &str, challenge: &str, state: &str) -> String {
-    let scope = SCOPES.join(" ");
+    let scope = format!("{} {DRIVE_FULL}", SCOPES.join(" "));
     format!(
         "{AUTH_URL}?{}",
         form_body(&[
@@ -468,6 +481,19 @@ mod tests {
     fn both_scopes_must_be_granted() {
         assert_eq!(missing_scope(&SCOPES.join(" ")), None);
         assert_eq!(missing_scope(SCOPES[1]), Some(SCOPES[0]));
-        assert!(auth_url("id", "http://127.0.0.1:1", "c", "s").contains("access_type=offline"));
+        let url = auth_url("id", "http://127.0.0.1:1", "c", "s");
+        assert!(url.contains("access_type=offline"));
+        // Full Drive is asked for but not required.
+        assert!(url.contains(&format!("{}&", pct(&format!("drive.file {DRIVE_FULL}")))), "{url}");
+        assert_eq!(missing_scope(&SCOPES.join(" ")), None);
+    }
+
+    #[test]
+    fn a_missing_scope_says_to_reconnect() {
+        let body = br#"{"error":{"code":403,"message":"Request had insufficient authentication scopes.","details":[{"reason":"ACCESS_TOKEN_SCOPE_INSUFFICIENT"}]}}"#;
+        assert_eq!(api_error(403, body), NEEDS_DRIVE);
+        let other = br#"{"error":{"code":403,"message":"The user does not have sufficient permissions for this file."}}"#;
+        assert_eq!(api_error(403, other), "Google refused (403): The user does not have sufficient permissions for this file.");
+        assert_eq!(api_error(404, b""), NOT_FOUND);
     }
 }

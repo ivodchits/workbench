@@ -552,3 +552,89 @@ export interface SheetRead {
 /** A tab of the sheet (the first one when `tab` is empty). */
 export const sheetRead = (clientId: string, sheetId: string, tab: string): Promise<SheetRead> =>
   invoke("assistant_sheet_read", { clientId, sheetId, tab });
+
+/** A Google Drive file of any kind (Duck's Drive tools). */
+export interface DriveFile {
+  id: string;
+  name: string;
+  mimeType: string;
+  /** A short name for the kind (`xlsx`, `google_sheet`, `folder`, …), else the MIME type. */
+  kind: string;
+  size?: number;
+  modified?: string;
+  created?: string;
+  /** The folders it's in, by id. */
+  parents: string[];
+  /** The folders' names (one file's metadata only). */
+  folders?: string[];
+  link: string;
+  trashed: boolean;
+  ownedByMe: boolean;
+}
+
+/** What a Drive search looks for; every part optional. */
+export interface DriveQuery {
+  name?: string;
+  /** A folder's id, or `root` (My Drive). */
+  folder?: string;
+  kind?: string;
+  /** `YYYY-MM-DD` or an RFC 3339 time. */
+  modifiedAfter?: string;
+  modifiedBefore?: string;
+  limit?: number;
+}
+
+export interface DriveRenamed {
+  file: DriveFile;
+  was: string;
+}
+
+export interface DriveMoved {
+  file: DriveFile;
+  /** The folders it was in. */
+  from: string[];
+}
+
+export interface DriveDownloaded {
+  file: DriveFile;
+  path: string;
+  bytes: number;
+  exportedAs?: string;
+}
+
+/** Files matching `query`, the latest changed first. */
+export const driveSearch = (clientId: string, query: DriveQuery): Promise<DriveFile[]> =>
+  invoke("assistant_drive_search", { clientId, query });
+
+/** One file's metadata, with its folders' names. */
+export const driveFile = (clientId: string, fileId: string): Promise<DriveFile> =>
+  invoke("assistant_drive_file", { clientId, fileId });
+
+/** Copy a file as `name` into `folder` (the original's folder when null); the original is only read. */
+export const driveCopy = (clientId: string, fileId: string, name: string, folder: string | null): Promise<DriveFile> =>
+  invoke("assistant_drive_copy", { clientId, fileId, name, folder });
+
+export const driveRename = (clientId: string, fileId: string, name: string): Promise<DriveRenamed> =>
+  invoke("assistant_drive_rename", { clientId, fileId, name });
+
+export const driveMove = (clientId: string, fileId: string, folder: string): Promise<DriveMoved> =>
+  invoke("assistant_drive_move", { clientId, fileId, folder });
+
+export const driveCreateFolder = (clientId: string, name: string, parent: string | null): Promise<DriveFile> =>
+  invoke("assistant_drive_create_folder", { clientId, name, parent });
+
+/** Put a file in Drive's trash (restorable there for 30 days). */
+export const driveTrash = (clientId: string, fileId: string): Promise<DriveFile> =>
+  invoke("assistant_drive_trash", { clientId, fileId });
+
+/** Save a file into `<workspace>/data/drive/` (a Google file exported as docx/xlsx/pptx). */
+export const driveDownload = (clientId: string, workspace: string, fileId: string): Promise<DriveDownloaded> =>
+  invoke("assistant_drive_download", { clientId, workspace, fileId });
+
+/** Upload a local file (5 MB at most) into `folder` (My Drive when null). */
+export const driveUpload = (
+  clientId: string,
+  path: string,
+  name: string | null,
+  folder: string | null,
+): Promise<DriveFile> => invoke("assistant_drive_upload", { clientId, path, name, folder });
