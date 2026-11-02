@@ -11,6 +11,8 @@
 //!   `offset`; what is before it is history, asked for with `back`.
 //! - down `resume { sessionId, offset }` — on a reconnect that named the transcript
 //!   and offset it had got to (`?session=…&offset=…`): lines continue from there.
+//!   Only when that is just a couple of turns behind (`short_catch_up`); further
+//!   back it gets `start`, and reloads the newest page and rewrites its cache.
 //! - down `lines { sessionId, lines, offset, nextOffset }` — appended lines.
 //! - down `rotated { sessionId, offset, reason }` — another transcript (`/clear`, a
 //!   resumed session) or a truncated file: start over, history before `offset`.
@@ -123,10 +125,13 @@ async fn handle(
     let mut cur = Cursor { session_id: at.session_id, path: at.path, offset: at.offset };
     let resumed = match (&resume, &cur.session_id, &cur.path) {
         (Some((session, offset)), Some(now), Some(path)) if session == now => {
-            // Only an offset inside the file is a place to continue from.
-            stream::read_forward(path, *offset, 1)
-                .is_ok_and(|l| *offset <= l.end)
-                .then_some(*offset)
+            // Only an offset inside the file is a place to continue from, and only
+            // when little has happened since: a long gap goes faster as a fresh start
+            // (the phone reloads the newest page and rewrites its cache) than as
+            // every line since, appended frame by frame.
+            (stream::read_forward(path, *offset, 1).is_ok_and(|l| *offset <= l.end)
+                && short_catch_up(path, *offset))
+            .then_some(*offset)
         }
         _ => None,
     };
@@ -250,6 +255,57 @@ async fn rotate(
     send(socket, &frame).await && pump(socket, app, instance_id, cur).await
 }
 
+/// Most new prompts a reconnect still catches up on line by line.
+const RESUME_MAX_TURNS: usize = 2;
+/// Most conversation lines it catches up on, however few the prompts (one long
+/// agentic turn is as slow as many short ones).
+const RESUME_MAX_LINES: usize = 80;
+/// Most file bytes read looking: past this the gap is long whatever is in it.
+const RESUME_MAX_SCAN: u64 = 8 * 1024 * 1024;
+
+/// Whether what was appended since `offset` is just a couple of turns: few enough
+/// lines that sending them beats starting over.
+fn short_catch_up(path: &std::path::Path, offset: u64) -> bool {
+    let (mut turns, mut lines, mut at) = (0, 0, offset);
+    loop {
+        let Ok(chunk) = stream::read_forward(path, at, stream::CHUNK_BYTES) else {
+            return false;
+        };
+        if chunk.next_offset <= at {
+            return true;
+        }
+        for line in conversation(chunk.lines) {
+            lines += 1;
+            turns += usize::from(is_prompt(&line));
+            if turns > RESUME_MAX_TURNS || lines > RESUME_MAX_LINES {
+                return false;
+            }
+        }
+        at = chunk.next_offset;
+        if at - offset > RESUME_MAX_SCAN {
+            return false;
+        }
+    }
+}
+
+/// A conversation line that starts a turn: something the user typed, not a tool
+/// result or one of Claude Code's own meta lines.
+fn is_prompt(line: &str) -> bool {
+    let Ok(v) = serde_json::from_str::<Value>(line) else { return false };
+    if v.get("type").and_then(Value::as_str) != Some("user")
+        || v.get("isMeta").and_then(Value::as_bool) == Some(true)
+    {
+        return false;
+    }
+    match v.pointer("/message/content") {
+        Some(Value::String(_)) => true,
+        Some(Value::Array(parts)) => {
+            parts.iter().any(|p| p.get("type").and_then(Value::as_str) == Some("text"))
+        }
+        _ => false,
+    }
+}
+
 #[derive(Deserialize)]
 #[serde(tag = "type", rename_all = "camelCase")]
 enum Request {
@@ -343,6 +399,38 @@ mod tests {
         let edited: Value = serde_json::from_str(&out[1]).unwrap();
         assert_eq!(edited["toolUseResult"], json!({ "filePath": "a.rs" }));
         assert_eq!(out[2], lines[5]);
+    }
+
+    /// A reconnect resumes a couple of turns behind, and starts over further back:
+    /// many prompts, one turn with many lines, or a gap too long to look through.
+    #[test]
+    fn resumes_only_a_short_catch_up() {
+        let prompt = |n: usize| format!(r#"{{"type":"user","message":{{"content":"go {n}"}}}}"#);
+        let tool = r#"{"type":"user","message":{"content":[{"type":"tool_result","content":"ok"}]}}"#;
+        let reply = r#"{"type":"assistant","message":{"content":[{"type":"text","text":"done"}]}}"#;
+        let meta = r#"{"type":"user","isMeta":true,"message":{"content":"caveat"}}"#;
+        let pad = format!("{{\"type\":\"attachment\",\"pad\":\"{}\"}}", "x".repeat(1_000_000));
+
+        let dir = std::env::temp_dir().join(format!(
+            "wb-remote-resume-{}",
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("s.jsonl");
+        let short = |lines: &[String]| {
+            let head = format!("{}\n", prompt(0));
+            let body: String = lines.iter().map(|l| format!("{l}\n")).collect();
+            std::fs::write(&path, format!("{head}{body}")).unwrap();
+            short_catch_up(&path, head.len() as u64)
+        };
+        let s = |l: &str| l.to_string();
+
+        assert!(short(&[]));
+        assert!(short(&[prompt(1), s(tool), s(reply), s(meta), prompt(2), s(reply)]));
+        assert!(!short(&[prompt(1), prompt(2), prompt(3)]));
+        assert!(!short(&std::iter::repeat_n(s(tool), RESUME_MAX_LINES + 1).collect::<Vec<_>>()));
+        assert!(!short(&std::iter::repeat_n(pad, 9).collect::<Vec<_>>()));
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     /// The real session, paged back the way the phone does: every page has something
