@@ -110,11 +110,11 @@ body {
   overflow: hidden;
 }
 
-#side.open > :not(h1, #session, #duck, #hire) {
+#side.open > :not(h1, #session, #duck, #hire, #notes) {
   display: none;
 }
 
-:is(#session, #duck, #hire, #ask, #lesson) {
+:is(#session, #duck, #hire, #notes, #ask, #lesson) {
   flex: 1;
   min-height: 0;
   display: flex;
@@ -123,44 +123,44 @@ body {
 }
 
 /* Over any part's own display. */
-:is(#session, #duck, #hire, #ask, #lesson)[hidden],
-:is(#session, #duck, #hire, #ask, #lesson) [hidden],
-:is(#session, #duck, #hire, #ask, #lesson) .hidden {
+:is(#session, #duck, #hire, #notes, #ask, #lesson)[hidden],
+:is(#session, #duck, #hire, #notes, #ask, #lesson) [hidden],
+:is(#session, #duck, #hire, #notes, #ask, #lesson) .hidden {
   display: none !important;
 }
 
-:is(#session, #duck, #hire, #ask, #lesson) header {
+:is(#session, #duck, #hire, #notes, #ask, #lesson) header {
   position: relative;
   padding-right: 28px;
 }
 
-:is(#session, #duck, #hire, #ask, #lesson) h2 {
+:is(#session, #duck, #hire, #notes, #ask, #lesson) h2 {
   margin: 0;
   color: var(--text);
 }
 
-:is(#session, #duck, #hire, #ask, #lesson) header p {
+:is(#session, #duck, #hire, #notes, #ask, #lesson) header p {
   margin: 0;
   overflow-wrap: anywhere;
 }
 
-:is(#session, #duck, #hire, #ask, #lesson) .what {
+:is(#session, #duck, #hire, #notes, #ask, #lesson) .what {
   color: var(--muted);
 }
 
-:is(#session, #duck, #hire, #ask, #lesson) .state.phase-needs_you {
+:is(#session, #duck, #hire, #notes, #ask, #lesson) .state.phase-needs_you {
   color: var(--needs);
 }
 
-:is(#session, #duck, #hire, #ask, #lesson) .state.phase-working {
+:is(#session, #duck, #hire, #notes, #ask, #lesson) .state.phase-working {
   color: var(--duck);
 }
 
-:is(#session, #duck, #hire, #ask, #lesson) .state.phase-done {
+:is(#session, #duck, #hire, #notes, #ask, #lesson) .state.phase-done {
   color: var(--done);
 }
 
-:is(#session, #duck, #hire, #ask, #chatter, #standup, #spanish) button {
+:is(#session, #duck, #hire, #notes, #ask, #chatter, #standup, #spanish) button {
   font: inherit;
   color: var(--text);
   background: var(--night);
@@ -170,18 +170,18 @@ body {
   cursor: pointer;
 }
 
-:is(#session, #duck, #hire, #ask, #chatter, #standup, #spanish) button:hover {
+:is(#session, #duck, #hire, #notes, #ask, #chatter, #standup, #spanish) button:hover {
   border-color: var(--muted);
 }
 
-:is(#session, #duck, #hire, #ask, #lesson) .close {
+:is(#session, #duck, #hire, #notes, #ask, #lesson) .close {
   position: absolute;
   top: 0;
   right: 0;
   padding: 0 6px;
 }
 
-:is(#session, #duck, #hire, #ask, #lesson) .wb-chc {
+:is(#session, #duck, #hire, #notes, #ask, #lesson) .wb-chc {
   max-height: 45%;
   overflow-y: auto;
   border: 1px solid var(--needs);
@@ -189,31 +189,31 @@ body {
 }
 
 /* No terminal here: those answers are Workbench's. */
-:is(#session, #duck, #hire, #ask, #lesson) .wb-chc-bar button:not(.wb-chc-deny),
-:is(#session, #duck, #hire, #ask, #lesson) .wb-chc-note button {
+:is(#session, #duck, #hire, #notes, #ask, #lesson) .wb-chc-bar button:not(.wb-chc-deny),
+:is(#session, #duck, #hire, #notes, #ask, #lesson) .wb-chc-note button {
   display: none;
 }
 
-:is(#session, #duck, #hire, #ask, #lesson) .needs {
+:is(#session, #duck, #hire, #notes, #ask, #lesson) .needs {
   display: flex;
   align-items: center;
   gap: 8px;
   color: var(--needs);
 }
 
-:is(#session, #duck, #hire, #ask, #lesson) .needs span {
+:is(#session, #duck, #hire, #notes, #ask, #lesson) .needs span {
   margin-right: auto;
 }
 
-:is(#session, #duck, #hire, #ask, #lesson) .needs .ok {
+:is(#session, #duck, #hire, #notes, #ask, #lesson) .needs .ok {
   border-color: var(--done);
 }
 
-:is(#session, #duck, #hire, #ask, #lesson) .needs .no {
+:is(#session, #duck, #hire, #notes, #ask, #lesson) .needs .no {
   border-color: var(--needs);
 }
 
-:is(#session, #duck, #hire, #ask, #lesson) .scroll {
+:is(#session, #duck, #hire, #notes, #ask, #lesson) .scroll {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
@@ -224,18 +224,18 @@ body {
   font-size: 12px;
 }
 
-:is(#session, #duck, #hire, #ask, #lesson) .jump {
+:is(#session, #duck, #hire, #notes, #ask, #lesson) .jump {
   align-self: center;
   margin-top: -36px;
 }
 
-:is(#session, #duck, #hire, #ask, #lesson) .composer {
+:is(#session, #duck, #hire, #notes, #ask, #lesson) .composer {
   display: flex;
   flex-direction: column;
   gap: 6px;
 }
 
-:is(#session, #duck, #hire, #ask, #lesson) textarea {
+:is(#session, #duck, #hire, #notes, #ask, #lesson) textarea {
   resize: vertical;
   min-height: 3.2em;
   font: inherit;
@@ -246,23 +246,23 @@ body {
   padding: 4px 6px;
 }
 
-:is(#session, #duck, #hire, #ask, #lesson) textarea:focus {
+:is(#session, #duck, #hire, #notes, #ask, #lesson) textarea:focus {
   outline: none;
   border-color: var(--duck);
 }
 
-:is(#session, #duck, #hire, #ask, #lesson) .buttons {
+:is(#session, #duck, #hire, #notes, #ask, #lesson) .buttons {
   display: flex;
   justify-content: flex-end;
   gap: 6px;
 }
 
-:is(#session, #duck, #hire, #ask, #lesson) .send {
+:is(#session, #duck, #hire, #notes, #ask, #lesson) .send {
   border-color: var(--duck);
   color: var(--duck);
 }
 
-:is(#session, #duck, #hire, #ask, #lesson) .stop {
+:is(#session, #duck, #hire, #notes, #ask, #lesson) .stop {
   margin-right: auto;
   color: var(--needs);
 }
@@ -1038,4 +1038,127 @@ body.below #side {
 /* The session panel's own close: the window's header has ✕ and ←. */
 #lesson > header .close {
   display: none;
+}
+
+/* The project notes, from the bookshelves. */
+#notes header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding-right: 28px;
+}
+
+#notes :is(select, input) {
+  min-width: 0;
+  font: inherit;
+  color: inherit;
+  background: var(--night);
+  border: 1px solid var(--rim);
+  border-radius: 4px;
+  padding: 2px 6px;
+}
+
+#notes :is(select, input):focus {
+  outline: none;
+  border-color: var(--duck);
+}
+
+#notes header select {
+  flex: 1;
+}
+
+#notes .error {
+  margin: 0;
+  color: var(--needs);
+}
+
+#notes :is(.list-view, .note-view) {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+#notes .adder,
+#notes .bar,
+#notes .conflict {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+#notes .adder input {
+  flex: 1;
+}
+
+/* The name over the note's buttons, the width of the sidebar. */
+#notes .bar {
+  flex-wrap: wrap;
+}
+
+#notes .bar .name {
+  flex: 1 1 100%;
+  order: -1;
+  font-weight: bold;
+}
+
+#notes .bar button {
+  white-space: nowrap;
+}
+
+#notes .bar .delete {
+  margin-left: auto;
+}
+
+#notes .notes {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+#notes .notes button {
+  width: 100%;
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 4px;
+  text-align: left;
+}
+
+#notes .notes .title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+#notes .note-view textarea {
+  flex: 1;
+  resize: none;
+  font: 12px/1.5 var(--mono);
+}
+
+#notes .preview {
+  font-size: 13px;
+}
+
+#notes .conflict {
+  flex-wrap: wrap;
+  color: var(--needs);
+}
+
+#notes .conflict span {
+  margin-right: auto;
+}
+
+#notes .delete {
+  color: var(--needs);
+}
+
+#notes .status {
+  margin: 0;
+  font-size: 11px;
 }

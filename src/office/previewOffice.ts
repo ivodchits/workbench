@@ -1,8 +1,8 @@
 // The office for the preview (office plans O1.1–O1.4); the office page runs on real
 // sessions instead (liveOffice.ts). A made-up snapshot with one session in each state
 // from "Status → behaviour" (world/fixtures.ts) is seated as the page would seat it, so
-// every behaviour shows at once: typing, typing fast, at the rack and the whiteboard,
-// reading, filing, waving with a `!` or a `?`, sweating, slumped, leaning back with a
+// every behaviour shows at once: typing, typing fast, typing a command, reading tests,
+// reading, compacting, waving with a `!` or a `?`, sweating, slumped, leaning back with a
 // coffee, and two contractors. Theo is saying something, and so is Duck.
 // A debug click moves people: click a worker to pick them, then a spot on the floor to
 // send them there, a desk to sit at it, or the door to walk out (they go back to what

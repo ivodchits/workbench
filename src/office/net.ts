@@ -5,7 +5,8 @@
 // sidebar shows (O1.5), on the phone's terms. The same snapshot and actions
 // as the phone (`src/remote/protocol.ts`). The page's own settings (`prefs`) are kept by
 // Workbench too, in its DB, so they outlive the tab; so are chatter's settings (O4.1),
-// whose scenes it asks for here.
+// whose scenes it asks for here. A `notes` frame on the socket says a project's notes
+// changed, for the bookshelves' notes (notesPanel.ts).
 
 import type { ChatterAnswer, ChatterRequest, ChatterSettings } from "../remote/chatter";
 import type { PictionaryAnswer, PictionaryRequest } from "../remote/pictionary";
@@ -128,7 +129,9 @@ async function sessionKnown(session: string): Promise<boolean | null> {
   }
 }
 
-export function connect(onState: (state: LinkState) => void): Link {
+/** `onNotes` hears that a project's notes changed (anywhere: here, the desktop, a
+ *  phone), from a `notes` frame on the snapshot socket. */
+export function connect(onState: (state: LinkState) => void, onNotes?: (projectId: string) => void): Link {
   let session: string | null = null;
   let signedIn!: (session: string | null) => void;
   const ready = new Promise<string | null>((resolve) => (signedIn = resolve));
@@ -147,10 +150,12 @@ export function connect(onState: (state: LinkState) => void): Link {
     ws.onmessage = (e) => {
       retry = RETRY_MIN;
       try {
-        const data = JSON.parse(String(e.data)) as Partial<RemoteSnapshot>;
-        if (Array.isArray(data.instances)) onState({ kind: "live", snapshot: data as RemoteSnapshot });
+        const data = JSON.parse(String(e.data)) as Partial<RemoteSnapshot> & { type?: string; projectId?: string };
+        if (data.type === "notes") {
+          if (typeof data.projectId === "string") onNotes?.(data.projectId);
+        } else if (Array.isArray(data.instances)) onState({ kind: "live", snapshot: data as RemoteSnapshot });
       } catch {
-        // Not a snapshot; nothing else is sent yet.
+        // Not JSON: nothing like that is sent.
       }
     };
     ws.onclose = async () => {

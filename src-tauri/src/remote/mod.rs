@@ -868,16 +868,18 @@ pub fn remote_push_snapshot(state: State<'_, Arc<RemoteState>>, json: String) {
     }
 }
 
-/// Tell connected phones that a project's notes changed (step R8), on the dashboard
+/// Tell connected phones (and the office) that a project's notes changed (step R8), on the dashboard
 /// socket beside the snapshots: `{"type":"notes","projectId":…}`. Not stored as the
 /// snapshot, so a phone connecting later just reads the notes fresh. A no-op while
 /// the server is off or remote access was never set up.
 pub fn push_notes_changed(app: &AppHandle, project_id: &str) {
     let Some(state) = app.try_state::<Arc<RemoteState>>() else { return };
-    let inner = state.inner.lock().unwrap();
-    if let Some(tx) = &inner.tx {
-        let _ = tx.send(serde_json::json!({ "type": "notes", "projectId": project_id }).to_string());
+    let frame = serde_json::json!({ "type": "notes", "projectId": project_id }).to_string();
+    if let Some(tx) = &state.inner.lock().unwrap().tx {
+        let _ = tx.send(frame.clone());
     }
+    // The office's notes (its bookshelves) hear it on the snapshot socket.
+    state.office.push(&frame);
 }
 
 /// List paired devices (approved and waiting) for the menu and the approval dialog.

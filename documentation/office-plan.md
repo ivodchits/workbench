@@ -88,10 +88,10 @@ Workbench webview ──snapshot──▶ Rust core ──▶ office listener (1
 | Signal | Worker | Over the head |
 |---|---|---|
 | `working` + edit | typing, monitor glows | — (the monitor shows it) |
-| `working` + bash / test | at the server rack / whiteboard, fidgeting | status icon |
+| `working` + bash / test | at the desk: typing a command / reading the results (2026-11-04: nobody leaves the desk for work) | — |
 | `working` + web / read | reading a newspaper / a document | — |
 | `subagents > 0` | typing faster; the count shows in the sidebar | — |
-| `compacting` | shuffling papers into the filing cabinet | — |
+| `compacting` | at the desk, reading a sheet | — |
 | `needs_you` | stands beside the desk, waves; monitor flashes red | **`!`** bubble (**`?`** when it's a question with options) |
 | `escalated` | sweating, bubble pulses red | `!` red |
 | `stuck` | slumped on the keyboard | `…` |
@@ -1238,6 +1238,21 @@ survive a move between devices.
   - **Live test owed:** in the real app, New Lesson starting a lesson in `spanish-lessons`
     and opening it in the window, Fernando teaching and asking, and a real word of the day.
 
+- **O5.9 Project notes from the bookshelves** (2026-11-04, live test owed)
+  - Clicking either bookshelf (Demiurge's, Duck's office) opens the project notes in the
+    sidebar (`src/office/notesPanel.ts`): a project picker (the last one remembered), its
+    notes newest first, a new note by name, and a note to edit in a plain field — saved
+    1.2 s after typing stops, on Ctrl+S, on leaving it — with a markdown preview, rename
+    (the name field) and delete (asked twice).
+  - The phone's notes API on the office listener (`/office/api/notes…`,
+    `remote/office/notes.rs`), behind the office session; `remote/notes.rs` split into
+    the bearer gate and shared handlers. A save names its base revision: a 409 shows
+    "keep mine / take theirs". `notes::notify` now also sends `{type:"notes"}` on the
+    office socket, so the list and an unedited open note follow changes made elsewhere.
+  - Working sessions no longer send workers to the rack, the whiteboard or the cabinet:
+    bash types, tests and compacting read a document, all seated (`behave.ts`; stations
+    and their stay rule removed).
+
 ## Phase O6 — Polish
 - **O6.1** Settings page (room mapping, roster names, chatter budget and model, open in browser
   vs window, ROM folder).
@@ -1307,6 +1322,7 @@ closed, open and still, and open and busy.
 - [ ] O5.6 D&D table
 - [ ] O5.7 Meeting room: pitch an idea
 - [x] O5.8 Fernando, the Spanish teacher (live test owed)
+- [x] O5.9 Project notes from the bookshelves; work stays at the desk (live test owed)
 - [ ] O6.1 Settings
 - [ ] O6.2 Performance pass
 - [ ] O6.3 Docs

@@ -14,6 +14,7 @@
 // console (games/console/, O5.3a), and while you play on it idle workers come to watch.
 // Clicking Fernando, the Spanish teacher in the lounge, opens the Spanish lessons over
 // the office (spanish.ts): a new lesson, an empty session, the word of the day.
+// Clicking a bookshelf opens the project notes in the sidebar (notesPanel.ts).
 
 import { fitSize, sideLayout } from "./canvas";
 import { startHud } from "./hud";
@@ -27,6 +28,7 @@ import {
   OFFICE_W,
   askAt,
   askOf,
+  bookshelfAt,
   clickOffice,
   drawOffice,
   deskOffer,
@@ -59,6 +61,7 @@ import {
 } from "./liveOffice";
 import { createAskCard } from "./askCard";
 import { createDuckChat } from "./duckChat";
+import { createNotesPanel } from "./notesPanel";
 import { createHireForm, type HireTarget } from "./hireForm";
 import { ROSTER } from "./roster";
 import type { Cost } from "./net";
@@ -113,8 +116,9 @@ const view = {
   paused: false,
   pausedAt: 0,
 };
-/** `view.selected` while the new-session form is open. */
+/** `view.selected` while the new-session form is open; while the notes are. */
 const HIRE_ID = "hire";
+const NOTES_ID = "notes";
 /** The desk the form is for, the free desk under the pointer, and the one a dragged
  *  worker is over. */
 let hireTarget: HireTarget | null = null;
@@ -174,29 +178,33 @@ const pickRoom = (id: string, team: Parameters<typeof setRoom>[1]) => {
   setRoom(id, team);
   loop.invalidate();
 };
-const link = connect((state) => {
-  showLink(linkEl, state);
-  if (state.kind !== "live") {
-    snapshot = null;
-    return statsEl.replaceChildren();
-  }
-  snapshot = state.snapshot;
-  officeSnapshot(state.snapshot);
-  // Which project's sessions are Fernando's, asked once a connection is up.
-  if (!spanishAsked) {
-    spanishAsked = true;
-    void link.spanish({ today: today(), word: false }).then((a) => {
-      if (a?.status === "ok") foundSpanish(a.result.projectId);
-      else spanishAsked = false;
-    });
-  }
-  spanish.update(state.snapshot);
-  showRooms(roomsEl, state.snapshot.projects, roomOf, pickRoom);
-  hireForm.update(state.snapshot);
-  if (ask.id) ask.update(whoAt(ask.id));
-  showSelected();
-  showTip();
-});
+const link = connect(
+  (state) => {
+    showLink(linkEl, state);
+    if (state.kind !== "live") {
+      snapshot = null;
+      return statsEl.replaceChildren();
+    }
+    snapshot = state.snapshot;
+    officeSnapshot(state.snapshot);
+    // Which project's sessions are Fernando's, asked once a connection is up.
+    if (!spanishAsked) {
+      spanishAsked = true;
+      void link.spanish({ today: today(), word: false }).then((a) => {
+        if (a?.status === "ok") foundSpanish(a.result.projectId);
+        else spanishAsked = false;
+      });
+    }
+    spanish.update(state.snapshot);
+    showRooms(roomsEl, state.snapshot.projects, roomOf, pickRoom);
+    hireForm.update(state.snapshot);
+    if (ask.id) ask.update(whoAt(ask.id));
+    notes.update(state.snapshot.projects);
+    showSelected();
+    showTip();
+  },
+  (projectId) => notes.changed(projectId),
+);
 const panel = createPanel(document.querySelector<HTMLElement>("#session")!, link, () => select(null));
 const hireForm = createHireForm(document.querySelector<HTMLElement>("#hire")!, link, {
   close: () => select(null),
@@ -219,6 +227,7 @@ const spanish = createSpanishOverlay(document.querySelector<HTMLElement>("#spani
   found: (info) => foundSpanish(info.projectId),
   current: spanishSession,
 });
+const notes = createNotesPanel(document.querySelector<HTMLElement>("#notes")!, link, () => select(null));
 const duckChat = createDuckChat(document.querySelector<HTMLElement>("#duck")!, link, () => select(null), (turn) => {
   duckChatTurn(turn);
   loop.invalidate();
@@ -229,13 +238,15 @@ const duckChat = createDuckChat(document.querySelector<HTMLElement>("#duck")!, l
 function showSelected(): void {
   const duck = view.selected === DUCK_ID && !view.overlay;
   const hiring = view.selected === HIRE_ID && !view.overlay ? hireTarget : null;
-  const who = view.selected && !view.overlay && !duck && !hiring ? whoAt(view.selected) : null;
-  side.classList.toggle("open", !!who || duck || !!hiring);
+  const reading = view.selected === NOTES_ID && !view.overlay;
+  const who = view.selected && !view.overlay && !duck && !hiring && !reading ? whoAt(view.selected) : null;
+  side.classList.toggle("open", !!who || duck || !!hiring || reading);
   panel.show(who);
   duckChat.show(duck);
   hireForm.show(hiring);
+  notes.show(reading);
   outline();
-  if (!who && !duck && !hiring) showStatsNow();
+  if (!who && !duck && !hiring && !reading) showStatsNow();
 }
 
 /** The desk outlined: the one a worker is dragged over, the form's, or the free one
@@ -407,7 +418,8 @@ function showTip(): void {
   const desk = !view.hover && !drag && hoverDesk !== null;
   const game = !view.hover && !drag ? hoverGame : null;
   const table = !view.hover && !drag && !game && hoverTable;
-  tip.hidden = !((who || duck || fernando || desk || game || table) && pointer && !view.overlay);
+  const shelf = !view.hover && !drag && !game && !table && hoverShelf;
+  tip.hidden = !((who || duck || fernando || desk || game || table || shelf) && pointer && !view.overlay);
   if (tip.hidden || !pointer) return;
   const free = who && !who.instance && who.worker && workerFree(who.worker.id);
   const hint = free ? "drag onto a free desk: a new session" : hoverAsk ? "click the bubble to answer here" : null;
@@ -421,7 +433,9 @@ function showTip(): void {
         ? [GAME_NAMES[game], "click to play"]
         : table
           ? ["The standup table", standupNotes()?.on ? "a standup is under way" : "click for a standup: what got done yesterday"]
-          : ["A free desk", "click to start a session here"];
+          : shelf
+            ? ["The bookshelf", "click for the project notes"]
+            : ["A free desk", "click to start a session here"];
   tip.replaceChildren(
     ...lines.map((text, n) => {
       const line = document.createElement("div");
@@ -449,6 +463,7 @@ setInterval(() => !tip.hidden && showTip(), 1000);
 let hoverAsk = false;
 let hoverGame: GameProp | null = null;
 let hoverTable = false;
+let hoverShelf = false;
 
 /** Hovering a worker (or their bubble) shows their name tag and the tooltip; a free
  *  desk is outlined. */
@@ -460,7 +475,8 @@ function hoverAt(e: PointerEvent | null): void {
   const desk = e && !id && !view.overlay ? freeDeskAt(...sceneAt(e)) : null;
   const game = e && !id && desk === null && !view.overlay ? gameAt(...sceneAt(e)) : null;
   hoverTable = !!e && !id && desk === null && !game && !view.overlay && standupTableAt(...sceneAt(e));
-  canvas.style.cursor = id || desk !== null || game || hoverTable || (view.overlay && view.selected) ? "pointer" : "";
+  hoverShelf = !!e && !id && desk === null && !game && !hoverTable && !view.overlay && bookshelfAt(...sceneAt(e));
+  canvas.style.cursor = id || desk !== null || game || hoverTable || hoverShelf || (view.overlay && view.selected) ? "pointer" : "";
   const moved = id !== view.hover || desk !== hoverDesk;
   hoverGame = game;
   view.hover = id;
@@ -537,6 +553,8 @@ canvas.addEventListener("click", (e) => {
     standup();
     standupPanel.update();
     loop.invalidate();
+  } else if (!id && desk === null && !game && bookshelfAt(...sceneAt(e))) {
+    select(NOTES_ID);
   } else if (game) {
     hoverAt(null);
     games.show(GAMES[game]);

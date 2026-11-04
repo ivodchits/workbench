@@ -252,6 +252,10 @@ export function freeDeskAt(x: number, y: number): number | null {
 /** The prop at (x, y) in office pixels that opens a game (O5.1): the TV or the kicker. */
 export const gameAt = (x: number, y: number): GameProp | null => gamePropAt(office, x, y);
 
+/** Whether (x, y) in office pixels is on a bookshelf, which opens the project notes. */
+export const bookshelfAt = (x: number, y: number): boolean =>
+  office.props.some((p) => p.id === "bookshelf" && x >= p.x && x < p.x + p.prop.w && y >= p.y && y < p.y + p.prop.h);
+
 /** Whether worker `id` has nothing to do (so can be given a session). */
 export const workerFree = (id: string): boolean => world.workers.some((w) => w.worker.id === id) && isFree(staff, id);
 

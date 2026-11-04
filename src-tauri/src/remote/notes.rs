@@ -19,8 +19,12 @@
 //!   gets " 2", " 3", …
 //! - `POST /api/notes/save {project, id, content, base}` — `{revision}`, or 409.
 //! - `POST /api/notes/rename {project, id, to}`, `POST /api/notes/delete {project, id}`.
+//!
+//! The office's listener serves the same under `/office/api/notes…`, signed in with
+//! the office's session instead of a pairing (`office/notes.rs`).
 
 use std::net::SocketAddr;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use axum::extract::{ConnectInfo, Query, State};
@@ -43,8 +47,15 @@ fn gate(
     peer: SocketAddr,
     headers: &HeaderMap,
     project: Option<&str>,
-) -> Result<std::path::PathBuf, Response> {
+) -> Result<PathBuf, Response> {
     authed(state, bearer(headers).as_deref(), &client_addr(peer, headers))?;
+    root_for(state, project)
+}
+
+#[allow(clippy::result_large_err)]
+/// The notes root, once `project` (when named) is known to the registry. The office's
+/// listener (`office/notes.rs`) checks its own session and then comes here too.
+pub(super) fn root_for(state: &Arc<RemoteState>, project: Option<&str>) -> Result<PathBuf, Response> {
     if let Some(project) = project {
         let db = state.app.state::<Db>();
         let conn = db.conn.lock().expect("db lock poisoned");
@@ -74,10 +85,13 @@ pub(super) async fn counts(
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
 ) -> Response {
-    let root = match gate(&state, peer, &headers, None) {
-        Ok(root) => root,
-        Err(refusal) => return refusal,
-    };
+    match gate(&state, peer, &headers, None) {
+        Ok(root) => do_counts(&state, &root),
+        Err(refusal) => refusal,
+    }
+}
+
+pub(super) fn do_counts(state: &Arc<RemoteState>, root: &Path) -> Response {
     let projects = {
         let db = state.app.state::<Db>();
         let conn = db.conn.lock().expect("db lock poisoned");
@@ -85,7 +99,7 @@ pub(super) async fn counts(
     };
     let counts: Vec<_> = projects
         .iter()
-        .map(|p| json!({ "projectId": p.id, "count": notes::list(&root, &p.id).map_or(0, |l| l.len()) }))
+        .map(|p| json!({ "projectId": p.id, "count": notes::list(root, &p.id).map_or(0, |l| l.len()) }))
         .collect();
     Json(counts).into_response()
 }
@@ -93,9 +107,9 @@ pub(super) async fn counts(
 #[derive(Deserialize)]
 pub(super) struct ProjectQuery {
     #[serde(default)]
-    project: String,
+    pub(super) project: String,
     #[serde(default)]
-    id: String,
+    pub(super) id: String,
 }
 
 pub(super) async fn list(
@@ -104,11 +118,14 @@ pub(super) async fn list(
     headers: HeaderMap,
     Query(q): Query<ProjectQuery>,
 ) -> Response {
-    let root = match gate(&state, peer, &headers, Some(&q.project)) {
-        Ok(root) => root,
-        Err(refusal) => return refusal,
-    };
-    match notes::list(&root, &q.project) {
+    match gate(&state, peer, &headers, Some(&q.project)) {
+        Ok(root) => do_list(&state, &root, q),
+        Err(refusal) => refusal,
+    }
+}
+
+pub(super) fn do_list(_state: &Arc<RemoteState>, root: &Path, q: ProjectQuery) -> Response {
+    match notes::list(root, &q.project) {
         Ok(list) => Json(list).into_response(),
         Err(e) => failed(e),
     }
@@ -120,11 +137,14 @@ pub(super) async fn read(
     headers: HeaderMap,
     Query(q): Query<ProjectQuery>,
 ) -> Response {
-    let root = match gate(&state, peer, &headers, Some(&q.project)) {
-        Ok(root) => root,
-        Err(refusal) => return refusal,
-    };
-    match notes::read(&root, &q.project, &q.id) {
+    match gate(&state, peer, &headers, Some(&q.project)) {
+        Ok(root) => do_read(&state, &root, q),
+        Err(refusal) => refusal,
+    }
+}
+
+pub(super) fn do_read(_state: &Arc<RemoteState>, root: &Path, q: ProjectQuery) -> Response {
+    match notes::read(root, &q.project, &q.id) {
         Ok(note) => note_json(&note),
         Err(e) if e.contains("no longer exists") => refuse(StatusCode::NOT_FOUND, &e),
         Err(e) => failed(e),
@@ -133,10 +153,10 @@ pub(super) async fn read(
 
 #[derive(Deserialize)]
 pub(super) struct CreateReq {
-    project: String,
-    name: String,
+    pub(super) project: String,
+    pub(super) name: String,
     #[serde(default)]
-    content: String,
+    pub(super) content: String,
 }
 
 pub(super) async fn create(
@@ -145,11 +165,14 @@ pub(super) async fn create(
     headers: HeaderMap,
     Json(req): Json<CreateReq>,
 ) -> Response {
-    let root = match gate(&state, peer, &headers, Some(&req.project)) {
-        Ok(root) => root,
-        Err(refusal) => return refusal,
-    };
-    match notes::create_unique(&root, &req.project, req.name.trim(), &req.content) {
+    match gate(&state, peer, &headers, Some(&req.project)) {
+        Ok(root) => do_create(&state, &root, req),
+        Err(refusal) => refusal,
+    }
+}
+
+pub(super) fn do_create(state: &Arc<RemoteState>, root: &Path, req: CreateReq) -> Response {
+    match notes::create_unique(root, &req.project, req.name.trim(), &req.content) {
         Ok(note) => {
             notes::notify(&state.app, &req.project);
             note_json(&note)
@@ -160,13 +183,13 @@ pub(super) async fn create(
 
 #[derive(Deserialize)]
 pub(super) struct SaveReq {
-    project: String,
-    id: String,
-    content: String,
+    pub(super) project: String,
+    pub(super) id: String,
+    pub(super) content: String,
     /// The revision the text was edited from; absent overwrites (after the phone
     /// showed both versions and the user chose theirs to go).
     #[serde(default)]
-    base: Option<String>,
+    pub(super) base: Option<String>,
 }
 
 pub(super) async fn save(
@@ -175,18 +198,21 @@ pub(super) async fn save(
     headers: HeaderMap,
     Json(req): Json<SaveReq>,
 ) -> Response {
-    let root = match gate(&state, peer, &headers, Some(&req.project)) {
-        Ok(root) => root,
-        Err(refusal) => return refusal,
-    };
-    match notes::write(&root, &req.project, &req.id, &req.content, req.base.as_deref()) {
+    match gate(&state, peer, &headers, Some(&req.project)) {
+        Ok(root) => do_save(&state, &root, req),
+        Err(refusal) => refusal,
+    }
+}
+
+pub(super) fn do_save(state: &Arc<RemoteState>, root: &Path, req: SaveReq) -> Response {
+    match notes::write(root, &req.project, &req.id, &req.content, req.base.as_deref()) {
         Ok(revision) => {
             notes::notify(&state.app, &req.project);
             Json(json!({ "revision": revision })).into_response()
         }
         Err(e) if e.starts_with(notes::STALE) => {
             // The note as it is now (or null, deleted), so both versions can be shown.
-            let current = notes::read(&root, &req.project, &req.id)
+            let current = notes::read(root, &req.project, &req.id)
                 .ok()
                 .map(|n| json!({ "id": n.id, "content": n.content, "revision": n.revision }));
             (StatusCode::CONFLICT, Json(json!({ "error": e, "current": current }))).into_response()
@@ -197,9 +223,9 @@ pub(super) async fn save(
 
 #[derive(Deserialize)]
 pub(super) struct RenameReq {
-    project: String,
-    id: String,
-    to: String,
+    pub(super) project: String,
+    pub(super) id: String,
+    pub(super) to: String,
 }
 
 pub(super) async fn rename(
@@ -208,11 +234,14 @@ pub(super) async fn rename(
     headers: HeaderMap,
     Json(req): Json<RenameReq>,
 ) -> Response {
-    let root = match gate(&state, peer, &headers, Some(&req.project)) {
-        Ok(root) => root,
-        Err(refusal) => return refusal,
-    };
-    match notes::rename(&root, &req.project, &req.id, req.to.trim()) {
+    match gate(&state, peer, &headers, Some(&req.project)) {
+        Ok(root) => do_rename(&state, &root, req),
+        Err(refusal) => refusal,
+    }
+}
+
+pub(super) fn do_rename(state: &Arc<RemoteState>, root: &Path, req: RenameReq) -> Response {
+    match notes::rename(root, &req.project, &req.id, req.to.trim()) {
         Ok(()) => {
             notes::notify(&state.app, &req.project);
             StatusCode::OK.into_response()
@@ -223,8 +252,8 @@ pub(super) async fn rename(
 
 #[derive(Deserialize)]
 pub(super) struct DeleteReq {
-    project: String,
-    id: String,
+    pub(super) project: String,
+    pub(super) id: String,
 }
 
 pub(super) async fn delete(
@@ -233,11 +262,14 @@ pub(super) async fn delete(
     headers: HeaderMap,
     Json(req): Json<DeleteReq>,
 ) -> Response {
-    let root = match gate(&state, peer, &headers, Some(&req.project)) {
-        Ok(root) => root,
-        Err(refusal) => return refusal,
-    };
-    match notes::delete(&root, &req.project, &req.id) {
+    match gate(&state, peer, &headers, Some(&req.project)) {
+        Ok(root) => do_delete(&state, &root, req),
+        Err(refusal) => refusal,
+    }
+}
+
+pub(super) fn do_delete(state: &Arc<RemoteState>, root: &Path, req: DeleteReq) -> Response {
+    match notes::delete(root, &req.project, &req.id) {
         Ok(()) => {
             notes::notify(&state.app, &req.project);
             StatusCode::OK.into_response()

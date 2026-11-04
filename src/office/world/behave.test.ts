@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import type { RemoteInstance } from "../../remote/protocol";
 import { buildOffice } from "../map/build";
-import { LOOSE_FOR, SETTLE, STAY, WANDER_AFTER, behave, besideDesk, doing } from "./behave";
+import { LOOSE_FOR, SETTLE, WANDER_AFTER, behave, besideDesk, doing } from "./behave";
 import { debugClick } from "./debug";
 import { createWorld, type WorkerEntity, type World } from "./entities";
 import { EVERY_STATE, EVERY_STATE_ROOMS, instance, snapshot, testStaff } from "./fixtures";
@@ -15,18 +15,18 @@ const spot = (id: string) => office.spots.find((s) => s.id === id)!;
 describe("what a session asks of its worker", () => {
   const of = (over: Partial<RemoteInstance>, doneFor = 0) => {
     const d = doing(instance("a", "p", over), doneFor);
-    return [d.place.kind === "station" ? d.place.station : d.place.kind, d.anim, d.overhead, d.bubble && `${d.bubble.text} ${d.bubble.tone}`];
+    return [d.place.kind, d.anim, d.overhead, d.bubble && `${d.bubble.text} ${d.bubble.tone}`];
   };
 
-  it("works at the desk, the rack, the whiteboard or with something to read, by the latest tool", () => {
+  it("works seated at the desk whatever the tool: typing, or with something to read", () => {
     expect(of({ activity: "edit" })).toEqual(["desk", "type", "working", null]);
     expect(of({ activity: null })).toEqual(["desk", "type", "working", null]);
     expect(of({ activity: "task", subagents: 1 })).toEqual(["desk", "typeFast", "working", null]);
-    expect(of({ activity: "bash" })).toEqual(["rack", "tinker", "working", null]);
-    expect(of({ activity: "test" })).toEqual(["board", "board", "working", null]);
+    expect(of({ activity: "bash" })).toEqual(["desk", "type", "working", null]);
+    expect(of({ activity: "test" })).toEqual(["desk", "document", "working", null]);
     expect(of({ activity: "web" })).toEqual(["desk", "newspaper", "working", null]);
     expect(of({ activity: "read" })).toEqual(["desk", "document", "working", null]);
-    expect(of({ activity: "edit", compacting: true })).toEqual(["cabinet", "file", "working", null]);
+    expect(of({ activity: "edit", compacting: true })).toEqual(["desk", "document", "working", null]);
   });
 
   it("stands and waves when the session needs you: ? for a question, a red ! once escalated", () => {
@@ -83,8 +83,8 @@ describe("workers doing what their session is doing", () => {
     const needs = by("needs");
     expect([at(needs), needs.dir, needs.anim, needs.bubble?.text]).toEqual([landing(office, besideDesk(office.seats[needs.home])), "down", "wave", "!"]);
     expect(world.screens[staff.seating.get("needs")!.desk!]).toBe("alert");
-    expect([at(by("bash")), by("bash").anim]).toEqual([at(spot("rack")), "tinker"]);
-    expect(by("compacting").anim).toBe("file");
+    expect([by("bash").seat, by("bash").anim]).toEqual([by("bash").home, "type"]);
+    expect([by("compacting").seat, by("compacting").anim]).toEqual([by("compacting").home, "document"]);
     expect([by("web").anim, by("read").anim, by("stuck").anim, by("done").anim]).toEqual(["newspaper", "document", "sleep", "coffee"]);
     expect(by("escalated").bubble).toEqual({ text: "!", tone: "alert", pulse: true });
     // Two contractors at the extra desks, one with the bubble.
@@ -106,50 +106,32 @@ describe("workers doing what their session is doing", () => {
     expect([w.seat, w.anim, w.bubble]).toEqual([desk, "type", null]);
   });
 
-  it("goes to the rack for a command that lasts, not one that flicks past", () => {
+  it("stays at the desk for commands, tests and compacting, never off to the rack or a whiteboard", () => {
     const o = office$();
     o.seat([instance("a", "misc")]);
     o.run(20_000);
     const w = o.of("a");
     const desk = w.seat;
-    o.seat([instance("a", "misc", { activity: "bash" })]);
-    o.run(SETTLE - 500);
-    o.seat([instance("a", "misc", { activity: "edit" })]);
-    o.run(SETTLE + 500);
-    expect([w.seat, w.walk]).toEqual([desk, null]);
-
-    o.seat([instance("a", "misc", { activity: "bash" })]);
-    o.run(SETTLE + 15_000);
-    expect([at(w), w.dir, w.anim, o.staff.spots.get(w.worker.id)]).toEqual([{ x: spot("rack").x, y: spot("rack").y }, "up", "tinker", "rack"]);
-    // The monitor keeps running while they're away from it.
-    expect(o.world.screens[desk!]).toBe("code");
+    for (const over of [{ activity: "bash" }, { activity: "test" }, { activity: "edit", compacting: true }] as const) {
+      o.seat([instance("a", "misc", over)]);
+      for (let t = 0; t < SETTLE + 15_000; t += 100) {
+        o.run(100);
+        expect([w.seat, w.walk]).toEqual([desk, null]);
+      }
+      expect([w.anim, o.staff.spots.has(w.worker.id), o.world.screens[desk!]]).toEqual([over.activity === "bash" ? "type" : "document", false, "code"]);
+    }
   });
 
-  it("stays at a station a while after getting there before going back to the desk", () => {
+  it("changes pose only once a new tool has held for a moment", () => {
     const o = office$();
-    o.seat([instance("a", "misc", { activity: "test" })]);
-    const w = o.of("a");
-    while (w.anim !== "board") o.run(100);
-    const arrived = o.now();
-    o.seat([instance("a", "misc", { activity: "edit" })]);
-    o.run(SETTLE + 200);
-    expect(w.walk).toBeNull();
-    while (!w.walk) o.run(100);
-    expect(o.now() - arrived).toBeGreaterThanOrEqual(STAY);
-    expect(w.walk?.then).toEqual({ kind: "sit", seat: w.home });
+    o.seat([instance("a", "misc")]);
     o.run(20_000);
-    expect([w.seat, w.anim, o.staff.spots.has(w.worker.id)]).toEqual([w.home, "type", false]);
-  });
-
-  it("shares the stations: the second tester takes the other whiteboard, a third stays at the desk", () => {
-    const o = office$();
-    const list = ["a", "b", "c"].map((id) => instance(id, "misc", { activity: "test" }));
-    o.seat(list);
-    o.run(40_000);
-    const boards = ["a", "b", "c"].map((id) => o.staff.spots.get(o.of(id).worker.id) ?? null);
-    expect([...boards].sort()).toEqual(["board-demiurge", "pitch-board", null].sort());
-    const third = o.of(list[boards.indexOf(null)].id);
-    expect([third.seat, third.anim]).toEqual([third.home, "type"]);
+    const w = o.of("a");
+    o.seat([instance("a", "misc", { activity: "test" })]);
+    o.run(SETTLE - 500);
+    expect(w.anim).toBe("type");
+    o.run(1000);
+    expect(w.anim).toBe("document");
   });
 
   it("leans back when done, wanders off after ten minutes, and comes back for the next turn", () => {
@@ -194,12 +176,11 @@ describe("workers doing what their session is doing", () => {
   it("shows the working icon only away from the desk", () => {
     const o = office$();
     o.seat([instance("a", "misc", { activity: "edit" })]);
-    o.run(20_000);
     const w = o.of("a");
+    o.run(500);
+    expect([w.seat, w.overhead]).toEqual([null, "working"]);
+    o.run(20_000);
     expect([w.seat, w.overhead]).toEqual([w.home, null]);
-    o.seat([instance("a", "misc", { activity: "bash" })]);
-    o.run(SETTLE + 20_000);
-    expect([w.seat, w.anim, w.overhead]).toEqual([null, "tinker", "working"]);
   });
 
   it("leaves someone a debug click moved alone till a moment after they get there", () => {

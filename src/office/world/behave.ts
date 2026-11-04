@@ -1,8 +1,8 @@
 // What a worker does about their session (office plan O1.4, "Status → behaviour"). Each
 // sim step, every worker with a session is given a place and a pose from it: typing at
-// the desk (faster with subagents out), reading a newspaper or a document there, at the
-// server rack for a command, at the whiteboard for tests, filing papers while the
-// context compacts, up and waving when the session needs you (sweating once it's been
+// the desk (faster with subagents out, and for a command), reading a newspaper or a
+// document there (for tests, and while the context compacts) — all work is done
+// seated, so you can see at a glance who's on what — up and waving when the session needs you (sweating once it's been
 // too long), slumped on the keyboard when it seems stuck, leaning back with a coffee
 // when it's done — wandering off after ten minutes of that — and off to the kitchen or
 // the lounge when the session has ended; up and cheering for a moment after a commit
@@ -14,15 +14,13 @@
 // Someone given a session from the office (O3.2, `hire.ts`) goes to its desk and sits
 // waiting there till it starts.
 //
-// A change of activity only moves someone once it has held for a moment, and nobody
-// leaves the rack or the whiteboard straight after getting there, so a session
-// flicking between tools doesn't send its worker running back and forth. A change of
-// phase is acted on at once.
+// A change of activity only takes once it has held for a moment, so a session flicking
+// between tools doesn't make its worker twitch between poses. A change of phase is
+// acted on at once.
 
 import { ANIMS, type Anim, type Dir } from "../art/characters";
 import type { Overhead } from "../art/labels";
 import type { OfficeMap, Point, Seat } from "../map/build";
-import type { SpotSpec } from "../map/office";
 import type { RemoteInstance } from "../../remote/protocol";
 import { seatedAt, setAnim, type Bubble, type Screen, type WorkerEntity, type World } from "./entities";
 import { playGroups } from "./groups";
@@ -34,18 +32,7 @@ import { activity, dayPart, pickIdle } from "./idle";
 import { enter, landing, walkTo } from "./move";
 import type { IdleState, Staff } from "./sessions";
 
-/** Away from the desk for work: which spots, and which way to face there. */
-export type Station = "rack" | "board" | "cabinet";
-const STATIONS: Record<Station, readonly { id: string; face: Dir }[]> = {
-  rack: [{ id: "rack", face: "up" }],
-  board: [
-    { id: "board-demiurge", face: "up" },
-    { id: "pitch-board", face: "up" },
-  ],
-  cabinet: [{ id: "cabinet", face: "up" }],
-};
-
-export type Place = { kind: "desk" } | { kind: "stand" } | { kind: "station"; station: Station } | { kind: "about" };
+export type Place = { kind: "desk" } | { kind: "stand" } | { kind: "about" };
 
 /** What a session asks of its worker. */
 export interface Doing {
@@ -62,8 +49,6 @@ const DESK_W = 32;
 export const WANDER_AFTER = 10 * 60_000;
 /** A new activity has to hold this long before the worker acts on it. */
 export const SETTLE = 1500;
-/** Nobody leaves a station sooner than this after getting there. */
-export const STAY = 6000;
 /** Someone a debug click sent somewhere stays there this long. */
 export const LOOSE_FOR = 3000;
 /** An idle worker who hasn't got where they were going in this long picks again. */
@@ -72,8 +57,8 @@ export const TRAVEL_MAX = 90_000;
 export const IDLE_RETRY = 5000;
 
 const WORKING: Partial<Record<NonNullable<RemoteInstance["activity"]>, Omit<Doing, "overhead" | "bubble">>> = {
-  bash: { place: { kind: "station", station: "rack" }, anim: "tinker" },
-  test: { place: { kind: "station", station: "board" }, anim: "board" },
+  bash: { place: { kind: "desk" }, anim: "type" },
+  test: { place: { kind: "desk" }, anim: "document" },
   web: { place: { kind: "desk" }, anim: "newspaper" },
   read: { place: { kind: "desk" }, anim: "document" },
 };
@@ -87,7 +72,7 @@ export function doing(i: RemoteInstance, doneFor = 0): Doing {
     const text = i.choice?.kind === "question" ? "?" : "!";
     return { place: { kind: "stand" }, anim: "wave", overhead: null, bubble: { text, tone: "needs" } };
   }
-  if (i.compacting) return { place: { kind: "station", station: "cabinet" }, anim: "file", overhead: "working", bubble: null };
+  if (i.compacting) return { place: { kind: "desk" }, anim: "document", overhead: "working", bubble: null };
   if (i.phase === "working") {
     if (i.stuck) return { place: { kind: "desk" }, anim: "sleep", overhead: "stuck", bubble: null };
     const job = (i.activity && WORKING[i.activity]) || { place: { kind: "desk" }, anim: i.subagents > 0 ? "typeFast" : "type" };
@@ -105,14 +90,11 @@ export interface Plan {
   doing: Doing;
   phase: RemoteInstance["phase"];
   since: number;
-  /** When they got there, for a station. */
-  arrived?: number;
   /** What they'd rather be doing, and since when: taken up after `SETTLE`. */
   next?: { key: string; since: number };
 }
 
-const placeKey = (p: Place) => (p.kind === "station" ? `station:${p.station}` : p.kind);
-const keyOf = (d: Doing) => `${placeKey(d.place)}/${d.anim}`;
+const keyOf = (d: Doing) => `${d.place.kind}/${d.anim}`;
 
 /** Moves everyone to match their session, or to an idle spot without one. `instant`
  *  puts people where they belong without walking (the first snapshot). True when the
@@ -180,12 +162,11 @@ function cheering(staff: Staff, id: string, ms: number): boolean {
   return false;
 }
 
-/** `plan` with a cheer in it: up beside the desk, or where they are at a station.
- *  Nobody cheers mid-question or wandered off. */
+/** `plan` with a cheer in it: up beside the desk. Nobody cheers mid-question or
+ *  wandered off. */
 function cheer(plan: Plan): Plan {
   const { place } = plan.doing;
   if (place.kind === "desk") return { ...plan, doing: { ...plan.doing, place: { kind: "stand" }, anim: "cheer" } };
-  if (place.kind === "station") return { ...plan, doing: { ...plan.doing, anim: "cheer" } };
   return plan;
 }
 
@@ -196,8 +177,7 @@ function choose(plan: Plan | undefined, want: Doing, phase: Plan["phase"], ms: n
   const key = keyOf(want);
   if (key === keyOf(plan.doing)) return { ...plan, doing: want, next: undefined };
   const next = plan.next?.key === key ? plan.next : { key, since: ms };
-  const staying = plan.arrived !== undefined && ms - plan.arrived < STAY;
-  if (ms - next.since >= SETTLE && !staying) return now();
+  if (ms - next.since >= SETTLE) return now();
   return { ...plan, next };
 }
 
@@ -227,14 +207,6 @@ function go(office: OfficeMap, staff: Staff, w: WorkerEntity, desk: number, plan
       leaveIdle(staff, id);
       staff.spots.delete(id);
       return stand(office, w, besideDesk(seat), "down", anim, ms, instant, () => staff.settled.add(id));
-    }
-    case "station": {
-      leaveIdle(staff, id);
-      const spot = stationFor(office, staff, w, place.station, seat.stand);
-      if (!spot) return go(office, staff, w, desk, { ...plan, doing: { ...plan.doing, place: { kind: "desk" }, anim: "type" } }, ms, instant);
-      staff.spots.set(id, spot.id);
-      // Cheering turns to face the room.
-      return stand(office, w, spot, anim === "cheer" ? "down" : spot.face, anim, ms, instant, () => (plan.arrived ??= ms));
     }
     case "about": {
       staff.settled.delete(id);
@@ -284,17 +256,6 @@ const headedTo = (w: WorkerEntity, p: Point) => {
   const last = w.walk?.points[w.walk.points.length - 1];
   return w.walk?.then.kind === "stand" && last !== undefined && last.x === p.x && last.y === p.y;
 };
-
-/** The station spot `w` holds, else the free one nearest their desk. */
-function stationFor(office: OfficeMap, staff: Staff, w: WorkerEntity, station: Station, from: Point): (SpotSpec & { face: Dir }) | undefined {
-  const mine = staff.spots.get(w.worker.id);
-  const taken = new Set([...staff.spots].filter(([who]) => who !== w.worker.id).map(([, s]) => s));
-  const options = STATIONS[station]
-    .filter((o) => o.id === mine || !taken.has(o.id))
-    .map((o) => ({ ...office.spots.find((s) => s.id === o.id)!, face: o.face }))
-    .sort((a, b) => (a.id === mine ? -1 : b.id === mine ? 1 : Math.hypot(a.x - from.x, a.y - from.y) - Math.hypot(b.x - from.x, b.y - from.y)));
-  return options[0];
-}
 
 const isStatusBubble = (b: Bubble | null) => b !== null && b.tone !== "say";
 

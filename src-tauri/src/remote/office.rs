@@ -27,6 +27,8 @@
 //!   morning standup (O5.5, [`standup`]).
 //! - `POST /office/api/spanish` — Fernando's Spanish lessons: their project and the
 //!   word of the day ([`spanish`]).
+//! - `/office/api/notes…` — project notes, opened from the bookshelves: the phone's
+//!   notes API on this listener ([`notes`]).
 //! - `/office/api/core/…`, `/office/api/library…` — the TV's Library (O5.3d,
 //!   [`library`]): the built-in emulator cores, your game images and their save states;
 //!   `/office/api/library/save…` their in-game saves, shared with RetroArch (O5.3e, [`saves`]);
@@ -65,6 +67,7 @@ use super::RemoteState;
 mod chatter;
 mod disc;
 mod library;
+mod notes;
 mod pictionary;
 mod saves;
 mod spanish;
@@ -240,6 +243,13 @@ fn router(state: Arc<RemoteState>, port: u16) -> Router {
         .route("/office/api/pictionary", post(pictionary::ask).layer(DefaultBodyLimit::max(pictionary::REQUEST_MAX)))
         .route("/office/api/standup", post(standup::ask))
         .route("/office/api/spanish", post(spanish::ask))
+        .route("/office/api/notes", get(notes::counts))
+        .route("/office/api/notes/list", get(notes::list))
+        .route("/office/api/notes/read", get(notes::read))
+        .route("/office/api/notes/create", post(notes::create))
+        .route("/office/api/notes/save", post(notes::save))
+        .route("/office/api/notes/rename", post(notes::rename))
+        .route("/office/api/notes/delete", post(notes::delete))
         .route("/office/api/core/{name}/{part}", get(library::core))
         .route("/office/api/library", get(library::get))
         .route("/office/api/library/folder", post(library::choose))
