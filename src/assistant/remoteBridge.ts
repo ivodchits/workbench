@@ -75,6 +75,7 @@ import { withoutImages } from "./threads";
 import { isHostUp, type HostConn, type Hosts } from "./hosts";
 import type { PhoneAlarm, ReminderRecord } from "./reminders";
 import { OfflineSync, type OfflineThread } from "./offline";
+import { LISTEN_MAX_TEXT } from "./listen";
 
 /** The longest message a phone may send. */
 const TEXT_MAX = 20_000;
@@ -111,6 +112,12 @@ const Message = z.discriminatedUnion("type", [
   z.object({ type: z.literal("task.rerun"), taskId: id }),
   z.object({ type: z.literal("autopilot"), instanceId: id, action: z.enum(["pause", "resume", "stop"]) }),
   z.object({ type: z.literal("reader"), action: z.enum(["pause", "resume", "next", "prev", "stop"]) }),
+  z.object({
+    type: z.literal("reader.read"),
+    key: z.string().regex(/^msg:[^\s]{1,300}$/),
+    title: z.string().trim().min(1).max(200),
+    text: z.string().trim().min(1).max(LISTEN_MAX_TEXT),
+  }),
   z.object({ type: z.literal("dnd"), until: z.number().int().positive().nullable() }),
   z.object({ type: z.literal("drawing.get"), drawingId: id }),
   z.object({ type: z.literal("canvas"), drawingId: id.nullable() }),
@@ -276,6 +283,9 @@ export interface RemoteBridge {
   /** A voice on the phone that sent `threadId`'s latest message, while it's
    *  connected; null when that message came from the desktop. */
   voiceFor(threadId: string): Voice | null;
+  /** A voice on the phone at socket `conn` (its transcript's listen button), while
+   *  it's connected. */
+  voiceOn(conn: number): Voice | null;
   /** Resolves once `threadId`'s reply has been sent to the phone whole. */
   quiet(threadId: string): Promise<void>;
   /** Phones with Duck open now. */
@@ -535,7 +545,9 @@ export function startRemoteBridge(d: BridgeDeps): RemoteBridge {
       // What the phone shows, for housekeeping (L4).
       if (msg.type === "thread.open" || (msg.type === "send" && msg.threadId))
         d.duck.handle({ type: "thread.view", surface: `phone:${i.conn}`, threadId: msg.threadId });
-      d.duck.handle(msg, (e) => toPhone(i.conn, e));
+      // A message read on the phone that asked (the office's are read on this PC).
+      const routed = msg.type === "reader.read" && !offices.has(i.conn) ? { ...msg, phone: i.conn } : msg;
+      d.duck.handle(routed, (e) => toPhone(i.conn, e));
     }
   });
 
@@ -644,6 +656,9 @@ export function startRemoteBridge(d: BridgeDeps): RemoteBridge {
     voiceFor(threadId) {
       const conn = lastConn.get(threadId);
       return conn !== undefined && conns.has(conn) ? phoneVoice(conn, threadId) : null;
+    },
+    voiceOn(conn) {
+      return conns.has(conn) && !offices.has(conn) ? phoneVoice(conn, "") : null;
     },
   };
 }

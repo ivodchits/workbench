@@ -337,6 +337,15 @@ footer button { background: transparent; border: none; color: var(--dim); font-s
 #note-sendto { display: flex; gap: 8px; }
 #note-sendto select { flex: 1; min-height: 44px; background: var(--panel); color: var(--fg); border: 1px solid var(--line); border-radius: 6px; padding: 8px 10px; font: inherit; }
 
+/* A message's listen button: a finger-sized target, and its reader bar. */
+#tx-list .wb-tx-listen { font-size: 12px; padding: 4px 10px; min-height: 30px; }
+#tx-list .wb-tx-message > .wb-tx-listen { top: -16px; }
+#tx-reader { display: flex; gap: 6px; align-items: center; margin: 0 2px 6px; font-size: 13px; color: var(--working); }
+#tx-reader span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#tx-reader button { min-width: 40px; min-height: 36px; padding: 2px 8px; }
+#tx-reader.hidden, #tx-listen-note.hidden { display: none; }
+#tx-listen-note { font-size: 13px; margin: 0 2px 6px; color: var(--needs); }
+
 /* A plan card's "open plan" opens a desktop tab (step P1); the phone has none. */
 body .wb-tx-open-plan { display: none; }
 

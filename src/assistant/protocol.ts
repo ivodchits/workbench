@@ -363,6 +363,10 @@ export type ClientMessage =
   | { type: "autopilot"; instanceId: string; action: "pause" | "resume" | "stop" }
   /** The reader bar's buttons (step V3). */
   | { type: "reader"; action: ReaderAction }
+  /** Read one message of a session aloud (the transcript's listen button,
+   *  `listen.ts`): on this PC, or on the phone whose socket `phone` is (set by
+   *  the remote bridge, never by the phone). */
+  | { type: "reader.read"; key: string; title: string; text: string; phone?: number }
   /** Duck's Do Not Disturb (step V5): until a moment (epoch ms), or off (null). */
   | { type: "dnd"; until: number | null }
   /** A drawing, answered with `drawing` (step G3). */

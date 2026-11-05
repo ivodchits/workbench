@@ -7,7 +7,9 @@
 // drawn by the framework-free renderer (`transcript/render`); this component is
 // the chrome around it — scrolling, paging back, find, link handling, a status
 // line fed by the hook-driven live status, the prompt composer underneath (step
-// T4), and over it the card for a prompt the agent is waiting on (step T5).
+// T4), and over it the card for a prompt the agent is waiting on (step T5). Each
+// message has a listen button: Duck's reader reads it aloud, and its reader bar
+// shows here while it does (`assistant/listen.ts`).
 
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 
@@ -23,7 +25,10 @@ import { instanceSource } from "../transcript/desktopSource";
 import { createFeed, plansIn, userPrompts, type Feed } from "../transcript/feed";
 import { notePlans } from "../state/plans";
 import { openPlan } from "./openPlan";
-import { createRenderer } from "../transcript/render";
+import { createRenderer, markListening } from "../transcript/render";
+import { listenPrefix, listenRequest, listeningTo } from "../assistant/listen";
+import { listenToMessage, useDuckState } from "./Assistant/duckState";
+import ReaderBar from "./Assistant/ReaderBar";
 
 interface TranscriptViewProps {
   instanceId: string;
@@ -33,6 +38,9 @@ interface TranscriptViewProps {
    *  on an answer, which is still given there). */
   onShowTerminal: () => void;
 }
+
+/** How long a listen button's "can't" stays up. */
+const LISTEN_NOTE_MS = 6000;
 
 /** Closer than this to the end counts as "at the bottom". */
 const STICK_PX = 48;
@@ -65,6 +73,8 @@ function TranscriptView({ instanceId, live, onShowTerminal }: TranscriptViewProp
   const [feedState, setFeedState] = useState<FeedState>(EMPTY);
   const [away, setAway] = useState(false);
   const [finding, setFinding] = useState(false);
+  const [listenNote, setListenNote] = useState<string | null>(null);
+  const reader = useDuckState().reader;
   // Held back until the conversation is loaded: it may show the prompt was
   // already answered (in the terminal, while this view was away).
   const pending = usePendingChoice(instanceId);
@@ -79,7 +89,7 @@ function TranscriptView({ instanceId, live, onShowTerminal }: TranscriptViewProp
     const scroll = scrollRef.current;
     const list = listRef.current;
     if (!scroll || !list) return;
-    const renderer = createRenderer(list);
+    const renderer = createRenderer(list, { listen: true });
     stuck.current = true;
     setFeedState(EMPTY);
     setAway(false);
@@ -191,6 +201,21 @@ function TranscriptView({ instanceId, live, onShowTerminal }: TranscriptViewProp
     if (scroll && stuck.current) scroll.scrollTop = scroll.scrollHeight;
   }, [feedState, live?.phase, live?.compacting]);
 
+  // The message being read gets its button marked; re-rendered items come unmarked.
+  const listening = listeningTo(reader, instanceId);
+  const listenId = listening?.itemId ?? null;
+  const listenState = listening?.state ?? null;
+  useEffect(() => {
+    if (listRef.current)
+      markListening(listRef.current, listenId && listenState ? { itemId: listenId, state: listenState } : null);
+  }, [listenId, listenState, feedState.rev]);
+
+  useEffect(() => {
+    if (!listenNote) return;
+    const t = setTimeout(() => setListenNote(null), LISTEN_NOTE_MS);
+    return () => clearTimeout(t);
+  }, [listenNote]);
+
   // A prompt that opens after the conversation was last read is checked once
   // against it too — the answer may have been recorded before the card was built.
   const pendingId = choice?.id ?? null;
@@ -245,6 +270,22 @@ function TranscriptView({ instanceId, live, onShowTerminal }: TranscriptViewProp
   // Links in rendered text never navigate this webview: web and mail links go to
   // the OS (the backend refuses anything else), the rest do nothing.
   const onLink = (e: React.MouseEvent) => {
+    const listenBtn = e.target instanceof Element ? e.target.closest(".wb-tx-listen") : null;
+    if (listenBtn) {
+      // A message's listen button: read it aloud, or stop / go on with it.
+      e.preventDefault();
+      e.stopPropagation();
+      const id = listenBtn.closest<HTMLElement>("[data-item-id]")?.dataset.itemId;
+      const item = feedRef.current?.items.find((i) => i.id === id);
+      const req = item ? listenRequest(instanceId, item) : null;
+      if (req && e.type === "click") {
+        setListenNote(null);
+        void listenToMessage(req)
+          .then(setListenNote)
+          .catch((err: unknown) => setListenNote(err instanceof Error ? err.message : String(err)));
+      }
+      return;
+    }
     const planBtn = e.target instanceof Element ? e.target.closest(".wb-tx-open-plan") : null;
     if (planBtn) {
       // A plan card's "open plan" (step P1): the card's item id is the plan's.
@@ -292,6 +333,12 @@ function TranscriptView({ instanceId, live, onShowTerminal }: TranscriptViewProp
           </button>
         )}
       </div>
+      <ReaderBar only={listenPrefix(instanceId)} style={{ padding: "3px 10px", borderTop: "1px solid var(--wb-border)" }} />
+      {listenNote && (
+        <div className="wb-txv-listen-note" role="status">
+          {listenNote}
+        </div>
+      )}
       {choice && (
         <ChoiceCard instanceId={instanceId} choice={choice} onShowTerminal={onShowTerminal} />
       )}

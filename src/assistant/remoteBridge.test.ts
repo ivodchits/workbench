@@ -305,6 +305,23 @@ describe("startRemoteBridge", () => {
     }
   });
 
+  it("reads a session message on the phone that tapped its listen button, the office's on this PC", () => {
+    const h = harness();
+    h.open(1);
+    const req = { key: "msg:i1:u1", title: "Claude: Done", text: "Done. The tests pass." };
+    h.phone(1, { type: "reader.read", ...req, phone: 7 });
+    // The socket is the bridge's to say, not the phone's.
+    expect(h.handled[0].msg).toEqual({ type: "reader.read", ...req, phone: 1 });
+    expect(h.bridge.voiceOn(1)?.where).toBe("phone");
+    expect(h.bridge.voiceOn(2)).toBeNull();
+    h.phone(1, { type: "reader.read", ...req, key: "note:x" });
+    expect(h.sent[h.sent.length - 1].frame).toMatchObject({ type: "error" });
+    h.raw({ conn: 5, device: OFFICE_DEVICE, kind: "open", msg: null });
+    h.raw({ conn: 5, device: OFFICE_DEVICE, kind: "message", msg: { type: "reader.read", ...req } });
+    expect(h.handled[h.handled.length - 1].msg).toEqual({ type: "reader.read", ...req });
+    expect(h.bridge.voiceOn(5)).toBeNull();
+  });
+
   it("lets the phone drive the reader, and never sends it images", () => {
     const h = harness();
     h.open(1);

@@ -66,6 +66,8 @@ import { keepingSelection } from "../util/keepSelection";
 import { $, el } from "./dom";
 import { apply, emptyView, userText, type DuckView } from "./duckStore";
 import { audioContext, browserOut, fetchPart, playbackLevel, setEchoPath, unlock } from "./duckSpeech";
+import { listenAction, type ListenRequest } from "../assistant/listen";
+import type { ReaderView } from "../assistant/reader";
 import { chime, stream, streamNative, type Streaming } from "./converse";
 import * as duckApp from "./duckApp";
 import {
@@ -486,8 +488,18 @@ function talkAway(): boolean {
 /** What the app asked for before the socket was open: done once it is. */
 let onLive: (() => void) | null = null;
 
+/** A message read from the transcript (its listen button): the socket stays up
+ *  for its audio and the reader bar while Duck is closed. `seen`: the reader has
+ *  started it; `failed`: where Duck's refusal goes until then. */
+let listening: { key: string; seen: boolean; failed: (why: string) => void } | null = null;
+
+/** The socket is wanted: Duck is open, or a message is being read. */
+function wanted(): boolean {
+  return listening !== null || (shown && (!document.hidden || talkAway()));
+}
+
 function connect(): void {
-  if (ws || !shown || (document.hidden && !talkAway())) return;
+  if (ws || !wanted()) return;
   // Retrying while offline still says offline, not a "connecting…" every few seconds.
   if (!$("duck-conn").classList.contains("off")) paintConn("connecting…");
   // A device key's session first (`net.ready`), shared with the dashboard.
@@ -495,7 +507,7 @@ function connect(): void {
 }
 
 function connectNow(): void {
-  if (ws || !shown || (document.hidden && !talkAway())) return;
+  if (ws || !wanted()) return;
   const socket = openSocket("/api/assistant");
   ws = socket;
   let opened = false;
@@ -515,11 +527,12 @@ function connectNow(): void {
   socket.onclose = () => {
     if (ws !== socket) return;
     ws = null;
+    readerChanged();
     uploader.drop();
     outbox.unconfirmed("duck", "the link dropped before Duck had it");
     paintConn("○ offline", "off");
     if (talk || talkStarting) endTalk("The connection dropped, so conversation mode is off.");
-    if (!shown || (document.hidden && !talkAway())) return;
+    if (!wanted()) return;
     if (opened) {
       retry = setTimeout(connect, backoff(retries++));
       return;
@@ -547,6 +560,7 @@ function disconnect(): void {
   const socket = ws;
   ws = null;
   socket?.close();
+  if (socket) readerChanged();
 }
 
 // ── drawings (G3) ───────────────────────────────────────────────────────────
@@ -627,6 +641,12 @@ function onFrame(f: RemoteDuckFrame): void {
   const before = view;
   const r = apply(view, f, adopting);
   view = r.view;
+  if (before.reader !== view.reader) readerChanged();
+  if (f.type === "error" && listening && !listening.seen) {
+    // Duck refused the read (no voice, nothing in it): it's over before it began.
+    listening.failed(f.message);
+    endListening();
+  }
   if (r.adopted) {
     adopting = false;
     store(THREAD_KEY, view.current);
@@ -1283,15 +1303,20 @@ function paintStatus(): void {
 
 /** The reader bar (V3): what's being read, and its buttons. */
 function paintReader(): void {
-  const r = view.reader;
-  $("duck-reader").classList.toggle("hidden", !r);
+  paintReaderBar($("duck-reader"), view.reader);
+}
+
+/** A reader bar (Duck's, or the transcript's for its messages): its text in its
+ *  `span`, its buttons by `data-reader`. Hidden when `r` is null. */
+export function paintReaderBar(bar: HTMLElement, r: ReaderView | null): void {
+  bar.classList.toggle("hidden", !r);
   if (!r) return;
-  $("duck-reader-text").textContent = `${r.state === "reading" ? "♪" : "❚❚"} ${r.title} · ${r.section + 1}/${r.sections}${r.where === "desktop" ? " · on the PC" : ""}`;
-  const toggle = document.querySelector<HTMLButtonElement>('#duck-reader [data-reader="toggle"]')!;
+  bar.querySelector("span")!.textContent = `${r.state === "reading" ? "♪" : "❚❚"} ${r.title} · ${r.section + 1}/${r.sections}${r.where === "desktop" ? " · on the PC" : ""}`;
+  const toggle = bar.querySelector<HTMLButtonElement>('[data-reader="toggle"]')!;
   toggle.textContent = r.state === "reading" ? "❚❚" : "▶";
   toggle.setAttribute("aria-label", r.state === "reading" ? "pause" : "go on");
-  document.querySelector<HTMLButtonElement>('#duck-reader [data-reader="prev"]')!.disabled = r.section === 0;
-  document.querySelector<HTMLButtonElement>('#duck-reader [data-reader="next"]')!.disabled = r.section + 1 >= r.sections;
+  bar.querySelector<HTMLButtonElement>('[data-reader="prev"]')!.disabled = r.section === 0;
+  bar.querySelector<HTMLButtonElement>('[data-reader="next"]')!.disabled = r.section + 1 >= r.sections;
 }
 
 function readerButton(what: string): void {
@@ -1306,6 +1331,65 @@ function readerButton(what: string): void {
   unlock();
   hushed = false;
   post({ type: "reader", action: what === "toggle" ? "resume" : what === "next" ? "next" : "prev" });
+}
+
+// ── a session message read aloud (its listen button, `assistant/listen.ts`) ──
+
+const readerListeners = new Set<(r: ReaderView | null) => void>();
+
+/** What the reader is doing, as far as this phone knows (nothing while Duck's
+ *  socket is down). */
+function liveReader(): ReaderView | null {
+  return ws?.readyState === WebSocket.OPEN ? view.reader : null;
+}
+
+/** What the reader is doing, now and on every change. */
+export function onReader(cb: (r: ReaderView | null) => void): () => void {
+  readerListeners.add(cb);
+  cb(liveReader());
+  return () => readerListeners.delete(cb);
+}
+
+function readerChanged(): void {
+  const r = liveReader();
+  for (const l of readerListeners) l(r);
+  if (!listening) return;
+  if (r?.key === listening.key) listening.seen = true;
+  // The read is over (or another took its place): with Duck closed, the socket
+  // isn't needed anymore.
+  else if (listening.seen) endListening();
+}
+
+function endListening(): void {
+  listening = null;
+  if (!shown) disconnect();
+}
+
+/** The reader bar's buttons, from anywhere ("prev", "toggle", "next", "stop"). */
+export function controlReader(what: string): void {
+  readerButton(what);
+}
+
+/** A session message's listen button: read it aloud on this phone with Duck's
+ *  reader, stop it while it's reading, go on with it when it's paused. Called
+ *  in the tap, so the audio may start. */
+export function listenOnPhone(req: ListenRequest, failed: (why: string) => void): void {
+  const action = listenAction(liveReader(), req.key);
+  if (action === "stop") return readerButton("stop");
+  if (action === "resume") return readerButton("toggle");
+  unlock();
+  hushed = false;
+  listening = { key: req.key, seen: false, failed };
+  if (ws?.readyState === WebSocket.OPEN) {
+    post({ type: "reader.read", ...req });
+    return;
+  }
+  const before = onLive;
+  onLive = () => {
+    before?.();
+    post({ type: "reader.read", ...req });
+  };
+  connect();
 }
 
 function paint(why: string, before?: DuckView): void {
@@ -1811,7 +1895,7 @@ function closeDuck(): void {
   if (talk || talkStarting) stopTalk();
   hush();
   stopAvatar();
-  disconnect();
+  if (!listening) disconnect();
   paintUnread();
 }
 
