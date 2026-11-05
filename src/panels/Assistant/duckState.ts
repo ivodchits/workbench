@@ -51,7 +51,8 @@ import type { DecisionRow, Spend, StoredMessage, ThreadRow } from "../../ipc/ass
 import type { Route } from "../../assistant/routing";
 import { MODE_IDS, MODES } from "../../assistant/modes";
 import { getPref, setPref, type AssistantDrawerPrefs } from "../../ipc/prefs";
-import { onReplyDelta, onToolStart, onTurnEnded, onUserMessage, stopSpeaking } from "./replySpeech";
+import { getSpeechState, initSpeech, onReplyDelta, onToolStart, onTurnEnded, onUserMessage, stopSpeaking } from "./replySpeech";
+import { listenAction, type ListenRequest } from "../../assistant/listen";
 
 export interface DuckState {
   /** Connected to the engine. */
@@ -843,6 +844,25 @@ export function rerunTask(taskId: string): void {
 /** The reader bar's buttons (V3). */
 export function controlReader(action: ReaderAction): void {
   post({ type: "reader", action });
+}
+
+/** A session message's listen button: read it aloud on this PC with Duck's
+ *  reader, stop it while it's reading, go on with it when it's paused. Resolves
+ *  to why it can't, or null. */
+export async function listenToMessage(req: ListenRequest): Promise<string | null> {
+  await connectDuck();
+  if (!getDuck()) return "Duck isn't running.";
+  await initSpeech();
+  const action = listenAction(state.reader, req.key);
+  if (action !== "read") {
+    controlReader(action);
+    return null;
+  }
+  const speech = getSpeechState();
+  if (!speech.prefs.on) return "Speak is off on this PC: turn it on with the speaker by Duck's button.";
+  if (!speech.ready) return "Duck's voice isn't set up yet: see Duck's settings.";
+  post({ type: "reader.read", ...req });
+  return null;
 }
 
 /** A session autopilot's buttons on its card (P1). */

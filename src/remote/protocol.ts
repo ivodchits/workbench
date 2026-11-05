@@ -277,6 +277,9 @@ export type RemoteDuckMessage =
   | { type: "autopilot"; instanceId: string; action: "pause" | "resume" | "stop" }
   /** The reader bar (step V3): a read playing on the phone comes as `tts` parts. */
   | { type: "reader"; action: "pause" | "resume" | "next" | "prev" | "stop" }
+  /** Read one message of a session aloud on this phone (the transcript's listen
+   *  button): `key` is `msg:<instance>:<item>`. */
+  | { type: "reader.read"; key: string; title: string; text: string }
   /** Duck's Do Not Disturb (step V5): until a moment (epoch ms), or off (null). */
   | { type: "dnd"; until: number | null }
   /** A drawing (step G3), answered with `drawing`; its PNG is at
