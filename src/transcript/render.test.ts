@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 
 import { fixtures, sessionLines } from "./fixtures.test-util";
 import { createTranscript, type Item } from "./model";
-import { createRenderer, renderItem } from "./render";
+import { createRenderer, markListening, renderItem } from "./render";
 
 function fold(lines: string[], sidechain = false): Item[] {
   const t = createTranscript({ sidechain });
@@ -224,5 +224,42 @@ describe("renderer", () => {
     r.update(t.items);
     expect(host.children).toHaveLength(0);
     r.clear();
+  });
+});
+
+describe("a message's listen button", () => {
+  it("is drawn only when asked for, on prompts and replies with text", () => {
+    const items = fold([
+      user("u1", "make it faster"),
+      assistant("a1", { type: "text", text: "Done: it's **twice** as fast." }),
+      assistant("a2", { type: "tool_use", id: "t1", name: "Bash", input: { command: "ls" } }),
+    ]);
+    const plain = document.createElement("div");
+    createRenderer(plain).update(items);
+    expect(plain.querySelectorAll(".wb-tx-listen")).toHaveLength(0);
+    const host = document.createElement("div");
+    createRenderer(host, { listen: true }).update(items);
+    const owners = [...host.querySelectorAll(".wb-tx-listen")].map((b) => b.closest<HTMLElement>("[data-item-id]")?.dataset.itemKind);
+    expect(owners).toEqual(["user", "assistant"]);
+    // Its label is CSS's: copying the message never picks it up.
+    expect(host.textContent).not.toContain("listen");
+  });
+
+  it("marks the message being read, and how, and unmarks the rest", () => {
+    const items = fold([user("u1", "hi"), assistant("a1", { type: "text", text: "Hello." })]);
+    const host = document.createElement("div");
+    createRenderer(host, { listen: true }).update(items);
+    const [mine, reply] = [...host.querySelectorAll<HTMLButtonElement>(".wb-tx-listen")];
+    markListening(host, { itemId: items[1].id, state: "reading" });
+    expect(reply.classList.contains("wb-tx-listening")).toBe(true);
+    expect(reply.getAttribute("aria-pressed")).toBe("true");
+    expect(reply.title).toBe("stop reading");
+    expect(mine.classList.contains("wb-tx-listening")).toBe(false);
+    markListening(host, { itemId: items[1].id, state: "paused" });
+    expect(reply.classList.contains("wb-tx-listening")).toBe(false);
+    expect(reply.classList.contains("wb-tx-listen-paused")).toBe(true);
+    markListening(host, null);
+    expect(reply.classList.contains("wb-tx-listen-paused")).toBe(false);
+    expect(reply.title).toBe("listen");
   });
 });

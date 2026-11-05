@@ -58,6 +58,7 @@ import { ttsRender, ttsWarm } from "../ipc/tts";
 import { ipcLink, startRemoteBridge, type RemoteBridge } from "./remoteBridge";
 import { prepareSentence } from "./speakable";
 import { Reader, type ReaderView, type ReadPosition, type Voice } from "./reader";
+import { listenJob, type ListenRequest } from "./listen";
 import { Announcer, headline, type Level } from "./announce";
 import { getPresence } from "../ipc/presence";
 import { localPort } from "./port.local";
@@ -255,6 +256,9 @@ const QUIET_MAX_MS = 60_000;
 /** The reader's view, for the endpoint. */
 export interface ReaderLink {
   reader: Reader;
+  /** Read one message aloud (the transcript's listen button): here, or on the
+   *  phone at socket `phone`. Throws when that voice can't speak. */
+  listen(req: ListenRequest, phone?: number): void;
   subscribe(cb: (v: ReaderView | null) => void): () => void;
 }
 
@@ -632,6 +636,11 @@ export function endpoint(
         else r.stop();
         return;
       }
+      case "reader.read": {
+        if (!reader) throw new Error("Reading aloud isn't available here.");
+        reader.listen({ key: msg.key, title: msg.title, text: msg.text }, msg.phone);
+        return;
+      }
       case "thread.open": {
         if (!s.thread(msg.threadId))
           throw new Error(`no thread ${msg.threadId}`);
@@ -768,8 +777,9 @@ export function initAssistant(): Promise<void> {
         const newest = [...kept.values()].sort((a, b) => b.at - a.at).slice(0, KEPT_READS);
         void setPref("readAloud", Object.fromEntries(newest.map((x) => [x.key, x]))).catch(() => {});
       },
+      // A message's listen button (no thread) has no reply to wait for.
       quiet: (threadId) =>
-        Promise.race([
+        !threadId ? Promise.resolve() : Promise.race([
           (async () => {
             while (engineRef && engineRef.state(threadId) !== "idle" && engineRef.state(threadId) !== "waiting")
               await new Promise((r) => setTimeout(r, 100));
@@ -782,6 +792,10 @@ export function initAssistant(): Promise<void> {
       },
       ended: (threadId, why) => {
         if (why === "the end") return;
+        if (!threadId) {
+          console.warn(`duck: reading a message stopped: ${why}`);
+          return;
+        }
         void engineRef
           ?.notice(threadId, { kind: "reader", text: `Reading stopped: ${why}.` })
           .catch((e: unknown) => console.warn("duck: a reader notice was dropped", e));
@@ -1199,6 +1213,18 @@ export function initAssistant(): Promise<void> {
       autopilot,
       {
         reader,
+        listen(req, phone) {
+          const voice = phone === undefined ? desktopSpeech?.voice : bridge?.voiceOn(phone);
+          if (!voice)
+            throw new Error(
+              phone === undefined ? "This PC's voice isn't running yet: open Duck's drawer once." : "That phone isn't connected anymore.",
+            );
+          if (phone === undefined && !desktopSpeech?.speakOn())
+            throw new Error("Speak is off on this PC: turn it on with the speaker by Duck's button.");
+          const job = listenJob(req);
+          if (job.sections.length === 0) throw new Error("There's nothing in that message to read.");
+          reader.start(job, voice, reader.resumable(job));
+        },
         subscribe(cb) {
           readerListeners.add(cb);
           return () => readerListeners.delete(cb);

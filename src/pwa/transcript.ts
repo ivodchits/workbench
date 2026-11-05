@@ -20,7 +20,10 @@ import { sizeText } from "../assistant/attachments";
 import { fixNames } from "../assistant/voiceNames";
 import type { RemoteInstance } from "../remote/protocol";
 import { createFeed, type Feed } from "../transcript/feed";
-import { createRenderer, type TranscriptRenderer } from "../transcript/render";
+import { createRenderer, markListening, type TranscriptRenderer } from "../transcript/render";
+import { listenPrefix, listenRequest, listeningTo } from "../assistant/listen";
+import type { ReaderView } from "../assistant/reader";
+import { controlReader, listenOnPhone, onReader, paintReaderBar } from "./duck";
 import { createChoiceCard, type ChoiceCardView } from "./choice";
 import { releaseDuckMic } from "./duck";
 import { $, el } from "./dom";
@@ -117,6 +120,28 @@ const staging = createStaging(uploadToSession, (id) => {
   if (id === current) paintFiles();
 });
 
+/** What Duck's reader is doing, as last heard. */
+let reader: ReaderView | null = null;
+let noteTimer: ReturnType<typeof setTimeout> | null = null;
+/** How long a listen button's "can't" stays up. */
+const LISTEN_NOTE_MS = 6000;
+
+/** The listen buttons and the reader bar, for the message of this session being
+ *  read (if one is). */
+function paintListening(): void {
+  const mine = current ? listeningTo(reader, current) : null;
+  if (renderer) markListening($("tx-list"), mine);
+  paintReaderBar($("tx-reader"), current && reader?.key.startsWith(listenPrefix(current)) ? reader : null);
+}
+
+function listenNote(text: string | null): void {
+  const note = $("tx-listen-note");
+  note.textContent = text ?? "";
+  note.classList.toggle("hidden", !text);
+  if (noteTimer) clearTimeout(noteTimer);
+  noteTimer = text ? setTimeout(() => listenNote(null), LISTEN_NOTE_MS) : null;
+}
+
 function scroller(): HTMLElement {
   return $("tx-scroll");
 }
@@ -142,7 +167,10 @@ function changed(why: string): void {
   const follow = why === "reset" || stuck;
   const height = s.scrollHeight;
   const top = s.scrollTop;
-  if (why !== "loading") renderer.update(feed.items);
+  if (why !== "loading") {
+    renderer.update(feed.items);
+    paintListening();
+  }
   const earlier = $<HTMLButtonElement>("tx-earlier");
   earlier.classList.toggle("hidden", !feed.hasEarlier);
   earlier.disabled = feed.loading;
@@ -406,7 +434,8 @@ export function showTranscript(id: string, it: RemoteInstance | undefined): void
     hideTranscript();
     current = id;
     stuck = true;
-    renderer = createRenderer($("tx-list"));
+    renderer = createRenderer($("tx-list"), { listen: true });
+    listenNote(null);
     report("connecting…");
     const text = $<HTMLTextAreaElement>("tx-text");
     text.value = drafts.get(id) ?? "";
@@ -454,6 +483,7 @@ export function hideTranscript(): void {
   renderer?.clear();
   renderer = null;
   current = null;
+  paintListening();
   $("tx-pending").replaceChildren();
 }
 
@@ -521,10 +551,30 @@ export function initTranscript(link: (text: string) => void, terminal: () => voi
   // Rendered links are untrusted text: web and mail links open in a new tab, as the
   // renderer marked them; nothing else goes anywhere.
   s.addEventListener("click", (e) => {
+    // A message's listen button: read it aloud here, or stop / go on with it.
+    const listen = e.target instanceof Element ? e.target.closest(".wb-tx-listen") : null;
+    if (listen) {
+      e.preventDefault();
+      e.stopPropagation();
+      const id = listen.closest<HTMLElement>("[data-item-id]")?.dataset.itemId;
+      const item = feed?.items.find((i) => i.id === id);
+      const req = item && current ? listenRequest(current, item) : null;
+      if (req) {
+        listenNote(null);
+        listenOnPhone(req, listenNote);
+      }
+      return;
+    }
     const link = e.target instanceof Element ? e.target.closest("a[href]") : null;
     if (link && !/^(https?:|mailto:)/i.test(link.getAttribute("href") ?? "")) e.preventDefault();
   });
   $("tx-earlier").onclick = () => void feed?.loadEarlier();
+  for (const b of document.querySelectorAll<HTMLButtonElement>("#tx-reader [data-reader]"))
+    b.onclick = () => controlReader(b.dataset.reader ?? "");
+  onReader((r) => {
+    reader = r;
+    paintListening();
+  });
   outbox.subscribe(paintPending);
   $("tx-jump").onclick = () => {
     stuck = true;

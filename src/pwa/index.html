@@ -141,6 +141,15 @@
       </div>
 
       <div id="tx-dock">
+        <!-- A message of this session being read aloud (its listen button). -->
+        <div id="tx-reader" class="hidden" role="status">
+          <span></span>
+          <button type="button" data-reader="prev" aria-label="previous section">⏮</button>
+          <button type="button" data-reader="toggle" aria-label="pause">❚❚</button>
+          <button type="button" data-reader="next" aria-label="next section">⏭</button>
+          <button type="button" data-reader="stop" aria-label="stop reading">■</button>
+        </div>
+        <div id="tx-listen-note" class="hidden" role="status"></div>
         <!-- What the session is asking, with its answers (step R5). -->
         <div id="tx-choice" class="hidden"></div>
         <div id="tx-needs" class="hidden">

@@ -70,6 +70,40 @@ function copyButton(label: string, text: () => string): HTMLButtonElement {
   return button;
 }
 
+/** A message's listen button (read it aloud). Like the plan's button it only
+ *  carries a class: the view around the transcript catches the click (it knows
+ *  the session and how to reach Duck's reader) and marks the one being read
+ *  (`markListening`). Its label is drawn by CSS, as the copy button's. */
+function listenButton(): HTMLButtonElement {
+  const button = el("button", "wb-tx-listen");
+  button.type = "button";
+  button.title = "listen";
+  button.setAttribute("aria-label", "listen");
+  button.setAttribute("aria-pressed", "false");
+  return button;
+}
+
+/** What `markListening` marks: the message being read, and how. */
+export interface Listening {
+  itemId: string;
+  state: "reading" | "paused";
+}
+
+/** Mark the listen button of the message being read (none: `null`). Run again
+ *  after every update: re-rendered items come unmarked. */
+export function markListening(container: HTMLElement, listening: Listening | null): void {
+  for (const button of container.querySelectorAll<HTMLButtonElement>(".wb-tx-listen")) {
+    const id = button.closest<HTMLElement>("[data-item-id]")?.dataset.itemId;
+    const state = listening && id === listening.itemId ? listening.state : null;
+    button.classList.toggle("wb-tx-listening", state === "reading");
+    button.classList.toggle("wb-tx-listen-paused", state === "paused");
+    button.setAttribute("aria-pressed", String(state !== null));
+    const label = state === "reading" ? "stop reading" : state === "paused" ? "go on reading" : "listen";
+    button.title = label;
+    button.setAttribute("aria-label", label);
+  }
+}
+
 /** Sanitized markdown, as a `.wb-md` block. */
 function markdown(source: string, className = ""): HTMLElement {
   const html = DOMPurify.sanitize(marked.parse(source, { async: false, gfm: true }), {
@@ -358,10 +392,16 @@ export function renderPendingTool(name: string, input: Record<string, unknown>):
 
 // --- the other items --------------------------------------------------------
 
-function userBlock(item: UserItem): HTMLElement {
+function userBlock(item: UserItem, listen: boolean): HTMLElement {
   const text = el("div", "wb-tx-user-text");
   text.textContent = item.text;
-  const node = el("div", "wb-tx-user", el("span", "wb-tx-prompt", "❯"), text);
+  const node = el(
+    "div",
+    "wb-tx-user",
+    el("span", "wb-tx-prompt", "❯"),
+    text,
+    listen && item.text.trim() !== "" && listenButton(),
+  );
   for (const image of item.images) {
     const img = el("img", "wb-tx-image");
     // The media type was checked against an allow-list by the model.
@@ -398,12 +438,18 @@ function dividerBlock(item: DividerItem): HTMLElement {
   );
 }
 
+export interface RenderOptions {
+  /** Messages get a listen button (`listenButton`). */
+  listen?: boolean;
+}
+
 /** Build the element for one item. */
-export function renderItem(item: Item): HTMLElement {
+export function renderItem(item: Item, opts: RenderOptions = {}): HTMLElement {
+  const listen = opts.listen === true;
   let node: HTMLElement;
   switch (item.kind) {
     case "user":
-      node = userBlock(item);
+      node = userBlock(item, listen);
       break;
     case "assistant":
       node = el(
@@ -412,6 +458,7 @@ export function renderItem(item: Item): HTMLElement {
         markdown(item.text, item.isError ? "wb-tx-assistant wb-tx-err" : "wb-tx-assistant"),
         // The message as Claude wrote it: its markdown source.
         copyButton("copy message", () => item.text),
+        listen && item.text.trim() !== "" && listenButton(),
       );
       break;
     case "thinking":
@@ -472,7 +519,7 @@ function reopen(node: HTMLElement, open: number[]): void {
   }
 }
 
-export function createRenderer(container: HTMLElement): TranscriptRenderer {
+export function createRenderer(container: HTMLElement, opts: RenderOptions = {}): TranscriptRenderer {
   container.classList.add("wb-tx");
   const shown = new Map<string, { rev: number; node: HTMLElement }>();
 
@@ -489,7 +536,7 @@ export function createRenderer(container: HTMLElement): TranscriptRenderer {
       for (const item of items) {
         let rec = shown.get(item.id);
         if (!rec || rec.rev !== item.rev) {
-          const node = renderItem(item);
+          const node = renderItem(item, opts);
           if (rec) {
             reopen(node, openCards(rec.node));
             if (cursor === rec.node) cursor = rec.node.nextElementSibling;
