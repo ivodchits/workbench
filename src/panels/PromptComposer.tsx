@@ -5,6 +5,10 @@
 // the session's PTY that the prompt queue and the template library use
 // (`promptDelivery`): the terminal stays the one way the session is driven, and
 // the prompt shows up in the transcript because Claude wrote it there.
+//
+// The mic button records a voice message (`voiceNote`): its transcript lands in
+// the field, to read over and send with ↵ — never sent unseen, since a
+// misheard word in a prompt costs a turn.
 
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 
@@ -29,7 +33,9 @@ import type { LiveStatus } from "../state/status";
 import { isHeadless } from "../state/headless";
 import { interruptSession } from "../state/remoteActions";
 import { useTemplates, type PromptTemplate } from "../state/templates";
+import { clock } from "../util/dictation";
 import { flash } from "../util/flash";
+import { cancelNote, dismissNoteError, NOTE_MAX_S, startNote, stopNote, useNoteState } from "./voiceNote";
 
 interface PromptComposerProps {
   instanceId: string;
@@ -79,6 +85,35 @@ function PromptComposer({ instanceId, live, typed, onShowTerminal, onSent }: Pro
   const resting = atRest(live) && !startingUp;
   const working = live?.phase === "working" && !live.compacting;
   const canSend = draft.trim().length > 0;
+
+  const note = useNoteState();
+  const noteHere = note.instanceId === instanceId ? note.phase : "idle";
+  const noteElsewhere = note.phase !== "idle" && note.instanceId !== instanceId;
+  const noteError = note.error?.instanceId === instanceId ? note.error.text : null;
+  const [, tick] = useState(0);
+  useEffect(() => {
+    if (noteHere !== "recording") return;
+    const timer = setInterval(() => tick((n) => n + 1), 500);
+    return () => clearInterval(timer);
+  }, [noteHere]);
+  const noteSeconds = noteHere === "recording" ? Math.floor((Date.now() - note.since) / 1000) : 0;
+  // A transcript that just landed: the caret goes to its end, ready for ↵.
+  const wasTranscribing = useRef(false);
+  useEffect(() => {
+    if (wasTranscribing.current && noteHere === "idle" && !noteError) {
+      const field = fieldRef.current;
+      if (field) {
+        field.focus();
+        field.setSelectionRange(field.value.length, field.value.length);
+      }
+    }
+    wasTranscribing.current = noteHere === "transcribing";
+  }, [noteHere, noteError]);
+
+  const toggleNote = () => {
+    if (noteHere === "recording") void stopNote();
+    else if (noteHere === "idle") void startNote(instanceId);
+  };
 
   useLayoutEffect(() => {
     const field = fieldRef.current;
@@ -208,6 +243,13 @@ function PromptComposer({ instanceId, live, typed, onShowTerminal, onSent }: Pro
     // Esc in an empty field takes the queued prompt back into it, or else stops
     // the agent, as Esc does in the terminal. With text in the field it does nothing.
     if (e.key === "Escape" && !e.nativeEvent.isComposing) {
+      // Esc drops a voice message that's recording, before anything else.
+      if (noteHere === "recording" || noteHere === "starting") {
+        cancelNote();
+        e.preventDefault();
+        e.stopPropagation();
+        return;
+      }
       if (draft) return;
       if (queued) editQueued();
       else if (working) interrupt();
@@ -286,6 +328,28 @@ function PromptComposer({ instanceId, live, typed, onShowTerminal, onSent }: Pro
         onPaste={onPaste}
       />
       <div className="wb-cmp-bar">
+        {noteHere !== "idle" || noteError ? (
+          <span className={noteError ? "wb-cmp-hint wb-cmp-voice-error" : "wb-cmp-hint wb-cmp-voice"} role="status">
+            {noteHere === "starting" ? (
+              "opening the microphone…"
+            ) : noteHere === "recording" ? (
+              <>
+                <span className="wb-cmp-voice-dot">●</span> recording {clock(noteSeconds)}
+                {noteSeconds >= NOTE_MAX_S - 10 && ` (stops at ${clock(NOTE_MAX_S)})`} — <b>■</b> puts the text in
+                the field · <b>Esc</b> drops it
+              </>
+            ) : noteHere === "transcribing" ? (
+              "transcribing…"
+            ) : (
+              <>
+                {noteError}{" "}
+                <button type="button" onClick={() => dismissNoteError(instanceId)} title="dismiss">
+                  ✕
+                </button>
+              </>
+            )}
+          </span>
+        ) : (
         <span className="wb-cmp-hint">
           {startingUp ? (
             <>
@@ -319,6 +383,29 @@ function PromptComposer({ instanceId, live, typed, onShowTerminal, onSent }: Pro
             </>
           )}
         </span>
+        )}
+        {(noteHere === "recording" || noteHere === "starting") && (
+          <button type="button" onMouseDown={(e) => e.preventDefault()} onClick={cancelNote} title="drop the recording (Esc)">
+            cancel
+          </button>
+        )}
+        <button
+          type="button"
+          className={noteHere === "recording" ? "wb-cmp-mic wb-cmp-mic-on" : "wb-cmp-mic"}
+          onMouseDown={(e) => e.preventDefault()}
+          onClick={toggleNote}
+          disabled={noteElsewhere || noteHere === "starting" || noteHere === "transcribing"}
+          aria-label={noteHere === "recording" ? "stop recording and transcribe" : "record a voice message"}
+          title={
+            noteElsewhere
+              ? "the microphone is recording for another session"
+              : noteHere === "recording"
+                ? "stop; the text goes into the field to check and send"
+                : "record a voice message — transcribed on this PC into the field (English, Russian, Spanish…)"
+          }
+        >
+          {noteHere === "recording" ? "■ stop" : noteHere === "transcribing" ? "…" : "🎤"}
+        </button>
         <button
           type="button"
           onMouseDown={(e) => e.preventDefault()}

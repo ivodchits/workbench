@@ -212,6 +212,16 @@ footer button { background: transparent; border: none; color: var(--dim); font-s
 #tx-files { padding: 0 0 6px; }
 #tx-files.hidden, #tx-attach.hidden { display: none; }
 #tx-composer #tx-attach { min-width: 44px; padding: 0 8px; font-weight: 400; }
+#tx-composer #tx-mic { min-width: 44px; padding: 0 8px; font-weight: 400; }
+#tx-composer #tx-mic.on { color: var(--needs); border-color: var(--needs); font-weight: 600; }
+#tx-mic:disabled { opacity: 0.5; }
+#tx-voice { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; font-size: 13px; }
+#tx-voice.hidden { display: none; }
+#tx-voice #tx-voice-text { margin-right: auto; }
+#tx-voice.error #tx-voice-text { color: var(--needs); }
+#tx-voice .dot { color: var(--needs); animation: tx-pulse 1.2s ease-in-out infinite; }
+#tx-voice button { min-height: 36px; padding: 4px 12px; }
+@keyframes tx-pulse { 50% { opacity: 0.25; } }
 #tx-send:disabled { opacity: 0.5; }
 .duck-file.failed { border-color: var(--needs); }
 .duck-file .error { color: var(--needs); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

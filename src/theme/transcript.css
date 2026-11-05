@@ -545,6 +545,35 @@
   border-color: var(--wb-borderActive);
 }
 
+.wb-cmp-voice {
+  color: var(--wb-text);
+}
+
+.wb-cmp-voice-dot {
+  color: var(--wb-needs);
+  animation: wb-cmp-voice-pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes wb-cmp-voice-pulse {
+  50% {
+    opacity: 0.25;
+  }
+}
+
+.wb-cmp-voice-error {
+  color: var(--wb-needs);
+  white-space: normal;
+}
+
+.wb-cmp-voice-error button {
+  padding: 0 6px;
+}
+
+.wb-cmp button.wb-cmp-mic-on {
+  color: var(--wb-needs);
+  border-color: var(--wb-needs);
+}
+
 .wb-cmp button.wb-cmp-stop {
   color: var(--wb-needs);
 }

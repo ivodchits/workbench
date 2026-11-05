@@ -21,6 +21,12 @@
 //!   `voice-transcript`, and sends the text to Duck.
 //! - The drawer's mic button drives the same path ([`voice_ptt`]).
 //!
+//! A **voice message** for a session ([`voice_note_start`] and its stop and
+//! cancel): the same capture and model, but the text comes back to the caller
+//! (the session's prompt composer) instead of going to Duck, and no overlay or
+//! `voice-state` event goes with it. One microphone user at a time: it stops
+//! conversation mode, and conversation mode or a push-to-talk press drops it.
+//!
 //! Transcribing a WAV is a command of its own (the settings check), and the phone
 //! uploads 16 kHz WAV to the remote server, which calls [`VoiceState::transcribe`]
 //! (step R1).
@@ -156,6 +162,8 @@ pub struct VoiceState {
     hotkey: Mutex<Option<String>>,
     /// A recording in progress, and when it began.
     recording: Mutex<Option<(capture::Recorder, Instant)>>,
+    /// A voice message for a session, while it records, and when it began.
+    note: Mutex<Option<(capture::Recorder, Instant)>>,
     /// Conversation mode, while it runs (step V4).
     conversation: Mutex<Option<conversation::Handle>>,
     runs: AtomicU64,
@@ -173,6 +181,7 @@ impl VoiceState {
             config: Mutex::new(VoiceConfig::default()),
             hotkey: Mutex::new(None),
             recording: Mutex::new(None),
+            note: Mutex::new(None),
             conversation: Mutex::new(None),
             runs: AtomicU64::new(0),
             wake: Mutex::new(None),
@@ -240,6 +249,19 @@ fn key_up(app: &AppHandle) {
     }
 }
 
+/// Whether a session's voice message is recording.
+fn noting(app: &AppHandle) -> bool {
+    app.try_state::<VoiceState>().and_then(|s| s.note.lock().ok().map(|n| n.is_some())).unwrap_or(false)
+}
+
+/// Drop a session's voice message that's recording (the microphone is wanted for
+/// Duck); its stop then says so.
+fn drop_note(s: &VoiceState) {
+    if let Some((rec, _)) = s.note.lock().ok().and_then(|mut n| n.take()) {
+        let _ = rec.stop();
+    }
+}
+
 /// Whether conversation mode is running.
 fn conversing(app: &AppHandle) -> bool {
     app.try_state::<VoiceState>().and_then(|s| s.conversation.lock().ok().map(|c| c.is_some())).unwrap_or(false)
@@ -257,6 +279,7 @@ fn set_conversation(app: &AppHandle, on: bool) {
         return;
     }
     // One microphone user at a time: a dictation in progress is dropped.
+    drop_note(&s);
     if let Some(rec) = s.recording.lock().ok().and_then(|mut r| r.take()) {
         let _ = rec.0.stop();
         say(app, "idle", None);
@@ -326,6 +349,7 @@ fn press(app: &AppHandle) {
     if conversing(app) {
         set_conversation(app, false);
     }
+    drop_note(&s);
     let Ok(mut rec) = s.recording.lock() else { return };
     if rec.is_some() {
         return;
@@ -500,6 +524,66 @@ pub fn voice_conversation_patience(app: AppHandle, patience: conversation::Patie
     if let Some(h) = c.as_ref() {
         let _ = h.cmds.send(conversation::Cmd::Patience(patience));
     }
+}
+
+/// Start recording a voice message for a session (its composer's mic button).
+/// Takes the microphone from conversation mode and from Duck's voice; refuses
+/// while a push-to-talk dictation for Duck records. Recording already: nothing.
+#[tauri::command]
+pub fn voice_note_start(app: AppHandle, state: State<'_, VoiceState>) -> Result<(), String> {
+    if state.recording.lock().map(|r| r.is_some()).unwrap_or(false) {
+        return Err("A dictation for Duck has the microphone: finish it first.".into());
+    }
+    let config = state.config.lock().map(|c| c.clone()).unwrap_or_default();
+    if state.engine.choose(config.gpu).is_none() {
+        return Err("The voice model isn't downloaded yet: download it in Duck's settings (Voice).".into());
+    }
+    if conversing(&app) {
+        set_conversation(&app, false);
+    }
+    let mut note = state.note.lock().map_err(|e| e.to_string())?;
+    if note.is_some() {
+        return Ok(());
+    }
+    // Duck talking would be in the message.
+    if let Some(t) = app.try_state::<tts::TtsState>() {
+        t.stop(&app);
+    }
+    let rec = capture::start(config.device.clone()).map_err(|e| format!("The microphone didn't open: {e}"))?;
+    *note = Some((rec, Instant::now()));
+    // Loading takes ~2 s; the recording covers it.
+    let engine = Arc::clone(&state.engine);
+    std::thread::spawn(move || {
+        let _ = engine.preload(config.gpu);
+    });
+    Ok(())
+}
+
+/// Stop the voice message and transcribe it. `None`: too short to be anything
+/// (a slip). The capture keeps at most [`capture::MAX`]; the composer stops it
+/// there.
+#[tauri::command]
+pub async fn voice_note_stop(state: State<'_, VoiceState>) -> Result<Option<Transcript>, String> {
+    let Some((rec, began)) = state.note.lock().map_err(|e| e.to_string())?.take() else {
+        return Err("The recording was stopped: the microphone went to Duck.".into());
+    };
+    let engine = Arc::clone(&state.engine);
+    let gpu = state.config.lock().map(|c| c.gpu).unwrap_or_default();
+    tauri::async_runtime::spawn_blocking(move || {
+        let samples = rec.stop().map_err(|e| format!("The recording failed: {e}"))?;
+        if began.elapsed() < MIN_HOLD {
+            return Ok(None);
+        }
+        engine.transcribe(&samples, gpu).map(Some).map_err(|e| format!("Transcription failed: {e}"))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Stop the voice message and drop it.
+#[tauri::command]
+pub fn voice_note_cancel(state: State<'_, VoiceState>) {
+    drop_note(&state);
 }
 
 /// The wake word's last state (step V6), for a webview that just loaded.

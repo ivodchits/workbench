@@ -545,7 +545,7 @@ struct Desktop(AppHandle);
 
 impl Host for Desktop {
     fn busy(&self) -> bool {
-        super::conversing(&self.0) || super::recording(&self.0)
+        super::conversing(&self.0) || super::recording(&self.0) || super::noting(&self.0)
     }
 
     fn speaking(&self) -> bool {

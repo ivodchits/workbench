@@ -1815,6 +1815,16 @@ function closeDuck(): void {
   paintUnread();
 }
 
+/** A session's voice message wants the mic (`transcript.ts`): conversation mode
+ *  stops and a dictation for Duck is dropped, as one mic has one listener. */
+export function releaseDuckMic(): void {
+  if (talk || talkStarting) stopTalk();
+  if (recording) {
+    cancelRecording();
+    setVoiceNote("");
+  }
+}
+
 /** Duck is the start view (the "the app opens on" setting). */
 export function duckOnStart(): boolean {
   return prefs.openOn === "duck";

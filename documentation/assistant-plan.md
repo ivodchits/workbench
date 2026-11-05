@@ -4662,6 +4662,42 @@ up ("change this", with a circle around it).
     next run opens its thread (once); the minute's limit. vitest 724 (2 new); cargo
     314; tsc, eslint and clippy clean (the existing warnings). Not tried in the app.
 
+#### Step V9 — Voice messages to sessions (added 2026-11-05, live test owed)
+
+- **Goal:** speak a prompt to a Claude Code session instead of typing it, on the PC and
+  on the phone (browser PWA and Duck's Android app), with V1's model; never via Duck.
+- **UX:** a 🎤 button in the session's composer. Press, speak, press ■: the transcript
+  goes into the field at its end (after a space), the caret after it, to read over and
+  send with ↵ (desktop) or send (phone). It's never sent unseen: a misheard word in a
+  prompt costs a turn, and Parakeet writes English terms in Cyrillic in Russian speech.
+  Cancel (or Esc on the desktop) drops it. Russian, English and Spanish are all
+  Parakeet v3's; Duck's name fixer (`fixNames`) puts names and terms back.
+- **As built (2026-11-05):**
+  - **Desktop:** `voice_note_start` / `voice_note_stop` / `voice_note_cancel` in
+    `src-tauri/src/voice/mod.rs`: V1's capture (the microphone picked in Duck's voice
+    settings) and engine, the text returned to the caller; no overlay, no
+    `voice-state`, nothing to Duck. One microphone user: it stops conversation mode
+    and refuses while a push-to-talk dictation records; conversation mode and a
+    push-to-talk press drop it; the wake word holds while it records. The composer's
+    side is `src/panels/voiceNote.ts` (one recording per window, for one session; the
+    text lands in that session's draft even if its console closed meanwhile) and the
+    mic button, timer and errors in `PromptComposer.tsx`. Stops itself at 1:58 (the
+    capture keeps 2 minutes).
+  - **Phone:** `src/pwa/transcript.ts` records with Duck's `mic.ts` (getUserMedia, or
+    the app's native mic and its permission prompt), stops at 59 s, and posts to
+    `/api/assistant/audio?for=session` (`for=session` skips warming Duck's voice). A
+    session voice message takes the mic from Duck's conversation mode or dictation
+    (`releaseDuckMic`). Closing the console drops a recording.
+  - **Errors shown in the composer:** no model downloaded, the mic refused or missing
+    (with where to allow it), nothing heard, too short, transcription failed, the
+    desktop unreachable (phone).
+  - **Tests:** `src/util/dictation.test.ts` (joining a transcript to a draft, the
+    timer). vitest, tsc, eslint clean; cargo tests pass apart from the known CRLF
+    `plugins::draft` frontmatter test.
+  - **Live test owed:** a Russian/English/Spanish message into a session on the PC
+    (and with the wrong mic picked), and on the phone in the browser and in Duck's
+    app (first-time permission prompt included).
+
 ### Track R — Remote
 
 #### Step R1 — Assistant endpoints on the remote server
@@ -8304,6 +8340,7 @@ T2 goes live after the replay check in its done-when (the past week's prompts th
 | V6 | Wake word on the PC (experimental) | ☐ (built 2026-10-22, off by default, sensitivity 0.5 from the sweep; done when measured in your room) |
 | V7 | Duck stops hearing itself on the phone (high priority) | ☐ (built 2026-10-22; done when measured on your phone) |
 | V8 | Announcements don't turn the mic on (small fix) | ☑ |
+| V9 | Voice messages to sessions (desktop and phone) | ☑ (live test owed) |
 | L1 | Long-term memory: files, index, recall | ☑ (not tried in the app yet) |
 | L2 | Consolidation, journal, and recall quality | ☑ (not tried in the app; hit-rate review 2026-11-05) |
 | L3 | Self-development through Opus sessions | ☑ (not tried in the app; no real Opus branch yet) |

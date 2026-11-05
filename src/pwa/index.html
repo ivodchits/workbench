@@ -151,8 +151,14 @@
         </div>
         <!-- Pictures and files waiting to go with the next prompt. -->
         <div id="tx-files" class="duck-files hidden"></div>
+        <!-- A voice message recording or transcribing, or why it couldn't. -->
+        <div id="tx-voice" class="hidden" role="status">
+          <span id="tx-voice-text"></span>
+          <button id="tx-voice-cancel" type="button">cancel</button>
+        </div>
         <div id="tx-composer">
           <button id="tx-attach" type="button" aria-label="attach a picture or file">📎</button>
+          <button id="tx-mic" type="button" aria-label="record a voice message">🎤</button>
           <input id="tx-file" type="file" multiple accept="image/*,*/*" hidden />
           <textarea id="tx-text" rows="1" placeholder="message Claude…" enterkeyhint="enter"></textarea>
           <button id="tx-stop" class="hidden" type="button">stop</button>

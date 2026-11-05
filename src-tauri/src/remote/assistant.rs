@@ -4,7 +4,8 @@
 //!   (`src/assistant/protocol.ts`, the phone's frames in `src/remote/protocol.ts`).
 //!   Auth as `/api/ws` ([`ws_authed`]).
 //! - `POST /api/assistant/audio` — a 16 kHz mono WAV of at most 60 s, transcribed
-//!   with V1's model; answers `{text}`. Auth: bearer. The body limit is raised to
+//!   with V1's model; answers `{text}`. `?for=session`: a voice message for a
+//!   session's composer, not Duck's, so Duck's voice isn't warmed. Auth: bearer. The body limit is raised to
 //!   4 MB on this route only.
 //! - `GET /api/assistant/tts/{id}` — one sentence of a spoken reply the desktop
 //!   made for the phone (`audio/wav`, kept a few minutes). Auth: bearer.
@@ -44,7 +45,7 @@ use std::time::{Duration, Instant};
 
 use axum::body::Bytes;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
-use axum::extract::{ConnectInfo, Path, State};
+use axum::extract::{ConnectInfo, Path, Query, State};
 use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
@@ -432,18 +433,22 @@ pub(super) async fn audio(
     State(state): State<Arc<RemoteState>>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
+    Query(q): Query<std::collections::HashMap<String, String>>,
     body: Bytes,
 ) -> Response {
     if let Err(refusal) = authed(&state, bearer(&headers).as_deref(), &client_addr(peer, &headers)) {
         return refusal;
     }
+    let for_duck = q.get("for").map(String::as_str) != Some("session");
     let samples = match clip(&body) {
         Ok(s) => s,
         Err(e) => return (StatusCode::BAD_REQUEST, Json(json!({ "error": e }))).into_response(),
     };
     // The reply will likely be spoken: start the voice while this is transcribed,
     // as the desktop's push-to-talk press does.
-    state.app.state::<TtsState>().warm_if_wanted();
+    if for_duck {
+        state.app.state::<TtsState>().warm_if_wanted();
+    }
     let app = state.app.clone();
     let result =
         tauri::async_runtime::spawn_blocking(move || app.state::<VoiceState>().transcribe(&samples)).await;
