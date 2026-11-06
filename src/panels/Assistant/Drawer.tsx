@@ -74,7 +74,8 @@ import { DrawerCanvas } from "./Canvas";
 import { SketchView } from "./SketchView";
 import { closeSketch, openSketch, useSketchState } from "./sketchState";
 import { OverviewPanel } from "./OverviewView";
-import ReaderBar from "./ReaderBar";
+import ReaderBar, { ListenButton } from "./ReaderBar";
+import { duckListenRequest } from "../../assistant/listen";
 import { DecisionsPanel, TrustPanel } from "./TrustViews";
 import { focusUnlessReading, isSelecting, sendsToComposer, watchSelecting } from "./composerFocus";
 import { holdSelection, restoreSelection, type HeldSelection } from "../../util/keepSelection";
@@ -971,8 +972,16 @@ function ItemView({ item, active }: { item: Item; active: boolean }) {
           <FileList files={item.files} />
         </div>
       );
-    case "reply":
-      return <Reply text={item.text} />;
+    case "reply": {
+      // Duck's own reply, with its listen button.
+      const req = duckListenRequest(item.key, item.text);
+      return (
+        <div className="wb-duck-said">
+          <Reply text={item.text} />
+          {req && <ListenButton req={req} />}
+        </div>
+      );
+    }
     case "tool":
       return <ToolChip item={item} active={active} />;
     case "event":

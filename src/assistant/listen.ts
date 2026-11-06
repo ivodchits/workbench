@@ -1,12 +1,15 @@
-// The transcript's listen button: one message of a session read aloud by Duck's
-// reader (`reader.ts`), from the desktop's transcript view or the phone's, without
-// asking Duck. It's a read like `read_aloud`'s: narrated for listening (code
-// becomes what it does), a section at a time, with the reader bar's pause, skip
-// and stop, its place kept per message. It belongs to no Duck thread, so it starts
-// at once (no reply to wait for) and a stop on its own leaves no notice anywhere.
+// The listen button: one message read aloud by Duck's reader (`reader.ts`)
+// without asking Duck. On a session's messages in its transcript view (desktop
+// and phone), keyed `msg:<instance>:<item>`, narrated for listening (code becomes
+// what it does); and on Duck's own replies in its threads, keyed
+// `duck:<thread>:<seq>:<part>`, read as written (Duck writes to be heard; a code
+// block is "see the code on screen"). Either is a read like `read_aloud`'s, a
+// section at a time, with the reader bar's pause, skip and stop, its place kept
+// per message. It belongs to no Duck thread, so it starts at once (no reply to
+// wait for) and a stop on its own leaves no notice anywhere.
 
 import type { Item } from "../transcript/model";
-import { CHARS_PER_MINUTE, NARRATE_SECTION, sections, type ReadJob, type ReaderView } from "./reader";
+import { CHARS_PER_MINUTE, NARRATE_SECTION, sections, VERBATIM_SECTION, type ReadJob, type ReaderView } from "./reader";
 
 /** A message to read: where its place is kept, what the reader bar calls it, and
  *  its text (markdown as the session wrote it). */
@@ -48,19 +51,32 @@ export function listenRequest(instanceId: string, item: Item): ListenRequest | n
   };
 }
 
-/** The reader's job for a request. */
+/** A listen key: a session message's or a Duck reply's. */
+export const LISTEN_KEY = /^(msg|duck):\S{1,300}$/;
+
+/** The request for one of Duck's replies in a thread (`key`: the drawer's item
+ *  key, `<thread>:<seq>:<part>`); null when it has nothing to read. */
+export function duckListenRequest(key: string, text: string): ListenRequest | null {
+  const t = text.trim();
+  if (!t) return null;
+  return { key: `duck:${key}`, title: titleOf("Duck", t), text: t.slice(0, LISTEN_MAX_TEXT) };
+}
+
+/** The reader's job for a request: a session's message narrated, Duck's read as
+ *  written. */
 export function listenJob(req: ListenRequest): ReadJob {
   const text = req.text.slice(0, LISTEN_MAX_TEXT);
+  const narrate = !req.key.startsWith("duck:");
   return {
     key: req.key,
     title: req.title,
-    sections: sections(text, NARRATE_SECTION),
-    narrate: true,
+    sections: sections(text, narrate ? NARRATE_SECTION : VERBATIM_SECTION),
+    narrate,
     threadId: "",
     // All of it: the button asked for this one message.
     maxChars: 60 * CHARS_PER_MINUTE,
     // "Continue reading" (Duck's tool) can read it again as text.
-    source: { source: "text", text, title: req.title, mode: "narrate" },
+    source: { source: "text", text, title: req.title, mode: narrate ? "narrate" : "verbatim" },
   };
 }
 
@@ -68,6 +84,11 @@ export function listenJob(req: ListenRequest): ReadJob {
 export function listenAction(view: ReaderView | null, key: string): "stop" | "resume" | "read" {
   if (view?.key !== key) return "read";
   return view.state === "reading" ? "stop" : "resume";
+}
+
+/** How the reader is on the message keyed `key`: null when it's not reading it. */
+export function listenStateOf(view: ReaderView | null, key: string): "reading" | "paused" | null {
+  return view?.key === key ? view.state : null;
 }
 
 /** The message `view` is reading of `instanceId`'s, by item id; null when none. */

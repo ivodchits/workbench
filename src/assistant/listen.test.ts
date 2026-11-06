@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import type { Item } from "../transcript/model";
-import { LISTEN_MAX_TEXT, listenAction, listenJob, listenRequest, listeningTo } from "./listen";
+import { duckListenRequest, LISTEN_KEY, LISTEN_MAX_TEXT, listenAction, listenJob, listenRequest, listenStateOf, listeningTo } from "./listen";
 import type { ReaderView } from "./reader";
 
 const base = { rev: 0, timestamp: null };
@@ -63,5 +63,22 @@ describe("the button", () => {
     expect(listeningTo(view("msg:i2:a1", "reading"), "i1")).toBeNull();
     expect(listeningTo(view("session:i1:last", "reading"), "i1")).toBeNull();
     expect(listeningTo(null, "i1")).toBeNull();
+  });
+});
+
+describe("Duck's own replies", () => {
+  it("are keyed by thread, message and part, titled Duck's, and read as written", () => {
+    const req = duckListenRequest("t1:12:0", "Here's the plan.\n\n```ts\nx()\n```");
+    expect(req).toEqual({ key: "duck:t1:12:0", title: "Duck: Here's the plan.", text: "Here's the plan.\n\n```ts\nx()\n```" });
+    expect(LISTEN_KEY.test(req!.key)).toBe(true);
+    const job = listenJob(req!);
+    expect(job.narrate).toBe(false);
+    expect(job.source).toMatchObject({ mode: "verbatim" });
+    expect(listenStateOf(view("duck:t1:12:0", "paused"), "duck:t1:12:0")).toBe("paused");
+    expect(listenStateOf(view("duck:t1:12:1", "reading"), "duck:t1:12:0")).toBeNull();
+  });
+
+  it("have no button when there's nothing to read", () => {
+    expect(duckListenRequest("t1:12:0", " \n ")).toBeNull();
   });
 });

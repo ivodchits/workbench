@@ -350,6 +350,9 @@ footer button { background: transparent; border: none; color: var(--dim); font-s
 /* A message's listen button: a finger-sized target, and its reader bar. */
 #tx-list .wb-tx-listen { font-size: 12px; padding: 4px 10px; min-height: 30px; }
 #tx-list .wb-tx-message > .wb-tx-listen { top: -16px; }
+#duck-list .wb-tx-listen { font-size: 12px; padding: 4px 10px; min-height: 30px; }
+#duck-list .wb-duck-said { padding-top: 14px; }
+#duck-list .wb-duck-said > .wb-tx-listen { top: -4px; right: 2px; }
 #tx-reader { display: flex; gap: 6px; align-items: center; margin: 0 2px 6px; font-size: 13px; color: var(--working); }
 #tx-reader span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 #tx-reader button { min-width: 40px; min-height: 36px; padding: 2px 8px; }
