@@ -567,6 +567,12 @@ export function fakePort(data: FakePortData = {}): FakePort {
     setAutopilotBadge(id, badge) {
       port.badges.set(id, badge);
     },
+    openDecisionsLog(id) {
+      record("openDecisionsLog", id);
+    },
+    decisionsLogged(id) {
+      record("decisionsLogged", id);
+    },
     alertUser(id, title, body) {
       record("alertUser", id, title, body);
     },

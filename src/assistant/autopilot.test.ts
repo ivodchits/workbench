@@ -9,6 +9,7 @@ import {
   overLimits,
   planContext,
   stallAfter,
+  trailingQuestion,
   type Autopilot,
   type AutopilotCall,
   type QuestionAnswer,
@@ -17,6 +18,19 @@ import {
 } from "./autopilot";
 import { fakePort, project, session, type FakePortData } from "./fakePort.test-util";
 import type { ChoiceRef, SessionPhase } from "./port";
+import type { LoggedDecision } from "./decisionsLog";
+
+let line = 0;
+/** A transcript line: Claude's reply. */
+function claudeSays(text: string): string {
+  return JSON.stringify({
+    type: "assistant",
+    uuid: `a${++line}`,
+    // After the test clock, so a turn read "since its prompt" takes it.
+    timestamp: new Date(20_000_000_000).toISOString(),
+    message: { id: `m${line}`, type: "message", role: "assistant", content: [{ type: "text", text }] },
+  });
+}
 
 const PLAN = `# The plan
 
@@ -109,9 +123,15 @@ function setup(
   const stored = new Map<string, Autopilot>();
   for (const a of opts.stored ?? []) stored.set(a.instanceId, a);
   const removed: string[] = [];
+  const journal: LoggedDecision[] = [];
+  const headings: string[] = [];
   let clock = 10_000_000_000;
   const ap = createAutopilot({
     port,
+    journal: {
+      record: async (e) => void journal.push(e),
+      heading: async (_id, _session, text) => void headings.push(text),
+    },
     backend: {
       put: async (a) => void stored.set(a.instanceId, a),
       list: async () => [...stored.values()],
@@ -159,7 +179,7 @@ function setup(
     port.phase("w", "done", "working");
   };
   const calls = (name: string) => port.calls.filter((c) => c.name === name).map((c) => c.args);
-  return { port, ap, s, s2, asked, told, levels, notices, stored, removed, turnEnds, calls, tick, setClock };
+  return { port, ap, s, s2, asked, told, levels, notices, stored, removed, turnEnds, calls, tick, setClock, journal, headings };
 }
 
 const start = (t: ReturnType<typeof setup>, extra: Partial<Parameters<ReturnType<typeof setup>["ap"]["start"]>[0]> = {}) =>
@@ -666,5 +686,132 @@ describe("unattended runs (P2)", () => {
     expect(t.ap.get("w")).toMatchObject({ state: "running", stepsDone: 1 });
     expect(t.ap.get("v")).toMatchObject({ state: "paused", question: "Which voice?" });
     expect(t.ap.list()).toHaveLength(2);
+  });
+});
+
+describe("trailingQuestion", () => {
+  it("finds the question a turn's last message ends on", () => {
+    expect(trailingQuestion("user: go\nclaude: Done with A1.\n\nShall I go on to A2?")).toBe("Shall I go on to A2?");
+    expect(trailingQuestion("[10:02] claude: Built it. Which name do you prefer, cache or store?")).toBe("Which name do you prefer, cache or store?");
+    expect(trailingQuestion("claude: Two ways:\n\n- keep the old table?\n- or drop it?")).toBe("keep the old table? or drop it?");
+  });
+
+  it("ignores a question something came after, one in code, and a turn without one", () => {
+    expect(trailingQuestion("claude: Which one?\ntool Bash: ls")).toBeNull();
+    expect(trailingQuestion("claude: Which one?\nuser: the first")).toBeNull();
+    expect(trailingQuestion("claude: Ran it:\n\n```\nok?\n```")).toBeNull();
+    expect(trailingQuestion("claude: All done. Tests pass.")).toBeNull();
+    expect(trailingQuestion("")).toBeNull();
+  });
+});
+
+describe("the decisions log", () => {
+  const PLAN_CHOICE = {
+    ...QUESTION,
+    id: "p1",
+    kind: "plan",
+    toolName: "ExitPlanMode",
+    questions: [],
+    options: [{ key: 1, label: "Yes, manually approve edits", detail: "", typed: false }],
+    optionsFrom: "terminal",
+  } satisfies ChoiceRef;
+
+  it("logs the run's start, what it settles, and what it leaves to you", async () => {
+    const t = setup({
+      phase: "working",
+      answers: [
+        { serious: false, option: 1, text: null, why: "The plan keeps everything local." },
+        { serious: true, option: null, text: null, why: "It changes the data model." },
+      ],
+    });
+    await start(t);
+    expect(t.headings).toEqual(["Autopilot started on C:/src/p/plan.md, for up to 5 step(s)"]);
+    t.s.choice = QUESTION;
+    t.port.phase("w", "needs_you", "working");
+    await flush();
+    expect(t.journal).toEqual([
+      { instanceId: "w", session: "workbench", kind: "question", step: null, asked: "Which database?", decided: "SQLite", why: "The plan keeps everything local." },
+    ]);
+    t.s.choice = { ...QUESTION, id: "c2" };
+    t.port.phase("w", "working", "needs_you");
+    t.port.phase("w", "needs_you", "working");
+    await flush();
+    expect(last(t.journal)).toMatchObject({
+      kind: "left to you",
+      asked: "Which database? (1. SQLite; 2. Postgres)",
+      decided: "the run paused for you",
+      why: "the session asks a question that's yours to decide",
+    });
+    expect(last(t.told)).toContain("show_autopilot_decisions");
+  });
+
+  it("logs a turn's open questions, and a question at a turn's end it went on past", async () => {
+    const t = setup({
+      reviews: [
+        verdict({ finished: false, decisions: [{ question: "Name the table?", decision: "cache_entries", why: "Matches the others." }] }),
+        verdict(),
+      ],
+      data: { transcripts: { w: [claudeSays("Built the core.\n\nShould I also migrate the old rows?")], v: [] } },
+    });
+    await start(t);
+    await flush();
+    // The review settled the turn's question: that's its entry, and no other.
+    expect(t.journal).toEqual([
+      { instanceId: "w", session: "workbench", kind: "open question", step: "A1", asked: "Name the table?", decided: "cache_entries", why: "Matches the others." },
+    ]);
+    t.turnEnds();
+    await flush();
+    expect(t.journal).toHaveLength(2);
+    expect(last(t.journal)).toMatchObject({
+      kind: "turn-end question",
+      asked: "Should I also migrate the old rows?",
+      decided: "went on without asking you",
+      why: "The step is done and recorded.",
+    });
+    expect(t.notices).toContain("Autopilot went on past the session's question: Should I also migrate the old rows?");
+  });
+
+  it("puts a plan approval and a question only the terminal can answer to the thread", async () => {
+    const t = setup({ phase: "working" });
+    await start(t);
+    t.s.choice = PLAN_CHOICE;
+    t.port.phase("w", "needs_you", "working");
+    await flush();
+    expect(t.asked).toHaveLength(0);
+    expect(t.calls("answerChoice")).toHaveLength(0);
+    expect(last(t.told)).toContain("asks to approve its plan. That's the user's");
+    expect(last(t.levels)).toBe("needs_you");
+    expect(last(t.journal)).toMatchObject({ kind: "left to you", asked: "the session asks to approve its plan", decided: "left in the session for you" });
+    expect(t.ap.get("w")).toMatchObject({ state: "running", doing: "waiting" });
+
+    t.s.choice = { ...QUESTION, id: "c9", terminalOnly: "multi-select" };
+    t.port.phase("w", "working", "needs_you");
+    t.port.phase("w", "needs_you", "working");
+    await flush();
+    expect(t.asked).toHaveLength(0);
+    expect(last(t.told)).toContain("asks: Which database?");
+    expect(last(t.journal)).toMatchObject({ kind: "left to you", asked: "the session asks: Which database?" });
+    // Each is told once.
+    t.port.phase("w", "working", "needs_you");
+    t.port.phase("w", "needs_you", "working");
+    await flush();
+    expect(t.journal).toHaveLength(2);
+  });
+
+  it("takes on a question already open when it starts", async () => {
+    const t = setup({ phase: "needs_you", answers: [{ serious: false, option: 2, text: null, why: "The plan names Postgres." }] });
+    t.s.choice = QUESTION;
+    await start(t);
+    await flush();
+    expect(t.calls("answerChoice")).toEqual([["w", "c1", 2]]);
+    expect(last(t.journal)).toMatchObject({ kind: "question", decided: "Postgres" });
+  });
+
+  it("logs where the run stopped", async () => {
+    const t = setup({ reviews: [verdict({ verdict: "plan_done" })] });
+    await start(t);
+    await flush();
+    expect(last(t.journal)).toMatchObject({ kind: "run", decided: "stopped after 1 step(s)", why: "the plan is done" });
+    expect(last(t.told)).toContain("show_autopilot_decisions opens it");
   });
 });

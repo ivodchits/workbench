@@ -30,6 +30,7 @@ import {
 } from "./act";
 import { listWorktrees } from "./read";
 import { createRegistry, type ToolDef } from "./registry";
+import type { LoggedDecision } from "../decisionsLog";
 
 const choice: ChoiceRef = {
   id: "c7",
@@ -247,6 +248,30 @@ describe("action tools", () => {
     await expect(
       run(answerChoice, { session: "api", choiceId: "c6", option: 1 }),
     ).rejects.toThrow(/no longer open/);
+  });
+
+  it("answer_choice logs Duck's answer for a session handed to it, and only for one", async () => {
+    const decisionsFor = (logged: LoggedDecision[]) => ({
+      record: async (e: LoggedDecision) => void logged.push(e),
+      heading: async () => {},
+      read: async () => null,
+      prune: async () => 0,
+    });
+    const d = data();
+    d.contexts = { i1: { delegated: true } };
+    const logged: LoggedDecision[] = [];
+    const ctx = { ...toolCtx(fakePort(d)), decisions: decisionsFor(logged) };
+    await answerChoice.run(answerChoice.schema.parse({ session: "api", choiceId: "c7", option: 1, reason: "the tests are its task" }), ctx);
+    await new Promise((r) => setTimeout(r, 0));
+    expect(logged).toEqual([
+      { instanceId: "i1", session: "api", kind: "permission", asked: "permission: Bash npm test", decided: "Yes", why: "the tests are its task" },
+    ]);
+
+    const none: LoggedDecision[] = [];
+    const plain = { ...toolCtx(fakePort(data())), decisions: decisionsFor(none) };
+    await answerChoice.run(answerChoice.schema.parse({ session: "api", choiceId: "c7", option: 1 }), plain);
+    await new Promise((r) => setTimeout(r, 0));
+    expect(none).toEqual([]);
   });
 
   it("kill_session removes the session, and refuses one with a worktree", async () => {

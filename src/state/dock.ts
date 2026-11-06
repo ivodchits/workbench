@@ -44,6 +44,25 @@ export function openPanelBeside(
   });
 }
 
+/** `openPanelBeside`, once `besideId` is docked: after a project switch its console
+ *  shows up a few frames later. Opens anyway (wherever dockview puts it) when it
+ *  doesn't within about two seconds. */
+export function openPanelBesideWhenReady(
+  besideId: string,
+  panel: { id: string; component: string; title: string; params: Record<string, unknown> },
+): void {
+  let tries = 0;
+  const tick = () => {
+    if (!api) return;
+    if (api.getPanel(besideId) || ++tries >= 120) {
+      openPanelBeside(besideId, panel);
+      return;
+    }
+    requestAnimationFrame(tick);
+  };
+  tick();
+}
+
 /**
  * Bring `panelId` to the foreground and hand it the keyboard — the *final* word,
  * even when opening it triggers an async project swap.

@@ -28,6 +28,7 @@ import Console from "./Console";
 import FileDropZone from "./FileDropZone";
 import TranscriptView from "./TranscriptView";
 import PlanButton from "./PlanButton";
+import DecisionsButton from "./DecisionsButton";
 import type { Instance, Project } from "../ipc/registry";
 import type { SpawnResult } from "../ipc/pty";
 import { contextWindowTokens, formatTokens, tokenBreakdown } from "../util/format";
@@ -242,6 +243,7 @@ function HeaderStrip({
       )}
       <span style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 10, paddingLeft: 12 }}>
         <PlanButton instanceId={instance.id} enabled={plans} />
+        <DecisionsButton instanceId={instance.id} />
         {viewMode && <ViewToggle mode={viewMode} onToggle={onToggleView} />}
         {onTakeOver && (
           <button

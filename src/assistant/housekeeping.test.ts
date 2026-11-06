@@ -100,7 +100,9 @@ const settle = async () => {
   for (let i = 0; i < 10; i++) await new Promise((r) => setTimeout(r, 0));
 };
 
-function lab(opts: { threads?: ThreadRow[]; consolidatedTo?: number | null; busy?: (id: string) => string | null } = {}) {
+function lab(
+  opts: { threads?: ThreadRow[]; consolidatedTo?: number | null; busy?: (id: string) => string | null; pruneDecisionLogs?: () => Promise<number> } = {},
+) {
   const clock = { now: NOW };
   const tells: { threadId: string; text: string; level: Level }[] = [];
   const threads: ThreadRow[] = [...(opts.threads ?? [])];
@@ -178,6 +180,7 @@ function lab(opts: { threads?: ThreadRow[]; consolidatedTo?: number | null; busy
     piloted: () => new Set(),
     consolidatedTo: async () => (opts.consolidatedTo === undefined ? NOW - DAY / 2 : opts.consolidatedTo),
     resultJson: async (t) => results.get(t.id) ?? null,
+    pruneDecisionLogs: opts.pruneDecisionLogs,
     tell: (threadId, text, level) => tells.push({ threadId, text, level }),
     now: () => clock.now,
   });
@@ -311,6 +314,16 @@ describe("housekeeping", () => {
     expect(l.tells[0].text).toMatch(/Deleted 2 idle threads: "Release notes", "Flight search"/);
     expect(l.tells[0].text).toMatch(/folded 1 old task folders/);
     expect(l.tells[0].text).toMatch(/was merged/);
+  });
+
+  it("removes the autopilot decisions logs a week old, and says so", async () => {
+    let pruned = 0;
+    const l = lab({ pruneDecisionLogs: async () => (++pruned, 2) });
+    l.status.repo = false;
+    await l.routines.load();
+    await l.routines.runNow("builtin-housekeeping");
+    expect(pruned).toBe(1);
+    expect(l.tells[0].text).toContain("removed 2 autopilot decisions logs a week old");
   });
 
   it("leaves a branch that drops entries without a reason for your OK", async () => {

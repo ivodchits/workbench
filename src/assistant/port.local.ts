@@ -41,6 +41,8 @@ import { startPluginRunFor } from "../panels/pluginRun";
 import { deliverPrompt, promptPending } from "../state/promptOutbox";
 import { lastTypedAt, readScreen, readTail, release, submitPrompt } from "../panels/terminalPool";
 import { setAutopilotBadge } from "../state/autopilotBadges";
+import { decisionsLogged } from "../state/decisionsLog";
+import { openDecisions } from "../panels/openDecisions";
 import { alertAbout } from "../state/notifications";
 import { atRest } from "../state/queue";
 import { setActiveProject } from "../state/activeProject";
@@ -801,6 +803,10 @@ export const localPort: WorkbenchPort = {
     return (await getSessionContext(id))?.usedPercentage ?? null;
   },
   setAutopilotBadge,
+  openDecisionsLog(id) {
+    openDecisions(instance(id).id, { show: true });
+  },
+  decisionsLogged,
   alertUser: alertAbout,
   onUserBack(cb) {
     let awaySince: number | null = document.hasFocus() ? null : Date.now();

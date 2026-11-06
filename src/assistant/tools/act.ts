@@ -430,14 +430,33 @@ export const answerChoice = defineTool({
       grant: grantedBy?.trim() && !/don.?t ask again|always allow/i.test(label) ? grantedBy : undefined,
     };
   },
-  run({ session, project, choiceId, option, text, reason }, { port, tasks }) {
+  run({ session, project, choiceId, option, text, reason }, ctx) {
+    const { port, tasks } = ctx;
     const s = findSession(port, session, project);
     const asked = workerQuestion(s) ? (s.choice?.questions[0]?.question ?? "") : null;
+    const c = s.choice;
     const label = port.answerChoice(s.id, choiceId, answerOf(option, text));
     if (asked !== null) tasks?.noteAnswer(s.id, { question: asked, answer: label, reason: reason?.trim() || "" });
+    else if (c) void logAnswer(ctx, s, c, label, reason);
     return { session: s.title, answered: label };
   },
 });
+
+/** An answer Duck gave in its thread for a session on autopilot, or one handed to
+ *  it, goes to the session's decisions log. */
+async function logAnswer(ctx: ToolContext, s: SessionRef, c: NonNullable<SessionRef["choice"]>, label: string, reason: string | undefined): Promise<void> {
+  if (!ctx.decisions) return;
+  const piloted = (ctx.autopilot?.get(s.id)?.state ?? "stopped") !== "stopped";
+  if (!piloted && !(await ctx.port.sessionContext(s.id).catch(() => null))?.delegated) return;
+  await ctx.decisions.record({
+    instanceId: s.id,
+    session: s.title,
+    kind: c.kind === "permission" ? "permission" : c.kind === "plan" ? "plan" : "question",
+    asked: c.kind === "question" ? (c.questions[0]?.question ?? choiceLine(c)) : choiceLine(c),
+    decided: label,
+    why: reason?.trim() || "Duck answered it in its thread",
+  });
+}
 
 export const interruptSession = defineTool({
   name: "interrupt_session",

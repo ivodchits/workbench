@@ -92,6 +92,7 @@ import { lastUserText } from "./trust/mandate";
 import type { Summarizer } from "./summarize";
 import type { TaskManager } from "./tasks";
 import type { AutopilotManager } from "./autopilot";
+import type { DecisionsLog } from "./decisionsLog";
 import type { ReaderHost } from "./tools/readAloud";
 import type { ScreenHost } from "./tools/screenshot";
 import type { QuietHost } from "./tools/quiet";
@@ -204,6 +205,9 @@ export interface EngineDeps {
   summaries?: Summarizer;
   /** Plan autopilots (step P1), for the autopilot tools. */
   autopilot?: AutopilotManager;
+  /** The sessions' autopilot decisions log, for `show_autopilot_decisions` and
+   *  `answer_choice`. */
+  decisions?: DecisionsLog;
   /** Read-aloud and screenshots (step V3), for their tools. */
   reader?: ReaderHost;
   screen?: ScreenHost;
@@ -1683,6 +1687,7 @@ export function createEngine(deps: EngineDeps): Engine {
           tasks: deps.tasks ?? null,
           summaries: deps.summaries ?? null,
           autopilot: deps.autopilot ?? null,
+          decisions: deps.decisions ?? null,
           reader: deps.reader ?? null,
           screen: deps.screen ?? null,
           quiet: deps.quiet ?? null,

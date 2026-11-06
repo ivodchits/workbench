@@ -295,6 +295,16 @@ export const attachOutputs = (workspace: string, folder: string): Promise<Stored
   invoke("assistant_attach_outputs", { workspace, folder });
 /** Remove attachments nothing has referred to for a week; how many went. */
 export const attachPrune = (): Promise<number> => invoke("assistant_attach_prune");
+
+/** Add a line to a session's autopilot decisions log; a new file starts with
+ *  `header`. */
+export const decisionsLogAppend = (instanceId: string, header: string, text: string): Promise<void> =>
+  invoke("assistant_decisions_log_append", { instanceId, header, text });
+/** A session's decisions log as Markdown; null when nothing was logged for it. */
+export const decisionsLogRead = (instanceId: string): Promise<string | null> =>
+  invoke("assistant_decisions_log_read", { instanceId });
+/** Remove the decisions logs unchanged for a week; how many went. */
+export const decisionsLogPrune = (): Promise<number> => invoke("assistant_decisions_log_prune");
 /** Drag a stored file out of the window. */
 export const attachDrag = (id: string, name: string): Promise<void> => invoke("assistant_attach_drag", { id, name });
 /** Save a copy of a stored file at `dest` (a full path from the save dialog). */

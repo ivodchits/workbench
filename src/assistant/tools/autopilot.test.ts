@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import { createAutopilot } from "../autopilot";
 import { fakePort, project, session, toolCtx } from "../fakePort.test-util";
-import { autopilotStatus, minutesOf, planPathFor, startAutopilot, stopAutopilot, windowOf } from "./autopilot";
+import { autopilotStatus, minutesOf, planPathFor, showAutopilotDecisions, startAutopilot, stopAutopilot, windowOf } from "./autopilot";
 
 describe("autopilot tools", () => {
   it("resolves a plan path against the session's folder", () => {
@@ -61,5 +61,59 @@ describe("autopilot tools", () => {
     );
     expect(bounded).toMatchObject({ state: "running", steps: "0 done, until the plan is done", checklist: ["the demo runs"] });
     autopilot.dispose();
+  });
+});
+
+describe("show_autopilot_decisions", () => {
+  const LOG = [
+    '# Decisions on "workbench"',
+    "",
+    "Session w.",
+    "",
+    "## 2026-11-06 14:00 · Autopilot started on plan.md",
+    "",
+    "- 2026-11-06 14:05 · question · Which DB? → **SQLite** (local)",
+    "",
+  ].join("\n");
+
+  function setup(sessions = [session({ id: "w", projectId: "p", title: "workbench", phase: "working" })]) {
+    const port = fakePort({ projects: [project({ id: "p" })], sessions });
+    const autopilot = createAutopilot({
+      port,
+      backend: { put: async () => {}, list: async () => [], remove: async () => {} },
+      call: () => Promise.reject(new Error("not called")),
+      readFile: async () => "# Plan",
+      tell: () => {},
+      notice: () => {},
+    });
+    const files: Record<string, string> = { w: LOG };
+    const decisions = { record: async () => {}, heading: async () => {}, read: async (id: string) => files[id] ?? null, prune: async () => 0 };
+    return { port, autopilot, ctx: { ...toolCtx(port), autopilot, decisions } };
+  }
+
+  it("opens the session's log for the user and returns its lines", async () => {
+    const { port, ctx } = setup();
+    const out = await showAutopilotDecisions.run({ session: "workbench" }, ctx);
+    expect(out).toEqual({
+      session: "workbench",
+      opened: true,
+      entries: ["## 2026-11-06 14:00 · Autopilot started on plan.md", "- 2026-11-06 14:05 · question · Which DB? → **SQLite** (local)"],
+    });
+    expect(port.calls.filter((c) => c.name === "openDecisionsLog").map((c) => c.args)).toEqual([["w"]]);
+    // Read only.
+    await showAutopilotDecisions.run({ session: "workbench", open: false }, ctx);
+    expect(port.calls.filter((c) => c.name === "openDecisionsLog")).toHaveLength(1);
+  });
+
+  it("finds the session on autopilot when none is named, and says when there's nothing", async () => {
+    const { autopilot, ctx } = setup([
+      session({ id: "w", projectId: "p", title: "workbench", phase: "working" }),
+      session({ id: "v", projectId: "p", title: "voice", phase: "working" }),
+    ]);
+    await expect(showAutopilotDecisions.run({}, ctx)).rejects.toThrow("No session has been on autopilot");
+    await autopilot.start({ instanceId: "v", threadId: "t", planPath: "plan.md" });
+    expect(await showAutopilotDecisions.run({ open: false }, ctx)).toEqual({ session: "voice", entries: "nothing logged for this session yet" });
+    await autopilot.start({ instanceId: "w", threadId: "t", planPath: "plan.md" });
+    await expect(showAutopilotDecisions.run({}, ctx)).rejects.toThrow('2 sessions are on autopilot: name one ("workbench", "voice")');
   });
 });

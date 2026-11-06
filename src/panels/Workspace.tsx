@@ -39,6 +39,7 @@ import NotesPanel, { type NotesPanelParams } from "./Notes";
 import TaskPanel, { type TaskPanelParams } from "./TaskPanel";
 import PreviewPanel from "./PreviewPanel";
 import PlanPanel from "./PlanPanel";
+import DecisionsPanel from "./DecisionsPanel";
 import DrawingPanel from "./Assistant/Canvas";
 import SketchPanel from "./Assistant/SketchView";
 import { GLYPH } from "../theme";
@@ -177,6 +178,9 @@ const COMPONENTS = {
   // Plan tabs (step P1) carry their text in params and no store id, so like the
   // preview they persist purely as part of the tree.
   plan: PlanPanel as React.FunctionComponent<IDockviewPanelProps>,
+  // A session's autopilot decisions log: its session in params, the file read
+  // when shown, so it persists as part of the tree too.
+  decisions: DecisionsPanel as React.FunctionComponent<IDockviewPanelProps>,
   // A Duck drawing popped out of the drawer's canvas (step G3): its id in params,
   // the drawing from Duck, so like the plan it persists as part of the tree.
   drawing: DrawingPanel as React.FunctionComponent<IDockviewPanelProps>,

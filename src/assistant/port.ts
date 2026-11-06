@@ -360,6 +360,11 @@ export interface WorkbenchPort {
   /** The autopilot line under the session's card (null: none). A session on a
    *  running autopilot gets no done alerts. */
   setAutopilotBadge(instanceId: string, badge: AutopilotBadgeRef | null): void;
+  /** Open the session's autopilot decisions log beside its console (its project
+   *  shown first). */
+  openDecisionsLog(instanceId: string): void;
+  /** The session's decisions log changed: an open view of it reads it again. */
+  decisionsLogged(instanceId: string): void;
   /** A desktop toast and phone push about a session, on the user's routes. */
   alertUser(instanceId: string, title: string, body: string): void;
   /** Hear the user come back to the app after a while away (the window regains

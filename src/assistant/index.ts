@@ -50,6 +50,7 @@ import { readFile } from "../ipc/fs";
 import { getPref, setPref } from "../ipc/prefs";
 import { listMonitors, saveScreenshot, screenshot } from "../ipc/screen";
 import { badgeText, createAutopilot, ipcAutopilotBackend, type AutopilotManager } from "./autopilot";
+import { createDecisionsLog, ipcDecisionsLogBackend, sessionOfRow, trustEntry } from "./decisionsLog";
 import { errorMessage, getClient, oneShot, structured } from "./client";
 import { createEngine, eventText, type Engine } from "./engine";
 import { createBrainHost } from "./brain/subscription";
@@ -732,10 +733,17 @@ export function initAssistant(): Promise<void> {
         .catch((e: unknown): McpResult => ({ content: [{ type: "text", text: `The render failed: ${errorMessage(e)}` }], isError: true }))
         .then((result) => brainToolResult(call.callId, result)),
     );
+    // What Duck settles for sessions on autopilot or handed to it: one file per
+    // session, shown beside its console.
+    const decisionsLog = createDecisionsLog({
+      backend: ipcDecisionsLogBackend,
+      changed: (id) => localPort.decisionsLogged(id),
+    });
     // Plan autopilots (P1) report the same way; their step log is notices.
     const autopilot = createAutopilot({
       port: localPort,
       backend: ipcAutopilotBackend,
+      journal: decisionsLog,
       call: (r) => structured(r),
       readFile,
       tell: (threadId, text, level) => {
@@ -920,6 +928,7 @@ export function initAssistant(): Promise<void> {
       consolidatedTo: async () => (await tidier.last())?.at ?? null,
       resultJson: (t) => taskResult(t.workspace, t.folder).then((r) => r.json),
       pruneFiles: attachPrune,
+      pruneDecisionLogs: () => decisionsLog.prune(),
       tell: (threadId, text, level) => {
         levels.set(threadId, level);
         void engineRef
@@ -994,6 +1003,7 @@ export function initAssistant(): Promise<void> {
       drawings,
       images: { key: imageKey, generate: imageGenerate },
       autopilot,
+      decisions: decisionsLog,
       summaries,
       reader: readerHost,
       screen: screenHost,
@@ -1062,6 +1072,21 @@ export function initAssistant(): Promise<void> {
         holdOther: delegate ? (id) => delegate.hold(id) : undefined,
         notice: trustNotice,
       });
+    // The trust layer's decisions on a session on autopilot, or one handed to Duck
+    // (its permission prompts, T3's answers and plan approvals), go to the
+    // session's decisions log too.
+    trust?.subscribe(({ decision }) => {
+      const id = decision ? sessionOfRow(decision) : null;
+      if (!decision || !id) return;
+      const session = localPort.listSessions().find((x) => x.id === id);
+      if (!session) return;
+      const entry = trustEntry(decision, session.title);
+      if (!entry) return;
+      const piloted = (autopilot.get(id)?.state ?? "stopped") !== "stopped";
+      void (piloted ? Promise.resolve(true) : localPort.sessionContext(id).then((c) => c.delegated, () => false)).then(
+        (logged) => (logged ? decisionsLog.record(entry) : undefined),
+      );
+    });
     // Often-approved patterns, offered for Claude Code's allow list (T3).
     const promoter = trust
       ? createPromoter({

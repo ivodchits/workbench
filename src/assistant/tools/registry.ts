@@ -42,6 +42,7 @@ import type { DuckSettings } from "../settings";
 import type { Summarizer } from "../summarize";
 import type { TaskManager } from "../tasks";
 import type { AutopilotManager } from "../autopilot";
+import type { DecisionsLog } from "../decisionsLog";
 import type { TrustFacts } from "../trust/decide";
 import type { RoutinesHost } from "./routines";
 import type { ReaderHost } from "./readAloud";
@@ -91,6 +92,8 @@ export interface ToolContext {
   summaries: Summarizer | null;
   /** Plan autopilots (step P1); null where there are none (some tests). */
   autopilot: AutopilotManager | null;
+  /** The sessions' autopilot decisions log; absent where there is none (tests). */
+  decisions?: DecisionsLog | null;
   /** Read-aloud (step V3); null where there is none (some tests). */
   reader: ReaderHost | null;
   /** Screenshots (step V3); null where there are none (some tests). */

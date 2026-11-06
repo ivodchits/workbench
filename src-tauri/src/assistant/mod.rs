@@ -30,6 +30,7 @@ mod autopilot;
 mod budget;
 pub mod config;
 mod db;
+pub mod decisions_log;
 pub mod drawings;
 pub mod imagegen;
 pub mod gitlane;
@@ -989,6 +990,30 @@ pub fn assistant_attach_prune(app: AppHandle, ctx: Db<'_>) -> Result<usize, Stri
             || q("SELECT 1 FROM assistant_drawings WHERE instr(data, ?1) > 0 LIMIT 1")
     };
     Ok(attachments::prune(&root, 7 * 24 * 3_600_000, referred))
+}
+
+// ── the autopilot decisions log ──
+
+fn decisions_root(app: &AppHandle) -> Result<std::path::PathBuf, String> {
+    Ok(decisions_log::root(&app.path().app_data_dir().map_err(|e| e.to_string())?))
+}
+
+/// Add a line to a session's decisions log (a new file starts with `header`).
+#[tauri::command]
+pub fn assistant_decisions_log_append(app: AppHandle, instance_id: String, header: String, text: String) -> Result<(), String> {
+    decisions_log::append(&decisions_root(&app)?, &instance_id, &header, &text)
+}
+
+/// A session's decisions log; None when nothing was logged for it.
+#[tauri::command]
+pub fn assistant_decisions_log_read(app: AppHandle, instance_id: String) -> Result<Option<String>, String> {
+    decisions_log::read(&decisions_root(&app)?, &instance_id)
+}
+
+/// Remove the decisions logs unchanged for a week (the weekly housekeeping).
+#[tauri::command]
+pub fn assistant_decisions_log_prune(app: AppHandle) -> Result<usize, String> {
+    Ok(decisions_log::prune(&decisions_root(&app)?, 7 * 24 * 3_600_000))
 }
 
 /// Save a copy of a stored file where you picked ("save as…" on a drawing, G3).

@@ -27,6 +27,8 @@ import { defineTool, type ToolContext } from "./registry";
 const LOG_LINES = 12;
 /** Decisions it shows, newest. */
 const DECISION_LINES = 20;
+/** Lines of the decisions log `show_autopilot_decisions` returns, newest. */
+const LOG_FILE_LINES = 40;
 
 function manager(ctx: ToolContext): AutopilotManager {
   if (!ctx.autopilot) throw new Error("Autopilot isn't available here.");
@@ -218,4 +220,40 @@ export const stopAutopilot = defineTool({
   },
 });
 
-export const AUTOPILOT_TOOLS = [startAutopilot, autopilotStatus, pauseAutopilot, resumeAutopilot, stopAutopilot];
+export const showAutopilotDecisions = defineTool({
+  name: "show_autopilot_decisions",
+  description:
+    "Open a session's decisions log beside its console, for the user: every question, plan and permission prompt settled without them while the session was on autopilot (or handed to you), and each one left to them. Use it when the user asks what got decided on autopilot (\"show me what got decided\"), and offer it when you report a run's decisions. Without `session`, the session on autopilot (when there is one). `open: false` only reads it. Returns the log's latest lines.",
+  schema: z.object({
+    session: sessionArg.optional(),
+    project: projectArg.optional(),
+    open: z.boolean().optional().describe("Open the view for the user (default true); false only reads the log."),
+  }),
+  tier: "reversible",
+  async run({ session, project, open }, ctx) {
+    if (!ctx.decisions) throw new Error("The decisions log isn't available here.");
+    let id: string;
+    if (session) id = findSession(ctx.port, session, project).id;
+    else {
+      const all = ctx.autopilot?.list() ?? [];
+      const live = all.filter((a) => a.state !== "stopped");
+      if (live.length > 1)
+        throw new Error(`${live.length} sessions are on autopilot: name one (${live.map((a) => `"${titleOf(ctx, a.instanceId)}"`).join(", ")}).`);
+      const a = live[0] ?? all[0];
+      if (!a) throw new Error("No session has been on autopilot: name the session.");
+      id = a.instanceId;
+    }
+    const text = await ctx.decisions.read(id);
+    const opened = open !== false;
+    if (opened) ctx.port.openDecisionsLog(id);
+    const lines = (text ?? "").split(/\r?\n/).filter((l) => l.startsWith("- ") || l.startsWith("## "));
+    return compact({
+      session: titleOf(ctx, id),
+      opened,
+      entries: lines.length ? lines.slice(-LOG_FILE_LINES) : "nothing logged for this session yet",
+      earlier: lines.length > LOG_FILE_LINES ? `${lines.length - LOG_FILE_LINES} earlier line(s) are in the view` : null,
+    });
+  },
+});
+
+export const AUTOPILOT_TOOLS = [startAutopilot, autopilotStatus, pauseAutopilot, resumeAutopilot, stopAutopilot, showAutopilotDecisions];

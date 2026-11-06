@@ -31,6 +31,12 @@
 // A finished step that misses an item of the plan's checklist (`detectChecklist`) is
 // sent back once as a fix-up. Coming back after a while away gets one summary of
 // every run that went on meanwhile.
+//
+// Everything a run settles without you, and everything it leaves to you, also goes
+// to the session's decisions log (`decisionsLog.ts`): the questions it answers, the
+// small ones a turn left open, a question at the end of a turn it went on past, a
+// plan approval or a question it can't answer (put to you or the thread), and each
+// pause and stop.
 
 import type { Level } from "./announce";
 import { z } from "zod";
@@ -38,6 +44,7 @@ import { z } from "zod";
 import { autopilotDelete, autopilotList, autopilotPut } from "../ipc/assistant";
 import type { RateLimits } from "../ipc/usageLimits";
 import { readPlainText } from "../transcript/plainText";
+import type { DecisionsLog, LoggedDecision } from "./decisionsLog";
 import { MAIN_MODEL } from "./prompt";
 import { choiceLine } from "./tools/read";
 import type { SessionPhase, WorkbenchPort } from "./port";
@@ -325,7 +332,7 @@ Fields:
 - summary: one sentence for the step log: what the turn did.
 - reason: one sentence: why this verdict.
 - question: for needs_you, the serious question for the user, complete enough to answer without reading the session; otherwise null.
-- decisions: each small question the turn left open (asked by the agent, or a choice it said it needs), with your decision and one sentence of why. Empty when there are none. A plain "shall I continue?" is not a decision.
+- decisions: each small question the turn left open (asked by the agent, or a choice it said it needs), with your decision and one sentence of why. Empty when there are none. A plain "shall I continue?" is not a decision. Every other question the agent puts to the user, above all one at the end of its last message, is either settled here or makes the verdict needs_you: never pass one over.
 - compact: whether to run /compact before the next prompt. Usually true after a finished step. False for a fix-up of the same step or one that wires up what was just built, or when the context used is low (under about 40%). compactReason: one short sentence.
 - compactFocus: a short line telling /compact what to keep (the plan's path, the step just finished, anything the next step needs), or null.
 - nextPrompt: in the user's voice, short. Required when there are decisions (give the agent each one plainly: "use SQLite for the cache; name it cache.db") or a fix-up ("two tests in queue.test.ts still fail: fix them, then proceed"). Otherwise null for the user's usual phrasing, unless a word more helps: "proceed to the next step (T2); note the flaky test in queue.test.ts".
@@ -403,6 +410,8 @@ export interface AutopilotDeps {
   tell: (threadId: string, text: string, level?: Level) => void;
   /** A line in the thread the model never sees: the step log. */
   notice: (threadId: string, text: string) => void;
+  /** The sessions' decisions log. */
+  journal?: Pick<DecisionsLog, "record" | "heading">;
   now?: () => number;
   /** How long after a turn's end the transcript is read (its last reply lands in the
    *  file just after the Stop hook). */
@@ -513,6 +522,35 @@ export function fromLastPrompt(text: string): string {
   return text;
 }
 
+const ITEM_START = /^(\[\d\d:\d\d\] )?(user|claude|error|tool|command)[: ]/;
+const CLAUDE_START = /^(\[\d\d:\d\d\] )?claude: /;
+
+/** The question(s) the turn's last message ends on, when nothing came after it (no
+ *  tool, no prompt): what a session asks in plain text instead of with options.
+ *  Null when it ends on none. */
+export function trailingQuestion(text: string): string | null {
+  const lines = text.split("\n");
+  let i = lines.length - 1;
+  while (i >= 0 && !ITEM_START.test(lines[i])) i--;
+  if (i < 0 || !CLAUDE_START.test(lines[i])) return null;
+  const body = [lines[i].replace(CLAUDE_START, ""), ...lines.slice(i + 1)]
+    .join("\n")
+    .replace(/ …\[cut\]$/, "")
+    .replace(/```[\s\S]*?```/g, "")
+    .trim();
+  // Its last paragraph (a list's items count one by one).
+  const paragraphs = body.split(/\n\s*\n/).filter((p) => p.trim());
+  const tail = paragraphs.slice(-1).join("\n");
+  const asked = tail
+    .split(/\n/)
+    .flatMap((l) => l.split(/(?<=[.!?])\s+/))
+    .map((x) => x.replace(/^\s*(?:[-*]|\d+[.)])\s+/, "").trim())
+    .filter((x) => /\?["')*]*$/.test(x));
+  if (asked.length === 0) return null;
+  const q = asked.join(" ");
+  return q.length > 400 ? `${q.slice(0, 399)}…` : q;
+}
+
 export function reviewText(r: {
   ap: Autopilot;
   session: string;
@@ -563,6 +601,9 @@ export function badgeText(a: Autopilot, at = Date.now()): string {
 export function fixupPrompt(stepId: string | null, missed: string[]): string {
   return `Before going on${stepId ? ` from ${stepId}` : ""}: ${missed.map((m) => m.replace(/\.\s*$/, "")).join("; ")}. Then proceed to the next step.`;
 }
+
+/** Where a report points for the whole record. */
+const LOG_HINT = " Every decision of the run is in the session's decisions log: show_autopilot_decisions opens it beside the session; offer it when the user wants the details.";
 
 /** Decisions as a numbered list, for a digest. */
 export function digestText(ds: Decision[]): string {
@@ -629,6 +670,7 @@ export function createAutopilot(deps: AutopilotDeps): AutopilotManager {
   /** Pause on something that needs you: the thread hears it and you get an alert. */
   function pauseFor(id: string, why: string, question: string | null, summary: string): void {
     const a = update(id, { state: "paused", doing: "working", why, question, resumeAt: null });
+    journal(id, { kind: "left to you", step: a.step, asked: question ?? why, decided: "the run paused for you", why: question ? why : null });
     deps.tell(
       a.threadId,
       `The autopilot on "${title(id)}" (session ${id}) paused after ${a.stepsDone} step(s): ${why}.${question ? ` Its question: ${question}` : ""} ${summary} Tell the user${question ? " and ask them" : ""}; when they answer, resume it with resume_autopilot, passing their answer as \`prompt\` if it is one for the session.${digest(id)}`,
@@ -639,7 +681,8 @@ export function createAutopilot(deps: AutopilotDeps): AutopilotManager {
 
   function finishRun(id: string, why: string, summary: string): void {
     const a = update(id, { state: "stopped", doing: "working", why, resumeAt: null });
-    deps.tell(a.threadId, `The autopilot on "${title(id)}" (session ${id}) stopped after ${a.stepsDone} step(s): ${why}. ${summary} Tell the user.${digest(id)}`);
+    journal(id, { kind: "run", step: a.step, asked: "the run", decided: `stopped after ${a.stepsDone} step(s)`, why });
+    deps.tell(a.threadId, `The autopilot on "${title(id)}" (session ${id}) stopped after ${a.stepsDone} step(s): ${why}. ${summary} Tell the user.${digest(id)}${LOG_HINT}`);
     port.alertUser(id, "Autopilot stopped", why);
   }
 
@@ -649,7 +692,12 @@ export function createAutopilot(deps: AutopilotDeps): AutopilotManager {
     const open = a?.decisions.filter((d) => !d.reported) ?? [];
     if (!a || open.length === 0) return "";
     update(id, { decisions: a.decisions.map((d) => ({ ...d, reported: true })) });
-    return ` It also settled ${open.length} small question(s) on its own, without asking the user:\n${digestText(open)}\nList these for the user briefly, so they can check each fits what they want; if one doesn't, they tell you and you pass the change to the session with send_prompt.`;
+    return ` It also settled ${open.length} small question(s) on its own, without asking the user:\n${digestText(open)}\nList these for the user briefly, so they can check each fits what they want; if one doesn't, they tell you and you pass the change to the session with send_prompt.${LOG_HINT}`;
+  }
+
+  /** A line in the session's decisions log. */
+  function journal(id: string, e: Omit<LoggedDecision, "instanceId" | "session">): void {
+    void deps.journal?.record({ instanceId: id, session: title(id), ...e });
   }
 
   /** Record a decision made without the user, and alert them at once if they want
@@ -661,6 +709,7 @@ export function createAutopilot(deps: AutopilotDeps): AutopilotManager {
     // Over the cap, reported ones go first.
     while (decisions.length > DECISIONS_MAX) decisions.splice(Math.max(0, decisions.findIndex((x) => x.reported)), 1);
     update(id, { decisions });
+    journal(id, { kind: d.by === "question" ? "question" : "open question", step: d.stepId, asked: d.question, decided: d.decision, why: d.why });
     deps.notice(a.threadId, `Autopilot decided${d.stepId ? ` (${d.stepId})` : ""}: ${d.question} → ${d.decision} · ${d.why}`);
     if (a.notifyDecisions) port.alertUser(id, "Autopilot decided", `${d.question} → ${d.decision}`);
   }
@@ -684,6 +733,7 @@ export function createAutopilot(deps: AutopilotDeps): AutopilotManager {
         return;
       }
       let verdict: Review;
+      let turnText = "";
       try {
         const [read, planText, contextUsed] = await Promise.all([
           readPlainText((before) => port.readTranscriptBack(id, before), {
@@ -694,6 +744,7 @@ export function createAutopilot(deps: AutopilotDeps): AutopilotManager {
           deps.readFile(a.planPath),
           port.contextUsed(id).catch(() => null),
         ]);
+        turnText = read.text;
         const s = port.listSessions().find((x) => x.id === id);
         const project = s ? port.listProjects().find((p) => p.id === s.projectId)?.name : null;
         verdict = await deps.call({
@@ -720,6 +771,13 @@ export function createAutopilot(deps: AutopilotDeps): AutopilotManager {
       a = all.get(id);
       if (!a || a.state !== "running" || disposed) return;
       for (const d of verdict.decisions) decided(id, { ...d, stepId: verdict.stepId, by: "review" });
+      // A question asked in plain text at the turn's end that the review settled
+      // nothing on: the run goes on past it, so that's a decision too.
+      const asked = verdict.verdict === "continue" && verdict.decisions.length === 0 ? trailingQuestion(turnText) : null;
+      if (asked) {
+        journal(id, { kind: "turn-end question", step: verdict.stepId, asked, decided: "went on without asking you", why: verdict.reason });
+        deps.notice(a.threadId, `Autopilot went on past the session's question: ${asked}`);
+      }
       if (verdict.verdict === "needs_you") {
         log(id, { kind: "needs_you", stepId: verdict.stepId, summary: verdict.summary, reason: verdict.reason, compacted: null, prompt: null });
         pauseFor(id, verdict.reason.replace(/\.\s*$/, ""), verdict.question, `The turn: ${verdict.summary}`);
@@ -931,7 +989,10 @@ export function createAutopilot(deps: AutopilotDeps): AutopilotManager {
     // reviewed instead.
     if (a.held && atRest(id)) await carryOut(id, a.held);
     else if (atRest(id)) await review(id);
-    else update(id, { held: null, doing: phase === "needs_you" ? "waiting" : "working" });
+    else {
+      update(id, { held: null, doing: phase === "needs_you" ? "waiting" : "working" });
+      if (phase === "needs_you") await question(id);
+    }
   }
 
   /**
@@ -994,11 +1055,37 @@ export function createAutopilot(deps: AutopilotDeps): AutopilotManager {
   async function question(id: string): Promise<void> {
     const a = all.get(id)!;
     const c = port.choiceOf(id);
-    if (!c || c.kind !== "question" || c.terminalOnly || told.get(id) === c.id) return;
+    if (!c || c.kind === "permission" || c.sent !== null || told.get(id) === c.id) return;
     told.set(id, c.id);
+    // A plan approval, or a question the card can't answer: not the run's to
+    // settle, and the trust layer leaves a running autopilot's prompts alone. It
+    // waits in the session; the thread and the log hear of it, so it isn't lost.
+    if (c.kind !== "question" || c.terminalOnly) {
+      const what = c.kind === "question" ? `asks: ${c.questions[0]?.question ?? choiceLine(c)}` : "asks to approve its plan";
+      journal(id, {
+        kind: "left to you",
+        step: a.step,
+        asked: `the session ${what}`,
+        decided: "left in the session for you",
+        why: c.kind === "question" ? `it can only be answered in the terminal (${c.terminalOnly})` : "a plan approval is yours",
+      });
+      deps.tell(
+        a.threadId,
+        `"${title(id)}" (session ${id}, on autopilot) ${what}. That's the user's: tell them it waits in the session (they answer it there, or tell you). The run goes on after the turn ends.`,
+        "needs_you",
+      );
+      return;
+    }
     const q = c.questions[0];
     const options = c.options.map((o) => `${o.key}. ${o.label}${o.detail ? ` (${o.detail})` : ""}`).join("; ");
     if (c.questions.length !== 1 || q.multiSelect) {
+      journal(id, {
+        kind: "left to you",
+        step: a.step,
+        asked: `the session asks: ${q?.question ?? choiceLine(c)}`,
+        decided: "put to Duck's thread",
+        why: "several questions or picks: one answer here can't cover it",
+      });
       deps.tell(
         a.threadId,
         `"${title(id)}" (session ${id}, on autopilot) asks: ${q?.question ?? choiceLine(c)} Options: ${options}. Unless it's serious, answer it yourself with answer_choice (choiceId ${c.id}) with a \`reason\`, by the plan (${a.planPath}) first, and say in a sentence what you picked. A serious one goes to the user.`,
@@ -1080,12 +1167,15 @@ export function createAutopilot(deps: AutopilotDeps): AutopilotManager {
       finishRun(id, "the session ended", "");
       return;
     }
+    // A question is settled whatever else the run is doing.
+    if (phase === "needs_you") {
+      if (!busy.has(id)) update(id, { doing: "waiting" });
+      void question(id);
+      return;
+    }
     if (busy.has(id)) return;
     if (phase === "done") void review(id);
-    else if (phase === "needs_you") {
-      update(id, { doing: "waiting" });
-      void question(id);
-    } else if (phase === "working" && a.doing !== "working") update(id, { doing: "working" });
+    else if (phase === "working" && a.doing !== "working") update(id, { doing: "working" });
   });
 
   // A compaction from rest (a /compact the user or Duck sent) ends with no turn end:
@@ -1152,6 +1242,7 @@ export function createAutopilot(deps: AutopilotDeps): AutopilotManager {
         a.endsAt !== null ? `until ${clockAt(a.endsAt, t)}` : null,
       ].filter(Boolean);
       log(s.id, { kind: "note", stepId: null, summary: `Started on ${req.planPath}, ${bounds.join(", ")}.`, reason: null, compacted: null, prompt: null });
+      void deps.journal?.heading(s.id, s.title, `Autopilot started on ${req.planPath}, ${bounds.join(", ")}`);
       // Outside its window, it waits for the start.
       if (a.window && !inWindow(a.window, t)) {
         const at = nextAt(a.window.from, t);
@@ -1160,7 +1251,11 @@ export function createAutopilot(deps: AutopilotDeps): AutopilotManager {
       }
       // At rest, its last turn is the first one reviewed; otherwise the turn's end is.
       if (atRest(s.id)) void review(s.id);
-      else if (s.phase === "needs_you") update(s.id, { doing: "waiting" });
+      else if (s.phase === "needs_you") {
+        // A question already open is the run's from now on.
+        update(s.id, { doing: "waiting" });
+        void question(s.id);
+      }
       return all.get(s.id)!;
     },
 
@@ -1189,7 +1284,10 @@ export function createAutopilot(deps: AutopilotDeps): AutopilotManager {
         send(id, opts.prompt.trim());
       } else if (a.held && atRest(id)) void carryOut(id, a.held);
       else if (atRest(id)) void review(id);
-      else update(id, { held: null, doing: phase === "needs_you" ? "waiting" : "working" });
+      else {
+        update(id, { held: null, doing: phase === "needs_you" ? "waiting" : "working" });
+        if (phase === "needs_you") void question(id);
+      }
       return all.get(id)!;
     },
 
