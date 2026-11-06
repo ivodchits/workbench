@@ -75,7 +75,7 @@ import { withoutImages } from "./threads";
 import { isHostUp, type HostConn, type Hosts } from "./hosts";
 import type { PhoneAlarm, ReminderRecord } from "./reminders";
 import { OfflineSync, type OfflineThread } from "./offline";
-import { LISTEN_MAX_TEXT } from "./listen";
+import { LISTEN_KEY, LISTEN_MAX_TEXT } from "./listen";
 
 /** The longest message a phone may send. */
 const TEXT_MAX = 20_000;
@@ -114,7 +114,7 @@ const Message = z.discriminatedUnion("type", [
   z.object({ type: z.literal("reader"), action: z.enum(["pause", "resume", "next", "prev", "stop"]) }),
   z.object({
     type: z.literal("reader.read"),
-    key: z.string().regex(/^msg:[^\s]{1,300}$/),
+    key: z.string().regex(LISTEN_KEY),
     title: z.string().trim().min(1).max(200),
     text: z.string().trim().min(1).max(LISTEN_MAX_TEXT),
   }),

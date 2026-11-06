@@ -278,7 +278,8 @@ export type RemoteDuckMessage =
   /** The reader bar (step V3): a read playing on the phone comes as `tts` parts. */
   | { type: "reader"; action: "pause" | "resume" | "next" | "prev" | "stop" }
   /** Read one message of a session aloud on this phone (the transcript's listen
-   *  button): `key` is `msg:<instance>:<item>`. */
+   *  button): `key` is `msg:<instance>:<item>`, or `duck:<thread>:<seq>:<part>` for
+   *  one of Duck's replies. */
   | { type: "reader.read"; key: string; title: string; text: string }
   /** Duck's Do Not Disturb (step V5): until a moment (epoch ms), or off (null). */
   | { type: "dnd"; until: number | null }

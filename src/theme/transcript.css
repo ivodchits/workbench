@@ -349,6 +349,22 @@
   right: 60px;
 }
 
+/* Duck's own replies, in the drawer and on the phone: in the corner above. */
+.wb-duck-said {
+  position: relative;
+}
+
+.wb-duck-said > .wb-tx-listen {
+  top: -10px;
+  right: 12px;
+}
+
+.wb-duck-listen-note {
+  margin: 0 16px 4px;
+  font: 11px var(--wb-mono);
+  color: var(--wb-needs);
+}
+
 .wb-tx-listen::before {
   content: "♪ listen";
 }
@@ -363,6 +379,7 @@
 
 .wb-tx-message:hover > .wb-tx-listen,
 .wb-tx-user:hover > .wb-tx-listen,
+.wb-duck-said:hover > .wb-tx-listen,
 .wb-tx-listen:focus-visible,
 .wb-tx-listen.wb-tx-listening,
 .wb-tx-listen.wb-tx-listen-paused {

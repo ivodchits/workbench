@@ -314,6 +314,8 @@ describe("startRemoteBridge", () => {
     expect(h.handled[0].msg).toEqual({ type: "reader.read", ...req, phone: 1 });
     expect(h.bridge.voiceOn(1)?.where).toBe("phone");
     expect(h.bridge.voiceOn(2)).toBeNull();
+    h.phone(1, { type: "reader.read", ...req, key: "duck:t1:3:0" });
+    expect(h.handled[h.handled.length - 1].msg).toEqual({ type: "reader.read", ...req, key: "duck:t1:3:0", phone: 1 });
     h.phone(1, { type: "reader.read", ...req, key: "note:x" });
     expect(h.sent[h.sent.length - 1].frame).toMatchObject({ type: "error" });
     h.raw({ conn: 5, device: OFFICE_DEVICE, kind: "open", msg: null });

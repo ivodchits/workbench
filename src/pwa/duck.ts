@@ -66,7 +66,7 @@ import { keepingSelection } from "../util/keepSelection";
 import { $, el } from "./dom";
 import { apply, emptyView, userText, type DuckView } from "./duckStore";
 import { audioContext, browserOut, fetchPart, playbackLevel, setEchoPath, unlock } from "./duckSpeech";
-import { listenAction, type ListenRequest } from "../assistant/listen";
+import { duckListenRequest, listenAction, listenStateOf, type ListenRequest } from "../assistant/listen";
 import type { ReaderView } from "../assistant/reader";
 import { chime, stream, streamNative, type Streaming } from "./converse";
 import * as duckApp from "./duckApp";
@@ -1301,9 +1301,37 @@ function paintStatus(): void {
   s.textContent = state !== "idle" && !streaming ? STATE_LABEL[state] : "";
 }
 
-/** The reader bar (V3): what's being read, and its buttons. */
+/** The reader bar (V3): what's being read, and its buttons; and the listen
+ *  button of the reply being read, marked. */
 function paintReader(): void {
   paintReaderBar($("duck-reader"), view.reader);
+  for (const b of document.querySelectorAll<HTMLButtonElement>("#duck-list .wb-tx-listen")) markListen(b);
+}
+
+/** A reply's listen button (`assistant/listen.ts`), its label drawn by CSS. */
+function listenButton(req: ListenRequest): HTMLButtonElement {
+  const b = el("button", "wb-tx-listen");
+  b.type = "button";
+  b.dataset.listenKey = req.key;
+  b.onclick = (e) => {
+    e.stopPropagation();
+    listenOnPhone(req, (why) => {
+      view = { ...view, error: why };
+      paintError();
+    });
+  };
+  markListen(b);
+  return b;
+}
+
+function markListen(b: HTMLButtonElement): void {
+  const state = listenStateOf(liveReader(), b.dataset.listenKey ?? "");
+  b.classList.toggle("wb-tx-listening", state === "reading");
+  b.classList.toggle("wb-tx-listen-paused", state === "paused");
+  b.setAttribute("aria-pressed", String(state !== null));
+  const label = state === "reading" ? "stop reading" : state === "paused" ? "go on reading" : "listen";
+  b.title = label;
+  b.setAttribute("aria-label", label);
 }
 
 /** A reader bar (Duck's, or the transcript's for its messages): its text in its
@@ -1353,6 +1381,7 @@ export function onReader(cb: (r: ReaderView | null) => void): () => void {
 function readerChanged(): void {
   const r = liveReader();
   for (const l of readerListeners) l(r);
+  if (shown) paintReader();
   if (!listening) return;
   if (r?.key === listening.key) listening.seen = true;
   // The read is over (or another took its place): with Duck closed, the socket
@@ -1547,7 +1576,12 @@ function itemView(it: Item, active: boolean): HTMLElement {
     case "reply": {
       const r = el("div", "wb-md duck-reply");
       r.innerHTML = renderMarkdown(it.text); // sanitized by DOMPurify in renderMarkdown
-      return r;
+      // Duck's own reply, with its listen button: read here, by Duck's reader.
+      const req = duckListenRequest(it.key, it.text);
+      if (!req) return r;
+      const said = el("div", "wb-duck-said");
+      said.append(r, listenButton(req));
+      return said;
     }
     case "tool":
       return toolChip(it, active);
