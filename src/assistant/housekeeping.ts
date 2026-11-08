@@ -78,6 +78,9 @@ export interface HousekeepingDeps {
   pruneFiles?(): Promise<number>;
   /** Remove the autopilot decisions logs unchanged for a week; how many went. */
   pruneDecisionLogs?(): Promise<number>;
+  /** Remove the plans Duck wrote for autopilot runs (`generatedPlan.ts`) unchanged
+   *  for a week, but those of runs not stopped; how many went. */
+  prunePlans?(): Promise<number>;
   tell(threadId: string, text: string, level: Level): void;
   now?: () => number;
 }
@@ -354,9 +357,11 @@ export function createHousekeeping(deps: HousekeepingDeps): Housekeeping {
     const mech = await git.housekeep(localDate(now() - TASK_KEEP_DAYS * DAY_MS));
     const pruned = (await deps.pruneFiles?.().catch(() => 0)) ?? 0;
     const logs = (await deps.pruneDecisionLogs?.().catch(() => 0)) ?? 0;
+    const plans = (await deps.prunePlans?.().catch(() => 0)) ?? 0;
     const mechLine = [
       pruned && `removed ${pruned} attached file${pruned === 1 ? "" : "s"} no thread refers to any more`,
       logs && `removed ${logs} autopilot decisions log${logs === 1 ? "" : "s"} a week old`,
+      plans && `removed ${plans} plan${plans === 1 ? "" : "s"} Duck wrote for autopilot runs a week over`,
       mech.indexed.length && `folded ${mech.indexed.length} old task folders into tasks/INDEX.md`,
       mech.removed && `removed ${mech.removed} of their intermediate files (${Math.round(mech.bytes / 1024)} KB)`,
       mech.committed.length && `committed ${mech.committed.length} files no commit had taken`,

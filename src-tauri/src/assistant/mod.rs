@@ -27,6 +27,7 @@
 
 pub mod attachments;
 mod autopilot;
+mod autopilot_plans;
 mod budget;
 pub mod config;
 mod db;
@@ -1014,6 +1015,25 @@ pub fn assistant_decisions_log_read(app: AppHandle, instance_id: String) -> Resu
 #[tauri::command]
 pub fn assistant_decisions_log_prune(app: AppHandle) -> Result<usize, String> {
     Ok(decisions_log::prune(&decisions_root(&app)?, 7 * 24 * 3_600_000))
+}
+
+// ── generated autopilot plans ──
+
+fn plans_root(app: &AppHandle) -> Result<std::path::PathBuf, String> {
+    Ok(autopilot_plans::root(&app.path().app_data_dir().map_err(|e| e.to_string())?))
+}
+
+/// Write a session's generated autopilot plan (replacing its last one); its path.
+#[tauri::command]
+pub fn assistant_autopilot_plan_write(app: AppHandle, instance_id: String, text: String) -> Result<String, String> {
+    Ok(autopilot_plans::write(&plans_root(&app)?, &instance_id, &text)?.to_string_lossy().into_owned())
+}
+
+/// Remove the generated plans unchanged for a week, but those of `keep` (the
+/// weekly housekeeping).
+#[tauri::command]
+pub fn assistant_autopilot_plan_prune(app: AppHandle, keep: Vec<String>) -> Result<usize, String> {
+    Ok(autopilot_plans::prune(&plans_root(&app)?, 7 * 24 * 3_600_000, &keep))
 }
 
 /// Save a copy of a stored file where you picked ("save as…" on a drawing, G3).

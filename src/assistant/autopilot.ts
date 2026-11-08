@@ -37,6 +37,12 @@
 // small ones a turn left open, a question at the end of a turn it went on past, a
 // plan approval or a question it can't answer (put to you or the thread), and each
 // pause and stop.
+//
+// A plan needn't be a file the user wrote: given the steps in words (or worked out
+// from what the session is doing), Duck writes a plan of its own in the same format
+// (`generatedPlan.ts`), kept in the app's data folder, never in the project. Such a
+// run sends the next step's text with each prompt (the session never read the plan),
+// and Duck ticks the plan's Progress list itself as steps are reviewed done.
 
 import type { Level } from "./announce";
 import { z } from "zod";
@@ -45,6 +51,7 @@ import { autopilotDelete, autopilotList, autopilotPut } from "../ipc/assistant";
 import type { RateLimits } from "../ipc/usageLimits";
 import { readPlainText } from "../transcript/plainText";
 import type { DecisionsLog, LoggedDecision } from "./decisionsLog";
+import { stepNote, tickStep, type PlanSource, type PlanStore } from "./generatedPlan";
 import { MAIN_MODEL } from "./prompt";
 import { choiceLine } from "./tools/read";
 import type { SessionPhase, WorkbenchPort } from "./port";
@@ -77,6 +84,9 @@ export function detectChecklist(text: string): string[] {
   if (/\bcommit/i.test(text)) out.push("the work is committed");
   return out;
 }
+
+/** A generated plan's checklist: its own, less the ticking, which Duck does. */
+export const generatedChecklist = (text: string) => detectChecklist(text).filter((c) => !/ticked/.test(c));
 
 /** The subscription's use (percent) at which a run pauses until that window resets.
  *  The 5-hour window resets soon, so a run goes closer to it; the weekly one keeps
@@ -224,6 +234,9 @@ export const Autopilot = z.object({
   instanceId: z.string(),
   threadId: z.string(),
   planPath: z.string(),
+  /** Set when Duck wrote the plan (`generatedPlan.ts`): from the user's words, or
+   *  from what the session was working on. */
+  planSource: z.enum(["user", "session"]).nullable().default(null),
   continuePrompts: z.array(z.string()).min(1).default(DEFAULT_PROMPTS),
   /** The review may write the next prompt itself; off, it's always your phrasing. */
   situational: z.boolean().default(true),
@@ -405,6 +418,8 @@ export interface AutopilotDeps {
   call: <S extends z.ZodType>(r: AutopilotCall<S>) => Promise<z.infer<S>>;
   /** A text file's contents (the plan). */
   readFile: (path: string) => Promise<string>;
+  /** Where generated plans are written (and ticked). */
+  plans?: Pick<PlanStore, "write">;
   /** Post a Workbench event into a thread (it starts a turn there); `level` is how
    *  its news is announced (V5), report when absent. */
   tell: (threadId: string, text: string, level?: Level) => void;
@@ -428,7 +443,9 @@ const everyInterval = (ms: number, cb: () => void) => {
 export interface StartRequest {
   instanceId: string;
   threadId: string;
-  planPath: string;
+  /** The plan file; or, with `generated`, none: Duck's plan is written for the run. */
+  planPath?: string;
+  generated?: { text: string; source: PlanSource };
   maxSteps?: number;
   compactPolicy?: CompactPolicy;
   situational?: boolean;
@@ -564,6 +581,11 @@ export function reviewText(r: {
   return [
     `Session: ${r.session}`,
     `Plan file: ${ap.planPath}`,
+    ...(ap.planSource
+      ? [
+          `Duck wrote this plan when the run started, ${ap.planSource === "user" ? "from the steps the user described" : "from what the session was working on"}; the session never read it: each prompt sent it on with the step's text. Its Progress list is Duck's own record, ticked as you review steps finished, so a step's work done in the session counts even before its tick. Its step ids are "Step 1", "Step 2", ….`,
+        ]
+      : []),
     `This run: ${ap.stepsDone} step(s) done ${ap.untilDone ? "(it runs until the plan is done)" : `of at most ${ap.maxSteps}`}${ap.step ? `; the session was sent on to ${ap.step}` : ""}.`,
     `Context used: ${r.contextUsed === null ? "unknown" : `${Math.round(r.contextUsed)}%`}`,
     "",
@@ -682,7 +704,8 @@ export function createAutopilot(deps: AutopilotDeps): AutopilotManager {
   function finishRun(id: string, why: string, summary: string): void {
     const a = update(id, { state: "stopped", doing: "working", why, resumeAt: null });
     journal(id, { kind: "run", step: a.step, asked: "the run", decided: `stopped after ${a.stepsDone} step(s)`, why });
-    deps.tell(a.threadId, `The autopilot on "${title(id)}" (session ${id}) stopped after ${a.stepsDone} step(s): ${why}. ${summary} Tell the user.${digest(id)}${LOG_HINT}`);
+    const kept = a.planSource ? ` The plan you wrote for it stays at ${a.planPath} (outside the project; the weekly housekeeping clears it after a week).` : "";
+    deps.tell(a.threadId, `The autopilot on "${title(id)}" (session ${id}) stopped after ${a.stepsDone} step(s): ${why}. ${summary}${kept} Tell the user.${digest(id)}${LOG_HINT}`);
     port.alertUser(id, "Autopilot stopped", why);
   }
 
@@ -734,8 +757,9 @@ export function createAutopilot(deps: AutopilotDeps): AutopilotManager {
       }
       let verdict: Review;
       let turnText = "";
+      let planText = "";
       try {
-        const [read, planText, contextUsed] = await Promise.all([
+        const [read, text, contextUsed] = await Promise.all([
           readPlainText((before) => port.readTranscriptBack(id, before), {
             maxItems: TURN_ITEMS,
             maxChars: TURN_CHARS,
@@ -745,6 +769,7 @@ export function createAutopilot(deps: AutopilotDeps): AutopilotManager {
           port.contextUsed(id).catch(() => null),
         ]);
         turnText = read.text;
+        planText = text;
         const s = port.listSessions().find((x) => x.id === id);
         const project = s ? port.listProjects().find((p) => p.id === s.projectId)?.name : null;
         verdict = await deps.call({
@@ -786,6 +811,7 @@ export function createAutopilot(deps: AutopilotDeps): AutopilotManager {
       if (verdict.verdict === "plan_done") {
         log(id, { kind: "plan_done", stepId: verdict.stepId, summary: verdict.summary, reason: verdict.reason, compacted: null, prompt: null, finished: true });
         update(id, { stepsDone: a.stepsDone + 1, lastStep: verdict.stepId ?? a.lastStep });
+        await tickPlan(id, planText, verdict.stepId);
         finishRun(id, "the plan is done", `The last step: ${verdict.summary}`);
         return;
       }
@@ -818,6 +844,7 @@ export function createAutopilot(deps: AutopilotDeps): AutopilotManager {
         lastStep: v.finished ? (v.stepId ?? a.lastStep) : a.lastStep,
         step: v.nextStepId ?? a.step,
       });
+      if (v.finished) planText = await tickPlan(id, planText, v.stepId);
       if (turnsOnStep >= TURNS_PER_STEP_MAX) {
         log(id, { kind: "needs_you", stepId: v.stepId, summary: v.summary, reason: v.reason, compacted: null, prompt: null });
         pauseFor(id, `${turnsOnStep} turns went by without finishing a step`, null, `The last turn: ${v.summary}`);
@@ -828,7 +855,7 @@ export function createAutopilot(deps: AutopilotDeps): AutopilotManager {
         finishRun(id, `it ran the ${a.maxSteps} step(s) it was given`, `The last step: ${v.summary}${v.nextStepId ? ` Next is ${v.nextStepId}.` : ""}`);
         return;
       }
-      const held = { review: v, prompt: promptFor(all.get(id)!, v, fixup) };
+      const held = { review: v, prompt: promptFor(all.get(id)!, v, fixup, planText) };
       if (await gate(id, held)) await next(id, held);
     } finally {
       busy.delete(id);
@@ -837,10 +864,27 @@ export function createAutopilot(deps: AutopilotDeps): AutopilotManager {
 
   /** The next prompt after a turn: a fix-up, the review's own (when allowed), or the
    *  user's phrasing in turn; with the decisions the agent has to hear. */
-  function promptFor(a: Autopilot, v: Review, fixup: string | null): string {
+  function promptFor(a: Autopilot, v: Review, fixup: string | null, planText: string): string {
     const fixed = a.continuePrompts[(a.stepsDone + a.turnsOnStep + a.continuePrompts.length - 1) % a.continuePrompts.length];
     const own = fixup ?? (a.situational ? v.nextPrompt?.trim() : undefined);
-    return promptWith(own || fixed, v.decisions, !!own && !fixup);
+    const prompt = promptWith(own || fixed, v.decisions, !!own && !fixup);
+    // The session never read Duck's own plan: the step it goes on to goes with it.
+    return a.planSource && !fixup ? `${prompt}\n\n${stepNote(planText, v.nextStepId, a.planPath)}` : prompt;
+  }
+
+  /** A generated plan's Progress line for a finished step, ticked (by Duck: the
+   *  session doesn't keep that plan); the plan's text after. */
+  async function tickPlan(id: string, planText: string, stepId: string | null): Promise<string> {
+    const a = all.get(id);
+    if (!a?.planSource || !deps.plans) return planText;
+    const ticked = tickStep(planText, stepId);
+    if (ticked === planText) return planText;
+    try {
+      await deps.plans.write(id, ticked);
+    } catch (e) {
+      console.warn("duck: a generated plan wasn't ticked", e);
+    }
+    return ticked;
   }
 
   /** Whether the run may go on now: its end, its window and the limits. Past the end
@@ -1211,17 +1255,30 @@ export function createAutopilot(deps: AutopilotDeps): AutopilotManager {
       if (s.phase === "offline" || s.phase === "ended") throw new Error(`"${s.title}" isn't running: start or resume it first.`);
       const cur = all.get(s.id);
       if (cur && cur.state !== "stopped") throw new Error(`"${s.title}" is already on autopilot (${cur.state}).`);
-      // The plan must be readable now, not at the first review.
-      const plan = await deps.readFile(req.planPath).catch((e: unknown) => {
-        throw new Error(`The plan can't be read: ${errorText(e)}`);
-      });
+      if (!req.planPath === !req.generated) throw new Error("Give the run a plan file or the plan's steps, one of the two.");
       const t = now();
       if (req.endsAt != null && req.endsAt <= t) throw new Error(`Its end, ${clockAt(req.endsAt, t)}, has passed.`);
+      // Duck's own plan is written now (replacing the session's last one, whose run
+      // is stopped: a live one was refused above).
+      let planPath = req.planPath ?? "";
+      if (req.generated) {
+        if (!deps.plans) throw new Error("Plans from a description aren't available here.");
+        const text = req.generated.text;
+        planPath = await deps.plans.write(s.id, text).catch((e: unknown) => {
+          throw new Error(`The plan couldn't be written: ${errorText(e)}`);
+        });
+      }
+      // The plan must be readable now, not at the first review.
+      const plan = await deps.readFile(planPath).catch((e: unknown) => {
+        throw new Error(`The plan can't be read: ${errorText(e)}`);
+      });
+      const source = req.generated?.source ?? null;
       const a = save(
         Autopilot.parse({
           instanceId: s.id,
           threadId: req.threadId,
-          planPath: req.planPath,
+          planPath,
+          planSource: source,
           continuePrompts: req.continuePrompts?.length ? req.continuePrompts : undefined,
           situational: req.situational,
           compactPolicy: req.compactPolicy,
@@ -1230,7 +1287,7 @@ export function createAutopilot(deps: AutopilotDeps): AutopilotManager {
           untilDone: req.untilDone,
           window: req.window ?? null,
           endsAt: req.endsAt ?? null,
-          checklist: req.checklist?.length ? req.checklist : detectChecklist(plan),
+          checklist: req.checklist?.length ? req.checklist : source ? generatedChecklist(plan) : detectChecklist(plan),
           notifyDecisions: req.notifyDecisions,
           state: "running",
           created: t,
@@ -1241,8 +1298,9 @@ export function createAutopilot(deps: AutopilotDeps): AutopilotManager {
         a.window ? `between ${clock(a.window.from)} and ${clock(a.window.to)}` : null,
         a.endsAt !== null ? `until ${clockAt(a.endsAt, t)}` : null,
       ].filter(Boolean);
-      log(s.id, { kind: "note", stepId: null, summary: `Started on ${req.planPath}, ${bounds.join(", ")}.`, reason: null, compacted: null, prompt: null });
-      void deps.journal?.heading(s.id, s.title, `Autopilot started on ${req.planPath}, ${bounds.join(", ")}`);
+      const on = source ? `Duck's plan ${planPath} (${source === "user" ? "from the user's description" : "from the session's work"})` : planPath;
+      log(s.id, { kind: "note", stepId: null, summary: `Started on ${on}, ${bounds.join(", ")}.`, reason: null, compacted: null, prompt: null });
+      void deps.journal?.heading(s.id, s.title, `Autopilot started on ${on}, ${bounds.join(", ")}`);
       // Outside its window, it waits for the start.
       if (a.window && !inWindow(a.window, t)) {
         const at = nextAt(a.window.from, t);

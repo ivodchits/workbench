@@ -233,6 +233,8 @@ pub fn run() {
             assistant::assistant_decisions_log_append,
             assistant::assistant_decisions_log_read,
             assistant::assistant_decisions_log_prune,
+            assistant::assistant_autopilot_plan_write,
+            assistant::assistant_autopilot_plan_prune,
             assistant::assistant_attach_drag,
             assistant::assistant_attach_save,
             assistant::assistant_core_read,
