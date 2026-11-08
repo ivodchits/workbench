@@ -101,7 +101,7 @@ const settle = async () => {
 };
 
 function lab(
-  opts: { threads?: ThreadRow[]; consolidatedTo?: number | null; busy?: (id: string) => string | null; pruneDecisionLogs?: () => Promise<number> } = {},
+  opts: { threads?: ThreadRow[]; consolidatedTo?: number | null; busy?: (id: string) => string | null; pruneDecisionLogs?: () => Promise<number>; prunePlans?: () => Promise<number> } = {},
 ) {
   const clock = { now: NOW };
   const tells: { threadId: string; text: string; level: Level }[] = [];
@@ -181,6 +181,7 @@ function lab(
     consolidatedTo: async () => (opts.consolidatedTo === undefined ? NOW - DAY / 2 : opts.consolidatedTo),
     resultJson: async (t) => results.get(t.id) ?? null,
     pruneDecisionLogs: opts.pruneDecisionLogs,
+    prunePlans: opts.prunePlans,
     tell: (threadId, text, level) => tells.push({ threadId, text, level }),
     now: () => clock.now,
   });
@@ -324,6 +325,14 @@ describe("housekeeping", () => {
     await l.routines.runNow("builtin-housekeeping");
     expect(pruned).toBe(1);
     expect(l.tells[0].text).toContain("removed 2 autopilot decisions logs a week old");
+  });
+
+  it("removes the plans Duck wrote for autopilot runs a week over, and says so", async () => {
+    const l = lab({ prunePlans: async () => 1 });
+    l.status.repo = false;
+    await l.routines.load();
+    await l.routines.runNow("builtin-housekeeping");
+    expect(l.tells[0].text).toContain("removed 1 plan Duck wrote for autopilot runs a week over");
   });
 
   it("leaves a branch that drops entries without a reason for your OK", async () => {

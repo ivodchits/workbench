@@ -648,3 +648,11 @@ export const driveUpload = (
   name: string | null,
   folder: string | null,
 ): Promise<DriveFile> => invoke("assistant_drive_upload", { clientId, path, name, folder });
+
+/** Write a session's generated autopilot plan (`<app data>/duck-plans/<id>.md`,
+ *  replacing the last one); its absolute path. */
+export const autopilotPlanWrite = (instanceId: string, text: string): Promise<string> =>
+  invoke("assistant_autopilot_plan_write", { instanceId, text });
+/** Remove the generated plans unchanged for a week, but those of `keep` (sessions
+ *  whose run isn't stopped); how many went. */
+export const autopilotPlanPrune = (keep: string[]): Promise<number> => invoke("assistant_autopilot_plan_prune", { keep });

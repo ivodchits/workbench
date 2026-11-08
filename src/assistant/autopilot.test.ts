@@ -19,6 +19,7 @@ import {
 import { fakePort, project, session, type FakePortData } from "./fakePort.test-util";
 import type { ChoiceRef, SessionPhase } from "./port";
 import type { LoggedDecision } from "./decisionsLog";
+import { generatedPlanText } from "./generatedPlan";
 
 let line = 0;
 /** A transcript line: Claude's reply. */
@@ -125,9 +126,18 @@ function setup(
   const removed: string[] = [];
   const journal: LoggedDecision[] = [];
   const headings: string[] = [];
+  /** Duck's generated plans, by path. */
+  const plans = new Map<string, string>();
   let clock = 10_000_000_000;
   const ap = createAutopilot({
     port,
+    plans: {
+      write: async (id, text) => {
+        const path = `C:/data/duck-plans/${id}.md`;
+        plans.set(path, text);
+        return path;
+      },
+    },
     journal: {
       record: async (e) => void journal.push(e),
       heading: async (_id, _session, text) => void headings.push(text),
@@ -146,6 +156,8 @@ function setup(
       return next as never;
     },
     readFile: async (path) => {
+      const generated = plans.get(path);
+      if (generated !== undefined) return generated;
       if (path !== "C:/src/p/plan.md") throw new Error(`no file ${path}`);
       return PLAN;
     },
@@ -179,7 +191,7 @@ function setup(
     port.phase("w", "done", "working");
   };
   const calls = (name: string) => port.calls.filter((c) => c.name === name).map((c) => c.args);
-  return { port, ap, s, s2, asked, told, levels, notices, stored, removed, turnEnds, calls, tick, setClock, journal, headings };
+  return { port, ap, s, s2, asked, told, levels, notices, stored, removed, turnEnds, calls, tick, setClock, journal, headings, plans };
 }
 
 const start = (t: ReturnType<typeof setup>, extra: Partial<Parameters<ReturnType<typeof setup>["ap"]["start"]>[0]> = {}) =>
@@ -813,5 +825,62 @@ describe("the decisions log", () => {
     await flush();
     expect(last(t.journal)).toMatchObject({ kind: "run", decided: "stopped after 1 step(s)", why: "the plan is done" });
     expect(last(t.told)).toContain("show_autopilot_decisions opens it");
+  });
+});
+
+describe("autopilot on a plan Duck wrote", () => {
+  const text = generatedPlanText({
+    title: "Dark mode",
+    session: "workbench",
+    source: "user",
+    at: new Date(2026, 10, 8).getTime(),
+    steps: [
+      { title: "Add the theme tokens", doneWhen: "both themes build" },
+      { title: "Wire the toggle", details: "In the settings panel." },
+    ],
+  });
+  const generated = { text, source: "user" as const };
+
+  it("writes the plan out of the project, sends each step's text, and ticks it done", async () => {
+    const t = setup({ reviews: [verdict({ stepId: "Step 1", nextStepId: "Step 2" })] });
+    const a = await start(t, { planPath: undefined, generated });
+    expect(a).toMatchObject({ planPath: "C:/data/duck-plans/w.md", planSource: "user" });
+    // Duck ticks the plan itself: that's not on the session's checklist.
+    expect(a.checklist.some((c) => /ticked/.test(c))).toBe(false);
+    expect(a.checklist.some((c) => /Done when/.test(c))).toBe(true);
+    expect(t.headings[0]).toContain("Duck's plan C:/data/duck-plans/w.md (from the user's description)");
+    await flush();
+    expect(t.asked[0].input).toContain("Duck wrote this plan when the run started, from the steps the user described");
+    expect(t.asked[0].input).toContain("Progress records:\n## Progress");
+    const sent = t.calls("sendPrompt")[0][1] as string;
+    expect(sent).toMatch(/^continue the implementation\n\nThis run's plan \(written by Duck for it; not in the project\) is C:\/data\/duck-plans\/w\.md\./);
+    expect(sent).toContain("The step to work on now:\n\n## Step 2: Wire the toggle\n\nIn the settings panel.");
+    expect(t.plans.get("C:/data/duck-plans/w.md")).toContain("- [x] Step 1: Add the theme tokens\n- [ ] Step 2: Wire the toggle");
+  });
+
+  it("sends a fix-up without the step, and says where the plan stays when it ends", async () => {
+    const t = setup({
+      reviews: [
+        verdict({ stepId: "Step 1", nextStepId: "Step 2", missed: ["run the tests"] }),
+        verdict({ verdict: "plan_done", stepId: "Step 2", nextStepId: null }),
+      ],
+    });
+    await start(t, { planPath: undefined, generated });
+    await flush();
+    expect(t.calls("sendPrompt")[0][1]).not.toContain("This run's plan");
+    t.turnEnds();
+    await flush();
+    expect(t.ap.get("w")).toMatchObject({ state: "stopped", why: "the plan is done" });
+    expect(t.plans.get("C:/data/duck-plans/w.md")).toContain("- [ ] Step 1: Add the theme tokens\n- [x] Step 2: Wire the toggle");
+    expect(last(t.told)).toContain("The plan you wrote for it stays at C:/data/duck-plans/w.md");
+  });
+
+  it("takes a plan file or steps, not both or neither, and never overwrites a live run's plan", async () => {
+    const t = setup();
+    await expect(start(t, { generated })).rejects.toThrow("one of the two");
+    await expect(start(t, { planPath: undefined })).rejects.toThrow("one of the two");
+    await start(t);
+    await expect(start(t, { planPath: undefined, generated })).rejects.toThrow("already on autopilot");
+    expect(t.plans.size).toBe(0);
   });
 });

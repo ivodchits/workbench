@@ -51,6 +51,7 @@ import { getPref, setPref } from "../ipc/prefs";
 import { listMonitors, saveScreenshot, screenshot } from "../ipc/screen";
 import { badgeText, createAutopilot, ipcAutopilotBackend, type AutopilotManager } from "./autopilot";
 import { createDecisionsLog, ipcDecisionsLogBackend, sessionOfRow, trustEntry } from "./decisionsLog";
+import { ipcPlanStore } from "./generatedPlan";
 import { errorMessage, getClient, oneShot, structured } from "./client";
 import { createEngine, eventText, type Engine } from "./engine";
 import { createBrainHost } from "./brain/subscription";
@@ -746,6 +747,7 @@ export function initAssistant(): Promise<void> {
       journal: decisionsLog,
       call: (r) => structured(r),
       readFile,
+      plans: ipcPlanStore,
       tell: (threadId, text, level) => {
         levels.set(threadId, level ?? "report");
         void engineRef
@@ -929,6 +931,7 @@ export function initAssistant(): Promise<void> {
       resultJson: (t) => taskResult(t.workspace, t.folder).then((r) => r.json),
       pruneFiles: attachPrune,
       pruneDecisionLogs: () => decisionsLog.prune(),
+      prunePlans: () => ipcPlanStore.prune(autopilot.list().filter((a) => a.state !== "stopped").map((a) => a.instanceId)),
       tell: (threadId, text, level) => {
         levels.set(threadId, level);
         void engineRef
