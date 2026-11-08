@@ -4,6 +4,7 @@ import App from "./App";
 import TornWindow, { readTornParams } from "./torn/TornWindow";
 import VoiceOverlay from "./panels/Assistant/VoiceOverlay";
 import { blockStrayDrops } from "./ipc/osDrop";
+import { startHeartbeat } from "./ipc/heartbeat";
 import "./theme/global.css";
 
 // A torn-off panel window (step 4.2) loads this same bundle with a `?torn=…` query
@@ -16,6 +17,9 @@ blockStrayDrops();
 
 // The listening sign (`?overlay=voice`) is a page of its own too.
 const overlay = new URLSearchParams(window.location.search).get("overlay") === "voice";
+
+// The backend reloads the cockpit page if it stops beating (renderer watchdog).
+if (!overlay && !torn) startHeartbeat();
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(
   <React.StrictMode>{overlay ? <VoiceOverlay /> : torn ? <TornWindow params={torn} /> : <App />}</React.StrictMode>,
 );

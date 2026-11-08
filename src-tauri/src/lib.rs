@@ -20,6 +20,7 @@ mod plugins;
 mod pty;
 mod registry;
 mod remote;
+mod renderer_watchdog;
 mod shutdown;
 mod skills;
 mod statusline;
@@ -158,6 +159,8 @@ pub fn run() {
             }
             if let Some(win) = app.get_webview_window("main") {
                 accel::install_accelerator_handler(&win);
+                // Reload the page if its renderer dies or wedges.
+                renderer_watchdog::install(&win);
             }
             Ok(())
         })
@@ -182,6 +185,7 @@ pub fn run() {
             pty::pty_kill,
             pty::session_instance,
             pty::pty_session_live,
+            renderer_watchdog::ui_heartbeat,
             pty::default_working_dir,
             pty::remote_cmd_spawn,
             hooks::hook_server_status,
