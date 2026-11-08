@@ -48,8 +48,32 @@ interface PromptComposerProps {
   onSent: () => void;
 }
 
-/** The field grows with its text up to this height, then scrolls. */
+/** The field grows with its text up to this height, then scrolls — unless the
+ *  user has dragged it to a size of their own (the grip on its top edge). */
 const MAX_FIELD_PX = 190;
+/** The smallest a dragged field gets, and the room it always leaves the transcript. */
+const MIN_FIELD_PX = 40;
+const TRANSCRIPT_ROOM_PX = 80;
+/** A dragged size is kept for every console and across restarts. */
+const SIZE_KEY = "wb.composer.fieldPx";
+
+function loadFieldPx(): number | null {
+  try {
+    const n = Number(localStorage.getItem(SIZE_KEY));
+    return Number.isFinite(n) && n >= MIN_FIELD_PX ? n : null;
+  } catch {
+    return null;
+  }
+}
+
+function saveFieldPx(px: number | null) {
+  try {
+    if (px === null) localStorage.removeItem(SIZE_KEY);
+    else localStorage.setItem(SIZE_KEY, String(Math.round(px)));
+  } catch {
+    // Not kept — it still applies until the window closes.
+  }
+}
 /** How often a console with no hook signal yet is checked for having started. */
 const STARTING_POLL_MS = 500;
 
@@ -73,6 +97,9 @@ function useStarting(instanceId: string, live: LiveStatus | null): boolean {
 
 function PromptComposer({ instanceId, live, typed, onShowTerminal, onSent }: PromptComposerProps) {
   const fieldRef = useRef<HTMLTextAreaElement>(null);
+  const rootRef = useRef<HTMLDivElement>(null);
+  /** The height the user dragged the field to, or null to fit its text. */
+  const [fieldPx, setFieldPx] = useState<number | null>(loadFieldPx);
   const draft = useDraft(instanceId);
   const queued = useQueued().get(instanceId) ?? null;
   const [picking, setPicking] = useState(false);
@@ -121,13 +148,57 @@ function PromptComposer({ instanceId, live, typed, onShowTerminal, onSent }: Pro
     field.style.height = "auto";
     // `scrollHeight` leaves out the border, which the border-box height includes.
     const wanted = field.scrollHeight + (field.offsetHeight - field.clientHeight);
-    field.style.height = `${Math.min(wanted, MAX_FIELD_PX)}px`;
-    field.style.overflowY = wanted > MAX_FIELD_PX ? "auto" : "hidden";
+    const height = fieldPx === null ? Math.min(wanted, MAX_FIELD_PX) : Math.min(fieldPx, largestFieldPx());
+    field.style.height = `${height}px`;
+    field.style.overflowY = wanted > height ? "auto" : "hidden";
     if (pendingSelection.current) {
       field.setSelectionRange(...pendingSelection.current);
       pendingSelection.current = null;
     }
-  }, [draft]);
+  }, [draft, fieldPx]);
+
+  /** The tallest the field may be dragged: the transcript above keeps some room. */
+  const largestFieldPx = (): number => {
+    const root = rootRef.current;
+    const field = fieldRef.current;
+    const host = root?.parentElement;
+    if (!root || !field || !host) return Infinity;
+    const chrome = root.offsetHeight - field.offsetHeight;
+    return Math.max(MIN_FIELD_PX, host.clientHeight - chrome - TRANSCRIPT_ROOM_PX);
+  };
+
+  /** Dragging the grip up makes the field taller, down shorter. */
+  const onGripDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    const field = fieldRef.current;
+    if (!field || e.button !== 0) return;
+    e.preventDefault();
+    const grip = e.currentTarget;
+    grip.setPointerCapture(e.pointerId);
+    const startY = e.clientY;
+    const startPx = field.offsetHeight;
+    const most = largestFieldPx();
+    let px = startPx;
+    const onMove = (ev: PointerEvent) => {
+      px = Math.max(MIN_FIELD_PX, Math.min(most, startPx + (startY - ev.clientY)));
+      setFieldPx(px);
+    };
+    const onUp = () => {
+      grip.removeEventListener("pointermove", onMove);
+      grip.removeEventListener("pointerup", onUp);
+      grip.removeEventListener("pointercancel", onUp);
+      saveFieldPx(px);
+    };
+    grip.addEventListener("pointermove", onMove);
+    grip.addEventListener("pointerup", onUp);
+    grip.addEventListener("pointercancel", onUp);
+  };
+
+  /** Double-clicking the grip goes back to fitting the text. */
+  const resetFieldPx = () => {
+    setFieldPx(null);
+    saveFieldPx(null);
+    fieldRef.current?.focus();
+  };
 
   const send = () => {
     if (!canSend) return;
@@ -271,7 +342,16 @@ function PromptComposer({ instanceId, live, typed, onShowTerminal, onSent }: Pro
   };
 
   return (
-    <div className="wb-cmp">
+    <div className="wb-cmp" ref={rootRef}>
+      <div
+        className={fieldPx === null ? "wb-cmp-grip" : "wb-cmp-grip wb-cmp-grip-set"}
+        role="separator"
+        aria-orientation="horizontal"
+        aria-label="resize the prompt field"
+        title="drag to resize the prompt field · double-click to fit the text again"
+        onPointerDown={onGripDown}
+        onDoubleClick={resetFieldPx}
+      />
       {picking && (
         <TemplateMenu
           onPick={insertTemplate}

@@ -557,6 +557,42 @@
   font: 11px var(--wb-mono);
 }
 
+/* The resize grip along the composer's top edge (drag up for a taller field). */
+.wb-cmp-grip {
+  position: absolute;
+  top: -4px;
+  left: 0;
+  right: 0;
+  height: 8px;
+  cursor: ns-resize;
+  z-index: 2;
+  touch-action: none;
+}
+
+.wb-cmp-grip::after {
+  content: "";
+  position: absolute;
+  top: 3px;
+  left: 50%;
+  width: 36px;
+  height: 2px;
+  margin-left: -18px;
+  border-radius: 1px;
+  background: var(--wb-border);
+  opacity: 0;
+  transition: opacity 0.12s;
+}
+
+.wb-cmp:hover .wb-cmp-grip::after,
+.wb-cmp-grip-set::after {
+  opacity: 1;
+}
+
+.wb-cmp-grip:hover::after,
+.wb-cmp-grip:active::after {
+  background: var(--wb-borderActive);
+}
+
 .wb-cmp-field {
   display: block;
   width: 100%;
