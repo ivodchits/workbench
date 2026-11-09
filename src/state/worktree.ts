@@ -129,6 +129,26 @@ export async function projectWorktrees(project: Project): Promise<WorktreeUse[]>
     });
 }
 
+/** The default branch a new worktree for `title` gets: `agent/<slug>`. */
+export function defaultWorktreeBranch(title: string): string {
+  return `agent/${slugify(title)}`;
+}
+
+/** The existing worktree a typed name means, if any: its branch (`agent/2`, or `2`
+ *  for `agent/2`) or its folder's name. Gone worktrees don't count. */
+export function findWorktreeByName<W extends WorktreeEntry>(list: W[], name: string): W | null {
+  const n = name.trim().replace(/^refs\/heads\//, "");
+  if (!n) return null;
+  const folder = (p: string) => p.replace(/[\\/]+$/, "").split(/[\\/]/).pop() ?? "";
+  const live = list.filter((w) => !w.isMain && !w.missing);
+  return (
+    live.find((w) => w.branch === n) ??
+    live.find((w) => w.branch === `agent/${n}`) ??
+    live.find((w) => folder(w.path).toLowerCase() === n.toLowerCase()) ??
+    null
+  );
+}
+
 /** Why a session can't move into a worktree another running session works in. */
 export function sharedWorktreeError(path: string, live: Instance[]): Error {
   const names = live.map((i) => `"${i.title}"`).join(", ");
@@ -214,9 +234,13 @@ function relaunchLiveConsole(instanceId: string): void {
 export async function provisionWorktree(
   instance: Instance,
   project: Project,
+  /** The branch to make it on, as the user typed it; the default `agent/<slug>`
+   *  (uniquified) when absent. */
+  branch?: string,
 ): Promise<SetupResult> {
   const baseDir = (await getPref("worktreeBasePath", "")).trim() || undefined;
-  const result = await ipcProvisionWorktree(project.rootPath, slugify(instance.title), baseDir);
+  const named = branch?.trim() || undefined;
+  const result = await ipcProvisionWorktree(project.rootPath, slugify(instance.title), baseDir, named);
   await updateInstance(instance.id, {
     worktreeOn: true,
     workingDir: result.path,

@@ -59,11 +59,15 @@ import {
   useRegistry,
 } from "../../state/registry";
 import {
+  attachWorktree,
+  defaultWorktreeBranch,
+  findWorktreeByName,
+  projectWorktrees,
   provisionWorktree,
   revertToRoot,
   sharedWorkingDirInstances,
-  slugify,
   teardownWorktree,
+  type WorktreeUse,
 } from "../../state/worktree";
 import { worktreeTeardownInfo, type SetupResult, type TeardownInfo } from "../../ipc/git";
 import { isTextInput, matchCommand } from "../../keyboard";
@@ -1708,6 +1712,22 @@ function WorktreeProvision({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [setup, setSetup] = useState<SetupResult | null>(null);
+  // The branch to make it on: `agent/<N>` by default, editable. Typing the name of
+  // a worktree the project already has opens the session there instead.
+  const [name, setName] = useState(() => defaultWorktreeBranch(instance.title));
+  const [worktrees, setWorktrees] = useState<WorktreeUse[]>([]);
+  useEffect(() => {
+    if (!project || project.remoteSshDest) return;
+    let alive = true;
+    void projectWorktrees(project)
+      .then((l) => alive && setWorktrees(l))
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, [project]);
+  const existing = findWorktreeByName(worktrees, name);
+  const existingLive = existing ? existing.live.filter((i) => i.id !== instance.id) : [];
   // Whether a live console would be restarted by this change (we relaunch claude
   // in the new working dir).
   const consoleLive = getOpenConsoles().some(
@@ -1721,10 +1741,20 @@ function WorktreeProvision({
       setError("project not found");
       return;
     }
+    if (!name.trim()) {
+      setError("name the worktree's branch");
+      return;
+    }
     setBusy(true);
     setError(null);
     try {
-      const result = await provisionWorktree(instance, project);
+      if (existing) {
+        // The dialog shows who's running there; going ahead is the user's say-so.
+        await attachWorktree(instance, project, existing.path, { share: true });
+        onClose();
+        return;
+      }
+      const result = await provisionWorktree(instance, project, name);
       // If there was meaningful setup to show (a command ran), keep the dialog open
       // on its result screen; otherwise we're done.
       if (result.skipped || (!result.command && result.copiedEnv.length === 0)) {
@@ -1803,12 +1833,44 @@ function WorktreeProvision({
     <Modal title="isolate in a worktree" onClose={onClose} width={420}>
       <div style={{ fontSize: 12.5, color: "var(--wb-text)", lineHeight: 1.5 }}>
         Provision an isolated worktree for{" "}
-        <strong style={{ color: "var(--wb-accent)" }}>{instance.title}</strong> on a new branch{" "}
-        <span style={{ color: "var(--wb-accent)", fontFamily: "var(--wb-mono)" }}>
-          agent/{slugify(instance.title)}
-        </span>
-        ?
-        {willRunSetup && (
+        <strong style={{ color: "var(--wb-accent)" }}>{instance.title}</strong> on branch:
+        <input
+          autoFocus
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && !busy) void confirm();
+          }}
+          spellCheck={false}
+          style={{
+            display: "block",
+            width: "100%",
+            boxSizing: "border-box",
+            marginTop: 6,
+            background: "var(--wb-bg)",
+            color: "var(--wb-text)",
+            border: "1px solid var(--wb-border)",
+            padding: "6px 8px",
+            fontFamily: "var(--wb-mono)",
+            fontSize: 12.5,
+          }}
+        />
+        {existing && (
+          <div style={{ marginTop: 6, color: "var(--wb-textDim2)" }}>
+            {GLYPH.worktree} That worktree exists — the session moves into{" "}
+            <span style={{ color: "var(--wb-accent)", fontFamily: "var(--wb-mono)" }}>{existing.path}</span>
+            {existing.branch && <> on {existing.branch}</>} instead of making a new one; it stays when the
+            instance goes.
+            {existingLive.length > 0 && (
+              <div style={{ marginTop: 4, color: "var(--wb-working)" }}>
+                {GLYPH.warn} {existingLive.map((i) => `"${i.title}"`).join(", ")}{" "}
+                {existingLive.length === 1 ? "is" : "are"} running there — two sessions in one worktree
+                can overwrite each other's edits.
+              </div>
+            )}
+          </div>
+        )}
+        {willRunSetup && !existing && (
           <div style={{ marginTop: 8, color: "var(--wb-textDim2)" }}>
             {project?.worktreeCopyEnv && <>Copies <code>.env*</code>. </>}
             {(project?.worktreeSetupCommand ?? "").trim() && (
@@ -1843,7 +1905,7 @@ function WorktreeProvision({
           disabled={busy}
           style={{ ...confirmButtonStyle, borderColor: "var(--wb-borderActive)" }}
         >
-          {busy ? "working…" : `${GLYPH.worktree} isolate`}
+          {busy ? "working…" : `${GLYPH.worktree} ${existing ? "use existing" : "isolate"}`}
         </button>
       </div>
       {project && !project.remoteSshDest && (

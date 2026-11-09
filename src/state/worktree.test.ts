@@ -39,7 +39,14 @@ vi.mock("./registry", () => ({
   },
 }));
 
-import { attachWorktree, projectWorktrees, sessionsInDir, teardownWorktree } from "./worktree";
+import {
+  attachWorktree,
+  defaultWorktreeBranch,
+  findWorktreeByName,
+  projectWorktrees,
+  sessionsInDir,
+  teardownWorktree,
+} from "./worktree";
 
 const project = { id: "p1", name: "demiurge", rootPath: "C:\\r\\demiurge", remoteSshDest: null } as Project;
 const wt2 = "C:\\r\\.workbench\\worktrees\\2";
@@ -161,6 +168,28 @@ describe("worktrees and their sessions", () => {
   it("matches folders across separators and case", () => {
     const all = [inst("a", "C:/R/x/"), inst("b", "c:\\r\\x"), inst("c", "c:\\r\\y")];
     expect(sessionsInDir(all, "C:\\r\\x",{ exceptId: "b" }).map((i) => i.id)).toEqual(["a"]);
+  });
+});
+
+describe("findWorktreeByName", () => {
+  const custom = entry("C:\\r\\.workbench\\worktrees\\login", "feature/login");
+  const gone = { ...entry("C:\\r\\.workbench\\worktrees\\old", "agent/old"), missing: true };
+  const list = () => [entry(project.rootPath, "main", true), entry(wt2, "agent/2"), custom, gone];
+
+  it("finds a worktree by its branch, its agent/ suffix or its folder", () => {
+    expect(defaultWorktreeBranch("2")).toBe("agent/2");
+    expect(findWorktreeByName(list(), "agent/2")?.path).toBe(wt2);
+    expect(findWorktreeByName(list(), " refs/heads/agent/2 ")?.path).toBe(wt2);
+    expect(findWorktreeByName(list(), "2")?.path).toBe(wt2);
+    expect(findWorktreeByName(list(), "feature/login")).toBe(custom);
+    expect(findWorktreeByName(list(), "Login")).toBe(custom);
+  });
+
+  it("ignores the project's own folder, gone worktrees and new names", () => {
+    expect(findWorktreeByName(list(), "main")).toBeNull();
+    expect(findWorktreeByName(list(), "agent/old")).toBeNull();
+    expect(findWorktreeByName(list(), "agent/3")).toBeNull();
+    expect(findWorktreeByName(list(), "  ")).toBeNull();
   });
 });
 

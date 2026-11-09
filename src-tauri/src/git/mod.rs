@@ -117,11 +117,16 @@ pub struct WorktreeResult {
 /// sibling `.workbench/worktrees/` next to the repo. The branch and folder name are
 /// uniquified so re-using a title (or two projects sharing a sibling area) never
 /// collides. Teardown/merge is the next step (2.5); this only creates.
+///
+/// `branch` names the branch outright instead (the user typed one): it isn't
+/// uniquified, only its folder is. A branch that already exists is checked out in
+/// the new worktree rather than created; git refuses one checked out elsewhere.
 #[tauri::command]
 pub fn provision_worktree(
     repo_root: String,
     slug: String,
     base_dir: Option<String>,
+    branch: Option<String>,
 ) -> Result<WorktreeResult, String> {
     let root = Path::new(&repo_root);
     if !root.join(".git").exists() {
@@ -133,16 +138,35 @@ pub fn provision_worktree(
         None => default_worktree_base(root),
     };
 
-    let safe = sanitize_slug(&slug);
-    let (branch, path) = unique_worktree(root, &base, &safe)?;
+    let named = branch.map(|b| b.trim().to_owned()).filter(|b| !b.is_empty());
+    let (branch, path, existing) = match named {
+        Some(b) => {
+            let b = b.strip_prefix("refs/heads/").unwrap_or(&b).to_owned();
+            if git_run(root, &["check-ref-format", "--branch", &b]).is_err() {
+                return Err(format!("'{b}' isn't a valid branch name"));
+            }
+            let folder = sanitize_slug(b.strip_prefix("agent/").unwrap_or(&b));
+            let path = unique_dir(&base, &folder)?;
+            let existing = branch_exists(root, &b);
+            (b, path, existing)
+        }
+        None => {
+            let (b, p) = unique_worktree(root, &base, &sanitize_slug(&slug))?;
+            (b, p, false)
+        }
+    };
 
     std::fs::create_dir_all(&base)
         .map_err(|e| format!("could not create worktree dir {}: {e}", base.display()))?;
 
     let path_str = path.to_string_lossy().into_owned();
-    // Options before the path: the canonical `git worktree add -b <branch> <path>`
-    // form, which creates `branch` off the repo's current HEAD.
-    git_run(root, &["worktree", "add", "-b", &branch, &path_str])?;
+    if existing {
+        git_run(root, &["worktree", "add", &path_str, &branch])?;
+    } else {
+        // Options before the path: the canonical `git worktree add -b <branch> <path>`
+        // form, which creates `branch` off the repo's current HEAD.
+        git_run(root, &["worktree", "add", "-b", &branch, &path_str])?;
+    }
 
     // If the worktree area lives inside the repo, keep `git status` clean by adding
     // it to the repo's *local* excludes (not the committed `.gitignore`).
@@ -203,6 +227,14 @@ fn unique_worktree(root: &Path, base: &Path, slug: &str) -> Result<(String, Path
         }
     }
     Err(format!("could not find a free worktree name for '{slug}'"))
+}
+
+/// A folder under `base` for `name` that doesn't exist yet: `name`, `name-2`, …
+fn unique_dir(base: &Path, name: &str) -> Result<PathBuf, String> {
+    (1..=100)
+        .map(|n| if n == 1 { base.join(name) } else { base.join(format!("{name}-{n}")) })
+        .find(|p| !p.exists())
+        .ok_or_else(|| format!("could not find a free worktree folder for '{name}'"))
 }
 
 /// True when `branch` already exists in `root` (local ref). Uses `show-ref
@@ -2942,6 +2974,7 @@ mod tests {
             dir.to_string_lossy().into_owned(),
             "Fix Auth Redirect".into(),
             Some(base.clone()),
+            None,
         )
         .unwrap();
         assert_eq!(res.branch, "agent/fix-auth-redirect");
@@ -2954,10 +2987,43 @@ mod tests {
             dir.to_string_lossy().into_owned(),
             "Fix Auth Redirect".into(),
             Some(base),
+            None,
         )
         .unwrap();
         assert_eq!(res2.branch, "agent/fix-auth-redirect-2");
         assert_ne!(res.path, res2.path);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn provisions_worktree_on_a_named_branch() {
+        let dir = temp_dir("wt-named");
+        if !init_repo(&dir) {
+            std::fs::remove_dir_all(&dir).ok();
+            return;
+        }
+        let root = dir.to_string_lossy().into_owned();
+        let base = dir.join("worktrees").to_string_lossy().into_owned();
+        let named = |b: &str| provision_worktree(root.clone(), "1".into(), Some(base.clone()), Some(b.into()));
+
+        // A new branch is taken as typed, not uniquified; its folder drops `agent/`.
+        let res = named("feature/login").unwrap();
+        assert_eq!(res.branch, "feature/login");
+        assert!(res.path.ends_with("feature-login"), "{}", res.path);
+        let res = named("agent/custom").unwrap();
+        assert_eq!(res.branch, "agent/custom");
+        assert!(res.path.ends_with("custom"), "{}", res.path);
+
+        // An existing branch with no worktree is checked out, not re-created.
+        git_run(&dir, &["branch", "spare"]).unwrap();
+        let res = named("spare").unwrap();
+        assert_eq!(res.branch, "spare");
+        assert!(Path::new(&res.path).join(".git").exists());
+
+        // One already checked out elsewhere is git's to refuse; a bad name is ours.
+        assert!(named("agent/custom").is_err());
+        assert!(named("bad..name").unwrap_err().contains("valid branch name"));
 
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -2994,7 +3060,7 @@ mod tests {
         }
         let root = dir.to_string_lossy().into_owned();
         let base = dir.join("worktrees").to_string_lossy().into_owned();
-        let made = provision_worktree(root.clone(), "two".into(), Some(base)).unwrap();
+        let made = provision_worktree(root.clone(), "two".into(), Some(base), None).unwrap();
 
         let list = list_worktrees(root.clone()).unwrap();
         assert_eq!(list.len(), 2);
@@ -3063,7 +3129,7 @@ mod tests {
     #[test]
     fn provision_on_non_repo_errors() {
         let dir = temp_dir("notrepo");
-        let result = provision_worktree(dir.to_string_lossy().into_owned(), "x".into(), None);
+        let result = provision_worktree(dir.to_string_lossy().into_owned(), "x".into(), None, None);
         assert!(result.is_err());
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -3167,6 +3233,7 @@ mod tests {
             dir.to_string_lossy().into_owned(),
             "add feature".into(),
             Some(base),
+            None,
         )
         .unwrap();
         let wt_path = Path::new(&wt.path);

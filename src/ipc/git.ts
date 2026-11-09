@@ -30,13 +30,17 @@ export interface WorktreeResult {
  * `git worktree add -b agent/<slug> <path>` from `repoRoot`. `baseDir` overrides
  * the default location (a sibling `.workbench/worktrees/`, decision 7). The branch
  * + folder are uniquified, so a repeated title never collides. Throws on git error.
+ *
+ * `branch` names the branch outright instead (taken as typed, only its folder is
+ * uniquified); one that already exists is checked out rather than created.
  */
 export function provisionWorktree(
   repoRoot: string,
   slug: string,
   baseDir?: string,
+  branch?: string,
 ): Promise<WorktreeResult> {
-  return invoke("provision_worktree", { repoRoot, slug, baseDir: baseDir ?? null });
+  return invoke("provision_worktree", { repoRoot, slug, baseDir: baseDir ?? null, branch: branch ?? null });
 }
 
 // --- existing worktrees -----------------------------------------------------
