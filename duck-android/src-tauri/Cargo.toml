@@ -1,6 +1,6 @@
 [package]
 name = "duck-android"
-version = "2.3.0"
+version = "2.3.1"
 description = "Duck on the phone: the assistant app (assistant plan R4, H5)."
 authors = ["Workbench"]
 edition = "2021"
