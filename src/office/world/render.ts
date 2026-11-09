@@ -9,10 +9,12 @@
 // The windows show the sky of the hour, and the whiteboard on Demiurge's wall keeps the
 // coffee budget: what's left of each usage window (O2.4).
 
-import { FRAME_H, FRAME_W, frame } from "../art/characters";
+import { FRAME_H, frame } from "../art/characters";
 import { DUCK_ANIMS, DUCK_H, DUCK_W, duckFrame } from "../art/duck";
 import { FERNANDO_ANIMS, FERNANDO_H, FERNANDO_W, fernandoFrame } from "../art/fernando";
 import { nameTag, speechBubble, statusIcon } from "../art/labels";
+import { BALL_H, BALL_W, HEART_H, HEART_W, LUPA_ANIMS, LUPA_H, ballFrame, heartFrame, lupaFrame, lupaView } from "../art/lupa";
+import { textBitmap } from "../art/font";
 import { PROPS, clockAt, floorTile, propFrame, type PropName } from "../art/props";
 import { cached } from "../canvas";
 import { WALK_CELL, type OfficeMap, type Point, type Seat } from "../map/build";
@@ -23,7 +25,8 @@ import { ballAt, kickerScore, type KickerMatch } from "./groups";
 import { SKY_COLORS, hoursOf, officeTime, skyAt } from "./ambience";
 import { tvScreen } from "../games/emulator/screen";
 import { boardScreen } from "../games/screen";
-import type { Budget, Bubble, Contractor, DuckEntity, Entity, FernandoEntity, Screen, WorkerEntity, World } from "./entities";
+import { HEART_MS, LUPA_ID, type Budget, type Bubble, type Contractor, type DuckEntity, type Entity, type FernandoEntity, type Heart, type Screen, type WorkerEntity, type World } from "./entities";
+import type { Ball, LupaEntity } from "./lupa";
 
 export const OFFICE_W = MAP_W * TILE;
 export const OFFICE_H = MAP_H * TILE;
@@ -218,12 +221,14 @@ export function createRenderer(office: OfficeMap): Renderer {
       // How far through the current step: people slide from `prev` to where they are.
       const t = Math.min(1, Math.max(0, (ms - world.stepAt) / SIM_STEP));
       let next = Infinity;
-      const shown = (e: Entity): Point => {
+      const shown = (e: { x: number; y: number; prev: Point }): Point => {
         if (e.prev.x === e.x && e.prev.y === e.y) return e;
         if (t < 1) next = 0;
         return { x: e.prev.x + (e.x - e.prev.x) * t, y: e.prev.y + (e.y - e.prev.y) * t };
       };
       const people = [...world.workers.filter((w) => !w.away), world.duck].map((e) => ({ e, at: shown(e) }));
+      const lupaAt = shown(world.lupa);
+      const ballAt = shownBall(world.ball, t, () => (next = 0));
 
       // Furniture, monitors and people, back to front. Sorting is stable, so on a tie
       // the furniture (listed first) goes behind.
@@ -235,6 +240,9 @@ export function createRenderer(office: OfficeMap): Renderer {
           draw: (c: CanvasRenderingContext2D, ms: number) => (e.kind === "duck" ? drawDuck(c, e, at, ms) : drawWorker(c, e, at, ms)),
         })),
         { base: world.fernando.y, draw: (c: CanvasRenderingContext2D, ms: number) => drawFernando(c, world.fernando, ms) },
+        { base: lupaAt.y, draw: (c: CanvasRenderingContext2D, ms: number) => drawLupa(c, world.lupa, lupaAt, ms) },
+        // A held ball is drawn over everything, below.
+        ...(world.ball.carried || world.ball.held ? [] : [{ base: ballAt.y, draw: (c: CanvasRenderingContext2D) => (drawBall(c, ballAt), Infinity) }]),
       ];
       items.sort((a, b) => a.base - b.base);
       for (const item of items) next = Math.min(next, item.draw(ctx, ms));
@@ -243,6 +251,9 @@ export function createRenderer(office: OfficeMap): Renderer {
       for (const c of world.contractors) next = Math.min(next, drawContractorTag(ctx, office, c, view, ms, asks));
       for (const { e, at } of people.sort((a, b) => a.at.y - b.at.y)) next = Math.min(next, drawOverhead(ctx, e, at, view, ms, asks));
       next = Math.min(next, drawFernandoOverhead(ctx, world.fernando, view, ms));
+      next = Math.min(next, drawLupaOverhead(ctx, world.lupa, lupaAt, view, ms));
+      if (world.ball.held) drawBall(ctx, ballAt);
+      next = Math.min(next, drawHearts(ctx, world, people, lupaAt, ms));
       if (world.kicker && kickerTable) next = Math.min(next, drawScore(ctx, world.kicker, kickerTable.x + kickerTable.prop.w / 2, kickerTable.y - 1, ms));
       if (view.overlay) drawOverlay(ctx, office, world);
       return next;
@@ -315,14 +326,15 @@ function drawWorker(ctx: CanvasRenderingContext2D, w: WorkerEntity, at: Point, m
   const { index, next } = frameAt(w.playing, ms);
   const x = Math.round(at.x);
   const y = Math.round(at.y);
-  if (w.seat === null) {
+  if (w.seat === null && !w.lift) {
     ctx.fillStyle = SHADOW;
     ctx.beginPath();
     ctx.ellipse(x, y - 1, 6, 2, 0, 0, Math.PI * 2);
     ctx.fill();
   }
   const img = cached(`worker/${w.worker.id}/${w.anim}/${w.dir}/${index}`, () => frame(w.worker.look, w.anim, w.dir, index));
-  ctx.drawImage(img, x - FRAME_W / 2, y - FRAME_H);
+  // Lying on a table, the sprite is up on its top (`lift`), wider than a frame.
+  ctx.drawImage(img, x - Math.floor(img.width / 2), y - (w.lift ?? 0) - img.height);
   return next;
 }
 
@@ -343,6 +355,97 @@ function drawFernando(ctx: CanvasRenderingContext2D, f: FernandoEntity, ms: numb
   const img = cached(`fernando/${f.anim}/${index}`, () => fernandoFrame(FERNANDO_ANIMS[f.anim][index].pose));
   ctx.drawImage(img, Math.round(f.x - FERNANDO_W / 2), Math.round(f.y - FERNANDO_H));
   return next;
+}
+
+/** Where the ball is shown: sliding between steps like everyone, a held one exactly
+ *  where it is (it follows the pointer between steps). */
+function shownBall(b: Ball, t: number, moving: () => void): { x: number; y: number; z: number } {
+  if (b.held) return b;
+  const { prev } = b;
+  if (prev.x === b.x && prev.y === b.y && prev.z === b.z) return b;
+  if (t < 1) moving();
+  return { x: prev.x + (b.x - prev.x) * t, y: prev.y + (b.y - prev.y) * t, z: prev.z + (b.z - prev.z) * t };
+}
+
+/** The ball, its shadow on the floor under it and the ball up off it by its height. */
+function drawBall(ctx: CanvasRenderingContext2D, b: { x: number; y: number; z: number }): void {
+  const x = Math.round(b.x);
+  const y = Math.round(b.y);
+  ctx.fillStyle = SHADOW;
+  ctx.beginPath();
+  ctx.ellipse(x, y, Math.max(1.5, 3 - b.z / 6), 1.2, 0, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.drawImage(cached("ball", ballFrame), x - BALL_W / 2, Math.round(y - b.z) - BALL_H + 1);
+}
+
+/** Lupa, on a shadow (a flatter one asleep), the ball in her mouth if she has it. */
+function drawLupa(ctx: CanvasRenderingContext2D, l: LupaEntity, at: Point, ms: number): number {
+  const { index, next } = frameAt(l.playing, ms);
+  const view = lupaView(l.anim, l.view);
+  const pose = LUPA_ANIMS[l.anim].frames[index].pose;
+  const x = Math.round(at.x);
+  const y = Math.round(at.y);
+  ctx.fillStyle = SHADOW;
+  ctx.beginPath();
+  ctx.ellipse(x, y - 1, view === "down" || view === "up" ? 7 : 10, 2, 0, 0, Math.PI * 2);
+  ctx.fill();
+  const img = cached(`lupa/${pose}/${view}/${l.carrying}`, () => lupaFrame(pose, view, l.carrying));
+  ctx.drawImage(img, x - Math.floor(img.width / 2), y - img.height);
+  return next;
+}
+
+/** Lupa's tag: her collar's pink. */
+const LUPA_TAG = "#c93c66";
+const ZZZ = "#e9e4f2";
+
+/** Over Lupa: z's drifting up while she sleeps, her name tag when hovered. */
+function drawLupaOverhead(ctx: CanvasRenderingContext2D, l: LupaEntity, at: Point, view: View, ms: number): number {
+  const x = Math.round(at.x);
+  const top = Math.round(at.y) - (l.anim === "sleep" ? 9 : LUPA_H);
+  let next = Infinity;
+  if (l.anim === "sleep") {
+    const z = cached("lupa/z", () => textBitmap("z", ZZZ));
+    // Two at a time, each rising and drifting right over 1.6 s.
+    for (const offset of [0, 800]) {
+      const p = ((ms + offset) % 1600) / 1600;
+      ctx.globalAlpha = 1 - p;
+      ctx.drawImage(z, x + 6 + Math.round(p * 6), top - 2 - Math.round(p * 10));
+    }
+    ctx.globalAlpha = 1;
+    next = 100;
+  }
+  if (view.tags || view.hover === LUPA_ID) {
+    const img = cached("tag/lupa", () => nameTag("Lupa", LUPA_TAG, null));
+    ctx.drawImage(img, Math.min(Math.max(0, x - Math.floor(img.width / 2)), OFFICE_W - img.width), Math.max(0, top - img.height - 1));
+  }
+  return next;
+}
+
+/** The hearts floating up over Anya and Lupa: popping in, rising, drifting, fading. */
+function drawHearts(ctx: CanvasRenderingContext2D, world: World, people: { e: Entity; at: Point }[], lupaAt: Point, ms: number): number {
+  if (!world.hearts.length) return Infinity;
+  const img = cached("heart", heartFrame);
+  let live = false;
+  for (const h of world.hearts as Heart[]) {
+    const age = ms - h.at;
+    if (age < 0 || age >= HEART_MS) continue;
+    live = true;
+    const who = h.over === LUPA_ID ? null : people.find((p) => p.e.kind === "worker" && p.e.worker.id === h.over);
+    const at = who?.at ?? lupaAt;
+    const lift = who?.e.kind === "worker" ? (who.e.lift ?? 0) : 0;
+    const head = h.over === LUPA_ID ? (world.lupa.anim === "sleep" ? 9 : LUPA_H) : who?.e.kind === "worker" && who.e.anim === "lie" ? 15 : FRAME_H;
+    const p = age / HEART_MS;
+    // A quick pop: bigger for the first tenth of a second.
+    const scale = age < 100 ? 2 : age < 180 ? 1.5 : 1;
+    const w = HEART_W * scale;
+    const hgt = HEART_H * scale;
+    const cx = at.x + h.dx * p + Math.sin(p * Math.PI * 2) * 2;
+    const y = at.y - lift - head - 2 - p * 16;
+    ctx.globalAlpha = p < 0.6 ? 1 : 1 - (p - 0.6) / 0.4;
+    ctx.drawImage(img, Math.round(cx - w / 2), Math.round(y - hgt), w, hgt);
+  }
+  ctx.globalAlpha = 1;
+  return live ? 0 : Infinity;
 }
 
 /** Fernando's id for hover and the view. */

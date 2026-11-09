@@ -10,6 +10,7 @@ import type { OfficeMap } from "../map/build";
 import type { Seating } from "./assign";
 import type { World } from "./entities";
 import type { Staff } from "./sessions";
+import { isGuest } from "../roster";
 
 /** A session on its way to a desk. */
 export interface Hire {
@@ -47,8 +48,9 @@ export function bindHires(staff: Staff, snapshot: RemoteSnapshot, ms: number): S
 /** The hire `id` is on their way to, if any. */
 export const hireOf = (staff: Staff, id: string): Hire | undefined => staff.hires.find((h) => h.worker === id);
 
-/** Whether `id` has nothing to do: no session, and none on its way. */
-export const isFree = (staff: Staff, id: string): boolean => !staff.jobs.has(id) && !hireOf(staff, id);
+/** Whether `id` has nothing to do (no session, and none on its way), so can be given
+ *  one. Never a guest: they don't work here. */
+export const isFree = (staff: Staff, id: string): boolean => !isGuest(id) && !staff.jobs.has(id) && !hireOf(staff, id);
 
 /** Whether nothing sits at `desk`: no session, nor one on its way. */
 export function deskFree(staff: Staff, desk: number): boolean {

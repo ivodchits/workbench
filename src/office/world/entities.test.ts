@@ -2,19 +2,30 @@ import { describe, expect, it } from "vitest";
 
 import { FRAME_H } from "../art/characters";
 import { buildOffice } from "../map/build";
-import { ROSTER } from "../roster";
+import { GUESTS, ROSTER, isGuest } from "../roster";
 import { frameAt } from "./anim";
 import { createWorld, setAnim, workerAt } from "./entities";
 
 const office = buildOffice();
 
 describe("the world at the start", () => {
-  const world = createWorld(office);
+  const all = createWorld(office);
+  const world = { ...all, workers: all.workers.filter((w) => !isGuest(w.worker.id)) };
 
   it("seats every worker once, at a desk in their team's room", () => {
     expect(world.workers.map((w) => w.worker.id).sort()).toEqual(ROSTER.map((w) => w.id).sort());
     expect(new Set(world.workers.map((w) => w.home)).size).toBe(ROSTER.length);
     for (const w of world.workers) expect(office.seats[w.home].room).toBe(w.worker.team);
+  });
+
+  it("has the guests about too, standing, with no desk of their own", () => {
+    const guests = all.workers.filter((w) => isGuest(w.worker.id));
+    expect(guests.map((w) => w.worker.id)).toEqual(GUESTS.map((g) => g.id));
+    for (const g of guests) expect([g.home, g.seat]).toEqual([-1, null]);
+  });
+
+  it("brings Lupa and her ball, on the floor", () => {
+    for (const p of [all.lupa, all.ball]) expect(office.walk.blocked[Math.floor(p.y / 8) * office.walk.cols + Math.floor(p.x / 8)]).toBe(0);
   });
 
   it("draws seated workers at the seat's depth, so desk and chair layer as approved", () => {

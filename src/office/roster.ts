@@ -15,6 +15,9 @@ export interface Worker {
   /** Idle activities they're likelier to pick (`world/idle.ts`). */
   likes: readonly string[];
   look: Look;
+  /** Not staff: who they are instead of a team ("visiting"). A guest has no desk and
+   *  never takes a session, but walks about, joins the chats and does as idle workers do. */
+  guest?: string;
 }
 
 export const TEAM_NAMES: Record<Team, string> = {
@@ -229,3 +232,35 @@ export const ROSTER: readonly Worker[] = [
     },
   },
 ];
+
+/** Anya's id: she drops by. */
+export const ANYA_ID = "anya";
+
+/** People about the office who don't work there: no desk, no sessions, not in the
+ *  standup. Clicking one sends up a heart. */
+export const GUESTS: readonly Worker[] = [
+  {
+    id: ANYA_ID,
+    name: "Anya",
+    team: "open",
+    guest: "visiting",
+    personality: "Not on any team, just visiting. Cute and cheerful, and an artist at heart: sees everything by how it looks and feels. Asks about projects and people's work for the colours, the shapes and the mood, never how it works under the hood.",
+    likes: ["cooler", "sofa", "lie", "plants"],
+    look: {
+      skin: SKIN.light,
+      hair: HAIR.honey,
+      hairStyle: "long",
+      top: CLOTH.silk,
+      topStyle: "tee",
+      pants: PANTS.denim,
+      shoes: SHOES.sandal,
+      blush: true,
+      dress: CLOTH.lace,
+    },
+  },
+];
+
+/** Everyone who walks about the office: the staff, then the guests. */
+export const PEOPLE: readonly Worker[] = [...ROSTER, ...GUESTS];
+
+export const isGuest = (id: string): boolean => GUESTS.some((g) => g.id === id);

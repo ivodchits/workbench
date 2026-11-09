@@ -1253,6 +1253,50 @@ survive a move between devices.
     bash types, tests and compacting read a document, all seated (`behave.ts`; stations
     and their stay rule removed).
 
+- **O5.10 Anya and Lupa** (2026-11-08, live test owed)
+  - **Anya**, a guest (`roster.ts` `GUESTS`, `Worker.guest`): long honey hair, a washed-blue
+    slip dress with lace at the neck and hem, sandals, no glasses (`Look.dress`: the skirt
+    takes the trousers' place in every pose, the arms are bare). She's in `world.workers`
+    with no desk (`home` -1) and is never free for a session (`isFree`), so she's never
+    hired, dragged to a desk or called to the standup. She does what idle workers do
+    (`GUEST_ACTIVITIES`: everything but her own desk) and joins the cooler and sofa chats,
+    written into the scenes with her own persona (chatter's prompt lists the guests, and
+    Lupa, who never speaks). Now and then she lies on a free table on her front, chin on
+    her hands, kicking her feet (`lie`, 32×15, `lieFrame`): any desk with no session and
+    nobody else on it (she holds it as `desk:<n>`, so its owner doesn't come to read the
+    paper there) and the two long tables, the standup's only while no standup is on. A
+    session for the desk, or a standup, gets her off it at once. The `lie-*` spots carry a
+    `lift`: the feet stay in front of the table, so she's drawn over it. Walking off
+    furniture now starts from the nearest floor (`walkTo`). Click: a heart pops, rises,
+    drifts and fades (`world.hearts`). Hover: "Anya · visiting".
+  - **Lupa**, the office dog (`art/lupa.ts`, `world/lupa.ts`): golden, big upright ears, a
+    white blaze, chest and socks, a pink collar with a gold tag; 24×18, side views from
+    parts (head, body, tail, legs), facing you sitting or standing, from behind, asleep.
+    She roams on her own: wanders, sits, sniffs about, naps anywhere on the floor (more at
+    night, z's drifting up), sits by someone. A click pets her: she sits up happy with a
+    heart, then goes back to what she was doing (back to sleep where she was). She
+    doesn't block anyone's way.
+  - **The ball**: a tennis ball in the lounge. Drag it (it's carried at the pointer, its
+    shadow under it) and let go: it's thrown at the pointer's speed over the last 90 ms
+    (capped), flies, bounces and rolls to a stop off the walls and furniture (the walk
+    grid). Let go over furniture, it lands on the nearest floor. Brought over Lupa, it has
+    her attention: she follows it while held, runs after it once thrown, picks it up,
+    brings it to the pointer, drops it and sits panting for the next throw; picked up
+    from by her (or out of her mouth) she's straight after it again. Chasing and bringing
+    it back each give up after 30 s (from the last throw), waiting after 20 s; she drops
+    the ball and roams again. A ball she's lost interest in can be left over her without
+    starting it again: only bringing it over her does.
+  - **Tests:** the sprites (frames, colours, the dress, lying); Lupa (an hour of roaming on
+    the floor, ignoring a ball thrown without her, a whole fetch to the pointer, each give-up,
+    a pet and back to sleep, no pet mid-chase); the ball (bounces, rests, walls, landing off
+    furniture, the cap); Anya (never hired, four hours idle with some lying and never a desk
+    of her own, off a desk when a session wants it). The afternoon groups test runs seeds 3–5
+    (with Anya about, seed 2's half hour has no kicker match). Checked in headless Chrome on
+    the dev page: the ball dragged over Lupa, thrown, chased, brought to the pointer; a pet;
+    Anya lying on a desk and both long tables.
+  - **Live test owed:** in the real app, Anya walking about, joining a chat with a scene
+    written for her, lying on a free desk and getting off when a session takes it.
+
 ## Phase O6 — Polish
 - **O6.1** Settings page (room mapping, roster names, chatter budget and model, open in browser
   vs window, ROM folder).
@@ -1323,6 +1367,7 @@ closed, open and still, and open and busy.
 - [ ] O5.7 Meeting room: pitch an idea
 - [x] O5.8 Fernando, the Spanish teacher (live test owed)
 - [x] O5.9 Project notes from the bookshelves; work stays at the desk (live test owed)
+- [x] O5.10 Anya and Lupa (live test owed)
 - [ ] O6.1 Settings
 - [ ] O6.2 Performance pass
 - [ ] O6.3 Docs

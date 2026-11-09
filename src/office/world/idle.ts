@@ -11,6 +11,7 @@
 // place, a spot in `map/office.ts`).
 
 import type { Anim, Dir } from "../art/characters";
+import { DESKS } from "../map/office";
 
 /** The parts of the day that change what people feel like doing. */
 export type DayPart = "day" | "lunch" | "night";
@@ -64,7 +65,22 @@ export const ACTIVITIES: readonly IdleActivity[] = [
   { id: "desk", at: "home", anim: "newspaper", lasts: [2 * MIN, 6 * MIN], weight: 1.5, times: QUIET },
 ];
 
-const BY_ID = new Map(ACTIVITIES.map((a) => [a.id, a]));
+/** A guest's own: lying on a free table, on her front, kicking her feet. */
+export const LIE: IdleActivity = {
+  id: "lie",
+  at: [...DESKS.map((_, i) => `lie-desk-${i}`), "lie-standup", "lie-meeting"],
+  anim: "lie",
+  face: "down",
+  lasts: [1.5 * MIN, 4 * MIN],
+  weight: 1,
+  times: { night: 2 },
+};
+
+/** What a guest does (Anya): everything but sitting at a desk of their own, and lying
+ *  on the tables. */
+export const GUEST_ACTIVITIES: readonly IdleActivity[] = [...ACTIVITIES.filter((a) => a.at !== "home"), LIE];
+
+const BY_ID = new Map([...ACTIVITIES, LIE].map((a) => [a.id, a]));
 export const activity = (id: string): IdleActivity | undefined => BY_ID.get(id);
 
 /** How much likelier a worker is to pick what they like. */

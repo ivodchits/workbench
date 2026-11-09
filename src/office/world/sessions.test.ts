@@ -32,11 +32,12 @@ describe("sessions in the office", () => {
       expect([w.seat, w.walk, w.tag]).toEqual([s.desk, null, "working"]);
       expect(world.screens[s.desk!]).toBe("code");
     }
-    // The rest are straight at something to do (some at their own desk), each somewhere else.
+    // The rest, and Anya, are straight at something to do (some at their own desk), each
+    // somewhere else.
     const free = world.workers.filter((w) => !staff.jobs.has(w.worker.id));
-    expect(free.length).toBe(10);
+    expect(free.length).toBe(11);
     expect(free.every((w) => !w.walk && w.tag === null && staff.idle.has(w.worker.id))).toBe(true);
-    expect(new Set(free.map((w) => `${w.x},${w.y}`)).size).toBe(10);
+    expect(new Set(free.map((w) => `${w.x},${w.y}`)).size).toBe(11);
   });
 
   it("walks a newly assigned worker to their desk, and a released one to the kitchen", () => {

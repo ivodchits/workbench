@@ -4,12 +4,13 @@
 // render.ts draws it.
 
 import type { KickerMatch } from "./groups";
-import { ANIMS, FRAME_H, FRAME_W, type Anim, type Dir } from "../art/characters";
+import { ANIMS, FRAME_H, FRAME_W, LIE_H, LIE_W, type Anim, type Dir } from "../art/characters";
 import { DUCK_ANIMS, DUCK_H, DUCK_W, type DuckAnim, type DuckView } from "../art/duck";
 import { FERNANDO_ANIMS, FERNANDO_H, FERNANDO_W, type FernandoAnim } from "../art/fernando";
 import type { BubbleTone, Overhead, TagGlyph } from "../art/labels";
 import type { OfficeMap, Point, Seat } from "../map/build";
-import { ROSTER, type Team, type Worker } from "../roster";
+import { GUESTS, ROSTER, type Team, type Worker } from "../roster";
+import { createBall, createLupa, type Ball, type LupaEntity } from "./lupa";
 import { play, type Clip, type Playing } from "./anim";
 
 export interface Bubble {
@@ -45,6 +46,8 @@ export interface WorkerEntity extends Body {
   overhead: Overhead | null;
   /** The status glyph on the name tag; none when there's no session. */
   tag: TagGlyph | null;
+  /** Lying on a table: how far over the feet the sprite is drawn (the spot's `lift`). */
+  lift?: number;
 }
 
 /** What happens at the end of a walk. */
@@ -104,7 +107,33 @@ export interface World {
   kicker: KickerMatch | null;
   /** The usage limits, for the coffee-budget whiteboard (office plan O2.4). */
   budget: Budget;
+  /** Lupa, the office dog, and her ball (`lupa.ts`). */
+  lupa: LupaEntity;
+  ball: Ball;
+  /** Hearts floating up: from a click on Anya, a pet for Lupa. */
+  hearts: Heart[];
 }
+
+/** A heart over someone (a worker's id, or `LUPA_ID`), from `at` (sim ms); `dx` its
+ *  drift, so a few in a row don't stack. */
+export interface Heart {
+  over: string;
+  at: number;
+  dx: number;
+}
+
+/** How long a heart floats. */
+export const HEART_MS = 1300;
+/** Lupa's id for hover and hearts. */
+export const LUPA_ID = "lupa";
+/** The ball's, for hover. */
+export const BALL_ID = "ball";
+
+/** Where Lupa naps when the office opens, and where the ball lies: the lounge. */
+const LUPA_START = { x: 472, y: 126 };
+const BALL_START = { x: 452, y: 140 };
+/** Where guests are when the office opens. */
+const GUEST_START = { x: 420, y: 150 };
 
 /** How much of each usage window is used, in percent; null when not known. */
 export interface Budget {
@@ -208,11 +237,28 @@ export function createWorld(office: OfficeMap, ms = 0): World {
     walk: null,
   };
   const fernando: FernandoEntity = { ...office.fernando, anim: "idle", playing: play(fernandoClip("idle"), ms), bubble: null };
+  // Guests: no desk (`home` is -1), standing about the lounge.
+  GUESTS.forEach((worker, i) => {
+    const at = { x: GUEST_START.x + i * 16, y: GUEST_START.y };
+    workers.push({ kind: "worker", worker, ...at, prev: at, dir: "down", anim: "idle", seat: null, walk: null, away: false, playing: play(workerClip("idle"), ms), home: -1, overhead: null, tag: null, bubble: null });
+  });
   const screens = office.seats.map((s): Screen => (seated.has(s.index) ? "code" : "off"));
-  return { workers, duck, fernando, screens, contractors: [], stepAt: ms, tv: false, kicker: null, budget: { fiveHour: null, sevenDay: null } };
+  return {
+    workers,
+    duck,
+    fernando,
+    screens,
+    contractors: [],
+    stepAt: ms,
+    tv: false,
+    kicker: null,
+    budget: { fiveHour: null, sevenDay: null },
+    lupa: createLupa(LUPA_START, ms),
+    ball: createBall(BALL_START),
+    hearts: [],
+  };
 }
 
-/** The frontmost worker whose sprite covers (x, y). */
 /** Whether (x, y) is on Fernando. */
 export function onFernando(world: World, x: number, y: number): boolean {
   const f = world.fernando;
@@ -225,11 +271,14 @@ export function onDuck(world: World, x: number, y: number): boolean {
   return x >= d.x - DUCK_W / 2 && x < d.x + DUCK_W / 2 && y >= d.y - DUCK_H && y < d.y;
 }
 
+/** The frontmost worker whose sprite covers (x, y). */
 export function workerAt(world: World, x: number, y: number): WorkerEntity | undefined {
   let hit: WorkerEntity | undefined;
   for (const w of world.workers) {
     if (w.away) continue;
-    const inside = x >= w.x - FRAME_W / 2 && x < w.x + FRAME_W / 2 && y >= w.y - FRAME_H && y < w.y;
+    const lying = w.anim === "lie";
+    const [bw, bh, lift] = lying ? [LIE_W, LIE_H, w.lift ?? 0] : [FRAME_W, FRAME_H, 0];
+    const inside = x >= w.x - bw / 2 && x < w.x + bw / 2 && y >= w.y - lift - bh && y < w.y - lift;
     if (inside && (!hit || w.y >= hit.y)) hit = w;
   }
   return hit;

@@ -15,7 +15,10 @@ import type { Link } from "./net";
 import { addToLog, logEvents, type LogEntry } from "./log";
 import { ROSTER, TEAM_NAMES, type Team } from "./roster";
 import { debugClick, deskAt } from "./world/debug";
-import { createWorld, onDuck, onFernando, setFernandoAnim, workerAt as hit } from "./world/entities";
+import { BALL_ID, HEART_MS, LUPA_ID, createWorld, onDuck, onFernando, setFernandoAnim, workerAt as hit } from "./world/entities";
+import { grabBall, holdBall, lupaDoing, onBall, onLupa, petLupa, stepBall, stepLupa, throwBall } from "./world/lupa";
+import { SIM_STEP } from "./loop";
+import { ANYA_ID, isGuest } from "./roster";
 import type { TurnState } from "../assistant/protocol";
 import { stepWalkers } from "./world/move";
 import { FERNANDO_ID, OFFICE_H, OFFICE_W, createRenderer, type AskBubble, type View } from "./world/render";
@@ -31,7 +34,7 @@ import { callStandup, standupTable, type Reported } from "./world/standup";
 import type { StandupResult } from "../remote/standup";
 import type { Who } from "./describe";
 
-export { FERNANDO_ID, OFFICE_H, OFFICE_W };
+export { BALL_ID, FERNANDO_ID, LUPA_ID, OFFICE_H, OFFICE_W };
 
 /** How long to gather changes to the sticky map before saving it. */
 const SAVE_AFTER = 1000;
@@ -192,9 +195,39 @@ export function setRoom(projectId: string, team: Team): void {
   save();
 }
 
+/** Where the pointer is over the office, in office pixels: Lupa brings the ball there. */
+let pointerAt: { x: number; y: number } | null = null;
+
+export function setPointer(p: { x: number; y: number } | null): void {
+  pointerAt = p;
+}
+
+/** Lupa's sense of the office: the pointer, who's about to go and sit by, the hour. */
+const sense = {
+  get pointer() {
+    return pointerAt;
+  },
+  people: () => [...world.workers.filter((w) => !w.away && w.seat === null && w.anim !== "lie"), world.duck].map((e) => ({ x: e.x, y: e.y })),
+  get night() {
+    const h = staff.hour();
+    return h < 7 || h >= 22;
+  },
+  random: Math.random,
+};
+
+/** Lupa, the ball and the hearts, one step on; true when the picture changed. */
+function stepPets(ms: number): boolean {
+  const ball = stepBall(office, world.ball);
+  const dog = stepLupa(office, world.lupa, world.ball, sense, ms);
+  const hearts = world.hearts.length;
+  world.hearts = world.hearts.filter((h) => ms - h.at < HEART_MS);
+  return ball || dog || hearts !== world.hearts.length;
+}
+
 /** One sim step at `ms`; true when the picture changed. */
 export function stepOffice(ms: number): boolean {
-  const walked = stepWalkers(world, office, ms);
+  const pets = stepPets(ms);
+  const walked = stepWalkers(world, office, ms) || pets;
   const changed = (loaded && behave(office, world, staff, ms)) || walked;
   // What idle workers got up to together goes in the log.
   if (staff.events.length) {
@@ -344,12 +377,15 @@ export const duckDoing = (): string => {
   return chat === "waiting" ? "waiting for your answer" : chat !== "idle" ? "thinking" : state;
 };
 
-/** What's at (x, y) in office pixels, for hover: a worker's id, a contractor's desk
- *  as `desk:<index>`, Fernando (`FERNANDO_ID`) or Duck (`DUCK_ID`). */
+/** What's at (x, y) in office pixels, for hover: the ball (`BALL_ID`), a worker's id
+ *  (or a guest's), a contractor's desk as `desk:<index>`, Fernando (`FERNANDO_ID`),
+ *  Lupa (`LUPA_ID`) or Duck (`DUCK_ID`). */
 export function workerAt(x: number, y: number): string | null {
+  if (onBall(world.ball, x, y)) return BALL_ID;
   const w = hit(world, x, y);
   if (w) return w.worker.id;
   if (onFernando(world, x, y)) return FERNANDO_ID;
+  if (onLupa(world.lupa, x, y)) return LUPA_ID;
   if (onDuck(world, x, y)) return DUCK_ID;
   const desk = deskAt(office, { x, y });
   return desk !== undefined && world.contractors.some((c) => c.desk === desk) ? `desk:${desk}` : null;
@@ -371,6 +407,51 @@ export function askAt(x: number, y: number): AskBubble | null {
 
 /** Where `id`'s bubble asking for you was last drawn, if it's up. */
 export const askOf = (id: string): AskBubble | null => renderer.asks().find((a) => a.id === id) ?? null;
+
+/** A heart over `id` now, drifting a little to one side. */
+function heart(id: string, ms: number): void {
+  world.hearts.push({ over: id, at: ms, dx: (Math.random() - 0.5) * 10 });
+}
+
+/** A click on a guest (Anya) or Lupa: a heart, and for Lupa a pet. False for anyone
+ *  else (who opens their session, Duck a chat…). */
+export function cuddle(id: string, ms: number): boolean {
+  if (id === LUPA_ID) {
+    petLupa(world.lupa, ms);
+    heart(LUPA_ID, ms);
+    return true;
+  }
+  if (!isGuest(id)) return false;
+  heart(id, ms);
+  return true;
+}
+
+/** Picks up the ball at (x, y) in office pixels, if it's there (out of Lupa's mouth too). */
+export function grabBallAt(x: number, y: number, ms: number): boolean {
+  if (!onBall(world.ball, x, y) && !(world.lupa.carrying && onLupa(world.lupa, x, y))) return false;
+  grabBall(world.ball, world.lupa, x, y, ms);
+  return true;
+}
+
+/** The held ball, at the pointer. */
+export const moveBall = (x: number, y: number): void => holdBall(world.ball, x, y);
+
+/** Lets go of the ball, thrown at (`vx`, `vy`) office pixels a millisecond. */
+export function releaseBall(vx: number, vy: number, ms: number): void {
+  if (world.ball.held) throwBall(office, world.ball, world.lupa, vx * SIM_STEP, vy * SIM_STEP, ms);
+}
+
+/** Lupa's tooltip. */
+export function lupaTip(): string[] {
+  const m = world.lupa.mood.kind;
+  const hint = m === "chase" || m === "fetch" ? "throw it, she'll bring it back" : m === "wait" ? "pick up the ball and throw it" : "click to pet";
+  return ["Lupa · the office dog", `${lupaDoing(world.lupa)} · ${hint}`];
+}
+
+/** Whether Lupa is playing (so the ball's tooltip can say what to do next). */
+export const lupaPlaying = (): boolean => world.lupa.mood.kind !== "roam" && world.lupa.mood.kind !== "petted";
+
+export { ANYA_ID };
 
 export function drawOffice(ctx: CanvasRenderingContext2D, ms: number, view: View = {}): number {
   return renderer.draw(ctx, world, ms, view);

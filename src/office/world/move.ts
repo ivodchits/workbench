@@ -36,7 +36,7 @@ export function landing(office: OfficeMap, to: Point): Point {
 }
 
 /** Feet positions from `from` to `to`: the centres where the path turns, then `to`. */
-function route(office: OfficeMap, from: Point, to: Point, avoid?: (c: Point) => boolean): Point[] | null {
+export function route(office: OfficeMap, from: Point, to: Point, avoid?: (c: Point) => boolean): Point[] | null {
   const cells = findPath(office.walk, cellOf(from), cellOf(to), avoid);
   if (!cells) return null;
   const turns = cells.filter((_, i) => {
@@ -69,8 +69,12 @@ export function walkTo(office: OfficeMap, w: WorkerEntity, to: Point, ms: number
   if (w.away) return false;
   const goal = then.kind === "leave" ? office.door : then.kind === "sit" ? office.seats[then.seat].stand : landing(office, to);
   const seat = w.seat;
+  w.lift = 0;
   standUp(office, w);
-  const points = route(office, w, goal);
+  // Up on furniture (a table she lay on): first down onto the nearest floor.
+  const start = isFree(office.walk, cellOf(w)) ? null : landing(office, w);
+  const points = route(office, start ?? w, goal);
+  if (points && start) points.unshift(start);
   if (!points) {
     if (seat !== null) sitAt(office, w, seat, ms);
     return false;

@@ -49,6 +49,7 @@ export function timeOf(d: Date): string {
 
 /** What a worker is up to, for the scene. */
 export function doingOf(who: Who | null): string {
+  if (who?.worker?.guest) return `${who.worker.guest}, no work to do here`;
   const i = who?.instance;
   if (!i) return "free, between sessions";
   return `${phaseText(i)} on ${i.projectName || "a project"} · ${titleOf(i)}`;
@@ -60,7 +61,7 @@ export function projectsFor(whos: readonly (Who | null)[], snapshot: RemoteSnaps
   const out: string[] = [];
   const add = (id: string) => out.length < PROJECTS_MAX && !out.includes(id) && out.push(id);
   for (const w of whos) if (w?.instance) add(w.instance.projectId);
-  const teams = new Set(whos.flatMap((w) => (w?.worker ? [w.worker.team] : [])));
+  const teams = new Set(whos.flatMap((w) => (w?.worker && !w.worker.guest ? [w.worker.team] : [])));
   const byCommit = [...(snapshot?.projects ?? [])].sort((a, b) => (b.lastCommitAt ?? 0) - (a.lastCommitAt ?? 0));
   for (const p of byCommit) if (teams.has(roomOf(p.id))) add(p.id);
   return out;
@@ -79,7 +80,7 @@ export function sceneRequest(
   const whos = ids.map(who);
   const speakers: ChatterSpeaker[] = ids.map((id, n) => {
     const w = whos[n];
-    const team = w?.worker ? ` (${TEAM_NAMES[w.worker.team]})` : "";
+    const team = w?.worker && !w.worker.guest ? ` (${TEAM_NAMES[w.worker.team]})` : "";
     return { id, doing: `${doingOf(w)}${team}` };
   });
   return { day: dayOf(now), time: timeOf(now), place, speakers, projects: projectsFor(whos, snapshot, roomOf), lines };

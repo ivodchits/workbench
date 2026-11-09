@@ -28,7 +28,9 @@ import { duckRounds } from "./reactions";
 import { duckAtDesk } from "./boss";
 import { playStandup } from "./standup";
 import { hireOf } from "./hire";
-import { activity, dayPart, pickIdle } from "./idle";
+import { GUEST_ACTIVITIES, activity, dayPart, pickIdle } from "./idle";
+import { lieDesk } from "../map/office";
+import { isGuest } from "../roster";
 import { enter, landing, walkTo } from "./move";
 import type { IdleState, Staff } from "./sessions";
 
@@ -276,8 +278,23 @@ function toDesk(office: OfficeMap, w: WorkerEntity, desk: number, ms: number): v
   else walkTo(office, w, office.seats[desk].stand, ms, then);
 }
 
-/** What `staff.spots` holds for `w`'s idle place: the spot, or `desk:<n>` for home. */
-const holdOf = (place: string, w: WorkerEntity) => (place === "home" ? `desk:${w.home}` : place);
+/** What `staff.spots` holds for `w`'s idle place: the spot, or `desk:<n>` for home and
+ *  for lying on desk `n`, so nobody comes to sit there meanwhile. */
+function holdOf(place: string, w: WorkerEntity): string {
+  if (place === "home") return `desk:${w.home}`;
+  const desk = lieDesk(place);
+  return desk === null ? place : `desk:${desk}`;
+}
+
+/** Whether table spot `place` can be lain on by `id`: its desk has no session, nor
+ *  anyone else on it; the standup's table, no standup going. */
+function tableFree(staff: Staff, place: string, id: string): boolean {
+  const desk = lieDesk(place);
+  if (desk !== null) return !deskTaken(staff, desk, id);
+  if (place === "lie-standup") return !staff.standup;
+  return true;
+}
+const isTable = (place: string) => place.startsWith("lie-");
 
 /** Done with idle life for now (a session wants them): the activity's place is let go. */
 function leaveIdle(staff: Staff, id: string): void {
@@ -298,12 +315,16 @@ function deskTaken(staff: Staff, desk: number, id: string): boolean {
  *  sends someone just let go to the kitchen; `homeOk` lets them use their own desk. */
 function idle(office: OfficeMap, staff: Staff, w: WorkerEntity, ms: number, instant: boolean, kitchenFirst: boolean, homeOk: boolean): void {
   const id = w.worker.id;
+  // A guest has no desk of their own.
+  homeOk &&= w.home >= 0;
   let s = staff.idle.get(id);
   const over =
     !!s &&
     ((s.until !== null && ms >= s.until) ||
       (s.until === null && ms - s.since > TRAVEL_MAX) ||
       (s.place === "home" && (!homeOk || deskTaken(staff, w.home, id))) ||
+      // The table's wanted (a session for the desk, a standup): off it.
+      (isTable(s.place) && !tableFree(staff, s.place, id)) ||
       // You've started playing on the TV: everyone thinks again, likelier to come watch.
       (staff.watching !== null && s.since < staff.watching && !activity(s.activity)?.watch));
   if (!s || over) {
@@ -332,7 +353,11 @@ function idle(office: OfficeMap, staff: Staff, w: WorkerEntity, ms: number, inst
   const spot = office.spots.find((p) => p.id === state.place)!;
   const face = staff.groupFace.get(id) ?? doing.face ?? spot.dir;
   // A pose drawn only one way (watering faces up) would turn them from what they're at.
-  stand(office, w, spot, face, ANIMS[anim].dirs.includes(face) ? anim : "idle", ms, instant, there, spot.kind === "sit");
+  const onto = spot.kind === "sit" || spot.kind === "lie";
+  stand(office, w, spot, face, ANIMS[anim].dirs.includes(face) ? anim : "idle", ms, instant, there, onto);
+  // Up on the table.
+  w.lift = spot.lift && !w.walk && w.x === spot.x && w.y === spot.y ? spot.lift : 0;
+  if (spot.kind === "lie" && !w.lift && w.anim === "lie") setAnim(w, "idle", ms);
 }
 
 /** Gets `w` to their place at the standup's table (O5.5, `standup.ts`), facing it:
@@ -356,10 +381,11 @@ function startIdle(office: OfficeMap, staff: Staff, w: WorkerEntity, ms: number,
     last: staff.lastIdle.get(id) ?? null,
     kitchenFirst,
     homeOk: homeOk && !deskTaken(staff, w.home, id),
-    free: (spot) => known.has(spot) && !held.has(spot),
+    free: (spot) => known.has(spot) && !held.has(spot) && (!isTable(spot) || tableFree(staff, spot, id)),
     company: (a) => [...staff.idle].filter(([who, s]) => who !== id && s.activity === a).length,
     watching: staff.watching !== null,
     random: staff.random,
+    activities: isGuest(id) ? GUEST_ACTIVITIES : undefined,
   });
   const state: IdleState = pick
     ? { activity: pick.activity.id, place: pick.place, since: ms, lasts: pick.lasts, until: instant ? ms + pick.lasts : null }

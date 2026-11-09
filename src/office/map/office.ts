@@ -190,7 +190,7 @@ export const DESKS: DeskSpec[] = [
   ...grid("open", [12, 68, 124, 180], [228, 292]),
 ];
 
-export type SpotKind = "chat" | "drink" | "sit" | "play" | "meeting" | "pitch" | "dnd" | "browse" | "window" | "plant" | "stroll";
+export type SpotKind = "chat" | "drink" | "sit" | "play" | "meeting" | "pitch" | "dnd" | "browse" | "window" | "plant" | "stroll" | "lie";
 
 export interface SpotSpec {
   id: string;
@@ -199,6 +199,9 @@ export interface SpotSpec {
   x: number;
   y: number;
   dir: Dir;
+  /** Lying on a table: how far above the feet the sprite is drawn, onto the top. The
+   *  feet stay in front of the table, so the one lying is drawn over it. */
+  lift?: number;
 }
 
 const spot = (id: string, kind: SpotKind, x: number, y: number, dir: Dir): SpotSpec => ({ id, kind, x, y, dir });
@@ -254,7 +257,14 @@ export const SPOTS: SpotSpec[] = [
   spot("stroll-open", "stroll", 120, 262, "down"),
   spot("stroll-tinywizard", "stroll", 300, 258, "down"),
   spot("stroll-lounge", "stroll", 440, 140, "down"),
+  // Tables a guest lies on (Anya): every desk while it's free, and the two long tables.
+  ...DESKS.map((d, i): SpotSpec => ({ ...spot(`lie-desk-${i}`, "lie", d.x + 16, d.y + 23, "down"), lift: 13 })),
+  { ...spot("lie-standup", "lie", 272 + 32, 140 + 14, "down"), lift: 7 },
+  { ...spot("lie-meeting", "lie", 288 + 32, 306 + 14, "down"), lift: 7 },
 ];
+
+/** The table spots, by id: the desk a `lie-desk-<n>` spot is on. */
+export const lieDesk = (spotId: string): number | null => (spotId.startsWith("lie-desk-") ? Number(spotId.slice("lie-desk-".length)) : null);
 
 /** Where people come in and leave. */
 export const DOOR = { x: 216, y: 40 } as const;

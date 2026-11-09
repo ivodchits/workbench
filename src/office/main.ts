@@ -15,6 +15,9 @@
 // Clicking Fernando, the Spanish teacher in the lounge, opens the Spanish lessons over
 // the office (spanish.ts): a new lesson, an empty session, the word of the day.
 // Clicking a bookshelf opens the project notes in the sidebar (notesPanel.ts).
+// Clicking Anya, who's visiting, sends up a heart; clicking Lupa, the office dog, pets
+// her. Her ball can be picked up, dragged and thrown: drag it onto her and she plays
+// fetch, bringing it back to the pointer (world/lupa.ts).
 
 import { fitSize, sideLayout } from "./canvas";
 import { startHud } from "./hud";
@@ -22,8 +25,17 @@ import { startLoop } from "./loop";
 import { connect } from "./net";
 import { tooltipLines } from "./describe";
 import {
+  BALL_ID,
   DUCK_ID,
   FERNANDO_ID,
+  LUPA_ID,
+  cuddle,
+  grabBallAt,
+  lupaPlaying,
+  lupaTip,
+  moveBall,
+  releaseBall,
+  setPointer,
   OFFICE_H,
   OFFICE_W,
   askAt,
@@ -414,12 +426,14 @@ let pointer: { x: number; y: number } | null = null;
 function showTip(): void {
   const duck = view.hover === DUCK_ID;
   const fernando = view.hover === FERNANDO_ID && !drag;
+  const dog = view.hover === LUPA_ID && !drag && !ballDrag;
+  const ball = view.hover === BALL_ID && !drag && !ballDrag;
   const who = view.hover && pointer && !view.overlay && !duck && !fernando && !drag?.moved && view.hover !== ask.id ? whoAt(view.hover) : null;
   const desk = !view.hover && !drag && hoverDesk !== null;
   const game = !view.hover && !drag ? hoverGame : null;
   const table = !view.hover && !drag && !game && hoverTable;
   const shelf = !view.hover && !drag && !game && !table && hoverShelf;
-  tip.hidden = !((who || duck || fernando || desk || game || table || shelf) && pointer && !view.overlay);
+  tip.hidden = !((who || duck || fernando || dog || ball || desk || game || table || shelf) && pointer && !view.overlay);
   if (tip.hidden || !pointer) return;
   const free = who && !who.instance && who.worker && workerFree(who.worker.id);
   const hint = free ? "drag onto a free desk: a new session" : hoverAsk ? "click the bubble to answer here" : null;
@@ -429,6 +443,10 @@ function showTip(): void {
       ? ["Duck", `${duckDoing()} · click to talk`]
       : fernando
         ? fernandoTip()
+      : dog
+        ? lupaTip()
+      : ball
+        ? ["The ball", lupaPlaying() ? "throw it: drag and let go" : "drag it onto Lupa, then throw it"]
       : game
         ? [GAME_NAMES[game], "click to play"]
         : table
@@ -476,7 +494,7 @@ function hoverAt(e: PointerEvent | null): void {
   const game = e && !id && desk === null && !view.overlay ? gameAt(...sceneAt(e)) : null;
   hoverTable = !!e && !id && desk === null && !game && !view.overlay && standupTableAt(...sceneAt(e));
   hoverShelf = !!e && !id && desk === null && !game && !hoverTable && !view.overlay && bookshelfAt(...sceneAt(e));
-  canvas.style.cursor = id || desk !== null || game || hoverTable || hoverShelf || (view.overlay && view.selected) ? "pointer" : "";
+  canvas.style.cursor = id === BALL_ID && !view.overlay ? "grab" : id || desk !== null || game || hoverTable || hoverShelf || (view.overlay && view.selected) ? "pointer" : "";
   const moved = id !== view.hover || desk !== hoverDesk;
   hoverGame = game;
   view.hover = id;
@@ -493,14 +511,37 @@ let dropped = false;
 /** Further than this (page pixels) and a press is a drag. */
 const DRAG_PX = 4;
 
+/** The ball in hand: where the pointer has been lately, to throw it at that speed. */
+let ballDrag: { trail: { t: number; x: number; y: number }[] } | null = null;
+/** How far back the pointer's movement counts toward a throw. */
+const THROW_WINDOW = 90;
+
 canvas.addEventListener("pointerdown", (e) => {
   if (view.paused || view.overlay || e.button !== 0) return;
+  const [sx, sy] = sceneAt(e);
+  if (grabBallAt(sx, sy, performance.now())) {
+    ballDrag = { trail: [{ t: performance.now(), x: sx, y: sy }] };
+    canvas.setPointerCapture(e.pointerId);
+    canvas.style.cursor = "grabbing";
+    tip.hidden = true;
+    loop.invalidate();
+    return;
+  }
   const id = workerAt(...sceneAt(e));
   if (!id || !workerFree(id)) return;
   drag = { id, x: e.clientX, y: e.clientY, moved: false };
   canvas.setPointerCapture(e.pointerId);
 });
 canvas.addEventListener("pointermove", (e) => {
+  const [sx, sy] = sceneAt(e);
+  setPointer({ x: Math.min(Math.max(sx, 0), OFFICE_W - 1), y: Math.min(Math.max(sy, 0), OFFICE_H - 1) });
+  if (ballDrag) {
+    const now = performance.now();
+    moveBall(Math.min(Math.max(sx, 2), OFFICE_W - 2), Math.min(Math.max(sy, 8), OFFICE_H - 2));
+    ballDrag.trail = [...ballDrag.trail.filter((p) => now - p.t <= THROW_WINDOW), { t: now, x: sx, y: sy }];
+    loop.invalidate();
+    return;
+  }
   if (!drag) return hoverAt(e);
   if (!drag.moved && Math.hypot(e.clientX - drag.x, e.clientY - drag.y) < DRAG_PX) return;
   drag.moved = true;
@@ -512,7 +553,21 @@ canvas.addEventListener("pointermove", (e) => {
   showTip();
   loop.invalidate();
 });
+/** Lets go of the ball: thrown at the speed the pointer was going. */
+function endBallDrag(e: PointerEvent): void {
+  const trail = ballDrag!.trail.filter((p) => performance.now() - p.t <= THROW_WINDOW);
+  ballDrag = null;
+  dropped = true;
+  const first = trail[0];
+  const last = trail[trail.length - 1];
+  const dt = first && last ? last.t - first.t : 0;
+  releaseBall(dt > 0 ? (last.x - first.x) / dt : 0, dt > 0 ? (last.y - first.y) / dt : 0, performance.now());
+  hoverAt(e);
+  loop.invalidate();
+}
+
 const endDrag = (e: PointerEvent, drop: boolean) => {
+  if (ballDrag) return endBallDrag(e);
   const d = drag;
   drag = null;
   if (!d?.moved) return;
@@ -524,7 +579,11 @@ const endDrag = (e: PointerEvent, drop: boolean) => {
 };
 canvas.addEventListener("pointerup", (e) => endDrag(e, true));
 canvas.addEventListener("pointercancel", (e) => endDrag(e, false));
-canvas.addEventListener("pointerleave", () => !drag && hoverAt(null));
+canvas.addEventListener("pointerleave", () => {
+  if (drag || ballDrag) return;
+  setPointer(null);
+  hoverAt(null);
+});
 canvas.addEventListener("click", (e) => {
   if (dropped) {
     dropped = false;
@@ -543,6 +602,12 @@ canvas.addEventListener("click", (e) => {
   // A worker (or a contractor's desk) opens their session, Duck a chat, a free desk the
   // new-session form, the TV or the kicker a game; anywhere else closes it.
   const id = workerAt(...sceneAt(e));
+  // Anya gets a heart, Lupa a pet; the ball is picked up, not clicked.
+  if (id === BALL_ID) return;
+  if (id && cuddle(id, performance.now())) {
+    loop.invalidate();
+    return;
+  }
   const desk = id ? null : freeDeskAt(...sceneAt(e));
   const game = id || desk !== null ? null : gameAt(...sceneAt(e));
   if (id === FERNANDO_ID) {

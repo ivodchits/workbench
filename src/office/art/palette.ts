@@ -52,6 +52,7 @@ export const HAIR = {
   blue: sw("#4f72d8", "#3753ad"),
   gray: sw("#b9b9c6", "#8e8e9e"),
   platinum: sw("#f1e8d2", "#cfc3a6"),
+  honey: sw("#b7864f", "#8e6236"),
 } as const;
 
 export const CLOTH = {
@@ -67,6 +68,9 @@ export const CLOTH = {
   pink: sw("#ec6fa4", "#c04f83"),
   white: sw("#e9e7e2", "#bdbab3"),
   black: sw("#3a3843", "#26242d"),
+  /** Washed blue silk, and its lace. */
+  silk: sw("#9db4d8", "#7e97c0"),
+  lace: sw("#5c72a8", "#4a5d90"),
 } as const;
 
 export const PANTS = {
@@ -82,6 +86,7 @@ export const SHOES = {
   white: "#efece4",
   black: "#1e1c24",
   tan: "#9a5a32",
+  sandal: "#c49a6c",
 } as const;
 
 export const GEAR = {

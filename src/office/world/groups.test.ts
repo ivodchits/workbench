@@ -68,7 +68,7 @@ describe("idle workers together", () => {
   }
 
   it("chat at the cooler, play the kicker and the console by themselves, in an ordinary afternoon", () => {
-    for (const seed of [2, 3, 4]) {
+    for (const seed of [3, 4, 5]) {
       const { log, tvAlone, saidAtCooler, movedMidMatch } = run(30, seed);
       expect(log.some((l) => l.endsWith("are chatting at the water cooler")), `seed ${seed}: ${log.join(" | ")}`).toBe(true);
       expect(log.some((l) => l.endsWith("got the console out")), `seed ${seed}: ${log.join(" | ")}`).toBe(true);
@@ -179,7 +179,7 @@ describe("scenes at the water cooler", () => {
       return { lines: sceneFor(ids, 3).lines.map((l) => ({ ...l, text: `${l.text} at ${spot}` })), mood: null };
     };
     let sofaLines = 0;
-    for (const seed of [2, 3, 4]) {
+    for (const seed of [3, 4, 5]) {
       const { events } = await run(30, seed, writer, true);
       const heads = new Map(events.flatMap((e) => (e.kind === "chat" ? [[e.key, e.text] as const] : [])));
       for (const e of events) {

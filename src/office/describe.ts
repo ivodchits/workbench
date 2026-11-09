@@ -55,7 +55,8 @@ export function phaseText(i: RemoteInstance): string {
 
 /** Who they are: "Felix · Demiurge", or "Remote contractor". */
 export function whoText(who: Who): string {
-  return who.worker ? `${who.worker.name} · ${TEAM_NAMES[who.worker.team]}` : "Remote contractor";
+  if (!who.worker) return "Remote contractor";
+  return `${who.worker.name} · ${who.worker.guest ?? TEAM_NAMES[who.worker.team]}`;
 }
 
 /** The session's title, as the rail shows it. */
@@ -66,6 +67,7 @@ export function titleOf(i: RemoteInstance): string {
 /** The tooltip's lines: who, the session, and what it's doing for how long. */
 export function tooltipLines(who: Who, now: number): string[] {
   const lines = [whoText(who)];
+  if (who.worker?.guest) return [...lines, "click to send a heart"];
   const i = who.instance;
   if (!i) return [...lines, "free"];
   lines.push(`${i.projectName} · ${titleOf(i)}`);

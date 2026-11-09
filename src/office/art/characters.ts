@@ -36,6 +36,9 @@ export interface Look {
   headphones?: Swatch;
   /** Rosy cheeks. */
   blush?: boolean;
+  /** A long slip dress instead of a top and trousers: `top` is its silk, this its lace
+   *  (the neckline and the hem). Bare arms, ankles and sandals (`shoes`) under it. */
+  dress?: Swatch;
 }
 
 const part = (y: number, rows: string[], x = 0): Part => ({ rows, x, y });
@@ -375,6 +378,161 @@ const SIP_BEHIND_HEAD = part(2, [
   ".otto.....otto..",
   "..oo......ooo...",
 ]);
+
+// ── The slip dress ───────────────────────────────────────────────────────────
+// Thin straps over bare shoulders, a lace V at the neck, and a skirt to the ankles
+// with a lace hem that sways as she walks. `L`/`l` are the lace.
+
+const DRESS_TORSO: Record<DrawnDir, Part> = {
+  down: part(13, [
+    "...osTssssTso...",
+    "..ostLssssLtso..",
+    "..osttLssLttso..",
+    "..osTttLLttTso..",
+    "..osTttttttTso..",
+  ]),
+  up: part(13, [
+    "...osTssssTso...",
+    "..ostTssssTtso..",
+    "..osttttttttso..",
+    "..osTttttttTso..",
+    "..osTttttttTso..",
+  ]),
+  right: part(13, [
+    "....ossTsso.....",
+    "....osttLso.....",
+    "....ostttto.....",
+    "....ottTTtto....",
+    "....ottsstto....",
+  ]),
+};
+
+const SKIRT_FRONT = part(18, [
+  "...otttttttto...",
+  "...otTttttTto...",
+  "..otTttttttTto..",
+  "..oLlLLlLLlLLo..",
+  "...oosoooosoo...",
+  "...obbo..obbo...",
+]);
+const SKIRT_FRONT_STEP_L = part(18, [
+  "...otttttttto...",
+  "...otTttttTto...",
+  "..otTttttttTto..",
+  ".oLlLLlLLlLLo...",
+  "..obbooooosoo...",
+  "...oo....obbo...",
+]);
+const SKIRT_FRONT_STEP_R = part(18, [
+  "...otttttttto...",
+  "...otTttttTto...",
+  "..otTttttttTto..",
+  "...oLlLLlLLlLLo.",
+  "...oosoooooobbo.",
+  "...obbo....oo...",
+]);
+const SKIRT_SIDE = part(18, [
+  "....otttttto....",
+  "....ottttTto....",
+  "...otttttTTo....",
+  "...oLlLLlLLo....",
+  "....oosooso.....",
+  "....obbbobbbo...",
+]);
+const SKIRT_SIDE_STRIDE_A = part(18, [
+  "....otttttto....",
+  "....ottttTto....",
+  "...otttttTTto...",
+  "..oLlLLlLLlLo...",
+  "..obsoo..osoo...",
+  "..oooo...obbbo..",
+]);
+const SKIRT_SIDE_STRIDE_B = part(18, [
+  "....otttttto....",
+  "....ottttTto....",
+  "...otttttTTto...",
+  "...oLlLLlLLlLo..",
+  "...oosoo.obboo..",
+  "...obbbo..ooo...",
+]);
+/** Seated, facing you: the skirt over the knees, the shins and sandals below. */
+const SKIRT_SEATED = part(18, [
+  "...otttttttto...",
+  "..otttttttttto..",
+  "..oLlLLlLLlLLo..",
+  "...osso..osso...",
+  "...obbo..obbo...",
+]);
+
+/** The legs each pose has, in a dress. */
+const SKIRT_FOR = new Map<Part, Part>([
+  [LEGS_FRONT, SKIRT_FRONT],
+  [LEGS_FRONT_STEP_L, SKIRT_FRONT_STEP_L],
+  [LEGS_FRONT_STEP_R, SKIRT_FRONT_STEP_R],
+  [LEGS_SIDE, SKIRT_SIDE],
+  [LEGS_SIDE_STRIDE_A, SKIRT_SIDE_STRIDE_A],
+  [LEGS_SIDE_STRIDE_B, SKIRT_SIDE_STRIDE_B],
+  [LEGS_SEATED, SKIRT_SEATED],
+]);
+
+// ── Lying on a table ─────────────────────────────────────────────────────────
+// On her front along a table, chin on her hands, her feet up behind her and kicking.
+// Wider than a frame: `LIE_W`×`LIE_H`. The spot's `lift` puts it up on the table top
+// while the feet (`x`, `y`) stay in front of the table, so it's drawn over it.
+
+export const LIE_W = 32;
+export const LIE_H = 15;
+/** Where the head goes in the lying frame. */
+const LIE_HEAD = { x: 0, y: 1 };
+
+/** The body along the table, and the hands under the chin. */
+const LIE_BODY = part(9, [
+  "............ooooooooooooo.......",
+  "...........otttttttttTtLLo......",
+  "..ooo.....otTttttttttTLlLLo.....",
+  ".ossso..osstttttttttTTLLlLo.....",
+  ".osssooosssTTTTTTTTTTTLLLLo.....",
+  "..ooo..ooo.ooooooooooooooo......",
+]);
+/** The shins up behind, crossed at the ankles; and swung the other way. */
+const LIE_LEGS_A = part(0, [
+  "........................oo.oo...",
+  ".......................obbobbo..",
+  "........................osooso..",
+  "........................ososo...",
+  ".......................ososo....",
+  ".......................oosso....",
+  "......................osso......",
+  "......................osso......",
+  "......................osso......",
+  "......................osso......",
+]);
+const LIE_LEGS_B = part(0, [
+  "................................",
+  "...........................oo...",
+  "........................oooobbo.",
+  ".......................obbosso..",
+  "........................osooso..",
+  "........................osso....",
+  ".......................osso.....",
+  "......................osso......",
+  "......................osso......",
+  "......................osso......",
+]);
+
+/** A frame of lying on the table: 0 and 2 the feet one way, 1 the other, 3 a blink. */
+function lieFrame(look: Look, index: number): Bitmap {
+  const colors = colorsOf(look);
+  const out = bitmap(LIE_W, LIE_H);
+  const head = (p: Part) => draw(out, p, colors, LIE_HEAD.x, LIE_HEAD.y);
+  draw(out, index % 2 === 1 ? LIE_LEGS_B : LIE_LEGS_A, colors);
+  draw(out, LIE_BODY, colors);
+  head(HEAD.down);
+  if (index === 3) head(BLINK.down!);
+  head(HAIR[look.hairStyle].down);
+  if (look.glasses) head(GLASSES.down!);
+  return out;
+}
 
 /** Trim over the front of the top. */
 const TOP_TRIM: Record<TopStyle, Part | null> = {
@@ -732,7 +890,8 @@ export type Anim =
   | "relax"
   | "coffee"
   | "foosball"
-  | "gamepad";
+  | "gamepad"
+  | "lie";
 
 /** One frame's pose: which legs and torso, and the extras. */
 interface Pose {
@@ -933,6 +1092,16 @@ export const ANIMS: Record<Anim, AnimDef> = {
       { front: { legs: LEGS_SEATED, torso: TORSO_TYPE_B }, back: { torso: TORSO_TYPE_BACK_B }, side: standSide, ms: 260 },
     ],
   },
+  /** Lying on a table on her front, kicking her feet (`lieFrame`: its own size). */
+  lie: {
+    dirs: ["down"],
+    frames: [
+      { front: stand, side: standSide, ms: 700 },
+      { front: stand, side: standSide, ms: 700 },
+      { front: stand, side: standSide, ms: 1600 },
+      { front: stand, side: standSide, ms: 150 },
+    ],
+  },
   /** Both arms up, hopping. */
   cheer: {
     dirs: ["down"],
@@ -973,11 +1142,14 @@ export function colorsOf(look: Look): ColorMap {
     b: look.shoes,
     k: gear.base,
     K: gear.shade,
+    L: (look.dress ?? look.top).base,
+    l: (look.dress ?? look.top).shade,
   };
 }
 
 /** Draw one frame of `anim` facing `dir`. */
 export function frame(look: Look, anim: Anim, dir: Dir, index: number): Bitmap {
+  if (anim === "lie") return lieFrame(look, index);
   const def = ANIMS[anim];
   const facing = def.dirs.includes(dir) ? dir : "down";
   const drawn: DrawnDir = facing === "left" ? "right" : facing;
@@ -989,17 +1161,19 @@ export function frame(look: Look, anim: Anim, dir: Dir, index: number): Bitmap {
   const head = body + (pose.headDy ?? 0);
   const put = (p: Part | null | undefined, dy = body) => p && draw(out, p, colors, 0, dy);
 
+  const legs = look.dress && pose.legs ? (SKIRT_FOR.get(pose.legs) ?? pose.legs) : pose.legs;
   put(pose.behind);
-  put(pose.legs);
-  put(pose.torso ?? TORSO[drawn]);
-  if (drawn === "down") put(TOP_TRIM[look.topStyle]);
+  put(legs);
+  put(pose.torso ?? (look.dress ? DRESS_TORSO : TORSO)[drawn]);
+  if (drawn === "down" && !look.dress) put(TOP_TRIM[look.topStyle]);
   put(HEAD[drawn], head);
   if (pose.blink) put(BLINK[drawn], head);
   if (look.beard) put(BEARD[drawn], head);
   put(HAIR[look.hairStyle][drawn], head);
   if (look.glasses) put(GLASSES[drawn], head);
   if (look.headphones) put(HEADPHONES[drawn], head);
-  put(pose.arm, pose.armWithHead ? head : body);
+  // Bare arms in a dress: the sleeves are skin.
+  if (pose.arm) draw(out, pose.arm, look.dress ? { ...colors, t: colors.s, T: colors.S } : colors, 0, pose.armWithHead ? head : body);
   put(pose.held, body);
 
   return facing === "left" ? mirrorBitmap(out) : out;
@@ -1012,6 +1186,11 @@ export function allParts(): [string, Part][] {
   for (const [d, p] of Object.entries(HEAD)) add(`head.${d}`, p);
   for (const [d, p] of Object.entries(BLINK)) add(`blink.${d}`, p);
   for (const [d, p] of Object.entries(TORSO)) add(`torso.${d}`, p);
+  for (const [d, p] of Object.entries(DRESS_TORSO)) add(`dress.${d}`, p);
+  for (const [legs, skirt] of SKIRT_FOR) add(`skirt.${legs.rows.length}`, skirt);
+  add("lie.body", LIE_BODY);
+  add("lie.legsA", LIE_LEGS_A);
+  add("lie.legsB", LIE_LEGS_B);
   for (const [s, p] of Object.entries(TOP_TRIM)) add(`top.${s}`, p);
   for (const [s, dirs] of Object.entries(HAIR)) {
     for (const [d, p] of Object.entries(dirs)) add(`hair.${s}.${d}`, p);

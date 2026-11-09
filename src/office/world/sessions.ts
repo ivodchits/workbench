@@ -13,7 +13,7 @@ import type { RemoteInstance, RemoteSnapshot } from "../../remote/protocol";
 import type { TagGlyph } from "../art/labels";
 import type { Who } from "../describe";
 import type { OfficeMap } from "../map/build";
-import { ROSTER, type Team } from "../roster";
+import { PEOPLE, type Team } from "../roster";
 import { officeTime } from "./ambience";
 import { assign, type Seating } from "./assign";
 import { behave, doing, type Plan } from "./behave";
@@ -205,7 +205,7 @@ export function whoIs(staff: Staff, id: string): Who | null {
     const instance = seated ? staff.instances.get(seated[0]) : undefined;
     return instance ? { worker: null, instance, since: since(instance) } : null;
   }
-  const worker = ROSTER.find((w) => w.id === id);
+  const worker = PEOPLE.find((w) => w.id === id);
   if (!worker) return null;
   const instance = staff.jobs.get(id)?.instance ?? null;
   return { worker, instance, since: since(instance) };
