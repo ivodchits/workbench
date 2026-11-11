@@ -627,6 +627,43 @@ describe("unattended runs (P2)", () => {
     // Under the line, or past its reset (the snapshot is old), it doesn't stop a run.
     expect(overLimits({ fiveHour: { usedPercentage: 80, resetsAt: resets }, sevenDay: null, receivedAt: 0 }, at(12))).toBeNull();
     expect(overLimits({ fiveHour: { usedPercentage: 99, resetsAt: resets }, sevenDay: null, receivedAt: 0 }, at(15))).toBeNull();
+    // Past the lines the user said to go past.
+    const both = { fiveHour: { usedPercentage: 93, resetsAt: resets }, sevenDay: { usedPercentage: 90, resetsAt: at(20) / 1000 }, receivedAt: 0 };
+    expect(overLimits(both, at(12))?.why).toBe("the 5-hour limit is at 93% and the weekly limit is at 90%");
+    expect(overLimits(both, at(12), "weekly")).toEqual({ why: "the 5-hour limit is at 93%", until: at(14, 21) });
+    expect(overLimits({ ...both, fiveHour: null }, at(12), "weekly")).toBeNull();
+    expect(overLimits(both, at(12), "all")).toBeNull();
+  });
+
+  it("goes past the weekly limit when told to", async () => {
+    const t = setup({
+      at: at(12),
+      data: { limits: { fiveHour: null, sevenDay: { usedPercentage: 95, resetsAt: at(20) / 1000 }, receivedAt: 0 } },
+    });
+    await start(t, { ignoreLimits: "weekly" });
+    await flush();
+    expect(t.ap.get("w")).toMatchObject({ state: "running", ignoreLimits: "weekly", stepsDone: 1 });
+    expect(t.calls("sendPrompt")).toEqual([["w", "continue the implementation"]]);
+  });
+
+  it("a run paused for the limits goes on now when resumed past them", async () => {
+    const t = setup({
+      at: at(12),
+      data: { limits: { fiveHour: null, sevenDay: { usedPercentage: 95, resetsAt: at(20) / 1000 }, receivedAt: 0 } },
+    });
+    await start(t);
+    await flush();
+    expect(t.ap.get("w")).toMatchObject({ state: "paused", resumeAt: at(20, 1) });
+    // Resumed plainly, it's still over: it pauses again.
+    await t.ap.resume("w");
+    await flush();
+    expect(t.ap.get("w")?.state).toBe("paused");
+    expect(t.calls("sendPrompt")).toEqual([]);
+    await t.ap.resume("w", { ignoreLimits: "weekly" });
+    await flush();
+    expect(t.ap.get("w")).toMatchObject({ state: "running", held: null, ignoreLimits: "weekly", stepsDone: 1 });
+    expect(t.calls("sendPrompt")).toEqual([["w", "continue the implementation"]]);
+    expect(t.ap.get("w")?.log.some((e) => e.summary.includes("goes past the weekly limit"))).toBe(true);
   });
 
   it("runs until the plan is done, past its step limit", async () => {

@@ -14,6 +14,8 @@ import {
   clock,
   clockAt,
   COMPACT_POLICIES,
+  IGNORE_LIMITS,
+  ignoredText,
   MAX_STEPS,
   nextAt,
   type Autopilot,
@@ -76,6 +78,7 @@ function view(a: Autopilot, title: string, now = Date.now()) {
     window: a.window ? `${clock(a.window.from)}-${clock(a.window.to)}` : null,
     until: a.endsAt !== null ? clockAt(a.endsAt, now) : null,
     resumes: a.state === "paused" && a.resumeAt !== null ? clockAt(a.resumeAt, now) : null,
+    limits: ignoredText(a.ignoreLimits),
     checklist: a.checklist,
     onStep: a.step,
     lastStep: a.lastStep,
@@ -90,6 +93,14 @@ function view(a: Autopilot, title: string, now = Date.now()) {
   });
 }
 
+/** Only on the user's word: past a line, a run spends what's left of their week. */
+const ignoreLimitsArg = z
+  .enum(IGNORE_LIMITS)
+  .optional()
+  .describe(
+    "Only when the user says so: which of the subscription's limits the run goes past instead of pausing near them (5-hour at 90%, weekly at 85%). `weekly`: it goes on near the weekly limit, still waiting out the 5-hour one; `all`: neither stops it (once a limit is reached, the session's own turns fail); `none` (default) keeps to both.",
+  );
+
 const titleOf = (ctx: ToolContext, id: string) => ctx.port.listSessions().find((s) => s.id === id)?.title ?? id;
 
 export const startAutopilot = defineTool({
@@ -97,7 +108,7 @@ export const startAutopilot = defineTool({
   description: [
     "Put one of the user's sessions on autopilot through a plan: each time it finishes a turn, the turn is reviewed against the plan; a finished step is followed by /compact (when due) and the user's \"continue the implementation\" / \"proceed to the next step\" (or a situational prompt). Small questions (the session's, or left open by a turn) are settled on their own, each recorded and announced to the user, so the work isn't blocked; only a serious one pauses the run with a question. It stops when the plan is done or the step limit is reached. You're told in a <workbench_event> when it pauses or stops, and when the user comes back, with the decisions made without them; each step shows in this thread.",
     "The plan is one of two: `plan`, a plan file's path (absolute, or relative to the session's folder); or `steps`, the steps themselves, from which you get a plan file of your own (marked as generated, kept in your data folder, never in the project; the run sends each step's text with its prompt and ticks the plan's progress itself). Give `steps` when the user describes the steps in words (`steps_from: user`), or when you worked them out from what the session is doing (`steps_from: session`). When the user didn't say where the steps come from, in this order: (1) look for a plan file (read_session shows the session's recent prompts; plans are usually Markdown under documentation/ or docs/); (2) else work out the steps the session is on from its transcript (read_session, summarize_session), its open todos and its recent commits (git_overview); (3) else, or when that's a guess, ask the user to name a plan file or describe the steps. Either way, confirm before starting: the file's path, or the steps you'll pass, each in a line.",
-    "Bounds: `max_steps`, or `until_done`; `window` keeps it to a daily window (\"overnight only\": 22:00-07:00; started outside it, it waits for the start), and `until` ends it at a time; at either end it stops after the turn in progress. It also pauses on its own when the same step fails twice, when a turn runs far longer than usual and looks stuck, and near the subscription's limits (it carries on by itself after the reset). When the user comes back after a while away, you get one summary of every run.",
+    "Bounds: `max_steps`, or `until_done`; `window` keeps it to a daily window (\"overnight only\": 22:00-07:00; started outside it, it waits for the start), and `until` ends it at a time; at either end it stops after the turn in progress. It also pauses on its own when the same step fails twice, when a turn runs far longer than usual and looks stuck, and near the subscription's limits (it carries on by itself after the reset), unless `ignore_limits` says otherwise. When the user comes back after a while away, you get one summary of every run.",
     "The checklist a finished step must meet is read from the plan's format (its Done when, tracker, As built notes, commits) unless `checklist` names one; a missed item is sent back to the session once.",
     "Permission prompts in the session stay under the trust policy; the project should be in live mode for the run to keep moving.",
   ].join(" "),
@@ -140,6 +151,7 @@ export const startAutopilot = defineTool({
       .boolean()
       .optional()
       .describe("Alert the user at each small decision made without them (default true); off, they hear them only in the digests."),
+    ignore_limits: ignoreLimitsArg,
   }),
   tier: "reversible",
   timeoutMs: 15_000,
@@ -165,6 +177,7 @@ export const startAutopilot = defineTool({
       fixed_prompts,
       prompts,
       notify_decisions,
+      ignore_limits,
     },
     ctx,
   ) {
@@ -197,6 +210,7 @@ export const startAutopilot = defineTool({
       untilDone: until_done,
       window: window ? windowOf(window) : null,
       endsAt: until ? nextAt(minutesOf(until), at) : null,
+      ignoreLimits: ignore_limits,
       checklist,
     });
     return {
@@ -242,20 +256,21 @@ export const pauseAutopilot = defineTool({
 export const resumeAutopilot = defineTool({
   name: "resume_autopilot",
   description:
-    "Resume a paused autopilot. Pass the user's answer to its question as `prompt` and it goes into the session as the next turn; without one, a run waiting for the limits sends what it held back (if they allow it now), and otherwise the session's last turn is reviewed again (after the user sorted things out themselves). `steps` allows that many more steps from here.",
+    "Resume a paused autopilot. Pass the user's answer to its question as `prompt` and it goes into the session as the next turn; without one, a run waiting for the limits sends what it held back (if they allow it now), and otherwise the session's last turn is reviewed again (after the user sorted things out themselves). `steps` allows that many more steps from here. `ignore_limits` changes which subscription limits it keeps to from here: a run paused for the limits that the user tells to go on anyway is resumed with it, and goes on now.",
   schema: z.object({
     ...sessionArgs,
     prompt: z.string().trim().min(1).max(20_000).optional(),
     steps: z.number().int().min(1).max(MAX_STEPS).optional(),
+    ignore_limits: ignoreLimitsArg,
   }),
   tier: "reversible",
   trust: (input, port) => ({
     projectId: findSession(port, input.session, input.project).projectId,
     texts: input.prompt ? [input.prompt] : [],
   }),
-  async run({ session, project, prompt, steps }, ctx) {
+  async run({ session, project, prompt, steps, ignore_limits }, ctx) {
     const s = findSession(ctx.port, session, project);
-    return view(await manager(ctx).resume(s.id, { prompt, steps }), s.title);
+    return view(await manager(ctx).resume(s.id, { prompt, steps, ignoreLimits: ignore_limits }), s.title);
   },
 });
 

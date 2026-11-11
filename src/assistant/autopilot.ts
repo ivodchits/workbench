@@ -96,10 +96,15 @@ export const generatedChecklist = (text: string) => detectChecklist(text).filter
  *  room for the user's own week. No API fallback: this is subscription work. */
 export const AUTOPILOT_LIMITS = { fiveHour: 90, sevenDay: 85 };
 
+/** Which of those lines a run goes past, when the user says so: `weekly` (the run
+ *  still waits out the 5-hour window), or `all`. */
+export const IGNORE_LIMITS = ["none", "weekly", "all"] as const;
+export type IgnoreLimits = (typeof IGNORE_LIMITS)[number];
+
 /** Why the limits stop a run now, and when they reset; null when they don't. A
  *  window whose reset has passed counts as reset (the snapshot only changes when a
  *  session reports again). */
-export function overLimits(l: RateLimits | null, at: number): { why: string; until: number } | null {
+export function overLimits(l: RateLimits | null, at: number, ignore: IgnoreLimits = "none"): { why: string; until: number } | null {
   const over: string[] = [];
   const resets: number[] = [];
   const check = (w: RateLimits["fiveHour"], max: number, name: string) => {
@@ -107,8 +112,8 @@ export function overLimits(l: RateLimits | null, at: number): { why: string; unt
     over.push(`the ${name} limit is at ${Math.round(w.usedPercentage)}%`);
     resets.push(w.resetsAt * 1000);
   };
-  check(l?.fiveHour ?? null, AUTOPILOT_LIMITS.fiveHour, "5-hour");
-  check(l?.sevenDay ?? null, AUTOPILOT_LIMITS.sevenDay, "weekly");
+  if (ignore !== "all") check(l?.fiveHour ?? null, AUTOPILOT_LIMITS.fiveHour, "5-hour");
+  if (ignore === "none") check(l?.sevenDay ?? null, AUTOPILOT_LIMITS.sevenDay, "weekly");
   // A minute's margin, so the reset has happened when it's read again.
   return over.length ? { why: over.join(" and "), until: Math.max(...resets) + 60_000 } : null;
 }
@@ -256,6 +261,8 @@ export const Autopilot = z.object({
   window: RunWindow.nullable().default(null),
   /** Stops at this time (epoch ms). */
   endsAt: z.number().nullable().default(null),
+  /** The subscription lines it goes past, by the user's say (`IGNORE_LIMITS`). */
+  ignoreLimits: z.enum(IGNORE_LIMITS).default("none"),
   /** A paused run carries on by itself then (a limit's reset, its window's start). */
   resumeAt: z.number().nullable().default(null),
   /** What a pause for the limits held back: resuming carries it out without a new
@@ -468,6 +475,7 @@ export interface StartRequest {
   untilDone?: boolean;
   window?: RunWindow | null;
   endsAt?: number | null;
+  ignoreLimits?: IgnoreLimits;
   /** Its own checklist; detected from the plan when absent. */
   checklist?: string[];
 }
@@ -478,8 +486,9 @@ export interface AutopilotManager {
   pause(instanceId: string, why?: string): Autopilot;
   /** Run again. With `prompt` (your answer to its question), that goes in as the next
    *  turn; without, a session at rest has its last turn reviewed again. `steps`
-   *  allows that many more steps from here. */
-  resume(instanceId: string, opts?: { prompt?: string; steps?: number }): Promise<Autopilot>;
+   *  allows that many more steps from here; `ignoreLimits` changes the lines it
+   *  keeps to from here. */
+  resume(instanceId: string, opts?: { prompt?: string; steps?: number; ignoreLimits?: IgnoreLimits }): Promise<Autopilot>;
   stop(instanceId: string, why?: string): Autopilot;
   get(instanceId: string): Autopilot | undefined;
   list(): Autopilot[];
@@ -636,6 +645,11 @@ export function badgeText(a: Autopilot, at = Date.now()): string {
   const end = a.endsAt !== null ? a.endsAt : a.window ? nextAt(a.window.to, at) : null;
   const until = end !== null ? ` · until ${clockAt(end, at)}` : "";
   return `step ${a.stepsDone + 1}${a.untilDone ? "" : ` of ${a.maxSteps}`}${a.step ? ` (${a.step})` : ""} · ${doing}${decided}${until}`;
+}
+
+/** A run's limits as its log and its start read them; null when it keeps to them. */
+export function ignoredText(i: IgnoreLimits): string | null {
+  return i === "all" ? "goes past the subscription's limits" : i === "weekly" ? "goes past the weekly limit (not the 5-hour one)" : null;
 }
 
 /** The prompt that sends a step back for the checklist items it missed. */
@@ -930,7 +944,7 @@ export function createAutopilot(deps: AutopilotDeps): AutopilotManager {
       finishRun(id, `its window ended at ${clock(a.window.to)}`, `The last turn: ${s.summary}${then}`);
       return false;
     }
-    const over = overLimits(await port.usageLimits().catch(() => null), t);
+    const over = overLimits(await port.usageLimits().catch(() => null), t, a.ignoreLimits);
     if (all.get(id)?.state !== "running" || disposed) return false;
     if (over) {
       const why = `${over.why}; resuming at ${clockAt(over.until, t)}`;
@@ -939,7 +953,7 @@ export function createAutopilot(deps: AutopilotDeps): AutopilotManager {
       update(id, { state: "paused", doing: "working", why, question: null, resumeAt: over.until, held });
       deps.tell(
         a.threadId,
-        `The autopilot on "${title(id)}" (session ${id}) waits for the subscription: ${why}. It carries on by itself then, with "${held.prompt}". Mention it to the user in a sentence; nothing is needed from them.`,
+        `The autopilot on "${title(id)}" (session ${id}) waits for the subscription: ${why}. It carries on by itself then, with "${held.prompt}". Mention it to the user in a sentence; nothing is needed from them (should they want it to go on anyway, resume_autopilot with ignore_limits does that).`,
         "info",
       );
       return false;
@@ -1315,6 +1329,7 @@ export function createAutopilot(deps: AutopilotDeps): AutopilotManager {
           untilDone: req.untilDone,
           window: req.window ?? null,
           endsAt: req.endsAt ?? null,
+          ignoreLimits: req.ignoreLimits,
           checklist: req.checklist?.length ? req.checklist : source ? generatedChecklist(plan) : detectChecklist(plan),
           notifyDecisions: req.notifyDecisions,
           state: "running",
@@ -1325,6 +1340,7 @@ export function createAutopilot(deps: AutopilotDeps): AutopilotManager {
         a.untilDone ? "until the plan is done" : `for up to ${a.maxSteps} step(s)`,
         a.window ? `between ${clock(a.window.from)} and ${clock(a.window.to)}` : null,
         a.endsAt !== null ? `until ${clockAt(a.endsAt, t)}` : null,
+        ignoredText(a.ignoreLimits),
       ].filter(Boolean);
       const on = source ? `Duck's plan ${planPath} (${source === "user" ? "from the user's description" : "from the session's work"})` : planPath;
       log(s.id, { kind: "note", stepId: null, summary: `Started on ${on}, ${bounds.join(", ")}.`, reason: null, compacted: null, prompt: null });
@@ -1362,8 +1378,10 @@ export function createAutopilot(deps: AutopilotDeps): AutopilotManager {
       if (phase === null || phase === "offline" || phase === "ended")
         throw new Error(`"${title(id)}" isn't running: start or resume the session first.`);
       const maxSteps = opts.steps ? Math.min(MAX_STEPS, a.stepsDone + opts.steps) : Math.max(a.maxSteps, a.stepsDone + 1);
-      update(id, { state: "running", why: null, question: null, maxSteps, resumeAt: null, failed: null });
-      log(id, { kind: "note", stepId: a.step, summary: opts.prompt ? "Resumed with the user's answer." : "Resumed.", reason: null, compacted: null, prompt: opts.prompt ?? null });
+      const ignoreLimits = opts.ignoreLimits ?? a.ignoreLimits;
+      update(id, { state: "running", why: null, question: null, maxSteps, resumeAt: null, failed: null, ignoreLimits });
+      const limits = ignoreLimits !== a.ignoreLimits ? ` From here it ${ignoredText(ignoreLimits) ?? "keeps to the subscription's limits"}.` : "";
+      log(id, { kind: "note", stepId: a.step, summary: `${opts.prompt ? "Resumed with the user's answer." : "Resumed."}${limits}`, reason: null, compacted: null, prompt: opts.prompt ?? null });
       update(id, { toldAt: now() });
       // Their answer goes in; else what a limit held back is carried out now (the
       // limits are read again); else the last turn is reviewed again.
