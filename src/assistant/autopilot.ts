@@ -173,8 +173,6 @@ export const MAX_STEPS = 50;
 const LOG_MAX = 100;
 /** Decisions kept (the oldest reported ones go first). */
 const DECISIONS_MAX = 200;
-/** Turns without a finished step before the run pauses: it's going in circles. */
-const TURNS_PER_STEP_MAX = 12;
 
 export const LogEntry = z.object({
   at: z.number(),
@@ -845,11 +843,6 @@ export function createAutopilot(deps: AutopilotDeps): AutopilotManager {
         step: v.nextStepId ?? a.step,
       });
       if (v.finished) planText = await tickPlan(id, planText, v.stepId);
-      if (turnsOnStep >= TURNS_PER_STEP_MAX) {
-        log(id, { kind: "needs_you", stepId: v.stepId, summary: v.summary, reason: v.reason, compacted: null, prompt: null });
-        pauseFor(id, `${turnsOnStep} turns went by without finishing a step`, null, `The last turn: ${v.summary}`);
-        return;
-      }
       if (v.finished && !a.untilDone && stepsDone >= a.maxSteps) {
         log(id, { kind: "continue", stepId: v.stepId, summary: v.summary, reason: v.reason, compacted: null, prompt: null, finished: true });
         finishRun(id, `it ran the ${a.maxSteps} step(s) it was given`, `The last step: ${v.summary}${v.nextStepId ? ` Next is ${v.nextStepId}.` : ""}`);

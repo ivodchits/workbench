@@ -376,9 +376,10 @@ describe("autopilot", () => {
       t.turnEnds();
       await flush();
     }
-    // Twelve turns without a finished step: it's going in circles.
-    expect(t.ap.get("w")).toMatchObject({ state: "paused", why: "12 turns went by without finishing a step" });
-    expect(t.calls("sendPrompt")).toHaveLength(11);
+    // Many turns without a finished step don't pause it: long steps (background test
+    // runs) take many turns.
+    expect(t.ap.get("w")).toMatchObject({ state: "running", turnsOnStep: 12 });
+    expect(t.calls("sendPrompt")).toHaveLength(12);
   });
 
   it("gives one summary of every run when the user comes back, what needs them first", async () => {

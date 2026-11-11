@@ -6284,7 +6284,8 @@ up ("change this", with a circle around it).
       agent the answers, in the review's own prompt or added to your phrasing.
     - `finished` says whether the turn completed a step. Only finished steps count
       toward the step limit.
-    - Twelve turns without a finished step pause the run as going in circles.
+    - Twelve turns without a finished step paused the run as going in circles; the
+      guard was removed 2026-11-10 (background test runs looked like a stuck step).
   - **A question the session asks mid-turn** (one question, one pick) is answered by a
     second Sonnet call (`autopilot-question`, `QUESTION_SYSTEM`) with `answerChoice`,
     unless it's serious, which pauses the run with the question.
@@ -6304,7 +6305,7 @@ up ("change this", with a circle around it).
     - a question answered with an alert, and a serious one pausing with the digest;
     - a turn's decisions reaching the agent, with fix-ups not counted as steps and the
       no-progress guard (four turns when tested; now twelve, `TURNS_PER_STEP_MAX`,
-      raised 2026-10-23);
+      raised 2026-10-23; removed 2026-11-10);
     - the digest on your return, given once.
   - **Not verified live.**
 
