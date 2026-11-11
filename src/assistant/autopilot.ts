@@ -293,6 +293,10 @@ export const Autopilot = z.object({
   log: z.array(LogEntry).default([]),
   /** The small questions it settled, kept for the user's digest. */
   decisions: z.array(Decision).default([]),
+  /** The user knew how the run stood at this time: they started, paused, resumed or
+   *  stopped it themselves, or the summary on their return told them. That summary
+   *  tells only what came after. */
+  toldAt: z.number().nullable().default(null),
   /** Alert the user at each decision, so they can steer. */
   notifyDecisions: z.boolean().default(true),
   created: z.number(),
@@ -1201,18 +1205,22 @@ export function createAutopilot(deps: AutopilotDeps): AutopilotManager {
   // Back from a while away: one summary of every run that went on meanwhile (the
   // morning summary after an overnight run), what needs the user first.
   const offBack = port.onUserBack((since) => {
-    const runs = [...all.values()].filter((a) => a.log.some((e) => e.at >= since) || a.decisions.some((d) => !d.reported));
+    // What the user hasn't heard: not their own stop or pause, nor an earlier summary.
+    const news = (a: Autopilot, e: LogEntry) => e.at >= since && (a.toldAt === null || e.at > a.toldAt);
+    const runs = [...all.values()].filter((a) => a.log.some((e) => news(a, e)) || a.decisions.some((d) => !d.reported));
     if (runs.length === 0) return;
     const rank = (a: Autopilot) => (a.state === "paused" && a.resumeAt === null ? 0 : a.state === "stopped" ? 2 : 1);
     runs.sort((a, b) => rank(a) - rank(b));
     const lines = runs.map((a) => {
-      const steps = a.log.filter((e) => e.at >= since && e.finished).map((e) => e.stepId ?? "a step");
+      const steps = a.log.filter((e) => news(a, e) && e.finished).map((e) => e.stepId ?? "a step");
       const done = steps.length ? `${steps.length} step(s) done while away (${steps.join(", ")})` : "no step finished while away";
       const state =
         a.state === "running"
           ? `still running${a.step ? `, on ${a.step}` : ""}`
           : `${a.state}${a.why ? `: ${a.why}` : ""}${a.question ? `. Its question: ${a.question}` : ""}`;
-      return `- "${title(a.instanceId)}" (session ${a.instanceId}): ${done}; ${state}.${digest(a.instanceId)}`;
+      const line = `- "${title(a.instanceId)}" (session ${a.instanceId}): ${done}; ${state}.${digest(a.instanceId)}`;
+      update(a.instanceId, { toldAt: now() });
+      return line;
     });
     const hours = (now() - since) / 3600_000;
     const away = hours >= 1 ? `${Math.round(hours)} hour(s)` : `${Math.round(hours * 60)} minutes`;
@@ -1320,6 +1328,7 @@ export function createAutopilot(deps: AutopilotDeps): AutopilotManager {
       ].filter(Boolean);
       const on = source ? `Duck's plan ${planPath} (${source === "user" ? "from the user's description" : "from the session's work"})` : planPath;
       log(s.id, { kind: "note", stepId: null, summary: `Started on ${on}, ${bounds.join(", ")}.`, reason: null, compacted: null, prompt: null });
+      update(s.id, { toldAt: now() });
       void deps.journal?.heading(s.id, s.title, `Autopilot started on ${on}, ${bounds.join(", ")}`);
       // Outside its window, it waits for the start.
       if (a.window && !inWindow(a.window, t)) {
@@ -1342,7 +1351,7 @@ export function createAutopilot(deps: AutopilotDeps): AutopilotManager {
       if (!a || a.state === "stopped") throw new Error(`No autopilot runs on "${title(id)}".`);
       log(id, { kind: "note", stepId: a.step, summary: `Paused: ${why}.`, reason: null, compacted: null, prompt: null });
       // A wait for a limit or a window is called off too.
-      return update(id, { state: "paused", why, doing: "working", resumeAt: null });
+      return update(id, { state: "paused", why, doing: "working", resumeAt: null, toldAt: now() });
     },
 
     async resume(id, opts = {}) {
@@ -1355,6 +1364,7 @@ export function createAutopilot(deps: AutopilotDeps): AutopilotManager {
       const maxSteps = opts.steps ? Math.min(MAX_STEPS, a.stepsDone + opts.steps) : Math.max(a.maxSteps, a.stepsDone + 1);
       update(id, { state: "running", why: null, question: null, maxSteps, resumeAt: null, failed: null });
       log(id, { kind: "note", stepId: a.step, summary: opts.prompt ? "Resumed with the user's answer." : "Resumed.", reason: null, compacted: null, prompt: opts.prompt ?? null });
+      update(id, { toldAt: now() });
       // Their answer goes in; else what a limit held back is carried out now (the
       // limits are read again); else the last turn is reviewed again.
       if (opts.prompt?.trim()) {
@@ -1373,11 +1383,15 @@ export function createAutopilot(deps: AutopilotDeps): AutopilotManager {
       const a = all.get(id);
       if (!a || a.state === "stopped") throw new Error(`No autopilot runs on "${title(id)}".`);
       log(id, { kind: "note", stepId: a.step, summary: `Stopped: ${why}.`, reason: null, compacted: null, prompt: null });
-      return update(id, { state: "stopped", why, doing: "working", resumeAt: null, held: null });
+      // Stopped by the user: its decisions are theirs to look up now (stop_autopilot
+      // shows the unreported ones), not news for their return.
+      const decisions = all.get(id)!.decisions.map((d) => ({ ...d, reported: true }));
+      return update(id, { state: "stopped", why, doing: "working", resumeAt: null, held: null, decisions, toldAt: now() });
     },
 
     get: (id) => all.get(id),
-    list: () => [...all.values()].sort((a, b) => b.created - a.created),
+    // Newest first; two started in the same millisecond, the later one first.
+    list: () => [...all.values()].reverse().sort((a, b) => b.created - a.created),
     subscribe(cb) {
       listeners.add(cb);
       return () => {

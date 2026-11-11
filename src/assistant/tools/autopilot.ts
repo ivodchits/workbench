@@ -266,7 +266,10 @@ export const stopAutopilot = defineTool({
   tier: "reversible",
   run({ session, project }, ctx) {
     const s = findSession(ctx.port, session, project);
-    return view(manager(ctx).stop(s.id), s.title);
+    // The decisions it settled that the user hasn't heard of are shown once, here.
+    const before = manager(ctx).get(s.id)?.decisions;
+    const a = manager(ctx).stop(s.id);
+    return view({ ...a, decisions: before ?? a.decisions }, s.title);
   },
 });
 

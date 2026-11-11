@@ -419,12 +419,38 @@ describe("autopilot", () => {
     await start(u);
     await flush();
     await u.ap.start({ instanceId: "v", threadId: "t2", planPath: "C:/src/p/plan.md" });
+    // A run with a turn reviewed meanwhile (only being started is no news).
+    u.s2.phase = "done";
+    u.port.phase("v", "done", "working");
+    await flush();
     for (const cb of u.port.back) cb(since);
     const lines = last(u.told).split("\n");
     expect(lines[1]).toContain('"workbench" (session w): no step finished while away; paused');
     expect(lines[1]).toContain("Its question: SQLite or Postgres?");
     expect(lines[2]).toContain('"voice" (session v)');
     expect(last(u.levels)).toBe("needs_you");
+  });
+
+  it("doesn't bring up on the user's return a run they stopped or paused themselves", async () => {
+    const t = setup({
+      phase: "working",
+      reviews: [verdict({ decisions: [{ question: "Retry count?", decision: "3", why: "The plan's default." }] })],
+    });
+    const left = 10_000_100_000;
+    t.setClock(left);
+    await start(t, { notifyDecisions: false });
+    await t.ap.start({ instanceId: "v", threadId: "t2", planPath: "C:/src/p/plan.md" });
+    t.turnEnds();
+    await flush();
+    // Stopped from a phone or by voice while the window was away: what it settled is
+    // in the stop's own result, not saved for the return.
+    t.ap.stop("w");
+    t.ap.pause("v");
+    expect(t.ap.get("w")!.decisions.every((d) => d.reported)).toBe(true);
+    const n = t.told.length;
+    t.setClock(left + 3600_000);
+    for (const cb of t.port.back) cb(left);
+    expect(t.told).toHaveLength(n);
   });
 
   it("stops when the session ends, and pauses a run the app quit during", async () => {

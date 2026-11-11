@@ -6409,6 +6409,10 @@ up ("change this", with a circle around it).
     unreported decisions since then.
     - Per run: the steps finished while you were away (by id), where it is now or why it
       stopped, its question, and its decisions digest.
+    - It leaves out what you already know (`toldAt`, added 2026-11-10): your own start,
+      pause, resume or stop, and what an earlier summary told you. A run you stop
+      hands its unreported decisions to `stop_autopilot`'s result instead of your
+      return, so a stopped run no longer reads as one still going.
     - Runs paused on something of yours come first, and make it `needs_you`; otherwise
       it's a `report`.
     - It replaces P1's per-run "the user is back" digest.
