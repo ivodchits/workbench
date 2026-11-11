@@ -70,7 +70,7 @@ function view(a: Autopilot, title: string, now = Date.now()) {
     session: title,
     id: a.instanceId,
     state: a.state,
-    doing: a.state === "running" ? a.doing : null,
+    doing: a.state === "running" ? (a.doing === "working" && a.background !== null ? "waiting on the session's background work" : a.doing) : null,
     plan: a.planSource ? `${a.planPath} (Duck's, from ${a.planSource === "user" ? "the user's description" : "the session's work"}; outside the project)` : a.planPath,
     steps: a.untilDone ? `${a.stepsDone} done, until the plan is done` : `${a.stepsDone} done of at most ${a.maxSteps}`,
     window: a.window ? `${clock(a.window.from)}-${clock(a.window.to)}` : null,

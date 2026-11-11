@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   AT_REST_REVIEW_MS,
+  BACKGROUND_REVIEW_MS,
   createAutopilot,
   detectChecklist,
   inWindow,
@@ -496,6 +497,58 @@ describe("turn ends that never come", () => {
     expect(t.asked).toHaveLength(2);
     expect(t.notices.some((n) => n.includes("no turn end was heard"))).toBe(true);
     expect(t.calls("sendPrompt")).toHaveLength(2);
+  });
+
+  it("leaves a session waiting on its background work alone until the work wakes it", async () => {
+    const waiting = verdict({ verdict: "waiting", summary: "Started the test suite in the background." });
+    const t = setup({ reviews: [waiting, verdict(), waiting, verdict({ stepId: "A2", nextStepId: null })] });
+    await start(t);
+    await flush();
+    expect(t.calls("compactSession")).toEqual([]);
+    expect(t.calls("sendPrompt")).toEqual([]);
+    expect(t.ap.get("w")).toMatchObject({ state: "running", doing: "working", stepsDone: 0 });
+    expect(t.ap.get("w")!.background).not.toBeNull();
+    expect(t.port.badges.get("w")).toMatchObject({ text: expect.stringContaining("waiting on its background work") });
+    expect(last(t.notices)).toContain("Waiting on the session's background work: Started the test suite");
+
+    // The tests end, Claude Code wakes the session, and that turn's end is reviewed.
+    t.s.phase = "working";
+    t.port.phase("w", "working", "done");
+    t.turnEnds();
+    await flush();
+    expect(t.asked).toHaveLength(2);
+    expect(t.asked[1].input).toContain("waiting on work it ran in the background");
+    expect(t.calls("compactSession")).toEqual([["w", "keep the plan path"]]);
+    expect(t.calls("sendPrompt")).toEqual([["w", "continue the implementation"]]);
+    expect(t.ap.get("w")).toMatchObject({ stepsDone: 1, background: null });
+
+    // A turn it sent that waits on the way is timed once, at its real end.
+    t.s.phase = "working";
+    t.port.phase("w", "working", "done");
+    t.turnEnds();
+    await flush();
+    expect(t.calls("sendPrompt")).toHaveLength(1);
+    expect(t.ap.get("w")!.turnTimes).toEqual([]);
+    t.s.phase = "working";
+    t.port.phase("w", "working", "done");
+    t.turnEnds();
+    await flush();
+    expect(t.calls("sendPrompt")).toHaveLength(2);
+    expect(t.ap.get("w")!.turnTimes).toHaveLength(1);
+  });
+
+  it("gives a session waiting on background work longer before the watchdog reviews it", async () => {
+    const t = setup({ at: at(9), reviews: [verdict({ verdict: "waiting" })] });
+    await start(t);
+    await flush();
+    expect(t.asked).toHaveLength(1);
+    await t.tick(at(9, 1));
+    await t.tick(at(9, 1) + AT_REST_REVIEW_MS);
+    await t.tick(at(9, 1) + 5 * AT_REST_REVIEW_MS);
+    expect(t.asked).toHaveLength(1);
+    await t.tick(at(9, 1) + BACKGROUND_REVIEW_MS);
+    expect(t.asked).toHaveLength(2);
+    expect(t.calls("sendPrompt")).toHaveLength(1);
   });
 
   it("doesn't review while a prompt of its own, or Duck's, is still going in", async () => {

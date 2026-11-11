@@ -6286,6 +6286,10 @@ up ("change this", with a circle around it).
       toward the step limit.
     - Twelve turns without a finished step paused the run as going in circles; the
       guard was removed 2026-11-10 (background test runs looked like a stuck step).
+    - A turn that ends waiting on work the session runs in the background (a test
+      run, a build) is reviewed `waiting` (added 2026-11-10): no /compact and no
+      prompt, since Claude Code wakes the session when the work ends; the turn after
+      is reviewed as one with it. The watchdog gives such a rest 15 minutes, not one.
   - **A question the session asks mid-turn** (one question, one pick) is answered by a
     second Sonnet call (`autopilot-question`, `QUESTION_SYSTEM`) with `answerChoice`,
     unless it's serious, which pauses the run with the question.

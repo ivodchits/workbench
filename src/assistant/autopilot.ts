@@ -7,6 +7,9 @@
 //   never, by the autopilot's policy), wait for the compaction to end, then send the
 //   next prompt: your phrasing ("continue the implementation", "proceed to the next
 //   step"), or the review's own when the situation calls for it and that's allowed.
+// - `waiting`: the turn ended on work the session runs in the background (a test
+//   run, a build) that its step waits for: nothing is compacted or sent, as the
+//   work's end wakes the session; the turn after is reviewed when it ends.
 // - `needs_you`: pause, and tell the thread (and you, with an alert) the question.
 //   Your answer goes in as the next prompt when it resumes.
 // - `plan_done`: stop, and say so.
@@ -162,6 +165,9 @@ const TICK_MS = 60_000;
 /** A running autopilot whose session has sat at rest this long with no turn end
  *  heard reviews it anyway (the watchdog, checked on the tick). */
 export const AT_REST_REVIEW_MS = 60_000;
+/** A session waiting on its background work rests between turns on purpose: the
+ *  watchdog looks again only after this long (the work's end wakes it, normally). */
+export const BACKGROUND_REVIEW_MS = 15 * 60_000;
 
 export const COMPACT_POLICIES = ["review", "always", "never"] as const;
 export type CompactPolicy = (typeof COMPACT_POLICIES)[number];
@@ -207,7 +213,7 @@ export type Decision = z.infer<typeof Decision>;
 
 /** The review's verdict on one turn. */
 export const Review = z.object({
-  verdict: z.enum(["continue", "needs_you", "plan_done"]),
+  verdict: z.enum(["continue", "waiting", "needs_you", "plan_done"]),
   /** The turn finished its step (a fix-up or a settled question doesn't). */
   finished: z.boolean(),
   /** The turn's attempt at its step failed (tests or the build fail, it gave up). */
@@ -265,6 +271,9 @@ export const Autopilot = z.object({
   fixedUp: z.string().nullable().default(null),
   /** Steps reviewed as done in this run. */
   stepsDone: z.number().int().default(0),
+  /** When the session's turn ended waiting on work it runs in the background (a
+   *  test run, a build): no compaction and no prompt, the work's end wakes it. */
+  background: z.number().nullable().default(null),
   /** Turns continued since the last finished step (fix-ups, settled questions). */
   turnsOnStep: z.number().int().default(0),
   state: z.enum(["running", "paused", "stopped"]),
@@ -331,6 +340,7 @@ ${SMALL_AND_SERIOUS}
 You get the plan's outline and progress records (and the text of the steps in question), the session's activity in this turn, the checklist a finished step must meet, and the run so far.
 
 verdict:
+- waiting: the turn ended while work the agent started is still running in the background (tests, a build, a long command) and its step can't be judged until that work ends: it said it waits for it, or its last message is about that work's coming result. Claude Code wakes the session by itself when the work ends, so nothing is sent and nothing compacted; the review comes again at the end of the turn that follows. Not when the agent is done and the background work is incidental (a dev server left running), and not when it asks a question.
 - continue: the turn finished a step of the plan, or made progress you can steer with the next prompt: a fix-up (a failing test it can fix, an unfinished part of the step), or open questions that are all small, which you settle in decisions.
 - needs_you: a serious question or decision is open; or the turn failed or was interrupted in a way the next prompt can't put right; or you can't tell what happened.
 - plan_done: the plan's last step has landed: its progress records show nothing left, or the agent says so and the plan agrees.
@@ -342,6 +352,7 @@ Fields:
 - stepId: the plan's id (or short title) of the step this turn worked on; null if none. nextStepId: the step the session goes on to (the same step for a fix-up); null when none or unknown.
 - summary: one sentence for the step log: what the turn did.
 - reason: one sentence: why this verdict.
+- For waiting, the other fields don't matter (decisions stay empty).
 - question: for needs_you, the serious question for the user, complete enough to answer without reading the session; otherwise null.
 - decisions: each small question the turn left open (asked by the agent, or a choice it said it needs), with your decision and one sentence of why. Empty when there are none. A plain "shall I continue?" is not a decision. Every other question the agent puts to the user, above all one at the end of its last message, is either settled here or makes the verdict needs_you: never pass one over.
 - compact: whether to run /compact before the next prompt. Usually true after a finished step. False for a fix-up of the same step or one that wires up what was just built, or when the context used is low (under about 40%). compactReason: one short sentence.
@@ -595,6 +606,9 @@ export function reviewText(r: {
     "",
     `<plan>\n${fence(r.plan)}\n</plan>`,
     "",
+    ...(ap.background !== null
+      ? ["An earlier review found the session waiting on work it ran in the background, so nothing was sent: this activity runs from Duck's last prompt and spans that wait.", ""]
+      : []),
     `This turn's activity${r.truncated ? " (its oldest part was cut)" : ""}:`,
     `<activity>\n${fence(r.activity) || "(nothing in the transcript)"}\n</activity>`,
   ].join("\n");
@@ -611,7 +625,10 @@ export function badgeText(a: Autopilot, at = Date.now()): string {
   const decided = open ? ` · ${open} decided` : "";
   if (a.state === "paused") return `paused · ${of}${a.why ? ` · ${a.why}` : ""}`;
   if (a.state === "stopped") return `stopped · ${of}`;
-  const doing = { working: "working", reviewing: "reviewing the step", compacting: "compacting", waiting: "waiting on you" }[a.doing];
+  const doing =
+    a.doing === "working" && a.background !== null
+      ? "waiting on its background work"
+      : { working: "working", reviewing: "reviewing the step", compacting: "compacting", waiting: "waiting on you" }[a.doing];
   const end = a.endsAt !== null ? a.endsAt : a.window ? nextAt(a.window.to, at) : null;
   const until = end !== null ? ` · until ${clockAt(end, at)}` : "";
   return `step ${a.stepsDone + 1}${a.untilDone ? "" : ` of ${a.maxSteps}`}${a.step ? ` (${a.step})` : ""} · ${doing}${decided}${until}`;
@@ -742,8 +759,8 @@ export function createAutopilot(deps: AutopilotDeps): AutopilotManager {
     try {
       const ended = all.get(id);
       // How long the turn it sent took: the stall check's median.
-      if (ended?.turnStarted != null && ended.doing === "working")
-        update(id, { turnTimes: [...ended.turnTimes, now() - ended.turnStarted].slice(-TURN_TIMES) });
+      const timed = ended?.turnStarted != null && ended.doing === "working";
+      if (timed) update(id, { turnTimes: [...ended.turnTimes, now() - ended.turnStarted!].slice(-TURN_TIMES) });
       update(id, { doing: "reviewing", stallCheckAt: null });
       await new Promise((r) => setTimeout(r, settleMs));
       let a = all.get(id);
@@ -793,6 +810,16 @@ export function createAutopilot(deps: AutopilotDeps): AutopilotManager {
       }
       a = all.get(id);
       if (!a || a.state !== "running" || disposed) return;
+      // The session waits on its own background work: not done, so no compaction
+      // and no prompt; the work's end starts its next turn, reviewed when it ends.
+      if (verdict.verdict === "waiting") {
+        if (a.background === null)
+          log(id, { kind: "note", stepId: verdict.stepId ?? a.step, summary: `Waiting on the session's background work: ${verdict.summary}`, reason: verdict.reason, compacted: null, prompt: null });
+        // The turn it sent isn't over: its time is taken when it is.
+        update(id, { doing: "working", background: now(), turnTimes: timed ? a.turnTimes.slice(0, -1) : a.turnTimes });
+        return;
+      }
+      update(id, { background: null });
       for (const d of verdict.decisions) decided(id, { ...d, stepId: verdict.stepId, by: "review" });
       // A question asked in plain text at the turn's end that the review settled
       // nothing on: the run goes on past it, so that's a decision too.
@@ -1047,7 +1074,7 @@ export function createAutopilot(deps: AutopilotDeps): AutopilotManager {
     }
     const since = restSince.get(id) ?? t;
     restSince.set(id, since);
-    if (t - since < AT_REST_REVIEW_MS) return false;
+    if (t - since < (a.background !== null ? BACKGROUND_REVIEW_MS : AT_REST_REVIEW_MS)) return false;
     restSince.delete(id);
     log(id, { kind: "note", stepId: a.step, summary: "The session is at rest, but no turn end was heard; reviewing its last turn.", reason: null, compacted: null, prompt: null });
     void review(id);
@@ -1070,7 +1097,7 @@ export function createAutopilot(deps: AutopilotDeps): AutopilotManager {
 
   /** The next turn's prompt; one that isn't taken pauses the run. */
   function send(id: string, prompt: string): void {
-    update(id, { doing: "working", turnStarted: now() });
+    update(id, { doing: "working", turnStarted: now(), background: null });
     void port
       .sendPrompt(id, prompt, {
         onFailed: (why) => {
