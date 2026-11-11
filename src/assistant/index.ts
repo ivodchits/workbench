@@ -189,6 +189,8 @@ const REPLAY_MAX_CALLS = 20_000;
 let started: Promise<void> | null = null;
 let duck: Transport | null = null;
 let consolidator: Consolidator | null = null;
+type ReminderAction = "done" | "dismissed" | "snooze";
+let reminderAction: ((id: string, action: ReminderAction) => Promise<void>) | null = null;
 
 /** How often the nightly tidy (step L2) checks whether it's due. */
 const TIDY_CHECK_MS = 5 * 60_000;
@@ -1200,16 +1202,17 @@ export function initAssistant(): Promise<void> {
     // A push's Done or Snooze, tapped on the phone (H4): the same change Duck's
     // tools make, with its chip in the thread.
     // Done or Snooze from a notification: the push's (H4), or the phone app's own (H5).
-    const actOnReminder = (id: string, action: "done" | "snooze") =>
-      void (async () => {
-        const threadId = await activeThread();
-        const until = localStamp(new Date(Date.now() + SNOOZE_MINUTES * 60_000));
-        await changeReminder({ reminders, notice: (n) => engine.notice(threadId, n) }, id, (now) => {
-          if (!now || now.state !== "open") throw new Error("it's no longer open");
-          return action === "done" ? closing(now, "done", new Date()) : snoozing(now, until);
-        });
-      })().catch(warnReminders);
-    onReminderAction(({ id, action }) => actOnReminder(id, action));
+    // Done or Dismiss from the drawer's reminders list goes the same way.
+    const actOnReminder = async (id: string, action: ReminderAction) => {
+      const threadId = await activeThread();
+      const until = localStamp(new Date(Date.now() + SNOOZE_MINUTES * 60_000));
+      await changeReminder({ reminders, notice: (n) => engine.notice(threadId, n) }, id, (now) => {
+        if (!now || now.state !== "open") throw new Error("it's no longer open");
+        return action === "snooze" ? snoozing(now, until) : closing(now, action, new Date());
+      });
+    };
+    reminderAction = actOnReminder;
+    onReminderAction(({ id, action }) => void actOnReminder(id, action).catch(warnReminders));
     // A session you start: its project's reminders, one line (no model turn).
     localPort.onSessionYouStarted((_id, projectId) => {
       const list = reminders.forProject(projectId);
@@ -1351,6 +1354,13 @@ export function tidyMemory(): Promise<TidyReport> {
 /** The last tidy, for the Memory view. */
 export function lastTidy(): Promise<{ date: string; report: TidyReport } | null> {
   return consolidator?.last() ?? Promise.resolve(null);
+}
+
+/** Close a reminder from the drawer's list, done or dismissed, with its chip in
+ *  the active thread (undo from there). */
+export function closeReminder(id: string, state: "done" | "dismissed"): Promise<void> {
+  if (!reminderAction) return Promise.reject(new Error("Duck isn't started yet."));
+  return reminderAction(id, state);
 }
 
 /** The transport to the running Duck, or `null` until `initAssistant` finished. */
