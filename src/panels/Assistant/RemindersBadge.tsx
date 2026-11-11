@@ -4,20 +4,60 @@
 // general ones. The full text stays with Duck (`list_reminders`); done and dismiss
 // go through Duck. It pulses when one comes up (due, or a project's on a new
 // session), and shows nothing when there are none.
+//
+// The same dot (`ReminderDot`) sits in the title bar after the Duck button, the duck
+// and the speaker, for the general ones; a project's show as a crumb on its tile in
+// the rail (`ProjectReminders`).
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { widgetOrder, type ReminderView } from "../../assistant/reminders";
 import { useActiveProject } from "../../state/activeProject";
+import { useDuckState } from "./duckState";
 
-export default function RemindersBadge({
+export default function RemindersBadge(props: { reminders: ReminderView[]; problem: string | null; pulse: number }) {
+  if (!props.reminders.length && !props.problem) return null;
+  return (
+    <div style={{ position: "absolute", top: 6, left: 8, zIndex: 3 }}>
+      <ReminderDot {...props} />
+    </div>
+  );
+}
+
+/** The general reminders (no project) as a dot, for the title bar. */
+export function GeneralReminders() {
+  const duck = useDuckState();
+  const general = useMemo(() => duck.reminders.filter((r) => !r.project), [duck.reminders]);
+  return <ReminderDot reminders={general} problem={duck.remindersProblem} pulse={duck.remindersPulse} size={15} />;
+}
+
+/** A project's open reminders as a crumb on its rail tile; nothing without any. */
+export function ProjectReminders({ projectId }: { projectId: string }) {
+  const reminders = useDuckState().reminders;
+  const mine = reminders.filter((r) => r.project?.id === projectId);
+  if (!mine.length) return null;
+  const overdue = mine.some((r) => r.overdue);
+  return (
+    <span
+      title={mine.map((r) => `• ${r.title}${r.due ? ` (${r.due})` : ""}`).join("\n")}
+      style={{ color: overdue ? "var(--wb-needs)" : "var(--wb-working)" }}
+    >
+      ● {mine.length} reminder{mine.length === 1 ? "" : "s"}
+    </span>
+  );
+}
+
+/** The dot with the count, and the list of titles on a click. */
+export function ReminderDot({
   reminders,
   problem,
   pulse,
+  size = 18,
 }: {
   reminders: ReminderView[];
   problem: string | null;
   /** Goes up each time one comes up. */
   pulse: number;
+  size?: number;
 }) {
   const project = useActiveProject();
   const [open, setOpen] = useState(false);
@@ -39,7 +79,7 @@ export default function RemindersBadge({
   if (!reminders.length && !problem) return null;
   const list = widgetOrder(reminders, project);
   return (
-    <div style={{ position: "absolute", top: 6, left: 8, zIndex: 3 }}>
+    <div style={{ position: "relative", display: "inline-flex" }}>
       <button
         ref={dot}
         type="button"
@@ -47,15 +87,15 @@ export default function RemindersBadge({
         title={problem ?? `${reminders.length} open reminder${reminders.length === 1 ? "" : "s"}`}
         aria-expanded={open}
         style={{
-          minWidth: 18,
-          height: 18,
-          padding: "0 5px",
-          borderRadius: 9,
+          minWidth: size,
+          height: size,
+          padding: `0 ${size > 16 ? 5 : 4}px`,
+          borderRadius: size / 2,
           border: "none",
           background: "var(--wb-needs)",
           color: "var(--wb-bg)",
-          font: "600 11px var(--wb-mono)",
-          lineHeight: "18px",
+          font: `600 ${size > 16 ? 11 : 9.5}px var(--wb-mono)`,
+          lineHeight: `${size}px`,
           cursor: "pointer",
         }}
       >
@@ -66,8 +106,9 @@ export default function RemindersBadge({
           role="list"
           style={{
             position: "absolute",
-            top: 22,
+            top: size + 4,
             left: 0,
+            zIndex: 202,
             width: 260,
             maxHeight: 240,
             overflowY: "auto",

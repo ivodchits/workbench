@@ -8,6 +8,9 @@
 // moon while Do Not Disturb is on. Right-click the button for Do Not Disturb.
 //
 // An ear on the button (V6) while the wake word listens for "Hey Duck".
+//
+// After the speaker, a red dot counts the general reminders (no project); a click
+// lists them. A project's show on its tile in the rail instead.
 
 import { useEffect, useRef, useState } from "react";
 import { runCommand, useBindings } from "../../keyboard";
@@ -18,6 +21,7 @@ import { DND_FOREVER } from "../../assistant/settings";
 import { setDnd, useDuckState } from "./duckState";
 import { setSpeakOn, useSpeechState } from "./replySpeech";
 import { useVoiceState } from "./voiceState";
+import { GeneralReminders } from "./RemindersBadge";
 
 function untilText(until: number): string {
   if (until >= DND_FOREVER) return "until you turn it off";
@@ -180,6 +184,7 @@ export default function DuckButton() {
       >
         {speech.prefs.on ? "🔊" : "🔇"}
       </button>
+      <GeneralReminders />
       {dnd && (
         <button
           type="button"

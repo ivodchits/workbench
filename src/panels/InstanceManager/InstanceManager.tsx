@@ -73,6 +73,7 @@ import { worktreeTeardownInfo, type SetupResult, type TeardownInfo } from "../..
 import { isTextInput, matchCommand } from "../../keyboard";
 import { registerCommand } from "../../keyboard/bus";
 import { updateTrayBadge } from "../../ipc/attention";
+import { ProjectReminders } from "../Assistant/RemindersBadge";
 import ProjectDialog from "./ProjectDialog";
 import InstanceCard from "./InstanceCard";
 import Modal from "./Modal";
@@ -1034,6 +1035,7 @@ function ProjectNode({
               )}
             </>
           )}
+          <ProjectReminders projectId={project.id} />
         </div>
       </div>
 
