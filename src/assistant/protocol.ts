@@ -374,7 +374,9 @@ export type ClientMessage =
   /** A version's SVG, answered with `drawingSvg` (the desktop's canvas). */
   | { type: "drawing.svg"; drawingId: string; n: number }
   /** The drawing a surface's canvas shows (null: closed): its worker stays warm. */
-  | { type: "canvas"; surface: Surface; drawingId: string | null };
+  | { type: "canvas"; surface: Surface; drawingId: string | null }
+  /** Take a task off the waiting queue (fleet plan F3.2). */
+  | { type: "waiting.drop"; id: string };
 
 export type ReaderAction = "pause" | "resume" | "next" | "prev" | "stop";
 
@@ -473,7 +475,19 @@ export type DuckEvent =
   /** Answer to `drawing.svg`: the SVG, or why there's none. */
   | { type: "drawingSvg"; drawingId: string; n: number; svg: string | null; error?: string }
   /** A request from a surface failed (an unknown thread, storage down, …). */
-  | { type: "error"; message: string };
+  | { type: "error"; message: string }
+  /** The work waiting for a machine that's off (fleet plan F3.2), on sync and on
+   *  every change. */
+  | { type: "waiting"; items: WaitingView[] };
+
+/** A task waiting for a machine, as a surface shows it. */
+export interface WaitingView {
+  id: string;
+  machine: string;
+  task: string;
+  /** Epoch ms. */
+  at: number;
+}
 
 export type Stamped<T> = T & { v: typeof PROTOCOL_VERSION };
 

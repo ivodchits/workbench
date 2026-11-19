@@ -1,6 +1,7 @@
 // Every tool Duck has, and the ones it loads on demand: one list for the engine
 // (`index.ts`) and the tests that check what the modes name (step S1).
 
+import { FLEET_TOOLS } from "./tools/fleet";
 import { ACT_TOOLS } from "./tools/act";
 import { DRAW_TOOLS } from "./tools/draw";
 import { DRIVE_TOOLS } from "./tools/drive";
@@ -67,6 +68,7 @@ export const TOOLS = [
   weather,
   ...MEDIA_TOOLS,
   ...REMINDER_TOOLS,
+  ...FLEET_TOOLS,
   ...(import.meta.env.DEV ? [testConfirm, testAnnounce] : []),
 ];
 
@@ -80,6 +82,7 @@ export const TOOL_NAMES: ReadonlySet<string> = new Set([...TOOLS.map((t) => t.na
  *  the rarely used, and the large ones that are rarely used. The rest load up
  *  front, so most turns need no search. */
 export const DEFERRED = new Set([
+  "drop_waiting",
   ...PLUGIN_TOOLS.map((t) => t.name),
   ...AUTOPILOT_TOOLS.map((t) => t.name),
   ...SCREEN_TOOLS.map((t) => t.name),

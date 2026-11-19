@@ -30,9 +30,10 @@ mod autopilot;
 mod autopilot_plans;
 mod budget;
 pub mod config;
-mod db;
+pub(crate) mod db;
 pub mod decisions_log;
 pub mod drawings;
+pub mod waiting;
 pub mod imagegen;
 pub mod gitlane;
 pub mod google;
@@ -78,7 +79,7 @@ pub use threads::{Message, Pending, Thread};
 /// Tauri-managed (as `Arc<Assistant>`): the proxy's shared state.
 pub struct Assistant {
     app: AppHandle,
-    db: DuckDb,
+    pub(crate) db: DuckDb,
     /// The per-launch token the webview presents as its API key: 32 random bytes,
     /// hex. It is worthless outside this run of the app.
     token: String,
@@ -806,6 +807,23 @@ pub fn assistant_drawing_put(ctx: Db<'_>, id: String, data: String) -> Result<()
     drawings::put(&lock(&ctx), &id, &data, now_ms())
 }
 
+/// Keep an item of the waiting queue (fleet plan F3.2).
+#[tauri::command]
+pub fn assistant_waiting_put(ctx: Db<'_>, id: String, data: String) -> Result<(), String> {
+    waiting::put(&lock(&ctx), &id, &data, now_ms())
+}
+
+/// The waiting queue, oldest first.
+#[tauri::command]
+pub fn assistant_waiting_list(ctx: Db<'_>) -> Result<Vec<String>, String> {
+    waiting::list(&lock(&ctx))
+}
+
+#[tauri::command]
+pub fn assistant_waiting_delete(ctx: Db<'_>, id: String) -> Result<bool, String> {
+    waiting::remove(&lock(&ctx), &id)
+}
+
 /// The latest drawing records, newest first.
 #[tauri::command]
 pub fn assistant_drawing_list(ctx: Db<'_>, limit: u32) -> Result<Vec<String>, String> {
@@ -923,6 +941,8 @@ pub async fn assistant_attach_bytes(app: AppHandle, name: String, data: String) 
 #[tauri::command]
 pub async fn assistant_attach_prepare(app: AppHandle, id: String, name: String) -> Result<attachments::Prepared, String> {
     let root = attachments_root(&app)?;
+    // Made on another machine of the fleet: fetched from it (fleet plan F5.2).
+    let _ = crate::fleet::ensure_attachment(&app, &root, &id, &name).await;
     tauri::async_runtime::spawn_blocking(move || attachments::prepare(&root, &id, &name))
         .await
         .map_err(|e| e.to_string())?
@@ -932,6 +952,7 @@ pub async fn assistant_attach_prepare(app: AppHandle, id: String, name: String) 
 #[tauri::command]
 pub async fn assistant_attach_data(app: AppHandle, id: String, name: String, kind: String) -> Result<String, String> {
     let root = attachments_root(&app)?;
+    let _ = crate::fleet::ensure_attachment(&app, &root, &id, &name).await;
     tauri::async_runtime::spawn_blocking(move || attachments::data(&root, &id, &name, &kind))
         .await
         .map_err(|e| e.to_string())?

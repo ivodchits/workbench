@@ -26,7 +26,26 @@ import {
   type PublicStatus,
   type RemoteDevice,
 } from "../ipc/remote";
+import {
+  fleetClearLog,
+  fleetJoin,
+  fleetNewCode,
+  fleetRemove,
+  fleetRename,
+  fleetResetIdentity,
+  fleetSetCanBeMain,
+  fleetSetKind,
+  fleetSetOrder,
+  fleetSetPin,
+  fleetSetWakeable,
+  fleetWake,
+  FLEET_KINDS,
+  type FleetKind,
+  type FleetMember,
+  type FleetStatus,
+} from "../ipc/fleet";
 import { openUrl } from "../ipc/os";
+import { refreshFleet, setFleetStatus, useFleet } from "../state/fleet";
 import { formatAgo, formatCountdown } from "../util/format";
 
 /** Failures listed before "show all". */
@@ -45,6 +64,7 @@ function RemoteAccessMenu() {
   useEffect(() => {
     if (!open) return;
     void refreshRemoteStatus();
+    void refreshFleet();
   }, [open]);
 
   // Close on outside click / Escape.
@@ -93,6 +113,9 @@ function RemoteAccessMenu() {
   }
 
   const waiting = status?.pendingCount ?? 0;
+  const fleet = useFleet();
+  const machines = fleet?.members.length ?? 0;
+  const machinesOnline = fleet?.members.filter((m) => m.online).length ?? 0;
   const shownFailures = allFailures ? failures : failures.slice(0, FAILURES_SHOWN);
 
   return (
@@ -120,6 +143,14 @@ function RemoteAccessMenu() {
           <span style={{ color: "var(--wb-needs)" }}>· public ✕</span>
         )}
         {waiting > 0 && <span style={{ color: "var(--wb-needs)" }}>· {waiting} waiting</span>}
+        {machines > 0 && (
+          <span
+            title={`${machinesOnline} of ${machines} other machines online`}
+            style={{ color: machinesOnline > 0 ? "var(--wb-accent)" : "var(--wb-textFaint)" }}
+          >
+            · fleet {machinesOnline}/{machines}
+          </span>
+        )}
       </button>
 
       {open && (
@@ -286,12 +317,493 @@ function RemoteAccessMenu() {
             </>
           )}
 
+          <Divider />
+          <FleetSection />
+
           {error && <Note tone="error">{error}</Note>}
         </div>
       )}
     </div>
   );
 }
+
+/** The fleet (fleet plan F1.1, F1.2): this machine's name, the other Workbench
+ *  machines it links to over the tailnet, joining with a one-time code, and who is
+ *  main. Independent of the phone's server above: machines talk on their own
+ *  tailnet-only port. */
+function FleetSection() {
+  const fleet = useFleet();
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [join, setJoin] = useState("");
+  const [name, setName] = useState<string | null>(null);
+  const [info, setInfo] = useState<string | null>(null);
+
+  if (!fleet) return null;
+
+  async function run(f: () => Promise<FleetStatus>): Promise<boolean> {
+    setBusy(true);
+    setError(null);
+    try {
+      setFleetStatus(await f());
+      return true;
+    } catch (e) {
+      setError(String(e));
+      return false;
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function saveName() {
+    const next = name?.trim();
+    setName(null);
+    if (next && next !== fleet?.me.name) void run(() => fleetRename(next));
+  }
+
+  async function joinNow() {
+    const text = join.trim();
+    if (text && (await run(() => fleetJoin(text)))) setJoin("");
+  }
+
+  const others = fleet.members;
+  return (
+    <>
+      <SectionLabel>fleet · your machines</SectionLabel>
+      <Row>
+        <span style={{ color: "var(--wb-textFaint)" }}>this</span>
+        {name === null ? (
+          <button
+            type="button"
+            onClick={() => setName(fleet.me.name)}
+            title="rename this machine (the others see it)"
+            style={{
+              ...miniBtn,
+              border: "none",
+              padding: 0,
+              color: "var(--wb-text)",
+              flex: 1,
+              textAlign: "left",
+            }}
+          >
+            {fleet.me.name}
+          </button>
+        ) : (
+          <input
+            autoFocus
+            value={name}
+            maxLength={40}
+            onChange={(e) => setName(e.target.value)}
+            onBlur={saveName}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") saveName();
+              if (e.key === "Escape") {
+                e.stopPropagation();
+                setName(null);
+              }
+            }}
+            style={inputStyle}
+          />
+        )}
+        <span style={{ color: "var(--wb-textFaint)", fontSize: 10 }} title={`fleet id ${fleet.me.id}`}>
+          {fleet.listening ?? (fleet.tailnet ? "not listening" : "no tailnet")}
+        </span>
+      </Row>
+
+      {fleet.problem && (
+        <>
+          <Note tone="error">{fleet.problem}</Note>
+          <Row>
+            <button
+              type="button"
+              disabled={busy}
+              onClick={() => void run(fleetResetIdentity)}
+              title="a new id and key for this machine; it leaves the fleet and has to join again"
+              style={{ ...miniBtn, marginLeft: "auto", color: "var(--wb-needs)" }}
+            >
+              reset this machine’s identity
+            </button>
+          </Row>
+        </>
+      )}
+
+      {others.length === 0 ? (
+        <Note>
+          No other machines yet. Make a join code here and paste it on the other machine (or
+          the other way round). Both need Tailscale, logged in as you.
+        </Note>
+      ) : (
+        others.map((m) => (
+          <MachineRow
+            key={m.id}
+            m={m}
+            canWake={fleet.config.wake.includes(m.id)}
+            busy={busy}
+            onRemove={() => void run(() => fleetRemove(m.id))}
+            onWakeable={(on) => void run(() => fleetSetWakeable(m.id, on))}
+            onWake={() => {
+              setError(null);
+              setInfo(null);
+              fleetWake(m.id).then(
+                (said) => setInfo(`Wake-on-LAN: ${said}.`),
+                (e: unknown) => setError(String(e)),
+              );
+            }}
+          />
+        ))
+      )}
+
+      {others.length > 0 && <PriorityList fleet={fleet} busy={busy} run={run} />}
+      {fleet.replica && (
+        <Note tone={fleet.replica.error ? "error" : undefined}>
+          Duck&apos;s state: a copy of {fleet.replica.of}&apos;s
+          {fleet.replica.head > fleet.replica.seq ? `, ${fleet.replica.head - fleet.replica.seq} changes behind` : ", up to date"}
+          {fleet.replica.at ? ` · ${formatAgo(fleet.replica.at)}` : ""}
+          {fleet.replica.error ? ` · ${fleet.replica.error}` : ""}
+        </Note>
+      )}
+
+      <Row>
+        {fleet.joinString ? (
+          <>
+            <code
+              style={{
+                flex: 1,
+                color: "var(--wb-text)",
+                userSelect: "all",
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+              }}
+              title="paste this on the other machine"
+            >
+              {fleet.joinString}
+            </code>
+            <button
+              type="button"
+              onClick={() => void navigator.clipboard?.writeText(fleet.joinString ?? "")}
+              style={miniBtn}
+            >
+              copy
+            </button>
+          </>
+        ) : (
+          <span style={{ flex: 1, color: "var(--wb-textFaint)", fontSize: 10 }}>
+            {fleet.codeLocked ? "the last code took too many wrong tries" : "add a machine"}
+          </span>
+        )}
+        <button
+          type="button"
+          disabled={busy || !fleet.tailnet}
+          onClick={() => void run(fleetNewCode)}
+          title={fleet.tailnet ? "a one-time code for 10 minutes" : "Tailscale isn’t connected"}
+          style={miniBtn}
+        >
+          {fleet.joinString ? "new code" : "join code"}
+        </button>
+      </Row>
+      {fleet.joinString && fleet.codeExpiresAt && (
+        <Note>Paste it on the other machine · expires {formatCountdown(fleet.codeExpiresAt)}</Note>
+      )}
+      <Row>
+        <input
+          value={join}
+          placeholder="paste a join code from another machine"
+          onChange={(e) => setJoin(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") void joinNow();
+          }}
+          style={inputStyle}
+        />
+        <button
+          type="button"
+          disabled={busy || !join.trim()}
+          onClick={() => void joinNow()}
+          style={miniBtn}
+        >
+          join
+        </button>
+      </Row>
+
+      {others.length > 0 && (
+        <Row>
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() => void run(() => fleetRemove(fleet.me.id))}
+            title="this machine forgets the fleet, and the others forget it"
+            style={{ ...miniBtn, marginLeft: "auto", color: "var(--wb-needs)" }}
+          >
+            leave the fleet
+          </button>
+        </Row>
+      )}
+
+      {fleet.log.length > 0 && (
+        <>
+          <Row>
+            <span style={sectionLabelStyle}>fleet log</span>
+            <button
+              type="button"
+              onClick={() => void run(fleetClearLog)}
+              style={{ ...miniBtn, marginLeft: "auto" }}
+            >
+              clear
+            </button>
+          </Row>
+          {fleet.log.slice(0, FAILURES_SHOWN).map((f) => (
+            <div
+              key={`${f.addr} ${f.what}`}
+              style={{ padding: "2px 12px", fontSize: 10, lineHeight: 1.5 }}
+            >
+              <div style={{ color: "var(--wb-text)" }}>
+                {f.what}
+                {f.count > 1 && <span style={{ color: "var(--wb-textFaint)" }}> ×{f.count}</span>}
+              </div>
+              <div style={{ color: "var(--wb-textFaint)" }}>
+                {f.addr} · {formatAgo(f.at)}
+              </div>
+            </div>
+          ))}
+        </>
+      )}
+      {info && <Note>{info}</Note>}
+      {error && <Note tone="error">{error}</Note>}
+    </>
+  );
+}
+
+/** Who is main and in what order (F1.2): the fleet's shared list, edited on any
+ *  machine. While there's no election the main is the pinned machine; the list's
+ *  first choice is shown for when there will be. */
+function PriorityList({
+  fleet,
+  busy,
+  run,
+}: {
+  fleet: FleetStatus;
+  busy: boolean;
+  run: (f: () => Promise<FleetStatus>) => Promise<boolean>;
+}) {
+  const c = fleet.config;
+  const byId = new Map<string, FleetMember>([fleet.me, ...fleet.members].map((m) => [m.id, m]));
+  const name = (id: string | null) => (id ? (byId.get(id)?.name ?? "a machine") : "");
+  const order = c.order.filter((id) => byId.has(id));
+
+  function move(i: number, by: -1 | 1) {
+    const j = i + by;
+    if (j < 0 || j >= order.length) return;
+    const next = [...order];
+    [next[i], next[j]] = [next[j], next[i]];
+    void run(() => fleetSetOrder(next));
+  }
+
+  const summary = c.main
+    ? `main: ${name(c.main)} (pinned)`
+    : c.firstChoice
+      ? `no main pinned · the list would pick ${name(c.firstChoice)}`
+      : "no main pinned · no machine that can be main is up";
+
+  return (
+    <>
+      <Row>
+        <span style={sectionLabelStyle}>main · priority</span>
+        {c.customOrder && (
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() => void run(() => fleetSetOrder([]))}
+            title="back to the default order: desktop, server, laptop"
+            style={{ ...miniBtn, marginLeft: "auto" }}
+          >
+            default order
+          </button>
+        )}
+      </Row>
+      {order.map((id, i) => {
+        const m = byId.get(id)!;
+        const isMe = id === fleet.me.id;
+        const pinned = c.pin === id;
+        const canBeMain = !c.notMain.includes(id);
+        return (
+          <div
+            key={id}
+            style={{ padding: "2px 12px", display: "flex", alignItems: "center", gap: 6 }}
+          >
+            <span style={{ color: "var(--wb-textFaint)", width: 12, textAlign: "right" }}>
+              {i + 1}
+            </span>
+            <span
+              style={{
+                flex: 1,
+                minWidth: 0,
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+                whiteSpace: "nowrap",
+                color: canBeMain ? "var(--wb-text)" : "var(--wb-textFaint)",
+              }}
+              title={isMe ? "this machine" : m.online ? "online" : "offline"}
+            >
+              {m.name}
+              {isMe && <span style={{ color: "var(--wb-textFaint)" }}> (this)</span>}
+            </span>
+            {isMe ? (
+              <select
+                value={m.kind || "desktop"}
+                disabled={busy}
+                onChange={(e) => void run(() => fleetSetKind(e.target.value as FleetKind))}
+                title="what sort of machine this is; it places it in the default order"
+                style={{ ...miniBtn, padding: "1px 2px" }}
+              >
+                {FLEET_KINDS.map((k) => (
+                  <option key={k} value={k}>
+                    {k}
+                  </option>
+                ))}
+              </select>
+            ) : (
+              <span style={{ color: "var(--wb-textFaint)", fontSize: 10 }}>{m.kind || "?"}</span>
+            )}
+            <button
+              type="button"
+              disabled={busy || i === 0}
+              onClick={() => move(i, -1)}
+              title="higher priority"
+              style={{ ...miniBtn, padding: "1px 5px" }}
+            >
+              ↑
+            </button>
+            <button
+              type="button"
+              disabled={busy || i === order.length - 1}
+              onClick={() => move(i, 1)}
+              title="lower priority"
+              style={{ ...miniBtn, padding: "1px 5px" }}
+            >
+              ↓
+            </button>
+            <input
+              type="checkbox"
+              checked={canBeMain}
+              disabled={busy}
+              onChange={(e) => void run(() => fleetSetCanBeMain(id, e.target.checked))}
+              title="can be main"
+            />
+            <button
+              type="button"
+              disabled={busy}
+              onClick={() => void run(() => fleetSetPin(pinned ? null : id))}
+              title={pinned ? "unpin: no main by hand" : "pin the main to this machine"}
+              style={{
+                ...miniBtn,
+                padding: "1px 6px",
+                color: pinned ? "var(--wb-accent)" : "var(--wb-textDim2)",
+                borderColor: pinned ? "var(--wb-accent)" : "var(--wb-border)",
+              }}
+            >
+              {pinned ? "main" : "pin"}
+            </button>
+          </div>
+        );
+      })}
+      <Note>
+        {summary}
+        {c.by && ` · changed on ${c.by} ${formatAgo(Math.floor(c.updatedAt / 1000))}`}
+      </Note>
+    </>
+  );
+}
+
+/** One other machine: online or when last heard from, what it runs, waking it
+ *  (Wake-on-LAN, F4.1), remove. */
+function MachineRow({
+  m,
+  canWake,
+  busy,
+  onRemove,
+  onWakeable,
+  onWake,
+}: {
+  m: FleetMember;
+  canWake: boolean;
+  busy: boolean;
+  onRemove: () => void;
+  onWakeable: (on: boolean) => void;
+  onWake: () => void;
+}) {
+  const seen = m.online
+    ? `online · ${m.direction === "out" ? "dialed" : "dialed in"}`
+    : m.lastSeen
+      ? `seen ${formatAgo(m.lastSeen)}`
+      : "never connected";
+  const detail = [seen, m.version && `v${m.version}${m.build === "debug" ? " dev" : ""}`, m.os];
+  const where = [
+    m.host ?? m.ip,
+    `${m.ip}:${m.port}`,
+    m.caps.length > 0 ? `can: ${m.caps.join(", ")}` : "",
+  ];
+  return (
+    <div style={{ padding: "4px 12px", display: "flex", alignItems: "center", gap: 8 }}>
+      <span style={{ color: m.online ? "var(--wb-accent)" : "var(--wb-textFaint)" }}>●</span>
+      <div style={{ flex: 1, minWidth: 0, lineHeight: 1.45 }}>
+        <div
+          style={{
+            color: "var(--wb-text)",
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+            whiteSpace: "nowrap",
+          }}
+        >
+          {m.name}
+        </div>
+        <div
+          style={{ color: "var(--wb-textFaint)", fontSize: 10 }}
+          title={where.filter(Boolean).join("\n")}
+        >
+          {detail.filter(Boolean).join(" · ")}
+        </div>
+      </div>
+      <label
+        title={
+          m.wakeable
+            ? "can be woken with Wake-on-LAN (from sleep; from off needs it on in the BIOS)"
+            : "it hasn't said its network address yet: start it once"
+        }
+        style={{ display: "flex", alignItems: "center", gap: 3, color: "var(--wb-textFaint)", fontSize: 10 }}
+      >
+        <input
+          type="checkbox"
+          checked={canWake}
+          disabled={busy || (!m.wakeable && !canWake)}
+          onChange={(e) => onWakeable(e.target.checked)}
+        />
+        wake
+      </label>
+      {!m.online && canWake && m.wakeable && (
+        <button type="button" disabled={busy} onClick={onWake} title="send it a Wake-on-LAN packet" style={miniBtn}>
+          wake now
+        </button>
+      )}
+      <button
+        type="button"
+        onClick={onRemove}
+        title="remove it from the fleet, on every machine"
+        style={{ ...miniBtn, color: "var(--wb-needs)" }}
+      >
+        remove
+      </button>
+    </div>
+  );
+}
+
+const inputStyle: React.CSSProperties = {
+  flex: 1,
+  minWidth: 0,
+  background: "transparent",
+  border: "1px solid var(--wb-border)",
+  color: "var(--wb-text)",
+  font: "10.5px var(--wb-mono)",
+  padding: "2px 6px",
+};
 
 /** The public access (Funnel) switch, what it exposes, and where it stands. */
 function PublicAccess({ pub }: { pub: PublicStatus }) {

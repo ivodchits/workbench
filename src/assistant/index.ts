@@ -96,7 +96,26 @@ import { memoryApply, memoryList, memoryStateGet, memoryStateSet } from "../ipc/
 import { createMcpHost } from "./mcp";
 import { createDriveHost, createGoogleHost } from "./google";
 import { createRegistry, toolsOn } from "./tools/registry";
-import { connectLocal, createHosts } from "./hosts";
+import { connectLocal, createHosts, type MachineRef } from "./hosts";
+import { createFleetHub, runFleetLink, serveFleet } from "./fleetHosts";
+import { createFleetPort, type FleetPort } from "./port.fleet";
+import { createSwitchTransport, type SwitchTransport } from "./switchTransport";
+import { createFleetTools, type FleetTools } from "./fleet";
+import { createRemotes } from "./remotes";
+import { gitOriginUrl } from "../ipc/git";
+import { waitingDelete, waitingList, waitingPut } from "../ipc/assistant";
+import {
+  fleetDrained,
+  fleetHostSend,
+  fleetSetWorkspace,
+  fleetStatus,
+  fleetWake,
+  onDuckPromoted,
+  onFleetChanged,
+  onFleetDrain,
+  onFleetHost,
+  onFleetMerged,
+} from "../ipc/fleet";
 import { pcHandlers } from "./tools/pc";
 import { youtubeMusic } from "./music/youtube";
 import { youtubeSearch } from "../ipc/music";
@@ -187,7 +206,13 @@ export type Replayer = (
 const REPLAY_MAX_CALLS = 20_000;
 
 let started: Promise<void> | null = null;
-let duck: Transport | null = null;
+let duck: SwitchTransport | null = null;
+
+/** This machine holds Duck's lease (fleet plan F6.1), or there's no fleet: only
+ *  then do routines, reminders and the waiting queue run here. */
+let duckHere = true;
+/** Duck is handing over to another machine: no new turns. */
+let fleetDraining = false;
 let consolidator: Consolidator | null = null;
 type ReminderAction = "done" | "dismissed" | "snooze";
 let reminderAction: ((id: string, action: ReminderAction) => Promise<void>) | null = null;
@@ -322,6 +347,7 @@ export function endpoint(
   hosted?: HostedSync,
   reminders?: RemindersHost,
   drawings?: Drawings,
+  fleet?: FleetTools,
 ): DuckEndpoint {
   const listeners = new Set<(ev: DuckEvent) => void>();
   const say = (ev: DuckEvent) => {
@@ -428,6 +454,12 @@ export function endpoint(
     });
   };
   reminders?.subscribe((pulse) => sendReminders(say, pulse));
+  // The work waiting for a machine that's off (fleet plan F3.2).
+  const sendWaiting = (to = say) => {
+    if (!fleet) return;
+    to({ type: "waiting", items: fleet.waiting().map((w) => ({ id: w.id, machine: w.machineName, task: w.task, at: w.at })) });
+  };
+  fleet?.onChange(() => sendWaiting());
   const needTrust = () => {
     if (!trust) throw new Error("Duck's trust settings didn't load.");
     return trust;
@@ -446,6 +478,7 @@ export function endpoint(
   async function handle(msg: ClientMessage, answer: (ev: DuckEvent) => void): Promise<void> {
     switch (msg.type) {
       case "send":
+        if (fleetDraining) throw new Error("Duck is moving to another computer; send it again in a moment.");
         await e.send(msg);
         return;
       case "stop":
@@ -492,6 +525,7 @@ export function endpoint(
         await sendSkills(answer).catch(fail);
         if (reader) answer({ type: "reader", reader: reader.reader.view() });
         sendReminders(answer);
+        sendWaiting(answer);
         await sendSpend(answer);
         return;
       case "settings.set":
@@ -616,6 +650,9 @@ export function endpoint(
       }
       case "canvas":
         drawings?.viewing(msg.surface, msg.drawingId);
+        return;
+      case "waiting.drop":
+        await fleet?.drop(msg.id);
         return;
       case "task.diff": {
         const t = tasks?.get(msg.taskId);
@@ -880,6 +917,8 @@ export function initAssistant(): Promise<void> {
     const warnReminders = (e: unknown) => console.warn("duck: reminders", e);
     const watchReminders = () => {
       void remindersWatch(ws()).catch(warnReminders);
+      // The repo the other machines mirror (fleet plan F5.2).
+      void fleetSetWorkspace(ws() || null).catch(() => {});
       void reminders.load().catch(warnReminders);
     };
     watchReminders();
@@ -985,19 +1024,79 @@ export function initAssistant(): Promise<void> {
     void hosted.sync().catch((e: unknown) => console.warn("duck: the hosted MCP servers didn't load", e));
     // Tools that run where they act (H1): the PC's here, in process (H2: Steam,
     // the media sessions, opening a link); the phone's over its socket.
-    const hosts = createHosts((host) => toolsOn(TOOLS, host));
-    connectLocal(
+    let self: MachineRef | null = null;
+    const hosts = createHosts((host) => toolsOn(TOOLS, host), () => self);
+    const pcTools = pcHandlers({
+      library: steamLibrary,
+      storeSearch: steamStoreSearch,
+      activity: steamActivity,
+      open: pcOpen,
+      nowPlaying: mediaNowPlaying,
+      control: mediaControl,
+    });
+    connectLocal(hosts, "pc", pcTools);
+    // The other Workbench machines (fleet plan F3.1): at the main, their `pc` and
+    // their Workbench come over the fleet's link, and Duck's tools see every
+    // machine's sessions through one port; elsewhere, this machine serves its own
+    // to the main.
+    const hostSend = (to: string, text: string) =>
+      void fleetHostSend(to, text).catch((e: unknown) => console.warn("duck: a message to another machine was dropped", e));
+    // The user's machines and the work waiting for one that's off (F3.2); a task
+    // goes back to its thread when its machine connects.
+    const fleetTools = createFleetTools({
+      store: { put: waitingPut, list: waitingList, delete: waitingDelete },
+      wakeSend: fleetWake,
+      tell: async (threadId, text) => {
+        if (!engineRef) throw new Error("Duck isn't started");
+        await engineRef.send({ threadId, text: eventText(text), source: "event" });
+      },
+    });
+    void fleetTools.load().catch((e: unknown) => console.warn("duck: the waiting queue didn't load", e));
+    // Projects' git remotes (F3.2), to tell the same project on two machines.
+    const gitRemotes = createRemotes(gitOriginUrl);
+    let fleetPort: FleetPort | null = null;
+    const hub = createFleetHub({
       hosts,
-      "pc",
-      pcHandlers({
-        library: steamLibrary,
-        storeSearch: steamStoreSearch,
-        activity: steamActivity,
-        open: pcOpen,
-        nowPlaying: mediaNowPlaying,
-        control: mediaControl,
-      }),
-    );
+      send: hostSend,
+      events: (n, a) => fleetPort?.dispatch(n, a),
+      connected: (id) => {
+        if (duckHere) void fleetTools.connected(id);
+      },
+    });
+    fleetPort = createFleetPort(localPort, () => self?.name ?? "this computer", () => hub.ports(), gitRemotes);
+    const fleetLink = runFleetLink({
+      status: () => fleetStatus().catch(() => null),
+      hub,
+      serve: (main, name) => serveFleet({ main, name, pc: pcTools, port: localPort, send: hostSend, remotes: gitRemotes }),
+      setSelf: (m) => (self = m),
+      onStatus: (s) => {
+        fleetTools.setStatus(s);
+        duckHere = !s.config.duck || s.config.duck === s.me.id;
+      },
+      send: hostSend,
+    });
+    void onFleetHost((from, text) => fleetLink.receive(from, text)).catch(() => {});
+    // The election (F6.1): a handover waits for Duck's turns to finish (up to a
+    // minute; the backend stops waiting then), and taking over from another
+    // machine starts Duck again on the copy it installed.
+    void onFleetDrain((on) => {
+      fleetDraining = on;
+      if (!on) return;
+      void (async () => {
+        const until = Date.now() + 60_000;
+        while (Date.now() < until && engineRef && s.threads().some((t) => engineRef!.state(t.id) !== "idle"))
+          await new Promise((r) => setTimeout(r, 500));
+        await fleetDrained().catch(() => {});
+      })();
+    }).catch(() => {});
+    void onDuckPromoted(() => location.reload()).catch(() => {});
+    // A merge after a split (F6.2): said in the latest thread.
+    void onFleetMerged((text) => {
+      const t = s.threads()[0];
+      if (t) void engineRef?.notice(t.id, { kind: "note", text }).catch(() => {});
+    }).catch(() => {});
+    void onFleetChanged(() => void fleetLink.look()).catch(() => {});
+    void fleetLink.look();
     const engine = createEngine({
       attachments: {
         prepare: attachPrepare,
@@ -1042,7 +1141,9 @@ export function initAssistant(): Promise<void> {
       eventLevel: (threadId, level) => levels.set(threadId, level),
       store: s,
       registry,
-      port: localPort,
+      // Every machine's Workbench, for Duck's tools (fleet plan F3.1).
+      port: fleetPort,
+      fleet: fleetTools,
       gate: createPolicy({ settings: settings.get, trust, messages: s.loaded }),
       settings: settings.get,
       degraded: () => localPort.spend().then((x) => x.softReached),
@@ -1173,8 +1274,10 @@ export function initAssistant(): Promise<void> {
       startedAt,
       // Every channel at once (H4): the thread, the announcer (spoken with Speak
       // on), the widget's pulse, and a push to the phone with Done and Snooze.
+      // Only where Duck's lease is (F6.1): a machine standing by doesn't fire them.
       announce: (r, late, at) =>
         void (async () => {
+          if (!duckHere) return;
           const threadId = await activeThread();
           const text = late ? `Reminder, late (it was due ${dueText(at)}): ${r.title}` : `Reminder: ${r.title}`;
           await engine.notice(threadId, { kind: "reminder", text });
@@ -1185,6 +1288,7 @@ export function initAssistant(): Promise<void> {
         })().catch(warnReminders),
       ring: (t, late) =>
         void (async () => {
+          if (!duckHere) return;
           const threadId = t.threadId && s.thread(t.threadId) ? t.threadId : await activeThread();
           const what = t.label ? `${t.label} (${t.length})` : t.length;
           const text = late ? `Timer done while the app was closed: ${what}` : `Timer done: ${what}`;
@@ -1230,7 +1334,9 @@ export function initAssistant(): Promise<void> {
     void housekeeping.check().catch(() => {});
     // The first check soon after start: a routine missed while the app was closed
     // runs once now.
-    const tickRoutines = () => void routines.tick().catch((e: unknown) => console.warn("duck: a routine failed", e));
+    const tickRoutines = () => {
+      if (duckHere) void routines.tick().catch((e: unknown) => console.warn("duck: a routine failed", e));
+    };
     setTimeout(tickRoutines, 30_000);
     setInterval(tickRoutines, ROUTINE_CHECK_MS);
     const ep = endpoint(
@@ -1283,9 +1389,15 @@ export function initAssistant(): Promise<void> {
       hosted,
       reminders,
       drawings,
+      fleetTools,
     );
     epRef = ep;
-    duck = createLocalTransport(ep);
+    // The drawer talks to this engine, or to the main's when that's another
+    // machine (fleet plan F3.1b); the other machines' drawers talk to this one.
+    const drawer = createSwitchTransport(createLocalTransport(ep));
+    duck = drawer;
+    hub.setEndpoint(ep);
+    fleetLink.setDrawer(drawer);
     bridge = startRemoteBridge({
       duck: ep,
       link: ipcLink,
@@ -1366,4 +1478,14 @@ export function closeReminder(id: string, state: "done" | "dismissed"): Promise<
 /** The transport to the running Duck, or `null` until `initAssistant` finished. */
 export function getDuck(): Transport | null {
   return duck;
+}
+
+/** Which machine the drawer's Duck is on when it isn't this one (fleet plan
+ *  F3.1b), and every change of it: the drawer starts over on one. */
+export function duckWhere(): string | null {
+  return duck?.where() ?? null;
+}
+
+export function onDuckSwitch(cb: (where: string | null) => void): () => void {
+  return duck?.onSwitch(cb) ?? (() => {});
 }

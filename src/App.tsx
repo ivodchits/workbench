@@ -50,6 +50,7 @@ import { initRemoteActions } from "./state/remoteActions";
 import { initNotifications } from "./state/notifications";
 import { startDuckBadge } from "./state/duckBadgeHost";
 import { initRemoteServer } from "./state/remoteServer";
+import { initFleet } from "./state/fleet";
 import { draftImageNames } from "./state/composer";
 import { prunePastedImages } from "./ipc/os";
 import RemoteApprovalHost from "./panels/RemoteApproval";
@@ -108,6 +109,7 @@ function App() {
     // follow its device and auth changes (step R2).
     initRemoteActions();
     initRemoteServer();
+    initFleet();
     // Notification routing + escalation (step 4.6): route needs-you to the configured
     // destinations and watch for held/stuck cards. App-lifetime, idempotent.
     initNotifications();

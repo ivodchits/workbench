@@ -59,6 +59,11 @@ header { display: flex; align-items: center; justify-content: space-between; gap
   border-radius: 50%; background: var(--accent); box-shadow: 0 0 0 2px var(--bg);
 }
 #newBtn { min-height: 38px; padding: 6px 12px; font-size: 13px; color: var(--accent); border-color: var(--accent); }
+/* The machine picker (fleet plan F2.2): whose sessions are shown. */
+#machine {
+  min-height: 38px; max-width: 38vw; padding: 4px 6px; font: 13px var(--wb-mono);
+  color: var(--fg); background: var(--panel); border: 1px solid var(--line); border-radius: 6px;
+}
 #conn.live { color: var(--done); }
 #conn.off { color: var(--needs); }
 #conn.wait { color: var(--dim); }

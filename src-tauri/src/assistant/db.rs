@@ -27,6 +27,8 @@ impl DuckDb {
         let conn = Connection::open(path)?;
         conn.execute_batch("PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL;")?;
         crate::db::run_migrations(&conn, MIGRATIONS)?;
+        // The replication log's triggers, from the schema as it is now (fleet F5.1).
+        crate::fleet::repl::install(&conn)?;
         Ok(Self {
             conn: Mutex::new(conn),
         })
@@ -39,6 +41,52 @@ impl DuckDb {
         Ok(Self {
             conn: Mutex::new(conn),
         })
+    }
+
+    /// Become the copy of another machine's `duck.db` (fleet plan F6.1: this machine
+    /// takes over as Duck's main). The live file goes aside as `backup`; the copy is
+    /// put at `live`, migrated, and given a fresh replication log. Returns the new
+    /// connection's handle for what the caller does next (the paths' rebase).
+    pub fn become_copy(&self, live: &Path, copy: &Path, backup: &Path, then: impl FnOnce(&Connection) -> Result<(), String>) -> Result<(), String> {
+        let mut conn = self.conn.lock().expect("duck db lock poisoned");
+        let placeholder = Connection::open_in_memory().map_err(|e| e.to_string())?;
+        drop(std::mem::replace(&mut *conn, placeholder)); // closes the live file
+        let side = |p: &Path, ext: &str| std::path::PathBuf::from(format!("{}{ext}", p.display()));
+        for ext in ["", "-wal", "-shm"] {
+            let _ = std::fs::remove_file(side(backup, ext));
+            if side(live, ext).exists() {
+                std::fs::rename(side(live, ext), side(backup, ext)).map_err(|e| format!("keeping the old duck.db: {e}"))?;
+            }
+        }
+        let reopen = |p: &Path| -> Result<Connection, String> {
+            let c = Connection::open(p).map_err(|e| e.to_string())?;
+            c.execute_batch("PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL;").map_err(|e| e.to_string())?;
+            Ok(c)
+        };
+        let installed = std::fs::copy(copy, live).map_err(|e| format!("installing the copy: {e}")).and_then(|_| {
+            let c = reopen(live)?;
+            crate::db::run_migrations(&c, MIGRATIONS).map_err(|e| e.to_string())?;
+            // A new history: the other machines take a snapshot of this one.
+            c.execute_batch("DELETE FROM repl_state; DELETE FROM repl_log;").map_err(|e| e.to_string())?;
+            crate::fleet::repl::install(&c).map_err(|e| e.to_string())?;
+            then(&c)?;
+            Ok(c)
+        });
+        match installed {
+            Ok(c) => {
+                *conn = c;
+                Ok(())
+            }
+            Err(e) => {
+                // Put the old one back, as it was.
+                let _ = std::fs::remove_file(live);
+                for ext in ["", "-wal", "-shm"] {
+                    let _ = std::fs::rename(side(backup, ext), side(live, ext));
+                }
+                *conn = reopen(live).map_err(|x| format!("{e}; and reopening the old one: {x}"))?;
+                Err(e)
+            }
+        }
     }
 
     pub fn meta_get(&self, key: &str) -> rusqlite::Result<Option<String>> {
@@ -60,7 +108,7 @@ impl DuckDb {
 
 /// Ordered schema migrations. Append-only: index `i` upgrades `user_version` from
 /// `i` to `i + 1`.
-const MIGRATIONS: &[&str] = &[
+pub(super) const MIGRATIONS: &[&str] = &[
     // v0 -> v1 (step A1): the usage ledger, one row per metered API call, written by
     // the proxy from the response's own `usage`. `ts` is epoch milliseconds; `purpose`
     // is what the caller said the call was for (`x-wb-purpose`); `cache_w` sums the
@@ -327,6 +375,15 @@ const MIGRATIONS: &[&str] = &[
     );
     CREATE INDEX idx_assistant_image_spend_ts ON assistant_image_spend(ts);
     "#,
+    // Fleet plan F3.2: work waiting for a machine that's off (`waiting.rs`), as JSON
+    // the engine writes.
+    r#"
+    CREATE TABLE assistant_waiting (
+        id          TEXT PRIMARY KEY,
+        data        TEXT NOT NULL,
+        created_at  INTEGER NOT NULL
+    );
+    "#,
 ];
 
 #[cfg(test)]
@@ -334,9 +391,43 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_machine_becomes_the_copy_and_keeps_its_old_state() {
+        let dir = std::env::temp_dir().join(format!("wb-become-{}", uuid::Uuid::new_v4().simple()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (live, copy, backup) = (dir.join("duck.db"), dir.join("copy.db"), dir.join("duck.db.before"));
+        let db = DuckDb::open(&live).unwrap();
+        db.meta_set("who", "the old me").unwrap();
+        {
+            let other = DuckDb::open(&copy).unwrap();
+            other.meta_set("who", "the main's").unwrap();
+        }
+        let mut seen = None;
+        db.become_copy(&live, &copy, &backup, |c| {
+            seen = c.query_row("SELECT value FROM meta WHERE key = 'who'", [], |r| r.get::<_, String>(0)).ok();
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(seen.as_deref(), Some("the main's"));
+        assert_eq!(db.meta_get("who").unwrap().as_deref(), Some("the main's"));
+        // A fresh log: a new epoch, nothing in it from before.
+        let n: i64 = db.conn.lock().unwrap().query_row("SELECT COUNT(*) FROM repl_log", [], |r| r.get(0)).unwrap();
+        assert_eq!(n, 0);
+        // The old state is kept beside it.
+        let old = Connection::open(&backup).unwrap();
+        let who: String = old.query_row("SELECT value FROM meta WHERE key = 'who'", [], |r| r.get(0)).unwrap();
+        assert_eq!(who, "the old me");
+
+        // A copy that can't be installed puts the live one back.
+        std::fs::write(dir.join("broken.db"), b"not a database").unwrap();
+        let err = db.become_copy(&live, &dir.join("broken.db"), &dir.join("again"), |_| Ok(()));
+        assert!(err.is_err());
+        assert_eq!(db.meta_get("who").unwrap().as_deref(), Some("the main's"));
+    }
+
+    #[test]
     fn s1_threads_from_before_modes_are_the_assistants() {
         let conn = Connection::open_in_memory().unwrap();
-        crate::db::run_migrations(&conn, &MIGRATIONS[..MIGRATIONS.len() - 6]).unwrap();
+        crate::db::run_migrations(&conn, &MIGRATIONS[..MIGRATIONS.len() - 7]).unwrap();
         conn.execute("INSERT INTO assistant_threads (id, mode, created, updated) VALUES ('old', 'chat', 1, 1)", []).unwrap();
         crate::db::run_migrations(&conn, MIGRATIONS).unwrap();
         let mode: String = conn.query_row("SELECT mode FROM assistant_threads WHERE id = 'old'", [], |r| r.get(0)).unwrap();

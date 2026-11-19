@@ -18,7 +18,7 @@
 // come next, as your message there, and their reply is spoken as yours would be.
 
 import { useSyncExternalStore } from "react";
-import { getDuck, initAssistant } from "../../assistant";
+import { duckWhere, getDuck, initAssistant, onDuckSwitch } from "../../assistant";
 import type { AttachmentRef } from "../../assistant/attachments";
 import { notifyAlert } from "../../ipc/attention";
 import { getNotificationConfig } from "../../state/notifications";
@@ -39,6 +39,7 @@ import type {
   TaskView,
   TrustView,
   TurnState,
+  WaitingView,
 } from "../../assistant/protocol";
 import type { ReaderView } from "../../assistant/reader";
 import type { ReminderView } from "../../assistant/reminders";
@@ -57,6 +58,10 @@ import { listenAction, type ListenRequest } from "../../assistant/listen";
 export interface DuckState {
   /** Connected to the engine. */
   ready: boolean;
+  /** The machine Duck is on when it isn't this one (fleet plan F3.1b). */
+  where: string | null;
+  /** Work waiting for a machine that's off (fleet plan F3.2). */
+  waiting: WaitingView[];
   open: boolean;
   threads: ThreadRow[];
   /** The thread on screen; `null` = a new thread, created by the first send. */
@@ -140,6 +145,8 @@ export const DEFAULT_DRAWER: AssistantDrawerPrefs = {
 
 let state: DuckState = {
   ready: false,
+  where: null,
+  waiting: [],
   open: false,
   threads: [],
   current: null,
@@ -227,6 +234,11 @@ function onScreen(threadId: string): boolean {
 
 /** Every thread read: the unread counts (the overview's button, and the Duck
  *  button's dot) go. The news lines stay, no longer bold. */
+/** Take a task off the waiting queue (fleet plan F3.2). */
+export function dropWaiting(id: string): void {
+  post({ type: "waiting.drop", id });
+}
+
 export function clearUnread(): void {
   set({ unread: {} });
   savePrefs({ unread: {} });
@@ -481,6 +493,9 @@ function onEvent(e: DuckEvent): void {
     case "reader":
       set({ reader: e.reader });
       break;
+    case "waiting":
+      set({ waiting: e.items });
+      break;
     case "reminders":
       set({
         reminders: e.reminders,
@@ -549,6 +564,28 @@ export function connectDuck(): Promise<void> {
       return;
     }
     duck.subscribe(onEvent);
+    set({ where: duckWhere() });
+    // Duck moved to another machine, or back here: what was shown was the other
+    // engine's, so start over from its sync.
+    onDuckSwitch((where) => {
+      set({
+        where,
+        ready: false,
+        threads: [],
+        current: null,
+        messages: {},
+        streaming: {},
+        provisional: {},
+        states: {},
+        queued: {},
+        asks: [],
+        turns: {},
+        routing: {},
+        error: null,
+        waiting: [],
+      });
+      duck.send({ type: "sync" });
+    });
     duck.send({ type: "sync" });
   })();
   return connecting;

@@ -370,6 +370,10 @@ export const drawingWrite = (workspace: string, folder: string, id: string, n: n
   invoke("assistant_drawing_write", { workspace, folder, id, n, ext, text });
 export const drawingPut = (id: string, data: string): Promise<void> => invoke("assistant_drawing_put", { id, data });
 export const drawingList = (limit: number): Promise<string[]> => invoke("assistant_drawing_list", { limit });
+/** The waiting queue (fleet plan F3.2): work for a machine that's off, as JSON. */
+export const waitingPut = (id: string, data: string): Promise<void> => invoke("assistant_waiting_put", { id, data });
+export const waitingList = (): Promise<string[]> => invoke("assistant_waiting_list");
+export const waitingDelete = (id: string): Promise<boolean> => invoke("assistant_waiting_delete", { id });
 
 // Plan autopilot records (step P1), one per session.
 /** A turn's timing (step D3): the engine's JSON, by when the turn started. */

@@ -7387,6 +7387,11 @@ checked in the scratch PTY first.
 
 #### Step H6 — Duck on the home server
 
+> **Superseded (2026-11-19) by `fleet-plan.md`.** Duck is no longer fixed on the server:
+> one Duck runs on whichever instance is main (desktop → server → laptop), the others
+> are hosts, and the server runs research sessions only. The outline below is kept for
+> history; build from the fleet plan.
+
 - **Goal:** Duck works while the PC is off; Workbench is one more host.
 - **Depends on:** H1, H4. **Gate:** the server exists. **Design first:** a design pass
   fills in this step before any code (the server's OS and hardware, the process model,
@@ -8304,7 +8309,7 @@ T2 goes live after the replay check in its done-when (the past week's prompts th
 | 25 | ~~Autopilot defaults?~~ **Compact only after a finished step, judged per step (usually yes); never mid-job. Continue with "continue the implementation" / "proceed to the next step", or a situational prompt** (2026-10-18). Max steps per run: default 5, adjustable. | ✔ |
 | 26 | ~~Quiet hours?~~ **All etiquette is configurable; quiet hours optional and off by default; manual DND (with durations and a voice command) is the main control; a master Speak toggle gates all voice output** (2026-10-18). | ✔ |
 | 27 | ~~Music service?~~ **YouTube Music** (comes with the YouTube subscription), behind a provider interface; **Spotify** only if you switch for its API (2026-10-20). | ✔ |
-| 28 | ~~Duck with the PC off?~~ **An always-on home server runs Duck's core** (H6), **plus a fallback brain on the phone with its own capped key** (H7) (2026-10-20). Still open: the server's hardware and OS. | H6 |
+| 28 | ~~Duck with the PC off?~~ **An always-on home server runs Duck's core** (H6), **plus a fallback brain on the phone with its own capped key** (H7) (2026-10-20). Revised 2026-11-19: the core runs on whichever instance is main, the server is Fedora (`fleet-plan.md`). Still open: the server's hardware. | H6 → fleet |
 | 29 | Steam Web API key for playtime and friends, or the local files only? | H2 |
 | 30 | Which Google plan do you have (AI Pro or Ultra), and do its developer credits pay for Gemini image generation? Decides G6's route. | G6 |
 | 31 | Drawing over the subscription thresholds: **wait for the window** (proposed default, to keep API credits) or fall back to an API worker as other tasks do? | G3 |
@@ -8372,7 +8377,7 @@ T2 goes live after the replay check in its done-when (the past week's prompts th
 | H4 | Duck's reminders and timers | ☑ |
 | H8 | Reminders: project and general, with a widget | ☑ |
 | H5 | The phone as a host (with R4) | ☑ (emulator only) |
-| H6 | Duck on the home server (gate: the server) | ☐ |
+| H6 | Duck on the home server: superseded by `fleet-plan.md` (F1–F8) | ☐ |
 | H7 | The phone's fallback brain | ☑ (before H6; emulator only, no real phone key yet) |
 | G1 | Attachments: paste, drop and pick files into Duck | ☑ (desktop by hand and the phone's camera not tried; workers can't make .xlsx without a shell) |
 | G2 | Talking about what you drop | ☑ (by hand with the key, the mic and a phone share not tried yet) |

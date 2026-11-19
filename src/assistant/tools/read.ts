@@ -8,6 +8,7 @@
 // rules cover the rest. Notes are the user's writing but are returned as data too;
 // a note can't grant Duck anything.
 
+import { remoteMatches } from "../remotes";
 import { z } from "zod";
 import { readPlainText } from "../../transcript/plainText";
 import type { ChoiceRef, ProjectRef, SessionRef, WorkbenchPort } from "../port";
@@ -56,13 +57,23 @@ function names(list: { name?: string; title?: string; id: string }[]): string {
   return list.map((x) => `"${x.name ?? x.title}" (${x.id})`).join(", ");
 }
 
+/** A project by id, name or repo (`owner/repo`). With several machines (fleet plan
+ *  F3.1) the name can carry one, `workbench@laptop`; a bare name that several
+ *  machines have is the one on the machine Duck runs on (listed first). */
 export function findProject(port: WorkbenchPort, ref: string): ProjectRef {
   const all = port.listProjects();
+  const at = ref.lastIndexOf("@");
+  const [name, machine] = at > 0 ? [ref.slice(0, at), ref.slice(at + 1)] : [ref, null];
+  const onMachine = (p: ProjectRef) => machine === null || norm(p.machine ?? "") === norm(machine);
   const hit =
     all.find((p) => p.id === ref) ??
-    all.find((p) => norm(p.name) === norm(ref));
+    all.find((p) => norm(p.name) === norm(name) && onMachine(p)) ??
+    (machine !== null ? all.find((p) => norm(p.name) === norm(ref)) : undefined) ??
+    // By its repo (F3.2): `owner/repo`, or the remote's URL.
+    all.find((p) => !!p.gitRemote && remoteMatches(p.gitRemote, name) && onMachine(p));
   if (hit) return hit;
-  throw new Error(`no project "${ref}". Projects: ${names(all) || "none"}.`);
+  const listed = all.map((p) => `"${p.name}${p.machine ? `@${p.machine}` : ""}" (${p.id})`).join(", ");
+  throw new Error(`no project "${ref}". Projects: ${listed || "none"}.`);
 }
 
 export function findSession(
@@ -104,7 +115,9 @@ export function choiceLine(c: ChoiceRef): string {
   return `permission: ${c.toolName}${line ? ` ${line}` : ""}`;
 }
 
-export const projectArg = z.string().describe("The project's id or name.");
+export const projectArg = z
+  .string()
+  .describe("The project's id or name; name@machine for another of the user's computers.");
 export const sessionArg = z
   .string()
   .describe("The session's id, or its title (unique, or with `project`).");
@@ -114,6 +127,7 @@ function sessionSummary(s: SessionRef, projects: ProjectRef[], now: number) {
     id: s.id,
     title: s.title,
     project: projects.find((p) => p.id === s.projectId)?.name ?? s.projectId,
+    machine: s.machine,
     phase: s.phase,
     needs: s.choice ? choiceLine(s.choice) : null,
     task: s.taskNote,
@@ -148,6 +162,8 @@ export const listProjects = defineTool({
           name: p.name,
           group: p.group,
           path: p.rootPath,
+          machine: p.machine,
+          repo: p.gitRemote,
           remote: p.remote,
           sessions: mine.length,
           needYou: mine.filter((s) => s.phase === "needs_you").length || null,

@@ -64,7 +64,7 @@ use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{ConnectInfo, DefaultBodyLimit, Query, State};
 use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::{Html, IntoResponse, Response};
-use axum::routing::{get, post};
+use axum::routing::{any, get, post};
 use axum::{Json, Router};
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -111,6 +111,7 @@ async fn run(listener: std::net::TcpListener, state: Arc<RemoteState>) -> std::i
         .route("/api/auth/session", post(auth_session))
         .route("/share", post(share_lost))
         .route("/api/state", get(api_state))
+        .route("/api/fleet", get(api_fleet))
         .route("/api/ws", get(api_ws))
         .route("/api/action", post(api_action))
         .route("/api/term", get(api_term))
@@ -145,6 +146,12 @@ async fn run(listener: std::net::TcpListener, state: Arc<RemoteState>) -> std::i
         .route("/api/push/test", post(super::push::test))
         // A reminder push's Done and Snooze (step H4): its one-use token is the key.
         .route("/api/reminders/action", post(super::push::reminder_action))
+        // Another machine's sessions, and Duck at the main (fleet plan F2.2).
+        .route(
+            "/m/{id}/{*rest}",
+            any(super::relay::machine).layer(DefaultBodyLimit::max(super::uploads::FILE_MAX)),
+        )
+        .layer(axum::middleware::from_fn_with_state(state.clone(), super::relay::duck))
         .with_state(state);
     axum::serve(
         listener,
@@ -414,6 +421,24 @@ async fn api_state(
     }
     let snap = state.inner.lock().unwrap().snapshot.clone();
     ([(header::CONTENT_TYPE, "application/json")], snap).into_response()
+}
+
+/// The machines of the fleet as the phone keeps them (fleet plan F2.1): each one's
+/// public address, in priority order, the main marked. A machine on its own is a
+/// fleet of one.
+async fn api_fleet(
+    State(state): State<Arc<RemoteState>>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+) -> Response {
+    let addr = client_addr(peer, &headers);
+    if let Err(refusal) = authed(&state, bearer(&headers).as_deref(), &addr) {
+        return refusal;
+    }
+    match crate::fleet::get(&state.app) {
+        Some(fleet) => Json(fleet.phone_list()).into_response(),
+        None => Json(json!({ "here": null, "main": null, "pinned": false, "instances": [] })).into_response(),
+    }
 }
 
 /// Submit one action over HTTP (auth: bearer header). The body is a JSON action object

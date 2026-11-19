@@ -44,16 +44,25 @@
 //! boot), adds the funnel while the switch and the server are on, removes it when
 //! either goes off, and re-checks now and then so the menu says what is missing.
 //!
+//! **The fleet (fleet plan F2.1):** the paired devices are the fleet's. A change here
+//! (pairing, approval, revoke, a first use after a while) goes to the other machines
+//! ([`crate::fleet`]), and theirs come here through [`crate::fleet::DeviceBook`]. A
+//! removed device leaves a tombstone row (no token) so gossip can't bring it back.
+//! This machine's public address goes to the fleet too, for the phone's list. The
+//! phone's requests for another machine, and Duck's when the main is elsewhere, are
+//! relayed to it ([`relay`], F2.2).
+//!
 //! **Duck (step R1):** [`assistant`] carries the Duck Protocol to the phone, through
 //! the webview like the dashboard: its own socket and broadcast channel (per run,
 //! like the snapshot's), plus routes for the phone's voice clips and spoken replies.
 
 pub mod assistant;
-mod auth;
-mod funnel;
+pub(crate) mod auth;
+pub(crate) mod funnel;
 mod notes;
 pub mod office;
 pub mod push;
+mod relay;
 mod server;
 mod transcript;
 mod uploads;
@@ -69,6 +78,7 @@ use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::sync::{broadcast, watch};
 
 use crate::db::Db;
+use crate::fleet::proto::PairedDevice;
 use auth::{AuthFailure, AuthLog, PairGate, PairOutcome};
 use funnel::{PublicPhase, PublicStatus};
 
@@ -92,6 +102,10 @@ const RECHECK_IDLE: Duration = Duration::from_secs(300);
 
 /// Longest device name kept from a pairing request.
 const NAME_MAX: usize = 40;
+
+/// A device's use is told to the fleet when it moves this far (its 30 days unused
+/// count from the latest use on any machine).
+const SEEN_GOSSIP_SECS: u64 = 3600;
 
 /// Tauri-managed (`Arc<RemoteState>`) shared state for the remote server. Created and
 /// managed in [`init`] during setup, mirroring how the hook server manages its
@@ -142,6 +156,8 @@ struct RemoteInner {
     snapshot: String,
     /// Every paired device, approved or waiting (mirrors `remote_devices`).
     devices: Vec<Device>,
+    /// Removed devices (id, version), kept for the fleet's gossip.
+    tombstones: Vec<(String, u64)>,
     /// The pairing code and the limits on trying it.
     gate: PairGate,
     /// What device keys sign, and the sessions their proofs bought (assistant R3).
@@ -164,6 +180,24 @@ struct Device {
     /// The device key's public half (base64url SEC1), when it paired with one. Its
     /// token alone is then refused: it needs a session.
     public_key: Option<String>,
+    /// Milliseconds since the epoch of this version (fleet plan F2.1).
+    updated_at: u64,
+}
+
+impl Device {
+    fn record(&self) -> PairedDevice {
+        PairedDevice {
+            id: self.id.clone(),
+            token: self.token.clone(),
+            name: self.name.clone(),
+            paired_at: self.paired_at,
+            approved: self.approved,
+            public_key: self.public_key.clone(),
+            last_seen: self.last_seen,
+            updated_at: self.updated_at,
+            removed: false,
+        }
+    }
 }
 
 /// What a presented token is worth.
@@ -181,7 +215,7 @@ enum Access {
 /// Never fails the app — a bind error only means remote access stays off until
 /// re-enabled.
 pub fn init(app: &AppHandle) {
-    let mut devices = load_devices(app);
+    let (mut devices, mut tombstones) = load_devices(app);
     let now = now();
     let (stale, live): (Vec<Device>, Vec<Device>) = devices
         .drain(..)
@@ -189,7 +223,9 @@ pub fn init(app: &AppHandle) {
     // Said in the failure log, so a device that quietly stopped working is explained.
     let mut log = AuthLog::default();
     for d in &stale {
-        delete_device_row(app, &d.id);
+        let at = now_ms().max(d.updated_at + 1);
+        tombstone_row(app, &d.id, at);
+        tombstones.push((d.id.clone(), at));
         if let Some(why) = auth::device_expired(d.approved, d.paired_at, d.last_seen, now) {
             let addr = d.last_addr.as_deref().unwrap_or("—");
             log.record(addr, &format!("“{}” {why}, removed", d.name), now);
@@ -215,6 +251,7 @@ pub fn init(app: &AppHandle) {
             duck: None,
             snapshot: "{}".to_string(),
             devices: live,
+            tombstones,
             gate: PairGate::default(),
             challenges: auth::Challenges::default(),
             sessions: auth::Sessions::default(),
@@ -243,8 +280,8 @@ pub fn init(app: &AppHandle) {
         .ok();
 }
 
-/// Every paired device row.
-fn load_devices(app: &AppHandle) -> Vec<Device> {
+/// Every paired device row, and the tombstones (id, version).
+fn load_devices(app: &AppHandle) -> (Vec<Device>, Vec<(String, u64)>) {
     let db = app.state::<Db>();
     let conn = db.conn.lock().expect("db lock poisoned");
     // A build from before step R2 sharing this database pairs devices with no id.
@@ -253,33 +290,171 @@ fn load_devices(app: &AppHandle) -> Vec<Device> {
         [],
     );
     let mut out = Vec::new();
+    let mut tombs = Vec::new();
     if let Ok(mut stmt) = conn.prepare(
-        "SELECT id, token, name, paired_at, last_seen, last_addr, approved, public_key FROM remote_devices",
+        "SELECT id, token, name, paired_at, last_seen, last_addr, approved, public_key, updated_at, removed
+         FROM remote_devices",
     ) {
         if let Ok(rows) = stmt.query_map([], |r| {
-            Ok(Device {
-                id: r.get(0)?,
-                token: r.get(1)?,
-                name: r.get(2)?,
-                paired_at: r.get::<_, i64>(3)? as u64,
-                last_seen: r.get::<_, Option<i64>>(4)?.map(|v| v as u64),
-                last_addr: r.get(5)?,
-                approved: r.get::<_, i64>(6)? != 0,
-                public_key: r.get(7)?,
-            })
+            Ok((
+                Device {
+                    id: r.get(0)?,
+                    token: r.get(1)?,
+                    name: r.get(2)?,
+                    paired_at: r.get::<_, i64>(3)? as u64,
+                    last_seen: r.get::<_, Option<i64>>(4)?.map(|v| v as u64),
+                    last_addr: r.get(5)?,
+                    approved: r.get::<_, i64>(6)? != 0,
+                    public_key: r.get(7)?,
+                    updated_at: r.get::<_, i64>(8)? as u64,
+                },
+                r.get::<_, i64>(9)? != 0,
+            ))
         }) {
-            out.extend(rows.flatten());
+            for (d, removed) in rows.flatten() {
+                if removed {
+                    tombs.push((d.id, d.updated_at));
+                } else {
+                    out.push(d);
+                }
+            }
         }
     }
-    out
+    (out, tombs)
 }
 
-fn delete_device_row(app: &AppHandle, id: &str) {
+/// Turn a device's row into its tombstone: no token (the primary key keeps a value
+/// no phone can present), no key, no name.
+fn tombstone_row(app: &AppHandle, id: &str, at: u64) {
     let db = app.state::<Db>();
     let conn = db.conn.lock().expect("db lock poisoned");
+    write_tombstone(&conn, id, at);
+}
+
+fn write_tombstone(conn: &rusqlite::Connection, id: &str, at: u64) {
     let _ = conn.execute("DELETE FROM remote_devices WHERE id = ?1", [id]);
+    let _ = conn.execute(
+        "INSERT INTO remote_devices (id, token, name, paired_at, approved, updated_at, removed)
+         VALUES (?1, ?2, '', 0, 0, ?3, 1)",
+        (id, format!("-{id}"), at as i64),
+    );
     // Its push subscription goes with it (step R6).
     let _ = conn.execute("DELETE FROM push_subscriptions WHERE device_id = ?1", [id]);
+}
+
+fn write_device(conn: &rusqlite::Connection, d: &Device) {
+    let _ = conn.execute("DELETE FROM remote_devices WHERE id = ?1", [&d.id]);
+    let _ = conn.execute(
+        "INSERT INTO remote_devices (id, token, name, paired_at, last_seen, last_addr, approved, public_key, updated_at, removed)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 0)",
+        (
+            &d.id,
+            &d.token,
+            &d.name,
+            d.paired_at as i64,
+            d.last_seen.map(|v| v as i64),
+            &d.last_addr,
+            d.approved as i64,
+            &d.public_key,
+            d.updated_at as i64,
+        ),
+    );
+}
+
+/// Tell the other machines that the devices changed here. Never with `inner` held.
+fn tell_fleet(state: &RemoteState) {
+    if let Some(fleet) = crate::fleet::get(&state.app) {
+        fleet.devices_changed();
+    }
+}
+
+/// The paired devices, for the fleet to carry.
+pub fn device_book(app: &AppHandle) -> Arc<dyn crate::fleet::DeviceBook> {
+    app.state::<Arc<RemoteState>>().inner().clone()
+}
+
+/// The remote server's port while it listens on the tailnet, for the fleet.
+pub fn tailnet_port(app: &AppHandle) -> Option<u16> {
+    let state = app.try_state::<Arc<RemoteState>>()?;
+    let bound = state.inner.lock().unwrap().bound_addr.is_some();
+    bound.then_some(REMOTE_PORT)
+}
+
+/// This machine's public (Funnel) address while it works, for the fleet.
+pub fn public_url(app: &AppHandle) -> Option<String> {
+    let state = app.try_state::<Arc<RemoteState>>()?;
+    let inner = state.inner.lock().unwrap();
+    public_url_of(&inner.public)
+}
+
+fn public_url_of(p: &PublicStatus) -> Option<String> {
+    (p.phase == PublicPhase::On).then(|| p.url.clone()).flatten()
+}
+
+impl crate::fleet::DeviceBook for RemoteState {
+    fn devices(&self) -> Vec<PairedDevice> {
+        let inner = self.inner.lock().unwrap();
+        inner
+            .devices
+            .iter()
+            .map(Device::record)
+            .chain(inner.tombstones.iter().map(|(id, at)| PairedDevice::tombstone(id, *at)))
+            .collect()
+    }
+
+    fn merge_devices(&self, incoming: &[PairedDevice]) -> bool {
+        let changes = crate::fleet::proto::merge_devices(&self.devices(), incoming);
+        if changes.is_empty() {
+            return false;
+        }
+        let db = self.app.state::<Db>();
+        let conn = db.conn.lock().expect("db lock poisoned");
+        let mut inner = self.inner.lock().unwrap();
+        for c in changes {
+            if c.removed {
+                inner.devices.retain(|d| d.id != c.id);
+                inner.sessions.end_device(&c.id);
+                inner.tombstones.retain(|(id, _)| id != &c.id);
+                inner.tombstones.push((c.id.clone(), c.updated_at));
+                write_tombstone(&conn, &c.id, c.updated_at);
+                continue;
+            }
+            // Where it was last seen from is this machine's own observation.
+            let last_addr = inner.devices.iter().find(|d| d.id == c.id).and_then(|d| d.last_addr.clone());
+            let d = Device {
+                id: c.id.clone(),
+                token: c.token,
+                name: c.name.chars().take(NAME_MAX).collect(),
+                paired_at: c.paired_at,
+                last_seen: c.last_seen,
+                last_addr,
+                approved: c.approved,
+                public_key: c.public_key.filter(|k| auth::parse_public_key(k).is_some()),
+                updated_at: c.updated_at,
+            };
+            write_device(&conn, &d);
+            inner.tombstones.retain(|(id, _)| id != &d.id);
+            inner.devices.retain(|x| x.id != d.id);
+            inner.devices.push(d);
+        }
+        drop(inner);
+        drop(conn);
+        kick(self); // a revoked or no longer approved device's sockets close
+        changed(self);
+        true
+    }
+
+    fn relay_session(&self, device: &str) -> Result<String, String> {
+        let mut inner = self.inner.lock().unwrap();
+        if !inner.running {
+            return Err("remote access is off there".into());
+        }
+        match inner.devices.iter().find(|d| d.id == device) {
+            Some(d) if d.approved => Ok(inner.sessions.start(device, now())),
+            Some(_) => Err("that device isn’t approved there yet".into()),
+            None => Err("that device isn’t paired there".into()),
+        }
+    }
 }
 
 /// Bind loopback (and the Tailscale interface, if it is up) and spawn the axum server.
@@ -334,6 +509,10 @@ fn bind_tailnet(state: &Arc<RemoteState>) -> Result<bool, String> {
     }
     inner.bound_addr = Some(format!("{ip}:{REMOTE_PORT}"));
     inner.tasks.push(task);
+    drop(inner);
+    if let Some(fleet) = crate::fleet::get(&state.app) {
+        fleet.set_remote_port(Some(REMOTE_PORT));
+    }
     Ok(true)
 }
 
@@ -422,19 +601,22 @@ fn set_public(state: &RemoteState, next: PublicStatus, wanted: bool) {
     let moved = {
         let mut inner = state.inner.lock().unwrap();
         if inner.public.enabled != wanted || inner.public == next {
-            false
+            None
         } else {
             inner.public = next;
-            true
+            Some(public_url_of(&inner.public))
         }
     };
-    if moved {
+    if let Some(url) = moved {
         changed(state);
+        if let Some(fleet) = crate::fleet::get(&state.app) {
+            fleet.set_public_url(url);
+        }
     }
 }
 
 /// The first local IPv4 in the Tailscale CGNAT range (100.64.0.0/10), or `None`.
-fn tailscale_ip() -> Option<Ipv4Addr> {
+pub(crate) fn tailscale_ip() -> Option<Ipv4Addr> {
     let addrs = if_addrs::get_if_addrs().ok()?;
     addrs.into_iter().find_map(|iface| match iface.ip() {
         std::net::IpAddr::V4(v4) if is_tailscale_v4(v4) => Some(v4),
@@ -513,19 +695,17 @@ fn try_pair(
         last_addr: Some(addr.to_string()),
         approved: false,
         public_key,
+        updated_at: now_ms(),
     };
     let bound = device.public_key.is_some();
     {
         let db = state.app.state::<Db>();
         let conn = db.conn.lock().expect("db lock poisoned");
-        let _ = conn.execute(
-            "INSERT INTO remote_devices (id, token, name, paired_at, last_seen, last_addr, approved, public_key)
-             VALUES (?1, ?2, ?3, ?4, NULL, ?5, 0, ?6)",
-            (&device.id, &device.token, &device.name, device.paired_at as i64, addr, &device.public_key),
-        );
+        write_device(&conn, &device);
     }
     state.inner.lock().unwrap().devices.push(device);
     changed(state);
+    tell_fleet(state);
     Ok((token, bound))
 }
 
@@ -588,12 +768,17 @@ fn grant(state: &Arc<RemoteState>, device: Device, addr: &str, now: u64) -> Acce
             d.last_addr = Some(addr.to_string());
         }
     }
-    let db = state.app.state::<Db>();
-    let conn = db.conn.lock().expect("db lock poisoned");
-    let _ = conn.execute(
-        "UPDATE remote_devices SET last_seen = ?1, last_addr = ?2 WHERE id = ?3",
-        (now as i64, addr, &device.id),
-    );
+    {
+        let db = state.app.state::<Db>();
+        let conn = db.conn.lock().expect("db lock poisoned");
+        let _ = conn.execute(
+            "UPDATE remote_devices SET last_seen = ?1, last_addr = ?2 WHERE id = ?3",
+            (now as i64, addr, &device.id),
+        );
+    }
+    if device.last_seen.is_none_or(|s| now >= s + SEEN_GOSSIP_SECS) {
+        tell_fleet(state);
+    }
     Access::Granted(device.id)
 }
 
@@ -650,22 +835,35 @@ fn device_valid(state: &RemoteState, id: &str) -> bool {
     inner.running && inner.devices.iter().any(|d| d.id == id && d.approved)
 }
 
-/// Forget a device everywhere and close its sockets.
+/// Forget a device on every machine and close its sockets. It leaves a tombstone.
 fn remove_device(state: &RemoteState, id: &str) {
-    delete_device_row(&state.app, id);
-    {
+    let at = {
         let mut inner = state.inner.lock().unwrap();
+        let old = inner.devices.iter().find(|d| d.id == id).map_or(0, |d| d.updated_at);
+        let at = now_ms().max(old + 1);
         inner.devices.retain(|d| d.id != id);
         inner.sessions.end_device(id);
-    }
+        inner.tombstones.retain(|(t, _)| t != id);
+        inner.tombstones.push((id.to_string(), at));
+        at
+    };
+    tombstone_row(&state.app, id, at);
     kick(state);
     changed(state);
+    tell_fleet(state);
 }
 
 fn now() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+fn now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
         .unwrap_or(0)
 }
 
@@ -805,6 +1003,9 @@ pub fn remote_stop(state: State<'_, Arc<RemoteState>>) -> RemoteStatus {
     }
     kick(st); // mirrored consoles don't ride the broadcast channel
     wake(st);
+    if let Some(fleet) = crate::fleet::get(&st.app) {
+        fleet.set_remote_port(None);
+    }
     let _ = st.app.state::<Db>().meta_set(ENABLED_KEY, "0");
     status_of(st)
 }
@@ -899,20 +1100,19 @@ pub fn remote_approve_device(state: State<'_, Arc<RemoteState>>, id: String) -> 
             Some(d) => {
                 d.approved = true;
                 d.last_seen = Some(now); // the 30 days unused count from here
-                true
+                d.updated_at = now_ms().max(d.updated_at + 1);
+                Some(d.clone())
             }
-            None => false,
+            None => None,
         }
     };
-    if found {
+    if let Some(d) = found {
         let db = st.app.state::<Db>();
         let conn = db.conn.lock().expect("db lock poisoned");
-        let _ = conn.execute(
-            "UPDATE remote_devices SET approved = 1, last_seen = ?1 WHERE id = ?2",
-            (now as i64, &id),
-        );
+        write_device(&conn, &d);
         drop(conn);
         changed(st);
+        tell_fleet(st);
     }
     list_devices(st)
 }

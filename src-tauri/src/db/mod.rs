@@ -263,6 +263,41 @@ const MIGRATIONS: &[&str] = &[
     r#"
     ALTER TABLE instances ADD COLUMN worktree_owned INTEGER NOT NULL DEFAULT 1;
     "#,
+    // v17 -> v18: the fleet's members (fleet plan F1.1), this machine's own record
+    // and tombstones included. `updated_at` (ms) decides which gossiped version wins;
+    // `last_seen` is this machine's observation and isn't gossiped.
+    r#"
+    CREATE TABLE fleet_members (
+        id          TEXT PRIMARY KEY,
+        name        TEXT NOT NULL,
+        public_key  TEXT NOT NULL,
+        ip          TEXT NOT NULL,
+        port        INTEGER NOT NULL,
+        host        TEXT,
+        updated_at  INTEGER NOT NULL,
+        removed     INTEGER NOT NULL DEFAULT 0,
+        last_seen   INTEGER
+    );
+    "#,
+    // v18 -> v19: what sort of machine each member is (fleet plan F1.2: `desktop`,
+    // `laptop`, `server`), which places it in the default priority order.
+    r#"
+    ALTER TABLE fleet_members ADD COLUMN kind TEXT NOT NULL DEFAULT '';
+    "#,
+    // v19 -> v20: pair once, reach every machine (fleet plan F2.1). A member's public
+    // (Funnel) address, for the phone; a paired device's version (ms; the newer
+    // wins when the fleet gossips it) and its tombstone (revoked, denied or expired:
+    // the row stays, with no token, so gossip can't bring it back).
+    r#"
+    ALTER TABLE fleet_members ADD COLUMN public_url TEXT;
+    ALTER TABLE remote_devices ADD COLUMN updated_at INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE remote_devices ADD COLUMN removed INTEGER NOT NULL DEFAULT 0;
+    "#,
+    // v20 -> v21: a member's LAN interface (fleet plan F4.1, Wake-on-LAN), as JSON
+    // (`proto::Lan`).
+    r#"
+    ALTER TABLE fleet_members ADD COLUMN lan TEXT;
+    "#,
 ];
 
 /// Apply any migrations the database hasn't seen yet, advancing

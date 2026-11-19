@@ -1933,6 +1933,13 @@ pub fn git_ignore_add(repo_root: String, patterns: Vec<String>) -> Result<String
     })
 }
 
+/// The repo's `origin` URL, or None (fleet plan F3.2: telling the same project apart
+/// on several machines).
+#[tauri::command]
+pub fn git_origin_url(repo_root: String) -> Option<String> {
+    git_output(Path::new(&repo_root), &["remote", "get-url", "origin"])
+}
+
 /// Fetch from a remote (step 3.11), pruning deleted remote branches. No remote ⇒
 /// the default (usually `origin`).
 #[tauri::command]
