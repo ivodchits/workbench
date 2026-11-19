@@ -1445,7 +1445,7 @@ Both rules are in `prompt.ts`.
 - The subscription brain in the app: built and tested with a fake process, and the same
   flags tried by hand against a stand-in MCP server (M3's As built), not yet through
   Workbench itself.
-- Duck on the home server (H6): not started, gated on the server existing; it needs a
+- Duck on the home server (H6): superseded by `fleet-plan.md` (one Duck on the main of several instances). Not started, gated on the server existing; it needs a
   design pass first. Until then the desktop is Duck's only full engine, and the phone
   brain (H7) its fallback.
 - Recent changes not yet tried by hand: Gmail, Drive and Docs through a real Google
