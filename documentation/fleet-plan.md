@@ -518,6 +518,31 @@ This document. Done when you've approved it; then H6 in `assistant-plan.md` poin
     and cached.
 - **Done when:** memory written on the main is recalled by a replica after it becomes
   the main; an attachment made on the desktop opens in a thread on the laptop.
+- _(Built, 2026-11-19: `src-tauri/src/fleet/files.rs` (`bundle`, `apply_bundle`),
+  the `repoBundle` and `fileChunk` asks, `Fleet::fetch_attachment`,
+  `fleet::ensure_attachment` (in `assistant_attach_prepare`/`_data` and the phone's
+  image and file routes), `fleet_set_workspace`.
+  **Changed from the plan:**
+  - Like the database, the repo's copy is **a mirror in its own folder**
+    (`duck-replica-workspace`), not the machine's Duck workspace, which its own Duck
+    still writes until F6. The mirror never commits; it fetches a bundle (since its
+    head when that's an ancestor of the main's, else whole) and resets to the main's
+    head, at most every 30 s.
+  - Files are fetched by id from whichever machine has them (Duck's main first):
+    an attachment's id is its SHA-256, so the bytes are checked against it. Not only
+    from the origin, so it also works the other way: the laptop's drawer can send
+    files again (F3.1b refused them), and the main's Duck fetches them from the
+    laptop when it prepares the message. Drawings are attachments, so they come the
+    same way. A worker's task folder isn't fetched (it lives in the workspace,
+    mirrored with the repo once committed).
+  - "Recalled after it becomes the main" needs the promotion (F6.1): this step keeps
+    the mirror current; F6.1 makes it the workspace.
+  **Checked:** `files.rs` test (a mirror made from a whole bundle, kept up by one since
+  its head, up to date, and whole again on a history the repo doesn't have); a fleet
+  test (the desktop's Duck repo mirrored on the laptop; an attachment made on the
+  desktop fetched by the laptop, one made on the laptop fetched by the desktop, one
+  nobody has refused with a reason). Live test owed: the Done when, on two
+  machines.)_
 
 ## Phase F6 — The main moves
 

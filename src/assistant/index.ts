@@ -104,7 +104,7 @@ import { createFleetTools, type FleetTools } from "./fleet";
 import { createRemotes } from "./remotes";
 import { gitOriginUrl } from "../ipc/git";
 import { waitingDelete, waitingList, waitingPut } from "../ipc/assistant";
-import { fleetHostSend, fleetStatus, fleetWake, onFleetChanged, onFleetHost } from "../ipc/fleet";
+import { fleetHostSend, fleetSetWorkspace, fleetStatus, fleetWake, onFleetChanged, onFleetHost } from "../ipc/fleet";
 import { pcHandlers } from "./tools/pc";
 import { youtubeMusic } from "./music/youtube";
 import { youtubeSearch } from "../ipc/music";
@@ -899,6 +899,8 @@ export function initAssistant(): Promise<void> {
     const warnReminders = (e: unknown) => console.warn("duck: reminders", e);
     const watchReminders = () => {
       void remindersWatch(ws()).catch(warnReminders);
+      // The repo the other machines mirror (fleet plan F5.2).
+      void fleetSetWorkspace(ws() || null).catch(() => {});
       void reminders.load().catch(warnReminders);
     };
     watchReminders();

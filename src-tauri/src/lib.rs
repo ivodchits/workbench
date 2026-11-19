@@ -374,6 +374,7 @@ pub fn run() {
             window::window_open_torn,
             fleet::fleet_status,
             fleet::fleet_host_send,
+            fleet::fleet_set_workspace,
             fleet::fleet_new_code,
             fleet::fleet_join,
             fleet::fleet_rename,

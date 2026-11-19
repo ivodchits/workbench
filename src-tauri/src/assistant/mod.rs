@@ -941,6 +941,8 @@ pub async fn assistant_attach_bytes(app: AppHandle, name: String, data: String) 
 #[tauri::command]
 pub async fn assistant_attach_prepare(app: AppHandle, id: String, name: String) -> Result<attachments::Prepared, String> {
     let root = attachments_root(&app)?;
+    // Made on another machine of the fleet: fetched from it (fleet plan F5.2).
+    let _ = crate::fleet::ensure_attachment(&app, &root, &id, &name).await;
     tauri::async_runtime::spawn_blocking(move || attachments::prepare(&root, &id, &name))
         .await
         .map_err(|e| e.to_string())?
@@ -950,6 +952,7 @@ pub async fn assistant_attach_prepare(app: AppHandle, id: String, name: String) 
 #[tauri::command]
 pub async fn assistant_attach_data(app: AppHandle, id: String, name: String, kind: String) -> Result<String, String> {
     let root = attachments_root(&app)?;
+    let _ = crate::fleet::ensure_attachment(&app, &root, &id, &name).await;
     tauri::async_runtime::spawn_blocking(move || attachments::data(&root, &id, &name, &kind))
         .await
         .map_err(|e| e.to_string())?

@@ -146,6 +146,11 @@ export function fleetSetWakeable(id: string, on: boolean): Promise<FleetStatus> 
   return invoke("fleet_set_wakeable", { id, on });
 }
 
+/** Duck's workspace here (fleet plan F5.2: the repo another machine mirrors). */
+export function fleetSetWorkspace(workspace: string | null): Promise<void> {
+  return invoke("fleet_set_workspace", { workspace });
+}
+
 /** Duck's host traffic to another machine (fleet plan F3.1, `fleetHosts.ts`). */
 export function fleetHostSend(peer: string, text: string): Promise<void> {
   return invoke("fleet_host_send", { peer, text });

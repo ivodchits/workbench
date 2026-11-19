@@ -347,6 +347,10 @@ pub enum Ask {
     ReplLog { epoch: Option<String>, seq: i64 },
     /// Chunk `n` of a snapshot of your `duck.db`; 0 makes a fresh one.
     ReplSnapshot { n: u32 },
+    /// Chunk `n` of a bundle of your Duck repo for my mirror at `have` (F5.2).
+    RepoBundle { have: Option<String>, n: u32 },
+    /// Chunk `n` of your attachment `id` / `name` (F5.2).
+    FileChunk { id: String, name: String, n: u32 },
 }
 
 /// One message on the peer link, as JSON text.

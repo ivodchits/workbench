@@ -651,6 +651,9 @@ fn duck_files(name: &str) -> (Arc<std::sync::Mutex<Connection>>, DuckRepl) {
         source: Storage::new(move |f| f(&c.lock().unwrap())),
         replica: std::sync::Mutex::new(repl::Replica::new(dir.join("duck.replica.db"))),
         scratch: dir.join("snapshot.db"),
+        workspace: std::sync::Mutex::new(Some(dir.join("workspace"))),
+        mirror: dir.join("mirror"),
+        files: dir.join("attachments"),
     };
     (conn, d)
 }
@@ -741,4 +744,48 @@ async fn the_mains_duck_state_is_copied_row_for_row() {
         c.execute("INSERT INTO assistant_threads VALUES ('t3', 'new life', 9)", []).unwrap();
     }
     until("re-copied", || matches(&laptop) && laptop.status().replica.unwrap().snapshots > snaps).await;
+}
+
+fn git(repo: &std::path::Path, args: &[&str]) {
+    crate::gitqueue::run(repo, args).unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_mains_repo_and_files_reach_the_other_machine() {
+    let ok = Arc::new(AtomicBool::new(false));
+    let desktop = instance("desktop", ok.clone());
+    let laptop = instance("laptop", ok.clone());
+    let (_d, desk) = duck_files("desktop");
+    let (_l, lap) = duck_files("laptop");
+    let ws = desk.workspace.lock().unwrap().clone().unwrap();
+    let (mirror, desk_files, lap_files) = (lap.mirror.clone(), desk.files.clone(), lap.files.clone());
+    std::fs::create_dir_all(&ws).unwrap();
+    git(&ws, &["init", "-q"]);
+    std::fs::write(ws.join("memory.md"), "the user likes tea").unwrap();
+    git(&ws, &["add", "-A"]);
+    git(&ws, &["-c", "user.name=Duck", "-c", "user.email=duck@localhost", "commit", "-q", "-m", "memory"]);
+    desktop.set_duck(desk);
+    laptop.set_duck(lap);
+    let code = join_string(&desktop).await;
+    laptop.join(&code).await.unwrap();
+    until("linked", || online(&desktop, "laptop")).await;
+
+    // Duck's repo: the laptop's mirror has the desktop's memory.
+    until("the mirror", || std::fs::read_to_string(mirror.join("memory.md")).is_ok_and(|t| t == "the user likes tea")).await;
+    assert_eq!(files::head(&mirror), files::head(&ws));
+    until("said in the status", || laptop.status().replica.is_some_and(|r| r.repo.is_some())).await;
+
+    // An attachment made on the desktop opens on the laptop.
+    let att = crate::assistant::attachments::store_bytes(&desk_files, "photo.txt", b"a picture, in words").unwrap();
+    assert!(crate::assistant::attachments::file_of(&lap_files, &att.id, "photo.txt").is_err());
+    laptop.fetch_attachment(&att.id, "photo.txt").await.unwrap();
+    let got = crate::assistant::attachments::file_of(&lap_files, &att.id, "photo.txt").unwrap();
+    assert_eq!(std::fs::read(got).unwrap(), b"a picture, in words");
+    // And one made on the laptop (its drawer sent it) reaches the desktop's Duck.
+    let up = crate::assistant::attachments::store_bytes(&lap_files, "notes.txt", b"from the laptop").unwrap();
+    desktop.fetch_attachment(&up.id, "notes.txt").await.unwrap();
+    assert!(crate::assistant::attachments::file_of(&desk_files, &up.id, "notes.txt").is_ok());
+    // One nobody has: a plain reason.
+    let err = laptop.fetch_attachment("0123456789abcdef0123456789abcdef", "nope.txt").await.unwrap_err();
+    assert!(err.contains("no machine sent it"), "{err}");
 }

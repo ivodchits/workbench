@@ -494,6 +494,8 @@ pub(super) async fn image(
     }
     let Ok(data) = state.app.path().app_data_dir() else { return StatusCode::NOT_FOUND.into_response() };
     let root = crate::assistant::attachments::root(&data);
+    // Made on another machine of the fleet: fetched from it (fleet plan F5.2).
+    let _ = crate::fleet::ensure_attachment(&state.app, &root, &id, &name).await;
     let Ok(path) = crate::assistant::attachments::file_of(&root, &id, &name) else {
         return StatusCode::NOT_FOUND.into_response();
     };
@@ -527,6 +529,8 @@ pub(super) async fn file(
     }
     let Ok(data) = state.app.path().app_data_dir() else { return StatusCode::NOT_FOUND.into_response() };
     let root = crate::assistant::attachments::root(&data);
+    // Made on another machine of the fleet: fetched from it (fleet plan F5.2).
+    let _ = crate::fleet::ensure_attachment(&state.app, &root, &id, &name).await;
     let Ok(path) = crate::assistant::attachments::file_of(&root, &id, &name) else {
         return StatusCode::NOT_FOUND.into_response();
     };

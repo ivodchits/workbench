@@ -49,10 +49,9 @@ describe("the drawer's transport", () => {
     local.broadcast({ type: "threads", threads: [{ id: "ignored" } as never] });
     expect(threadsOf(seen)).toEqual(["there"]);
 
-    // Files stay on this machine: refused, with why.
+    // Files go too: the main fetches them from here by id (F5.2).
     sw.send({ type: "send", threadId: null, text: "look", source: "desktop" as never, attachments: [{ id: "a" } as never] });
-    expect(sent).toHaveLength(1);
-    expect(seen[seen.length - 1]).toMatchObject({ type: "error" });
+    expect(sent).toHaveLength(2);
 
     sw.use(null);
     sw.send({ type: "sync" });

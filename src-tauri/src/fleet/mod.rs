@@ -48,6 +48,7 @@
 mod link;
 mod net;
 pub mod repl;
+pub mod files;
 pub mod proto;
 mod store;
 
@@ -137,10 +138,31 @@ pub struct DuckRepl {
     pub replica: Mutex<repl::Replica>,
     /// Where a snapshot is made before it's sent.
     pub scratch: std::path::PathBuf,
+    /// Duck's workspace here (its repo), as the settings say (F5.2).
+    pub workspace: Mutex<Option<std::path::PathBuf>>,
+    /// The mirror of the main's repo.
+    pub mirror: std::path::PathBuf,
+    /// Where attachments are stored (`assistant::attachments`).
+    pub files: std::path::PathBuf,
 }
 
-/// A snapshot being sent: when it was made, its bytes.
+/// A snapshot or a bundle being sent: when it was made, its bytes.
 type SnapshotCache = Option<(Instant, Arc<Vec<u8>>)>;
+
+/// The repo is synced at most this often.
+const REPO_EVERY: Duration = Duration::from_secs(30);
+
+/// Chunk `n` of `bytes`, as an answer: `{total, data}` (base64).
+fn chunk_answer(bytes: &[u8], n: u32) -> Result<String, String> {
+    use base64::Engine;
+    let total = bytes.len().div_ceil(repl::CHUNK).max(1) as u32;
+    if n >= total {
+        return Err("no such chunk".into());
+    }
+    let start = n as usize * repl::CHUNK;
+    let part = &bytes[start..(start + repl::CHUNK).min(bytes.len())];
+    Ok(serde_json::json!({ "total": total, "data": base64::engine::general_purpose::STANDARD.encode(part) }).to_string())
+}
 
 /// Where the copy stands, for the menu.
 #[derive(Debug, Clone, Default, Serialize)]
@@ -156,6 +178,9 @@ pub struct ReplicaView {
     pub error: Option<String>,
     /// Snapshots taken so far this run.
     pub snapshots: u32,
+    /// The mirror of the main's repo: its head, and its trouble (F5.2).
+    pub repo: Option<String>,
+    pub repo_error: Option<String>,
 }
 
 /// Takes host traffic from a peer: (its id, the text).
@@ -212,6 +237,8 @@ pub struct Fleet {
     /// Duck's database and the copy of the main's (F5.1).
     duck: Mutex<Option<Arc<DuckRepl>>>,
     snap_cache: Mutex<SnapshotCache>,
+    bundle_cache: Mutex<SnapshotCache>,
+    repo_synced: Mutex<Option<Instant>>,
     replicating: std::sync::atomic::AtomicBool,
     replica_view: Mutex<ReplicaView>,
     /// Sessions other machines gave for a device, by (machine, device).
@@ -443,6 +470,8 @@ impl Fleet {
             host_sink: Mutex::new(None),
             duck: Mutex::new(None),
             snap_cache: Mutex::new(None),
+            bundle_cache: Mutex::new(None),
+            repo_synced: Mutex::new(None),
             replicating: std::sync::atomic::AtomicBool::new(false),
             replica_view: Mutex::new(ReplicaView::default()),
             cfg,
@@ -1074,6 +1103,8 @@ impl Fleet {
             Ask::Wake { id } => self.wake_here(&id),
             Ask::ReplLog { epoch, seq } => self.repl_log(epoch.as_deref(), seq),
             Ask::ReplSnapshot { n } => self.repl_snapshot(n),
+            Ask::RepoBundle { have, n } => self.repo_bundle(have.as_deref(), n),
+            Ask::FileChunk { id, name, n } => self.file_chunk(&id, &name, n),
         }
     }
 
@@ -1097,7 +1128,6 @@ impl Fleet {
 
     /// The source's side: chunk `n` of a snapshot, `{total, data}` (base64).
     fn repl_snapshot(&self, n: u32) -> Result<String, String> {
-        use base64::Engine;
         let d = self.duck()?;
         let bytes = {
             let mut cache = self.snap_cache.lock().unwrap();
@@ -1108,14 +1138,106 @@ impl Fleet {
             }
             cache.as_ref().expect("just made").1.clone()
         };
-        let total = bytes.len().div_ceil(repl::CHUNK).max(1) as u32;
-        if n >= total {
-            return Err("no such chunk".into());
+        chunk_answer(&bytes, n)
+    }
+
+    /// The source's side: chunk `n` of a bundle of Duck's repo for a mirror at
+    /// `have`, or `{upToDate}`.
+    fn repo_bundle(&self, have: Option<&str>, n: u32) -> Result<String, String> {
+        let d = self.duck()?;
+        let ws = d.workspace.lock().unwrap().clone().ok_or("Duck's workspace isn't known here")?;
+        let bytes = {
+            let mut cache = self.bundle_cache.lock().unwrap();
+            let fresh = cache.as_ref().is_some_and(|(at, _)| at.elapsed() < Duration::from_secs(300));
+            if n == 0 || !fresh {
+                match files::bundle(&ws, have, &d.scratch.with_extension("bundle"))? {
+                    Some(b) => *cache = Some((Instant::now(), Arc::new(b))),
+                    None => return Ok(serde_json::json!({ "upToDate": true }).to_string()),
+                }
+            }
+            cache.as_ref().expect("just made").1.clone()
+        };
+        chunk_answer(&bytes, n)
+    }
+
+    /// The source's side: chunk `n` of a stored attachment.
+    fn file_chunk(&self, id: &str, name: &str, n: u32) -> Result<String, String> {
+        let d = self.duck()?;
+        let path = crate::assistant::attachments::file_of(&d.files, id, name)?;
+        let bytes = std::fs::read(&path).map_err(|e| e.to_string())?;
+        chunk_answer(&bytes, n)
+    }
+
+    /// Fetch every chunk of something `peer` sends in chunks; None for `upToDate`.
+    async fn fetch_chunks(&self, peer: &str, ask: impl Fn(u32) -> Ask) -> Result<Option<Vec<u8>>, String> {
+        use base64::Engine;
+        let mut bytes = Vec::new();
+        let mut n = 0u32;
+        loop {
+            let text = self.ask(peer, ask(n)).await?;
+            let v: serde_json::Value = serde_json::from_str(&text).map_err(|e| e.to_string())?;
+            if v["upToDate"].as_bool() == Some(true) {
+                return Ok(None);
+            }
+            let part = base64::engine::general_purpose::STANDARD.decode(v["data"].as_str().unwrap_or("")).map_err(|e| e.to_string())?;
+            bytes.extend_from_slice(&part);
+            n += 1;
+            if n >= v["total"].as_u64().unwrap_or(1) as u32 {
+                return Ok(Some(bytes));
+            }
         }
-        let start = n as usize * repl::CHUNK;
-        let part = &bytes[start..(start + repl::CHUNK).min(bytes.len())];
-        let data = base64::engine::general_purpose::STANDARD.encode(part);
-        Ok(serde_json::json!({ "total": total, "data": data }).to_string())
+    }
+
+    /// Duck's workspace here, as the settings say (F5.2).
+    pub fn set_workspace(&self, ws: std::path::PathBuf) {
+        if let Ok(d) = self.duck() {
+            *d.workspace.lock().unwrap() = Some(ws);
+        }
+    }
+
+    /// Bring the mirror of the main's repo up to date.
+    async fn sync_repo(self: &Arc<Self>, main: &str, d: &DuckRepl) -> Result<(), String> {
+        let have = files::head(&d.mirror);
+        let have2 = have.clone();
+        let Some(bytes) = self.fetch_chunks(main, move |n| Ask::RepoBundle { have: have2.clone(), n }).await? else {
+            self.replica_view.lock().unwrap().repo = have.map(|h| h[..h.len().min(10)].to_string());
+            return Ok(());
+        };
+        let mirror = d.mirror.clone();
+        let scratch = d.scratch.with_extension("incoming-bundle");
+        let head = tokio::task::spawn_blocking(move || files::apply_bundle(&mirror, &bytes, &scratch))
+            .await
+            .map_err(|e| e.to_string())??;
+        self.replica_view.lock().unwrap().repo = Some(head[..head.len().min(10)].to_string());
+        Ok(())
+    }
+
+    /// An attachment this machine doesn't have, from whichever linked machine has
+    /// it (Duck's main first), checked against its id (F5.2).
+    pub async fn fetch_attachment(&self, id: &str, name: &str) -> Result<(), String> {
+        let d = self.duck()?;
+        let mut peers: Vec<String> = self.inner.lock().unwrap().links.keys().cloned().collect();
+        if let Some(main) = self.duck_source() {
+            peers.retain(|p| p != &main);
+            peers.insert(0, main);
+        }
+        let mut last = "no other machine is connected".to_string();
+        for peer in peers {
+            let (i, nm) = (id.to_string(), name.to_string());
+            match self.fetch_chunks(&peer, move |n| Ask::FileChunk { id: i.clone(), name: nm.clone(), n }).await {
+                Ok(Some(bytes)) => {
+                    let stored = crate::assistant::attachments::store_bytes(&d.files, name, &bytes)?;
+                    if stored.id != id {
+                        last = "a machine sent other bytes than the attachment's".into();
+                        continue;
+                    }
+                    return Ok(());
+                }
+                Ok(None) => {}
+                Err(e) => last = e,
+            }
+        }
+        Err(format!("the attachment {name} isn't here, and no machine sent it: {last}"))
     }
 
     /// Duck's main when that's another machine linked to this one.
@@ -1152,6 +1274,13 @@ impl Fleet {
     pub async fn replicate(self: &Arc<Self>) -> Result<(), String> {
         let main = self.duck_source().ok_or("Duck's main isn't another machine that's connected")?;
         let d = self.duck()?;
+        // Duck's repo, now and then (F5.2).
+        let due = self.repo_synced.lock().unwrap().is_none_or(|at| at.elapsed() >= REPO_EVERY);
+        if due {
+            *self.repo_synced.lock().unwrap() = Some(Instant::now());
+            let res = self.sync_repo(&main, &d).await;
+            self.replica_view.lock().unwrap().repo_error = res.err();
+        }
         for _ in 0..50 {
             let st = d.replica.lock().unwrap().state();
             let answer: repl::LogAnswer = if st.origin.as_deref() == Some(main.as_str()) {
@@ -1187,21 +1316,7 @@ impl Fleet {
     }
 
     async fn fetch_snapshot(self: &Arc<Self>, main: &str, d: &DuckRepl) -> Result<(), String> {
-        use base64::Engine;
-        let mut bytes = Vec::new();
-        let mut n = 0u32;
-        loop {
-            let text = self.ask(main, Ask::ReplSnapshot { n }).await?;
-            let v: serde_json::Value = serde_json::from_str(&text).map_err(|e| e.to_string())?;
-            let part = base64::engine::general_purpose::STANDARD
-                .decode(v["data"].as_str().unwrap_or(""))
-                .map_err(|e| e.to_string())?;
-            bytes.extend_from_slice(&part);
-            n += 1;
-            if n >= v["total"].as_u64().unwrap_or(1) as u32 {
-                break;
-            }
-        }
+        let bytes = self.fetch_chunks(main, |n| Ask::ReplSnapshot { n }).await?.ok_or("the main sent no snapshot")?;
         d.replica.lock().unwrap().install(main, &bytes)?;
         let st = d.replica.lock().unwrap().state();
         let mut v = self.replica_view.lock().unwrap();
@@ -1660,6 +1775,7 @@ pub fn init(app: &AppHandle) {
     // Duck's state (F5.1): its database, and the copy of the main's beside it.
     if let (Ok(dir), Some(_)) = (app.path().app_data_dir(), app.try_state::<Arc<crate::assistant::Assistant>>()) {
         let replica = if cfg!(debug_assertions) { "duck.replica.dev.db" } else { "duck.replica.db" };
+        let mirror = if cfg!(debug_assertions) { "duck-replica-workspace.dev" } else { "duck-replica-workspace" };
         let source_app = app.clone();
         fleet.set_duck(DuckRepl {
             source: Storage::new(move |f| {
@@ -1669,6 +1785,9 @@ pub fn init(app: &AppHandle) {
             }),
             replica: Mutex::new(repl::Replica::new(dir.join(replica))),
             scratch: dir.join(format!("{replica}.snapshot")),
+            workspace: Mutex::new(crate::assistant::workspace::resolve(None).ok()),
+            mirror: dir.join(mirror),
+            files: crate::assistant::attachments::root(&dir),
         });
     }
     fleet.set_remote_port(crate::remote::tailnet_port(app));
@@ -1683,6 +1802,23 @@ pub fn init(app: &AppHandle) {
 /// The app's fleet, once [`init`] has run.
 pub fn get(app: &AppHandle) -> Option<Arc<Fleet>> {
     app.try_state::<Arc<Fleet>>().map(|f| f.inner().clone())
+}
+
+/// Duck's workspace here, from the settings (F5.2: the repo the mirror follows).
+#[tauri::command]
+pub fn fleet_set_workspace(fleet: State<'_, Arc<Fleet>>, workspace: Option<String>) -> Result<(), String> {
+    fleet.set_workspace(crate::assistant::workspace::resolve(workspace.as_deref())?);
+    Ok(())
+}
+
+/// Make sure attachment `id` / `name` is here, from another machine if it isn't
+/// (F5.2). Ok when it's here now.
+pub async fn ensure_attachment(app: &AppHandle, root: &std::path::Path, id: &str, name: &str) -> Result<(), String> {
+    if crate::assistant::attachments::file_of(root, id, name).is_ok() {
+        return Ok(());
+    }
+    let Some(fleet) = get(app) else { return Err(format!("the attachment {name} is gone")) };
+    fleet.fetch_attachment(id, name).await
 }
 
 /// Duck's host traffic to another machine (F3.1).

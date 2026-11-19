@@ -3,8 +3,8 @@
 // holds one transport and never knows; a switch moves every subscriber across and
 // tells the drawer (`onSwitch`), which starts over with a `sync`.
 //
-// Files a message carries are stored on the machine that sent them, which the
-// main can't read yet: such a message is refused here, with a word on why.
+// Files a message carries are stored on this machine; the main fetches them from
+// here by their id when it needs them (fleet plan F5.2).
 
 import { PROTOCOL_VERSION, type ClientMessage, type DuckEvent, type Stamped, type Transport } from "./protocol";
 
@@ -25,16 +25,6 @@ export function createSwitchTransport(local: Transport): SwitchTransport {
 
   return {
     send(msg: ClientMessage) {
-      const files = msg.type === "turn.files" || (msg.type === "send" && (msg.attachments?.length ?? 0) > 0);
-      if (where && files) {
-        const e: Stamped<DuckEvent> = {
-          type: "error",
-          message: `Duck is on ${where}, which can't read files from this machine yet. Send them from ${where} or the phone.`,
-          v: PROTOCOL_VERSION,
-        };
-        for (const cb of subs.keys()) cb(e);
-        return;
-      }
       current.send(msg);
     },
     subscribe(cb) {
