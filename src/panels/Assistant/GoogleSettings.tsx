@@ -74,7 +74,7 @@ export default function GoogleSettings({ settings }: { settings: DuckSettings })
 
   return (
     <>
-      <div style={heading}>Drive and Sheets</div>
+      <div className="wb-settings-subhead">Drive and Sheets</div>
       <label style={{ ...row, alignItems: "center" }}>
         <span style={{ flex: "0 0 auto" }}>OAuth client id</span>
         <input
@@ -116,7 +116,7 @@ export default function GoogleSettings({ settings }: { settings: DuckSettings })
       </div>
       {error && <div style={{ color: "var(--wb-needs)" }}>{error}</div>}
 
-      <div style={heading}>Speech (Chirp voices)</div>
+      <div className="wb-settings-subhead">Speech (Chirp voices)</div>
       <div style={hint}>
         {tts === null ? (
           "…"
@@ -130,7 +130,7 @@ export default function GoogleSettings({ settings }: { settings: DuckSettings })
         )}
       </div>
 
-      <div style={heading}>Images (Gemini)</div>
+      <div className="wb-settings-subhead">Images (Gemini)</div>
       <div style={hint}>
         {gemini === null ? (
           "…"
@@ -185,6 +185,5 @@ const row: React.CSSProperties = {
   lineHeight: 1.45,
 };
 
-const heading: React.CSSProperties = { color: "var(--wb-textDim2)", marginTop: 4 };
 
-const hint: React.CSSProperties = { color: "var(--wb-textFaint)" };
+const hint: React.CSSProperties = { color: "var(--wb-textDim2)" };

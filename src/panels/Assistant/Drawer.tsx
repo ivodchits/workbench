@@ -647,15 +647,26 @@ function Header({
           style={{
             ...popover,
             right: 8,
-            width: 320,
+            // As wide as the drawer has room for, up to a comfortable column; wide
+            // enough, the categories move to a column on the left.
+            width: "min(560px, calc(100% - 16px))",
             // Taller than the drawer allows, its tabs scroll.
             maxHeight: room ?? "calc(100vh - 96px)",
             display: "flex",
             flexDirection: "column",
+            paddingBottom: 0,
           }}
         >
           <DrawerSettings duck={duck} />
-          <div style={{ display: "flex", gap: 8, padding: "6px 12px 2px" }}>
+          <div
+            style={{
+              display: "flex",
+              gap: 8,
+              padding: "8px 12px",
+              borderTop: "1px solid var(--wb-border)",
+              flex: "0 0 auto",
+            }}
+          >
             {(["trust", "decisions"] as const).map((v) => (
               <button
                 key={v}

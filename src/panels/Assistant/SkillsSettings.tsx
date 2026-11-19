@@ -238,21 +238,20 @@ function FirefoxSettingsRow({ settings }: { settings: DuckSettings }) {
 export default function SkillsSettings({ duck, settings }: { duck: DuckState; settings: DuckSettings }) {
   return (
     <>
-      <div style={heading}>Skills and modes</div>
+      <div className="wb-settings-subhead">Skills and modes</div>
       <Skills duck={duck} settings={settings} />
-      <div style={heading}>MCP servers</div>
+      <div className="wb-settings-subhead">MCP servers</div>
       <McpServers settings={settings} />
-      <div style={heading}>From your Claude Code config</div>
+      <div className="wb-settings-subhead">From your Claude Code config</div>
       <HostedServers duck={duck} settings={settings} />
-      <div style={heading}>Firefox</div>
+      <div className="wb-settings-subhead">Firefox</div>
       <FirefoxSettingsRow settings={settings} />
     </>
   );
 }
 
-const heading: React.CSSProperties = { color: "var(--wb-textDim2)", marginTop: 4 };
 
-const hint: React.CSSProperties = { color: "var(--wb-textFaint)" };
+const hint: React.CSSProperties = { color: "var(--wb-textDim2)" };
 
 const select: React.CSSProperties = {
   background: "var(--wb-bg)",

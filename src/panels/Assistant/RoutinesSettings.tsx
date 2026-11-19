@@ -123,7 +123,7 @@ export default function RoutinesSettings({ duck, settings }: { duck: DuckState; 
   );
 }
 
-const hint: React.CSSProperties = { color: "var(--wb-textFaint)" };
+const hint: React.CSSProperties = { color: "var(--wb-textDim2)" };
 
 const input: React.CSSProperties = {
   background: "var(--wb-bg)",

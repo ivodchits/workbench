@@ -345,4 +345,4 @@ const row: React.CSSProperties = {
   lineHeight: 1.45,
 };
 
-const hint: React.CSSProperties = { color: "var(--wb-textFaint)" };
+const hint: React.CSSProperties = { color: "var(--wb-textDim2)" };

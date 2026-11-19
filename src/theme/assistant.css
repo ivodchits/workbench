@@ -16,3 +16,182 @@
   text-decoration: underline dotted;
   cursor: pointer;
 }
+
+/* Duck's settings (DrawerSettings): the categories scroll, settings sit in titled
+   cards, and the controls inside, its own and the voice/skills/google panels'
+   alike, get one look: rounded, a hover, the accent on focus. Their colors and
+   borders are inline, so only what's not set there is set here, bar the focus. */
+
+.wb-settings {
+  font-size: 12px;
+}
+
+.wb-settings-strip {
+  scrollbar-width: none;
+  scroll-padding-inline: 24px;
+}
+
+.wb-settings-strip::-webkit-scrollbar {
+  display: none;
+}
+
+.wb-settings-tab {
+  flex: 0 0 auto;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 3px;
+  color: var(--wb-textDim2);
+  font: 11.5px var(--wb-mono);
+  padding: 3px 9px;
+  cursor: pointer;
+  white-space: nowrap;
+  text-align: left;
+  transition: color 0.12s, background 0.12s, border-color 0.12s;
+}
+
+.wb-settings-tab:hover {
+  color: var(--wb-text);
+  background: color-mix(in srgb, var(--wb-text) 6%, transparent);
+}
+
+.wb-settings-tab[aria-selected="true"] {
+  color: var(--wb-text);
+  background: var(--wb-accentSoft);
+  border-color: color-mix(in srgb, var(--wb-accent) 45%, transparent);
+}
+
+.wb-settings-tab[data-vertical] {
+  padding: 5px 9px;
+  border-left-width: 2px;
+}
+
+.wb-settings-tab[data-vertical][aria-selected="true"] {
+  border-color: transparent;
+  border-left-color: var(--wb-accent);
+}
+
+.wb-settings-tab:focus-visible {
+  outline: none;
+  border-color: var(--wb-accent);
+}
+
+/* The strip's arrows, over a fade at the edge where categories are hidden. */
+.wb-settings-arrow {
+  position: absolute;
+  top: 0;
+  bottom: 7px;
+  width: 26px;
+  border: none;
+  color: var(--wb-text);
+  font: 14px var(--wb-mono);
+  cursor: pointer;
+  padding: 0;
+}
+
+.wb-settings-arrow[data-side="start"] {
+  left: 0;
+  text-align: left;
+  padding-left: 4px;
+  background: linear-gradient(to right, var(--wb-panel) 55%, transparent);
+}
+
+.wb-settings-arrow[data-side="end"] {
+  right: 0;
+  text-align: right;
+  padding-right: 4px;
+  background: linear-gradient(to left, var(--wb-panel) 55%, transparent);
+}
+
+.wb-settings-arrow:hover {
+  color: var(--wb-accent);
+}
+
+.wb-settings-group {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  padding: 9px 10px 10px;
+  border: 1px solid var(--wb-border);
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--wb-bg) 45%, transparent);
+}
+
+.wb-settings-group-title {
+  color: var(--wb-textDim2);
+  font-size: 10.5px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  margin-bottom: -2px;
+}
+
+/* A field's controls: on the right of its label, wrapping under it when tight. */
+.wb-settings-control {
+  display: flex;
+  gap: 6px;
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 100%;
+  margin-left: auto;
+}
+
+.wb-settings-control > select {
+  min-width: 0;
+  max-width: 100%;
+  text-overflow: ellipsis;
+}
+
+.wb-settings select,
+.wb-settings button:not(.wb-settings-tab):not(.wb-settings-arrow),
+.wb-settings input:not([type="checkbox"]):not([type="radio"]):not([type="range"]) {
+  border-radius: 3px;
+  min-height: 22px;
+  padding: 1px 6px;
+  transition: border-color 0.12s, background 0.12s;
+}
+
+.wb-settings button:not(.wb-settings-tab):not(.wb-settings-arrow) {
+  padding: 1px 9px;
+}
+
+.wb-settings select:hover,
+.wb-settings button:not(.wb-settings-tab):not(.wb-settings-arrow):not(:disabled):hover,
+.wb-settings input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):hover {
+  border-color: var(--wb-textFaint) !important;
+}
+
+.wb-settings select:focus-visible,
+.wb-settings button:not(.wb-settings-tab):not(.wb-settings-arrow):focus-visible,
+.wb-settings input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):focus {
+  outline: none;
+  border-color: var(--wb-accent) !important;
+}
+
+.wb-settings button:disabled {
+  opacity: 0.5;
+  cursor: default !important;
+}
+
+.wb-settings input[type="checkbox"],
+.wb-settings input[type="radio"],
+.wb-settings input[type="range"] {
+  accent-color: var(--wb-accent);
+  cursor: pointer;
+}
+
+.wb-settings input::placeholder {
+  color: var(--wb-textFaint);
+}
+
+/* A heading inside a card (the skills' and Google's parts), a rule above it. */
+.wb-settings-subhead {
+  color: var(--wb-textDim2);
+  font-size: 10.5px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.wb-settings-subhead:not(:first-child) {
+  border-top: 1px solid var(--wb-border);
+  padding-top: 9px;
+  margin-top: 3px;
+}
