@@ -61,7 +61,7 @@ use tokio::sync::{mpsc, oneshot, Notify};
 
 use crate::db::Db;
 use crate::remote::auth::{self, AuthFailure, AuthLog, PairGate, PairOutcome};
-use proto::{Ask, Beat, FleetConfig, Frame, Member, PairedDevice};
+use proto::{Ask, Beat, FleetConfig, Frame, Lan, Member, PairedDevice};
 
 /// The fleet's port on the tailnet. A debug build has its own, so a dev run and the
 /// installed app on one machine are two members (a real fleet test on one laptop).
@@ -97,6 +97,14 @@ pub trait Net: Send + Sync + 'static {
     /// Ok when `ip` is a machine of the same tailnet user as this one. May run the
     /// Tailscale CLI.
     fn same_owner(&self, ip: IpAddr) -> Result<(), String>;
+    /// This machine's LAN interface, for others to wake it (F4.1).
+    fn lan(&self) -> Option<Lan> {
+        None
+    }
+    /// Send a Wake-on-LAN packet for `mac` to `broadcast`.
+    fn send_wake(&self, mac: [u8; 6], broadcast: std::net::Ipv4Addr) -> Result<(), String> {
+        net::send_magic(mac, broadcast)
+    }
 }
 
 /// Where the paired devices live (the remote server's list in the app; a fake in the
@@ -222,6 +230,8 @@ pub struct MemberView {
     pub kind: String,
     /// Its public (Funnel) address, while it has one.
     pub public_url: Option<String>,
+    /// It said its LAN interface, so it can be sent a Wake-on-LAN packet (F4.1).
+    pub wakeable: bool,
     pub online: bool,
     /// Epoch seconds it was last heard from.
     pub last_seen: Option<u64>,
@@ -263,6 +273,8 @@ pub struct ConfigView {
     pub custom_order: bool,
     pub pin: Option<String>,
     pub not_main: Vec<String>,
+    /// Machines that may be woken (F4.1).
+    pub wake: Vec<String>,
     /// The main: the pin, while the main is set by hand.
     pub main: Option<String>,
     /// Who the list would make main now (the election, F6, will act on it).
@@ -420,6 +432,7 @@ impl Fleet {
                 host: None,
                 kind,
                 public_url: None,
+                lan: None,
                 updated_at: now_ms(),
                 removed: false,
             }),
@@ -468,14 +481,18 @@ impl Fleet {
         loop {
             let me = self.clone();
             let want_host = looks.is_multiple_of(30);
-            let (ip, host) = tokio::task::spawn_blocking(move || {
+            let (ip, host, lan) = tokio::task::spawn_blocking(move || {
                 let ip = me.net.tailnet_ip();
                 let host = if want_host && ip.is_some() { me.net.dns_name() } else { None };
-                (ip, host)
+                let lan = if want_host { me.net.lan() } else { None };
+                (ip, host, lan)
             })
             .await
-            .unwrap_or((None, None));
+            .unwrap_or((None, None, None));
             self.observe_addr(ip, host);
+            if let Some(lan) = lan {
+                self.observe_lan(lan);
+            }
             self.ensure_listener().await;
             self.dial_due();
             self.write_seen();
@@ -507,6 +524,14 @@ impl Fleet {
                 }
                 m.port = port;
             });
+        }
+    }
+
+    /// This machine's LAN interface, said to the others when it changes (F4.1).
+    fn observe_lan(&self, lan: Lan) {
+        let same = Self::self_record(&self.inner.lock().unwrap()).lan.as_ref() == Some(&lan);
+        if !same {
+            self.update_self(|m| m.lan = Some(lan));
         }
     }
 
@@ -1002,7 +1027,77 @@ impl Fleet {
     fn on_ask(&self, ask: Ask) -> Result<String, String> {
         match ask {
             Ask::RelaySession { device } => self.book.relay_session(&device),
+            Ask::Wake { id } => self.wake_here(&id),
         }
+    }
+
+    // --- waking (F4.1) ---------------------------------------------------------------
+
+    /// Whether machine `id` may be woken.
+    pub fn set_wakeable(&self, id: &str, on: bool) {
+        self.update_config(|cfg, members| {
+            if !members.iter().any(|m| m.id == id && !m.removed) {
+                return false;
+            }
+            cfg.wake.retain(|x| x != id);
+            if on {
+                cfg.wake.push(id.to_string());
+            }
+            true
+        });
+    }
+
+    /// Send machine `id` its packet from here, when this machine is on its network.
+    fn wake_here(&self, id: &str) -> Result<String, String> {
+        let (target, mine) = {
+            let inner = self.inner.lock().unwrap();
+            let target = Self::others_live(&inner).find(|m| m.id == id).and_then(|m| m.lan.clone());
+            (target, Self::self_record(&inner).lan)
+        };
+        let target = target.ok_or("that machine hasn’t said its network address")?;
+        if mine.as_ref().map(|l| &l.network) != Some(&target.network) {
+            return Err("this machine isn’t on its network".into());
+        }
+        let mac = proto::parse_mac(&target.mac).ok_or("its MAC address doesn’t read")?;
+        let broadcast = target.broadcast.parse().map_err(|_| "its broadcast address doesn’t read".to_string())?;
+        self.net.send_wake(mac, broadcast)?;
+        Ok("sent".into())
+    }
+
+    /// Wake machine `id`: the packet goes from here when this machine is on its
+    /// network, else from a machine that's on and is. Ok: who sent it.
+    pub async fn wake(&self, id: &str) -> Result<String, String> {
+        let (name, allowed, online, lan, helpers, here) = {
+            let inner = self.inner.lock().unwrap();
+            let m = Self::others_live(&inner).find(|m| m.id == id).ok_or("that machine isn’t in the fleet")?;
+            let lan = m.lan.clone();
+            let helpers: Vec<(String, String)> = Self::others_live(&inner)
+                .filter(|p| p.id != id && inner.links.contains_key(&p.id))
+                .filter(|p| p.lan.as_ref().map(|l| &l.network) == lan.as_ref().map(|l| &l.network))
+                .map(|p| (p.id.clone(), p.name.clone()))
+                .collect();
+            let here = Self::self_record(&inner).lan.map(|l| l.network);
+            (m.name.clone(), inner.config.wake.contains(&m.id), inner.links.contains_key(id), lan, helpers, here)
+        };
+        if online {
+            return Ok(format!("{name} is on already"));
+        }
+        if !allowed {
+            return Err(format!("{name} isn’t set to be woken (Remote Access → fleet: “can be woken”)"));
+        }
+        let lan = lan.ok_or(format!("{name} hasn’t said its network address yet: it has to be on once first"))?;
+        if here.as_ref() == Some(&lan.network) {
+            self.wake_here(id)?;
+            return Ok(format!("sent to {name} from here"));
+        }
+        let mut last = format!("no machine on {name}’s network ({}) is on to wake it", lan.network);
+        for (peer, peer_name) in helpers {
+            match self.ask(&peer, Ask::Wake { id: id.to_string() }).await {
+                Ok(_) => return Ok(format!("sent to {name} by {peer_name}")),
+                Err(e) => last = format!("{peer_name} couldn’t: {e}"),
+            }
+        }
+        Err(last)
     }
 
     fn on_answer(&self, req: u64, answer: Result<String, String>) {
@@ -1108,6 +1203,7 @@ impl Fleet {
                 host: m.host.clone(),
                 kind: m.kind.clone(),
                 public_url: m.public_url.clone(),
+                wakeable: m.lan.is_some(),
                 online: link.is_some(),
                 last_seen: inner.seen.get(&m.id).copied(),
                 version: beat.map(|b| b.version.clone()),
@@ -1131,6 +1227,7 @@ impl Fleet {
             custom_order: !cfg.order.is_empty(),
             pin: cfg.pin.clone(),
             not_main: cfg.not_main.clone(),
+            wake: cfg.wake.clone(),
             main: proto::main_by_hand(&inner.members, cfg),
             first_choice: proto::first_choice(&inner.members, cfg, up),
             duck: proto::main_by_hand(&inner.members, cfg).or_else(|| proto::first_choice(&inner.members, cfg, up)),
@@ -1438,6 +1535,19 @@ pub fn fleet_set_pin(fleet: State<'_, Arc<Fleet>>, id: Option<String>) -> Result
 #[tauri::command]
 pub fn fleet_set_can_be_main(fleet: State<'_, Arc<Fleet>>, id: String, can: bool) -> FleetStatus {
     fleet.set_can_be_main(&id, can);
+    fleet.status()
+}
+
+/// Wake a machine (F4.1): who sent the packet, or why none went.
+#[tauri::command]
+pub async fn fleet_wake(fleet: State<'_, Arc<Fleet>>, id: String) -> Result<String, String> {
+    let fleet = fleet.inner().clone();
+    fleet.wake(&id).await
+}
+
+#[tauri::command]
+pub fn fleet_set_wakeable(fleet: State<'_, Arc<Fleet>>, id: String, on: bool) -> FleetStatus {
+    fleet.set_wakeable(&id, on);
     fleet.status()
 }
 

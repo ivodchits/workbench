@@ -16,6 +16,8 @@ export interface FleetMember {
   host: string | null;
   /** What sort of machine it says it is; it places it in the default order. */
   kind: FleetKind | "";
+  /** It said its LAN interface: a Wake-on-LAN packet can reach it (F4.1). */
+  wakeable: boolean;
   online: boolean;
   /** Epoch seconds it was last heard from. */
   lastSeen: number | null;
@@ -41,6 +43,8 @@ export interface FleetConfig {
   pin: string | null;
   /** Machines that may never be main. */
   notMain: string[];
+  /** Machines that may be woken (Wake-on-LAN). */
+  wake: string[];
   /** The main: the pin, while the main is chosen by hand (no election yet). */
   main: string | null;
   /** Who the list would make main now. */
@@ -120,6 +124,16 @@ export function fleetResetIdentity(): Promise<FleetStatus> {
 
 export function fleetClearLog(): Promise<FleetStatus> {
   return invoke("fleet_clear_log");
+}
+
+/** Wake a machine that's off (Wake-on-LAN): who sent the packet. */
+export function fleetWake(id: string): Promise<string> {
+  return invoke("fleet_wake", { id });
+}
+
+/** Whether a machine may be woken. */
+export function fleetSetWakeable(id: string, on: boolean): Promise<FleetStatus> {
+  return invoke("fleet_set_wakeable", { id, on });
 }
 
 /** Duck's host traffic to another machine (fleet plan F3.1, `fleetHosts.ts`). */

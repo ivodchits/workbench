@@ -23,6 +23,8 @@ export interface MachineView {
   here: boolean;
   /** Duck's machine. */
   duck: boolean;
+  /** It may be woken, and can be (F4.1). */
+  canWake: boolean;
   os: string | null;
   caps: string[];
 }
@@ -49,6 +51,9 @@ export interface FleetTools {
   drop(id: string): Promise<boolean>;
   /** Machine `id` connected: hand over its tasks. */
   connected(id: string): Promise<void>;
+  /** Wake a machine that's off (F4.1) and wait for it to connect, up to `waitMs`.
+   *  Resolves to what happened, in a sentence. */
+  wake(machine: MachineView, signal: AbortSignal, waitMs?: number): Promise<string>;
   setStatus(s: FleetStatus): void;
   load(): Promise<void>;
   onChange(cb: () => void): () => void;
@@ -62,8 +67,13 @@ export interface WaitingStore {
 
 const TASK_MAX = 4000;
 
+/** How long a woken machine has to connect. */
+const WAKE_WAIT_MS = 90_000;
+
 export function createFleetTools(deps: {
   store: WaitingStore;
+  /** Send a machine its Wake-on-LAN packet (`fleet_wake`): who sent it. */
+  wakeSend?: (id: string) => Promise<string>;
   /** Put an event in a thread (null: a new one); rejects when it couldn't. */
   tell: (threadId: string | null, text: string) => Promise<void>;
   newId?: () => string;
@@ -71,6 +81,8 @@ export function createFleetTools(deps: {
   let status: FleetStatus | null = null;
   let items: WaitingItem[] = [];
   const subs = new Set<() => void>();
+  /** Who waits for a machine to connect. */
+  const waiters = new Map<string, Set<() => void>>();
   const changed = () => subs.forEach((cb) => cb());
   const newId = deps.newId ?? (() => crypto.randomUUID());
   const norm = (s: string) => s.trim().toLowerCase();
@@ -85,6 +97,7 @@ export function createFleetTools(deps: {
       online: here || m.online,
       here,
       duck: m.id === duck,
+      canWake: !here && m.wakeable && status!.config.wake.includes(m.id),
       os: m.os,
       caps: m.caps,
     });
@@ -111,7 +124,7 @@ export function createFleetTools(deps: {
         servers.length
           ? `Coding sessions go to a desktop or a laptop. ${servers.join(" and ")} take${servers.length === 1 ? "s" : ""} only research or heavy-thinking sessions, never coding.`
           : `Coding sessions go to whichever machine has the project.`,
-        `A machine that's off can't take work. When the user asks for something on one (or it can only be done there), say it's off and offer to wait: wait_for_machine hands the task back to you in this thread when that machine connects. Queue without asking only when they said it can wait ("whenever", "when it's on"). list_machines says which are on and what's waiting.`,
+        `A machine that's off can't take work. When the user asks for something on one (or it can only be done there), wake it first when list_machines says it can be woken (wake_machine), else say it's off and offer to wait: wait_for_machine hands the task back to you in this thread when that machine connects. Queue without asking only when they said it can wait ("whenever", "when it's on"). list_machines says which are on and what's waiting.`,
       ];
       return lines.join("\n");
     },
@@ -138,6 +151,8 @@ export function createFleetTools(deps: {
       return had;
     },
     async connected(id) {
+      for (const w of waiters.get(id) ?? []) w();
+      waiters.delete(id);
       const due = items.filter((i) => i.machine === id);
       for (const item of due) {
         const name = machines().find((m) => m.id === id)?.name ?? item.machineName;
@@ -153,8 +168,37 @@ export function createFleetTools(deps: {
       }
       if (due.length) changed();
     },
+    async wake(machine, signal, waitMs = WAKE_WAIT_MS) {
+      if (!deps.wakeSend) throw new Error("waking machines isn't possible here");
+      const sent = await deps.wakeSend(machine.id);
+      if (sent.endsWith("is on already")) return sent;
+      const came = await new Promise<boolean>((resolve) => {
+        const done = (v: boolean) => {
+          clearTimeout(timer);
+          signal.removeEventListener("abort", stop);
+          waiters.get(machine.id)?.delete(hello);
+          resolve(v);
+        };
+        const hello = () => done(true);
+        const stop = () => done(false);
+        const timer = setTimeout(stop, waitMs);
+        signal.addEventListener("abort", stop);
+        const set = waiters.get(machine.id) ?? new Set();
+        set.add(hello);
+        waiters.set(machine.id, set);
+      });
+      if (came) return `${machine.name} is awake and connected (the packet was ${sent}).`;
+      return `The packet was ${sent}, but ${machine.name} didn't connect within ${Math.round(waitMs / 1000)} s. It may be fully off with waking from off not set up; wait_for_machine queues the task for when it's on.`;
+    },
     setStatus(s) {
       status = s;
+      // A woken machine that outranks this one becomes the main and never says
+      // hello here: its link coming up is enough.
+      for (const m of s.members)
+        if (m.online && waiters.has(m.id)) {
+          for (const w of waiters.get(m.id)!) w();
+          waiters.delete(m.id);
+        }
     },
     async load() {
       const rows = await deps.store.list();

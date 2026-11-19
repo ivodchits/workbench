@@ -104,7 +104,7 @@ import { createFleetTools, type FleetTools } from "./fleet";
 import { createRemotes } from "./remotes";
 import { gitOriginUrl } from "../ipc/git";
 import { waitingDelete, waitingList, waitingPut } from "../ipc/assistant";
-import { fleetHostSend, fleetStatus, onFleetChanged, onFleetHost } from "../ipc/fleet";
+import { fleetHostSend, fleetStatus, fleetWake, onFleetChanged, onFleetHost } from "../ipc/fleet";
 import { pcHandlers } from "./tools/pc";
 import { youtubeMusic } from "./music/youtube";
 import { youtubeSearch } from "../ipc/music";
@@ -1025,6 +1025,7 @@ export function initAssistant(): Promise<void> {
     // goes back to its thread when its machine connects.
     const fleetTools = createFleetTools({
       store: { put: waitingPut, list: waitingList, delete: waitingDelete },
+      wakeSend: fleetWake,
       tell: async (threadId, text) => {
         if (!engineRef) throw new Error("Duck isn't started");
         await engineRef.send({ threadId, text: eventText(text), source: "event" });

@@ -1,16 +1,16 @@
 import { describe, expect, it } from "vitest";
 import type { FleetStatus } from "../ipc/fleet";
 import { createFleetTools, type WaitingStore } from "./fleet";
-import { dropWaiting, listMachines, waitForMachine } from "./tools/fleet";
+import { dropWaiting, listMachines, wakeMachine, waitForMachine } from "./tools/fleet";
 import type { ToolContext } from "./tools/registry";
 
-const member = (id: string, name: string, kind: string, online: boolean) => ({ id, name, kind, online, os: "windows", caps: [] as string[] });
+const member = (id: string, name: string, kind: string, online: boolean) => ({ id, name, kind, online, os: "windows", caps: [] as string[], wakeable: true });
 
 const status = (laptopOn: boolean): FleetStatus =>
   ({
     me: member("D", "desktop", "desktop", true),
     members: [member("L", "laptop", "laptop", laptopOn), member("S", "homeserver", "server", false)],
-    config: { duck: "D", order: ["D", "S", "L"] },
+    config: { duck: "D", order: ["D", "S", "L"], wake: ["L"] },
   }) as unknown as FleetStatus;
 
 function memStore(): WaitingStore & { rows: Map<string, string> } {
@@ -27,8 +27,10 @@ function setup() {
   const store = memStore();
   const told: [string | null, string][] = [];
   let n = 0;
+  const woken: string[] = [];
   const fleet = createFleetTools({
     store,
+    wakeSend: async (id) => (woken.push(id), "sent to it from here"),
     tell: async (threadId, text) => {
       if (threadId === "gone") throw new Error("no such thread");
       told.push([threadId, text]);
@@ -36,7 +38,7 @@ function setup() {
     newId: () => `w${++n}`,
   });
   fleet.setStatus(status(false));
-  return { fleet, store, told };
+  return { fleet, store, told, woken };
 }
 
 const ctx = (fleet: ReturnType<typeof createFleetTools>) => ({ fleet, threadId: "t1" }) as unknown as ToolContext & { prepared: undefined };
@@ -94,5 +96,35 @@ describe("Duck's machines and the waiting queue (fleet plan F3.2)", () => {
     const again = createFleetTools({ store, tell: async () => {} });
     await again.load();
     expect(again.waiting().map((w) => w.task)).toEqual(["two"]);
+  });
+});
+
+describe("waking a machine (fleet plan F4.1)", () => {
+  it("sends the packet and waits for the machine to connect", async () => {
+    const { fleet, woken } = setup();
+    const signal = new AbortController().signal;
+    const going = wakeMachine.run({ machine: "laptop" }, { ...ctx(fleet), signal } as never);
+    await new Promise((r) => setTimeout(r, 0));
+    expect(woken).toEqual(["L"]);
+    await fleet.connected("L");
+    await expect(going).resolves.toContain("laptop is awake and connected");
+  });
+
+  it("counts the machine's link coming up, and gives up after the wait", async () => {
+    const { fleet } = setup();
+    const signal = new AbortController().signal;
+    const going = fleet.wake(fleet.find("laptop")!, signal, 5000);
+    await new Promise((r) => setTimeout(r, 0));
+    fleet.setStatus(status(true));
+    await expect(going).resolves.toContain("awake");
+    fleet.setStatus(status(false));
+    await expect(fleet.wake(fleet.find("laptop")!, signal, 10)).resolves.toContain("didn't connect within 0 s");
+  });
+
+  it("refuses a machine that isn't set to be woken", async () => {
+    const { fleet } = setup();
+    await expect(wakeMachine.run({ machine: "homeserver" }, ctx(fleet))).rejects.toThrow(/isn't set to be woken/);
+    const listed = (await listMachines.run({}, ctx(fleet))) as { machines: { name: string; canWake?: boolean }[] };
+    expect(listed.machines.find((m) => m.name === "laptop")?.canWake).toBe(true);
   });
 });

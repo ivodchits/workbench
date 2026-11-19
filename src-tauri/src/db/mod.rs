@@ -293,6 +293,11 @@ const MIGRATIONS: &[&str] = &[
     ALTER TABLE remote_devices ADD COLUMN updated_at INTEGER NOT NULL DEFAULT 0;
     ALTER TABLE remote_devices ADD COLUMN removed INTEGER NOT NULL DEFAULT 0;
     "#,
+    // v20 -> v21: a member's LAN interface (fleet plan F4.1, Wake-on-LAN), as JSON
+    // (`proto::Lan`).
+    r#"
+    ALTER TABLE fleet_members ADD COLUMN lan TEXT;
+    "#,
 ];
 
 /// Apply any migrations the database hasn't seen yet, advancing

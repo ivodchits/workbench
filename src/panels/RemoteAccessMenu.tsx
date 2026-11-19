@@ -37,6 +37,8 @@ import {
   fleetSetKind,
   fleetSetOrder,
   fleetSetPin,
+  fleetSetWakeable,
+  fleetWake,
   FLEET_KINDS,
   type FleetKind,
   type FleetMember,
@@ -335,6 +337,7 @@ function FleetSection() {
   const [error, setError] = useState<string | null>(null);
   const [join, setJoin] = useState("");
   const [name, setName] = useState<string | null>(null);
+  const [info, setInfo] = useState<string | null>(null);
 
   if (!fleet) return null;
 
@@ -431,7 +434,22 @@ function FleetSection() {
         </Note>
       ) : (
         others.map((m) => (
-          <MachineRow key={m.id} m={m} onRemove={() => void run(() => fleetRemove(m.id))} />
+          <MachineRow
+            key={m.id}
+            m={m}
+            canWake={fleet.config.wake.includes(m.id)}
+            busy={busy}
+            onRemove={() => void run(() => fleetRemove(m.id))}
+            onWakeable={(on) => void run(() => fleetSetWakeable(m.id, on))}
+            onWake={() => {
+              setError(null);
+              setInfo(null);
+              fleetWake(m.id).then(
+                (said) => setInfo(`Wake-on-LAN: ${said}.`),
+                (e: unknown) => setError(String(e)),
+              );
+            }}
+          />
         ))
       )}
 
@@ -540,6 +558,7 @@ function FleetSection() {
           ))}
         </>
       )}
+      {info && <Note>{info}</Note>}
       {error && <Note tone="error">{error}</Note>}
     </>
   );
@@ -686,8 +705,23 @@ function PriorityList({
   );
 }
 
-/** One other machine: online or when last heard from, what it runs, remove. */
-function MachineRow({ m, onRemove }: { m: FleetMember; onRemove: () => void }) {
+/** One other machine: online or when last heard from, what it runs, waking it
+ *  (Wake-on-LAN, F4.1), remove. */
+function MachineRow({
+  m,
+  canWake,
+  busy,
+  onRemove,
+  onWakeable,
+  onWake,
+}: {
+  m: FleetMember;
+  canWake: boolean;
+  busy: boolean;
+  onRemove: () => void;
+  onWakeable: (on: boolean) => void;
+  onWake: () => void;
+}) {
   const seen = m.online
     ? `online · ${m.direction === "out" ? "dialed" : "dialed in"}`
     : m.lastSeen
@@ -720,6 +754,27 @@ function MachineRow({ m, onRemove }: { m: FleetMember; onRemove: () => void }) {
           {detail.filter(Boolean).join(" · ")}
         </div>
       </div>
+      <label
+        title={
+          m.wakeable
+            ? "can be woken with Wake-on-LAN (from sleep; from off needs it on in the BIOS)"
+            : "it hasn't said its network address yet: start it once"
+        }
+        style={{ display: "flex", alignItems: "center", gap: 3, color: "var(--wb-textFaint)", fontSize: 10 }}
+      >
+        <input
+          type="checkbox"
+          checked={canWake}
+          disabled={busy || (!m.wakeable && !canWake)}
+          onChange={(e) => onWakeable(e.target.checked)}
+        />
+        wake
+      </label>
+      {!m.online && canWake && m.wakeable && (
+        <button type="button" disabled={busy} onClick={onWake} title="send it a Wake-on-LAN packet" style={miniBtn}>
+          wake now
+        </button>
+      )}
       <button
         type="button"
         onClick={onRemove}

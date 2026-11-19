@@ -41,6 +41,10 @@ pub struct Member {
     /// the phone can open it.
     #[serde(default)]
     pub public_url: Option<String>,
+    /// Its wired (or else wireless) LAN interface (F4.1): what a Wake-on-LAN packet
+    /// needs. Its own to say, like the name.
+    #[serde(default)]
+    pub lan: Option<Lan>,
     /// Milliseconds since the epoch of this version of the record: the newer wins.
     pub updated_at: u64,
     /// Removed from the fleet (a tombstone, kept so gossip can't bring it back).
@@ -85,6 +89,88 @@ pub fn merge(local: &mut Vec<Member>, incoming: &[Member], me: &str) -> Merged {
     out
 }
 
+/// A machine's LAN interface, for Wake-on-LAN (F4.1).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Lan {
+    /// `aa:bb:cc:dd:ee:ff`.
+    pub mac: String,
+    /// `192.168.1.0/24`: machines with the same one can wake each other.
+    pub network: String,
+    /// `192.168.1.255`, where the packet goes.
+    pub broadcast: String,
+}
+
+/// A MAC address in any of the usual forms (`:`, `-`, or none).
+pub fn parse_mac(s: &str) -> Option<[u8; 6]> {
+    let hex: String = s.chars().filter(|c| c.is_ascii_hexdigit()).collect();
+    let seps = s.chars().filter(|c| !c.is_ascii_hexdigit()).all(|c| c == ':' || c == '-' || c == '.');
+    if hex.len() != 12 || !seps {
+        return None;
+    }
+    let mut out = [0u8; 6];
+    for (i, b) in out.iter_mut().enumerate() {
+        *b = u8::from_str_radix(&hex[i * 2..i * 2 + 2], 16).ok()?;
+    }
+    Some(out)
+}
+
+pub fn format_mac(mac: [u8; 6]) -> String {
+    mac.iter().map(|b| format!("{b:02x}")).collect::<Vec<_>>().join(":")
+}
+
+/// The Wake-on-LAN magic packet: six 0xff, then the MAC sixteen times.
+pub fn magic_packet(mac: [u8; 6]) -> Vec<u8> {
+    let mut p = vec![0xff; 6];
+    for _ in 0..16 {
+        p.extend_from_slice(&mac);
+    }
+    p
+}
+
+/// One of the machine's network interfaces, as the OS lists it.
+#[derive(Debug, Clone)]
+pub struct Interface {
+    pub name: String,
+    pub mac: [u8; 6],
+    pub addr: std::net::Ipv4Addr,
+    pub prefix: u8,
+}
+
+/// The interface a Wake-on-LAN packet would reach this machine on: a private IPv4
+/// address on a real MAC, not Tailscale's or a link-local one, wired before
+/// wireless (Wake-on-LAN from off needs the cable), then by name.
+pub fn pick_lan(list: &[Interface]) -> Option<Lan> {
+    let private = |a: std::net::Ipv4Addr| {
+        let o = a.octets();
+        o[0] == 10 || (o[0] == 172 && (16..=31).contains(&o[1])) || (o[0] == 192 && o[1] == 168)
+    };
+    let wireless = |n: &str| {
+        let n = n.to_lowercase();
+        n.contains("wi-fi") || n.contains("wifi") || n.contains("wlan") || n.contains("wireless") || n.starts_with("wl")
+    };
+    let virtual_ = |n: &str| {
+        let n = n.to_lowercase();
+        ["vethernet", "virtual", "vmware", "vbox", "hyper-v", "docker", "tailscale", "loopback", "bluetooth", "wsl"]
+            .iter()
+            .any(|v| n.contains(v))
+            || n.starts_with("veth")
+            || n.starts_with("br-")
+            || n.starts_with("virbr")
+    };
+    let mut ok: Vec<&Interface> = list
+        .iter()
+        .filter(|i| private(i.addr) && i.mac != [0; 6] && i.prefix > 0 && i.prefix < 32 && !virtual_(&i.name))
+        .collect();
+    ok.sort_by_key(|i| (wireless(&i.name), i.name.to_lowercase()));
+    let i = ok.first()?;
+    let mask = u32::MAX << (32 - u32::from(i.prefix));
+    let ip = u32::from(i.addr);
+    let network = std::net::Ipv4Addr::from(ip & mask);
+    let broadcast = std::net::Ipv4Addr::from(ip | !mask);
+    Some(Lan { mac: format_mac(i.mac), network: format!("{network}/{}", i.prefix), broadcast: broadcast.to_string() })
+}
+
 /// The kinds a machine can be, in the default priority order (settled decision 3: the
 /// laptop last, since the server can be main once it has proved itself).
 pub const KINDS: [&str; 3] = ["desktop", "server", "laptop"];
@@ -111,6 +197,9 @@ pub struct FleetConfig {
     pub pin: Option<String>,
     /// Members that may never be main ("can be main" off).
     pub not_main: Vec<String>,
+    /// Members that may be woken with Wake-on-LAN (F4.1); none by default.
+    #[serde(default)]
+    pub wake: Vec<String>,
     /// Milliseconds since the epoch of this version; 0 for the never-edited default.
     pub updated_at: u64,
     /// Who made this version (breaks a tie in `updated_at`).
@@ -252,6 +341,8 @@ pub enum Ask {
     /// A session on your remote server for this paired device, so I can relay its
     /// requests to you. It must be approved there.
     RelaySession { device: String },
+    /// Send machine `id` a Wake-on-LAN packet: you're on its network (F4.1).
+    Wake { id: String },
 }
 
 /// One message on the peer link, as JSON text.
@@ -388,6 +479,7 @@ mod tests {
             host: None,
             kind: String::new(),
             public_url: None,
+            lan: None,
             updated_at: at,
             removed: false,
         }
@@ -439,6 +531,39 @@ mod tests {
         // A record with no token is no record.
         let blank = PairedDevice { token: String::new(), ..device("x", 1, None) };
         assert!(merge_devices(&[], &[blank]).is_empty());
+    }
+
+    #[test]
+    fn wake_on_lan_packets_and_interfaces() {
+        let mac = parse_mac("AA-bb-CC-01-02-03").unwrap();
+        assert_eq!(parse_mac("aa:bb:cc:01:02:03"), Some(mac));
+        assert_eq!(parse_mac("aabbcc010203"), Some(mac));
+        assert_eq!(parse_mac("aa:bb:cc:01:02"), None);
+        assert_eq!(parse_mac("aa;bb:cc:01:02:03"), None);
+        assert_eq!(format_mac(mac), "aa:bb:cc:01:02:03");
+        let p = magic_packet(mac);
+        assert_eq!(p.len(), 102);
+        assert_eq!(&p[..6], &[0xff; 6]);
+        assert_eq!(&p[96..], &mac);
+
+        let i = |name: &str, addr: [u8; 4], prefix: u8| Interface { name: name.into(), mac, addr: addr.into(), prefix };
+        let list = vec![
+            i("Wi-Fi", [192, 168, 1, 40], 24),
+            i("Tailscale", [100, 100, 1, 2], 32),
+            i("vEthernet (WSL)", [172, 20, 0, 1], 20),
+            i("Ethernet", [192, 168, 1, 41], 24),
+        ];
+        let lan = pick_lan(&list).unwrap();
+        assert_eq!(lan.network, "192.168.1.0/24");
+        assert_eq!(lan.broadcast, "192.168.1.255");
+        // Wired first; wireless when that's all there is.
+        assert_eq!(pick_lan(&list[..3]).unwrap().network, "192.168.1.0/24");
+        let mut none = list.clone();
+        for x in &mut none {
+            x.mac = [0; 6];
+        }
+        assert_eq!(pick_lan(&none), None);
+        assert_eq!(pick_lan(&[i("eth0", [10, 1, 2, 3], 16)]).unwrap().broadcast, "10.1.255.255");
     }
 
     fn kinded(id: &str, kind: &str) -> Member {

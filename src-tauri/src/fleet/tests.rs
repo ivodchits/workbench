@@ -11,6 +11,18 @@ use super::*;
 /// Loopback for the tailnet; `deny` makes every peer someone else's.
 struct Loop {
     deny: Arc<AtomicBool>,
+    /// The LAN this machine says it's on (F4.1), and the packets it sent.
+    lan: Option<proto::Lan>,
+    sent: Sent,
+}
+
+/// The Wake-on-LAN packets a machine sent: (MAC, broadcast address).
+type Sent = Arc<std::sync::Mutex<Vec<([u8; 6], std::net::Ipv4Addr)>>>;
+
+impl Loop {
+    fn new(deny: Arc<AtomicBool>) -> Loop {
+        Loop { deny, lan: None, sent: Arc::default() }
+    }
 }
 
 impl Net for Loop {
@@ -19,6 +31,13 @@ impl Net for Loop {
     }
     fn dns_name(&self) -> Option<String> {
         None
+    }
+    fn lan(&self) -> Option<proto::Lan> {
+        self.lan.clone()
+    }
+    fn send_wake(&self, mac: [u8; 6], broadcast: std::net::Ipv4Addr) -> Result<(), String> {
+        self.sent.lock().unwrap().push((mac, broadcast));
+        Ok(())
     }
     fn same_owner(&self, ip: IpAddr) -> Result<(), String> {
         if self.deny.load(Ordering::SeqCst) {
@@ -47,7 +66,7 @@ fn instance_on(name: &str, deny: Arc<AtomicBool>, db: Arc<Db>) -> Arc<Fleet> {
 }
 
 fn instance_with(name: &str, deny: Arc<AtomicBool>, db: Arc<Db>, book: Arc<Book>) -> Arc<Fleet> {
-    let fleet = Fleet::new(test_config(name), Box::new(Loop { deny }), storage(db), book, Box::new(|| {}));
+    let fleet = Fleet::new(test_config(name), Box::new(Loop::new(deny)), storage(db), book, Box::new(|| {}));
     tokio::spawn(fleet.clone().run());
     fleet
 }
@@ -278,7 +297,7 @@ fn identity_survives_a_restart() {
         let ok = Arc::new(AtomicBool::new(false));
         let a = Fleet::new(
             Config { tick: Duration::from_secs(9), ..test_config("x") },
-            Box::new(Loop { deny: ok.clone() }),
+            Box::new(Loop::new(ok.clone())),
             storage(db.clone()),
             Arc::new(Book::default()),
             Box::new(|| {}),
@@ -288,7 +307,7 @@ fn identity_survives_a_restart() {
         drop(a);
         let b = Fleet::new(
             Config { tick: Duration::from_secs(9), ..test_config("y") },
-            Box::new(Loop { deny: ok }),
+            Box::new(Loop::new(ok)),
             storage(db),
             Arc::new(Book::default()),
             Box::new(|| {}),
@@ -355,7 +374,7 @@ async fn the_order_and_the_pin_travel_and_survive_a_restart() {
     // The laptop restarts (a second instance on its database): the settings are there.
     let again = Fleet::new(
         Config { tick: Duration::from_secs(9), ..test_config("laptop") },
-        Box::new(Loop { deny: ok.clone() }),
+        Box::new(Loop::new(ok.clone())),
         storage(laptop_db),
         Arc::new(Book::default()),
         Box::new(|| {}),
@@ -543,4 +562,73 @@ async fn host_traffic_travels_between_two_machines() {
     // Duck runs on the desktop (first by kind), as both see it.
     assert_eq!(laptop.status().config.duck, Some(d.clone()));
     assert_eq!(desktop.status().config.duck, Some(d));
+}
+
+fn lan(net: &str, mac: &str) -> proto::Lan {
+    proto::Lan { mac: mac.into(), network: format!("{net}.0/24"), broadcast: format!("{net}.255") }
+}
+
+/// A machine on a LAN, with the packets it sends kept.
+fn on_lan(name: &str, ok: Arc<AtomicBool>, l: Option<proto::Lan>) -> (Arc<Fleet>, Sent) {
+    let net = Loop { lan: l, ..Loop::new(ok) };
+    let sent = net.sent.clone();
+    let fleet = Fleet::new(
+        test_config(name),
+        Box::new(net),
+        storage(Arc::new(Db::open_in_memory().unwrap())),
+        Arc::new(Book::default()),
+        Box::new(|| {}),
+    );
+    tokio::spawn(fleet.clone().run());
+    (fleet, sent)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_machine_thats_off_is_woken_from_its_network() {
+    let ok = Arc::new(AtomicBool::new(false));
+    // The server and the desktop at home; the laptop away.
+    let (server, server_sent) = on_lan("server", ok.clone(), Some(lan("192.168.1", "00:11:22:33:44:01")));
+    let (laptop, laptop_sent) = on_lan("laptop", ok.clone(), Some(lan("10.0.0", "00:11:22:33:44:02")));
+    let code = join_string(&server).await;
+    laptop.join(&code).await.unwrap();
+    until("linked", || online(&server, "laptop")).await;
+    until("the LANs said", || server.status().members.iter().all(|m| m.wakeable)).await;
+
+    // The desktop, off: known from before, with its LAN, never connecting here.
+    let desk_key = SigningKey::random(&mut OsRng);
+    let desktop = Member {
+        id: "desk".into(),
+        name: "desktop".into(),
+        public_key: proto::public_key_b64(&desk_key),
+        ip: "100.64.0.9".into(),
+        port: 1,
+        host: None,
+        kind: "desktop".into(),
+        public_url: None,
+        lan: Some(lan("192.168.1", "aa:bb:cc:dd:ee:ff")),
+        updated_at: now_ms(),
+        removed: false,
+    };
+    server.take_members(None, vec![desktop]);
+    until("the laptop knows the desktop", || knows(&laptop, "desktop")).await;
+
+    // Not allowed yet.
+    let err = laptop.wake("desk").await.unwrap_err();
+    assert!(err.contains("isn’t set to be woken"), "{err}");
+    laptop.set_wakeable("desk", true);
+    until("allowed on the server", || server.status().config.wake.contains(&"desk".to_string())).await;
+
+    // From the laptop, away: the server, at home, sends it.
+    let said = laptop.wake("desk").await.unwrap();
+    assert_eq!(said, "sent to desktop by server");
+    let mac = proto::parse_mac("aa:bb:cc:dd:ee:ff").unwrap();
+    assert_eq!(server_sent.lock().unwrap().as_slice(), &[(mac, "192.168.1.255".parse().unwrap())]);
+    assert!(laptop_sent.lock().unwrap().is_empty());
+    // From the server itself: from here.
+    assert_eq!(server.wake("desk").await.unwrap(), "sent to desktop from here");
+
+    // A machine that's on is on.
+    let l = id_of(&server, "laptop");
+    server.set_wakeable(&l, true);
+    assert!(server.wake(&l).await.unwrap().contains("is on already"));
 }

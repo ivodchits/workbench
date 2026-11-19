@@ -431,6 +431,32 @@ This document. Done when you've approved it; then H6 in `assistant-plan.md` poin
   desktop from sleep and from soft-off (S5). Soft-off needs the BIOS's Wake on LAN on,
   ErP/deep sleep off, wired Ethernet, and possibly Windows' Fast Startup off. If S5
   can't be woken, the setting stays off for it and the queue covers it.
+- _(Built, 2026-11-19: `proto::Lan`, `parse_mac`, `magic_packet`, `pick_lan`;
+  `net::local_lan` (sysinfo's `network` feature), `send_magic`; `Fleet::wake`, the
+  `wake` ask; `config.wake`; migration v21; `fleet_wake`, `fleet_set_wakeable`;
+  `wake_machine` (`tools/fleet.ts`); the menu's "wake" box and "wake now".
+  **Changed from the plan:**
+  - The MAC isn't in `hello`: each machine says its LAN interface (MAC, network,
+    broadcast address) in its own fleet record, so it's known while the machine is
+    off. The interface is the wired one with a private address (the wireless one
+    if that's all), never a virtual or Tailscale one.
+  - Who sends: this machine when it's on the sleeper's network, else a machine
+    that's on and is (asked over the link). The packet goes to the network's
+    broadcast address and to 255.255.255.255, port 9.
+  - Waking is Duck's tool, not something every call does: `wake_machine` sends the
+    packet and waits up to 90 s for the machine (its host's hello, or its link
+    coming up, for a machine that outranks this one and becomes the main). Duck's
+    prompt says to wake a machine that can be, and else offer the queue. Nothing
+    else wakes a machine.
+  - A machine that wakes up and becomes the main doesn't get the old main's queue:
+    the queue moves with Duck's state (F5, F6).
+  **Checked:** proto tests (MAC forms, the packet, the interface picked: wired over
+  Wi-Fi, no virtual or Tailscale one, the broadcast address); the packet on a
+  real UDP socket; a fleet test over fake networks (not allowed until set; from a
+  laptop away, the server at home sends it; from the server, from itself; a machine
+  that's on is on); `fleet.test.ts` (sends and waits for the hello or the link,
+  gives up after the wait, refuses one not set). Live test owed: the desktop from
+  sleep and from soft-off.)_
 
 ## Phase F5 — Duck's state on every machine
 

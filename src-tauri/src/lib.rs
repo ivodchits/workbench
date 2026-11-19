@@ -381,6 +381,8 @@ pub fn run() {
             fleet::fleet_set_order,
             fleet::fleet_set_pin,
             fleet::fleet_set_can_be_main,
+            fleet::fleet_wake,
+            fleet::fleet_set_wakeable,
             fleet::fleet_remove,
             fleet::fleet_reset_identity,
             fleet::fleet_clear_log,

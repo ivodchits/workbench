@@ -22,6 +22,7 @@ export const listMachines = defineTool({
         kind: m.kind,
         on: m.online,
         ...(m.duck && { duck: true }),
+        ...(!m.online && m.canWake && { canWake: true }),
         ...(m.caps.length && { can: m.caps }),
         ...(m.os && { os: m.os }),
         ...(waiting.some((w) => w.machine === m.id) && {
@@ -63,4 +64,22 @@ export const dropWaiting = defineTool({
   },
 });
 
-export const FLEET_TOOLS = [listMachines, waitForMachine, dropWaiting];
+export const wakeMachine = defineTool({
+  name: "wake_machine",
+  description:
+    "Wake one of the user's computers that's off or asleep (Wake-on-LAN), when list_machines says it can be woken, and wait up to 90 s for it to connect. Then work on it as usual; if it doesn't come up, offer wait_for_machine.",
+  schema: z.object({ machine: z.string().describe("The computer, by name.") }),
+  tier: "reversible",
+  describe: ({ machine }) => `Wake ${machine}`,
+  timeoutMs: 100_000,
+  async run({ machine }, { fleet, signal }) {
+    if (!fleet) throw new Error("Workbench runs on this computer only.");
+    const m = fleet.find(machine);
+    if (!m) throw new Error(`no computer "${machine}"; they are: ${fleet.machines().map((x) => x.name).join(", ")}`);
+    if (m.online) return `${m.name} is on already.`;
+    if (!m.canWake) throw new Error(`${m.name} isn't set to be woken (the user turns that on in Remote Access → fleet).`);
+    return fleet.wake(m, signal);
+  },
+});
+
+export const FLEET_TOOLS = [listMachines, waitForMachine, dropWaiting, wakeMachine];
