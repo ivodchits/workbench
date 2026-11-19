@@ -109,6 +109,25 @@ pub fn set_config(conn: &Connection, cfg: &FleetConfig) -> rusqlite::Result<()> 
     Ok(())
 }
 
+/// The lease this machine last followed (F6.1), so a term never goes back.
+pub fn lease(conn: &Connection) -> super::proto::Lease {
+    conn.query_row("SELECT value FROM meta WHERE key = 'fleet_lease'", [], |r| r.get::<_, String>(0))
+        .optional()
+        .ok()
+        .flatten()
+        .and_then(|v| serde_json::from_str(&v).ok())
+        .unwrap_or_default()
+}
+
+pub fn set_lease(conn: &Connection, l: &super::proto::Lease) -> rusqlite::Result<()> {
+    conn.execute(
+        "INSERT INTO meta (key, value) VALUES ('fleet_lease', ?1)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        [serde_json::to_string(l).expect("serializes")],
+    )?;
+    Ok(())
+}
+
 pub fn seen(conn: &Connection, id: &str, at: u64) {
     let _ = conn.execute("UPDATE fleet_members SET last_seen = ?1 WHERE id = ?2", (at as i64, id));
 }

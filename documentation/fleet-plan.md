@@ -558,6 +558,47 @@ This document. Done when you've approved it; then H6 in `assistant-plan.md` poin
   35 s and the thread continues on it; the desktop started again → it takes over after
   catching up, with nothing lost or doubled; a reminder fires exactly once across a
   handover.
+- _(Built, 2026-11-19: the lease in `fleet/mod.rs` (`elect`, `hear_lease`,
+  `take_lease`, `ask_handover`/`give_handover`), `proto::Lease` and `desired`, the
+  `handover` ask, the lease and dirs in each beat, `fleet_lease` in `meta`;
+  `DuckDb::become_copy` and `promote_here` (the copy installed, paths rebased, the
+  workspace moved to the mirror's head); the webview's drain, reload on
+  `duck-promoted`, and routines, reminders and the queue gated on the lease;
+  `fleet_set_offline`.
+  **Changed from the plan:**
+  - The lease rides the beats (every 5 s), not its own message: the holder's beat
+    renews it, and every beat says which term it follows. The failover is the
+    holder unheard for 30 s, counted from when a machine took up the lease too, so
+    one heard of through another machine gets time to link to its holder.
+  - Two machines that took the same term apart (each started alone) settle on the
+    one the list puts first (the pin, else by priority); what the other did alone
+    is F6.2's to merge.
+  - A pin elsewhere moves the lease by a handover (the pinned machine asks). While
+    the pinned machine can't be reached, the holder keeps Duck rather than nobody
+    having it.
+  - **Taking over from another machine** (`promote_here`): the old `duck.db` is kept
+    beside it (`duck.db.before-term-N`), the copy installed with a fresh log (the
+    others take a snapshot of the new main), the old main's workspace and data paths
+    rebased to this machine's, and Duck's workspace reset to the mirror's head with
+    the old head kept on `fleet/before-term-N`. Then the webview reloads, so Duck
+    starts on its new state. A machine that takes the first lease, or takes over
+    with no copy of the old holder, keeps its own state.
+  - The handover's catching up is the copy reaching the head the holder said after
+    its turns ended (up to 60 s); a turn still running then isn't cancelled by the
+    holder, which only stops taking new ones; its end is in the log the new main
+    gets, and F6.2 covers what's written after.
+  - "Surfaces follow the term" came for free: the drawer, the phone's relay and the
+    hosts all go by `config.duck`, which is now the lease's holder.
+  **Checked:** a fleet test of three machines: the laptop alone takes the lease; the
+  desktop, first in the list, joins and gets it by a handover with the laptop's
+  copy promoted (and its folders to rebase from); the desktop goes offline and the
+  server (next) takes over by failover; the desktop comes back, follows, and takes
+  it back by a handover; every machine follows every term. A pinned laptop keeps
+  Duck from the desktop. `become_copy`: the copy installed with a fresh log, the old
+  state kept, and a copy that can't be installed puts the live one back. Live test
+  owed: the Done when on the desktop and the laptop; the reminder fired exactly once
+  depends on `reminders.json` having been committed and mirrored before the
+  handover, worth watching in that test.)_
 
 ### Step F6.2 — Merging after a split
 - **Depends on:** F6.1.

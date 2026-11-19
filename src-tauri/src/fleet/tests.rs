@@ -116,11 +116,14 @@ fn test_config(name: &str) -> Config {
         default_kind: if proto::valid_kind(name) { name.into() } else { "desktop".into() },
         version: "9.9.9".into(),
         tick: Duration::from_millis(100),
+        // Longer than the 5 s between beats, which renew the lease.
+        failover: Duration::from_millis(6500),
+        handover_after: Duration::from_millis(800),
     }
 }
 
 async fn until(what: &str, f: impl Fn() -> bool) {
-    for _ in 0..200 {
+    for _ in 0..300 {
         if f() {
             return;
         }
@@ -476,10 +479,11 @@ async fn the_phone_learns_every_machines_address() {
     // Pinned to the laptop: the laptop is main for the phone too.
     let l = list.instances[1].id.clone();
     desktop.set_pin(Some(l.clone())).unwrap();
+    // The lease moves to the pin by a handover (F6.1).
+    until("the laptop holds", || desktop.phone_list().main.as_deref() == Some(l.as_str())).await;
     let list = desktop.phone_list();
     assert!(list.pinned);
-    assert_eq!(list.main, Some(l));
-    assert!(list.instances[1].main && !list.instances[0].main);
+    assert!(list.instances.iter().find(|i| i.id == l).unwrap().main);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -510,9 +514,8 @@ async fn a_machine_relays_to_another_and_duck_goes_to_the_main() {
     assert_eq!(desktop.duck_main(), None);
     // Pinned to the laptop: the other way round.
     desktop.set_pin(Some(l.clone())).unwrap();
-    until("the pin reaches the laptop", || laptop.status().config.pin.is_some()).await;
-    assert_eq!(laptop.duck_main(), None);
-    assert_eq!(desktop.duck_main(), Some(l.clone()));
+    // The lease moves to the pin by a handover (F6.1).
+    until("handed to the pin", || laptop.duck_main().is_none() && desktop.duck_main() == Some(l.clone())).await;
 
     // A session for an approved phone, asked over the link; a stranger gets none.
     let phone = PairedDevice {
@@ -788,4 +791,84 @@ async fn the_mains_repo_and_files_reach_the_other_machine() {
     // One nobody has: a plain reason.
     let err = laptop.fetch_attachment("0123456789abcdef0123456789abcdef", "nope.txt").await.unwrap_err();
     assert!(err.contains("no machine sent it"), "{err}");
+}
+
+fn holder(f: &Fleet) -> (u64, Option<String>) {
+    let c = f.status().config;
+    (c.lease_term, c.duck)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_lease_moves_by_handover_and_failover() {
+    let ok = Arc::new(AtomicBool::new(false));
+    // The laptop alone: it takes Duck at once.
+    let laptop = instance("laptop", ok.clone());
+    let l = laptop.status().me.id;
+    until("the laptop holds", || holder(&laptop) == (1, Some(l.clone()))).await;
+    // A fleet that's been through a few terms (the desktop, new, starts at 1).
+    laptop.take_lease(None).unwrap();
+    assert_eq!(holder(&laptop), (2, Some(l.clone())));
+
+    // Duck's state on the laptop, and a copy kept on the desktop.
+    let (lap_db, lap_repl) = duck_files("laptop");
+    let (_desk_db, desk_repl) = duck_files("desktop");
+    lap_db.lock().unwrap().execute("INSERT INTO assistant_threads VALUES ('t1', 'on the laptop', 1)", []).unwrap();
+    laptop.set_duck(lap_repl);
+    let desktop = instance("desktop", ok.clone());
+    desktop.set_duck(desk_repl);
+    let promoted = Arc::new(std::sync::Mutex::new(Vec::<(u64, Option<[String; 2]>)>::new()));
+    let p = promoted.clone();
+    desktop.on_promote(Box::new(move |term, dirs| {
+        p.lock().unwrap().push((term, dirs));
+        Ok(())
+    }));
+    let d = desktop.status().me.id;
+    let code = join_string(&laptop).await;
+    desktop.join(&code).await.unwrap();
+
+    // The desktop is first in the list: once up a while with its copy caught up,
+    // it asks, and the laptop hands over.
+    until("the desktop holds", || holder(&desktop) == (3, Some(d.clone())) && holder(&laptop) == (3, Some(d.clone()))).await;
+    {
+        let p = promoted.lock().unwrap();
+        assert_eq!(p.len(), 1, "it took over with the laptop's copy");
+        assert_eq!(p[0].0, 3);
+        assert!(p[0].1.is_some(), "with the laptop's folders to rebase from");
+    }
+
+    // A server joins; the desktop goes away: the server is next, and takes over.
+    let server = instance("server", ok.clone());
+    let (_srv_db, srv_repl) = duck_files("server");
+    server.set_duck(srv_repl);
+    let s = server.status().me.id;
+    let code = join_string(&desktop).await;
+    server.join(&code).await.unwrap();
+    until("the server follows", || holder(&server) == (3, Some(d.clone()))).await;
+    desktop.set_offline(true);
+    until("failover to the server", || holder(&server) == (4, Some(s.clone())) && holder(&laptop) == (4, Some(s.clone()))).await;
+
+    // The desktop comes back: it follows the new term, then takes Duck back.
+    desktop.set_offline(false);
+    until("the desktop is back", || holder(&desktop).0 >= 4).await;
+    until("handed back to the desktop", || {
+        holder(&desktop) == (5, Some(d.clone())) && holder(&server) == (5, Some(d.clone())) && holder(&laptop) == (5, Some(d.clone()))
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_pin_keeps_duck_where_it_is() {
+    let ok = Arc::new(AtomicBool::new(false));
+    let laptop = instance("laptop", ok.clone());
+    let desktop = instance("desktop", ok.clone());
+    let code = join_string(&laptop).await;
+    desktop.join(&code).await.unwrap();
+    until("linked", || online(&laptop, "desktop")).await;
+    let l = laptop.status().me.id;
+    laptop.set_pin(Some(l.clone())).unwrap();
+    // Pinned to the laptop: the desktop, first in the list otherwise, never asks.
+    until("pinned", || desktop.status().config.pin.is_some()).await;
+    tokio::time::sleep(Duration::from_millis(2500)).await;
+    assert_eq!(holder(&desktop).1, Some(l.clone()));
+    assert_eq!(holder(&laptop).1, Some(l));
 }

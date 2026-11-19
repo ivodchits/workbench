@@ -253,6 +253,20 @@ impl Replica {
         Ok(self.conn.as_ref().expect("just opened"))
     }
 
+    /// Close the copy (it's being installed, F6.1) and forget it after: the next
+    /// sync starts a new one.
+    pub fn close(&mut self) -> &Path {
+        self.conn = None;
+        &self.path
+    }
+
+    pub fn discard(&mut self) {
+        self.conn = None;
+        for ext in ["", "-wal", "-shm"] {
+            let _ = std::fs::remove_file(format!("{}{ext}", self.path.display()));
+        }
+    }
+
     pub fn state(&mut self) -> ReplicaState {
         let Ok(c) = self.conn() else { return ReplicaState::default() };
         let get = |k: &str| state(c, k).ok().flatten();
@@ -329,14 +343,12 @@ impl Replica {
 
 /// The rows that hold absolute paths (audited for F5.1): a folder under Duck's
 /// workspace, or a file under the app's data folder.
-#[allow(dead_code)] // the election uses it (F6.1)
 const PATH_COLUMNS: [(&str, &str); 4] =
     [("assistant_tasks", "data"), ("assistant_drawings", "data"), ("assistant_autopilots", "data"), ("assistant_messages", "content")];
 
 /// Rewrite the paths a copy holds from the machine it came from (`from`: its
 /// workspace and data folder) to this one's (`to`), as JSON text and as plain
 /// text. For a copy that becomes the main (F6). Returns how many rows changed.
-#[allow(dead_code)] // the election uses it (F6.1)
 pub fn rebase_paths(conn: &Connection, from: &[&str], to: &[&str]) -> rusqlite::Result<usize> {
     let mut changed = 0;
     for (old, new) in from.iter().zip(to) {

@@ -375,6 +375,8 @@ pub fn run() {
             fleet::fleet_status,
             fleet::fleet_host_send,
             fleet::fleet_set_workspace,
+            fleet::fleet_drained,
+            fleet::fleet_set_offline,
             fleet::fleet_new_code,
             fleet::fleet_join,
             fleet::fleet_rename,

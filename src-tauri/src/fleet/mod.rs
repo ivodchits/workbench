@@ -39,6 +39,14 @@
 //! - **Duck's state** (F5.1, [`repl`]): a machine that isn't Duck's main keeps a copy
 //!   of the main's `duck.db`, pulled over the link: the log after what it has, or a
 //!   snapshot when it can't continue.
+//! - **The election** (F6.1): a lease `{term, holder}` in every beat. The holder's
+//!   beats renew it; silent for [`Config::failover`], the next machine the list
+//!   wants takes the next term from its copy (failover). A machine the list wants
+//!   more, up for [`Config::handover_after`] with its copy caught up, asks the holder
+//!   for it: the holder's Duck finishes its turns, says its log's head, and the asker
+//!   catches up and takes the next term (handover). Taking over from another machine
+//!   installs the copy as this machine's Duck (`DuckRepl::promote`). Where Duck is,
+//!   for the drawer, the phone's relay and the hosts, is the lease's holder.
 //! - **The listener** runs only while there is someone to talk to: another member, or
 //!   a live join code.
 //!
@@ -66,7 +74,7 @@ use tokio::sync::{mpsc, oneshot, Notify};
 
 use crate::db::Db;
 use crate::remote::auth::{self, AuthFailure, AuthLog, PairGate, PairOutcome};
-use proto::{Ask, Beat, FleetConfig, Frame, Lan, Member, PairedDevice};
+use proto::{Ask, Beat, FleetConfig, Frame, Lan, Lease, Member, PairedDevice};
 
 /// The fleet's port on the tailnet. A debug build has its own, so a dev run and the
 /// installed app on one machine are two members (a real fleet test on one laptop).
@@ -183,6 +191,9 @@ pub struct ReplicaView {
     pub repo_error: Option<String>,
 }
 
+/// Tells the webview to finish Duck's turns (true), or that it may take them again.
+pub type DrainSink = Box<dyn Fn(bool) + Send + Sync>;
+
 /// Takes host traffic from a peer: (its id, the text).
 pub type HostSink = Box<dyn Fn(&str, String) + Send + Sync>;
 
@@ -216,7 +227,15 @@ pub struct Config {
     pub version: String,
     /// How often the keeper looks (binding, dialing).
     pub tick: Duration,
+    /// The holder unheard this long: the next machine takes over (F6.1).
+    pub failover: Duration,
+    /// A machine the list wants more asks for the lease after being up this long.
+    pub handover_after: Duration,
 }
+
+/// What a machine taking over from another does to make the copy its Duck (F6.1):
+/// given the term and the old holder's dirs, as the app does it.
+pub type Promote = Box<dyn Fn(u64, Option<[String; 2]>) -> Result<(), String> + Send + Sync>;
 
 pub struct Fleet {
     cfg: Config,
@@ -241,6 +260,14 @@ pub struct Fleet {
     repo_synced: Mutex<Option<Instant>>,
     replicating: std::sync::atomic::AtomicBool,
     replica_view: Mutex<ReplicaView>,
+    /// Making the copy this machine's Duck (the app's; none in most tests).
+    promote: Mutex<Option<Promote>>,
+    /// The webview's Duck finished its turns for a handover (`fleet_drained`).
+    drained: Notify,
+    /// Tells the webview to finish its turns (true) or that it may take them again.
+    drain_sink: Mutex<Option<DrainSink>>,
+    /// A handover is being asked for.
+    handing: std::sync::atomic::AtomicBool,
     /// Sessions other machines gave for a device, by (machine, device).
     relay_sessions: Mutex<HashMap<(String, String), (String, Instant)>>,
 }
@@ -267,6 +294,17 @@ struct Inner {
     next_link: u64,
     /// This machine's remote server's port, while it listens on the tailnet.
     remote_port: Option<u16>,
+    /// The lease followed, and when its holder was last heard (F6.1).
+    lease: Lease,
+    lease_heard: Instant,
+    /// When each link came up (for the handover's wait).
+    up_since: HashMap<String, Instant>,
+    /// The holder's Duck is finishing its turns for a handover.
+    draining: bool,
+    /// Off the fleet on purpose (tests, and a future "go offline"): no links.
+    offline: bool,
+    /// Each member's last dirs (from its beats).
+    dirs: HashMap<String, [String; 2]>,
 }
 
 struct Link {
@@ -345,8 +383,12 @@ pub struct ConfigView {
     pub main: Option<String>,
     /// Who the list would make main now (the election, F6, will act on it).
     pub first_choice: Option<String>,
-    /// Where Duck runs: the main by hand, else the first choice.
+    /// Where Duck runs: the lease's holder (F6.1), else the list's choice.
     pub duck: Option<String>,
+    /// The lease's term (0: none yet).
+    pub lease_term: u64,
+    /// This machine's Duck is finishing its turns to hand over.
+    pub draining: bool,
     /// When the settings were last changed, and on which machine.
     pub updated_at: u64,
     pub by: Option<String>,
@@ -436,6 +478,7 @@ impl Fleet {
             members.push(m);
         }
         let config = store.with(store::config);
+        let lease0 = store.with(store::lease);
         let caps = local_caps();
         let fleet = Arc::new(Fleet {
             net,
@@ -462,11 +505,21 @@ impl Fleet {
                 problem: None,
                 next_link: 0,
                 remote_port: None,
+                lease: lease0,
+                lease_heard: Instant::now(),
+                up_since: HashMap::new(),
+                draining: false,
+                offline: false,
+                dirs: HashMap::new(),
             }),
             owners: Mutex::new(HashMap::new()),
             asks: Mutex::new(HashMap::new()),
             next_ask: std::sync::atomic::AtomicU64::new(1),
             relay_sessions: Mutex::new(HashMap::new()),
+            promote: Mutex::new(None),
+            drained: Notify::new(),
+            drain_sink: Mutex::new(None),
+            handing: std::sync::atomic::AtomicBool::new(false),
             host_sink: Mutex::new(None),
             duck: Mutex::new(None),
             snap_cache: Mutex::new(None),
@@ -568,6 +621,7 @@ impl Fleet {
             self.ensure_listener().await;
             self.dial_due();
             self.write_seen();
+            self.elect();
             self.replicate_due();
             looks += 1;
             tokio::select! {
@@ -641,7 +695,7 @@ impl Fleet {
     fn dial_due(self: &Arc<Self>) {
         let due: Vec<Member> = {
             let mut inner = self.inner.lock().unwrap();
-            if inner.problem.is_some() {
+            if inner.problem.is_some() || inner.offline {
                 return;
             }
             let at = Instant::now();
@@ -928,7 +982,7 @@ impl Fleet {
         let inner = self.inner.lock().unwrap();
         let cfg = &inner.config;
         let up = |id: &str| id == inner.me || inner.links.contains_key(id);
-        let main = proto::main_by_hand(&inner.members, cfg).or_else(|| proto::first_choice(&inner.members, cfg, up));
+        let main = Self::duck_of(&inner);
         let instances = proto::ranked(&inner.members, cfg)
             .into_iter()
             .filter_map(|id| inner.members.iter().find(|m| m.id == id))
@@ -1008,6 +1062,9 @@ impl Fleet {
     ) -> Option<(u64, oneshot::Receiver<String>)> {
         let (tx, rx) = oneshot::channel();
         let mut inner = self.inner.lock().unwrap();
+        if inner.offline {
+            return None;
+        }
         let me = inner.me.clone();
         if let Some(old) = inner.links.get_mut(peer) {
             if !proto::keep_new_link(&me, peer, &old.dialer, dialer) {
@@ -1022,6 +1079,7 @@ impl Fleet {
         inner.links.insert(peer.to_string(), Link { id, dialer: dialer.to_string(), out, cancel: Some(tx) });
         inner.backoff.remove(peer);
         inner.seen.insert(peer.to_string(), now());
+        inner.up_since.entry(peer.to_string()).or_insert_with(Instant::now);
         drop(inner);
         (self.notify)();
         Some((id, rx))
@@ -1032,6 +1090,7 @@ impl Fleet {
             let mut inner = self.inner.lock().unwrap();
             if inner.links.get(peer).is_some_and(|l| l.id == id) {
                 inner.links.remove(peer);
+                inner.up_since.remove(peer);
                 inner.seen.insert(peer.to_string(), now());
                 true
             } else {
@@ -1045,9 +1104,15 @@ impl Fleet {
     }
 
     fn on_beat(&self, peer: &str, beat: Beat) {
+        if let Some(l) = beat.lease.clone() {
+            self.hear_lease(peer, l);
+        }
         let changed = {
             let mut inner = self.inner.lock().unwrap();
             inner.seen.insert(peer.to_string(), now());
+            if let Some(d) = beat.dirs.clone() {
+                inner.dirs.insert(peer.to_string(), d);
+            }
             inner.beats.insert(peer.to_string(), beat.clone()) != Some(beat)
         };
         if changed {
@@ -1055,9 +1120,235 @@ impl Fleet {
         }
     }
 
+    // --- the election (F6.1) ---------------------------------------------------------
+
+    /// Where Duck is: the lease's holder once there's a lease, else the list's choice.
+    fn duck_of(inner: &Inner) -> Option<String> {
+        if inner.lease.term > 0 {
+            return Some(inner.lease.holder.clone());
+        }
+        let up = |id: &str| id == inner.me || inner.links.contains_key(id);
+        proto::desired(&inner.members, &inner.config, up)
+    }
+
+    /// A lease heard from `peer` (its beat): a higher term is followed; the holder's
+    /// own beat of the current term renews it.
+    fn hear_lease(&self, peer: &str, l: Lease) {
+        let (adopted, lost) = {
+            let mut inner = self.inner.lock().unwrap();
+            // Two machines that took the same term apart (each alone): the one the
+            // list puts first keeps it (the pin, else by priority).
+            let tie_won = l.term == inner.lease.term && l.holder != inner.lease.holder && {
+                let ranked = proto::ranked(&inner.members, &inner.config);
+                let pos = |id: &str| {
+                    if inner.config.pin.as_deref() == Some(id) {
+                        0
+                    } else {
+                        ranked.iter().position(|x| x == id).map_or(usize::MAX, |p| p + 1)
+                    }
+                };
+                (pos(&l.holder), &l.holder) < (pos(&inner.lease.holder), &inner.lease.holder)
+            };
+            if l.term > inner.lease.term || tie_won {
+                let lost = inner.lease.holder == inner.me && l.holder != inner.me;
+                inner.lease = l.clone();
+                inner.lease_heard = Instant::now();
+                (true, lost)
+            } else {
+                if l.term == inner.lease.term && l.holder == peer && inner.lease.holder == peer {
+                    inner.lease_heard = Instant::now();
+                }
+                (false, false)
+            }
+        };
+        if adopted {
+            self.store.with(|c| store::set_lease(c, &l)).ok();
+            if lost {
+                // Another machine holds Duck now: this one's takes turns again only
+                // as a stand-in, and its copy follows the new holder.
+                self.inner.lock().unwrap().draining = false;
+                if let Some(sink) = self.drain_sink.lock().unwrap().as_ref() {
+                    sink(false);
+                }
+            }
+            (self.notify)();
+            self.wake.notify_one();
+        }
+    }
+
+    /// Take the lease for the next term (from `from`, the holder before, when it was
+    /// another machine): its copy becomes this machine's Duck first.
+    fn take_lease(&self, from: Option<String>) -> Result<(), String> {
+        let (term, dirs) = {
+            let inner = self.inner.lock().unwrap();
+            (inner.lease.term + 1, from.as_ref().and_then(|f| inner.dirs.get(f).cloned()))
+        };
+        if let Some(old) = &from {
+            let has_copy = self
+                .duck()
+                .map(|d| d.replica.lock().unwrap().state().origin.as_deref() == Some(old.as_str()))
+                .unwrap_or(false);
+            if has_copy {
+                if let Some(p) = self.promote.lock().unwrap().as_ref() {
+                    p(term, dirs)?;
+                }
+            }
+        }
+        let lease = {
+            let mut inner = self.inner.lock().unwrap();
+            inner.lease = Lease { term, holder: inner.me.clone() };
+            inner.lease_heard = Instant::now();
+            inner.draining = false;
+            inner.lease.clone()
+        };
+        self.store.with(|c| store::set_lease(c, &lease)).ok();
+        // Said at once, not at the next beat.
+        let frame = Frame::Beat { beat: self.beat() }.to_text();
+        for link in self.inner.lock().unwrap().links.values() {
+            let _ = link.out.send(frame.clone());
+        }
+        (self.notify)();
+        Ok(())
+    }
+
+    /// One look at the lease: take it when its holder went quiet and this machine is
+    /// next, or ask for it when the list wants this machine more.
+    fn elect(self: &Arc<Self>) {
+        let (me, lease, heard, desired, linked_since, offline) = {
+            let inner = self.inner.lock().unwrap();
+            // The holder unheard for the failover time (from when this machine took
+            // up the lease, too: a lease heard of through another machine gets the
+            // time to link to its holder).
+            let quiet = inner.lease.term == 0 || (inner.lease.holder != inner.me && inner.lease_heard.elapsed() >= self.cfg.failover);
+            let up = |id: &str| id == inner.me || (inner.links.contains_key(id) && !(quiet && id == inner.lease.holder));
+            let desired = proto::desired(&inner.members, &inner.config, up);
+            let since = inner.up_since.get(&inner.lease.holder).copied();
+            (inner.me.clone(), inner.lease.clone(), quiet, desired, since, inner.offline)
+        };
+        if offline || desired.as_deref() != Some(me.as_str()) || lease.holder == me && lease.term > 0 {
+            return;
+        }
+        if heard {
+            // Failover (or the first lease): the holder went quiet.
+            let from = (lease.term > 0 && lease.holder != me).then(|| lease.holder.clone());
+            if let Err(e) = self.take_lease(from) {
+                eprintln!("[fleet] couldn’t take Duck over: {e}");
+            }
+            return;
+        }
+        // Handover: the holder is up; ask once this machine has been up a while
+        // and its copy has caught up.
+        let ready = linked_since.is_some_and(|t| t.elapsed() >= self.cfg.handover_after) && self.caught_up(&lease.holder);
+        if !ready || self.handing.swap(true, std::sync::atomic::Ordering::SeqCst) {
+            return;
+        }
+        let me2 = self.clone();
+        tokio::spawn(async move {
+            if let Err(e) = me2.ask_handover(&lease).await {
+                eprintln!("[fleet] the handover didn’t happen: {e}");
+            }
+            me2.handing.store(false, std::sync::atomic::Ordering::SeqCst);
+        });
+    }
+
+    /// This machine's copy follows `holder` and is at its last known head (no copy
+    /// kept here: nothing to catch up).
+    fn caught_up(&self, holder: &str) -> bool {
+        let Ok(d) = self.duck() else { return true };
+        let st = d.replica.lock().unwrap().state();
+        let v = self.replica_view.lock().unwrap().clone();
+        st.origin.as_deref() == Some(holder) && st.seq >= v.head && v.at.is_some_and(|t| now().saturating_sub(t) <= 30)
+    }
+
+    async fn ask_handover(self: &Arc<Self>, lease: &Lease) -> Result<(), String> {
+        let text = self.ask_for(&lease.holder, Ask::Handover { term: lease.term }, Duration::from_secs(75)).await?;
+        let head = serde_json::from_str::<serde_json::Value>(&text).ok().and_then(|v| v["head"].as_i64()).unwrap_or(0);
+        // Catch up to the head the holder said, then take over.
+        if self.duck().is_ok() {
+            for _ in 0..40 {
+                let _ = self.replicate().await;
+                let seq = self.duck()?.replica.lock().unwrap().state().seq;
+                if seq >= head {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(250)).await;
+            }
+        }
+        if self.inner.lock().unwrap().lease != *lease {
+            return Err("the lease moved meanwhile".into());
+        }
+        self.take_lease(Some(lease.holder.clone()))
+    }
+
+    /// The holder's side of a handover: Duck finishes its turns (up to 60 s), then
+    /// the log's head is the answer. The lease stays until the asker takes the next
+    /// term.
+    async fn give_handover(&self, term: u64) -> Result<String, String> {
+        {
+            let mut inner = self.inner.lock().unwrap();
+            if inner.lease.term != term || inner.lease.holder != inner.me {
+                return Err("this machine doesn’t hold that lease".into());
+            }
+            inner.draining = true;
+        }
+        (self.notify)();
+        let sink = self.drain_sink.lock().unwrap().is_some();
+        if sink {
+            if let Some(s) = self.drain_sink.lock().unwrap().as_ref() {
+                s(true);
+            }
+            let _ = tokio::time::timeout(Duration::from_secs(60), self.drained.notified()).await;
+        }
+        let head = match self.duck() {
+            Ok(d) => d.source.with(|c| repl::since(c, None, 0)).map(|a| a.head).unwrap_or(0),
+            Err(_) => 0,
+        };
+        Ok(serde_json::json!({ "head": head }).to_string())
+    }
+
+    /// The webview's Duck finished its turns (`fleet_drained`).
+    pub fn drained(&self) {
+        self.drained.notify_one();
+    }
+
+    /// Where the webview hears to finish its turns for a handover (and when it may
+    /// take them again).
+    pub fn on_drain(&self, sink: DrainSink) {
+        *self.drain_sink.lock().unwrap() = Some(sink);
+    }
+
+    /// How this machine makes its copy its Duck.
+    pub fn on_promote(&self, p: Promote) {
+        *self.promote.lock().unwrap() = Some(p);
+    }
+
+    /// Off the fleet (no links) or back on it.
+    pub fn set_offline(&self, on: bool) {
+        let peers: Vec<String> = {
+            let mut inner = self.inner.lock().unwrap();
+            inner.offline = on;
+            inner.links.keys().cloned().collect()
+        };
+        if on {
+            for p in peers {
+                self.close_link(&p, "gone offline");
+            }
+        }
+        self.wake.notify_one();
+    }
+
+
+
     fn beat(&self) -> Beat {
+        let dirs = self.duck().ok().and_then(|d| {
+            let ws = d.workspace.lock().unwrap().clone()?;
+            let data = d.files.parent()?.to_string_lossy().into_owned();
+            Some([ws.to_string_lossy().into_owned(), data])
+        });
         let inner = self.inner.lock().unwrap();
         Beat {
+            lease: (inner.lease.term > 0).then(|| inner.lease.clone()),
+            dirs,
             name: Self::self_record(&inner).name,
             version: self.cfg.version.clone(),
             os: std::env::consts::OS.into(),
@@ -1071,6 +1362,10 @@ impl Fleet {
 
     /// Ask `peer` something over its link; its answer, or why there is none.
     async fn ask(&self, peer: &str, ask: Ask) -> Result<String, String> {
+        self.ask_for(peer, ask, ASK_TIMEOUT).await
+    }
+
+    async fn ask_for(&self, peer: &str, ask: Ask, wait: Duration) -> Result<String, String> {
         let req = self.next_ask.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let (tx, rx) = oneshot::channel();
         let sent = {
@@ -1087,7 +1382,7 @@ impl Fleet {
             self.asks.lock().unwrap().remove(&req);
             return Err("that machine isn’t connected".into());
         }
-        let answer = tokio::time::timeout(ASK_TIMEOUT, rx).await;
+        let answer = tokio::time::timeout(wait, rx).await;
         self.asks.lock().unwrap().remove(&req);
         match answer {
             Ok(Ok(a)) => a,
@@ -1097,8 +1392,9 @@ impl Fleet {
     }
 
     /// A question from `peer` (the link's reader): the answer to send back.
-    fn on_ask(&self, ask: Ask) -> Result<String, String> {
+    async fn on_ask(&self, ask: Ask) -> Result<String, String> {
         match ask {
+            Ask::Handover { term } => self.give_handover(term).await,
             Ask::RelaySession { device } => self.book.relay_session(&device),
             Ask::Wake { id } => self.wake_here(&id),
             Ask::ReplLog { epoch, seq } => self.repl_log(epoch.as_deref(), seq),
@@ -1243,9 +1539,7 @@ impl Fleet {
     /// Duck's main when that's another machine linked to this one.
     fn duck_source(&self) -> Option<String> {
         let inner = self.inner.lock().unwrap();
-        let cfg = &inner.config;
-        let up = |id: &str| id == inner.me || inner.links.contains_key(id);
-        let main = proto::main_by_hand(&inner.members, cfg).or_else(|| proto::first_choice(&inner.members, cfg, up))?;
+        let main = Self::duck_of(&inner)?;
         (main != inner.me && inner.links.contains_key(&main)).then_some(main)
     }
 
@@ -1525,7 +1819,9 @@ impl Fleet {
             wake: cfg.wake.clone(),
             main: proto::main_by_hand(&inner.members, cfg),
             first_choice: proto::first_choice(&inner.members, cfg, up),
-            duck: proto::main_by_hand(&inner.members, cfg).or_else(|| proto::first_choice(&inner.members, cfg, up)),
+            duck: Self::duck_of(&inner),
+            lease_term: inner.lease.term,
+            draining: inner.draining,
             updated_at: cfg.updated_at,
             by: (!cfg.by.is_empty())
                 .then(|| inner.members.iter().find(|m| m.id == cfg.by).map_or(cfg.by.clone(), |m| m.name.clone())),
@@ -1756,6 +2052,8 @@ pub fn init(app: &AppHandle) {
             default_kind: default_kind().into(),
             version: env!("CARGO_PKG_VERSION").into(),
             tick: Duration::from_secs(3),
+            failover: Duration::from_secs(30),
+            handover_after: Duration::from_secs(120),
         },
         Box::new(net::Tailscale),
         Storage::new({
@@ -1772,6 +2070,14 @@ pub fn init(app: &AppHandle) {
         }),
     );
     fleet.set_public_url(crate::remote::public_url(app));
+    // The election (F6.1): the webview's Duck finishes its turns for a handover,
+    // and taking over installs the copy.
+    let drain_app = app.clone();
+    fleet.on_drain(Box::new(move |on| {
+        let _ = drain_app.emit("fleet-drain", on);
+    }));
+    let promote_app = app.clone();
+    fleet.on_promote(Box::new(move |term, dirs| promote_here(&promote_app, term, dirs)));
     // Duck's state (F5.1): its database, and the copy of the main's beside it.
     if let (Ok(dir), Some(_)) = (app.path().app_data_dir(), app.try_state::<Arc<crate::assistant::Assistant>>()) {
         let replica = if cfg!(debug_assertions) { "duck.replica.dev.db" } else { "duck.replica.db" };
@@ -1799,12 +2105,62 @@ pub fn init(app: &AppHandle) {
     tauri::async_runtime::spawn(fleet.run());
 }
 
+/// Make the copy of the old main's Duck this machine's (F6.1): its `duck.db` (the
+/// old one kept beside it), its paths rebased to this machine's, and Duck's
+/// workspace moved to the mirror's head (the old head kept on a branch). The
+/// webview then starts Duck again on it (`duck-promoted`).
+fn promote_here(app: &AppHandle, term: u64, dirs: Option<[String; 2]>) -> Result<(), String> {
+    let fleet = get(app).ok_or("no fleet")?;
+    let d = fleet.duck()?;
+    let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let live = dir.join(crate::assistant::db::FILE_NAME);
+    let backup = dir.join(format!("{}.before-term-{term}", crate::assistant::db::FILE_NAME));
+    let my_ws = d.workspace.lock().unwrap().clone();
+    let copy = d.replica.lock().unwrap().close().to_path_buf();
+    let a = app.state::<Arc<crate::assistant::Assistant>>();
+    a.db.become_copy(&live, &copy, &backup, |c| {
+        if let (Some([ws, data]), Some(mine)) = (&dirs, &my_ws) {
+            let my_data = dir.to_string_lossy().into_owned();
+            repl::rebase_paths(c, &[ws.as_str(), data.as_str()], &[&mine.to_string_lossy(), &my_data]).map_err(|e| e.to_string())?;
+        }
+        Ok(())
+    })?;
+    d.replica.lock().unwrap().discard();
+    // Duck's repo: the mirror's head, the old one kept.
+    if let (Some(ws), Some(_)) = (my_ws, files::head(&d.mirror)) {
+        let mirror = d.mirror.to_string_lossy().into_owned();
+        if files::head(&ws).is_some() {
+            let _ = crate::gitqueue::run(&ws, &["branch", "-f", &format!("fleet/before-term-{term}"), "HEAD"]);
+        } else if !ws.join(".git").exists() {
+            std::fs::create_dir_all(&ws).map_err(|e| e.to_string())?;
+            crate::gitqueue::run(&ws, &["init", "-q"])?;
+        }
+        crate::gitqueue::run(&ws, &["fetch", "-q", &mirror, "HEAD"])?;
+        crate::gitqueue::run(&ws, &["reset", "-q", "--hard", "FETCH_HEAD"])?;
+    }
+    let _ = app.emit("duck-promoted", term);
+    Ok(())
+}
+
 /// The app's fleet, once [`init`] has run.
 pub fn get(app: &AppHandle) -> Option<Arc<Fleet>> {
     app.try_state::<Arc<Fleet>>().map(|f| f.inner().clone())
 }
 
 /// Duck's workspace here, from the settings (F5.2: the repo the mirror follows).
+/// Take this machine off the fleet (no links) or put it back (F6.1).
+#[tauri::command]
+pub fn fleet_set_offline(fleet: State<'_, Arc<Fleet>>, on: bool) -> FleetStatus {
+    fleet.set_offline(on);
+    fleet.status()
+}
+
+/// The webview's Duck finished its turns for a handover (F6.1).
+#[tauri::command]
+pub fn fleet_drained(fleet: State<'_, Arc<Fleet>>) {
+    fleet.drained();
+}
+
 #[tauri::command]
 pub fn fleet_set_workspace(fleet: State<'_, Arc<Fleet>>, workspace: Option<String>) -> Result<(), String> {
     fleet.set_workspace(crate::assistant::workspace::resolve(workspace.as_deref())?);

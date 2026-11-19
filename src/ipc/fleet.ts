@@ -49,8 +49,12 @@ export interface FleetConfig {
   main: string | null;
   /** Who the list would make main now. */
   firstChoice: string | null;
-  /** Where Duck runs: the pinned main, else the first choice. */
+  /** Where Duck runs: the lease's holder (fleet plan F6.1), else the list's choice. */
   duck: string | null;
+  /** The lease's term (0: none yet). */
+  leaseTerm: number;
+  /** This machine's Duck is finishing its turns to hand over. */
+  draining: boolean;
   /** When the settings last changed (ms), and on which machine. */
   updatedAt: number;
   by: string | null;
@@ -149,6 +153,26 @@ export function fleetSetWakeable(id: string, on: boolean): Promise<FleetStatus> 
 /** Duck's workspace here (fleet plan F5.2: the repo another machine mirrors). */
 export function fleetSetWorkspace(workspace: string | null): Promise<void> {
   return invoke("fleet_set_workspace", { workspace });
+}
+
+/** The webview's Duck finished its turns for a handover (F6.1). */
+export function fleetDrained(): Promise<void> {
+  return invoke("fleet_drained");
+}
+
+/** Take this machine off the fleet (no links), or back on it. */
+export function fleetSetOffline(on: boolean): Promise<FleetStatus> {
+  return invoke("fleet_set_offline", { on });
+}
+
+/** Finish Duck's turns for a handover (true), or take them again (false). */
+export function onFleetDrain(cb: (on: boolean) => void): Promise<UnlistenFn> {
+  return listen<boolean>("fleet-drain", (e) => cb(e.payload));
+}
+
+/** This machine took Duck over from another: its state is the copy now. */
+export function onDuckPromoted(cb: (term: number) => void): Promise<UnlistenFn> {
+  return listen<number>("duck-promoted", (e) => cb(e.payload));
 }
 
 /** Duck's host traffic to another machine (fleet plan F3.1, `fleetHosts.ts`). */

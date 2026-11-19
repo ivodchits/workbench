@@ -232,11 +232,15 @@ async fn run(
                     Some(Frame::Devices { list }) => fleet.take_devices(&peer, list),
                     Some(Frame::Host { text }) => fleet.take_host(&peer, text),
                     Some(Frame::Ask { req, ask }) => {
-                        let (ok, err) = match fleet.on_ask(ask) {
-                            Ok(v) => (Some(v), None),
-                            Err(e) => (None, Some(e)),
-                        };
-                        let _ = out.send(Frame::Answer { req, ok, err }.to_text());
+                        // Answered on its own: a handover takes up to a minute.
+                        let (f, o) = (fleet.clone(), out.clone());
+                        tokio::spawn(async move {
+                            let (ok, err) = match f.on_ask(ask).await {
+                                Ok(v) => (Some(v), None),
+                                Err(e) => (None, Some(e)),
+                            };
+                            let _ = o.send(Frame::Answer { req, ok, err }.to_text());
+                        });
                     }
                     Some(Frame::Answer { req, ok, err }) => {
                         fleet.on_answer(req, ok.ok_or_else(|| err.unwrap_or_else(|| "no answer".into())));

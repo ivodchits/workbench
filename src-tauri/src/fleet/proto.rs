@@ -332,6 +332,28 @@ pub struct Beat {
     /// (F2.2: where the others relay the phone's requests).
     #[serde(default)]
     pub remote_port: Option<u16>,
+    /// The lease it follows (F6.1): the holder's beats renew it.
+    #[serde(default)]
+    pub lease: Option<Lease>,
+    /// Its Duck workspace and data folder (F6.1: what a copy's paths are rebased
+    /// from when another machine takes over).
+    #[serde(default)]
+    pub dirs: Option<[String; 2]>,
+}
+
+/// Who holds Duck (F6.1): the main for `term`. A higher term wins; a message from a
+/// lower one is the past.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct Lease {
+    pub term: u64,
+    pub holder: String,
+}
+
+/// Who should hold the lease: the pin (while it's a live member), else the first
+/// machine in the list that can be main and is up.
+pub fn desired(members: &[Member], cfg: &FleetConfig, up: impl Fn(&str) -> bool) -> Option<String> {
+    main_by_hand(members, cfg).or_else(|| first_choice(members, cfg, up))
 }
 
 /// A question one machine asks another over the link (F2.2).
@@ -351,6 +373,9 @@ pub enum Ask {
     RepoBundle { have: Option<String>, n: u32 },
     /// Chunk `n` of your attachment `id` / `name` (F5.2).
     FileChunk { id: String, name: String, n: u32 },
+    /// Hand me the lease of `term` (F6.1): your Duck finishes its turns, then you
+    /// answer with your log's head for me to catch up to.
+    Handover { term: u64 },
 }
 
 /// One message on the peer link, as JSON text.

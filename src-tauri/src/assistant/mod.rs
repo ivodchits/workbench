@@ -30,7 +30,7 @@ mod autopilot;
 mod autopilot_plans;
 mod budget;
 pub mod config;
-mod db;
+pub(crate) mod db;
 pub mod decisions_log;
 pub mod drawings;
 pub mod waiting;
