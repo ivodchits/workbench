@@ -19,6 +19,10 @@
 //!   list on connect and on every change (gossip: newest record wins, tombstones
 //!   included, [`proto::merge`]). 15 s of silence closes the link; the member shows
 //!   offline until it reconnects.
+//! - **The fleet's settings** (F1.2, [`FleetConfig`]): the priority order, the pin and
+//!   who may be main. One record for the whole fleet; the newer edit wins whole, sent
+//!   on connect, on every change and in a join's answer. While there's no election
+//!   (F6) the main is the pin.
 //! - **The listener** runs only while there is someone to talk to: another member, or
 //!   a live join code.
 //!
@@ -44,7 +48,7 @@ use tokio::sync::{mpsc, oneshot, Notify};
 
 use crate::db::Db;
 use crate::remote::auth::{self, AuthFailure, AuthLog, PairGate, PairOutcome};
-use proto::{Beat, Frame, Member};
+use proto::{Beat, FleetConfig, Frame, Member};
 
 /// The fleet's port on the tailnet. A debug build has its own, so a dev run and the
 /// installed app on one machine are two members (a real fleet test on one laptop).
@@ -108,6 +112,8 @@ pub struct Config {
     pub port: u16,
     /// What a new identity names this machine.
     pub default_name: String,
+    /// What a new record says this machine is (`desktop`, `laptop`, `server`).
+    pub default_kind: String,
     pub version: String,
     /// How often the keeper looks (binding, dialing).
     pub tick: Duration,
@@ -130,6 +136,7 @@ struct Inner {
     key: SigningKey,
     /// Every member, this machine and tombstones included.
     members: Vec<Member>,
+    config: FleetConfig,
     links: HashMap<String, Link>,
     beats: HashMap<String, Beat>,
     /// Last seen (epoch s): kept, and when it was last written.
@@ -168,6 +175,7 @@ pub struct MemberView {
     pub ip: String,
     pub port: u16,
     pub host: Option<String>,
+    pub kind: String,
     pub online: bool,
     /// Epoch seconds it was last heard from.
     pub last_seen: Option<u64>,
@@ -196,6 +204,26 @@ pub struct FleetStatus {
     pub members: Vec<MemberView>,
     pub log: Vec<AuthFailure>,
     pub problem: Option<String>,
+    pub config: ConfigView,
+}
+
+/// The fleet's settings as the menu shows them.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConfigView {
+    /// Every live member's id (this machine's too), in priority order.
+    pub order: Vec<String>,
+    /// The order was set by hand (else it's the default, by kind).
+    pub custom_order: bool,
+    pub pin: Option<String>,
+    pub not_main: Vec<String>,
+    /// The main: the pin, while the main is set by hand.
+    pub main: Option<String>,
+    /// Who the list would make main now (the election, F6, will act on it).
+    pub first_choice: Option<String>,
+    /// When the settings were last changed, and on which machine.
+    pub updated_at: u64,
+    pub by: Option<String>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -207,6 +235,8 @@ struct JoinRequest {
 #[derive(Serialize, Deserialize)]
 struct JoinResponse {
     members: Vec<Member>,
+    #[serde(default)]
+    config: FleetConfig,
 }
 
 fn now() -> u64 {
@@ -245,6 +275,7 @@ impl Fleet {
             }
             members.push(m);
         }
+        let config = store.with(store::config);
         let caps = local_caps();
         let fleet = Arc::new(Fleet {
             net,
@@ -256,6 +287,7 @@ impl Fleet {
                 me: me.clone(),
                 key,
                 members,
+                config,
                 links: HashMap::new(),
                 beats: HashMap::new(),
                 seen_written: seen.clone(),
@@ -281,9 +313,16 @@ impl Fleet {
         let mut inner = self.inner.lock().unwrap();
         let me = inner.me.clone();
         let public_key = proto::public_key_b64(&inner.key);
+        let kind = if proto::valid_kind(&self.cfg.default_kind) { self.cfg.default_kind.clone() } else { "desktop".into() };
         let fresh = match inner.members.iter().find(|m| m.id == me) {
-            Some(m) if !m.removed && m.public_key == public_key => None,
-            Some(m) => Some(Member { removed: false, public_key, updated_at: now_ms(), ..m.clone() }),
+            Some(m) if !m.removed && m.public_key == public_key && !m.kind.is_empty() => None,
+            Some(m) => Some(Member {
+                removed: false,
+                public_key,
+                kind: if m.kind.is_empty() { kind } else { m.kind.clone() },
+                updated_at: now_ms(),
+                ..m.clone()
+            }),
             None => Some(Member {
                 id: me.clone(),
                 name: clean_name(&self.cfg.default_name),
@@ -291,6 +330,7 @@ impl Fleet {
                 ip: String::new(),
                 port: self.cfg.port,
                 host: None,
+                kind,
                 updated_at: now_ms(),
                 removed: false,
             }),
@@ -528,18 +568,18 @@ impl Fleet {
         m.ip = addr; // what the tailnet says, not what it says
         m.updated_at = now_ms();
         m.removed = false;
-        let list = {
+        let (list, config) = {
             let mut inner = self.inner.lock().unwrap();
             inner.members.retain(|x| x.id != m.id);
             inner.members.push(m.clone());
             inner.backoff.remove(&m.id);
-            inner.members.clone()
+            (inner.members.clone(), inner.config.clone())
         };
         self.store.with(|c| store::save(c, &m)).ok();
         self.gossip(None);
         (self.notify)();
         self.wake.notify_one();
-        Ok(JoinResponse { members: list })
+        Ok(JoinResponse { members: list, config })
     }
 
     /// Join the fleet of the machine `join` names (a join string from its menu).
@@ -572,6 +612,7 @@ impl Fleet {
         }
         let answer: JoinResponse = serde_json::from_str(&text).map_err(|e| format!("a strange answer: {e}"))?;
         self.take_members(None, answer.members);
+        self.take_config(None, answer.config);
         self.wake.notify_one();
         Ok(())
     }
@@ -608,6 +649,57 @@ impl Fleet {
         self.gossip(from);
         (self.notify)();
         self.wake.notify_one();
+    }
+
+    /// The fleet's settings heard from `from` (None: a join's answer): kept if newer.
+    fn take_config(&self, from: Option<&str>, cfg: FleetConfig) {
+        {
+            let mut inner = self.inner.lock().unwrap();
+            if !inner.config.older_than(&cfg) {
+                return;
+            }
+            inner.config = cfg.clone();
+        }
+        self.store.with(|c| store::set_config(c, &cfg)).ok();
+        self.send_config(from);
+        (self.notify)();
+    }
+
+    /// Send the settings to every link but `except`'s.
+    fn send_config(&self, except: Option<&str>) {
+        let inner = self.inner.lock().unwrap();
+        let frame = Frame::Config { config: inner.config.clone() }.to_text();
+        for (peer, link) in &inner.links {
+            if Some(peer.as_str()) != except {
+                let _ = link.out.send(frame.clone());
+            }
+        }
+    }
+
+    /// Change the settings with `f` (false: nothing to change) and tell everyone.
+    fn update_config(&self, f: impl FnOnce(&mut FleetConfig, &[Member]) -> bool) {
+        let cfg = {
+            let mut inner = self.inner.lock().unwrap();
+            let mut cfg = inner.config.clone();
+            if !f(&mut cfg, &inner.members) || cfg == inner.config {
+                return;
+            }
+            // Later than the version it replaces even if this clock is behind.
+            cfg.updated_at = now_ms().max(inner.config.updated_at + 1);
+            cfg.by = inner.me.clone();
+            inner.config = cfg.clone();
+            cfg
+        };
+        self.store.with(|c| store::set_config(c, &cfg)).ok();
+        self.send_config(None);
+        (self.notify)();
+    }
+
+    /// Back to the never-edited settings (leaving the fleet, a reset identity), so
+    /// the next fleet's win at once.
+    fn forget_config(&self) {
+        self.inner.lock().unwrap().config = FleetConfig::default();
+        self.store.with(|c| store::set_config(c, &FleetConfig::default())).ok();
     }
 
     fn name_of(&self, id: &str) -> Option<String> {
@@ -647,6 +739,7 @@ impl Fleet {
         };
         let me = self.me();
         self.store.with(|c| store::clear_except(c, &me));
+        self.forget_config();
         for p in peers {
             self.close_link(&p, why);
         }
@@ -755,6 +848,7 @@ impl Fleet {
                 ip: m.ip.clone(),
                 port: m.port,
                 host: m.host.clone(),
+                kind: m.kind.clone(),
                 online: link.is_some(),
                 last_seen: inner.seen.get(&m.id).copied(),
                 version: beat.map(|b| b.version.clone()),
@@ -771,6 +865,19 @@ impl Fleet {
         me.caps = self.caps.clone();
         let mut members: Vec<MemberView> = Self::others_live(&inner).map(view).collect();
         members.sort_by_key(|m| m.name.to_lowercase());
+        let cfg = &inner.config;
+        let up = |id: &str| id == inner.me || inner.links.contains_key(id);
+        let config = ConfigView {
+            order: proto::ranked(&inner.members, cfg),
+            custom_order: !cfg.order.is_empty(),
+            pin: cfg.pin.clone(),
+            not_main: cfg.not_main.clone(),
+            main: proto::main_by_hand(&inner.members, cfg),
+            first_choice: proto::first_choice(&inner.members, cfg, up),
+            updated_at: cfg.updated_at,
+            by: (!cfg.by.is_empty())
+                .then(|| inner.members.iter().find(|m| m.id == cfg.by).map_or(cfg.by.clone(), |m| m.name.clone())),
+        };
         FleetStatus {
             me,
             tailnet: inner.tailnet_ip.is_some(),
@@ -785,6 +892,7 @@ impl Fleet {
             members,
             log: inner.log.entries(),
             problem: inner.problem.clone(),
+            config,
         }
     }
 
@@ -813,6 +921,67 @@ impl Fleet {
     pub fn rename(&self, name: &str) {
         let name = clean_name(name);
         self.update_self(|m| m.name = name);
+    }
+
+    /// What sort of machine this one is.
+    pub fn set_kind(&self, kind: &str) -> Result<(), String> {
+        if !proto::valid_kind(kind) {
+            return Err(format!("“{kind}” isn’t a kind of machine (desktop, laptop, server)"));
+        }
+        let kind = kind.to_string();
+        self.update_self(|m| m.kind = kind);
+        Ok(())
+    }
+
+    /// The priority order, by hand: `ids` first, in this order (an empty list goes
+    /// back to the default, by kind).
+    pub fn set_order(&self, ids: Vec<String>) {
+        self.update_config(|cfg, members| {
+            let mut order: Vec<String> = Vec::new();
+            for id in ids {
+                let live = members.iter().any(|m| m.id == id && !m.removed);
+                if live && !order.contains(&id) {
+                    order.push(id);
+                }
+            }
+            cfg.order = order;
+            true
+        });
+    }
+
+    /// Pin the main to a member (None: unpin). A pinned machine can be main.
+    pub fn set_pin(&self, id: Option<String>) -> Result<(), String> {
+        if let Some(id) = &id {
+            let live = self.inner.lock().unwrap().members.iter().any(|m| &m.id == id && !m.removed);
+            if !live {
+                return Err("that machine isn’t in the fleet".into());
+            }
+        }
+        self.update_config(|cfg, _| {
+            if let Some(id) = &id {
+                cfg.not_main.retain(|x| x != id);
+            }
+            cfg.pin = id;
+            true
+        });
+        Ok(())
+    }
+
+    /// Whether a member may be main. One that may not loses the pin.
+    pub fn set_can_be_main(&self, id: &str, can: bool) {
+        self.update_config(|cfg, members| {
+            if !members.iter().any(|m| m.id == id) {
+                return false;
+            }
+            cfg.not_main.retain(|x| x != id);
+            if !can {
+                cfg.not_main.push(id.to_string());
+                if cfg.pin.as_deref() == Some(id) {
+                    cfg.pin = None;
+                }
+            }
+            true
+        });
     }
 
     /// Remove a member from the fleet, everywhere; this machine's own id leaves.
@@ -872,6 +1041,7 @@ impl Fleet {
             inner.beats.clear();
             inner.backoff.clear();
         }
+        self.forget_config();
         self.ensure_self(); // the old key differs: a fresh record is saved
         (self.notify)();
         self.wake.notify_one();
@@ -885,6 +1055,28 @@ fn local_caps() -> Vec<String> {
         caps.push("claude-code".into());
     }
     caps
+}
+
+/// What a machine most likely is, for its first record: Linux is the server (the only
+/// Linux machine planned), a Windows PC with a battery is a laptop, any other a
+/// desktop. Editable in the menu.
+fn default_kind() -> &'static str {
+    if cfg!(target_os = "linux") {
+        return "server";
+    }
+    if cfg!(target_os = "macos") {
+        return "laptop";
+    }
+    #[cfg(windows)]
+    {
+        use windows::Win32::System::Power::{GetSystemPowerStatus, SYSTEM_POWER_STATUS};
+        let mut s = SYSTEM_POWER_STATUS::default();
+        // 128: no system battery; 255: unknown.
+        if unsafe { GetSystemPowerStatus(&mut s) }.is_ok() && s.BatteryFlag != 128 && s.BatteryFlag != 255 {
+            return "laptop";
+        }
+    }
+    "desktop"
 }
 
 // ---------------------------------------------------------------------------------
@@ -902,6 +1094,7 @@ pub fn init(app: &AppHandle) {
         Config {
             port: FLEET_PORT,
             default_name,
+            default_kind: default_kind().into(),
             version: env!("CARGO_PKG_VERSION").into(),
             tick: Duration::from_secs(3),
         },
@@ -943,6 +1136,30 @@ pub async fn fleet_join(fleet: State<'_, Arc<Fleet>>, join: String) -> Result<Fl
 #[tauri::command]
 pub fn fleet_rename(fleet: State<'_, Arc<Fleet>>, name: String) -> FleetStatus {
     fleet.rename(&name);
+    fleet.status()
+}
+
+#[tauri::command]
+pub fn fleet_set_kind(fleet: State<'_, Arc<Fleet>>, kind: String) -> Result<FleetStatus, String> {
+    fleet.set_kind(&kind)?;
+    Ok(fleet.status())
+}
+
+#[tauri::command]
+pub fn fleet_set_order(fleet: State<'_, Arc<Fleet>>, ids: Vec<String>) -> FleetStatus {
+    fleet.set_order(ids);
+    fleet.status()
+}
+
+#[tauri::command]
+pub fn fleet_set_pin(fleet: State<'_, Arc<Fleet>>, id: Option<String>) -> Result<FleetStatus, String> {
+    fleet.set_pin(id)?;
+    Ok(fleet.status())
+}
+
+#[tauri::command]
+pub fn fleet_set_can_be_main(fleet: State<'_, Arc<Fleet>>, id: String, can: bool) -> FleetStatus {
+    fleet.set_can_be_main(&id, can);
     fleet.status()
 }
 

@@ -279,6 +279,11 @@ const MIGRATIONS: &[&str] = &[
         last_seen   INTEGER
     );
     "#,
+    // v18 -> v19: what sort of machine each member is (fleet plan F1.2: `desktop`,
+    // `laptop`, `server`), which places it in the default priority order.
+    r#"
+    ALTER TABLE fleet_members ADD COLUMN kind TEXT NOT NULL DEFAULT '';
+    "#,
 ];
 
 /// Apply any migrations the database hasn't seen yet, advancing

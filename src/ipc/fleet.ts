@@ -1,6 +1,6 @@
-// Typed wrappers over the fleet (fleet plan F1.1): this machine's identity in the
-// fleet, the other Workbench machines it links to on the tailnet, and joining them
-// with a one-time code. The backend announces every change as `fleet-changed`.
+// Typed wrappers over the fleet (fleet plan F1.1, F1.2): this machine's identity in
+// the fleet, the other Workbench machines it links to on the tailnet, joining them
+// with a one-time code, and the fleet's shared settings (priority order, pin). The backend announces every change as `fleet-changed`.
 
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
@@ -14,6 +14,8 @@ export interface FleetMember {
   port: number;
   /** Its MagicDNS name, when Tailscale said. */
   host: string | null;
+  /** What sort of machine it says it is; it places it in the default order. */
+  kind: FleetKind | "";
   online: boolean;
   /** Epoch seconds it was last heard from. */
   lastSeen: number | null;
@@ -23,6 +25,29 @@ export interface FleetMember {
   caps: string[];
   /** Which way its link was dialed: "out" (by this machine) or "in". */
   direction: "out" | "in" | null;
+}
+
+export type FleetKind = "desktop" | "server" | "laptop";
+
+/** The kinds, in the default priority order. */
+export const FLEET_KINDS: FleetKind[] = ["desktop", "server", "laptop"];
+
+/** The fleet's shared settings, the same on every machine (the newest edit wins). */
+export interface FleetConfig {
+  /** Every machine's id (this one's too), in priority order. */
+  order: string[];
+  /** The order was set by hand; else it's the default, by kind. */
+  customOrder: boolean;
+  pin: string | null;
+  /** Machines that may never be main. */
+  notMain: string[];
+  /** The main: the pin, while the main is chosen by hand (no election yet). */
+  main: string | null;
+  /** Who the list would make main now. */
+  firstChoice: string | null;
+  /** When the settings last changed (ms), and on which machine. */
+  updatedAt: number;
+  by: string | null;
 }
 
 export interface FleetStatus {
@@ -41,6 +66,7 @@ export interface FleetStatus {
   log: AuthFailure[];
   /** Something only you can fix (a copied identity). */
   problem: string | null;
+  config: FleetConfig;
 }
 
 export function fleetStatus(): Promise<FleetStatus> {
@@ -59,6 +85,25 @@ export function fleetJoin(join: string): Promise<FleetStatus> {
 
 export function fleetRename(name: string): Promise<FleetStatus> {
   return invoke("fleet_rename", { name });
+}
+
+/** What sort of machine this one is. */
+export function fleetSetKind(kind: FleetKind): Promise<FleetStatus> {
+  return invoke("fleet_set_kind", { kind });
+}
+
+/** The priority order by hand; an empty list goes back to the default (by kind). */
+export function fleetSetOrder(ids: string[]): Promise<FleetStatus> {
+  return invoke("fleet_set_order", { ids });
+}
+
+/** Pin the main to a machine; null unpins. */
+export function fleetSetPin(id: string | null): Promise<FleetStatus> {
+  return invoke("fleet_set_pin", { id });
+}
+
+export function fleetSetCanBeMain(id: string, can: boolean): Promise<FleetStatus> {
+  return invoke("fleet_set_can_be_main", { id, can });
 }
 
 /** Remove a machine from the fleet everywhere; this machine's own id leaves. */

@@ -33,6 +33,10 @@ pub struct Member {
     pub port: u16,
     /// Its MagicDNS name, when Tailscale said.
     pub host: Option<String>,
+    /// What sort of machine it is: `desktop`, `laptop` or `server` (F1.2). It places the
+    /// machine in the default priority order. Its own to say, like the name.
+    #[serde(default)]
+    pub kind: String,
     /// Milliseconds since the epoch of this version of the record: the newer wins.
     pub updated_at: u64,
     /// Removed from the fleet (a tombstone, kept so gossip can't bring it back).
@@ -77,6 +81,79 @@ pub fn merge(local: &mut Vec<Member>, incoming: &[Member], me: &str) -> Merged {
     out
 }
 
+/// The kinds a machine can be, in the default priority order (settled decision 3: the
+/// laptop last, since the server can be main once it has proved itself).
+pub const KINDS: [&str; 3] = ["desktop", "server", "laptop"];
+
+pub fn valid_kind(kind: &str) -> bool {
+    KINDS.contains(&kind)
+}
+
+fn kind_rank(kind: &str) -> usize {
+    KINDS.iter().position(|k| *k == kind).unwrap_or(KINDS.len())
+}
+
+/// The fleet's shared settings (F1.2): who may be main and in what order. One record
+/// for the whole fleet, gossiped; the newer `(updated_at, by)` wins whole, so two
+/// machines edited apart settle on the later edit.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct FleetConfig {
+    /// Member ids in priority order, as set by hand. Empty: the default order (by kind).
+    /// Members missing from it come after it, in the default order.
+    pub order: Vec<String>,
+    /// "The main is this machine until I say otherwise." Until the election (F6) it's
+    /// the only way there is a main.
+    pub pin: Option<String>,
+    /// Members that may never be main ("can be main" off).
+    pub not_main: Vec<String>,
+    /// Milliseconds since the epoch of this version; 0 for the never-edited default.
+    pub updated_at: u64,
+    /// Who made this version (breaks a tie in `updated_at`).
+    pub by: String,
+}
+
+impl FleetConfig {
+    /// Whether `other` should replace this one.
+    pub fn older_than(&self, other: &FleetConfig) -> bool {
+        (other.updated_at, &other.by) > (self.updated_at, &self.by)
+    }
+
+    pub fn can_be_main(&self, id: &str) -> bool {
+        !self.not_main.iter().any(|x| x == id)
+    }
+}
+
+/// The live members' ids in priority order: the hand-set order first, then the rest
+/// by kind (desktop, server, laptop, unknown), then name.
+pub fn ranked(members: &[Member], cfg: &FleetConfig) -> Vec<String> {
+    let live: Vec<&Member> = members.iter().filter(|m| !m.removed).collect();
+    let mut out: Vec<String> = Vec::new();
+    for id in &cfg.order {
+        if live.iter().any(|m| &m.id == id) && !out.contains(id) {
+            out.push(id.clone());
+        }
+    }
+    let mut rest: Vec<&Member> = live.into_iter().filter(|m| !out.contains(&m.id)).collect();
+    rest.sort_by(|a, b| {
+        (kind_rank(&a.kind), a.name.to_lowercase(), &a.id).cmp(&(kind_rank(&b.kind), b.name.to_lowercase(), &b.id))
+    });
+    out.extend(rest.into_iter().map(|m| m.id.clone()));
+    out
+}
+
+/// The main while it's set by hand (F1.2): the pin, if it names a live member.
+pub fn main_by_hand(members: &[Member], cfg: &FleetConfig) -> Option<String> {
+    let pin = cfg.pin.as_ref()?;
+    members.iter().any(|m| &m.id == pin && !m.removed).then(|| pin.clone())
+}
+
+/// Who the list would make main: the first live member that can be main and is up.
+/// Shown in the menu until the election (F6) acts on it.
+pub fn first_choice(members: &[Member], cfg: &FleetConfig, up: impl Fn(&str) -> bool) -> Option<String> {
+    ranked(members, cfg).into_iter().find(|id| cfg.can_be_main(id) && up(id))
+}
+
 /// What a beat says about the machine sending it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
@@ -103,6 +180,8 @@ pub enum Frame {
     /// The members I know, my own record included.
     Members { list: Vec<Member> },
     Beat { beat: Beat },
+    /// The fleet's settings, on connect and on every change.
+    Config { config: FleetConfig },
     /// Closing on purpose, and why (shown in the menu's log on the other side).
     Bye { reason: String },
 }
@@ -214,9 +293,72 @@ mod tests {
             ip: "100.64.0.1".into(),
             port: 48955,
             host: None,
+            kind: String::new(),
             updated_at: at,
             removed: false,
         }
+    }
+
+    fn kinded(id: &str, kind: &str) -> Member {
+        Member { kind: kind.into(), ..member(id, 1) }
+    }
+
+    #[test]
+    fn the_default_order_goes_by_kind() {
+        let ms = vec![kinded("l", "laptop"), kinded("s", "server"), kinded("d", "desktop"), kinded("x", "")];
+        let cfg = FleetConfig::default();
+        assert_eq!(ranked(&ms, &cfg), vec!["d", "s", "l", "x"]);
+        // Two desktops: by name.
+        let ms2 = vec![kinded("b", "desktop"), kinded("a", "desktop")];
+        assert_eq!(ranked(&ms2, &cfg), vec!["a", "b"]);
+    }
+
+    #[test]
+    fn a_hand_set_order_comes_first_and_skips_the_gone() {
+        let mut ms = vec![kinded("l", "laptop"), kinded("s", "server"), kinded("d", "desktop")];
+        let cfg = FleetConfig { order: vec!["s".into(), "gone".into(), "l".into()], ..Default::default() };
+        // The desktop isn't in the order: it comes after, by kind.
+        assert_eq!(ranked(&ms, &cfg), vec!["s", "l", "d"]);
+        ms[1].removed = true;
+        assert_eq!(ranked(&ms, &cfg), vec!["l", "d"]);
+    }
+
+    #[test]
+    fn the_main_is_the_pin_and_the_list_names_a_first_choice() {
+        let ms = vec![kinded("l", "laptop"), kinded("s", "server"), kinded("d", "desktop")];
+        let mut cfg = FleetConfig::default();
+        assert_eq!(main_by_hand(&ms, &cfg), None);
+        cfg.pin = Some("l".into());
+        assert_eq!(main_by_hand(&ms, &cfg), Some("l".into()));
+        cfg.pin = Some("gone".into());
+        assert_eq!(main_by_hand(&ms, &cfg), None);
+
+        // The desktop is off: the server.
+        assert_eq!(first_choice(&ms, &cfg, |id| id != "d"), Some("s".into()));
+        // The server can't be main: the laptop.
+        cfg.not_main = vec!["s".into()];
+        assert_eq!(first_choice(&ms, &cfg, |id| id != "d"), Some("l".into()));
+        assert_eq!(first_choice(&ms, &cfg, |_| false), None);
+    }
+
+    #[test]
+    fn the_later_config_wins_and_ties_break_by_author() {
+        let a = FleetConfig { updated_at: 10, by: "a".into(), ..Default::default() };
+        let b = FleetConfig { updated_at: 10, by: "b".into(), ..Default::default() };
+        let c = FleetConfig { updated_at: 11, by: "a".into(), ..Default::default() };
+        assert!(a.older_than(&b));
+        assert!(!b.older_than(&a));
+        assert!(b.older_than(&c));
+        assert!(!a.older_than(&a.clone()));
+        assert!(FleetConfig::default().older_than(&a));
+    }
+
+    #[test]
+    fn a_record_from_before_kinds_still_reads() {
+        let mut v = serde_json::to_value(member("a", 1)).unwrap();
+        v.as_object_mut().unwrap().remove("kind");
+        let m: Member = serde_json::from_value(v).unwrap();
+        assert_eq!(m.kind, "");
     }
 
     #[test]

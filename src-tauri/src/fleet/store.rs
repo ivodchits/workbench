@@ -1,14 +1,16 @@
 //! Where the fleet keeps what it knows (fleet plan F1.1): this machine's identity in
 //! `meta` (its id and its instance key's secret half, like the VAPID key), and every
 //! member's record, tombstones included, in `fleet_members`. `last_seen` is this
-//! machine's own observation and is never gossiped.
+//! machine's own observation and is never gossiped. The fleet's shared settings (F1.2)
+//! are one JSON value in `meta`.
 
 use rusqlite::{Connection, OptionalExtension};
 
-use super::proto::Member;
+use super::proto::{FleetConfig, Member};
 
 const ID_KEY: &str = "fleet_instance_id";
 const SECRET_KEY: &str = "fleet_instance_key";
+const CONFIG_KEY: &str = "fleet_config";
 
 pub fn identity(conn: &Connection) -> Option<(String, String)> {
     let get = |k: &str| {
@@ -33,7 +35,7 @@ pub fn set_identity(conn: &Connection, id: &str, secret: &str) -> rusqlite::Resu
 
 pub fn members(conn: &Connection) -> Vec<(Member, Option<u64>)> {
     let Ok(mut stmt) = conn.prepare(
-        "SELECT id, name, public_key, ip, port, host, updated_at, removed, last_seen FROM fleet_members",
+        "SELECT id, name, public_key, ip, port, host, updated_at, removed, last_seen, kind FROM fleet_members",
     ) else {
         return Vec::new();
     };
@@ -46,6 +48,7 @@ pub fn members(conn: &Connection) -> Vec<(Member, Option<u64>)> {
                 ip: r.get(3)?,
                 port: r.get::<_, i64>(4)? as u16,
                 host: r.get(5)?,
+                kind: r.get(9)?,
                 updated_at: r.get::<_, i64>(6)? as u64,
                 removed: r.get::<_, i64>(7)? != 0,
             },
@@ -60,11 +63,11 @@ pub fn members(conn: &Connection) -> Vec<(Member, Option<u64>)> {
 
 pub fn save(conn: &Connection, m: &Member) -> rusqlite::Result<()> {
     conn.execute(
-        "INSERT INTO fleet_members (id, name, public_key, ip, port, host, updated_at, removed)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+        "INSERT INTO fleet_members (id, name, public_key, ip, port, host, updated_at, removed, kind)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
          ON CONFLICT(id) DO UPDATE SET name = excluded.name, public_key = excluded.public_key,
            ip = excluded.ip, port = excluded.port, host = excluded.host,
-           updated_at = excluded.updated_at, removed = excluded.removed",
+           updated_at = excluded.updated_at, removed = excluded.removed, kind = excluded.kind",
         (
             &m.id,
             &m.name,
@@ -74,7 +77,29 @@ pub fn save(conn: &Connection, m: &Member) -> rusqlite::Result<()> {
             &m.host,
             m.updated_at as i64,
             m.removed as i64,
+            &m.kind,
         ),
+    )?;
+    Ok(())
+}
+
+/// The fleet's settings; the never-edited default when there are none (or they don't
+/// read).
+pub fn config(conn: &Connection) -> FleetConfig {
+    conn.query_row("SELECT value FROM meta WHERE key = ?1", [CONFIG_KEY], |r| r.get::<_, String>(0))
+        .optional()
+        .ok()
+        .flatten()
+        .and_then(|v| serde_json::from_str(&v).ok())
+        .unwrap_or_default()
+}
+
+pub fn set_config(conn: &Connection, cfg: &FleetConfig) -> rusqlite::Result<()> {
+    let v = serde_json::to_string(cfg).expect("config serializes");
+    conn.execute(
+        "INSERT INTO meta (key, value) VALUES (?1, ?2)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        (CONFIG_KEY, v),
     )?;
     Ok(())
 }
@@ -108,6 +133,7 @@ mod tests {
             ip: "100.64.0.2".into(),
             port: 48955,
             host: Some("laptop.t.ts.net".into()),
+            kind: "laptop".into(),
             updated_at: 5,
             removed: false,
         };
@@ -122,5 +148,10 @@ mod tests {
         assert_eq!(all[0].1, Some(77), "a new version keeps last_seen");
         clear_except(&conn, "a");
         assert!(members(&conn).is_empty());
+
+        assert_eq!(config(&conn), FleetConfig::default());
+        let cfg = FleetConfig { order: vec!["b".into()], pin: Some("b".into()), updated_at: 9, by: "a".into(), ..Default::default() };
+        set_config(&conn, &cfg).unwrap();
+        assert_eq!(config(&conn), cfg);
     }
 }

@@ -174,6 +174,33 @@ This document. Done when you've approved it; then H6 in `assistant-plan.md` poin
   main is chosen by hand at this stage (it's the pin), with no election yet.
 - **Done when:** an order or pin changed on one instance shows on the other within
   seconds, and survives a restart of either.
+- _(Built, 2026-11-19: `FleetConfig` in `fleet/proto.rs` (`order`, `pin`, `not_main`,
+  `updated_at`, `by`; `ranked`, `main_by_hand`, `first_choice`), kept as one JSON value
+  in `meta` (`fleet_config`), sent as a `config` frame on connect and on every change
+  and in a join's answer; the menu's "main · priority" list (↑/↓, "can be main", pin,
+  default order).
+  **Changed from the plan:**
+  - Not a `fleet` table: one record for the whole fleet, and the newer
+    `(updated_at, by)` wins it whole. Two machines edited while apart settle on the
+    later edit; the earlier one is lost. Simple, and the settings are rarely edited.
+  - Each member says what it is (`kind`: desktop, server, laptop; migration v19), and
+    the default order is by kind, so a fleet nobody arranged is already desktop →
+    server → laptop. The first record guesses: Linux is the server, a Windows PC with
+    a battery the laptop, else a desktop. Editable for this machine in the list.
+  - The hand-set order lists ids; machines missing from it (one that joined later)
+    come after it, by kind.
+  - Pinning a machine makes it able to be main; turning "can be main" off drops its
+    pin. The list's first choice (first live machine that can be main) is shown but
+    acts on nothing until F6.
+  - Leaving the fleet or resetting the identity forgets the settings, so the next
+    fleet's win at once.
+  **Checked:** proto tests (default order, hand-set order skipping the gone, pin and
+  first choice, the later edit winning, records from before `kind`); a loopback fleet
+  test: order and pin set on the laptop reach the desktop, "can be main" off on the
+  desktop reaches the laptop and drops the pin, a machine joining later gets the
+  settings in its join's answer and is placed by kind, the settings and kind survive
+  a restart, a kind change travels, leaving forgets the settings. Live test owed with
+  F1.1's.)_
 
 ## Phase F2 — The phone across the fleet
 

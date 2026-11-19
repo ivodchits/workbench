@@ -38,19 +38,24 @@ fn storage(db: Arc<Db>) -> Storage {
 }
 
 fn instance_in(name: &str, deny: Arc<AtomicBool>, db: Db) -> Arc<Fleet> {
-    let fleet = Fleet::new(
-        Config {
-            port: 0,
-            default_name: name.into(),
-            version: "9.9.9".into(),
-            tick: Duration::from_millis(100),
-        },
-        Box::new(Loop { deny }),
-        storage(Arc::new(db)),
-        Box::new(|| {}),
-    );
+    instance_on(name, deny, Arc::new(db))
+}
+
+/// A machine named `name`; a name that's a kind (`laptop`, …) is also its kind.
+fn instance_on(name: &str, deny: Arc<AtomicBool>, db: Arc<Db>) -> Arc<Fleet> {
+    let fleet = Fleet::new(test_config(name), Box::new(Loop { deny }), storage(db), Box::new(|| {}));
     tokio::spawn(fleet.clone().run());
     fleet
+}
+
+fn test_config(name: &str) -> Config {
+    Config {
+        port: 0,
+        default_name: name.into(),
+        default_kind: if proto::valid_kind(name) { name.into() } else { "desktop".into() },
+        version: "9.9.9".into(),
+        tick: Duration::from_millis(100),
+    }
 }
 
 async fn until(what: &str, f: impl Fn() -> bool) {
@@ -230,7 +235,7 @@ fn identity_survives_a_restart() {
     rt.block_on(async {
         let ok = Arc::new(AtomicBool::new(false));
         let a = Fleet::new(
-            Config { port: 0, default_name: "x".into(), version: "1".into(), tick: Duration::from_secs(9) },
+            Config { tick: Duration::from_secs(9), ..test_config("x") },
             Box::new(Loop { deny: ok.clone() }),
             storage(db.clone()),
             Box::new(|| {}),
@@ -239,7 +244,7 @@ fn identity_survives_a_restart() {
         let id = a.status().me.id;
         drop(a);
         let b = Fleet::new(
-            Config { port: 0, default_name: "y".into(), version: "1".into(), tick: Duration::from_secs(9) },
+            Config { tick: Duration::from_secs(9), ..test_config("y") },
             Box::new(Loop { deny: ok }),
             storage(db),
             Box::new(|| {}),
@@ -247,4 +252,82 @@ fn identity_survives_a_restart() {
         assert_eq!(b.status().me.id, id);
         assert_eq!(b.status().me.name, "named");
     });
+}
+
+fn id_of(f: &Fleet, name: &str) -> String {
+    let s = f.status();
+    if s.me.name == name {
+        return s.me.id;
+    }
+    s.members.into_iter().find(|m| m.name == name).unwrap().id
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_order_and_the_pin_travel_and_survive_a_restart() {
+    let ok = Arc::new(AtomicBool::new(false));
+    let desktop = instance("desktop", ok.clone());
+    let laptop_db = Arc::new(Db::open_in_memory().unwrap());
+    let laptop = instance_on("laptop", ok.clone(), laptop_db.clone());
+    let code = join_string(&desktop).await;
+    laptop.join(&code).await.unwrap();
+    until("linked", || online(&desktop, "laptop") && online(&laptop, "desktop")).await;
+    let (d, l) = (id_of(&laptop, "desktop"), id_of(&desktop, "laptop"));
+
+    // The default: by kind, no main by hand, the desktop the list's first choice.
+    let c = laptop.status().config;
+    assert_eq!(c.order, vec![d.clone(), l.clone()]);
+    assert!(!c.custom_order);
+    assert_eq!(c.main, None);
+    assert_eq!(c.first_choice, Some(d.clone()));
+
+    // The laptop puts itself first and pins the main to itself; the desktop hears it.
+    laptop.set_order(vec![l.clone(), d.clone()]);
+    laptop.set_pin(Some(l.clone())).unwrap();
+    until("the desktop has the new order and pin", || {
+        let c = desktop.status().config;
+        c.order == vec![l.clone(), d.clone()] && c.main.as_deref() == Some(l.as_str())
+    })
+    .await;
+    assert_eq!(desktop.status().config.by.as_deref(), Some("laptop"));
+
+    // The desktop answers: the laptop can't be main, which drops the pin.
+    desktop.set_can_be_main(&l, false);
+    until("the laptop hears it", || {
+        let c = laptop.status().config;
+        c.not_main == vec![l.clone()] && c.pin.is_none() && c.first_choice.as_deref() == Some(d.as_str())
+    })
+    .await;
+
+    // A machine that joins later gets the settings in the join's answer.
+    let server = instance("server", ok.clone());
+    let code = join_string(&laptop).await;
+    server.join(&code).await.unwrap();
+    let s = server.status().config;
+    assert_eq!(s.not_main, vec![l.clone()]);
+    assert_eq!(&s.order[..2], &[l.clone(), d.clone()]);
+    // Not in the hand-set order: after it, by kind.
+    assert_eq!(s.order[2], server.status().me.id);
+
+    // The laptop restarts (a second instance on its database): the settings are there.
+    let again = Fleet::new(
+        Config { tick: Duration::from_secs(9), ..test_config("laptop") },
+        Box::new(Loop { deny: ok.clone() }),
+        storage(laptop_db),
+        Box::new(|| {}),
+    );
+    let c = again.status().config;
+    assert_eq!(c.not_main, vec![l.clone()]);
+    assert_eq!(&c.order[..2], &[l.clone(), d.clone()]);
+    assert_eq!(again.status().me.kind, "laptop");
+
+    // Its kind is its own to change, and travels.
+    laptop.set_kind("server").unwrap();
+    assert!(laptop.set_kind("toaster").is_err());
+    until("the new kind", || desktop.status().members.iter().any(|m| m.id == l && m.kind == "server")).await;
+
+    // Leaving forgets the fleet's settings.
+    laptop.remove(&l);
+    until("the laptop left", || laptop.status().members.is_empty()).await;
+    assert!(!laptop.status().config.custom_order);
+    assert!(laptop.status().config.not_main.is_empty());
 }

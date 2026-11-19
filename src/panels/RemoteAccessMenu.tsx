@@ -33,6 +33,12 @@ import {
   fleetRemove,
   fleetRename,
   fleetResetIdentity,
+  fleetSetCanBeMain,
+  fleetSetKind,
+  fleetSetOrder,
+  fleetSetPin,
+  FLEET_KINDS,
+  type FleetKind,
   type FleetMember,
   type FleetStatus,
 } from "../ipc/fleet";
@@ -319,9 +325,10 @@ function RemoteAccessMenu() {
   );
 }
 
-/** The fleet (fleet plan F1.1): this machine's name, the other Workbench machines it
- *  links to over the tailnet, and joining with a one-time code. Independent of the
- *  phone's server above: machines talk on their own tailnet-only port. */
+/** The fleet (fleet plan F1.1, F1.2): this machine's name, the other Workbench
+ *  machines it links to over the tailnet, joining with a one-time code, and who is
+ *  main. Independent of the phone's server above: machines talk on their own
+ *  tailnet-only port. */
 function FleetSection() {
   const fleet = useFleet();
   const [busy, setBusy] = useState(false);
@@ -428,6 +435,8 @@ function FleetSection() {
         ))
       )}
 
+      {others.length > 0 && <PriorityList fleet={fleet} busy={busy} run={run} />}
+
       <Row>
         {fleet.joinString ? (
           <>
@@ -532,6 +541,147 @@ function FleetSection() {
         </>
       )}
       {error && <Note tone="error">{error}</Note>}
+    </>
+  );
+}
+
+/** Who is main and in what order (F1.2): the fleet's shared list, edited on any
+ *  machine. While there's no election the main is the pinned machine; the list's
+ *  first choice is shown for when there will be. */
+function PriorityList({
+  fleet,
+  busy,
+  run,
+}: {
+  fleet: FleetStatus;
+  busy: boolean;
+  run: (f: () => Promise<FleetStatus>) => Promise<boolean>;
+}) {
+  const c = fleet.config;
+  const byId = new Map<string, FleetMember>([fleet.me, ...fleet.members].map((m) => [m.id, m]));
+  const name = (id: string | null) => (id ? (byId.get(id)?.name ?? "a machine") : "");
+  const order = c.order.filter((id) => byId.has(id));
+
+  function move(i: number, by: -1 | 1) {
+    const j = i + by;
+    if (j < 0 || j >= order.length) return;
+    const next = [...order];
+    [next[i], next[j]] = [next[j], next[i]];
+    void run(() => fleetSetOrder(next));
+  }
+
+  const summary = c.main
+    ? `main: ${name(c.main)} (pinned)`
+    : c.firstChoice
+      ? `no main pinned · the list would pick ${name(c.firstChoice)}`
+      : "no main pinned · no machine that can be main is up";
+
+  return (
+    <>
+      <Row>
+        <span style={sectionLabelStyle}>main · priority</span>
+        {c.customOrder && (
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() => void run(() => fleetSetOrder([]))}
+            title="back to the default order: desktop, server, laptop"
+            style={{ ...miniBtn, marginLeft: "auto" }}
+          >
+            default order
+          </button>
+        )}
+      </Row>
+      {order.map((id, i) => {
+        const m = byId.get(id)!;
+        const isMe = id === fleet.me.id;
+        const pinned = c.pin === id;
+        const canBeMain = !c.notMain.includes(id);
+        return (
+          <div
+            key={id}
+            style={{ padding: "2px 12px", display: "flex", alignItems: "center", gap: 6 }}
+          >
+            <span style={{ color: "var(--wb-textFaint)", width: 12, textAlign: "right" }}>
+              {i + 1}
+            </span>
+            <span
+              style={{
+                flex: 1,
+                minWidth: 0,
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+                whiteSpace: "nowrap",
+                color: canBeMain ? "var(--wb-text)" : "var(--wb-textFaint)",
+              }}
+              title={isMe ? "this machine" : m.online ? "online" : "offline"}
+            >
+              {m.name}
+              {isMe && <span style={{ color: "var(--wb-textFaint)" }}> (this)</span>}
+            </span>
+            {isMe ? (
+              <select
+                value={m.kind || "desktop"}
+                disabled={busy}
+                onChange={(e) => void run(() => fleetSetKind(e.target.value as FleetKind))}
+                title="what sort of machine this is; it places it in the default order"
+                style={{ ...miniBtn, padding: "1px 2px" }}
+              >
+                {FLEET_KINDS.map((k) => (
+                  <option key={k} value={k}>
+                    {k}
+                  </option>
+                ))}
+              </select>
+            ) : (
+              <span style={{ color: "var(--wb-textFaint)", fontSize: 10 }}>{m.kind || "?"}</span>
+            )}
+            <button
+              type="button"
+              disabled={busy || i === 0}
+              onClick={() => move(i, -1)}
+              title="higher priority"
+              style={{ ...miniBtn, padding: "1px 5px" }}
+            >
+              ↑
+            </button>
+            <button
+              type="button"
+              disabled={busy || i === order.length - 1}
+              onClick={() => move(i, 1)}
+              title="lower priority"
+              style={{ ...miniBtn, padding: "1px 5px" }}
+            >
+              ↓
+            </button>
+            <input
+              type="checkbox"
+              checked={canBeMain}
+              disabled={busy}
+              onChange={(e) => void run(() => fleetSetCanBeMain(id, e.target.checked))}
+              title="can be main"
+            />
+            <button
+              type="button"
+              disabled={busy}
+              onClick={() => void run(() => fleetSetPin(pinned ? null : id))}
+              title={pinned ? "unpin: no main by hand" : "pin the main to this machine"}
+              style={{
+                ...miniBtn,
+                padding: "1px 6px",
+                color: pinned ? "var(--wb-accent)" : "var(--wb-textDim2)",
+                borderColor: pinned ? "var(--wb-accent)" : "var(--wb-border)",
+              }}
+            >
+              {pinned ? "main" : "pin"}
+            </button>
+          </div>
+        );
+      })}
+      <Note>
+        {summary}
+        {c.by && ` · changed on ${c.by} ${formatAgo(Math.floor(c.updatedAt / 1000))}`}
+      </Note>
     </>
   );
 }
