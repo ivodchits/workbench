@@ -29,6 +29,11 @@
 //!   remote server keeps them ([`crate::remote`]); this module carries them.
 //! - **Public addresses** (F2.1): each member says its Funnel address, and the phone
 //!   gets the list ([`Fleet::phone_list`]) to open whichever machine answers.
+//! - **Relaying** (F2.2): a machine relays the phone's requests to another one. It
+//!   asks that machine over the link for a session for the phone's device
+//!   ([`proto::Ask::RelaySession`], kept a while), then the remote server forwards
+//!   to that machine's remote server on its tailnet address ([`Fleet::relay_target`]),
+//!   whose own checks then apply. Duck's routes go to the main ([`Fleet::duck_main`]).
 //! - **The listener** runs only while there is someone to talk to: another member, or
 //!   a live join code.
 //!
@@ -54,7 +59,7 @@ use tokio::sync::{mpsc, oneshot, Notify};
 
 use crate::db::Db;
 use crate::remote::auth::{self, AuthFailure, AuthLog, PairGate, PairOutcome};
-use proto::{Beat, FleetConfig, Frame, Member, PairedDevice};
+use proto::{Ask, Beat, FleetConfig, Frame, Member, PairedDevice};
 
 /// The fleet's port on the tailnet. A debug build has its own, so a dev run and the
 /// installed app on one machine are two members (a real fleet test on one laptop).
@@ -75,6 +80,11 @@ const OWNER_OK_TTL: Duration = Duration::from_secs(600);
 const OWNER_BAD_TTL: Duration = Duration::from_secs(30);
 /// Longest member name kept.
 const NAME_MAX: usize = 40;
+/// An answer over the link must come within this.
+const ASK_TIMEOUT: Duration = Duration::from_secs(5);
+/// A relay session is used this long before another is asked for (the other side
+/// keeps one alive for hours while it's used).
+const RELAY_SESSION_TTL: Duration = Duration::from_secs(3600);
 
 /// What this machine's network says, behind a trait so tests can run on loopback.
 pub trait Net: Send + Sync + 'static {
@@ -95,6 +105,9 @@ pub trait DeviceBook: Send + Sync + 'static {
     /// Take devices heard from another machine ([`proto::merge_devices`]); true when
     /// something changed here.
     fn merge_devices(&self, incoming: &[PairedDevice]) -> bool;
+    /// A session for `device` on this machine's remote server, for a machine that
+    /// relays its requests here (F2.2). The device must be approved here.
+    fn relay_session(&self, device: &str) -> Result<String, String>;
 }
 
 /// The database the fleet keeps its state in: the app's (given by [`init`]), or a
@@ -146,6 +159,11 @@ pub struct Fleet {
     caps: Vec<String>,
     inner: Mutex<Inner>,
     owners: Mutex<HashMap<IpAddr, OwnerAnswer>>,
+    /// Questions asked over a link, waiting for their answer.
+    asks: Mutex<HashMap<u64, oneshot::Sender<Result<String, String>>>>,
+    next_ask: std::sync::atomic::AtomicU64,
+    /// Sessions other machines gave for a device, by (machine, device).
+    relay_sessions: Mutex<HashMap<(String, String), (String, Instant)>>,
 }
 
 struct Inner {
@@ -168,6 +186,8 @@ struct Inner {
     /// Something only you can fix (another machine has this one's identity).
     problem: Option<String>,
     next_link: u64,
+    /// This machine's remote server's port, while it listens on the tailnet.
+    remote_port: Option<u16>,
 }
 
 struct Link {
@@ -354,8 +374,12 @@ impl Fleet {
                 log: AuthLog::default(),
                 problem: None,
                 next_link: 0,
+                remote_port: None,
             }),
             owners: Mutex::new(HashMap::new()),
+            asks: Mutex::new(HashMap::new()),
+            next_ask: std::sync::atomic::AtomicU64::new(1),
+            relay_sessions: Mutex::new(HashMap::new()),
             cfg,
         });
         fleet.ensure_self();
@@ -924,14 +948,107 @@ impl Fleet {
     }
 
     fn beat(&self) -> Beat {
-        let name = Self::self_record(&self.inner.lock().unwrap()).name;
+        let inner = self.inner.lock().unwrap();
         Beat {
-            name,
+            name: Self::self_record(&inner).name,
             version: self.cfg.version.clone(),
             os: std::env::consts::OS.into(),
             build: if cfg!(debug_assertions) { "debug" } else { "release" }.into(),
             caps: self.caps.clone(),
+            remote_port: inner.remote_port,
         }
+    }
+
+    // --- asking another machine ---------------------------------------------------
+
+    /// Ask `peer` something over its link; its answer, or why there is none.
+    async fn ask(&self, peer: &str, ask: Ask) -> Result<String, String> {
+        let req = self.next_ask.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let (tx, rx) = oneshot::channel();
+        let sent = {
+            let inner = self.inner.lock().unwrap();
+            match inner.links.get(peer) {
+                Some(link) => {
+                    self.asks.lock().unwrap().insert(req, tx);
+                    link.out.send(Frame::Ask { req, ask }.to_text()).is_ok()
+                }
+                None => false,
+            }
+        };
+        if !sent {
+            self.asks.lock().unwrap().remove(&req);
+            return Err("that machine isn’t connected".into());
+        }
+        let answer = tokio::time::timeout(ASK_TIMEOUT, rx).await;
+        self.asks.lock().unwrap().remove(&req);
+        match answer {
+            Ok(Ok(a)) => a,
+            Ok(Err(_)) => Err("the link closed before it answered".into()),
+            Err(_) => Err("that machine didn’t answer in time".into()),
+        }
+    }
+
+    /// A question from `peer` (the link's reader): the answer to send back.
+    fn on_ask(&self, ask: Ask) -> Result<String, String> {
+        match ask {
+            Ask::RelaySession { device } => self.book.relay_session(&device),
+        }
+    }
+
+    fn on_answer(&self, req: u64, answer: Result<String, String>) {
+        if let Some(tx) = self.asks.lock().unwrap().remove(&req) {
+            let _ = tx.send(answer);
+        }
+    }
+
+    // --- relaying (F2.2) -----------------------------------------------------------
+
+    /// This machine's remote server listens on the tailnet at `port` (None: it
+    /// stopped). Said in the next beat.
+    pub fn set_remote_port(&self, port: Option<u16>) {
+        self.inner.lock().unwrap().remote_port = port;
+    }
+
+    /// Where to relay a request for machine `id`: its remote server on its tailnet
+    /// address while it's linked and listening; this machine's own on loopback.
+    pub fn relay_target(&self, id: &str) -> Option<SocketAddr> {
+        let inner = self.inner.lock().unwrap();
+        if id == inner.me {
+            return inner.remote_port.map(|p| SocketAddr::from(([127, 0, 0, 1], p)));
+        }
+        if !inner.links.contains_key(id) {
+            return None;
+        }
+        let port = inner.beats.get(id)?.remote_port?;
+        let ip: IpAddr = Self::others_live(&inner).find(|m| m.id == id)?.ip.parse().ok()?;
+        Some(SocketAddr::new(ip, port))
+    }
+
+    /// A session for `device` on machine `id`'s remote server, to relay with: kept
+    /// from before unless `fresh` (the last one was refused).
+    pub async fn relay_session(&self, id: &str, device: &str, fresh: bool) -> Result<String, String> {
+        if id == self.me() {
+            return self.book.relay_session(device);
+        }
+        let key = (id.to_string(), device.to_string());
+        if !fresh {
+            if let Some((s, at)) = self.relay_sessions.lock().unwrap().get(&key) {
+                if at.elapsed() < RELAY_SESSION_TTL {
+                    return Ok(s.clone());
+                }
+            }
+        }
+        let session = self.ask(id, Ask::RelaySession { device: device.to_string() }).await?;
+        self.relay_sessions.lock().unwrap().insert(key, (session.clone(), Instant::now()));
+        Ok(session)
+    }
+
+    /// Where Duck is, when it isn't here: the main (the pin, else the list's first
+    /// choice) while it's another machine that can be relayed to. None: answer here
+    /// (this is the main, or the main can't be reached and this machine stands in).
+    pub fn duck_main(&self) -> Option<String> {
+        let main = self.phone_list().main?;
+        (main != self.me() && self.relay_target(&main).is_some()).then_some(main)
     }
 
     /// A peer presented this machine's own id: its identity was copied.
@@ -1225,6 +1342,7 @@ pub fn init(app: &AppHandle) {
         }),
     );
     fleet.set_public_url(crate::remote::public_url(app));
+    fleet.set_remote_port(crate::remote::tailnet_port(app));
     app.manage(fleet.clone());
     tauri::async_runtime::spawn(fleet.run());
 }

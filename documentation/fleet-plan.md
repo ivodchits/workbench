@@ -261,6 +261,38 @@ This document. Done when you've approved it; then H6 in `assistant-plan.md` poin
 - **Done when:** from the phone, a session on the laptop is prompted and approved while
   the phone's page is served by the desktop; Duck answers the same from either
   instance's page.
+- _(Built, 2026-11-19: `remote/relay.rs` (`/m/<machine>/…` and the Duck layer), the
+  fleet's `ask`/`answer` frames, `Fleet::relay_target`, `relay_session`, `duck_main`,
+  the remote port in each beat; `src/pwa/machine.ts` and the header's picker.
+  **Changed from the plan:**
+  - Always through the machine the phone is on, never directly: the page's token,
+    key and cache are per address in a browser, and one origin needs no CORS.
+  - The relay doesn't carry requests inside the peer link. The machine the phone is
+    on checks the phone, asks the target over the link for a **session for that
+    device** (kept an hour, asked again once if refused), then forwards the request
+    or socket to the target's own remote server on its tailnet address. The
+    target's own checks still apply, and every route is reused as it is. So the target
+    needs remote access on (it does anyway, for the phone).
+  - What's relayed is a whitelist: the dashboard socket, actions, consoles,
+    transcripts, notes, uploads. Duck's routes go to the main (the pin, else the
+    list's first choice) when it's another machine that can be reached; otherwise
+    this machine's Duck answers. A relayed request carries a mark and is never
+    relayed again, so two machines that briefly disagree about the main can't pass
+    it back and forth.
+  - Picking a machine reloads the page onto it; the kept snapshot is per machine.
+    Duck's unread marks come only from the main's snapshot.
+  - Not yet: the desktop's own drawer on a non-main machine still shows that
+    machine's Duck (settled decision 1 makes it a remote surface; that comes with F5
+    and F6, when Duck's state moves).
+  **Checked:** fleet test: ports in beats, relay targets (a peer's tailnet address,
+  its own loopback), Duck at the main and following the pin, relay sessions asked
+  over the link, kept, refreshed, refused for unknown devices. `relay.rs` whitelist
+  test; `machine.test.ts`. **Live, on this laptop's dev build relaying to itself**
+  (the same code path, loopback target): `/m/<self>/api/notes` gives the same answer
+  as `/api/notes`, a bad token 401, a route outside the list 404, an unknown machine
+  502, a POST goes through, the dashboard socket opens relayed with the `wb`
+  subprotocol and a bad token is refused. Live test owed: two machines, the phone
+  on the desktop's page driving a laptop session, and Duck from the laptop's page.)_
 
 ## Phase F3 — Workbench as a remote host
 

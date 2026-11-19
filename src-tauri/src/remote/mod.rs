@@ -48,7 +48,9 @@
 //! (pairing, approval, revoke, a first use after a while) goes to the other machines
 //! ([`crate::fleet`]), and theirs come here through [`crate::fleet::DeviceBook`]. A
 //! removed device leaves a tombstone row (no token) so gossip can't bring it back.
-//! This machine's public address goes to the fleet too, for the phone's list.
+//! This machine's public address goes to the fleet too, for the phone's list. The
+//! phone's requests for another machine, and Duck's when the main is elsewhere, are
+//! relayed to it ([`relay`], F2.2).
 //!
 //! **Duck (step R1):** [`assistant`] carries the Duck Protocol to the phone, through
 //! the webview like the dashboard: its own socket and broadcast channel (per run,
@@ -60,6 +62,7 @@ pub(crate) mod funnel;
 mod notes;
 pub mod office;
 pub mod push;
+mod relay;
 mod server;
 mod transcript;
 mod uploads;
@@ -370,6 +373,13 @@ pub fn device_book(app: &AppHandle) -> Arc<dyn crate::fleet::DeviceBook> {
     app.state::<Arc<RemoteState>>().inner().clone()
 }
 
+/// The remote server's port while it listens on the tailnet, for the fleet.
+pub fn tailnet_port(app: &AppHandle) -> Option<u16> {
+    let state = app.try_state::<Arc<RemoteState>>()?;
+    let bound = state.inner.lock().unwrap().bound_addr.is_some();
+    bound.then_some(REMOTE_PORT)
+}
+
 /// This machine's public (Funnel) address while it works, for the fleet.
 pub fn public_url(app: &AppHandle) -> Option<String> {
     let state = app.try_state::<Arc<RemoteState>>()?;
@@ -433,6 +443,18 @@ impl crate::fleet::DeviceBook for RemoteState {
         changed(self);
         true
     }
+
+    fn relay_session(&self, device: &str) -> Result<String, String> {
+        let mut inner = self.inner.lock().unwrap();
+        if !inner.running {
+            return Err("remote access is off there".into());
+        }
+        match inner.devices.iter().find(|d| d.id == device) {
+            Some(d) if d.approved => Ok(inner.sessions.start(device, now())),
+            Some(_) => Err("that device isn’t approved there yet".into()),
+            None => Err("that device isn’t paired there".into()),
+        }
+    }
 }
 
 /// Bind loopback (and the Tailscale interface, if it is up) and spawn the axum server.
@@ -487,6 +509,10 @@ fn bind_tailnet(state: &Arc<RemoteState>) -> Result<bool, String> {
     }
     inner.bound_addr = Some(format!("{ip}:{REMOTE_PORT}"));
     inner.tasks.push(task);
+    drop(inner);
+    if let Some(fleet) = crate::fleet::get(&state.app) {
+        fleet.set_remote_port(Some(REMOTE_PORT));
+    }
     Ok(true)
 }
 
@@ -977,6 +1003,9 @@ pub fn remote_stop(state: State<'_, Arc<RemoteState>>) -> RemoteStatus {
     }
     kick(st); // mirrored consoles don't ride the broadcast channel
     wake(st);
+    if let Some(fleet) = crate::fleet::get(&st.app) {
+        fleet.set_remote_port(None);
+    }
     let _ = st.app.state::<Db>().meta_set(ENABLED_KEY, "0");
     status_of(st)
 }

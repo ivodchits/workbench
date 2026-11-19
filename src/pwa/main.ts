@@ -22,6 +22,7 @@ import { $ } from "./dom";
 import { duckOnStart, initDuck, launchDuck, noteDuckThreads, openDuck, takeLaunchThread } from "./duck";
 import { takeLaunch } from "./launch";
 import { initLink, offerUpdate, setLink } from "./link";
+import { machineSuffix, onFleet, pickerItems, pickMachine, showsDuck } from "./machine";
 import { inApp, offlinePut } from "./native";
 import { checkAccess, connect, forget, isPaired, loadToken, pair } from "./net";
 import { initNewSession, openNewSession } from "./newSession";
@@ -35,7 +36,8 @@ const WAIT_POLL_MS = 2000;
 /** sessionStorage key carrying a pairing-view message across a reload. */
 const NOTE_KEY = "wb-remote-note";
 /** Where the last snapshot is kept. */
-const SNAPSHOT_KEY = "snapshot";
+/** What's kept of the sessions, per machine shown (fleet plan F2.2). */
+const SNAPSHOT_KEY = "snapshot" + machineSuffix();
 
 let waitTimer: ReturnType<typeof setTimeout> | null = null;
 const keepSnapshot = saver(SNAPSHOT_KEY);
@@ -80,12 +82,39 @@ if (openedOffline) {
   history.replaceState(history.state, "", url.pathname + url.search + url.hash);
 }
 
+/** The machine picker (fleet plan F2.2): shown once there's more than one machine.
+ *  Picking one reloads the page onto its sessions. */
+function initPicker(): void {
+  const select = $("machine") as HTMLSelectElement;
+  const draw = () => {
+    const items = pickerItems();
+    select.classList.toggle("hidden", items.length < 2);
+    select.replaceChildren(
+      ...items.map((i) => {
+        const o = document.createElement("option");
+        o.value = i.id;
+        o.selected = i.shown;
+        o.disabled = !i.online && !i.shown;
+        o.textContent = i.name + (i.main ? " · Duck" : "") + (i.online ? "" : " (off)");
+        return o;
+      }),
+    );
+  };
+  select.onchange = () => {
+    pickMachine(select.value);
+    location.reload();
+  };
+  draw();
+  onFleet(draw);
+}
+
 /** The app, drawn first from what was kept; the link comes up behind it. */
 async function showApp(): Promise<void> {
   await initLink();
   if (openedOffline) setLink("offline");
   const kept = await load<RemoteSnapshot>(SNAPSHOT_KEY);
   show("app");
+  initPicker();
   const dashboard = initDashboard({
     console: (id) => openConsole(id),
     newSession: openNewSession,
@@ -108,7 +137,8 @@ async function showApp(): Promise<void> {
     dashboard(snap);
     newSession(snap);
     notes.snapshot(snap);
-    noteDuckThreads(snap.duckThreads);
+    // Another machine's snapshot has its own Duck's threads, not the main's.
+    if (showsDuck()) noteDuckThreads(snap.duckThreads);
     updateConsole();
     if (launch && snap.instances.some((i) => i.id === launch)) {
       openConsole(launch);

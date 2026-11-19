@@ -24,6 +24,7 @@
 import type { RemoteAction, RemoteSnapshot } from "../remote/protocol";
 import { deviceKey, dropDeviceKey, makeDeviceKey, type DeviceKey } from "./deviceKey";
 import { flash, isLive, linkState, onRetry, outbox, setLink, synced } from "./link";
+import { FLEET_KEY, noteFleet, routed } from "./machine";
 import * as app from "./native";
 import { clearAll } from "./store";
 
@@ -69,7 +70,7 @@ export function forget(): void {
   void dropDeviceKey();
   void clearAll(); // what was kept of the desktop goes with the pairing
   if (app.inApp()) void app.offlinePut("fleet", null).catch(() => {});
-  else localStorage.removeItem(FLEET_KEY);
+  localStorage.removeItem(FLEET_KEY);
 }
 
 /** Exchange a pairing code for a device token, which works once the desktop allows
@@ -190,7 +191,8 @@ export function openSocket(path: string, params: Record<string, string> = {}): W
   const query = Object.entries(params)
     .map(([key, value]) => `${key}=${encodeURIComponent(value)}`)
     .join("&");
-  const url = `${proto}://${location.host}${path}${query ? "?" + query : ""}`;
+  // A session route goes to the machine shown (fleet plan F2.2, `machine.ts`).
+  const url = `${proto}://${location.host}${routed(path)}${query ? "?" + query : ""}`;
   return new WebSocket(url, ["wb", "wb-token." + credential()]);
 }
 
@@ -296,9 +298,6 @@ function open(): void {
   };
 }
 
-/** Where a browser keeps the fleet's list (Duck's app keeps it in the app). */
-const FLEET_KEY = "wb-fleet";
-
 /** Ask for the fleet's machines (fleet plan F2.1, `fleetList.ts`) and keep the
  *  list: Duck's app's loader opens whichever machine answers, the main first. */
 async function keepFleet(): Promise<void> {
@@ -309,8 +308,8 @@ async function keepFleet(): Promise<void> {
     });
     if (!res.ok) return;
     const text = await res.text();
-    if (app.inApp()) await app.offlinePut("fleet", text);
-    else localStorage.setItem(FLEET_KEY, text);
+    noteFleet(text); // the machine picker's (per address)
+    if (app.inApp()) await app.offlinePut("fleet", text); // the loader's
   } catch {
     // an older desktop, or the link went again: the kept list stays
   }
@@ -413,7 +412,7 @@ export async function api<T>(
   const query = opts.query ? "?" + new URLSearchParams(opts.query).toString() : "";
   const post = opts.body !== undefined || opts.raw !== undefined;
   const call = () =>
-    fetch(path + query, {
+    fetch(routed(path) + query, {
       method: post ? "POST" : "GET",
       headers: {
         ...authHeader(),

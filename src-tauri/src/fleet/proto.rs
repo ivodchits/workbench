@@ -239,6 +239,19 @@ pub struct Beat {
     pub build: String,
     /// What it can do (grows with F3: `steam`, `gpu`, `voice-models`, …).
     pub caps: Vec<String>,
+    /// The port its remote server listens on at its tailnet address, while it does
+    /// (F2.2: where the others relay the phone's requests).
+    #[serde(default)]
+    pub remote_port: Option<u16>,
+}
+
+/// A question one machine asks another over the link (F2.2).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "k", rename_all = "camelCase")]
+pub enum Ask {
+    /// A session on your remote server for this paired device, so I can relay its
+    /// requests to you. It must be approved there.
+    RelaySession { device: String },
 }
 
 /// One message on the peer link, as JSON text.
@@ -258,6 +271,9 @@ pub enum Frame {
     Devices { list: Vec<PairedDevice> },
     /// Closing on purpose, and why (shown in the menu's log on the other side).
     Bye { reason: String },
+    /// A question, answered by an `answer` with the same `req`.
+    Ask { req: u64, ask: Ask },
+    Answer { req: u64, ok: Option<String>, err: Option<String> },
 }
 
 impl Frame {

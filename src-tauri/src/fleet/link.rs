@@ -230,6 +230,16 @@ async fn run(
                     Some(Frame::Beat { beat }) => fleet.on_beat(&peer, beat),
                     Some(Frame::Config { config }) => fleet.take_config(Some(&peer), config),
                     Some(Frame::Devices { list }) => fleet.take_devices(&peer, list),
+                    Some(Frame::Ask { req, ask }) => {
+                        let (ok, err) = match fleet.on_ask(ask) {
+                            Ok(v) => (Some(v), None),
+                            Err(e) => (None, Some(e)),
+                        };
+                        let _ = out.send(Frame::Answer { req, ok, err }.to_text());
+                    }
+                    Some(Frame::Answer { req, ok, err }) => {
+                        fleet.on_answer(req, ok.ok_or_else(|| err.unwrap_or_else(|| "no answer".into())));
+                    }
                     Some(Frame::Bye { reason }) => {
                         let name = fleet.name_of(&peer).unwrap_or(peer.clone());
                         if reason != "replaced by a newer link" {

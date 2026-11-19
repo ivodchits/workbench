@@ -64,7 +64,7 @@ use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{ConnectInfo, DefaultBodyLimit, Query, State};
 use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::{Html, IntoResponse, Response};
-use axum::routing::{get, post};
+use axum::routing::{any, get, post};
 use axum::{Json, Router};
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -146,6 +146,12 @@ async fn run(listener: std::net::TcpListener, state: Arc<RemoteState>) -> std::i
         .route("/api/push/test", post(super::push::test))
         // A reminder push's Done and Snooze (step H4): its one-use token is the key.
         .route("/api/reminders/action", post(super::push::reminder_action))
+        // Another machine's sessions, and Duck at the main (fleet plan F2.2).
+        .route(
+            "/m/{id}/{*rest}",
+            any(super::relay::machine).layer(DefaultBodyLimit::max(super::uploads::FILE_MAX)),
+        )
+        .layer(axum::middleware::from_fn_with_state(state.clone(), super::relay::duck))
         .with_state(state);
     axum::serve(
         listener,

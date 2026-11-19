@@ -69,6 +69,13 @@ impl DeviceBook for Book {
         }
         !changes.is_empty()
     }
+    fn relay_session(&self, device: &str) -> Result<String, String> {
+        match self.get(device) {
+            Some(d) if d.approved && !d.removed => Ok(format!("session-for-{device}")),
+            Some(_) => Err("not approved here".into()),
+            None => Err("no such device here".into()),
+        }
+    }
 }
 
 impl Book {
@@ -454,4 +461,64 @@ async fn the_phone_learns_every_machines_address() {
     assert!(list.pinned);
     assert_eq!(list.main, Some(l));
     assert!(list.instances[1].main && !list.instances[0].main);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_machine_relays_to_another_and_duck_goes_to_the_main() {
+    let ok = Arc::new(AtomicBool::new(false));
+    let (dbook, lbook) = (Arc::new(Book::default()), Arc::new(Book::default()));
+    let desktop = instance_with("desktop", ok.clone(), Arc::new(Db::open_in_memory().unwrap()), dbook.clone());
+    let laptop = instance_with("laptop", ok.clone(), Arc::new(Db::open_in_memory().unwrap()), lbook.clone());
+    let code = join_string(&desktop).await;
+    laptop.join(&code).await.unwrap();
+    until("linked", || online(&desktop, "laptop") && online(&laptop, "desktop")).await;
+    let (d, l) = (id_of(&laptop, "desktop"), id_of(&desktop, "laptop"));
+
+    // Neither remote server listens yet: nowhere to relay, and Duck answers where asked.
+    assert_eq!(laptop.relay_target(&d), None);
+    assert_eq!(laptop.duck_main(), None);
+
+    desktop.set_remote_port(Some(49020));
+    laptop.set_remote_port(Some(49021));
+    until("the desktop's port in a beat", || laptop.relay_target(&d).is_some()).await;
+    assert_eq!(laptop.relay_target(&d).unwrap().port(), 49020);
+    // Its own: loopback.
+    assert_eq!(laptop.relay_target(&l).unwrap().to_string(), "127.0.0.1:49021");
+
+    // The desktop is the main (first by kind): the laptop sends Duck there; the
+    // desktop keeps it.
+    assert_eq!(laptop.duck_main(), Some(d.clone()));
+    assert_eq!(desktop.duck_main(), None);
+    // Pinned to the laptop: the other way round.
+    desktop.set_pin(Some(l.clone())).unwrap();
+    until("the pin reaches the laptop", || laptop.status().config.pin.is_some()).await;
+    assert_eq!(laptop.duck_main(), None);
+    assert_eq!(desktop.duck_main(), Some(l.clone()));
+
+    // A session for an approved phone, asked over the link; a stranger gets none.
+    let phone = PairedDevice {
+        id: "phone".into(),
+        token: "tok".into(),
+        name: "Pixel".into(),
+        paired_at: 1,
+        approved: true,
+        public_key: None,
+        last_seen: None,
+        updated_at: 10,
+        removed: false,
+    };
+    dbook.put(phone);
+    assert_eq!(laptop.relay_session(&d, "phone", false).await.unwrap(), "session-for-phone");
+    let err = laptop.relay_session(&d, "stranger", false).await.unwrap_err();
+    assert!(err.contains("no such device"), "{err}");
+    // Kept: the desktop isn't asked again (it would refuse now).
+    dbook.put(PairedDevice::tombstone("phone", 20));
+    assert_eq!(laptop.relay_session(&d, "phone", false).await.unwrap(), "session-for-phone");
+    assert!(laptop.relay_session(&d, "phone", true).await.is_err());
+    // This machine's own: from its own book.
+    assert!(laptop.relay_session(&l, "phone", false).await.is_err());
+
+    // A machine that isn't linked can't be asked.
+    let err = laptop.relay_session("nobody", "phone", false).await.unwrap_err();
+    assert!(err.contains("isn’t connected"), "{err}");
 }
