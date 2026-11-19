@@ -303,7 +303,12 @@ export default function AssistantDrawer() {
         onView={setView}
         onThread={showThread}
       />
-      {noKey && (
+      {duck.where && (
+        <div style={{ ...banner, color: "var(--wb-textDim2)" }} title="fleet: one Duck, on the main machine">
+          Duck is on {duck.where}: this drawer talks to it there.
+        </div>
+      )}
+      {noKey && !duck.where && (
         <div style={{ ...banner, color: "var(--wb-needs)" }}>
           No API key yet. Add one from the ◆ duck menu in the status bar.
         </div>

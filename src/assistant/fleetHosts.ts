@@ -13,14 +13,22 @@
 //   main and answers what it's sent. A new main gets a new hello; the old stops.
 // - A main that hears from a machine it doesn't know (its Duck restarted) asks it to
 //   say hello again (`port.resync`), and so does a main that just started.
+// - **The drawer** (F3.1b): `duck` carries the Duck Protocol between the main's
+//   endpoint and the drawer of a machine that isn't the main (`switchTransport.ts`),
+//   as the phone's socket does: answers to the drawer that asked, changes to all.
 // - `runFleetLink` follows the fleet's status to do all this.
 
 import type { FleetStatus } from "../ipc/fleet";
 import { serveHost, type HostConn, type HostDown, type HostHandler, type Hosts, type HostUp, type MachineRef } from "./hosts";
 import type { WorkbenchPort } from "./port";
+import type { ClientMessage, DuckEndpoint, DuckEvent } from "./protocol";
+import { createLinkTransport, type SwitchTransport } from "./switchTransport";
 import { createRemotePort, serveWorkbench, type PortDown, type PortEvent, type PortUp, type RemotePort } from "./port.remote";
 
-type Envelope = { ch: "pc"; msg: HostUp | HostDown } | { ch: "workbench"; msg: PortUp | PortDown };
+type Envelope =
+  | { ch: "pc"; msg: HostUp | HostDown }
+  | { ch: "workbench"; msg: PortUp | PortDown }
+  | { ch: "duck"; msg: ClientMessage | DuckEvent };
 
 /** The main's messages to a machine it serves, as opposed to a host's to the main. */
 const DOWN = new Set(["device.call", "device.cancel", "port.call", "port.resync"]);
@@ -34,7 +42,7 @@ export function isDown(text: string): boolean {
 function parse(text: string): Envelope | null {
   try {
     const e = JSON.parse(text) as Envelope;
-    return (e.ch === "pc" || e.ch === "workbench") && e.msg && typeof e.msg === "object" ? e : null;
+    return (e.ch === "pc" || e.ch === "workbench" || e.ch === "duck") && e.msg && typeof e.msg === "object" ? e : null;
   } catch {
     return null;
   }
@@ -49,6 +57,8 @@ export interface FleetHub {
   ports(): RemotePort[];
   /** Ask machine `id` to say hello again. */
   resync(id: string): void;
+  /** The engine the other machines' drawers talk to (once it's started). */
+  setEndpoint(ep: DuckEndpoint): void;
 }
 
 /** The main's side. `events` hands a machine's port events to the fleet port. */
@@ -59,13 +69,25 @@ export function createFleetHub(deps: {
 }): FleetHub {
   const pc = new Map<string, HostConn>();
   const ports = new Map<string, RemotePort>();
+  const drawers = new Map<string, () => void>();
+  let endpoint: DuckEndpoint | null = null;
   const out = (to: string, e: Envelope) => deps.send(to, JSON.stringify(e));
   const resync = (id: string) => out(id, { ch: "workbench", msg: { type: "port.resync" } });
   return {
     resync,
+    setEndpoint(ep) {
+      endpoint = ep;
+    },
     receive(from, text) {
       const e = parse(text);
       if (!e) return;
+      if (e.ch === "duck") {
+        if (!endpoint) return;
+        const reply = (ev: DuckEvent) => out(from, { ch: "duck", msg: ev });
+        if (!drawers.has(from)) drawers.set(from, endpoint.onEvent(reply));
+        endpoint.handle(e.msg as ClientMessage, reply);
+        return;
+      }
       const known = e.ch === "pc" ? pc.has(from) : ports.has(from);
       const hello = e.msg.type === "hello" || e.msg.type === "port.hello";
       if (!known && !hello) return resync(from);
@@ -89,6 +111,8 @@ export function createFleetHub(deps: {
       ports.get(from)?.receive(msg);
     },
     gone(id) {
+      drawers.get(id)?.();
+      drawers.delete(id);
       pc.get(id)?.close();
       pc.delete(id);
       ports.get(id)?.close();
@@ -142,11 +166,40 @@ export function runFleetLink(deps: {
   hub: FleetHub;
   serve: (main: string, name: string) => FleetServing;
   setSelf: (m: MachineRef) => void;
-}): { look(): Promise<void>; receive(from: string, text: string): void } {
+  send: (to: string, text: string) => void;
+}): {
+  look(): Promise<void>;
+  receive(from: string, text: string): void;
+  /** This machine's drawer: moved to the main while serving it (F3.1b). */
+  setDrawer(d: SwitchTransport): void;
+} {
   let serving: FleetServing | null = null;
   let online: Set<string> | null = null;
+  let surface: ReturnType<typeof createLinkTransport> | null = null;
+  let drawer: SwitchTransport | null = null;
+  let mainName = "";
+  const drawTo = (main: string | null, where: string) => {
+    mainName = where;
+    if (!drawer) return;
+    if (!main) {
+      surface = null;
+      drawer.use(null);
+      return;
+    }
+    surface = createLinkTransport((msg) => deps.send(main, JSON.stringify({ ch: "duck", msg })));
+    drawer.use({ transport: surface, where });
+  };
   return {
+    setDrawer(d) {
+      drawer = d;
+      if (serving) drawTo(serving.main, mainName);
+    },
     receive(from, text) {
+      const e = parse(text);
+      if (e?.ch === "duck" && serving?.main === from) {
+        surface?.deliver(e.msg as DuckEvent);
+        return;
+      }
       if (isDown(text)) {
         if (serving?.main === from) serving.receive(text);
       } else deps.hub.receive(from, text);
@@ -166,8 +219,12 @@ export function runFleetLink(deps: {
       if (serving && (serving.main !== want || serving.name !== s.me.name)) {
         serving.stop();
         serving = null;
+        if (!want) drawTo(null, "");
       }
-      if (want && !serving) serving = deps.serve(want, s.me.name);
+      if (want && !serving) {
+        serving = deps.serve(want, s.me.name);
+        drawTo(want, s.members.find((m) => m.id === want)?.name ?? "another machine");
+      }
     },
   };
 }

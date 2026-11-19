@@ -18,7 +18,7 @@
 // come next, as your message there, and their reply is spoken as yours would be.
 
 import { useSyncExternalStore } from "react";
-import { getDuck, initAssistant } from "../../assistant";
+import { duckWhere, getDuck, initAssistant, onDuckSwitch } from "../../assistant";
 import type { AttachmentRef } from "../../assistant/attachments";
 import { notifyAlert } from "../../ipc/attention";
 import { getNotificationConfig } from "../../state/notifications";
@@ -57,6 +57,8 @@ import { listenAction, type ListenRequest } from "../../assistant/listen";
 export interface DuckState {
   /** Connected to the engine. */
   ready: boolean;
+  /** The machine Duck is on when it isn't this one (fleet plan F3.1b). */
+  where: string | null;
   open: boolean;
   threads: ThreadRow[];
   /** The thread on screen; `null` = a new thread, created by the first send. */
@@ -140,6 +142,7 @@ export const DEFAULT_DRAWER: AssistantDrawerPrefs = {
 
 let state: DuckState = {
   ready: false,
+  where: null,
   open: false,
   threads: [],
   current: null,
@@ -549,6 +552,27 @@ export function connectDuck(): Promise<void> {
       return;
     }
     duck.subscribe(onEvent);
+    set({ where: duckWhere() });
+    // Duck moved to another machine, or back here: what was shown was the other
+    // engine's, so start over from its sync.
+    onDuckSwitch((where) => {
+      set({
+        where,
+        ready: false,
+        threads: [],
+        current: null,
+        messages: {},
+        streaming: {},
+        provisional: {},
+        states: {},
+        queued: {},
+        asks: [],
+        turns: {},
+        routing: {},
+        error: null,
+      });
+      duck.send({ type: "sync" });
+    });
     duck.send({ type: "sync" });
   })();
   return connecting;

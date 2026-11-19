@@ -360,6 +360,22 @@ This document. Done when you've approved it; then H6 in `assistant-plan.md` poin
 - **Done when:** on the laptop, with the desktop as main, the drawer shows the
   desktop's threads, a message typed on the laptop is answered by the desktop's Duck,
   and with the desktop gone the laptop's drawer says so and answers itself.
+- _(Built, 2026-11-19: `switchTransport.ts` (the drawer's transport, and one over the
+  link), the `duck` channel in `fleetHosts.ts`, `duckWhere`/`onDuckSwitch`, the
+  drawer's "Duck is on …" line.
+  **Changed from the plan:**
+  - The local engine isn't idled: it still runs this machine's own routines and
+    reminders until Duck's state is one (F5, F6), and it's what the drawer falls back
+    to. Only the drawer moves.
+  - A message with files from a drawer whose Duck is elsewhere is refused with a
+    plain reason (the files are stored on this machine); text and voice go.
+    Pictures and files in the main's threads are fetched from this machine's disk, so
+    they don't show here yet. Both come with F5.2 (files fetched from their origin).
+  - On a switch the drawer starts over from the other engine's `sync`.
+  **Checked:** `switchTransport.test.ts`: subscribers moved there and back, files
+  refused, and the laptop's drawer through both machines' fleet links (the desktop's
+  threads, a change at the desktop reaching it, its own Duck again once the desktop
+  goes). Live test owed: the Done when, on the desktop and the laptop.)_
 
 ### Step F3.2 — Projects across machines and the waiting queue
 - **Depends on:** F3.1.

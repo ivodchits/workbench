@@ -99,6 +99,7 @@ import { createRegistry, toolsOn } from "./tools/registry";
 import { connectLocal, createHosts, type MachineRef } from "./hosts";
 import { createFleetHub, runFleetLink, serveFleet } from "./fleetHosts";
 import { createFleetPort, type FleetPort } from "./port.fleet";
+import { createSwitchTransport, type SwitchTransport } from "./switchTransport";
 import { fleetHostSend, fleetStatus, onFleetChanged, onFleetHost } from "../ipc/fleet";
 import { pcHandlers } from "./tools/pc";
 import { youtubeMusic } from "./music/youtube";
@@ -190,7 +191,7 @@ export type Replayer = (
 const REPLAY_MAX_CALLS = 20_000;
 
 let started: Promise<void> | null = null;
-let duck: Transport | null = null;
+let duck: SwitchTransport | null = null;
 let consolidator: Consolidator | null = null;
 type ReminderAction = "done" | "dismissed" | "snooze";
 let reminderAction: ((id: string, action: ReminderAction) => Promise<void>) | null = null;
@@ -1013,6 +1014,7 @@ export function initAssistant(): Promise<void> {
       hub,
       serve: (main, name) => serveFleet({ main, name, pc: pcTools, port: localPort, send: hostSend }),
       setSelf: (m) => (self = m),
+      send: hostSend,
     });
     void onFleetHost((from, text) => fleetLink.receive(from, text)).catch(() => {});
     void onFleetChanged(() => void fleetLink.look()).catch(() => {});
@@ -1305,7 +1307,12 @@ export function initAssistant(): Promise<void> {
       drawings,
     );
     epRef = ep;
-    duck = createLocalTransport(ep);
+    // The drawer talks to this engine, or to the main's when that's another
+    // machine (fleet plan F3.1b); the other machines' drawers talk to this one.
+    const drawer = createSwitchTransport(createLocalTransport(ep));
+    duck = drawer;
+    hub.setEndpoint(ep);
+    fleetLink.setDrawer(drawer);
     bridge = startRemoteBridge({
       duck: ep,
       link: ipcLink,
@@ -1386,4 +1393,14 @@ export function closeReminder(id: string, state: "done" | "dismissed"): Promise<
 /** The transport to the running Duck, or `null` until `initAssistant` finished. */
 export function getDuck(): Transport | null {
   return duck;
+}
+
+/** Which machine the drawer's Duck is on when it isn't this one (fleet plan
+ *  F3.1b), and every change of it: the drawer starts over on one. */
+export function duckWhere(): string | null {
+  return duck?.where() ?? null;
+}
+
+export function onDuckSwitch(cb: (where: string | null) => void): () => void {
+  return duck?.onSwitch(cb) ?? (() => {});
 }
