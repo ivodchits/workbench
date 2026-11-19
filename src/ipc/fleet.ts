@@ -170,6 +170,11 @@ export function onFleetDrain(cb: (on: boolean) => void): Promise<UnlistenFn> {
   return listen<boolean>("fleet-drain", (e) => cb(e.payload));
 }
 
+/** What a cut-off main did was merged here (fleet plan F6.2), in words. */
+export function onFleetMerged(cb: (text: string) => void): Promise<UnlistenFn> {
+  return listen<string>("fleet-merged", (e) => cb(e.payload));
+}
+
 /** This machine took Duck over from another: its state is the copy now. */
 export function onDuckPromoted(cb: (term: number) => void): Promise<UnlistenFn> {
   return listen<number>("duck-promoted", (e) => cb(e.payload));

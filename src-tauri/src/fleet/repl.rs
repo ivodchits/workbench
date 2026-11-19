@@ -341,6 +341,26 @@ impl Replica {
     }
 }
 
+// For the merge after a split (`merge.rs`).
+pub(super) fn columns_of(c: &Connection, table: &str) -> rusqlite::Result<(Vec<String>, Vec<String>)> {
+    columns(c, table)
+}
+pub(super) fn is_replicated(table: &str) -> bool {
+    replicated(table)
+}
+pub(super) fn quote_ident(id: &str) -> String {
+    quote(id)
+}
+pub(super) fn sql_value(v: &Value) -> Sql {
+    sql_of(v)
+}
+pub(super) fn state_get(c: &Connection, k: &str) -> rusqlite::Result<Option<String>> {
+    state(c, k)
+}
+pub(super) fn state_set(c: &Connection, k: &str, v: &str) -> rusqlite::Result<()> {
+    set_state(c, k, v)
+}
+
 /// The rows that hold absolute paths (audited for F5.1): a folder under Duck's
 /// workspace, or a file under the app's data folder.
 const PATH_COLUMNS: [(&str, &str); 4] =

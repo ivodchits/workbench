@@ -47,6 +47,9 @@
 //!   catches up and takes the next term (handover). Taking over from another machine
 //!   installs the copy as this machine's Duck (`DuckRepl::promote`). Where Duck is,
 //!   for the drawer, the phone's relay and the hosts, is the lease's holder.
+//! - **Merging after a split** (F6.2, [`merge`]): a machine that took over from
+//!   another's copy keeps where it did; once the old main is linked again, it asks
+//!   for what that one wrote after, merges it, and says so (`fleet-merged`).
 //! - **The listener** runs only while there is someone to talk to: another member, or
 //!   a live join code.
 //!
@@ -57,6 +60,7 @@ mod link;
 mod net;
 pub mod repl;
 pub mod files;
+pub mod merge;
 pub mod proto;
 mod store;
 
@@ -194,6 +198,9 @@ pub struct ReplicaView {
 /// Tells the webview to finish Duck's turns (true), or that it may take them again.
 pub type DrainSink = Box<dyn Fn(bool) + Send + Sync>;
 
+/// Where a merge's notice goes (F6.2).
+pub type MergedSink = Box<dyn Fn(String) + Send + Sync>;
+
 /// Takes host traffic from a peer: (its id, the text).
 pub type HostSink = Box<dyn Fn(&str, String) + Send + Sync>;
 
@@ -268,6 +275,9 @@ pub struct Fleet {
     drain_sink: Mutex<Option<DrainSink>>,
     /// A handover is being asked for.
     handing: std::sync::atomic::AtomicBool,
+    /// A merge after a split is running, and where its notice goes (F6.2).
+    merging: std::sync::atomic::AtomicBool,
+    merged_sink: Mutex<Option<MergedSink>>,
     /// Sessions other machines gave for a device, by (machine, device).
     relay_sessions: Mutex<HashMap<(String, String), (String, Instant)>>,
 }
@@ -520,6 +530,8 @@ impl Fleet {
             drained: Notify::new(),
             drain_sink: Mutex::new(None),
             handing: std::sync::atomic::AtomicBool::new(false),
+            merging: std::sync::atomic::AtomicBool::new(false),
+            merged_sink: Mutex::new(None),
             host_sink: Mutex::new(None),
             duck: Mutex::new(None),
             snap_cache: Mutex::new(None),
@@ -623,6 +635,7 @@ impl Fleet {
             self.write_seen();
             self.elect();
             self.replicate_due();
+            self.merge_due();
             looks += 1;
             tokio::select! {
                 _ = tokio::time::sleep(self.cfg.tick) => {}
@@ -1184,13 +1197,15 @@ impl Fleet {
             (inner.lease.term + 1, from.as_ref().and_then(|f| inner.dirs.get(f).cloned()))
         };
         if let Some(old) = &from {
-            let has_copy = self
-                .duck()
-                .map(|d| d.replica.lock().unwrap().state().origin.as_deref() == Some(old.as_str()))
-                .unwrap_or(false);
-            if has_copy {
+            let copy = self.duck().ok().map(|d| d.replica.lock().unwrap().state());
+            if let Some(st) = copy.filter(|st| st.origin.as_deref() == Some(old.as_str())) {
                 if let Some(p) = self.promote.lock().unwrap().as_ref() {
                     p(term, dirs)?;
+                }
+                // Where this machine took over from, for the merge if the old main
+                // wrote on while cut off (F6.2).
+                if let (Ok(d), Some(epoch)) = (self.duck(), st.epoch.as_deref()) {
+                    d.source.with(|c| merge::set_split(c, old, epoch, st.seq)).ok();
                 }
             }
         }
@@ -1304,6 +1319,79 @@ impl Fleet {
             Err(_) => 0,
         };
         Ok(serde_json::json!({ "head": head }).to_string())
+    }
+
+    /// Where a merge's notice goes (the webview, in the app).
+    pub fn on_merged(&self, sink: MergedSink) {
+        *self.merged_sink.lock().unwrap() = Some(sink);
+    }
+
+    /// The holder, after a split: once the old main is linked again, merge what it
+    /// wrote after this machine took over (F6.2).
+    fn merge_due(self: &Arc<Self>) {
+        use std::sync::atomic::Ordering;
+        let Ok(d) = self.duck() else { return };
+        let holds = {
+            let inner = self.inner.lock().unwrap();
+            inner.lease.term > 0 && inner.lease.holder == inner.me
+        };
+        if !holds {
+            return;
+        }
+        let Ok(Some((origin, epoch, seq))) = d.source.with(merge::split) else { return };
+        if !self.inner.lock().unwrap().links.contains_key(&origin) || self.merging.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        let me = self.clone();
+        tokio::spawn(async move {
+            if let Err(e) = me.merge_from(&origin, &epoch, seq).await {
+                eprintln!("[fleet] the merge after a split didn’t finish: {e}");
+            }
+            me.merging.store(false, Ordering::SeqCst);
+        });
+    }
+
+    async fn merge_from(&self, origin: &str, epoch: &str, mut seq: i64) -> Result<(), String> {
+        let d = self.duck()?;
+        let name = self.name_of(origin).unwrap_or_else(|| "the other machine".into());
+        let mut report = merge::MergeReport::default();
+        loop {
+            let text = self.ask(origin, Ask::ReplLog { epoch: Some(epoch.to_string()), seq }).await?;
+            let a: repl::LogAnswer = serde_json::from_str(&text).map_err(|e| e.to_string())?;
+            if a.snapshot {
+                // Its history moved on (it took over again, or its log was trimmed
+                // past the split): nothing can be merged now.
+                d.source.with(|c| merge::advance_split(c, None)).ok();
+                self.say_merged(format!("{name} was cut off from the fleet for a while, but what it did then couldn't be merged here: its history moved on."));
+                return Ok(());
+            }
+            if a.entries.is_empty() {
+                break;
+            }
+            let last = a.entries.last().map(|e| e.seq).unwrap_or(seq);
+            let r = d.source.with(|c| merge::merge_tail(c, &a.entries, &name))?;
+            report.messages += r.messages;
+            report.records += r.records;
+            report.usage += r.usage;
+            report.skipped_deletes += r.skipped_deletes;
+            report.forked.extend(r.forked);
+            seq = last;
+            d.source.with(|c| merge::advance_split(c, Some(seq))).ok();
+            if (a.entries.len() as i64) < repl::BATCH {
+                break;
+            }
+        }
+        d.source.with(|c| merge::advance_split(c, None)).ok();
+        if !report.is_empty() {
+            self.say_merged(report.text(&name));
+        }
+        Ok(())
+    }
+
+    fn say_merged(&self, text: String) {
+        if let Some(s) = self.merged_sink.lock().unwrap().as_ref() {
+            s(text);
+        }
     }
 
     /// The webview's Duck finished its turns (`fleet_drained`).
@@ -2075,6 +2163,10 @@ pub fn init(app: &AppHandle) {
     let drain_app = app.clone();
     fleet.on_drain(Box::new(move |on| {
         let _ = drain_app.emit("fleet-drain", on);
+    }));
+    let merged_app = app.clone();
+    fleet.on_merged(Box::new(move |text| {
+        let _ = merged_app.emit("fleet-merged", text);
     }));
     let promote_app = app.clone();
     fleet.on_promote(Box::new(move |term, dirs| promote_here(&promote_app, term, dirs)));

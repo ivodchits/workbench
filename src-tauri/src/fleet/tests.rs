@@ -638,15 +638,24 @@ async fn a_machine_thats_off_is_woken_from_its_network() {
 
 /// A machine's `duck.db` (a few of Duck's tables, with the log) and its copy file.
 fn duck_files(name: &str) -> (Arc<std::sync::Mutex<Connection>>, DuckRepl) {
-    let dir = std::env::temp_dir().join(format!("wb-fleet-repl-{}-{name}", uuid::Uuid::new_v4().simple()));
-    std::fs::create_dir_all(&dir).unwrap();
-    let conn = Connection::open(dir.join("duck.db")).unwrap();
-    conn.execute_batch(
+    duck_files_with(
+        name,
         "CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
          CREATE TABLE assistant_threads (id TEXT PRIMARY KEY, title TEXT, updated INTEGER);
          CREATE TABLE assistant_messages (thread_id TEXT NOT NULL, seq INTEGER NOT NULL, body TEXT, PRIMARY KEY (thread_id, seq));",
     )
-    .unwrap();
+}
+
+/// Duck's threads and messages as `duck.db` has them.
+const REAL_THREADS: &str = "CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+     CREATE TABLE assistant_threads (id TEXT PRIMARY KEY, title TEXT, mode TEXT, created INTEGER, updated INTEGER, keep INTEGER);
+     CREATE TABLE assistant_messages (thread_id TEXT NOT NULL, seq INTEGER NOT NULL, ts INTEGER, role TEXT, content TEXT, source TEXT, PRIMARY KEY (thread_id, seq));";
+
+fn duck_files_with(name: &str, schema: &str) -> (Arc<std::sync::Mutex<Connection>>, DuckRepl) {
+    let dir = std::env::temp_dir().join(format!("wb-fleet-repl-{}-{name}", uuid::Uuid::new_v4().simple()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let conn = Connection::open(dir.join("duck.db")).unwrap();
+    conn.execute_batch(schema).unwrap();
     repl::install(&conn).unwrap();
     let conn = Arc::new(std::sync::Mutex::new(conn));
     let c = conn.clone();
@@ -871,4 +880,60 @@ async fn a_pin_keeps_duck_where_it_is() {
     tokio::time::sleep(Duration::from_millis(2500)).await;
     assert_eq!(holder(&desktop).1, Some(l.clone()));
     assert_eq!(holder(&laptop).1, Some(l));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn what_a_cut_off_main_wrote_is_merged_when_it_comes_back() {
+    let ok = Arc::new(AtomicBool::new(false));
+    let desktop = instance("desktop", ok.clone());
+    let server = instance("server", ok.clone());
+    let (desk_db, desk_repl) = duck_files_with("desktop", REAL_THREADS);
+    let (srv_db, srv_repl) = duck_files_with("server", REAL_THREADS);
+    desktop.set_duck(desk_repl);
+    server.set_duck(srv_repl);
+    let notices = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+    let n = notices.clone();
+    server.on_merged(Box::new(move |t| n.lock().unwrap().push(t)));
+    // What the server installs when it takes over: in the app, its copy of the
+    // desktop's database (here its own stands in for it, with the copy's rows).
+    let copy_into = srv_db.clone();
+    server.on_promote(Box::new(move |_, _| {
+        let c = copy_into.lock().unwrap();
+        c.execute_batch("INSERT OR IGNORE INTO assistant_threads VALUES ('t', 'groceries', 'assistant', 1, 1, 0);
+                         INSERT OR IGNORE INTO assistant_messages VALUES ('t', 1, 1, 'user', 'milk', NULL);")
+            .map_err(|e| e.to_string())
+    }));
+    desk_db.lock().unwrap().execute_batch("INSERT INTO assistant_threads VALUES ('t', 'groceries', 'assistant', 1, 1, 0);
+                                           INSERT INTO assistant_messages VALUES ('t', 1, 1, 'user', 'milk', NULL);").unwrap();
+    let code = join_string(&desktop).await;
+    server.join(&code).await.unwrap();
+    let (d, s) = (desktop.status().me.id, server.status().me.id);
+    until("the desktop holds, the server has its copy", || {
+        holder(&server).1.as_deref() == Some(d.as_str())
+            && server.status().replica.is_some_and(|r| r.seq > 0 && r.seq >= r.head)
+    })
+    .await;
+
+    // Cut off, the desktop goes on: Duck answers there, in the same thread.
+    desktop.set_offline(true);
+    desk_db.lock().unwrap().execute_batch("INSERT INTO assistant_messages VALUES ('t', 2, 2, 'user', 'and eggs', NULL);
+                                           INSERT INTO assistant_threads VALUES ('n', 'made apart', 'assistant', 2, 2, 0);
+                                           INSERT INTO assistant_messages VALUES ('n', 1, 2, 'user', 'remember this', NULL);").unwrap();
+    until("the server took over", || holder(&server) == (holder(&desktop).0 + 1, Some(s.clone()))).await;
+    // Meanwhile the server answers in that thread too.
+    srv_db.lock().unwrap().execute("INSERT INTO assistant_messages VALUES ('t', 2, 2, 'user', 'and bread', NULL)", []).unwrap();
+    // Keep Duck on the server for the rest (no handover back mid-test).
+    server.set_pin(Some(s.clone())).unwrap();
+
+    desktop.set_offline(false);
+    until("merged", || !notices.lock().unwrap().is_empty()).await;
+    let c = srv_db.lock().unwrap();
+    let rows = |sql: &str| -> Vec<String> { c.prepare(sql).unwrap().query_map([], |r| r.get(0)).unwrap().map(|x| x.unwrap()).collect() };
+    assert_eq!(rows("SELECT content FROM assistant_messages WHERE thread_id = 't' ORDER BY seq"), ["milk", "and bread"]);
+    assert_eq!(rows("SELECT content FROM assistant_messages WHERE thread_id = 'n'"), ["remember this"]);
+    // The desktop's side of the thread both wrote to: a fork.
+    assert_eq!(rows("SELECT content FROM assistant_messages WHERE thread_id LIKE 't~%' ORDER BY seq"), ["milk", "and eggs"]);
+    let note = notices.lock().unwrap()[0].clone();
+    assert!(note.contains("desktop"), "{note}");
+    assert!(merge::split(&c).unwrap().is_none(), "merged once, then the mark is gone");
 }

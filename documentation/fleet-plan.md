@@ -611,6 +611,30 @@ This document. Done when you've approved it; then H6 in `assistant-plan.md` poin
   - **Telling you.** A notice tells you what was merged.
 - **Done when:** a scripted split (both mains write for a minute while cut off from each
   other) merges with no lost message, and a forked thread for the conflict.
+- _(Built, 2026-11-19: `src-tauri/src/fleet/merge.rs` (`merge_tail`, the split
+  mark), `Fleet::merge_due`/`merge_from`, the split recorded in `take_lease`, the
+  `fleet-merged` notice in Duck's latest thread.
+  **Changed from the plan:**
+  - The new main pulls the old one's tail (its log after the `seq` the copy had
+    when it took over, by the old log's epoch), rather than the old one pushing: the
+    mark is kept in the new main's log state until the merge is done.
+  - The fork holds the old main's side from the first message both wrote, with the
+    thread's history up to there, so it reads whole on its own.
+  - Usage tables are a union; so are timings, recall and the decision log (rows that
+    stand alone). `meta` keeps this machine's value and adds the other's new keys:
+    there's no clock on a `meta` row to pick a later writer by.
+  - Deletes the old main made apart aren't repeated (nothing is lost; a thread it
+    deleted apart is still here).
+  - If the old main's history moved on before it came back (it took over again, or
+    its log was trimmed past the mark), nothing can be merged; the notice says so.
+  **Checked:** `merge.rs` tests (a scripted split: the thread both wrote to forked
+  with its history, a thread made apart and a message in an untouched thread added,
+  the newer record winning, spend from both sides, a delete not repeated, merging
+  twice adding nothing new; the mark kept and cleared); a fleet test of a real
+  split (the desktop, holding Duck, goes offline and writes on; the server takes
+  over and writes too; the desktop comes back: the server has both sides, the
+  shared thread forked, one notice, the mark gone). Live test owed: a split
+  between the desktop and the laptop.)_
 
 ## Phase F7 — Workbench on Linux (gate: the server exists)
 

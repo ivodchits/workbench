@@ -114,6 +114,7 @@ import {
   onFleetChanged,
   onFleetDrain,
   onFleetHost,
+  onFleetMerged,
 } from "../ipc/fleet";
 import { pcHandlers } from "./tools/pc";
 import { youtubeMusic } from "./music/youtube";
@@ -1089,6 +1090,11 @@ export function initAssistant(): Promise<void> {
       })();
     }).catch(() => {});
     void onDuckPromoted(() => location.reload()).catch(() => {});
+    // A merge after a split (F6.2): said in the latest thread.
+    void onFleetMerged((text) => {
+      const t = s.threads()[0];
+      if (t) void engineRef?.notice(t.id, { kind: "note", text }).catch(() => {});
+    }).catch(() => {});
     void onFleetChanged(() => void fleetLink.look()).catch(() => {});
     void fleetLink.look();
     const engine = createEngine({
