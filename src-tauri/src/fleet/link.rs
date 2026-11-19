@@ -215,6 +215,7 @@ async fn run(
 
     let _ = out.send(Frame::Members { list: fleet.inner.lock().unwrap().members.clone() }.to_text());
     let _ = out.send(Frame::Config { config: fleet.inner.lock().unwrap().config.clone() }.to_text());
+    let _ = out.send(Frame::Devices { list: fleet.book.devices() }.to_text());
     let _ = out.send(Frame::Beat { beat: fleet.beat() }.to_text());
     let mut beats = tokio::time::interval(BEAT_EVERY);
     beats.tick().await; // the first tick is now; the beat just went
@@ -228,6 +229,7 @@ async fn run(
                     Some(Frame::Members { list }) => fleet.take_members(Some(&peer), list),
                     Some(Frame::Beat { beat }) => fleet.on_beat(&peer, beat),
                     Some(Frame::Config { config }) => fleet.take_config(Some(&peer), config),
+                    Some(Frame::Devices { list }) => fleet.take_devices(&peer, list),
                     Some(Frame::Bye { reason }) => {
                         let name = fleet.name_of(&peer).unwrap_or(peer.clone());
                         if reason != "replaced by a newer link" {

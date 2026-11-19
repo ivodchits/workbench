@@ -35,7 +35,7 @@ pub fn set_identity(conn: &Connection, id: &str, secret: &str) -> rusqlite::Resu
 
 pub fn members(conn: &Connection) -> Vec<(Member, Option<u64>)> {
     let Ok(mut stmt) = conn.prepare(
-        "SELECT id, name, public_key, ip, port, host, updated_at, removed, last_seen, kind FROM fleet_members",
+        "SELECT id, name, public_key, ip, port, host, updated_at, removed, last_seen, kind, public_url FROM fleet_members",
     ) else {
         return Vec::new();
     };
@@ -49,6 +49,7 @@ pub fn members(conn: &Connection) -> Vec<(Member, Option<u64>)> {
                 port: r.get::<_, i64>(4)? as u16,
                 host: r.get(5)?,
                 kind: r.get(9)?,
+                public_url: r.get(10)?,
                 updated_at: r.get::<_, i64>(6)? as u64,
                 removed: r.get::<_, i64>(7)? != 0,
             },
@@ -63,11 +64,12 @@ pub fn members(conn: &Connection) -> Vec<(Member, Option<u64>)> {
 
 pub fn save(conn: &Connection, m: &Member) -> rusqlite::Result<()> {
     conn.execute(
-        "INSERT INTO fleet_members (id, name, public_key, ip, port, host, updated_at, removed, kind)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+        "INSERT INTO fleet_members (id, name, public_key, ip, port, host, updated_at, removed, kind, public_url)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
          ON CONFLICT(id) DO UPDATE SET name = excluded.name, public_key = excluded.public_key,
            ip = excluded.ip, port = excluded.port, host = excluded.host,
-           updated_at = excluded.updated_at, removed = excluded.removed, kind = excluded.kind",
+           updated_at = excluded.updated_at, removed = excluded.removed, kind = excluded.kind,
+           public_url = excluded.public_url",
         (
             &m.id,
             &m.name,
@@ -78,6 +80,7 @@ pub fn save(conn: &Connection, m: &Member) -> rusqlite::Result<()> {
             m.updated_at as i64,
             m.removed as i64,
             &m.kind,
+            &m.public_url,
         ),
     )?;
     Ok(())
@@ -134,6 +137,7 @@ mod tests {
             port: 48955,
             host: Some("laptop.t.ts.net".into()),
             kind: "laptop".into(),
+            public_url: Some("https://laptop.t.ts.net".into()),
             updated_at: 5,
             removed: false,
         };

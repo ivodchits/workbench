@@ -37,6 +37,10 @@ pub struct Member {
     /// machine in the default priority order. Its own to say, like the name.
     #[serde(default)]
     pub kind: String,
+    /// Its public (Funnel) address, `https://….ts.net`, while it has one (F2.1): where
+    /// the phone can open it.
+    #[serde(default)]
+    pub public_url: Option<String>,
     /// Milliseconds since the epoch of this version of the record: the newer wins.
     pub updated_at: u64,
     /// Removed from the fleet (a tombstone, kept so gossip can't bring it back).
@@ -154,6 +158,74 @@ pub fn first_choice(members: &[Member], cfg: &FleetConfig, up: impl Fn(&str) -> 
     ranked(members, cfg).into_iter().find(|id| cfg.can_be_main(id) && up(id))
 }
 
+/// A paired phone (or other device) as the fleet shares it (F2.1): paired on one
+/// machine, it's paired on all, and a revoke anywhere is a revoke everywhere. Each
+/// machine checks the device's token and key proof itself; sessions stay per machine.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PairedDevice {
+    pub id: String,
+    /// Its device token. Empty in a tombstone.
+    pub token: String,
+    pub name: String,
+    pub paired_at: u64,
+    pub approved: bool,
+    pub public_key: Option<String>,
+    /// Epoch seconds it was last used on any machine. Outside the version: the larger
+    /// wins, so every machine counts the 30 days unused from the same day.
+    pub last_seen: Option<u64>,
+    /// Milliseconds since the epoch of this version (pairing, approval, revoke).
+    pub updated_at: u64,
+    /// Revoked, denied or expired: a tombstone, so gossip can't bring it back.
+    pub removed: bool,
+}
+
+impl PairedDevice {
+    pub fn tombstone(id: &str, updated_at: u64) -> PairedDevice {
+        PairedDevice {
+            id: id.to_string(),
+            token: String::new(),
+            name: String::new(),
+            paired_at: 0,
+            approved: false,
+            public_key: None,
+            last_seen: None,
+            updated_at,
+            removed: true,
+        }
+    }
+}
+
+/// What `incoming` changes in `local`: the records to put in place (new ones, newer
+/// versions, a later `last_seen`). A tombstone carries nothing else.
+pub fn merge_devices(local: &[PairedDevice], incoming: &[PairedDevice]) -> Vec<PairedDevice> {
+    let mut out: Vec<PairedDevice> = Vec::new();
+    for m in incoming {
+        if m.id.is_empty() || (!m.removed && m.token.is_empty()) {
+            continue;
+        }
+        let m = if m.removed { PairedDevice::tombstone(&m.id, m.updated_at) } else { m.clone() };
+        // A second record of the same id in one batch: against what it already made.
+        let current = out.iter().find(|d| d.id == m.id).or_else(|| local.iter().find(|d| d.id == m.id));
+        let next = match current {
+            None => Some(m),
+            Some(l) if m.updated_at > l.updated_at => {
+                let last_seen = if m.removed { None } else { l.last_seen.max(m.last_seen) };
+                Some(PairedDevice { last_seen, ..m })
+            }
+            Some(l) if !l.removed && m.last_seen > l.last_seen => {
+                Some(PairedDevice { last_seen: m.last_seen, ..l.clone() })
+            }
+            Some(_) => None,
+        };
+        if let Some(next) = next {
+            out.retain(|d| d.id != next.id);
+            out.push(next);
+        }
+    }
+    out
+}
+
 /// What a beat says about the machine sending it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
@@ -182,6 +254,8 @@ pub enum Frame {
     Beat { beat: Beat },
     /// The fleet's settings, on connect and on every change.
     Config { config: FleetConfig },
+    /// The paired devices, tombstones included, on connect and on every change.
+    Devices { list: Vec<PairedDevice> },
     /// Closing on purpose, and why (shown in the menu's log on the other side).
     Bye { reason: String },
 }
@@ -294,9 +368,58 @@ mod tests {
             port: 48955,
             host: None,
             kind: String::new(),
+            public_url: None,
             updated_at: at,
             removed: false,
         }
+    }
+
+    fn device(id: &str, at: u64, seen: Option<u64>) -> PairedDevice {
+        PairedDevice {
+            id: id.into(),
+            token: format!("tok-{id}"),
+            name: "phone".into(),
+            paired_at: 1,
+            approved: false,
+            public_key: None,
+            last_seen: seen,
+            updated_at: at,
+            removed: false,
+        }
+    }
+
+    #[test]
+    fn devices_merge_by_version_and_last_use() {
+        let local = vec![device("a", 10, Some(100)), device("b", 10, None)];
+        // a: approved elsewhere (newer), but used here more recently.
+        let a2 = PairedDevice { approved: true, ..device("a", 20, Some(50)) };
+        // b: an older version used later elsewhere: only its last use moves.
+        let b_old = device("b", 5, Some(70));
+        let out = merge_devices(&local, &[a2, b_old, device("c", 1, None)]);
+        let get = |id: &str| out.iter().find(|d| d.id == id).unwrap();
+        assert!(get("a").approved);
+        assert_eq!(get("a").last_seen, Some(100));
+        assert_eq!(get("b").updated_at, 10);
+        assert_eq!(get("b").last_seen, Some(70));
+        assert_eq!(get("c").token, "tok-c");
+        // Nothing new: nothing to do.
+        assert!(merge_devices(&out, &out.clone()).is_empty());
+    }
+
+    #[test]
+    fn a_revoke_wins_and_stays() {
+        let local = vec![device("a", 10, Some(100))];
+        let gone = PairedDevice { token: "leaked".into(), ..PairedDevice::tombstone("a", 20) };
+        let out = merge_devices(&local, &[gone]);
+        assert_eq!(out.len(), 1);
+        assert!(out[0].removed);
+        assert!(out[0].token.is_empty(), "a tombstone carries no token");
+        // The old record, gossiped by someone who hasn't heard, changes nothing,
+        // not even its last use.
+        assert!(merge_devices(&out, &[device("a", 10, Some(500))]).is_empty());
+        // A record with no token is no record.
+        let blank = PairedDevice { token: String::new(), ..device("x", 1, None) };
+        assert!(merge_devices(&[], &[blank]).is_empty());
     }
 
     fn kinded(id: &str, kind: &str) -> Member {

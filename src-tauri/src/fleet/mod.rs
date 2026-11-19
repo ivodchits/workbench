@@ -23,6 +23,12 @@
 //!   who may be main. One record for the whole fleet; the newer edit wins whole, sent
 //!   on connect, on every change and in a join's answer. While there's no election
 //!   (F6) the main is the pin.
+//! - **Paired devices** (F2.1, [`DeviceBook`]): the phone's pairing is the fleet's.
+//!   Each machine's devices (tombstones included) go to the others on connect and on
+//!   every change; a newer version wins, and the latest use counts everywhere. The
+//!   remote server keeps them ([`crate::remote`]); this module carries them.
+//! - **Public addresses** (F2.1): each member says its Funnel address, and the phone
+//!   gets the list ([`Fleet::phone_list`]) to open whichever machine answers.
 //! - **The listener** runs only while there is someone to talk to: another member, or
 //!   a live join code.
 //!
@@ -48,7 +54,7 @@ use tokio::sync::{mpsc, oneshot, Notify};
 
 use crate::db::Db;
 use crate::remote::auth::{self, AuthFailure, AuthLog, PairGate, PairOutcome};
-use proto::{Beat, FleetConfig, Frame, Member};
+use proto::{Beat, FleetConfig, Frame, Member, PairedDevice};
 
 /// The fleet's port on the tailnet. A debug build has its own, so a dev run and the
 /// installed app on one machine are two members (a real fleet test on one laptop).
@@ -79,6 +85,16 @@ pub trait Net: Send + Sync + 'static {
     /// Ok when `ip` is a machine of the same tailnet user as this one. May run the
     /// Tailscale CLI.
     fn same_owner(&self, ip: IpAddr) -> Result<(), String>;
+}
+
+/// Where the paired devices live (the remote server's list in the app; a fake in the
+/// tests). The fleet only carries them between machines.
+pub trait DeviceBook: Send + Sync + 'static {
+    /// Every device, tombstones included, as the fleet gossips them.
+    fn devices(&self) -> Vec<PairedDevice>;
+    /// Take devices heard from another machine ([`proto::merge_devices`]); true when
+    /// something changed here.
+    fn merge_devices(&self, incoming: &[PairedDevice]) -> bool;
 }
 
 /// The database the fleet keeps its state in: the app's (given by [`init`]), or a
@@ -124,6 +140,7 @@ pub struct Fleet {
     net: Box<dyn Net>,
     store: Storage,
     notify: Box<dyn Fn() + Send + Sync>,
+    book: Arc<dyn DeviceBook>,
     /// Wakes the keeper to act on a change now.
     wake: Notify,
     caps: Vec<String>,
@@ -176,6 +193,8 @@ pub struct MemberView {
     pub port: u16,
     pub host: Option<String>,
     pub kind: String,
+    /// Its public (Funnel) address, while it has one.
+    pub public_url: Option<String>,
     pub online: bool,
     /// Epoch seconds it was last heard from.
     pub last_seen: Option<u64>,
@@ -226,6 +245,34 @@ pub struct ConfigView {
     pub by: Option<String>,
 }
 
+/// The fleet as the phone gets it (`/api/fleet`).
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PhoneFleet {
+    /// The machine answering.
+    pub here: String,
+    /// The main: the pin, else the list's first choice.
+    pub main: Option<String>,
+    pub pinned: bool,
+    /// Every machine, in priority order.
+    pub instances: Vec<PhoneInstance>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PhoneInstance {
+    pub id: String,
+    pub name: String,
+    pub kind: String,
+    /// Its public (Funnel) address; null while it has none.
+    pub url: Option<String>,
+    /// Linked to the machine answering (or is it).
+    pub online: bool,
+    pub main: bool,
+    /// The machine answering.
+    pub here: bool,
+}
+
 #[derive(Serialize, Deserialize)]
 struct JoinRequest {
     code: String,
@@ -257,7 +304,13 @@ fn clean_name(name: &str) -> String {
 }
 
 impl Fleet {
-    pub fn new(cfg: Config, net: Box<dyn Net>, store: Storage, notify: Box<dyn Fn() + Send + Sync>) -> Arc<Fleet> {
+    pub fn new(
+        cfg: Config,
+        net: Box<dyn Net>,
+        store: Storage,
+        book: Arc<dyn DeviceBook>,
+        notify: Box<dyn Fn() + Send + Sync>,
+    ) -> Arc<Fleet> {
         let (me, key) = store
             .with(store::identity)
             .and_then(|(id, secret)| Some((id, proto::key_from_secret(&secret)?)))
@@ -281,6 +334,7 @@ impl Fleet {
             net,
             store,
             notify,
+            book,
             wake: Notify::new(),
             caps,
             inner: Mutex::new(Inner {
@@ -331,6 +385,7 @@ impl Fleet {
                 port: self.cfg.port,
                 host: None,
                 kind,
+                public_url: None,
                 updated_at: now_ms(),
                 removed: false,
             }),
@@ -702,6 +757,62 @@ impl Fleet {
         self.store.with(|c| store::set_config(c, &FleetConfig::default())).ok();
     }
 
+    /// Paired devices heard from `from`: taken, and passed on when they changed
+    /// something here.
+    fn take_devices(&self, from: &str, list: Vec<PairedDevice>) {
+        if self.book.merge_devices(&list) {
+            self.send_devices(Some(from));
+        }
+    }
+
+    /// Send every paired device to every link but `except`'s.
+    fn send_devices(&self, except: Option<&str>) {
+        let frame = Frame::Devices { list: self.book.devices() }.to_text();
+        let inner = self.inner.lock().unwrap();
+        for (peer, link) in &inner.links {
+            if Some(peer.as_str()) != except {
+                let _ = link.out.send(frame.clone());
+            }
+        }
+    }
+
+    /// The paired devices changed here (paired, approved, revoked, used after a while):
+    /// tell the fleet.
+    pub fn devices_changed(&self) {
+        self.send_devices(None);
+    }
+
+    /// This machine's public address came or went.
+    pub fn set_public_url(&self, url: Option<String>) {
+        let same = Self::self_record(&self.inner.lock().unwrap()).public_url == url;
+        if !same {
+            self.update_self(|m| m.public_url = url);
+        }
+    }
+
+    /// The machines as the phone sees them: in priority order, the main (or the list's
+    /// first choice) marked, each with its public address when it has one.
+    pub fn phone_list(&self) -> PhoneFleet {
+        let inner = self.inner.lock().unwrap();
+        let cfg = &inner.config;
+        let up = |id: &str| id == inner.me || inner.links.contains_key(id);
+        let main = proto::main_by_hand(&inner.members, cfg).or_else(|| proto::first_choice(&inner.members, cfg, up));
+        let instances = proto::ranked(&inner.members, cfg)
+            .into_iter()
+            .filter_map(|id| inner.members.iter().find(|m| m.id == id))
+            .map(|m| PhoneInstance {
+                id: m.id.clone(),
+                name: m.name.clone(),
+                kind: m.kind.clone(),
+                url: m.public_url.clone(),
+                online: up(&m.id),
+                main: main.as_deref() == Some(m.id.as_str()),
+                here: m.id == inner.me,
+            })
+            .collect();
+        PhoneFleet { here: inner.me.clone(), main, pinned: cfg.pin.is_some(), instances }
+    }
+
     fn name_of(&self, id: &str) -> Option<String> {
         self.inner.lock().unwrap().members.iter().find(|m| m.id == id).map(|m| m.name.clone())
     }
@@ -849,6 +960,7 @@ impl Fleet {
                 port: m.port,
                 host: m.host.clone(),
                 kind: m.kind.clone(),
+                public_url: m.public_url.clone(),
                 online: link.is_some(),
                 last_seen: inner.seen.get(&m.id).copied(),
                 version: beat.map(|b| b.version.clone()),
@@ -1107,12 +1219,19 @@ pub fn init(app: &AppHandle) {
                 f(&conn)
             }
         }),
+        crate::remote::device_book(app),
         Box::new(move || {
             let _ = notify_app.emit("fleet-changed", ());
         }),
     );
+    fleet.set_public_url(crate::remote::public_url(app));
     app.manage(fleet.clone());
     tauri::async_runtime::spawn(fleet.run());
+}
+
+/// The app's fleet, once [`init`] has run.
+pub fn get(app: &AppHandle) -> Option<Arc<Fleet>> {
+    app.try_state::<Arc<Fleet>>().map(|f| f.inner().clone())
 }
 
 #[tauri::command]

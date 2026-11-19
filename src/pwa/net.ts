@@ -68,6 +68,8 @@ export function forget(): void {
   access = null;
   void dropDeviceKey();
   void clearAll(); // what was kept of the desktop goes with the pairing
+  if (app.inApp()) void app.offlinePut("fleet", null).catch(() => {});
+  else localStorage.removeItem(FLEET_KEY);
 }
 
 /** Exchange a pairing code for a device token, which works once the desktop allows
@@ -267,6 +269,7 @@ function open(): void {
     retries = 0;
     setLink("live");
     on.live(true);
+    void keepFleet();
   };
   socket.onclose = () => {
     if (ws !== socket) return;
@@ -291,6 +294,26 @@ function open(): void {
       on.snapshot(msg as RemoteSnapshot);
     }
   };
+}
+
+/** Where a browser keeps the fleet's list (Duck's app keeps it in the app). */
+const FLEET_KEY = "wb-fleet";
+
+/** Ask for the fleet's machines (fleet plan F2.1, `fleetList.ts`) and keep the
+ *  list: Duck's app's loader opens whichever machine answers, the main first. */
+async function keepFleet(): Promise<void> {
+  try {
+    const res = await fetch("/api/fleet", {
+      headers: { Authorization: "Bearer " + credential() },
+      cache: "no-store",
+    });
+    if (!res.ok) return;
+    const text = await res.text();
+    if (app.inApp()) await app.offlinePut("fleet", text);
+    else localStorage.setItem(FLEET_KEY, text);
+  } catch {
+    // an older desktop, or the link went again: the kept list stays
+  }
 }
 
 /** Open the dashboard socket and keep it open: a snapshot arrives on connect and on

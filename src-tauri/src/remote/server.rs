@@ -111,6 +111,7 @@ async fn run(listener: std::net::TcpListener, state: Arc<RemoteState>) -> std::i
         .route("/api/auth/session", post(auth_session))
         .route("/share", post(share_lost))
         .route("/api/state", get(api_state))
+        .route("/api/fleet", get(api_fleet))
         .route("/api/ws", get(api_ws))
         .route("/api/action", post(api_action))
         .route("/api/term", get(api_term))
@@ -414,6 +415,24 @@ async fn api_state(
     }
     let snap = state.inner.lock().unwrap().snapshot.clone();
     ([(header::CONTENT_TYPE, "application/json")], snap).into_response()
+}
+
+/// The machines of the fleet as the phone keeps them (fleet plan F2.1): each one's
+/// public address, in priority order, the main marked. A machine on its own is a
+/// fleet of one.
+async fn api_fleet(
+    State(state): State<Arc<RemoteState>>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+) -> Response {
+    let addr = client_addr(peer, &headers);
+    if let Err(refusal) = authed(&state, bearer(&headers).as_deref(), &addr) {
+        return refusal;
+    }
+    match crate::fleet::get(&state.app) {
+        Some(fleet) => Json(fleet.phone_list()).into_response(),
+        None => Json(json!({ "here": null, "main": null, "pinned": false, "instances": [] })).into_response(),
+    }
 }
 
 /// Submit one action over HTTP (auth: bearer header). The body is a JSON action object

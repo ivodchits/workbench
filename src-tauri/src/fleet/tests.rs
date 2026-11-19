@@ -43,9 +43,44 @@ fn instance_in(name: &str, deny: Arc<AtomicBool>, db: Db) -> Arc<Fleet> {
 
 /// A machine named `name`; a name that's a kind (`laptop`, …) is also its kind.
 fn instance_on(name: &str, deny: Arc<AtomicBool>, db: Arc<Db>) -> Arc<Fleet> {
-    let fleet = Fleet::new(test_config(name), Box::new(Loop { deny }), storage(db), Box::new(|| {}));
+    instance_with(name, deny, db, Arc::new(Book::default()))
+}
+
+fn instance_with(name: &str, deny: Arc<AtomicBool>, db: Arc<Db>, book: Arc<Book>) -> Arc<Fleet> {
+    let fleet = Fleet::new(test_config(name), Box::new(Loop { deny }), storage(db), book, Box::new(|| {}));
     tokio::spawn(fleet.clone().run());
     fleet
+}
+
+/// A machine's paired devices, as the remote server would keep them.
+#[derive(Default)]
+struct Book(std::sync::Mutex<Vec<PairedDevice>>);
+
+impl DeviceBook for Book {
+    fn devices(&self) -> Vec<PairedDevice> {
+        self.0.lock().unwrap().clone()
+    }
+    fn merge_devices(&self, incoming: &[PairedDevice]) -> bool {
+        let mut list = self.0.lock().unwrap();
+        let changes = proto::merge_devices(&list, incoming);
+        for c in &changes {
+            list.retain(|d| d.id != c.id);
+            list.push(c.clone());
+        }
+        !changes.is_empty()
+    }
+}
+
+impl Book {
+    fn get(&self, id: &str) -> Option<PairedDevice> {
+        self.0.lock().unwrap().iter().find(|d| d.id == id).cloned()
+    }
+    /// A change made on this machine (pairing, approval, revoke).
+    fn put(&self, d: PairedDevice) {
+        let mut list = self.0.lock().unwrap();
+        list.retain(|x| x.id != d.id);
+        list.push(d);
+    }
 }
 
 fn test_config(name: &str) -> Config {
@@ -238,6 +273,7 @@ fn identity_survives_a_restart() {
             Config { tick: Duration::from_secs(9), ..test_config("x") },
             Box::new(Loop { deny: ok.clone() }),
             storage(db.clone()),
+            Arc::new(Book::default()),
             Box::new(|| {}),
         );
         a.rename("named");
@@ -247,6 +283,7 @@ fn identity_survives_a_restart() {
             Config { tick: Duration::from_secs(9), ..test_config("y") },
             Box::new(Loop { deny: ok }),
             storage(db),
+            Arc::new(Book::default()),
             Box::new(|| {}),
         );
         assert_eq!(b.status().me.id, id);
@@ -313,6 +350,7 @@ async fn the_order_and_the_pin_travel_and_survive_a_restart() {
         Config { tick: Duration::from_secs(9), ..test_config("laptop") },
         Box::new(Loop { deny: ok.clone() }),
         storage(laptop_db),
+        Arc::new(Book::default()),
         Box::new(|| {}),
     );
     let c = again.status().config;
@@ -330,4 +368,90 @@ async fn the_order_and_the_pin_travel_and_survive_a_restart() {
     until("the laptop left", || laptop.status().members.is_empty()).await;
     assert!(!laptop.status().config.custom_order);
     assert!(laptop.status().config.not_main.is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_phone_paired_on_one_machine_is_paired_on_all() {
+    let ok = Arc::new(AtomicBool::new(false));
+    let (dbook, lbook, sbook) = (Arc::new(Book::default()), Arc::new(Book::default()), Arc::new(Book::default()));
+    let desktop = instance_with("desktop", ok.clone(), Arc::new(Db::open_in_memory().unwrap()), dbook.clone());
+    let laptop = instance_with("laptop", ok.clone(), Arc::new(Db::open_in_memory().unwrap()), lbook.clone());
+    // Paired on the laptop before it joined: it arrives with the link.
+    let phone = PairedDevice {
+        id: "phone".into(),
+        token: "tok".into(),
+        name: "Pixel".into(),
+        paired_at: 1,
+        approved: false,
+        public_key: Some("key".into()),
+        last_seen: None,
+        updated_at: 10,
+        removed: false,
+    };
+    lbook.put(phone.clone());
+    let code = join_string(&desktop).await;
+    laptop.join(&code).await.unwrap();
+    until("the desktop has the phone", || dbook.get("phone").is_some()).await;
+    assert!(!dbook.get("phone").unwrap().approved);
+
+    // Approved on the desktop: approved on the laptop.
+    dbook.put(PairedDevice { approved: true, updated_at: 20, ..phone.clone() });
+    desktop.devices_changed();
+    until("approved on the laptop", || lbook.get("phone").unwrap().approved).await;
+
+    // A third machine gets it from the laptop, and passes nothing back that loops.
+    let server = instance_with("server", ok.clone(), Arc::new(Db::open_in_memory().unwrap()), sbook.clone());
+    let code = join_string(&laptop).await;
+    server.join(&code).await.unwrap();
+    until("the server has it", || sbook.get("phone").is_some_and(|d| d.approved)).await;
+
+    // Used on the server: the others count its 30 days from then.
+    sbook.put(PairedDevice { last_seen: Some(999), ..sbook.get("phone").unwrap() });
+    server.devices_changed();
+    until("the last use travels", || {
+        dbook.get("phone").unwrap().last_seen == Some(999) && lbook.get("phone").unwrap().last_seen == Some(999)
+    })
+    .await;
+
+    // Revoked on the server: revoked everywhere, and it stays so.
+    sbook.put(PairedDevice::tombstone("phone", 30));
+    server.devices_changed();
+    until("revoked everywhere", || dbook.get("phone").unwrap().removed && lbook.get("phone").unwrap().removed).await;
+    laptop.devices_changed();
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(dbook.get("phone").unwrap().removed);
+    assert!(dbook.get("phone").unwrap().token.is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_phone_learns_every_machines_address() {
+    let ok = Arc::new(AtomicBool::new(false));
+    let desktop = instance("desktop", ok.clone());
+    let laptop = instance("laptop", ok.clone());
+    let code = join_string(&desktop).await;
+    laptop.join(&code).await.unwrap();
+    until("linked", || online(&desktop, "laptop")).await;
+    laptop.set_public_url(Some("https://laptop.t.ts.net".into()));
+    desktop.set_public_url(Some("https://desktop.t.ts.net".into()));
+    until("the laptop's address", || {
+        desktop.status().members[0].public_url.as_deref() == Some("https://laptop.t.ts.net")
+    })
+    .await;
+    let list = desktop.phone_list();
+    let names: Vec<&str> = list.instances.iter().map(|i| i.name.as_str()).collect();
+    assert_eq!(names, ["desktop", "laptop"]);
+    // No pin: the list's first choice is the main.
+    assert!(!list.pinned);
+    assert_eq!(list.main.as_deref(), Some(list.instances[0].id.as_str()));
+    assert!(list.instances[0].main && list.instances[0].here);
+    assert_eq!(list.instances[1].url.as_deref(), Some("https://laptop.t.ts.net"));
+    assert!(list.instances[1].online);
+
+    // Pinned to the laptop: the laptop is main for the phone too.
+    let l = list.instances[1].id.clone();
+    desktop.set_pin(Some(l.clone())).unwrap();
+    let list = desktop.phone_list();
+    assert!(list.pinned);
+    assert_eq!(list.main, Some(l));
+    assert!(list.instances[1].main && !list.instances[0].main);
 }

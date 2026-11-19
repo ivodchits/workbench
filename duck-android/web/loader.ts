@@ -14,6 +14,13 @@
 // Tailscale on, the same name resolves to the tailnet address (MagicDNS), so
 // the phone goes the short way without a second address.
 //
+// With several Workbench machines (fleet plan F2.1) the page keeps the fleet's
+// list (`offline_put("fleet")`, `src/pwa/fleetList.ts`): every machine's address,
+// the main marked. All are asked at once, and the best that answers opens: the
+// main, else the next in the fleet's priority order, else the address typed
+// here. The token and the device key are the app's, so any of them lets the
+// phone in without pairing again.
+//
 // Once Workbench's page is kept here (its service worker has it; the page says
 // so through the app, `offline_put("shell")`), an unreachable PC opens that page
 // anyway, marked offline (`?offline=1`): the sessions, Duck's threads and notes
@@ -22,6 +29,7 @@
 // page is kept, the phone brain is what an unreachable PC gets, as before.
 
 import { fastPath } from "../../src/pwa/fastPath";
+import { candidates, firstReachable, parseFleet } from "../../src/pwa/fleetList";
 import * as app from "../../src/pwa/native";
 import { startPhoneBrain, type PhoneBrain } from "../../src/pwa/phoneBrain";
 import type { DuckEvent } from "../../src/assistant/protocol";
@@ -56,6 +64,12 @@ async function reachable(address: string): Promise<boolean> {
   }
 }
 
+/** Every Workbench machine's address to try, best first. */
+async function addresses(saved: string): Promise<string[]> {
+  const fleet = parseFleet(await app.offlineGet("fleet").catch(() => null));
+  return candidates(saved, fleet);
+}
+
 /** Open Workbench's page; `stay` keeps the phone brain when the PC doesn't
  *  answer (asked for it, or trying again from here). */
 async function start(stay = false): Promise<void> {
@@ -64,7 +78,9 @@ async function start(stay = false): Promise<void> {
     show("setup");
     return;
   }
-  const kept = (await keptShell()) === address;
+  const tries = await addresses(address);
+  const shell = await keptShell();
+  const kept = shell !== null && tries.includes(shell);
   $("kept").hidden = !kept;
   if (stay && brainAsked && $("offline").hidden) {
     // Straight from the page's strip: it just found the PC unreachable.
@@ -73,14 +89,15 @@ async function start(stay = false): Promise<void> {
     return;
   }
   show("checking");
-  if (await reachable(address)) {
+  const found = await firstReachable(tries, reachable);
+  if (found) {
     // What opened the app waits in the app for the desktop's page to take it.
-    location.replace(`${address}/`);
+    location.replace(`${found}/`);
     return;
   }
   if (kept && !stay) {
     // The cached page, saying it's offline; the phone brain is a tap away there.
-    location.replace(`${address}/?offline=1`);
+    location.replace(`${shell}/?offline=1`);
     return;
   }
   show("offline");
@@ -287,7 +304,7 @@ $("say").onkeydown = (e) => {
 };
 $("retry").onclick = () => void start(true);
 $("kept").onclick = () => {
-  void app.savedAddress().then((a) => a && location.replace(`${a}/?offline=1`));
+  void keptShell().then((a) => a && location.replace(`${a}/?offline=1`));
 };
 $("fresh").onclick = () => {
   brain?.fresh();

@@ -284,6 +284,15 @@ const MIGRATIONS: &[&str] = &[
     r#"
     ALTER TABLE fleet_members ADD COLUMN kind TEXT NOT NULL DEFAULT '';
     "#,
+    // v19 -> v20: pair once, reach every machine (fleet plan F2.1). A member's public
+    // (Funnel) address, for the phone; a paired device's version (ms; the newer
+    // wins when the fleet gossips it) and its tombstone (revoked, denied or expired:
+    // the row stays, with no token, so gossip can't bring it back).
+    r#"
+    ALTER TABLE fleet_members ADD COLUMN public_url TEXT;
+    ALTER TABLE remote_devices ADD COLUMN updated_at INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE remote_devices ADD COLUMN removed INTEGER NOT NULL DEFAULT 0;
+    "#,
 ];
 
 /// Apply any migrations the database hasn't seen yet, advancing

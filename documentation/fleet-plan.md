@@ -215,6 +215,37 @@ This document. Done when you've approved it; then H6 in `assistant-plan.md` poin
     instance answers first, the main preferred.
 - **Done when:** a phone paired on instance A opens instance B's page without pairing
   again, and a revoke on B locks it out of A.
+- _(Built, 2026-11-19: `PairedDevice` and `merge_devices` in `fleet/proto.rs`, a
+  `devices` frame on connect and on every change, the `DeviceBook` the remote server
+  implements (`remote/mod.rs`); each member's `public_url`; `/api/fleet`
+  (`Fleet::phone_list`); `src/pwa/fleetList.ts`, kept by the page on every connect
+  and used by the loader. Migration v20.
+  **Changed from the plan:**
+  - Devices travel on the peer link, not in the fleet config: a newer version wins
+    (pairing, approval, revoke), and the latest use (`last_seen`) is the largest heard
+    anywhere, so every machine counts the 30 days unused from the same day. A removed
+    device (revoked, denied, expired) keeps a tombstone row with no usable token.
+    Tokens cross the link: it's the same user's machines, keyed and on WireGuard.
+  - The list is its own route (`/api/fleet`), not part of the snapshot: the
+    snapshot is the webview's and is about this machine's sessions.
+  - Without a pin, the phone's main is the list's first choice.
+  - **Pair once works in Duck's app**, where the token and the device key are the
+    app's. A plain browser keeps them per address (origin), so there each machine's
+    address is paired on its own; F2.2's picker reaches the other machines from the
+    one the phone is on, so this rarely matters.
+  - The loader asks every address at once and opens the best that answers (main,
+    priority order, the typed address). The loader is in the APK: the phone needs
+    a new build of Duck's app for this. An older app still opens the address typed
+    into it, and pair-once already works there.
+  - Push subscriptions stay with the machine they were made on.
+  **Checked:** proto tests (versions, last use, revokes staying, records without a
+  token); loopback fleet tests: a phone paired on the laptop before it joined
+  reaches the desktop, approval on the desktop reaches the laptop, a third machine
+  gets it through the laptop, a use on the server moves `last_seen` everywhere, a
+  revoke on the server reaches all and stays; every member's public address reaches
+  the others, and `phone_list` orders and marks the main (the first choice, then the
+  pin). `fleetList.test.ts`: order, filtering, parallel probing. Live test owed:
+  the phone against the desktop and the laptop, both with public access on.)_
 
 ### Step F2.2 — The machine picker and Duck's relay
 - **Depends on:** F2.1.
