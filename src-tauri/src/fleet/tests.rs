@@ -522,3 +522,25 @@ async fn a_machine_relays_to_another_and_duck_goes_to_the_main() {
     let err = laptop.relay_session("nobody", "phone", false).await.unwrap_err();
     assert!(err.contains("isn’t connected"), "{err}");
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn host_traffic_travels_between_two_machines() {
+    let ok = Arc::new(AtomicBool::new(false));
+    let desktop = instance("desktop", ok.clone());
+    let laptop = instance("laptop", ok.clone());
+    let got = Arc::new(std::sync::Mutex::new(Vec::<(String, String)>::new()));
+    let sink = got.clone();
+    desktop.on_host(Box::new(move |from, text| sink.lock().unwrap().push((from.to_string(), text))));
+    assert!(laptop.send_host("nobody", "x".into()).is_err());
+    let code = join_string(&desktop).await;
+    laptop.join(&code).await.unwrap();
+    until("linked", || online(&desktop, "laptop") && online(&laptop, "desktop")).await;
+    let d = id_of(&laptop, "desktop");
+    let l = id_of(&desktop, "laptop");
+    laptop.send_host(&d, r#"{"ch":"pc","msg":{"type":"hello"}}"#.into()).unwrap();
+    until("delivered", || !got.lock().unwrap().is_empty()).await;
+    assert_eq!(got.lock().unwrap()[0], (l, r#"{"ch":"pc","msg":{"type":"hello"}}"#.to_string()));
+    // Duck runs on the desktop (first by kind), as both see it.
+    assert_eq!(laptop.status().config.duck, Some(d.clone()));
+    assert_eq!(desktop.status().config.duck, Some(d));
+}

@@ -96,7 +96,10 @@ import { memoryApply, memoryList, memoryStateGet, memoryStateSet } from "../ipc/
 import { createMcpHost } from "./mcp";
 import { createDriveHost, createGoogleHost } from "./google";
 import { createRegistry, toolsOn } from "./tools/registry";
-import { connectLocal, createHosts } from "./hosts";
+import { connectLocal, createHosts, type MachineRef } from "./hosts";
+import { createFleetHub, runFleetLink, serveFleet } from "./fleetHosts";
+import { createFleetPort, type FleetPort } from "./port.fleet";
+import { fleetHostSend, fleetStatus, onFleetChanged, onFleetHost } from "../ipc/fleet";
 import { pcHandlers } from "./tools/pc";
 import { youtubeMusic } from "./music/youtube";
 import { youtubeSearch } from "../ipc/music";
@@ -985,19 +988,35 @@ export function initAssistant(): Promise<void> {
     void hosted.sync().catch((e: unknown) => console.warn("duck: the hosted MCP servers didn't load", e));
     // Tools that run where they act (H1): the PC's here, in process (H2: Steam,
     // the media sessions, opening a link); the phone's over its socket.
-    const hosts = createHosts((host) => toolsOn(TOOLS, host));
-    connectLocal(
-      hosts,
-      "pc",
-      pcHandlers({
-        library: steamLibrary,
-        storeSearch: steamStoreSearch,
-        activity: steamActivity,
-        open: pcOpen,
-        nowPlaying: mediaNowPlaying,
-        control: mediaControl,
-      }),
-    );
+    let self: MachineRef | null = null;
+    const hosts = createHosts((host) => toolsOn(TOOLS, host), () => self);
+    const pcTools = pcHandlers({
+      library: steamLibrary,
+      storeSearch: steamStoreSearch,
+      activity: steamActivity,
+      open: pcOpen,
+      nowPlaying: mediaNowPlaying,
+      control: mediaControl,
+    });
+    connectLocal(hosts, "pc", pcTools);
+    // The other Workbench machines (fleet plan F3.1): at the main, their `pc` and
+    // their Workbench come over the fleet's link, and Duck's tools see every
+    // machine's sessions through one port; elsewhere, this machine serves its own
+    // to the main.
+    const hostSend = (to: string, text: string) =>
+      void fleetHostSend(to, text).catch((e: unknown) => console.warn("duck: a message to another machine was dropped", e));
+    let fleetPort: FleetPort | null = null;
+    const hub = createFleetHub({ hosts, send: hostSend, events: (n, a) => fleetPort?.dispatch(n, a) });
+    fleetPort = createFleetPort(localPort, () => self?.name ?? "this computer", () => hub.ports());
+    const fleetLink = runFleetLink({
+      status: () => fleetStatus().catch(() => null),
+      hub,
+      serve: (main, name) => serveFleet({ main, name, pc: pcTools, port: localPort, send: hostSend }),
+      setSelf: (m) => (self = m),
+    });
+    void onFleetHost((from, text) => fleetLink.receive(from, text)).catch(() => {});
+    void onFleetChanged(() => void fleetLink.look()).catch(() => {});
+    void fleetLink.look();
     const engine = createEngine({
       attachments: {
         prepare: attachPrepare,
@@ -1042,7 +1061,8 @@ export function initAssistant(): Promise<void> {
       eventLevel: (threadId, level) => levels.set(threadId, level),
       store: s,
       registry,
-      port: localPort,
+      // Every machine's Workbench, for Duck's tools (fleet plan F3.1).
+      port: fleetPort,
       gate: createPolicy({ settings: settings.get, trust, messages: s.loaded }),
       settings: settings.get,
       degraded: () => localPort.spend().then((x) => x.softReached),

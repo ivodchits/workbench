@@ -34,6 +34,8 @@
 //!   ([`proto::Ask::RelaySession`], kept a while), then the remote server forwards
 //!   to that machine's remote server on its tailnet address ([`Fleet::relay_target`]),
 //!   whose own checks then apply. Duck's routes go to the main ([`Fleet::duck_main`]).
+//! - **Duck's hosts** (F3.1): the webviews pass Duck's host traffic over the link
+//!   ([`Fleet::send_host`], the `fleet-host` event); this module only carries it.
 //! - **The listener** runs only while there is someone to talk to: another member, or
 //!   a live join code.
 //!
@@ -116,6 +118,9 @@ pub struct Storage(Box<StoreFn>);
 
 type StoreFn = dyn Fn(&mut dyn FnMut(&Connection)) + Send + Sync;
 
+/// Takes host traffic from a peer: (its id, the text).
+pub type HostSink = Box<dyn Fn(&str, String) + Send + Sync>;
+
 /// What Tailscale said about an address, and when.
 type OwnerAnswer = (Instant, Result<(), String>);
 
@@ -162,6 +167,8 @@ pub struct Fleet {
     /// Questions asked over a link, waiting for their answer.
     asks: Mutex<HashMap<u64, oneshot::Sender<Result<String, String>>>>,
     next_ask: std::sync::atomic::AtomicU64,
+    /// Where host traffic from a peer goes (the webview, in the app).
+    host_sink: Mutex<Option<HostSink>>,
     /// Sessions other machines gave for a device, by (machine, device).
     relay_sessions: Mutex<HashMap<(String, String), (String, Instant)>>,
 }
@@ -260,6 +267,8 @@ pub struct ConfigView {
     pub main: Option<String>,
     /// Who the list would make main now (the election, F6, will act on it).
     pub first_choice: Option<String>,
+    /// Where Duck runs: the main by hand, else the first choice.
+    pub duck: Option<String>,
     /// When the settings were last changed, and on which machine.
     pub updated_at: u64,
     pub by: Option<String>,
@@ -380,6 +389,7 @@ impl Fleet {
             asks: Mutex::new(HashMap::new()),
             next_ask: std::sync::atomic::AtomicU64::new(1),
             relay_sessions: Mutex::new(HashMap::new()),
+            host_sink: Mutex::new(None),
             cfg,
         });
         fleet.ensure_self();
@@ -1001,6 +1011,26 @@ impl Fleet {
         }
     }
 
+    // --- Duck's hosts (F3.1) ------------------------------------------------------
+
+    /// Where host traffic from peers goes from now on.
+    pub fn on_host(&self, sink: HostSink) {
+        *self.host_sink.lock().unwrap() = Some(sink);
+    }
+
+    /// Send host traffic to `peer` over its link.
+    pub fn send_host(&self, peer: &str, text: String) -> Result<(), String> {
+        let inner = self.inner.lock().unwrap();
+        let link = inner.links.get(peer).ok_or("that machine isn’t connected")?;
+        link.out.send(Frame::Host { text }.to_text()).map_err(|_| "the link closed".to_string())
+    }
+
+    fn take_host(&self, peer: &str, text: String) {
+        if let Some(sink) = self.host_sink.lock().unwrap().as_ref() {
+            sink(peer, text);
+        }
+    }
+
     // --- relaying (F2.2) -----------------------------------------------------------
 
     /// This machine's remote server listens on the tailnet at `port` (None: it
@@ -1103,6 +1133,7 @@ impl Fleet {
             not_main: cfg.not_main.clone(),
             main: proto::main_by_hand(&inner.members, cfg),
             first_choice: proto::first_choice(&inner.members, cfg, up),
+            duck: proto::main_by_hand(&inner.members, cfg).or_else(|| proto::first_choice(&inner.members, cfg, up)),
             updated_at: cfg.updated_at,
             by: (!cfg.by.is_empty())
                 .then(|| inner.members.iter().find(|m| m.id == cfg.by).map_or(cfg.by.clone(), |m| m.name.clone())),
@@ -1343,6 +1374,10 @@ pub fn init(app: &AppHandle) {
     );
     fleet.set_public_url(crate::remote::public_url(app));
     fleet.set_remote_port(crate::remote::tailnet_port(app));
+    let host_app = app.clone();
+    fleet.on_host(Box::new(move |from, text| {
+        let _ = host_app.emit("fleet-host", serde_json::json!({ "from": from, "text": text }));
+    }));
     app.manage(fleet.clone());
     tauri::async_runtime::spawn(fleet.run());
 }
@@ -1350,6 +1385,12 @@ pub fn init(app: &AppHandle) {
 /// The app's fleet, once [`init`] has run.
 pub fn get(app: &AppHandle) -> Option<Arc<Fleet>> {
     app.try_state::<Arc<Fleet>>().map(|f| f.inner().clone())
+}
+
+/// Duck's host traffic to another machine (F3.1).
+#[tauri::command]
+pub fn fleet_host_send(fleet: State<'_, Arc<Fleet>>, peer: String, text: String) -> Result<(), String> {
+    fleet.send_host(&peer, text)
 }
 
 #[tauri::command]

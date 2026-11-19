@@ -313,6 +313,53 @@ This document. Done when you've approved it; then H6 in `assistant-plan.md` poin
 - **Done when:** with the desktop as the main, Duck starts a session on the laptop,
   sends it a prompt, reads its summary and answers its permission question; "pause the
   music on the laptop" pauses the laptop's media.
+- _(Built, 2026-11-19, all but the drawer (now F3.1b): `hosts.ts` (named hosts),
+  `port.remote.ts`, `port.fleet.ts`, `fleetHosts.ts`, the fleet's `host` frame
+  (`fleet_host_send`, the `fleet-host` event), `config.duck` in the fleet's status.
+  **Changed from the plan:**
+  - The hosts' traffic rides the peer link, not the Duck socket: the link is already
+    authenticated both ways, so no machine needs a device token for another.
+  - **No `device` argument on the Workbench tools.** The main's engine gets a fleet
+    port (`port.fleet.ts`): every machine's projects and sessions, each with its
+    machine's name, and a call goes to the machine that has the session or project
+    it names (ids are unique across machines; `git` goes by folder). `list_projects`
+    and `list_sessions` say the machine, and a project's name can carry it
+    (`workbench@laptop`); a bare name several machines have is the main's. So the
+    tool list didn't change, apart from the PC tools.
+  - The PC tools take `device` (a machine's name), added in one place
+    (`defineTool`), and default to the main's own PC.
+  - The main mirrors each machine's projects and sessions (pushed on every change and
+    every 3 s), so the port's synchronous reads answer at once. A session's screen
+    (`readScreen`) isn't mirrored: it's null for another machine, and keys still go.
+  - Members that take the engine's callbacks stay the main's own: the T4 holds, the
+    done summary, plugin drafts and actions, task ends. Asked for another machine,
+    they fail with a plain reason. Autopilot and the workers still drive only the
+    main's own sessions.
+  - A main that starts, or hears from a machine it doesn't know, asks it to say hello
+    again (`port.resync`).
+  **Checked:** `hosts.fleet.test.ts` (a PC tool by machine name or id, here by
+  default, an unknown machine named in the error, a machine going and coming
+  back); `fleetHosts.test.ts`: two machines back to back (both machines' projects
+  listed with their names; on the laptop a session is created, prompted, read and
+  its permission answered; a prompt's failure comes back; the laptop's phases heard;
+  `git` routed by folder; plugin drafts refused for the laptop; the laptop's music
+  paused by name; the laptop forgotten when its link goes); `read.fleet.test.ts`
+  (`name@machine`); a Rust test of host traffic over the link. Live test owed: the
+  Done when, on the desktop and the laptop.)_
+
+### Step F3.1b — Duck's drawer on a machine that isn't the main
+- **Depends on:** F3.1.
+- **Build:** On a machine that isn't the main, the drawer is a remote surface of the
+  main's Duck: its `Transport` (`protocol.ts`, what the drawer already talks through)
+  goes over the fleet's link to the main's endpoint, as the phone's does over its
+  socket. The local engine stays idle while another machine is main. Attachments,
+  drawings and images come from the main (as the phone fetches them). Speech is done
+  here (settled decision 8): this machine transcribes and speaks, and sends text.
+  The drawer says which machine Duck is on, and falls back to the local engine when
+  the main can't be reached.
+- **Done when:** on the laptop, with the desktop as main, the drawer shows the
+  desktop's threads, a message typed on the laptop is answered by the desktop's Duck,
+  and with the desktop gone the laptop's drawer says so and answers itself.
 
 ### Step F3.2 — Projects across machines and the waiting queue
 - **Depends on:** F3.1.

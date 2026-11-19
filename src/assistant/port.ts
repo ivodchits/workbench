@@ -25,6 +25,9 @@ export interface ProjectRef {
   group: string | null;
   /** An SSH project: its sessions run on another machine. */
   remote: boolean;
+  /** Which of the user's Workbench machines has it (fleet plan F3.1); set only
+   *  when there are several. */
+  machine?: string;
 }
 
 /** A session's live phase, or `offline` when no session is running. */
@@ -85,6 +88,9 @@ export interface SessionRef {
   /** Last activity, epoch seconds (the live status, else the stored one). */
   lastActivity: number | null;
   choice: ChoiceRef | null;
+  /** Which of the user's Workbench machines runs it (fleet plan F3.1); set only
+   *  when there are several. */
+  machine?: string;
 }
 
 /** A repo as the git panel reads it. */

@@ -45,6 +45,8 @@ export interface FleetConfig {
   main: string | null;
   /** Who the list would make main now. */
   firstChoice: string | null;
+  /** Where Duck runs: the pinned main, else the first choice. */
+  duck: string | null;
   /** When the settings last changed (ms), and on which machine. */
   updatedAt: number;
   by: string | null;
@@ -118,6 +120,16 @@ export function fleetResetIdentity(): Promise<FleetStatus> {
 
 export function fleetClearLog(): Promise<FleetStatus> {
   return invoke("fleet_clear_log");
+}
+
+/** Duck's host traffic to another machine (fleet plan F3.1, `fleetHosts.ts`). */
+export function fleetHostSend(peer: string, text: string): Promise<void> {
+  return invoke("fleet_host_send", { peer, text });
+}
+
+/** Duck's host traffic from another machine. */
+export function onFleetHost(cb: (from: string, text: string) => void): Promise<UnlistenFn> {
+  return listen<{ from: string; text: string }>("fleet-host", (e) => cb(e.payload.from, e.payload.text));
 }
 
 export function onFleetChanged(cb: () => void): Promise<UnlistenFn> {

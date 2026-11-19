@@ -199,6 +199,12 @@ export interface ToolDef<S extends z.ZodType = z.ZodType, P = unknown> {
 
 export const DEFAULT_TIMEOUT_MS = 10_000;
 
+/** Which of the user's Workbench machines a PC tool runs on (fleet plan F3.1). */
+export const DEVICE_ARG = z
+  .string()
+  .optional()
+  .describe("Which of the user's computers, by name, when it isn't the one Duck runs on.");
+
 const NAME = /^[a-z][a-z0-9_]{0,63}$/;
 
 export function defineTool<S extends z.ZodType, P = undefined>(
@@ -209,12 +215,19 @@ export function defineTool<S extends z.ZodType, P = undefined>(
   if (isRemoteHost(host)) {
     if (def.run) throw new Error(`${def.name} runs on ${host}, not here`);
     const name = def.name;
+    // A PC tool runs on any of the user's Workbench machines (fleet plan F3.1).
+    const schema = (host === "pc" && def.schema instanceof z.ZodObject
+      ? def.schema.extend({ device: DEVICE_ARG })
+      : def.schema) as S;
     return {
       ...def,
+      schema,
       timeoutMs: def.timeoutMs ?? DEFAULT_TIMEOUT_MS,
       run: async (input, ctx) => {
         if (!ctx.hosts) throw new Error("no host can run it here");
-        const out = await ctx.hosts.call(host, name, input, ctx.signal);
+        const { device, ...rest } = (input ?? {}) as Record<string, unknown>;
+        const sent = host === "pc" ? rest : input;
+        const out = await ctx.hosts.call(host, name, sent, ctx.signal, typeof device === "string" ? device : undefined);
         return (def.shape ? def.shape(out) : out) as ToolOutput;
       },
     };

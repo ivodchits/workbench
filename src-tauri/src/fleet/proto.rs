@@ -274,6 +274,9 @@ pub enum Frame {
     /// A question, answered by an `answer` with the same `req`.
     Ask { req: u64, ask: Ask },
     Answer { req: u64, ok: Option<String>, err: Option<String> },
+    /// Duck's host traffic between two machines' webviews (F3.1): the main's engine
+    /// and another machine's `pc` and `workbench` hosts. Opaque here.
+    Host { text: String },
 }
 
 impl Frame {

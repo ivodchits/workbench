@@ -230,6 +230,7 @@ async fn run(
                     Some(Frame::Beat { beat }) => fleet.on_beat(&peer, beat),
                     Some(Frame::Config { config }) => fleet.take_config(Some(&peer), config),
                     Some(Frame::Devices { list }) => fleet.take_devices(&peer, list),
+                    Some(Frame::Host { text }) => fleet.take_host(&peer, text),
                     Some(Frame::Ask { req, ask }) => {
                         let (ok, err) = match fleet.on_ask(ask) {
                             Ok(v) => (Some(v), None),
