@@ -392,6 +392,30 @@ This document. Done when you've approved it; then H6 in `assistant-plan.md` poin
 - **Done when:** "fix the flaky test in workbench" with the laptop off is queued and
   runs when the laptop connects; a project only on the desktop is never sent to the
   laptop.
+- _(Built, 2026-11-19: `remotes.ts` (projects' git remotes, `git_origin_url`),
+  `fleet.ts` (the machines, the prompt's paragraph, the queue), `tools/fleet.ts`
+  (`list_machines`, `wait_for_machine`, `drop_waiting`), `waiting.rs` (duck.db), the
+  `waiting` event and the drawer's list.
+  **Changed from the plan:**
+  - Projects aren't announced in `hello`: they're in the remote port's mirror (F3.1)
+    with their `gitRemote` (looked up once per folder, in the background). A
+    project is found by id, name, `name@machine`, or repo (`owner/repo`, the URL).
+    A project only on the desktop is never sent to the laptop because a call goes to
+    the machine that has the project's id.
+  - The queue holds **tasks, not calls**: "what to do there, in full". When the
+    machine connects to the main (its host's hello), each task goes back to its
+    thread as a Workbench event, and Duck does it then with the usual tools, through
+    the usual gate. A call replayed later would skip the judgement of whether it
+    still makes sense. A task whose thread is gone opens a new one.
+  - The prompt's paragraph names the machines and their kinds only (where Duck
+    runs, where coding goes, the server's role, how to wait), in the block after the
+    system prompt, so who's on now doesn't break the cache; `list_machines` says that.
+  **Checked:** `remotes.test.ts` (every URL form alike, `owner/repo` matching, one
+  lookup per folder); `fleet.test.ts` (priority order, the paragraph and its
+  stability, queue and hand-over to its thread when that machine connects and not
+  another, refusals for a machine that's on or unknown, a gone thread, drop, the
+  queue across a restart); `waiting.rs` test. Live test owed: the Done when on the
+  desktop and the laptop.)_
 
 ## Phase F4 — Waking machines
 

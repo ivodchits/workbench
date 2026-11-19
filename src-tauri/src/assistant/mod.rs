@@ -33,6 +33,7 @@ pub mod config;
 mod db;
 pub mod decisions_log;
 pub mod drawings;
+pub mod waiting;
 pub mod imagegen;
 pub mod gitlane;
 pub mod google;
@@ -804,6 +805,23 @@ pub fn assistant_drawing_write(workspace: String, folder: String, id: String, n:
 #[tauri::command]
 pub fn assistant_drawing_put(ctx: Db<'_>, id: String, data: String) -> Result<(), String> {
     drawings::put(&lock(&ctx), &id, &data, now_ms())
+}
+
+/// Keep an item of the waiting queue (fleet plan F3.2).
+#[tauri::command]
+pub fn assistant_waiting_put(ctx: Db<'_>, id: String, data: String) -> Result<(), String> {
+    waiting::put(&lock(&ctx), &id, &data, now_ms())
+}
+
+/// The waiting queue, oldest first.
+#[tauri::command]
+pub fn assistant_waiting_list(ctx: Db<'_>) -> Result<Vec<String>, String> {
+    waiting::list(&lock(&ctx))
+}
+
+#[tauri::command]
+pub fn assistant_waiting_delete(ctx: Db<'_>, id: String) -> Result<bool, String> {
+    waiting::remove(&lock(&ctx), &id)
 }
 
 /// The latest drawing records, newest first.

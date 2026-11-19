@@ -100,6 +100,7 @@ import { mcpServersBlock, type McpHost } from "./mcp";
 import type { HostedCaller } from "./tools/mcpHost";
 import type { GoogleHost } from "./google";
 import type { HostCaller } from "./hosts";
+import type { FleetTools } from "./fleet";
 import type { MusicProvider } from "./music/provider";
 import type { RemindersHost } from "./reminders";
 import type { Drawings } from "./drawings";
@@ -223,6 +224,9 @@ export interface EngineDeps {
   hosts?: HostCaller;
   /** Music and video search and play (step H3), for `play_music` and the rest. */
   music?: MusicProvider;
+  /** The user's machines and the waiting queue (fleet plan F3.2): their tools, and
+   *  their paragraph after the system prompt. */
+  fleet?: FleetTools;
   /** The user's reminders (step H8): their tools, and the general ones' note on
    *  the first message of a conversation. */
   reminders?: RemindersHost;
@@ -809,7 +813,11 @@ export function createEngine(deps: EngineDeps): Engine {
     const tools = modeFor(threadId).tools;
     // The MCP servers that are on, a line each (step X1), in the same block: none
     // when the thread's tools have no mcp_tools.
-    const servers = toolsOf(threadId).some((t) => "name" in t && t.name === "mcp_tools") ? mcpServersBlock(settings().mcpServers) : null;
+    const mcp = toolsOf(threadId).some((t) => "name" in t && t.name === "mcp_tools") ? mcpServersBlock(settings().mcpServers) : null;
+    // The user's machines (fleet plan F3.2), in the same block: their names and
+    // kinds rarely change.
+    const machines = deps.fleet?.promptBlock() ?? null;
+    const servers = [mcp, machines].filter((b): b is string => !!b).join("\n\n") || null;
     if (!deps.skills) return servers;
     let skills: string | null = null;
     try {
@@ -1696,6 +1704,7 @@ export function createEngine(deps: EngineDeps): Engine {
           hosted: deps.hosted ?? null,
           hosts: deps.hosts ?? null,
           music: deps.music ?? null,
+          fleet: deps.fleet ?? null,
           reminders: deps.reminders ?? null,
           drawings: deps.drawings ?? null,
           images: deps.images ?? null,

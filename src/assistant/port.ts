@@ -28,6 +28,9 @@ export interface ProjectRef {
   /** Which of the user's Workbench machines has it (fleet plan F3.1); set only
    *  when there are several. */
   machine?: string;
+  /** Its git `origin`, as `host/owner/repo` (fleet plan F3.2): the same project on
+   *  several machines has the same one. Once known. */
+  gitRemote?: string;
 }
 
 /** A session's live phase, or `offline` when no session is running. */

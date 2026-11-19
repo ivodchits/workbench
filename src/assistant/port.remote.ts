@@ -16,6 +16,7 @@
 // `onFailed` comes back as an event.
 
 import type { ProjectRef, SessionRef, WorkbenchPort } from "./port";
+import type { Remotes } from "./remotes";
 
 /** The main to a machine's Workbench. */
 export type PortDown =
@@ -96,12 +97,14 @@ export function serveWorkbench(
   name: string,
   send: (msg: PortUp) => void,
   every = STATE_EVERY_MS,
+  remotes?: Remotes,
 ): { receive(msg: PortDown): void; stop(): void } {
   let last = "";
   const pushState = () => {
     const sessions = port.listSessions();
     const state = {
-      projects: port.listProjects(),
+      // With their git remotes, so the main can match them to its own (F3.2).
+      projects: remotes ? remotes.attach(port.listProjects()) : port.listProjects(),
       sessions,
       pending: sessions.filter((s) => port.promptPending(s.id)).map((s) => s.id),
     };

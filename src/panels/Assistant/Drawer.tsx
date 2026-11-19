@@ -106,8 +106,7 @@ import {
   toggleDrawer,
   toggleTrust,
   useDuckState,
-  type DuckState,
-} from "./duckState";
+  type DuckState, dropWaiting } from "./duckState";
 import {
   lineDiff,
   oneLine,
@@ -303,6 +302,25 @@ export default function AssistantDrawer() {
         onView={setView}
         onThread={showThread}
       />
+      {duck.waiting.length > 0 && (
+        <div style={{ ...banner, color: "var(--wb-textDim2)" }}>
+          {duck.waiting.map((w) => (
+            <div key={w.id} style={{ display: "flex", gap: 8, alignItems: "baseline" }} title={w.task}>
+              <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                waiting for {w.machine}: {w.task}
+              </span>
+              <button
+                type="button"
+                onClick={() => dropWaiting(w.id)}
+                title="don't do it when that machine is on"
+                style={{ background: "none", border: "none", color: "var(--wb-textFaint)", cursor: "pointer", font: "inherit" }}
+              >
+                ×
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
       {duck.where && (
         <div style={{ ...banner, color: "var(--wb-textDim2)" }} title="fleet: one Duck, on the main machine">
           Duck is on {duck.where}: this drawer talks to it there.

@@ -22,6 +22,7 @@ import type { FleetStatus } from "../ipc/fleet";
 import { serveHost, type HostConn, type HostDown, type HostHandler, type Hosts, type HostUp, type MachineRef } from "./hosts";
 import type { WorkbenchPort } from "./port";
 import type { ClientMessage, DuckEndpoint, DuckEvent } from "./protocol";
+import type { Remotes } from "./remotes";
 import { createLinkTransport, type SwitchTransport } from "./switchTransport";
 import { createRemotePort, serveWorkbench, type PortDown, type PortEvent, type PortUp, type RemotePort } from "./port.remote";
 
@@ -66,6 +67,8 @@ export function createFleetHub(deps: {
   hosts: Hosts;
   send: (to: string, text: string) => void;
   events: (name: PortEvent, args: unknown[]) => void;
+  /** A machine's host said hello: it's connected to this one (F3.2). */
+  connected?: (id: string) => void;
 }): FleetHub {
   const pc = new Map<string, HostConn>();
   const ports = new Map<string, RemotePort>();
@@ -97,6 +100,7 @@ export function createFleetHub(deps: {
           pc.get(from)?.close();
           try {
             pc.set(from, deps.hosts.connect(msg, (down) => out(from, { ch: "pc", msg: down }), from));
+            deps.connected?.(from);
           } catch (err) {
             console.warn(`duck: a machine's pc host was refused`, err);
           }
@@ -137,11 +141,12 @@ export function serveFleet(deps: {
   pc: Record<string, HostHandler>;
   port: WorkbenchPort;
   send: (to: string, text: string) => void;
+  remotes?: Remotes;
 }): FleetServing {
   const out = (e: Envelope) => deps.send(deps.main, JSON.stringify(e));
   const pc = serveHost("pc", deps.pc, (msg) => out({ ch: "pc", msg }), deps.name);
   out({ ch: "pc", msg: pc.hello });
-  const wb = serveWorkbench(deps.port, deps.name, (msg) => out({ ch: "workbench", msg }));
+  const wb = serveWorkbench(deps.port, deps.name, (msg) => out({ ch: "workbench", msg }), undefined, deps.remotes);
   return {
     main: deps.main,
     name: deps.name,
@@ -166,6 +171,8 @@ export function runFleetLink(deps: {
   hub: FleetHub;
   serve: (main: string, name: string) => FleetServing;
   setSelf: (m: MachineRef) => void;
+  /** Every fresh status (F3.2: the machines Duck knows of). */
+  onStatus?: (s: FleetStatus) => void;
   send: (to: string, text: string) => void;
 }): {
   look(): Promise<void>;
@@ -208,6 +215,7 @@ export function runFleetLink(deps: {
       const s = await deps.status().catch(() => null);
       if (!s) return;
       deps.setSelf({ id: s.me.id, name: s.me.name });
+      deps.onStatus?.(s);
       const now = new Set(s.members.filter((m) => m.online).map((m) => m.id));
       const first = online === null;
       for (const id of online ?? []) if (!now.has(id)) deps.hub.gone(id);

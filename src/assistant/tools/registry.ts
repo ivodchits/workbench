@@ -64,6 +64,7 @@ import type { Drawings } from "../drawings";
 import type { ImageHost } from "./image";
 import type { Surface } from "../protocol";
 import { isRemoteHost, type Host, type HostCaller } from "../hosts";
+import type { FleetTools } from "../fleet";
 import type { AttachmentRef } from "../attachments";
 
 export type Tier = "read" | "reversible" | "consequential";
@@ -136,6 +137,8 @@ export interface ToolContext {
   hosts?: HostCaller | null;
   /** Music and video search and play (step H3); absent where there is none. */
   music?: MusicProvider | null;
+  /** The user's machines and the waiting queue (fleet plan F3.2). */
+  fleet?: FleetTools | null;
   /** Where the user's latest message in this thread was typed or said (step H3:
    *  music plays there unless they name a device); absent in some tests. */
   surface?: Surface;

@@ -60,7 +60,7 @@ impl DuckDb {
 
 /// Ordered schema migrations. Append-only: index `i` upgrades `user_version` from
 /// `i` to `i + 1`.
-const MIGRATIONS: &[&str] = &[
+pub(super) const MIGRATIONS: &[&str] = &[
     // v0 -> v1 (step A1): the usage ledger, one row per metered API call, written by
     // the proxy from the response's own `usage`. `ts` is epoch milliseconds; `purpose`
     // is what the caller said the call was for (`x-wb-purpose`); `cache_w` sums the
@@ -327,6 +327,15 @@ const MIGRATIONS: &[&str] = &[
     );
     CREATE INDEX idx_assistant_image_spend_ts ON assistant_image_spend(ts);
     "#,
+    // Fleet plan F3.2: work waiting for a machine that's off (`waiting.rs`), as JSON
+    // the engine writes.
+    r#"
+    CREATE TABLE assistant_waiting (
+        id          TEXT PRIMARY KEY,
+        data        TEXT NOT NULL,
+        created_at  INTEGER NOT NULL
+    );
+    "#,
 ];
 
 #[cfg(test)]
@@ -336,7 +345,7 @@ mod tests {
     #[test]
     fn s1_threads_from_before_modes_are_the_assistants() {
         let conn = Connection::open_in_memory().unwrap();
-        crate::db::run_migrations(&conn, &MIGRATIONS[..MIGRATIONS.len() - 6]).unwrap();
+        crate::db::run_migrations(&conn, &MIGRATIONS[..MIGRATIONS.len() - 7]).unwrap();
         conn.execute("INSERT INTO assistant_threads (id, mode, created, updated) VALUES ('old', 'chat', 1, 1)", []).unwrap();
         crate::db::run_migrations(&conn, MIGRATIONS).unwrap();
         let mode: String = conn.query_row("SELECT mode FROM assistant_threads WHERE id = 'old'", [], |r| r.get(0)).unwrap();

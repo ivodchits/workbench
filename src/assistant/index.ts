@@ -100,6 +100,10 @@ import { connectLocal, createHosts, type MachineRef } from "./hosts";
 import { createFleetHub, runFleetLink, serveFleet } from "./fleetHosts";
 import { createFleetPort, type FleetPort } from "./port.fleet";
 import { createSwitchTransport, type SwitchTransport } from "./switchTransport";
+import { createFleetTools, type FleetTools } from "./fleet";
+import { createRemotes } from "./remotes";
+import { gitOriginUrl } from "../ipc/git";
+import { waitingDelete, waitingList, waitingPut } from "../ipc/assistant";
 import { fleetHostSend, fleetStatus, onFleetChanged, onFleetHost } from "../ipc/fleet";
 import { pcHandlers } from "./tools/pc";
 import { youtubeMusic } from "./music/youtube";
@@ -326,6 +330,7 @@ export function endpoint(
   hosted?: HostedSync,
   reminders?: RemindersHost,
   drawings?: Drawings,
+  fleet?: FleetTools,
 ): DuckEndpoint {
   const listeners = new Set<(ev: DuckEvent) => void>();
   const say = (ev: DuckEvent) => {
@@ -432,6 +437,12 @@ export function endpoint(
     });
   };
   reminders?.subscribe((pulse) => sendReminders(say, pulse));
+  // The work waiting for a machine that's off (fleet plan F3.2).
+  const sendWaiting = (to = say) => {
+    if (!fleet) return;
+    to({ type: "waiting", items: fleet.waiting().map((w) => ({ id: w.id, machine: w.machineName, task: w.task, at: w.at })) });
+  };
+  fleet?.onChange(() => sendWaiting());
   const needTrust = () => {
     if (!trust) throw new Error("Duck's trust settings didn't load.");
     return trust;
@@ -496,6 +507,7 @@ export function endpoint(
         await sendSkills(answer).catch(fail);
         if (reader) answer({ type: "reader", reader: reader.reader.view() });
         sendReminders(answer);
+        sendWaiting(answer);
         await sendSpend(answer);
         return;
       case "settings.set":
@@ -620,6 +632,9 @@ export function endpoint(
       }
       case "canvas":
         drawings?.viewing(msg.surface, msg.drawingId);
+        return;
+      case "waiting.drop":
+        await fleet?.drop(msg.id);
         return;
       case "task.diff": {
         const t = tasks?.get(msg.taskId);
@@ -1006,14 +1021,32 @@ export function initAssistant(): Promise<void> {
     // to the main.
     const hostSend = (to: string, text: string) =>
       void fleetHostSend(to, text).catch((e: unknown) => console.warn("duck: a message to another machine was dropped", e));
+    // The user's machines and the work waiting for one that's off (F3.2); a task
+    // goes back to its thread when its machine connects.
+    const fleetTools = createFleetTools({
+      store: { put: waitingPut, list: waitingList, delete: waitingDelete },
+      tell: async (threadId, text) => {
+        if (!engineRef) throw new Error("Duck isn't started");
+        await engineRef.send({ threadId, text: eventText(text), source: "event" });
+      },
+    });
+    void fleetTools.load().catch((e: unknown) => console.warn("duck: the waiting queue didn't load", e));
+    // Projects' git remotes (F3.2), to tell the same project on two machines.
+    const gitRemotes = createRemotes(gitOriginUrl);
     let fleetPort: FleetPort | null = null;
-    const hub = createFleetHub({ hosts, send: hostSend, events: (n, a) => fleetPort?.dispatch(n, a) });
-    fleetPort = createFleetPort(localPort, () => self?.name ?? "this computer", () => hub.ports());
+    const hub = createFleetHub({
+      hosts,
+      send: hostSend,
+      events: (n, a) => fleetPort?.dispatch(n, a),
+      connected: (id) => void fleetTools.connected(id),
+    });
+    fleetPort = createFleetPort(localPort, () => self?.name ?? "this computer", () => hub.ports(), gitRemotes);
     const fleetLink = runFleetLink({
       status: () => fleetStatus().catch(() => null),
       hub,
-      serve: (main, name) => serveFleet({ main, name, pc: pcTools, port: localPort, send: hostSend }),
+      serve: (main, name) => serveFleet({ main, name, pc: pcTools, port: localPort, send: hostSend, remotes: gitRemotes }),
       setSelf: (m) => (self = m),
+      onStatus: (s) => fleetTools.setStatus(s),
       send: hostSend,
     });
     void onFleetHost((from, text) => fleetLink.receive(from, text)).catch(() => {});
@@ -1065,6 +1098,7 @@ export function initAssistant(): Promise<void> {
       registry,
       // Every machine's Workbench, for Duck's tools (fleet plan F3.1).
       port: fleetPort,
+      fleet: fleetTools,
       gate: createPolicy({ settings: settings.get, trust, messages: s.loaded }),
       settings: settings.get,
       degraded: () => localPort.spend().then((x) => x.softReached),
@@ -1305,6 +1339,7 @@ export function initAssistant(): Promise<void> {
       hosted,
       reminders,
       drawings,
+      fleetTools,
     );
     epRef = ep;
     // The drawer talks to this engine, or to the main's when that's another

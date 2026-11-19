@@ -14,6 +14,7 @@
 
 import type { PhaseListener, ProjectRef, SessionPhase, SessionRef, WorkbenchPort } from "./port";
 import type { PortEvent, RemotePort } from "./port.remote";
+import type { Remotes } from "./remotes";
 
 export interface FleetPort extends WorkbenchPort {
   /** Hand out an event another machine passed on (`createRemotePort`'s `events`). */
@@ -26,6 +27,7 @@ export function createFleetPort(
   local: WorkbenchPort,
   localName: () => string,
   remotes: () => readonly RemotePort[],
+  gitRemotes?: Remotes,
 ): FleetPort {
   const live = () => remotes().filter((r) => !r.closed);
   const bySession = (id: string) => live().find((r) => r.sessions().some((s) => s.id === id)) ?? null;
@@ -92,7 +94,7 @@ export function createFleetPort(
 
     listProjects(): ProjectRef[] {
       const others = live();
-      const mine = local.listProjects();
+      const mine = gitRemotes ? gitRemotes.attach(local.listProjects()) : local.listProjects();
       if (!others.length) return mine;
       return [...tag(mine, localName()), ...others.flatMap((r) => tag(r.projects(), r.name))];
     },

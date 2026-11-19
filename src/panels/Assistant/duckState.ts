@@ -39,6 +39,7 @@ import type {
   TaskView,
   TrustView,
   TurnState,
+  WaitingView,
 } from "../../assistant/protocol";
 import type { ReaderView } from "../../assistant/reader";
 import type { ReminderView } from "../../assistant/reminders";
@@ -59,6 +60,8 @@ export interface DuckState {
   ready: boolean;
   /** The machine Duck is on when it isn't this one (fleet plan F3.1b). */
   where: string | null;
+  /** Work waiting for a machine that's off (fleet plan F3.2). */
+  waiting: WaitingView[];
   open: boolean;
   threads: ThreadRow[];
   /** The thread on screen; `null` = a new thread, created by the first send. */
@@ -143,6 +146,7 @@ export const DEFAULT_DRAWER: AssistantDrawerPrefs = {
 let state: DuckState = {
   ready: false,
   where: null,
+  waiting: [],
   open: false,
   threads: [],
   current: null,
@@ -230,6 +234,11 @@ function onScreen(threadId: string): boolean {
 
 /** Every thread read: the unread counts (the overview's button, and the Duck
  *  button's dot) go. The news lines stay, no longer bold. */
+/** Take a task off the waiting queue (fleet plan F3.2). */
+export function dropWaiting(id: string): void {
+  post({ type: "waiting.drop", id });
+}
+
 export function clearUnread(): void {
   set({ unread: {} });
   savePrefs({ unread: {} });
@@ -484,6 +493,9 @@ function onEvent(e: DuckEvent): void {
     case "reader":
       set({ reader: e.reader });
       break;
+    case "waiting":
+      set({ waiting: e.items });
+      break;
     case "reminders":
       set({
         reminders: e.reminders,
@@ -570,6 +582,7 @@ export function connectDuck(): Promise<void> {
         turns: {},
         routing: {},
         error: null,
+        waiting: [],
       });
       duck.send({ type: "sync" });
     });

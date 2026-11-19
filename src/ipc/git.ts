@@ -466,6 +466,11 @@ export function gitIgnoreAdd(repoRoot: string, patterns: string[]): Promise<stri
   return invoke("git_ignore_add", { repoRoot, patterns });
 }
 
+/** The repo's `origin` URL, or null (fleet plan F3.2). */
+export function gitOriginUrl(repoRoot: string): Promise<string | null> {
+  return invoke("git_origin_url", { repoRoot });
+}
+
 /** Fetch from a remote (default `origin`), pruning deleted remote branches. */
 export function gitFetch(repoRoot: string, remote?: string): Promise<string> {
   return invoke("git_fetch", { repoRoot, remote: remote ?? null });
