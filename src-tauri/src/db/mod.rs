@@ -263,6 +263,22 @@ const MIGRATIONS: &[&str] = &[
     r#"
     ALTER TABLE instances ADD COLUMN worktree_owned INTEGER NOT NULL DEFAULT 1;
     "#,
+    // v17 -> v18: the fleet's members (fleet plan F1.1), this machine's own record
+    // and tombstones included. `updated_at` (ms) decides which gossiped version wins;
+    // `last_seen` is this machine's observation and isn't gossiped.
+    r#"
+    CREATE TABLE fleet_members (
+        id          TEXT PRIMARY KEY,
+        name        TEXT NOT NULL,
+        public_key  TEXT NOT NULL,
+        ip          TEXT NOT NULL,
+        port        INTEGER NOT NULL,
+        host        TEXT,
+        updated_at  INTEGER NOT NULL,
+        removed     INTEGER NOT NULL DEFAULT 0,
+        last_seen   INTEGER
+    );
+    "#,
 ];
 
 /// Apply any migrations the database hasn't seen yet, advancing

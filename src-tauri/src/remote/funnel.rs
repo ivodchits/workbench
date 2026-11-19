@@ -347,7 +347,7 @@ fn run(cli: &PathBuf, args: &[&str]) -> Result<Run, String> {
     Ok(Run { ok, out })
 }
 
-fn run_json(cli: &PathBuf, args: &[&str]) -> Result<Value, String> {
+pub(crate) fn run_json(cli: &PathBuf, args: &[&str]) -> Result<Value, String> {
     let r = run(cli, args)?;
     serde_json::from_str(&r.out).map_err(|_| first_line(&r.out))
 }

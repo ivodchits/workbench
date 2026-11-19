@@ -26,7 +26,18 @@ import {
   type PublicStatus,
   type RemoteDevice,
 } from "../ipc/remote";
+import {
+  fleetClearLog,
+  fleetJoin,
+  fleetNewCode,
+  fleetRemove,
+  fleetRename,
+  fleetResetIdentity,
+  type FleetMember,
+  type FleetStatus,
+} from "../ipc/fleet";
 import { openUrl } from "../ipc/os";
+import { refreshFleet, setFleetStatus, useFleet } from "../state/fleet";
 import { formatAgo, formatCountdown } from "../util/format";
 
 /** Failures listed before "show all". */
@@ -45,6 +56,7 @@ function RemoteAccessMenu() {
   useEffect(() => {
     if (!open) return;
     void refreshRemoteStatus();
+    void refreshFleet();
   }, [open]);
 
   // Close on outside click / Escape.
@@ -93,6 +105,9 @@ function RemoteAccessMenu() {
   }
 
   const waiting = status?.pendingCount ?? 0;
+  const fleet = useFleet();
+  const machines = fleet?.members.length ?? 0;
+  const machinesOnline = fleet?.members.filter((m) => m.online).length ?? 0;
   const shownFailures = allFailures ? failures : failures.slice(0, FAILURES_SHOWN);
 
   return (
@@ -120,6 +135,14 @@ function RemoteAccessMenu() {
           <span style={{ color: "var(--wb-needs)" }}>· public ✕</span>
         )}
         {waiting > 0 && <span style={{ color: "var(--wb-needs)" }}>· {waiting} waiting</span>}
+        {machines > 0 && (
+          <span
+            title={`${machinesOnline} of ${machines} other machines online`}
+            style={{ color: machinesOnline > 0 ? "var(--wb-accent)" : "var(--wb-textFaint)" }}
+          >
+            · fleet {machinesOnline}/{machines}
+          </span>
+        )}
       </button>
 
       {open && (
@@ -286,12 +309,288 @@ function RemoteAccessMenu() {
             </>
           )}
 
+          <Divider />
+          <FleetSection />
+
           {error && <Note tone="error">{error}</Note>}
         </div>
       )}
     </div>
   );
 }
+
+/** The fleet (fleet plan F1.1): this machine's name, the other Workbench machines it
+ *  links to over the tailnet, and joining with a one-time code. Independent of the
+ *  phone's server above: machines talk on their own tailnet-only port. */
+function FleetSection() {
+  const fleet = useFleet();
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [join, setJoin] = useState("");
+  const [name, setName] = useState<string | null>(null);
+
+  if (!fleet) return null;
+
+  async function run(f: () => Promise<FleetStatus>): Promise<boolean> {
+    setBusy(true);
+    setError(null);
+    try {
+      setFleetStatus(await f());
+      return true;
+    } catch (e) {
+      setError(String(e));
+      return false;
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function saveName() {
+    const next = name?.trim();
+    setName(null);
+    if (next && next !== fleet?.me.name) void run(() => fleetRename(next));
+  }
+
+  async function joinNow() {
+    const text = join.trim();
+    if (text && (await run(() => fleetJoin(text)))) setJoin("");
+  }
+
+  const others = fleet.members;
+  return (
+    <>
+      <SectionLabel>fleet · your machines</SectionLabel>
+      <Row>
+        <span style={{ color: "var(--wb-textFaint)" }}>this</span>
+        {name === null ? (
+          <button
+            type="button"
+            onClick={() => setName(fleet.me.name)}
+            title="rename this machine (the others see it)"
+            style={{
+              ...miniBtn,
+              border: "none",
+              padding: 0,
+              color: "var(--wb-text)",
+              flex: 1,
+              textAlign: "left",
+            }}
+          >
+            {fleet.me.name}
+          </button>
+        ) : (
+          <input
+            autoFocus
+            value={name}
+            maxLength={40}
+            onChange={(e) => setName(e.target.value)}
+            onBlur={saveName}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") saveName();
+              if (e.key === "Escape") {
+                e.stopPropagation();
+                setName(null);
+              }
+            }}
+            style={inputStyle}
+          />
+        )}
+        <span style={{ color: "var(--wb-textFaint)", fontSize: 10 }} title={`fleet id ${fleet.me.id}`}>
+          {fleet.listening ?? (fleet.tailnet ? "not listening" : "no tailnet")}
+        </span>
+      </Row>
+
+      {fleet.problem && (
+        <>
+          <Note tone="error">{fleet.problem}</Note>
+          <Row>
+            <button
+              type="button"
+              disabled={busy}
+              onClick={() => void run(fleetResetIdentity)}
+              title="a new id and key for this machine; it leaves the fleet and has to join again"
+              style={{ ...miniBtn, marginLeft: "auto", color: "var(--wb-needs)" }}
+            >
+              reset this machine’s identity
+            </button>
+          </Row>
+        </>
+      )}
+
+      {others.length === 0 ? (
+        <Note>
+          No other machines yet. Make a join code here and paste it on the other machine (or
+          the other way round). Both need Tailscale, logged in as you.
+        </Note>
+      ) : (
+        others.map((m) => (
+          <MachineRow key={m.id} m={m} onRemove={() => void run(() => fleetRemove(m.id))} />
+        ))
+      )}
+
+      <Row>
+        {fleet.joinString ? (
+          <>
+            <code
+              style={{
+                flex: 1,
+                color: "var(--wb-text)",
+                userSelect: "all",
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+              }}
+              title="paste this on the other machine"
+            >
+              {fleet.joinString}
+            </code>
+            <button
+              type="button"
+              onClick={() => void navigator.clipboard?.writeText(fleet.joinString ?? "")}
+              style={miniBtn}
+            >
+              copy
+            </button>
+          </>
+        ) : (
+          <span style={{ flex: 1, color: "var(--wb-textFaint)", fontSize: 10 }}>
+            {fleet.codeLocked ? "the last code took too many wrong tries" : "add a machine"}
+          </span>
+        )}
+        <button
+          type="button"
+          disabled={busy || !fleet.tailnet}
+          onClick={() => void run(fleetNewCode)}
+          title={fleet.tailnet ? "a one-time code for 10 minutes" : "Tailscale isn’t connected"}
+          style={miniBtn}
+        >
+          {fleet.joinString ? "new code" : "join code"}
+        </button>
+      </Row>
+      {fleet.joinString && fleet.codeExpiresAt && (
+        <Note>Paste it on the other machine · expires {formatCountdown(fleet.codeExpiresAt)}</Note>
+      )}
+      <Row>
+        <input
+          value={join}
+          placeholder="paste a join code from another machine"
+          onChange={(e) => setJoin(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") void joinNow();
+          }}
+          style={inputStyle}
+        />
+        <button
+          type="button"
+          disabled={busy || !join.trim()}
+          onClick={() => void joinNow()}
+          style={miniBtn}
+        >
+          join
+        </button>
+      </Row>
+
+      {others.length > 0 && (
+        <Row>
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() => void run(() => fleetRemove(fleet.me.id))}
+            title="this machine forgets the fleet, and the others forget it"
+            style={{ ...miniBtn, marginLeft: "auto", color: "var(--wb-needs)" }}
+          >
+            leave the fleet
+          </button>
+        </Row>
+      )}
+
+      {fleet.log.length > 0 && (
+        <>
+          <Row>
+            <span style={sectionLabelStyle}>fleet log</span>
+            <button
+              type="button"
+              onClick={() => void run(fleetClearLog)}
+              style={{ ...miniBtn, marginLeft: "auto" }}
+            >
+              clear
+            </button>
+          </Row>
+          {fleet.log.slice(0, FAILURES_SHOWN).map((f) => (
+            <div
+              key={`${f.addr} ${f.what}`}
+              style={{ padding: "2px 12px", fontSize: 10, lineHeight: 1.5 }}
+            >
+              <div style={{ color: "var(--wb-text)" }}>
+                {f.what}
+                {f.count > 1 && <span style={{ color: "var(--wb-textFaint)" }}> ×{f.count}</span>}
+              </div>
+              <div style={{ color: "var(--wb-textFaint)" }}>
+                {f.addr} · {formatAgo(f.at)}
+              </div>
+            </div>
+          ))}
+        </>
+      )}
+      {error && <Note tone="error">{error}</Note>}
+    </>
+  );
+}
+
+/** One other machine: online or when last heard from, what it runs, remove. */
+function MachineRow({ m, onRemove }: { m: FleetMember; onRemove: () => void }) {
+  const seen = m.online
+    ? `online · ${m.direction === "out" ? "dialed" : "dialed in"}`
+    : m.lastSeen
+      ? `seen ${formatAgo(m.lastSeen)}`
+      : "never connected";
+  const detail = [seen, m.version && `v${m.version}${m.build === "debug" ? " dev" : ""}`, m.os];
+  const where = [
+    m.host ?? m.ip,
+    `${m.ip}:${m.port}`,
+    m.caps.length > 0 ? `can: ${m.caps.join(", ")}` : "",
+  ];
+  return (
+    <div style={{ padding: "4px 12px", display: "flex", alignItems: "center", gap: 8 }}>
+      <span style={{ color: m.online ? "var(--wb-accent)" : "var(--wb-textFaint)" }}>●</span>
+      <div style={{ flex: 1, minWidth: 0, lineHeight: 1.45 }}>
+        <div
+          style={{
+            color: "var(--wb-text)",
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+            whiteSpace: "nowrap",
+          }}
+        >
+          {m.name}
+        </div>
+        <div
+          style={{ color: "var(--wb-textFaint)", fontSize: 10 }}
+          title={where.filter(Boolean).join("\n")}
+        >
+          {detail.filter(Boolean).join(" · ")}
+        </div>
+      </div>
+      <button
+        type="button"
+        onClick={onRemove}
+        title="remove it from the fleet, on every machine"
+        style={{ ...miniBtn, color: "var(--wb-needs)" }}
+      >
+        remove
+      </button>
+    </div>
+  );
+}
+
+const inputStyle: React.CSSProperties = {
+  flex: 1,
+  minWidth: 0,
+  background: "transparent",
+  border: "1px solid var(--wb-border)",
+  color: "var(--wb-text)",
+  font: "10.5px var(--wb-mono)",
+  padding: "2px 6px",
+};
 
 /** The public access (Funnel) switch, what it exposes, and where it stands. */
 function PublicAccess({ pub }: { pub: PublicStatus }) {

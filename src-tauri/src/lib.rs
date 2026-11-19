@@ -6,6 +6,7 @@
 mod accel;
 mod assistant;
 mod filedrop;
+mod fleet;
 mod attention;
 mod badge;
 mod db;
@@ -114,6 +115,10 @@ pub fn run() {
             // auto-started only if previously enabled. Never fails the app — a bind
             // failure just leaves remote access off until re-enabled.
             remote::init(app.handle());
+            // The fleet (fleet plan F1.1): this machine's identity and its links to
+            // the other Workbench machines on the tailnet. Listens only once there's
+            // a member or a join code.
+            fleet::init(app.handle());
             // Set up the system tray icon (step 2.3). Failures are logged;
             // the tray badge commands degrade gracefully when unavailable.
             attention::setup_tray(app.handle());
@@ -364,6 +369,13 @@ pub fn run() {
             assistant::subscription_brain::brain_kill,
             assistant::subscription_brain::brain_tool_result,
             window::window_open_torn,
+            fleet::fleet_status,
+            fleet::fleet_new_code,
+            fleet::fleet_join,
+            fleet::fleet_rename,
+            fleet::fleet_remove,
+            fleet::fleet_reset_identity,
+            fleet::fleet_clear_log,
             remote::remote_start,
             remote::remote_stop,
             remote::remote_status,

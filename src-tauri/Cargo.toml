@@ -104,6 +104,9 @@ sysinfo = { version = "0.39.6", default-features = false, features = ["system"] 
 # One release Workbench at a time: a second launch shows the first one's window
 # instead of starting a rival for the hook, mobile and office ports.
 tauri-plugin-single-instance = "2"
+# Fleet plan F1.1: the fleet's links between machines are dialed as WebSocket
+# clients (axum serves the other end). The version axum already pulls in.
+tokio-tungstenite = "0.29"
 
 # Windows-only: intercept WebView2 accelerator keys so we can suppress the engine's
 # built-in reload shortcuts (F5 / Ctrl+R / Ctrl+Shift+R), which would otherwise

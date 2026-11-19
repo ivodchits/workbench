@@ -141,6 +141,31 @@ This document. Done when you've approved it; then H6 in `assistant-plan.md` poin
 - **Done when:** two dev instances on one machine (separate profiles and ports) join,
   see each other online and offline, and refuse a peer with a wrong key. Live test owed:
   the desktop and the laptop.
+- _(Built, 2026-11-19: `src-tauri/src/fleet/` — `proto.rs` (records, merge, frames,
+  statements, join strings, whois parsing), `store.rs` (`fleet_members`, migration v18;
+  the identity in `meta` like the VAPID key, not the keychain, so Fedora needs nothing
+  more), `link.rs` (listener, dialer, handshake), `net.rs` (Tailscale), the Remote
+  Access menu's "fleet" section (`src/ipc/fleet.ts`, `src/state/fleet.ts`).
+  **Changed from the plan:**
+  - The link has **its own listener** (`48955`, `49055` in a debug build) on the tailnet
+    address only, not the remote server's. The remote server's loopback listener is
+    what Funnel exposes, and the fleet shouldn't depend on phone access being on. It
+    listens only while there's a member or a live code.
+  - "Both sides approve" is the code itself: it's made on one machine and typed on the
+    other, and the peer must be the same tailnet user (`tailscale whois`). A **tagged**
+    node has no user and is refused, so the server must not be tagged.
+  - A copied identity (a new PC set up from the laptop's app data) is caught: a peer
+    with this machine's id sets a problem in the menu with "reset this machine's
+    identity", and a join with an online member's id is refused.
+  **Checked:** the fleet runs three instances in one process over loopback: join,
+  one link per pair (the same one at both ends), beats, a third machine introduced by
+  gossip, rename, removal everywhere (and staying removed), leaving and rejoining, a
+  wrong code, someone else's machine, an impostor with a member's id and no key, a
+  copied identity, the identity across a restart. Tailscale's JSON fields checked
+  against this laptop's CLI. Not yet run in the app; live test owed: the desktop and
+  the laptop once the PC exists (or this laptop's dev build and an installed release
+  that has F1.1, on their two ports). On Windows the firewall may ask about the new
+  port the first time.)_
 
 ### Step F1.2 — Fleet config and the priority list
 - **Depends on:** F1.1.

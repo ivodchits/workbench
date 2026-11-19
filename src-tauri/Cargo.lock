@@ -7755,6 +7755,7 @@ dependencies = [
  "tauri-plugin-single-instance",
  "tauri-plugin-store",
  "tokio",
+ "tokio-tungstenite",
  "ureq",
  "uuid",
  "webview2-com",

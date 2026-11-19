@@ -49,8 +49,8 @@
 //! like the snapshot's), plus routes for the phone's voice clips and spoken replies.
 
 pub mod assistant;
-mod auth;
-mod funnel;
+pub(crate) mod auth;
+pub(crate) mod funnel;
 mod notes;
 pub mod office;
 pub mod push;
@@ -434,7 +434,7 @@ fn set_public(state: &RemoteState, next: PublicStatus, wanted: bool) {
 }
 
 /// The first local IPv4 in the Tailscale CGNAT range (100.64.0.0/10), or `None`.
-fn tailscale_ip() -> Option<Ipv4Addr> {
+pub(crate) fn tailscale_ip() -> Option<Ipv4Addr> {
     let addrs = if_addrs::get_if_addrs().ok()?;
     addrs.into_iter().find_map(|iface| match iface.ip() {
         std::net::IpAddr::V4(v4) if is_tailscale_v4(v4) => Some(v4),
