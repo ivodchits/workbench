@@ -73,6 +73,16 @@ export interface FleetStatus {
   /** Something only you can fix (a copied identity). */
   problem: string | null;
   config: FleetConfig;
+  /** This machine's copy of Duck's state at the main (fleet plan F5.1). */
+  replica: {
+    of: string | null;
+    seq: number;
+    head: number;
+    /** Epoch seconds of the last sync. */
+    at: number | null;
+    error: string | null;
+    snapshots: number;
+  } | null;
 }
 
 export function fleetStatus(): Promise<FleetStatus> {

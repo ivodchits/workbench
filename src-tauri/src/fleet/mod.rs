@@ -36,6 +36,9 @@
 //!   whose own checks then apply. Duck's routes go to the main ([`Fleet::duck_main`]).
 //! - **Duck's hosts** (F3.1): the webviews pass Duck's host traffic over the link
 //!   ([`Fleet::send_host`], the `fleet-host` event); this module only carries it.
+//! - **Duck's state** (F5.1, [`repl`]): a machine that isn't Duck's main keeps a copy
+//!   of the main's `duck.db`, pulled over the link: the log after what it has, or a
+//!   snapshot when it can't continue.
 //! - **The listener** runs only while there is someone to talk to: another member, or
 //!   a live join code.
 //!
@@ -44,6 +47,7 @@
 
 mod link;
 mod net;
+pub mod repl;
 pub mod proto;
 mod store;
 
@@ -126,6 +130,34 @@ pub struct Storage(Box<StoreFn>);
 
 type StoreFn = dyn Fn(&mut dyn FnMut(&Connection)) + Send + Sync;
 
+/// Duck's database on this machine, and where it keeps its copy of the main's (F5.1).
+pub struct DuckRepl {
+    /// This machine's `duck.db` (the log's source when it's the main).
+    pub source: Storage,
+    pub replica: Mutex<repl::Replica>,
+    /// Where a snapshot is made before it's sent.
+    pub scratch: std::path::PathBuf,
+}
+
+/// A snapshot being sent: when it was made, its bytes.
+type SnapshotCache = Option<(Instant, Arc<Vec<u8>>)>;
+
+/// Where the copy stands, for the menu.
+#[derive(Debug, Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReplicaView {
+    /// The machine it's a copy of.
+    pub of: Option<String>,
+    pub seq: i64,
+    /// The main's last `seq`, when last heard.
+    pub head: i64,
+    /// Epoch seconds of the last sync, and its trouble.
+    pub at: Option<u64>,
+    pub error: Option<String>,
+    /// Snapshots taken so far this run.
+    pub snapshots: u32,
+}
+
 /// Takes host traffic from a peer: (its id, the text).
 pub type HostSink = Box<dyn Fn(&str, String) + Send + Sync>;
 
@@ -177,6 +209,11 @@ pub struct Fleet {
     next_ask: std::sync::atomic::AtomicU64,
     /// Where host traffic from a peer goes (the webview, in the app).
     host_sink: Mutex<Option<HostSink>>,
+    /// Duck's database and the copy of the main's (F5.1).
+    duck: Mutex<Option<Arc<DuckRepl>>>,
+    snap_cache: Mutex<SnapshotCache>,
+    replicating: std::sync::atomic::AtomicBool,
+    replica_view: Mutex<ReplicaView>,
     /// Sessions other machines gave for a device, by (machine, device).
     relay_sessions: Mutex<HashMap<(String, String), (String, Instant)>>,
 }
@@ -261,6 +298,8 @@ pub struct FleetStatus {
     pub log: Vec<AuthFailure>,
     pub problem: Option<String>,
     pub config: ConfigView,
+    /// This machine's copy of the main's Duck state (F5.1), while it keeps one.
+    pub replica: Option<ReplicaView>,
 }
 
 /// The fleet's settings as the menu shows them.
@@ -402,6 +441,10 @@ impl Fleet {
             next_ask: std::sync::atomic::AtomicU64::new(1),
             relay_sessions: Mutex::new(HashMap::new()),
             host_sink: Mutex::new(None),
+            duck: Mutex::new(None),
+            snap_cache: Mutex::new(None),
+            replicating: std::sync::atomic::AtomicBool::new(false),
+            replica_view: Mutex::new(ReplicaView::default()),
             cfg,
         });
         fleet.ensure_self();
@@ -496,6 +539,7 @@ impl Fleet {
             self.ensure_listener().await;
             self.dial_due();
             self.write_seen();
+            self.replicate_due();
             looks += 1;
             tokio::select! {
                 _ = tokio::time::sleep(self.cfg.tick) => {}
@@ -1028,7 +1072,143 @@ impl Fleet {
         match ask {
             Ask::RelaySession { device } => self.book.relay_session(&device),
             Ask::Wake { id } => self.wake_here(&id),
+            Ask::ReplLog { epoch, seq } => self.repl_log(epoch.as_deref(), seq),
+            Ask::ReplSnapshot { n } => self.repl_snapshot(n),
         }
+    }
+
+    // --- Duck's state (F5.1) ---------------------------------------------------------
+
+    /// Duck's database, and the file for the copy of the main's.
+    pub fn set_duck(&self, d: DuckRepl) {
+        *self.duck.lock().unwrap() = Some(Arc::new(d));
+    }
+
+    fn duck(&self) -> Result<Arc<DuckRepl>, String> {
+        self.duck.lock().unwrap().clone().ok_or_else(|| "Duck's database isn't open here".to_string())
+    }
+
+    /// The source's side: the log after `seq`.
+    fn repl_log(&self, epoch: Option<&str>, seq: i64) -> Result<String, String> {
+        let d = self.duck()?;
+        let answer = d.source.with(|c| repl::since(c, epoch, seq)).map_err(|e| e.to_string())?;
+        Ok(serde_json::to_string(&answer).expect("serializes"))
+    }
+
+    /// The source's side: chunk `n` of a snapshot, `{total, data}` (base64).
+    fn repl_snapshot(&self, n: u32) -> Result<String, String> {
+        use base64::Engine;
+        let d = self.duck()?;
+        let bytes = {
+            let mut cache = self.snap_cache.lock().unwrap();
+            let fresh = cache.as_ref().is_some_and(|(at, _)| at.elapsed() < Duration::from_secs(300));
+            if n == 0 || !fresh {
+                let b = Arc::new(d.source.with(|c| repl::snapshot(c, &d.scratch))?);
+                *cache = Some((Instant::now(), b));
+            }
+            cache.as_ref().expect("just made").1.clone()
+        };
+        let total = bytes.len().div_ceil(repl::CHUNK).max(1) as u32;
+        if n >= total {
+            return Err("no such chunk".into());
+        }
+        let start = n as usize * repl::CHUNK;
+        let part = &bytes[start..(start + repl::CHUNK).min(bytes.len())];
+        let data = base64::engine::general_purpose::STANDARD.encode(part);
+        Ok(serde_json::json!({ "total": total, "data": data }).to_string())
+    }
+
+    /// Duck's main when that's another machine linked to this one.
+    fn duck_source(&self) -> Option<String> {
+        let inner = self.inner.lock().unwrap();
+        let cfg = &inner.config;
+        let up = |id: &str| id == inner.me || inner.links.contains_key(id);
+        let main = proto::main_by_hand(&inner.members, cfg).or_else(|| proto::first_choice(&inner.members, cfg, up))?;
+        (main != inner.me && inner.links.contains_key(&main)).then_some(main)
+    }
+
+    /// Bring the copy up to date in the background, one run at a time.
+    fn replicate_due(self: &Arc<Self>) {
+        use std::sync::atomic::Ordering;
+        if self.duck.lock().unwrap().is_none() || self.duck_source().is_none() {
+            return;
+        }
+        if self.replicating.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        let me = self.clone();
+        tokio::spawn(async move {
+            let res = me.replicate().await;
+            {
+                let mut v = me.replica_view.lock().unwrap();
+                v.at = Some(now());
+                v.error = res.err();
+            }
+            me.replicating.store(false, Ordering::SeqCst);
+        });
+    }
+
+    /// One sync with the main: the log while there is more, or a snapshot.
+    pub async fn replicate(self: &Arc<Self>) -> Result<(), String> {
+        let main = self.duck_source().ok_or("Duck's main isn't another machine that's connected")?;
+        let d = self.duck()?;
+        for _ in 0..50 {
+            let st = d.replica.lock().unwrap().state();
+            let answer: repl::LogAnswer = if st.origin.as_deref() == Some(main.as_str()) {
+                let text = self.ask(&main, Ask::ReplLog { epoch: st.epoch.clone(), seq: st.seq }).await?;
+                serde_json::from_str(&text).map_err(|e| e.to_string())?
+            } else {
+                repl::LogAnswer { epoch: String::new(), head: 0, snapshot: true, entries: vec![] }
+            };
+            self.replica_view.lock().unwrap().head = answer.head;
+            if answer.snapshot {
+                self.fetch_snapshot(&main, &d).await?;
+                continue;
+            }
+            let more = answer.entries.len() as i64 >= repl::BATCH;
+            let applied = d.replica.lock().unwrap().apply(&answer.entries);
+            if let Err(e) = applied {
+                // A schema it doesn't have, say: start over from a snapshot.
+                eprintln!("[fleet] the copy of Duck's state couldn't take a change ({e}); taking a snapshot");
+                self.fetch_snapshot(&main, &d).await?;
+                continue;
+            }
+            let st = d.replica.lock().unwrap().state();
+            {
+                let mut v = self.replica_view.lock().unwrap();
+                v.of = Some(main.clone());
+                v.seq = st.seq;
+            }
+            if !more {
+                return Ok(());
+            }
+        }
+        Ok(())
+    }
+
+    async fn fetch_snapshot(self: &Arc<Self>, main: &str, d: &DuckRepl) -> Result<(), String> {
+        use base64::Engine;
+        let mut bytes = Vec::new();
+        let mut n = 0u32;
+        loop {
+            let text = self.ask(main, Ask::ReplSnapshot { n }).await?;
+            let v: serde_json::Value = serde_json::from_str(&text).map_err(|e| e.to_string())?;
+            let part = base64::engine::general_purpose::STANDARD
+                .decode(v["data"].as_str().unwrap_or(""))
+                .map_err(|e| e.to_string())?;
+            bytes.extend_from_slice(&part);
+            n += 1;
+            if n >= v["total"].as_u64().unwrap_or(1) as u32 {
+                break;
+            }
+        }
+        d.replica.lock().unwrap().install(main, &bytes)?;
+        let st = d.replica.lock().unwrap().state();
+        let mut v = self.replica_view.lock().unwrap();
+        v.of = Some(main.to_string());
+        v.seq = st.seq;
+        v.snapshots += 1;
+        Ok(())
     }
 
     // --- waking (F4.1) ---------------------------------------------------------------
@@ -1250,6 +1430,13 @@ impl Fleet {
             log: inner.log.entries(),
             problem: inner.problem.clone(),
             config,
+            replica: {
+                let v = self.replica_view.lock().unwrap().clone();
+                v.of.is_some().then(|| ReplicaView {
+                    of: v.of.as_ref().map(|id| inner.members.iter().find(|m| &m.id == id).map_or(id.clone(), |m| m.name.clone())),
+                    ..v
+                })
+            },
         }
     }
 
@@ -1470,6 +1657,20 @@ pub fn init(app: &AppHandle) {
         }),
     );
     fleet.set_public_url(crate::remote::public_url(app));
+    // Duck's state (F5.1): its database, and the copy of the main's beside it.
+    if let (Ok(dir), Some(_)) = (app.path().app_data_dir(), app.try_state::<Arc<crate::assistant::Assistant>>()) {
+        let replica = if cfg!(debug_assertions) { "duck.replica.dev.db" } else { "duck.replica.db" };
+        let source_app = app.clone();
+        fleet.set_duck(DuckRepl {
+            source: Storage::new(move |f| {
+                let a = source_app.state::<Arc<crate::assistant::Assistant>>();
+                let conn = a.db.conn.lock().expect("duck db lock poisoned");
+                f(&conn)
+            }),
+            replica: Mutex::new(repl::Replica::new(dir.join(replica))),
+            scratch: dir.join(format!("{replica}.snapshot")),
+        });
+    }
     fleet.set_remote_port(crate::remote::tailnet_port(app));
     let host_app = app.clone();
     fleet.on_host(Box::new(move |from, text| {

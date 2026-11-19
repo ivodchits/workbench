@@ -27,6 +27,8 @@ impl DuckDb {
         let conn = Connection::open(path)?;
         conn.execute_batch("PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL;")?;
         crate::db::run_migrations(&conn, MIGRATIONS)?;
+        // The replication log's triggers, from the schema as it is now (fleet F5.1).
+        crate::fleet::repl::install(&conn)?;
         Ok(Self {
             conn: Mutex::new(conn),
         })

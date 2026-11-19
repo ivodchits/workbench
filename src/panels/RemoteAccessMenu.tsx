@@ -454,6 +454,14 @@ function FleetSection() {
       )}
 
       {others.length > 0 && <PriorityList fleet={fleet} busy={busy} run={run} />}
+      {fleet.replica && (
+        <Note tone={fleet.replica.error ? "error" : undefined}>
+          Duck&apos;s state: a copy of {fleet.replica.of}&apos;s
+          {fleet.replica.head > fleet.replica.seq ? `, ${fleet.replica.head - fleet.replica.seq} changes behind` : ", up to date"}
+          {fleet.replica.at ? ` · ${formatAgo(fleet.replica.at)}` : ""}
+          {fleet.replica.error ? ` · ${fleet.replica.error}` : ""}
+        </Note>
+      )}
 
       <Row>
         {fleet.joinString ? (

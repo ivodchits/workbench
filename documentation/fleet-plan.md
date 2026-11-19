@@ -474,6 +474,40 @@ This document. Done when you've approved it; then H6 in `assistant-plan.md` poin
 - **Key files:** `src-tauri/src/assistant/db.rs`, `src-tauri/src/fleet/repl.rs` (new).
 - **Done when:** a replica on a second dev instance matches the main row for row after a
   day of use, including after the replica was offline for an hour.
+- _(Built, 2026-11-19: `src-tauri/src/fleet/repl.rs`; the `replLog` and
+  `replSnapshot` asks; `Fleet::replicate`; `repl::install` in `DuckDb::open`; the
+  menu's "Duck's state" line.
+  **Changed from the plan:**
+  - **The copy is its own file** (`duck.replica.db`), not the machine's `duck.db`:
+    until the election (F6) every machine's Duck still writes its own, and a copy
+    streamed into it would fight those writes. A machine becomes the main with the
+    copy (F6.1).
+  - No term in the log yet: an `epoch` (random, per database) says which history the
+    `seq`s belong to, and the term comes with the election.
+  - The replica pulls (every few seconds while Duck's main is another linked
+    machine, up to 1000 entries a batch) instead of the main streaming, so a link
+    that comes back just continues. A snapshot (`VACUUM INTO`, in 256 KB chunks) when
+    the copy is of another main, another epoch, behind the log's start (it keeps
+    100 000 entries), or can't take a change (a schema it doesn't have).
+  - The triggers are made from the schema on every open, so no migration is needed
+    when a table changes; a BLOB is logged as hex so no value can fail a write.
+  - Also left out: `memory_index_files` and `meta`'s `memory_index_root:*` (this
+    machine's folders).
+  - **Paths, audited:** Duck's workspace in tasks, drawings and autopilots
+    (`workspace`, `folder`, `planPath`); attachment files under the app's data folder
+    in messages, tasks and drawings; session file paths in the decision log (about the
+    project's machine; left as they are). Rather than every writer going relative,
+    `rebase_paths` rewrites the old machine's workspace and data folder to this one's
+    when a copy becomes the main (F6.1). The files themselves come with F5.2.
+  **Checked:** `repl.rs` tests (inserts, updates incl. a key change, deletes, BLOBs,
+  the left-out rows, epochs, a replica ahead or behind, a bad batch rolled back, the
+  path rebase); a fleet test (the desktop's tables copied to the laptop row for row:
+  first by snapshot, then by the log; again after a gap past the log's start and
+  after a new epoch). **On a copy of this laptop's real `duck.db`:** every table's
+  rows updated through the triggers with no failure (1533 rows, 1595 entries; the
+  append-only messages refuse updates by their own rule, and the replica applies a
+  change as delete + insert), and its 2.6 MB snapshot installed as a replica. Live
+  test owed: two machines over a day, with the replica offline for an hour.)_
 
 ### Step F5.2 — Duck's repo and files
 - **Depends on:** F5.1.

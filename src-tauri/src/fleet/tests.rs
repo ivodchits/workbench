@@ -632,3 +632,113 @@ async fn a_machine_thats_off_is_woken_from_its_network() {
     server.set_wakeable(&l, true);
     assert!(server.wake(&l).await.unwrap().contains("is on already"));
 }
+
+/// A machine's `duck.db` (a few of Duck's tables, with the log) and its copy file.
+fn duck_files(name: &str) -> (Arc<std::sync::Mutex<Connection>>, DuckRepl) {
+    let dir = std::env::temp_dir().join(format!("wb-fleet-repl-{}-{name}", uuid::Uuid::new_v4().simple()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let conn = Connection::open(dir.join("duck.db")).unwrap();
+    conn.execute_batch(
+        "CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+         CREATE TABLE assistant_threads (id TEXT PRIMARY KEY, title TEXT, updated INTEGER);
+         CREATE TABLE assistant_messages (thread_id TEXT NOT NULL, seq INTEGER NOT NULL, body TEXT, PRIMARY KEY (thread_id, seq));",
+    )
+    .unwrap();
+    repl::install(&conn).unwrap();
+    let conn = Arc::new(std::sync::Mutex::new(conn));
+    let c = conn.clone();
+    let d = DuckRepl {
+        source: Storage::new(move |f| f(&c.lock().unwrap())),
+        replica: std::sync::Mutex::new(repl::Replica::new(dir.join("duck.replica.db"))),
+        scratch: dir.join("snapshot.db"),
+    };
+    (conn, d)
+}
+
+fn dump(c: &Connection) -> Vec<String> {
+    let mut out = Vec::new();
+    for t in ["assistant_threads", "assistant_messages", "meta"] {
+        let mut stmt = c.prepare(&format!("SELECT * FROM {t} ORDER BY 1, 2")).unwrap();
+        let n = stmt.column_count();
+        let rows = stmt
+            .query_map([], |r| {
+                Ok((0..n).map(|i| format!("{:?}", r.get::<_, rusqlite::types::Value>(i).unwrap())).collect::<Vec<_>>().join("|"))
+            })
+            .unwrap();
+        out.extend(rows.map(|r| format!("{t}: {}", r.unwrap())));
+    }
+    out
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_mains_duck_state_is_copied_row_for_row() {
+    let ok = Arc::new(AtomicBool::new(false));
+    let desktop = instance("desktop", ok.clone());
+    let laptop = instance("laptop", ok.clone());
+    let (desk_db, desk_repl) = duck_files("desktop");
+    let (_lap_db, lap_repl) = duck_files("laptop");
+    desktop.set_duck(desk_repl);
+    laptop.set_duck(lap_repl);
+    {
+        let c = desk_db.lock().unwrap();
+        c.execute("INSERT INTO assistant_threads VALUES ('t1', 'first', 1)", []).unwrap();
+        c.execute("INSERT INTO assistant_messages VALUES ('t1', 1, 'hello')", []).unwrap();
+    }
+    let code = join_string(&desktop).await;
+    laptop.join(&code).await.unwrap();
+    until("linked", || online(&desktop, "laptop")).await;
+
+    let copy = |l: &Fleet| {
+        let d = l.duck().unwrap();
+        let mut r = d.replica.lock().unwrap();
+        let st = r.state();
+        drop(r);
+        st
+    };
+    let matches = |l: &Fleet| {
+        let d = l.duck().unwrap();
+        let path = d.scratch.with_file_name("duck.replica.db");
+        let Ok(c) = Connection::open_with_flags(&path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY) else { return false };
+        let theirs = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| dump(&c))).unwrap_or_default();
+        theirs == dump(&desk_db.lock().unwrap())
+    };
+    // The first sync is a snapshot.
+    until("the first copy", || matches(&laptop)).await;
+    assert_eq!(laptop.status().replica.as_ref().unwrap().snapshots, 1);
+    assert_eq!(laptop.status().replica.unwrap().of.as_deref(), Some("desktop"));
+    // The desktop is Duck's main: it keeps no copy of the laptop's.
+    assert!(desktop.status().replica.is_none());
+
+    // Changes stream: an insert, an update, a delete.
+    {
+        let c = desk_db.lock().unwrap();
+        c.execute("INSERT INTO assistant_messages VALUES ('t1', 2, 'how are you')", []).unwrap();
+        c.execute("UPDATE assistant_threads SET title = 'renamed', updated = 2 WHERE id = 't1'", []).unwrap();
+        c.execute("INSERT INTO assistant_threads VALUES ('t2', 'gone soon', 3)", []).unwrap();
+        c.execute("DELETE FROM assistant_threads WHERE id = 't2'", []).unwrap();
+        c.execute("INSERT INTO meta VALUES ('trust', '1')", []).unwrap();
+    }
+    until("the changes", || matches(&laptop)).await;
+    assert_eq!(laptop.status().replica.unwrap().snapshots, 1, "no second snapshot for a few changes");
+
+    // A lot of changes while the laptop's copy can't keep up (the log trimmed past
+    // it): a snapshot again, and equal again.
+    let before = copy(&laptop).seq;
+    {
+        let c = desk_db.lock().unwrap();
+        for i in 3..1500 {
+            c.execute("INSERT INTO assistant_messages VALUES ('t1', ?1, 'more')", [i]).unwrap();
+        }
+        repl::install_keeping(&c, 10).unwrap();
+    }
+    until("caught up after the gap", || matches(&laptop) && copy(&laptop).seq > before).await;
+
+    // The desktop's database replaced (a new epoch): a snapshot.
+    let snaps = laptop.status().replica.unwrap().snapshots;
+    {
+        let c = desk_db.lock().unwrap();
+        c.execute("UPDATE repl_state SET v = 'another-epoch' WHERE k = 'epoch'", []).unwrap();
+        c.execute("INSERT INTO assistant_threads VALUES ('t3', 'new life', 9)", []).unwrap();
+    }
+    until("re-copied", || matches(&laptop) && laptop.status().replica.unwrap().snapshots > snaps).await;
+}

@@ -79,7 +79,7 @@ pub use threads::{Message, Pending, Thread};
 /// Tauri-managed (as `Arc<Assistant>`): the proxy's shared state.
 pub struct Assistant {
     app: AppHandle,
-    db: DuckDb,
+    pub(crate) db: DuckDb,
     /// The per-launch token the webview presents as its API key: 32 random bytes,
     /// hex. It is worthless outside this run of the app.
     token: String,

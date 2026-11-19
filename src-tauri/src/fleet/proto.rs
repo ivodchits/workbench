@@ -343,6 +343,10 @@ pub enum Ask {
     RelaySession { device: String },
     /// Send machine `id` a Wake-on-LAN packet: you're on its network (F4.1).
     Wake { id: String },
+    /// Your `duck.db` log after `seq`, for my copy of `epoch` (F5.1, `repl.rs`).
+    ReplLog { epoch: Option<String>, seq: i64 },
+    /// Chunk `n` of a snapshot of your `duck.db`; 0 makes a fresh one.
+    ReplSnapshot { n: u32 },
 }
 
 /// One message on the peer link, as JSON text.
