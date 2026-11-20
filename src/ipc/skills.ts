@@ -29,6 +29,8 @@ export interface Skill {
 
 export interface NewSkill {
   projectRoot: string;
+  /** The project, whose Claude profile holds the user scope. */
+  projectId?: string;
   /** `user` or `project` — plugin skills can't be created here. */
   scope: Exclude<SkillScope, "plugin">;
   name: string;
@@ -36,8 +38,8 @@ export interface NewSkill {
 }
 
 /** List user + project + plugin skills visible to a project, with validation. */
-export function skillList(projectRoot: string): Promise<Skill[]> {
-  return invoke("skill_list", { projectRoot });
+export function skillList(projectRoot: string, projectId?: string): Promise<Skill[]> {
+  return invoke("skill_list", { projectRoot, projectId });
 }
 
 /** Scaffold a new skill folder + SKILL.md; returns the SKILL.md path to open. */
@@ -50,6 +52,7 @@ export function skillRemove(
   projectRoot: string,
   scope: SkillScope,
   name: string,
+  projectId?: string,
 ): Promise<void> {
-  return invoke("skill_remove", { projectRoot, scope, name });
+  return invoke("skill_remove", { projectRoot, scope, name, projectId });
 }

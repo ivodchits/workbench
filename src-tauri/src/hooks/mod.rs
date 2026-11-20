@@ -53,20 +53,45 @@ pub fn init(app: &AppHandle) -> Result<u16, String> {
     // is non-fatal: the server still runs, the user just won't get events until the
     // settings file is fixed.
     let _ = db.meta_set(PORT_KEY, &port.to_string());
-    if let Err(e) = install::install_hooks(port) {
-        eprintln!("[hooks] could not install hooks: {e}");
-    }
-    // Install the managed statusline that feeds the account-wide usage meter (step
-    // 3.2). It shares this port and the same settings.json; a failure only costs the
-    // meter, so log and continue.
-    if let Err(e) = crate::statusline::install(app, port) {
-        eprintln!("[statusline] could not install: {e}");
-    }
+    install_all(app, port);
 
     let ctx = Arc::new(HookContext::new(app.clone(), port));
     app.manage(ctx.clone());
     server::serve(listener, ctx);
     Ok(port)
+}
+
+/// Every `settings.json` Workbench installs into: Personal's and each Claude
+/// profile's, after resolving links (profiles plan P1.2).
+fn settings_files(app: &AppHandle) -> Vec<std::path::PathBuf> {
+    let db = app.state::<Db>();
+    let files = match db.conn.lock() {
+        Ok(conn) => crate::profiles::settings_files(&conn),
+        Err(_) => Vec::new(),
+    };
+    files
+}
+
+/// Install (or refresh) the hooks, and the managed statusline that feeds the usage
+/// meter (step 3.2), in every settings file. A failure is logged and skipped: the
+/// server still runs, and that profile's consoles just don't report.
+fn install_all(app: &AppHandle, port: u16) {
+    for file in settings_files(app) {
+        if let Err(e) = install::install_hooks(&file, port) {
+            eprintln!("[hooks] could not install hooks in {}: {e}", file.display());
+        }
+        if let Err(e) = crate::statusline::install(app, &file, port) {
+            eprintln!("[statusline] could not install in {}: {e}", file.display());
+        }
+    }
+}
+
+/// Install into every settings file again, e.g. after a profile is added. A no-op
+/// before [`init`] has bound the port.
+pub fn reinstall(app: &AppHandle) {
+    if let Some(port) = port(app) {
+        install_all(app, port);
+    }
 }
 
 /// On a debug build's exit, take back what [`init`] put in `~/.claude/settings.json`
@@ -78,11 +103,13 @@ pub fn uninstall_dev(app: &AppHandle) {
     if !cfg!(debug_assertions) {
         return;
     }
-    if let Err(e) = install::uninstall_hooks() {
-        eprintln!("[hooks] could not uninstall hooks: {e}");
-    }
-    if let Err(e) = crate::statusline::uninstall(app) {
-        eprintln!("[statusline] could not uninstall: {e}");
+    for file in settings_files(app) {
+        if let Err(e) = install::uninstall_hooks(&file) {
+            eprintln!("[hooks] could not uninstall hooks in {}: {e}", file.display());
+        }
+        if let Err(e) = crate::statusline::uninstall(app, &file) {
+            eprintln!("[statusline] could not uninstall in {}: {e}", file.display());
+        }
     }
 }
 

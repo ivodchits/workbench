@@ -731,7 +731,7 @@ pub fn pty_spawn(
             SpawnKind::Shell | SpawnKind::Task => None,
         }
     };
-    let candidates = if let Some(t) = &task {
+    let mut candidates = if let Some(t) = &task {
         let mut cmd = CommandBuilder::from_argv(t.argv.iter().map(Into::into).collect());
         cmd.cwd(&cwd);
         cmd.env("TERM", "xterm-256color");
@@ -763,6 +763,23 @@ pub fn pty_spawn(
             SpawnKind::Task => unreachable!("a task's command is built above"),
         }
     };
+
+    // A project on another Claude profile (profiles plan P1.1) runs every local
+    // console under that config dir: claude itself, and a shell or task, so a
+    // `claude` started by hand there gets the same account. A remote one has its
+    // host's own config.
+    if remote.is_none() {
+        let profile_dir = db
+            .conn
+            .lock()
+            .ok()
+            .and_then(|conn| crate::profiles::config_dir_for_instance(&conn, &instance_id));
+        if let Some(dir) = profile_dir {
+            for cmd in &mut candidates {
+                cmd.env(crate::profiles::CONFIG_DIR_ENV, &dir);
+            }
+        }
+    }
 
     // Tear down any prior PTY for this instance only once we know we can spawn.
     kill_instance(state.inner(), &instance_id);

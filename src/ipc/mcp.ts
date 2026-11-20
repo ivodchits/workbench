@@ -33,6 +33,8 @@ export interface McpServer {
 
 export interface NewMcpServer {
   projectRoot: string;
+  /** The project, whose Claude profile holds the user/local servers. */
+  projectId?: string;
   scope: McpScope;
   name: string;
   transport: McpTransport;
@@ -46,8 +48,8 @@ export interface NewMcpServer {
 }
 
 /** List all MCP servers visible to a project, across scopes, with shadowing. */
-export function mcpList(projectRoot: string): Promise<McpServer[]> {
-  return invoke("mcp_list", { projectRoot });
+export function mcpList(projectRoot: string, projectId?: string): Promise<McpServer[]> {
+  return invoke("mcp_list", { projectRoot, projectId });
 }
 
 /** Add (or replace) a server via `claude mcp add`. */
@@ -56,8 +58,13 @@ export function mcpAdd(input: NewMcpServer): Promise<void> {
 }
 
 /** Remove a server from a specific scope via `claude mcp remove`. */
-export function mcpRemove(projectRoot: string, scope: McpScope, name: string): Promise<void> {
-  return invoke("mcp_remove", { projectRoot, scope, name });
+export function mcpRemove(
+  projectRoot: string,
+  scope: McpScope,
+  name: string,
+  projectId?: string,
+): Promise<void> {
+  return invoke("mcp_remove", { projectRoot, scope, name, projectId });
 }
 
 /** Raw text of the project's `.mcp.json` ("" when absent) for the JSON editor. */

@@ -18,6 +18,8 @@ import type { IDockviewPanelProps } from "dockview";
 import { GLYPH } from "../../theme";
 import { skillList, skillRemove, type Skill, type SkillScope } from "../../ipc/skills";
 import { useSkills, type SkillSession } from "../../state/skills";
+import { useProjectProfile } from "../../state/projectProfile";
+import ProfileBanner from "../ProfileBanner";
 import { openProjectFile } from "../../state/editors";
 import { getActiveConsoleId, useConsoles } from "../../state/consoles";
 import { pasteIntoTerminal } from "../terminalPool";
@@ -30,11 +32,17 @@ export interface SkillPanelParams {
 
 const SCOPE_ORDER: SkillScope[] = ["project", "user", "plugin"];
 
-const SCOPE_BLURB: Record<SkillScope, string> = {
-  project: "this repo · .claude/skills (shareable)",
-  user: "global, every project · ~/.claude/skills",
-  plugin: "bundled by an installed plugin · read-only",
-};
+/** Where each scope lives; `configDir` is the project's profile's config dir. */
+function scopeBlurb(scope: SkillScope, configDir: string): string {
+  switch (scope) {
+    case "project":
+      return "this repo · .claude/skills (shareable)";
+    case "user":
+      return `global, every project on this profile · ${configDir}/skills`;
+    case "plugin":
+      return "bundled by an installed plugin · read-only";
+  }
+}
 
 export function SkillManagerPanel(props: IDockviewPanelProps<SkillPanelParams>) {
   const { skillId } = props.params;
@@ -53,6 +61,10 @@ type Dialog = { kind: "new" } | { kind: "remove"; skill: Skill };
 
 function SkillBody({ session }: { session: SkillSession }) {
   const { repoRoot, projectId, title } = session;
+  // The project's Claude profile holds its user skills and plugins (profiles P2.2).
+  const profile = useProjectProfile(projectId);
+  const profileKey = profile?.id ?? null;
+  const configDir = profile ? profile.configDir : "~/.claude";
   const [skills, setSkills] = useState<Skill[] | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -73,7 +85,7 @@ function SkillBody({ session }: { session: SkillSession }) {
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      setSkills(await skillList(repoRoot));
+      setSkills(await skillList(repoRoot, projectId));
       setLoadError(null);
     } catch (err) {
       setLoadError(String(err));
@@ -81,7 +93,9 @@ function SkillBody({ session }: { session: SkillSession }) {
     } finally {
       setLoading(false);
     }
-  }, [repoRoot]);
+    // profileKey: a change of the project's profile re-reads its skills.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [repoRoot, projectId, profileKey]);
 
   useEffect(() => {
     void load();
@@ -125,6 +139,7 @@ function SkillBody({ session }: { session: SkillSession }) {
   return (
     <div style={{ height: "100%", display: "flex", flexDirection: "column", minHeight: 0, background: "var(--wb-bg)" }}>
       <Header total={total} loading={loading} onNew={() => setDialog({ kind: "new" })} onRefresh={() => void load()} />
+      {profile && <ProfileBanner profile={profile} what="user skills and plugins" />}
 
       <div style={{ flex: 1, overflow: "auto", minHeight: 0 }}>
         {loadError ? (
@@ -141,6 +156,7 @@ function SkillBody({ session }: { session: SkillSession }) {
               <ScopeSection
                 key={scope}
                 scope={scope}
+                blurb={scopeBlurb(scope, configDir)}
                 skills={list}
                 tryEnabled={tryTarget !== null}
                 onTry={trySkill}
@@ -157,6 +173,7 @@ function SkillBody({ session }: { session: SkillSession }) {
       {dialog?.kind === "new" && (
         <SkillDialog
           projectRoot={repoRoot}
+          projectId={projectId}
           onClose={() => setDialog(null)}
           onCreated={(path) => {
             void load();
@@ -168,6 +185,7 @@ function SkillBody({ session }: { session: SkillSession }) {
       {dialog?.kind === "remove" && (
         <RemoveConfirm
           projectRoot={repoRoot}
+          projectId={projectId}
           skill={dialog.skill}
           onClose={() => setDialog(null)}
           onRemoved={() => void load()}
@@ -248,6 +266,7 @@ function HeaderButton({
 
 function ScopeSection({
   scope,
+  blurb,
   skills,
   tryEnabled,
   onTry,
@@ -255,6 +274,7 @@ function ScopeSection({
   onRemove,
 }: {
   scope: SkillScope;
+  blurb: string;
   skills: Skill[];
   tryEnabled: boolean;
   onTry: (skill: Skill) => void;
@@ -275,7 +295,7 @@ function ScopeSection({
           {scope}
         </span>
         <span style={{ font: "10px var(--wb-mono)", color: "var(--wb-textFaint)" }}>
-          {SCOPE_BLURB[scope]}
+          {blurb}
         </span>
       </div>
       {skills.map((s) => (
@@ -421,11 +441,13 @@ function RowAction({
 
 function RemoveConfirm({
   projectRoot,
+  projectId,
   skill,
   onClose,
   onRemoved,
 }: {
   projectRoot: string;
+  projectId: string;
   skill: Skill;
   onClose: () => void;
   onRemoved: () => void;
@@ -436,7 +458,7 @@ function RemoveConfirm({
     setBusy(true);
     setError(null);
     try {
-      await skillRemove(projectRoot, skill.scope, skill.name);
+      await skillRemove(projectRoot, skill.scope, skill.name, projectId);
       onRemoved();
       onClose();
     } catch (e) {

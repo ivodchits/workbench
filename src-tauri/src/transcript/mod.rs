@@ -318,15 +318,27 @@ fn resolve_transcript(projects_dir: &Path, session_id: &str) -> Option<PathBuf> 
     None
 }
 
-/// `~/.claude/projects`, where Claude Code stores per-session transcripts.
+/// Personal's `projects/` folder, where Claude Code stores per-session transcripts.
+/// Duck reads its own (Personal) sessions from here; consoles' transcripts may be
+/// under any profile, see [`projects_dirs`].
 pub(crate) fn claude_projects_dir() -> Option<PathBuf> {
-    home_dir().map(|h| h.join(".claude").join("projects"))
+    crate::profiles::personal_dir().map(|d| d.join("projects"))
 }
 
-fn home_dir() -> Option<PathBuf> {
-    std::env::var_os("USERPROFILE")
-        .or_else(|| std::env::var_os("HOME"))
-        .map(PathBuf::from)
+/// Every distinct `projects/` folder across the Claude profiles (profiles plan
+/// P1.2), Personal's first.
+pub(crate) fn projects_dirs(app: &AppHandle) -> Vec<PathBuf> {
+    let db = app.state::<crate::db::Db>();
+    let dirs = match db.conn.lock() {
+        Ok(conn) => crate::profiles::projects_dirs(&conn),
+        Err(_) => claude_projects_dir().into_iter().collect(),
+    };
+    dirs
+}
+
+/// [`resolve_transcript`] across every profile's `projects/`.
+pub(crate) fn find_transcript(app: &AppHandle, session_id: &str) -> Option<PathBuf> {
+    projects_dirs(app).iter().find_map(|dir| resolve_transcript(dir, session_id))
 }
 
 // --- session enumeration for the resume picker (step 4.x) -------------------
@@ -509,11 +521,18 @@ fn session_folders(projects_dir: &Path, working_dir: &str) -> std::io::Result<Ve
 /// Backs the resume picker. Each file's recorded `cwd` (where the session started)
 /// is the real filter, so worktree/encoding quirks can't leak foreign sessions.
 #[tauri::command]
-pub fn list_project_sessions(working_dir: String) -> Result<Vec<SessionSummary>, String> {
-    let projects_dir = claude_projects_dir().ok_or("no home directory found")?;
+pub fn list_project_sessions(app: AppHandle, working_dir: String) -> Result<Vec<SessionSummary>, String> {
     let target_norm = norm_dir(&working_dir);
-    let folders = session_folders(&projects_dir, &working_dir)
-        .map_err(|e| format!("reading {}: {e}", projects_dir.display()))?;
+    // Every profile's `projects/` (profiles plan P1.2); the recorded cwd is still the
+    // filter, so only sessions started in this folder are listed.
+    let mut folders = Vec::new();
+    for projects_dir in projects_dirs(&app) {
+        match session_folders(&projects_dir, &working_dir) {
+            Ok(f) => folders.extend(f),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(format!("reading {}: {e}", projects_dir.display())),
+        }
+    }
 
     let mut out: Vec<SessionSummary> = Vec::new();
     for folder in folders {
@@ -531,6 +550,8 @@ pub fn list_project_sessions(working_dir: String) -> Result<Vec<SessionSummary>,
         }
     }
     out.sort_by_key(|s| std::cmp::Reverse(s.modified_at));
+    let mut seen = HashSet::new();
+    out.retain(|s| seen.insert(s.session_id.clone()));
     Ok(out)
 }
 
@@ -549,10 +570,6 @@ pub fn init(app: &AppHandle) {
 }
 
 fn run(app: AppHandle) {
-    let Some(projects_dir) = claude_projects_dir() else {
-        eprintln!("[transcript] no home dir found; token tailing disabled");
-        return;
-    };
     // Per-session tailing state, keyed by session id. A session that rotates
     // (`/clear`) or is killed drops out of the live set and is pruned, so its
     // successor starts a fresh tail (matching the cleared context's fresh count).
@@ -567,7 +584,7 @@ fn run(app: AppHandle) {
         for (instance_id, session_id) in &live {
             let tail = tails.entry(session_id.clone()).or_default();
             if tail.path.is_none() {
-                tail.path = resolve_transcript(&projects_dir, session_id);
+                tail.path = find_transcript(&app, session_id);
                 if tail.path.is_none() {
                     continue; // transcript not written yet; retry next tick
                 }

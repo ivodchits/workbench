@@ -15,6 +15,11 @@
 //! tree directly, and *editing* reuses the generic file editor (the panel hands it
 //! the `SKILL.md` path returned by the list / create).
 //!
+//! **Profiles (profiles plan P2.2).** "User" and "plugin" mean the project's Claude
+//! profile: `<config dir>/skills` and `<config dir>/plugins`, Personal's being
+//! `~/.claude`. A profile that links its `skills/` to Personal's shows (and writes)
+//! the same folder, once.
+//!
 //! The folder name is the skill's invocation id (`/<name>`). The `SKILL.md`
 //! frontmatter `name`/`description` drive Claude Code's matching, so the list
 //! validates them (kebab-case `name`, non-empty `description`) and surfaces any
@@ -23,6 +28,9 @@
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
+use tauri::State;
+
+use crate::db::Db;
 
 /// One discovered skill (a list row).
 #[derive(Debug, Clone, Serialize)]
@@ -51,6 +59,9 @@ pub struct Skill {
 #[serde(rename_all = "camelCase")]
 pub struct NewSkill {
     pub project_root: String,
+    /// The Workbench project, whose Claude profile holds the user scope (P2.2).
+    #[serde(default)]
+    pub project_id: Option<String>,
     /// `"user" | "project"` (plugin skills are read-only).
     pub scope: String,
     /// The folder + frontmatter name (validated kebab-case).
@@ -66,18 +77,25 @@ pub struct NewSkill {
 /// plugin-bundled skills (read-only). Sorted by scope precedence then name so the
 /// frontend renders deterministically.
 #[tauri::command]
-pub fn skill_list(project_root: String) -> Result<Vec<Skill>, String> {
+pub fn skill_list(
+    db: State<'_, Db>,
+    project_root: String,
+    project_id: Option<String>,
+) -> Result<Vec<Skill>, String> {
     let mut out: Vec<Skill> = Vec::new();
+    let config = config_dir(&db, project_id.as_deref());
 
-    if let Some(home) = home_dir() {
-        collect_scope(&home.join(".claude").join("skills"), "user", &mut out);
+    if let Some(config) = &config {
+        collect_scope(&config.join("skills"), "user", &mut out);
     }
     collect_scope(
         &Path::new(&project_root).join(".claude").join("skills"),
         "project",
         &mut out,
     );
-    collect_plugin_skills(&mut out);
+    if let Some(config) = &config {
+        collect_plugin_skills(config, &mut out);
+    }
 
     out.sort_by(|a, b| {
         scope_rank(&a.scope)
@@ -107,14 +125,18 @@ fn collect_scope(root: &Path, scope: &str, out: &mut Vec<Skill>) {
     }
 }
 
+/// The project's Claude config dir: its profile's, else Personal's (`~/.claude`).
+fn config_dir(db: &Db, project_id: Option<&str>) -> Option<PathBuf> {
+    crate::profiles::effective_dir(crate::profiles::dir_for(db, project_id).as_deref())
+}
+
 /// Best-effort scan for plugin-bundled skills (read-only). Plugins live under
-/// `~/.claude/plugins/repos/<owner>/<repo>/<plugin>/skills/<name>/SKILL.md`; the
+/// `<config dir>/plugins/repos/<owner>/<repo>/<plugin>/skills/<name>/SKILL.md`; the
 /// exact nesting varies, so walk a bounded depth looking for any `skills/<name>/
 /// SKILL.md` and label it with the nearest enclosing plugin directory. Anything
 /// unexpected just yields no rows — awareness, never a hard dependency.
-fn collect_plugin_skills(out: &mut Vec<Skill>) {
-    let Some(home) = home_dir() else { return };
-    let root = home.join(".claude").join("plugins").join("repos");
+fn collect_plugin_skills(config: &Path, out: &mut Vec<Skill>) {
+    let root = config.join("plugins").join("repos");
     walk_for_skills(&root, 0, 6, out);
 }
 
@@ -298,7 +320,7 @@ fn scope_rank(scope: &str) -> u8 {
 /// stub body. Returns the `SKILL.md` path so the panel can open it in the editor.
 /// Refuses to overwrite an existing skill or to write a plugin skill.
 #[tauri::command]
-pub fn skill_create(input: NewSkill) -> Result<String, String> {
+pub fn skill_create(db: State<'_, Db>, input: NewSkill) -> Result<String, String> {
     let name = input.name.trim();
     if !is_kebab_case(name) {
         return Err("the skill name must be kebab-case (lowercase a-z, 0-9, hyphens)".into());
@@ -308,7 +330,8 @@ pub fn skill_create(input: NewSkill) -> Result<String, String> {
         return Err("a description is required (it's how Claude decides to use the skill)".into());
     }
 
-    let base = scope_base(&input.scope, &input.project_root)?;
+    let config = config_dir(&db, input.project_id.as_deref());
+    let base = scope_base(&input.scope, &input.project_root, config.as_deref())?;
     let dir = base.join(name);
     if dir.exists() {
         return Err(format!("a skill named \"{name}\" already exists in this scope"));
@@ -326,12 +349,19 @@ pub fn skill_create(input: NewSkill) -> Result<String, String> {
 /// and rejected. The name must be a single path component (no separators / `..`) so
 /// a crafted value can't escape the scope directory.
 #[tauri::command]
-pub fn skill_remove(project_root: String, scope: String, name: String) -> Result<(), String> {
+pub fn skill_remove(
+    db: State<'_, Db>,
+    project_root: String,
+    scope: String,
+    name: String,
+    project_id: Option<String>,
+) -> Result<(), String> {
     let name = name.trim();
     if !is_safe_component(name) {
         return Err("invalid skill name".into());
     }
-    let base = scope_base(&scope, &project_root)?;
+    let config = config_dir(&db, project_id.as_deref());
+    let base = scope_base(&scope, &project_root, config.as_deref())?;
     let dir = base.join(name);
     if !dir.is_dir() {
         return Err(format!("\"{name}\" no longer exists"));
@@ -340,10 +370,11 @@ pub fn skill_remove(project_root: String, scope: String, name: String) -> Result
 }
 
 /// The writable base directory for a scope. Plugin scope has no writable base.
-fn scope_base(scope: &str, project_root: &str) -> Result<PathBuf, String> {
+/// `config` is the project's Claude config dir (see `config_dir`).
+fn scope_base(scope: &str, project_root: &str, config: Option<&Path>) -> Result<PathBuf, String> {
     match scope {
-        "user" => home_dir()
-            .map(|h| h.join(".claude").join("skills"))
+        "user" => config
+            .map(|c| c.join("skills"))
             .ok_or_else(|| "cannot resolve your home directory".to_owned()),
         "project" => Ok(Path::new(project_root).join(".claude").join("skills")),
         "plugin" => Err("plugin skills are read-only".into()),
@@ -382,12 +413,6 @@ fn is_safe_component(s: &str) -> bool {
         && !s.contains('/')
         && !s.contains('\\')
         && !s.contains('\0')
-}
-
-fn home_dir() -> Option<PathBuf> {
-    std::env::var_os("USERPROFILE")
-        .or_else(|| std::env::var_os("HOME"))
-        .map(PathBuf::from)
 }
 
 #[cfg(test)]
@@ -450,8 +475,12 @@ mod tests {
 
     #[test]
     fn scope_base_rejects_plugin_and_unknown() {
-        assert!(scope_base("plugin", "C:/repo").is_err());
-        assert!(scope_base("nope", "C:/repo").is_err());
-        assert!(scope_base("project", "C:/repo").is_ok());
+        assert!(scope_base("plugin", "C:/repo", None).is_err());
+        assert!(scope_base("nope", "C:/repo", None).is_err());
+        assert!(scope_base("project", "C:/repo", None).is_ok());
+        // The user scope is the project's profile dir (profiles plan P2.2).
+        let team = Path::new("C:/Users/me/.claude-team");
+        assert_eq!(scope_base("user", "C:/repo", Some(team)).unwrap(), team.join("skills"));
+        assert!(scope_base("user", "C:/repo", None).is_err());
     }
 }

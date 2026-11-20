@@ -86,7 +86,7 @@ fn home() -> Result<PathBuf, String> {
 
 fn spec(server: &str) -> Result<Spec, String> {
     let home = home()?;
-    let list = crate::mcp::mcp_list(home.to_string_lossy().into_owned())?;
+    let list = crate::mcp::list_servers(&home.to_string_lossy(), None)?;
     let s = list
         .into_iter()
         .find(|s| s.name == server && !s.shadowed)
@@ -311,7 +311,7 @@ pub async fn mcp_host_call(
 #[tauri::command]
 pub fn mcp_host_servers() -> Result<Vec<Value>, String> {
     let home = home()?;
-    Ok(crate::mcp::mcp_list(home.to_string_lossy().into_owned())?
+    Ok(crate::mcp::list_servers(&home.to_string_lossy(), None)?
         .into_iter()
         .filter(|s| s.transport == "stdio" && !s.shadowed)
         .map(|s| {

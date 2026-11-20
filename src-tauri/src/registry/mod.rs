@@ -97,6 +97,9 @@ pub struct Project {
     /// The folder this project's notes live in, shared across machines (step N3);
     /// `None` until its notes are linked or started.
     pub notes_key: Option<String>,
+    /// The Claude profile (config dir) this project's consoles run under
+    /// (profiles plan P1.1); `None` is Personal.
+    pub profile_id: Option<String>,
     pub sort_order: i64,
     pub created_at: i64,
 }
@@ -173,6 +176,8 @@ pub struct NewProject {
     pub default_model: Option<String>,
     #[serde(default)]
     pub default_permission_mode: Option<String>,
+    #[serde(default)]
+    pub profile_id: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -188,6 +193,7 @@ pub struct ProjectPatch {
     pub remote_dir: Option<Option<String>>,
     pub default_model: Option<Option<String>>,
     pub default_permission_mode: Option<Option<String>>,
+    pub profile_id: Option<Option<String>>,
     pub sort_order: Option<i64>,
 }
 
@@ -387,12 +393,13 @@ fn row_to_project(r: &Row) -> rusqlite::Result<Project> {
         default_model: r.get(11)?,
         notes_key: r.get(12)?,
         default_permission_mode: r.get(13)?,
+        profile_id: r.get(14)?,
     })
 }
 
 const PROJECT_COLS: &str = "id, group_id, name, root_path, default_branch, \
     worktree_setup_command, worktree_copy_env, remote_ssh_dest, remote_dir, \
-    sort_order, created_at, default_model, notes_key, default_permission_mode";
+    sort_order, created_at, default_model, notes_key, default_permission_mode, profile_id";
 
 pub fn insert_project(conn: &Connection, input: NewProject) -> rusqlite::Result<Project> {
     // Normalize an empty/whitespace setup command to NULL so "configured" is a
@@ -424,14 +431,15 @@ pub fn insert_project(conn: &Connection, input: NewProject) -> rusqlite::Result<
         default_model: clean_model(input.default_model)?,
         default_permission_mode: clean_permission_mode(input.default_permission_mode)?,
         notes_key: None,
+        profile_id: input.profile_id.filter(|s| !s.is_empty()),
         sort_order: 0,
         created_at: now(),
     };
     conn.execute(
         "INSERT INTO projects (id, group_id, name, root_path, default_branch,
             worktree_setup_command, worktree_copy_env, remote_ssh_dest, remote_dir,
-            sort_order, created_at, default_model, default_permission_mode)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+            sort_order, created_at, default_model, default_permission_mode, profile_id)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
         rusqlite::params![
             project.id,
             project.group_id,
@@ -446,6 +454,7 @@ pub fn insert_project(conn: &Connection, input: NewProject) -> rusqlite::Result<
             project.created_at,
             project.default_model,
             project.default_permission_mode,
+            project.profile_id,
         ],
     )?;
     Ok(project)
@@ -500,6 +509,9 @@ pub fn update_project(
     if let Some(m) = patch.default_permission_mode {
         p.default_permission_mode = clean_permission_mode(m)?;
     }
+    if let Some(profile) = patch.profile_id {
+        p.profile_id = profile.filter(|s| !s.is_empty());
+    }
     if let Some(sort_order) = patch.sort_order {
         p.sort_order = sort_order;
     }
@@ -508,7 +520,7 @@ pub fn update_project(
          SET group_id = ?2, name = ?3, root_path = ?4, default_branch = ?5,
              worktree_setup_command = ?6, worktree_copy_env = ?7,
              remote_ssh_dest = ?8, remote_dir = ?9, sort_order = ?10, default_model = ?11,
-             default_permission_mode = ?12
+             default_permission_mode = ?12, profile_id = ?13
          WHERE id = ?1",
         rusqlite::params![
             p.id,
@@ -523,6 +535,7 @@ pub fn update_project(
             p.sort_order,
             p.default_model,
             p.default_permission_mode,
+            p.profile_id,
         ],
     )?;
     Ok(p)
@@ -1012,6 +1025,7 @@ mod tests {
                 group_id: Some(group.id.clone()),
                 default_model: None,
                 default_permission_mode: None,
+                profile_id: None,
             },
         )
         .unwrap();
@@ -1063,6 +1077,7 @@ mod tests {
                 group_id: None,
                 default_model: None,
                 default_permission_mode: None,
+                profile_id: None,
             },
         )
         .unwrap();
@@ -1133,6 +1148,7 @@ mod tests {
                 group_id: None,
                 default_model: None,
                 default_permission_mode: None,
+                profile_id: None,
             },
         )
         .unwrap();
@@ -1217,6 +1233,7 @@ mod tests {
                 group_id: None,
                 default_model: None,
                 default_permission_mode: None,
+                profile_id: None,
             },
         )
         .unwrap();
@@ -1274,6 +1291,7 @@ mod tests {
                 group_id: None,
                 default_model: None,
                 default_permission_mode: None,
+                profile_id: None,
             },
         )
         .unwrap();
@@ -1311,6 +1329,7 @@ mod tests {
                 group_id: None,
                 default_model: None,
                 default_permission_mode: None,
+                profile_id: None,
             },
         )
         .unwrap();
@@ -1358,6 +1377,7 @@ mod tests {
                 group_id: Some(group.id.clone()),
                 default_model: None,
                 default_permission_mode: None,
+                profile_id: None,
             },
         )
         .unwrap();
@@ -1397,6 +1417,7 @@ mod tests {
                 group_id: None,
                 default_model: None,
                 default_permission_mode: None,
+                profile_id: None,
             },
         )
         .unwrap();
@@ -1456,6 +1477,7 @@ mod tests {
                 group_id: None,
                 default_model: None,
                 default_permission_mode: Some(" acceptEdits ".into()),
+                profile_id: None,
             },
         )
         .unwrap();

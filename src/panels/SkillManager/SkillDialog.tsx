@@ -16,6 +16,7 @@ import Modal from "../InstanceManager/Modal";
 
 interface SkillDialogProps {
   projectRoot: string;
+  projectId: string;
   onClose: () => void;
   /** Called after a successful create with the new SKILL.md path (to open it). */
   onCreated: (skillPath: string) => void;
@@ -29,7 +30,7 @@ const SCOPES: { value: Exclude<SkillScope, "plugin">; label: string; hint: strin
 /** Mirror of the backend's kebab rule, for live validation. */
 const KEBAB = /^[a-z0-9]+(-[a-z0-9]+)*$/;
 
-function SkillDialog({ projectRoot, onClose, onCreated }: SkillDialogProps) {
+function SkillDialog({ projectRoot, projectId, onClose, onCreated }: SkillDialogProps) {
   const [scope, setScope] = useState<Exclude<SkillScope, "plugin">>("project");
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
@@ -48,6 +49,7 @@ function SkillDialog({ projectRoot, onClose, onCreated }: SkillDialogProps) {
     try {
       const path = await skillCreate({
         projectRoot,
+        projectId,
         scope,
         name: name.trim(),
         description: description.trim(),

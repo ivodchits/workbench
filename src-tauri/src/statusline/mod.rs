@@ -15,6 +15,12 @@
 //! hook events this is *not* session-filtered: the figures are the same for every
 //! session, foreign or not.
 //!
+//! **Profiles (profiles plan P1.2).** Each Claude profile is its own account with its
+//! own limits. The script is installed next to every real `settings.json` and adds
+//! its process's `CLAUDE_CONFIG_DIR` to the POST, so [`ingest`] can tell the accounts
+//! apart: Personal's figures stay in [`LimitsState`] and drive the meter; another
+//! profile's are kept per profile in `meta` and shown in the meter's tooltip.
+//!
 //! The same POST carries the session's own context fill
 //! (`context_window.used_percentage`), which plan autopilot reads (step P1). That one
 //! *is* per session: kept by instance ([`ContextState`]) for sessions Workbench runs.
@@ -51,7 +57,7 @@ const SCRIPT_NAME: &str = if cfg!(debug_assertions) {
 
 /// `meta` key under which a pre-existing *foreign* statusline command is persisted so
 /// our script can chain it across relaunches (decision 17: don't clobber the user's).
-const CHAINED_KEY: &str = "statusline_chained_cmd";
+pub(crate) const CHAINED_KEY: &str = "statusline_chained_cmd";
 
 /// `meta` key holding the most recent limits snapshot (JSON). Restored into
 /// [`LimitsState`] on launch so the meter isn't blank until the next session renders
@@ -168,7 +174,83 @@ pub fn ingest(app: &AppHandle, body: &[u8]) {
     let Some(rl) = v.get("rate_limits") else {
         return;
     };
-    store(app, RateLimits::parse(rl));
+    let limits = RateLimits::parse(rl);
+    match reporting_profile(app, &v) {
+        Some(None) => store(app, limits),
+        Some(Some(profile_id)) => store_profile(app, &profile_id, limits),
+        None => {} // a config dir Workbench doesn't know: no meter to put it on
+    }
+}
+
+/// The field the managed script adds to the POST: its process's `CLAUDE_CONFIG_DIR`
+/// (empty when unset, i.e. the default dir).
+const CONFIG_DIR_FIELD: &str = "workbench_config_dir";
+
+/// Which profile's account a statusline POST reports: `Some(None)` for Personal,
+/// `Some(Some(id))` for a stored profile, `None` for an unknown config dir. A session
+/// Workbench runs is placed by its project; any other by the config dir the script
+/// reported. A POST from an older script, without the field, counts as Personal.
+fn reporting_profile(app: &AppHandle, v: &Value) -> Option<Option<String>> {
+    let db = app.try_state::<Db>()?;
+    let instance = v
+        .get("session_id")
+        .and_then(Value::as_str)
+        .and_then(|sid| app.try_state::<crate::pty::PtyManager>()?.instance_for_session(sid));
+    let conn = db.conn.lock().ok()?;
+    if let Some(instance) = instance {
+        return Some(crate::profiles::profile_for_instance(&conn, &instance));
+    }
+    match v.get(CONFIG_DIR_FIELD).and_then(Value::as_str) {
+        Some(dir) => crate::profiles::profile_for_dir(&conn, dir),
+        None => Some(None),
+    }
+}
+
+/// `meta` key holding a non-Personal profile's latest limits.
+fn profile_snapshot_key(profile_id: &str) -> String {
+    format!("{SNAPSHOT_KEY}:{profile_id}")
+}
+
+/// Keep another profile's limits. They're read on demand (the meter's tooltip), so
+/// there's no in-memory copy and no event.
+fn store_profile(app: &AppHandle, profile_id: &str, limits: RateLimits) {
+    if limits.is_empty() {
+        return;
+    }
+    if let (Some(db), Ok(json)) = (app.try_state::<Db>(), serde_json::to_string(&limits)) {
+        let _ = db.meta_set(&profile_snapshot_key(profile_id), &json);
+    }
+}
+
+/// One non-Personal profile's latest limits, for the meter's tooltip.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProfileLimits {
+    pub profile_id: String,
+    pub name: String,
+    /// `None` until one of its sessions has rendered a statusline.
+    pub limits: Option<RateLimits>,
+}
+
+/// Every Claude profile other than Personal, with its latest limits.
+#[tauri::command]
+pub fn usage_limits_profiles(db: State<'_, Db>) -> Result<Vec<ProfileLimits>, String> {
+    let profiles = {
+        let conn = db.conn.lock().map_err(|e| e.to_string())?;
+        crate::profiles::list(&conn).map_err(|e| e.to_string())?
+    };
+    Ok(profiles
+        .into_iter()
+        .map(|p| ProfileLimits {
+            limits: db
+                .meta_get(&profile_snapshot_key(&p.id))
+                .ok()
+                .flatten()
+                .and_then(|json| serde_json::from_str(&json).ok()),
+            profile_id: p.id,
+            name: p.name,
+        })
+        .collect())
 }
 
 /// Fold in the `rate_limit_info` of a headless `claude -p`'s `rate_limit_event`
@@ -237,16 +319,17 @@ pub fn session_context(state: State<'_, ContextState>, instance_id: String) -> O
     state.0.lock().ok().and_then(|m| m.get(&instance_id).cloned())
 }
 
-/// Install (or refresh) the managed statusline pointing at `port`. Writes the script
-/// under `~/.claude/` and points `~/.claude/settings.json`'s `statusLine` at it,
+/// Install (or refresh) the managed statusline pointing at `port` in one real
+/// `settings.json` (Personal's or a profile's, step P1.2). Writes the script next to
+/// it and points its `statusLine` at it,
 /// chaining any pre-existing user command. Idempotent on relaunch: the settings entry
 /// is stable (the port lives inside the script, not the command), so only the script
 /// file is rewritten when the port changes. Errors are returned for the caller to log
 /// — a failed install only costs the usage meter, never the app.
-pub fn install(app: &AppHandle, port: u16) -> Result<(), String> {
+pub fn install(app: &AppHandle, settings_path: &Path, port: u16) -> Result<(), String> {
     let db = app.state::<Db>();
-    let settings_path = crate::hooks::install::settings_path()?;
-    let mut settings = crate::hooks::install::read_settings(&settings_path)?;
+    let chained_key = chained_key(settings_path);
+    let mut settings = crate::hooks::install::read_settings(settings_path)?;
 
     // Capture a pre-existing *foreign* statusline so we can chain it. One-shot and
     // persisted: our own command is never mistaken for a foreign one (so re-running
@@ -257,18 +340,18 @@ pub fn install(app: &AppHandle, port: u16) -> Result<(), String> {
         .and_then(Value::as_str)
     {
         if !is_ours(cmd) {
-            let _ = db.meta_set(CHAINED_KEY, cmd);
+            let _ = db.meta_set(&chained_key, cmd);
         }
     }
     // A dev build chains the release's script rather than its foreign command, so
     // the installed release keeps getting every POST (its usage meter, Duck's context
     // fill) while `tauri dev` holds the key, and still does if dev is killed before
     // `uninstall` runs. The release's script chains the foreign command itself.
-    let chained = release_command()?.or_else(|| db.meta_get(CHAINED_KEY).ok().flatten());
+    let script = script_path(settings_path);
+    let chained = release_command(&script).or_else(|| db.meta_get(&chained_key).ok().flatten());
 
     // Write the managed script (always overwritten — its content is deterministic for
     // a given port + chained command).
-    let script = script_path()?;
     let url = format!("http://127.0.0.1:{port}{INGEST_PATH}");
     write_script(&script, &render_script(&url, chained.as_deref()))?;
 
@@ -283,7 +366,7 @@ pub fn install(app: &AppHandle, port: u16) -> Result<(), String> {
         return Ok(());
     }
     root.insert("statusLine".into(), entry);
-    crate::hooks::install::write_settings(&settings_path, &settings)?;
+    crate::hooks::install::write_settings(settings_path, &settings)?;
     Ok(())
 }
 
@@ -291,9 +374,8 @@ pub fn install(app: &AppHandle, port: u16) -> Result<(), String> {
 /// key pointing at a script that POSTs to a dead port. It goes back to the release
 /// build's script when one is installed, else to the chained foreign command, else
 /// is removed. A key some other command owns is left alone.
-pub fn uninstall(app: &AppHandle) -> Result<(), String> {
-    let settings_path = crate::hooks::install::settings_path()?;
-    let mut settings = crate::hooks::install::read_settings(&settings_path)?;
+pub fn uninstall(app: &AppHandle, settings_path: &Path) -> Result<(), String> {
+    let mut settings = crate::hooks::install::read_settings(settings_path)?;
     let owned = settings
         .get("statusLine")
         .and_then(|s| s.get("command"))
@@ -303,7 +385,8 @@ pub fn uninstall(app: &AppHandle) -> Result<(), String> {
         return Ok(());
     }
 
-    let command = release_command()?.or_else(|| app.state::<Db>().meta_get(CHAINED_KEY).ok().flatten());
+    let command = release_command(&script_path(settings_path))
+        .or_else(|| app.state::<Db>().meta_get(&chained_key(settings_path)).ok().flatten());
     let root = settings
         .as_object_mut()
         .ok_or("settings root is not an object")?;
@@ -315,7 +398,21 @@ pub fn uninstall(app: &AppHandle) -> Result<(), String> {
             root.remove("statusLine");
         }
     }
-    crate::hooks::install::write_settings(&settings_path, &settings)
+    crate::hooks::install::write_settings(settings_path, &settings)
+}
+
+/// The `meta` key of the foreign statusline chained in `settings_path`. Personal's
+/// keeps the original key, so an existing capture carries over; another profile's
+/// is keyed by its file.
+fn chained_key(settings_path: &Path) -> String {
+    let file = crate::profiles::real(settings_path);
+    let personal = crate::profiles::personal_dir()
+        .map(|d| crate::profiles::real(&d.join("settings.json")));
+    if personal.is_some_and(|p| crate::profiles::same_path(&p, &file)) {
+        CHAINED_KEY.to_owned()
+    } else {
+        format!("{CHAINED_KEY}:{}", file.display())
+    }
 }
 
 /// The managed statusline body, with the live POST URL and the (JSON-encoded) chained
@@ -336,20 +433,17 @@ fn is_ours(command: &str) -> bool {
 
 /// In a dev build, the command that runs the installed release's script, when there
 /// is one; always `None` in a release.
-fn release_command() -> Result<Option<String>, String> {
+fn release_command(script: &Path) -> Option<String> {
     if !cfg!(debug_assertions) {
-        return Ok(None);
+        return None;
     }
-    let release = script_path()?.with_file_name("workbench-statusline.mjs");
-    Ok(release.exists().then(|| format!("node \"{}\"", release.display())))
+    let release = script.with_file_name("workbench-statusline.mjs");
+    release.exists().then(|| format!("node \"{}\"", release.display()))
 }
 
-/// `~/.claude/<script>`.
-fn script_path() -> Result<PathBuf, String> {
-    let home = std::env::var_os("USERPROFILE")
-        .or_else(|| std::env::var_os("HOME"))
-        .ok_or("no home directory (USERPROFILE/HOME unset)")?;
-    Ok(PathBuf::from(home).join(".claude").join(SCRIPT_NAME))
+/// The managed script, next to the (resolved) `settings.json` it serves.
+fn script_path(settings_path: &Path) -> PathBuf {
+    crate::profiles::real(settings_path).with_file_name(SCRIPT_NAME)
 }
 
 /// Write the script atomically (temp file + rename), creating `~/.claude` if needed —
@@ -399,11 +493,19 @@ async function main(raw) {
   // 1) Forward to Workbench. Fire-and-forget with a short timeout; if Workbench isn't
   //    running the localhost connection is refused immediately, so normal `claude` use
   //    outside Workbench isn't slowed.
+  //    The config dir it runs under goes along, so Workbench can tell a team
+  //    profile's limits from the personal account's.
+  let body = raw;
+  try {
+    const d = JSON.parse(raw);
+    d.workbench_config_dir = process.env.CLAUDE_CONFIG_DIR || "";
+    body = JSON.stringify(d);
+  } catch {}
   try {
     await fetch(POST_URL, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: raw,
+      body,
       signal: AbortSignal.timeout(600),
     });
   } catch {}

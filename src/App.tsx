@@ -54,7 +54,7 @@ import { initFleet } from "./state/fleet";
 import { draftImageNames } from "./state/composer";
 import { prunePastedImages } from "./ipc/os";
 import RemoteApprovalHost from "./panels/RemoteApproval";
-import type { RateWindow } from "./ipc/usageLimits";
+import { getProfileUsageLimits, type ProfileLimits, type RateWindow } from "./ipc/usageLimits";
 import { formatCountdown, formatAgo } from "./util/format";
 import { GLYPH } from "./theme";
 
@@ -528,14 +528,25 @@ function UsageMeters() {
     const t = setInterval(() => tick((n) => n + 1), 30_000);
     return () => clearInterval(t);
   }, []);
+  // The meter is always Personal's account; other Claude profiles (profiles plan
+  // P1.2) are read when the pointer arrives and listed in the tooltip.
+  const [others, setOthers] = useState<ProfileLimits[]>([]);
+  const loadOthers = () => {
+    void getProfileUsageLimits()
+      .then(setOthers)
+      .catch(() => {});
+  };
+  const othersNote = profilesTooltip(others);
 
   if (!limits || (!limits.fiveHour && !limits.sevenDay)) {
     return (
       <span
         style={{ color: "var(--wb-textFaint)" }}
+        onMouseEnter={loadOthers}
         title={
           "account usage limits — appear after the first API response in a Claude " +
-          "session (Pro/Max only). Figures are machine-local and approximate."
+          "session (Pro/Max only). Figures are machine-local and approximate." +
+          othersNote
         }
       >
         ⏱ limits ○
@@ -545,16 +556,43 @@ function UsageMeters() {
   return (
     <span
       style={{ display: "flex", alignItems: "center", gap: 16 }}
+      onMouseEnter={loadOthers}
       title={
-        "account-wide usage — machine-local and approximate; resets count down live. " +
+        "Personal account usage — machine-local and approximate; resets count down live. " +
         `Last reading ${formatAgo(limits.receivedAt)} (refreshes when a session's ` +
-        "statusline renders)."
+        "statusline renders)." +
+        othersNote
       }
     >
-      {limits.fiveHour && <Meter label="5h" window={limits.fiveHour} color="working" />}
-      {limits.sevenDay && <Meter label="wk" window={limits.sevenDay} color="done" />}
+      {limits.fiveHour && (
+        <Meter label="5h" window={limits.fiveHour} color="working" note={othersNote} />
+      )}
+      {limits.sevenDay && (
+        <Meter label="wk" window={limits.sevenDay} color="done" note={othersNote} />
+      )}
     </span>
   );
+}
+
+/** The tooltip lines for the other Claude profiles' limits, or "" when there are
+ *  none. A window whose reset has passed shows as "reset" rather than an old figure. */
+function profilesTooltip(others: ProfileLimits[]): string {
+  if (others.length === 0) return "";
+  const now = Math.floor(Date.now() / 1000);
+  const win = (label: string, w: RateWindow | null) => {
+    if (!w) return null;
+    if (w.resetsAt <= now) return `${label} reset`;
+    return `${label} ${Math.round(w.usedPercentage)}% (resets in ${formatCountdown(w.resetsAt)})`;
+  };
+  const lines = others.map((p) => {
+    const parts = [win("5h", p.limits?.fiveHour ?? null), win("wk", p.limits?.sevenDay ?? null)].filter(
+      (x): x is string => x !== null,
+    );
+    const body = parts.length ? parts.join(" · ") : "no reading yet";
+    const ago = p.limits ? ` — ${formatAgo(p.limits.receivedAt)}` : "";
+    return `${p.name}: ${body}${ago}`;
+  });
+  return "\n\nOther profiles:\n" + lines.join("\n");
 }
 
 /** One usage window as a 6-cell box-drawing bar, matching the design mockup's Meter:
@@ -562,7 +600,18 @@ function UsageMeters() {
  *  A window whose reset has already passed is **stale** — its old percentage no longer
  *  describes the now-rolled-over window, so we dim it and drop the number rather than
  *  show a figure that's silently wrong (until the next statusline POST refreshes it). */
-function Meter({ label, window, color }: { label: string; window: RateWindow; color: string }) {
+function Meter({
+  label,
+  window,
+  color,
+  note = "",
+}: {
+  label: string;
+  window: RateWindow;
+  color: string;
+  /** Appended to the tooltip (the other profiles' limits). */
+  note?: string;
+}) {
   const cells = 6;
   const stale = window.resetsAt <= Math.floor(Date.now() / 1000);
   const pct = Math.max(0, Math.min(100, window.usedPercentage));
@@ -572,9 +621,9 @@ function Meter({ label, window, color }: { label: string; window: RateWindow; co
     <span
       style={{ display: "flex", alignItems: "center", gap: 5, opacity: stale ? 0.55 : 1 }}
       title={
-        stale
+        (stale
           ? `${label} window has reset since the last reading — awaiting the next session for a fresh figure`
-          : `${label} window · ${pct.toFixed(0)}% used · resets in ${reset}`
+          : `Personal ${label} window · ${pct.toFixed(0)}% used · resets in ${reset}`) + note
       }
     >
       <span style={{ color: "var(--wb-textDim2)" }}>{label}</span>
