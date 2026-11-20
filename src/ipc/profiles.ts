@@ -20,9 +20,10 @@ export interface PersonalProfile {
 
 export const listProfiles = () => invoke<ClaudeProfile[]>("profiles_list");
 export const personalProfile = () => invoke<PersonalProfile>("profiles_personal");
-/** Adopt an existing config dir as it is, or create an empty one. */
-export const addProfile = (name: string, configDir: string) =>
-  invoke<ClaudeProfile>("profiles_add", { name, configDir });
+/** Adopt an existing config dir as it is, or create a new one; with `seed`, a new
+ *  or empty folder starts as a copy of Personal's setup (profiles plan P2.1). */
+export const addProfile = (name: string, configDir: string, seed = false) =>
+  invoke<ClaudeProfile>("profiles_add", { name, configDir, seed });
 export const renameProfile = (id: string, name: string) =>
   invoke<void>("profiles_rename", { id, name });
 /** Forget a profile; its projects go back to Personal and the dir stays on disk. */

@@ -139,10 +139,15 @@ So every per-profile path is **resolved through links before use**:
 - **Build:** The copy in decision 4. It goes into an empty dir only, never overwrites
   an existing file, and skips Workbench's own hook and statusline entries, because
   P1.2 installs fresh ones.
+  *(Built that way: "+ new profile…" has a "start a new folder as a copy of
+  Personal's setup" box, on by default. A folder that already holds something is
+  adopted as it is, box or not. Workbench's statusline in the copied `settings.json`
+  gives way to the command it chained, so the profile's own install chains it
+  again.)*
 - **Key files:** `src-tauri/src/profiles/seed.rs` (new).
 - **Done when:** Tests cover a seed from a fake Personal (files copied, credentials
   and transcripts not copied, MCP servers carried over) and a refusal to seed into a
-  non-empty dir.
+  non-empty dir. **Done.**
 
 ### Step P2.2 — MCP and Skills managers follow the project's profile
 - **Goal:** The MCP and Skills managers show and edit the selected project's profile.
@@ -151,10 +156,12 @@ So every per-profile path is **resolved through links before use**:
   default: `~/.claude.json`). Every `claude mcp …` call gets the project's
   `CLAUDE_CONFIG_DIR`. User skills and plugin skills come from `<dir>/skills` and
   `<dir>/plugins`. Writes go through resolved links, so a shared `skills/` stays
-  shared.
+  shared. *(Built that way: the panels pass their project id; a line under each
+  header names the profile and its dir. Duck's MCP host stays on Personal.)*
 - **Key files:** `src-tauri/src/mcp/mod.rs`, `src-tauri/src/skills/mod.rs`.
 - **Done when:** In a tinywizard project, the MCP manager lists tinywizard's own
-  `mcpServers`, and the skills manager lists the shared skills once.
+  `mcpServers`, and the skills manager lists the shared skills once (**live test
+  owed**). Test: a profile's user skill scope is its own `skills/`.
 
 ## Settled since
 

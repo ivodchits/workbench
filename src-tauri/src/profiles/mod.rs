@@ -20,6 +20,8 @@ use tauri::State;
 
 use crate::db::Db;
 
+pub mod seed;
+
 /// The environment variable Claude Code reads its config dir from.
 pub const CONFIG_DIR_ENV: &str = "CLAUDE_CONFIG_DIR";
 
@@ -67,10 +69,16 @@ fn strip_verbatim(p: PathBuf) -> PathBuf {
 /// Whether `dir` holds a claude.ai login: a credentials file, or an account recorded
 /// in its `.claude.json` (where the macOS keychain keeps the secret itself).
 pub fn logged_in(dir: &Path) -> bool {
+    logged_in_with(dir, &dir.join(".claude.json"))
+}
+
+/// [`logged_in`] with the `.claude.json` given separately (Personal's default one
+/// lives in the home dir, not in `~/.claude`).
+fn logged_in_with(dir: &Path, claude_json: &Path) -> bool {
     if dir.join(".credentials.json").is_file() {
         return true;
     }
-    std::fs::read_to_string(dir.join(".claude.json"))
+    std::fs::read_to_string(claude_json)
         .ok()
         .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
         .is_some_and(|v| v.get("oauthAccount").is_some_and(|a| !a.is_null()))
@@ -89,6 +97,32 @@ pub fn config_dir_for_project(conn: &Connection, project_id: &str) -> Option<Pat
     .ok()
     .flatten()
     .map(PathBuf::from)
+}
+
+/// The profile dir `project_id` runs under, `None` for Personal (or no project).
+/// For the managers (MCP, skills) that act for a project (profiles plan P2.2).
+pub fn dir_for(db: &Db, project_id: Option<&str>) -> Option<PathBuf> {
+    let id = project_id.filter(|s| !s.is_empty())?;
+    let conn = db.conn.lock().ok()?;
+    config_dir_for_project(&conn, id)
+}
+
+/// The config dir a project's Claude uses: its profile's, else Personal's.
+pub fn effective_dir(profile_dir: Option<&Path>) -> Option<PathBuf> {
+    profile_dir.map(Path::to_path_buf).or_else(personal_dir)
+}
+
+/// Where Claude Code keeps `.claude.json` (user and local MCP servers, the account)
+/// for a profile dir, or for Personal (`None`): inside the config dir when
+/// `CLAUDE_CONFIG_DIR` names one, else `~/.claude.json`.
+pub fn claude_json_path(profile_dir: Option<&Path>) -> Option<PathBuf> {
+    if let Some(d) = profile_dir {
+        return Some(d.join(".claude.json"));
+    }
+    if let Some(d) = std::env::var_os(CONFIG_DIR_ENV).filter(|d| !d.is_empty()) {
+        return Some(PathBuf::from(d).join(".claude.json"));
+    }
+    home_dir().map(|h| h.join(".claude.json"))
 }
 
 /// [`config_dir_for_project`] for the project `instance_id` belongs to.
@@ -334,8 +368,12 @@ pub struct PersonalProfile {
 #[tauri::command]
 pub fn profiles_personal() -> PersonalProfile {
     let dir = personal_dir();
+    let json = claude_json_path(None);
     PersonalProfile {
-        logged_in: dir.as_deref().is_some_and(logged_in),
+        logged_in: match (dir.as_deref(), json.as_deref()) {
+            (Some(d), Some(j)) => logged_in_with(d, j),
+            _ => false,
+        },
         config_dir: dir.map(|d| d.to_string_lossy().into_owned()),
     }
 }
@@ -346,15 +384,31 @@ pub fn profiles_list(db: State<'_, Db>) -> Result<Vec<Profile>, String> {
 }
 
 /// Add a profile, then install Workbench's hooks and statusline into its
-/// `settings.json` (a no-op when that file is a link to one already done).
+/// `settings.json` (a no-op when that file is a link to one already done). With
+/// `seed`, a new or empty folder first gets a copy of Personal's setup (step P2.1);
+/// a folder that already holds something is adopted as it is.
 #[tauri::command]
 pub fn profiles_add(
     app: tauri::AppHandle,
     db: State<'_, Db>,
     name: String,
     config_dir: String,
+    seed: Option<bool>,
 ) -> Result<Profile, String> {
-    let profile = add(&*lock(&db)?, &name, &config_dir)?;
+    let empty = normalize_dir(&config_dir).is_ok_and(|d| seed::is_empty_dir(&d));
+    let mut profile = add(&*lock(&db)?, &name, &config_dir)?;
+    if seed.unwrap_or(false) && empty {
+        if let Some(personal) = personal_dir() {
+            let chained = db.meta_get(crate::statusline::CHAINED_KEY).ok().flatten();
+            let json = claude_json_path(None);
+            match seed::seed(&personal, json.as_deref(), chained.as_deref(), Path::new(&profile.config_dir)) {
+                Ok(s) => eprintln!("[profiles] seeded {} with {}", profile.config_dir, s.items.join(", ")),
+                // The profile exists either way; an incomplete copy is reported.
+                Err(e) => return Err(format!("the profile was added, but copying Personal failed: {e}")),
+            }
+        }
+        profile.logged_in = logged_in(Path::new(&profile.config_dir));
+    }
     crate::hooks::reinstall(&app);
     Ok(profile)
 }

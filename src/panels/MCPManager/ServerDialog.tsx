@@ -18,6 +18,7 @@ import Modal from "../InstanceManager/Modal";
 
 interface ServerDialogProps {
   projectRoot: string;
+  projectId: string;
   /** Existing server to edit; omit for the add flow. */
   server?: McpServer;
   onClose: () => void;
@@ -33,7 +34,7 @@ const SCOPES: { value: McpScope; label: string; hint: string }[] = [
 
 const TRANSPORTS: McpTransport[] = ["stdio", "http", "sse"];
 
-function ServerDialog({ projectRoot, server, onClose, onSaved }: ServerDialogProps) {
+function ServerDialog({ projectRoot, projectId, server, onClose, onSaved }: ServerDialogProps) {
   const editing = server !== undefined;
 
   const [scope, setScope] = useState<McpScope>(server?.scope ?? "local");
@@ -66,6 +67,7 @@ function ServerDialog({ projectRoot, server, onClose, onSaved }: ServerDialogPro
         kv.map((p) => ({ key: p.key.trim(), value: p.value })).filter((p) => p.key.length > 0);
       await mcpAdd({
         projectRoot,
+        projectId,
         scope,
         name: name.trim(),
         transport,
@@ -86,6 +88,7 @@ function ServerDialog({ projectRoot, server, onClose, onSaved }: ServerDialogPro
   }, [
     argsText,
     projectRoot,
+    projectId,
     scope,
     name,
     transport,

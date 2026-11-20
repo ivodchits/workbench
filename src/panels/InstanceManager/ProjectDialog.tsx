@@ -61,6 +61,7 @@ function ProjectDialog({ project, groups, onClose }: ProjectDialogProps) {
   const [personal, setPersonal] = useState<PersonalProfile | null>(null);
   const [newProfileName, setNewProfileName] = useState("");
   const [newProfileDir, setNewProfileDir] = useState("");
+  const [seedProfile, setSeedProfile] = useState(true);
   const [gitRepo, setGitRepo] = useState<boolean | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -173,7 +174,7 @@ function ProjectDialog({ project, groups, onClose }: ProjectDialogProps) {
       if (profileChoice === NEW_PROFILE) {
         if (!newProfileName.trim()) throw new Error("Enter a name for the new profile.");
         if (!newProfileDir.trim()) throw new Error("Choose a config folder for the new profile.");
-        profileId = (await addProfile(newProfileName, newProfileDir)).id;
+        profileId = (await addProfile(newProfileName, newProfileDir, seedProfile)).id;
       }
 
       // A remote project mirrors its remote dir into `rootPath` (so display code
@@ -236,6 +237,7 @@ function ProjectDialog({ project, groups, onClose }: ProjectDialogProps) {
     profileChoice,
     newProfileName,
     newProfileDir,
+    seedProfile,
     onClose,
   ]);
 
@@ -400,6 +402,25 @@ function ProjectDialog({ project, groups, onClose }: ProjectDialogProps) {
                     browse…
                   </button>
                 </div>
+                <label
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 7,
+                    marginTop: 7,
+                    font: "11.5px var(--wb-mono)",
+                    color: "var(--wb-textDim2)",
+                    cursor: "pointer",
+                  }}
+                  title="settings.json, CLAUDE.md, skills, agents, commands, rules, output styles, keybindings and your user MCP servers. Not your login, history or plugins."
+                >
+                  <input
+                    type="checkbox"
+                    checked={seedProfile}
+                    onChange={(e) => setSeedProfile(e.target.checked)}
+                  />
+                  start a new folder as a copy of Personal's setup
+                </label>
               </>
             )}
             <ProfileHint
@@ -515,8 +536,9 @@ function ProfileHint({
   if (choice === NEW_PROFILE) {
     return (
       <span style={hint}>
-        A folder you already set up is used as it is; a new one starts empty. Consoles get it as
-        CLAUDE_CONFIG_DIR, and the first one asks you to log in.
+        A folder you already set up is used as it is; a new or empty one can start as a copy of
+        Personal (plugins are installed again there). Consoles get it as CLAUDE_CONFIG_DIR, and the
+        first one asks you to log in.
       </span>
     );
   }

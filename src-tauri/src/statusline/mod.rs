@@ -57,7 +57,7 @@ const SCRIPT_NAME: &str = if cfg!(debug_assertions) {
 
 /// `meta` key under which a pre-existing *foreign* statusline command is persisted so
 /// our script can chain it across relaunches (decision 17: don't clobber the user's).
-const CHAINED_KEY: &str = "statusline_chained_cmd";
+pub(crate) const CHAINED_KEY: &str = "statusline_chained_cmd";
 
 /// `meta` key holding the most recent limits snapshot (JSON). Restored into
 /// [`LimitsState`] on launch so the meter isn't blank until the next session renders

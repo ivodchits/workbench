@@ -21,13 +21,21 @@
 //!
 //! `claude mcp` resolves `project`/`local` scope from its working directory, so
 //! every shell-out runs with `current_dir(project_root)`.
+//!
+//! **Profiles (profiles plan P2.2).** A project on a Claude profile keeps its user
+//! and local servers in that profile's `.claude.json`, so reads use
+//! [`crate::profiles::claude_json_path`] and every `claude mcp` call gets the
+//! profile's `CLAUDE_CONFIG_DIR`. Personal reads `~/.claude.json` as before.
 
 use std::collections::HashMap;
 use std::ffi::OsStr;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::Command;
 
 use serde::{Deserialize, Serialize};
+use tauri::State;
+
+use crate::db::Db;
 
 /// A single environment variable or HTTP header, as an ordered pair so the editor
 /// can round-trip it (a JSON object loses nothing here but a map is awkward to edit
@@ -70,6 +78,9 @@ pub struct McpServer {
 #[serde(rename_all = "camelCase")]
 pub struct NewMcpServer {
     pub project_root: String,
+    /// The Workbench project, whose Claude profile picks the config (P2.2).
+    #[serde(default)]
+    pub project_id: Option<String>,
     pub scope: String,
     pub name: String,
     pub transport: String,
@@ -93,9 +104,19 @@ pub struct NewMcpServer {
 /// `shadowed` marking the entries a higher-precedence scope overrides. Sorted by
 /// name then precedence so the frontend can group/render deterministically.
 #[tauri::command]
-pub fn mcp_list(project_root: String) -> Result<Vec<McpServer>, String> {
+pub fn mcp_list(
+    db: State<'_, Db>,
+    project_root: String,
+    project_id: Option<String>,
+) -> Result<Vec<McpServer>, String> {
+    let profile = crate::profiles::dir_for(&db, project_id.as_deref());
+    list_servers(&project_root, profile.as_deref())
+}
+
+/// [`mcp_list`] for a given Claude profile dir (`None`: Personal, as Duck uses).
+pub fn list_servers(project_root: &str, profile: Option<&Path>) -> Result<Vec<McpServer>, String> {
     let mut out: Vec<McpServer> = Vec::new();
-    let claude = read_claude_json();
+    let claude = read_claude_json(profile);
 
     // user scope — top-level mcpServers.
     if let Some(map) = claude.get("mcpServers").and_then(|v| v.as_object()) {
@@ -108,7 +129,7 @@ pub fn mcp_list(project_root: String) -> Result<Vec<McpServer>, String> {
     // map by the working directory (forward-slashed on Windows), so match on a
     // normalized path rather than a raw string compare.
     if let Some(projects) = claude.get("projects").and_then(|v| v.as_object()) {
-        let want = norm_path(&project_root);
+        let want = norm_path(project_root);
         if let Some((_, entry)) = projects.iter().find(|(k, _)| norm_path(k) == want) {
             if let Some(map) = entry.get("mcpServers").and_then(|v| v.as_object()) {
                 for (name, cfg) in map {
@@ -119,7 +140,7 @@ pub fn mcp_list(project_root: String) -> Result<Vec<McpServer>, String> {
     }
 
     // project scope — <root>/.mcp.json mcpServers.
-    if let Ok(text) = std::fs::read_to_string(Path::new(&project_root).join(".mcp.json")) {
+    if let Ok(text) = std::fs::read_to_string(Path::new(project_root).join(".mcp.json")) {
         if let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) {
             if let Some(map) = v.get("mcpServers").and_then(|m| m.as_object()) {
                 for (name, cfg) in map {
@@ -139,11 +160,12 @@ pub fn mcp_list(project_root: String) -> Result<Vec<McpServer>, String> {
     Ok(out)
 }
 
-/// Read `~/.claude.json` as a JSON value (the big shared config). A missing or
-/// unparseable file yields `Null` so the read path degrades to "no servers".
-fn read_claude_json() -> serde_json::Value {
-    home_dir()
-        .and_then(|h| std::fs::read_to_string(h.join(".claude.json")).ok())
+/// Read the profile's `.claude.json` (Personal: `~/.claude.json`) as a JSON value.
+/// A missing or unparseable file yields `Null` so the read path degrades to "no
+/// servers".
+fn read_claude_json(profile: Option<&Path>) -> serde_json::Value {
+    crate::profiles::claude_json_path(profile)
+        .and_then(|p| std::fs::read_to_string(p).ok())
         .and_then(|s| serde_json::from_str(&s).ok())
         .unwrap_or(serde_json::Value::Null)
 }
@@ -244,11 +266,12 @@ fn norm_path(p: &str) -> String {
 /// entry (`replaces`, falling back to the new name) is removed first so `add`
 /// doesn't reject a duplicate — the CLI has no in-place edit.
 #[tauri::command]
-pub fn mcp_add(input: NewMcpServer) -> Result<(), String> {
+pub fn mcp_add(db: State<'_, Db>, input: NewMcpServer) -> Result<(), String> {
     if input.name.trim().is_empty() {
         return Err("a server name is required".into());
     }
     let args = build_add_args(&input)?;
+    let profile = crate::profiles::dir_for(&db, input.project_id.as_deref());
 
     // Remove the row this add supersedes (ignore "not found"): a fresh add removes
     // its own name (a harmless no-op), an edit removes the name it replaces.
@@ -262,17 +285,26 @@ pub fn mcp_add(input: NewMcpServer) -> Result<(), String> {
             input.scope.clone(),
             prior,
         ],
+        profile.as_deref(),
     );
 
-    run_claude(&input.project_root, &args).map(|_| ())
+    run_claude(&input.project_root, &args, profile.as_deref()).map(|_| ())
 }
 
 /// Remove an MCP server from a specific scope via `claude mcp remove`.
 #[tauri::command]
-pub fn mcp_remove(project_root: String, scope: String, name: String) -> Result<(), String> {
+pub fn mcp_remove(
+    db: State<'_, Db>,
+    project_root: String,
+    scope: String,
+    name: String,
+    project_id: Option<String>,
+) -> Result<(), String> {
+    let profile = crate::profiles::dir_for(&db, project_id.as_deref());
     run_claude(
         &project_root,
         &["mcp".into(), "remove".into(), "--scope".into(), scope, name],
+        profile.as_deref(),
     )
     .map(|_| ())
 }
@@ -368,8 +400,14 @@ pub fn mcp_save_project_file(project_root: String, content: String) -> Result<()
 
 /// Run `claude <args>` in `cwd`, returning trimmed stdout on success or the captured
 /// stderr (else stdout) on failure so the dialog can surface *why* the CLI rejected.
-fn run_claude(cwd: &str, args: &[String]) -> Result<String, String> {
-    let out = claude_command(Path::new(cwd), args)?
+/// `profile` (a Claude profile's config dir) is passed as `CLAUDE_CONFIG_DIR`, so
+/// the CLI edits that profile's `.claude.json`; `None` (Personal) leaves the env.
+fn run_claude(cwd: &str, args: &[String], profile: Option<&Path>) -> Result<String, String> {
+    let mut cmd = claude_command(Path::new(cwd), args)?;
+    if let Some(dir) = profile {
+        cmd.env(crate::profiles::CONFIG_DIR_ENV, dir);
+    }
+    let out = cmd
         .output()
         .map_err(|e| format!("failed to run claude: {e}"))?;
     if !out.status.success() {
@@ -425,12 +463,6 @@ fn claude_command(cwd: &Path, args: &[String]) -> Result<Command, String> {
     Ok(cmd)
 }
 
-fn home_dir() -> Option<PathBuf> {
-    std::env::var_os("USERPROFILE")
-        .or_else(|| std::env::var_os("HOME"))
-        .map(PathBuf::from)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -439,6 +471,7 @@ mod tests {
     fn input(transport: &str) -> NewMcpServer {
         NewMcpServer {
             project_root: "C:/repo".into(),
+            project_id: None,
             scope: "user".into(),
             name: "demo".into(),
             transport: transport.into(),

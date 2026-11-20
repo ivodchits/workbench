@@ -15,6 +15,8 @@ import type { IDockviewPanelProps } from "dockview";
 import { GLYPH } from "../../theme";
 import { mcpList, mcpRemove, type McpScope, type McpServer } from "../../ipc/mcp";
 import { useMcps, type McpSession } from "../../state/mcp";
+import { useProjectProfile } from "../../state/projectProfile";
+import ProfileBanner from "../ProfileBanner";
 import Modal from "../InstanceManager/Modal";
 import ServerDialog from "./ServerDialog";
 import RawJsonDialog from "./RawJsonDialog";
@@ -25,11 +27,17 @@ export interface McpPanelParams {
 
 const SCOPE_ORDER: McpScope[] = ["local", "project", "user"];
 
-const SCOPE_BLURB: Record<McpScope, string> = {
-  local: "private to you, this project · ~/.claude.json",
-  project: "shared via .mcp.json (git-committed)",
-  user: "global, every project · ~/.claude.json",
-};
+/** Where each scope lives; `claudeJson` is the project's profile's `.claude.json`. */
+function scopeBlurb(scope: McpScope, claudeJson: string): string {
+  switch (scope) {
+    case "local":
+      return `private to you, this project · ${claudeJson}`;
+    case "project":
+      return "shared via .mcp.json (git-committed)";
+    case "user":
+      return `global, every project on this profile · ${claudeJson}`;
+  }
+}
 
 export function McpManagerPanel(props: IDockviewPanelProps<McpPanelParams>) {
   const { mcpId } = props.params;
@@ -51,7 +59,11 @@ type Dialog =
   | { kind: "remove"; server: McpServer };
 
 function McpBody({ session }: { session: McpSession }) {
-  const { repoRoot } = session;
+  const { repoRoot, projectId } = session;
+  // The project's Claude profile holds its user and local servers (profiles P2.2).
+  const profile = useProjectProfile(projectId);
+  const profileKey = profile?.id ?? null;
+  const claudeJson = profile ? `${profile.configDir}\\.claude.json` : "~/.claude.json";
   const [servers, setServers] = useState<McpServer[] | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -60,7 +72,7 @@ function McpBody({ session }: { session: McpSession }) {
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      setServers(await mcpList(repoRoot));
+      setServers(await mcpList(repoRoot, projectId));
       setLoadError(null);
     } catch (err) {
       setLoadError(String(err));
@@ -68,7 +80,9 @@ function McpBody({ session }: { session: McpSession }) {
     } finally {
       setLoading(false);
     }
-  }, [repoRoot]);
+    // profileKey: a change of the project's profile re-reads its servers.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [repoRoot, projectId, profileKey]);
 
   useEffect(() => {
     void load();
@@ -95,6 +109,7 @@ function McpBody({ session }: { session: McpSession }) {
         onRaw={() => setDialog({ kind: "raw" })}
         onRefresh={() => void load()}
       />
+      {profile && <ProfileBanner profile={profile} what="user and local servers" />}
 
       <div style={{ flex: 1, overflow: "auto", minHeight: 0 }}>
         {loadError ? (
@@ -111,6 +126,7 @@ function McpBody({ session }: { session: McpSession }) {
               <ScopeSection
                 key={scope}
                 scope={scope}
+                blurb={scopeBlurb(scope, claudeJson)}
                 servers={list}
                 onEdit={(server) => setDialog({ kind: "edit", server })}
                 onRemove={(server) => setDialog({ kind: "remove", server })}
@@ -123,11 +139,17 @@ function McpBody({ session }: { session: McpSession }) {
       </div>
 
       {dialog?.kind === "add" && (
-        <ServerDialog projectRoot={repoRoot} onClose={() => setDialog(null)} onSaved={() => void load()} />
+        <ServerDialog
+          projectRoot={repoRoot}
+          projectId={projectId}
+          onClose={() => setDialog(null)}
+          onSaved={() => void load()}
+        />
       )}
       {dialog?.kind === "edit" && (
         <ServerDialog
           projectRoot={repoRoot}
+          projectId={projectId}
           server={dialog.server}
           onClose={() => setDialog(null)}
           onSaved={() => void load()}
@@ -139,6 +161,7 @@ function McpBody({ session }: { session: McpSession }) {
       {dialog?.kind === "remove" && (
         <RemoveConfirm
           projectRoot={repoRoot}
+          projectId={projectId}
           server={dialog.server}
           onClose={() => setDialog(null)}
           onRemoved={() => void load()}
@@ -222,11 +245,13 @@ function HeaderButton({
 
 function ScopeSection({
   scope,
+  blurb,
   servers,
   onEdit,
   onRemove,
 }: {
   scope: McpScope;
+  blurb: string;
   servers: McpServer[];
   onEdit: (server: McpServer) => void;
   onRemove: (server: McpServer) => void;
@@ -252,7 +277,7 @@ function ScopeSection({
           {scope}
         </span>
         <span style={{ font: "10px var(--wb-mono)", color: "var(--wb-textFaint)" }}>
-          {SCOPE_BLURB[scope]}
+          {blurb}
         </span>
       </div>
       {servers.map((s) => (
@@ -396,11 +421,13 @@ function RowAction({
 
 function RemoveConfirm({
   projectRoot,
+  projectId,
   server,
   onClose,
   onRemoved,
 }: {
   projectRoot: string;
+  projectId: string;
   server: McpServer;
   onClose: () => void;
   onRemoved: () => void;
@@ -411,7 +438,7 @@ function RemoveConfirm({
     setBusy(true);
     setError(null);
     try {
-      await mcpRemove(projectRoot, server.scope, server.name);
+      await mcpRemove(projectRoot, server.scope, server.name, projectId);
       onRemoved();
       onClose();
     } catch (e) {
