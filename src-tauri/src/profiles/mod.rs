@@ -101,7 +101,6 @@ pub fn config_dir_for_instance(conn: &Connection, instance_id: &str) -> Option<P
 
 /// Every config dir in use, Personal first, de-duplicated on the resolved path.
 /// Dirs that don't exist are left out.
-#[allow(dead_code)] // the per-profile hook, statusline and transcript work (step P1.2)
 pub fn distinct_dirs(conn: &Connection) -> Vec<PathBuf> {
     let mut dirs: Vec<PathBuf> = personal_dir().into_iter().collect();
     if let Ok(mut stmt) = conn.prepare("SELECT config_dir FROM profiles ORDER BY created_at") {
@@ -112,9 +111,79 @@ pub fn distinct_dirs(conn: &Connection) -> Vec<PathBuf> {
     dedupe_real(dirs)
 }
 
+/// Every distinct real `settings.json` the profiles use, Personal's first (step
+/// P1.2): where Workbench installs its hooks and statusline. A profile whose
+/// `settings.json` is a link to Personal's adds nothing; one that has none yet is
+/// listed by its own path, so the install creates it.
+pub fn settings_files(conn: &Connection) -> Vec<PathBuf> {
+    let mut out: Vec<PathBuf> = Vec::new();
+    for dir in distinct_dirs(conn) {
+        let file = real(&dir.join("settings.json"));
+        if !out.iter().any(|o| same_path(o, &file)) {
+            out.push(file);
+        }
+    }
+    out
+}
+
+/// Every distinct real `projects/` folder (where Claude Code keeps transcripts),
+/// Personal's first. A junctioned `projects/` is listed once.
+pub fn projects_dirs(conn: &Connection) -> Vec<PathBuf> {
+    dedupe_real(distinct_dirs(conn).into_iter().map(|d| d.join("projects")))
+}
+
+/// Every path a transcript under some profile's `projects/` may be reported by: each
+/// dir as configured *and* as resolved, so a hook path through a junction
+/// (`.claude-team/projects/...` linked to Personal's) is still recognized.
+pub fn projects_roots(conn: &Connection) -> Vec<PathBuf> {
+    let mut raw: Vec<PathBuf> = personal_dir().into_iter().collect();
+    if let Ok(mut stmt) = conn.prepare("SELECT config_dir FROM profiles") {
+        if let Ok(rows) = stmt.query_map([], |r| r.get::<_, String>(0)) {
+            raw.extend(rows.flatten().map(PathBuf::from));
+        }
+    }
+    let mut out = Vec::new();
+    for dir in raw {
+        let projects = dir.join("projects");
+        let resolved = real(&projects);
+        out.push(projects);
+        out.push(resolved);
+    }
+    out
+}
+
+/// Which profile a config dir belongs to: `Some(None)` for Personal, `Some(Some(id))`
+/// for a stored profile, `None` for a dir Workbench doesn't know. Compared after
+/// resolving links; an empty `dir` is Personal (no override).
+pub fn profile_for_dir(conn: &Connection, dir: &str) -> Option<Option<String>> {
+    if dir.trim().is_empty() {
+        return Some(None);
+    }
+    let resolved = real(Path::new(dir.trim()));
+    if personal_dir().is_some_and(|p| same_path(&real(&p), &resolved)) {
+        return Some(None);
+    }
+    list(conn)
+        .ok()?
+        .into_iter()
+        .find(|p| same_path(&real(Path::new(&p.config_dir)), &resolved))
+        .map(|p| Some(p.id))
+}
+
+/// The profile id of the project `instance_id` belongs to: `None` for Personal.
+pub fn profile_for_instance(conn: &Connection, instance_id: &str) -> Option<String> {
+    conn.query_row(
+        "SELECT j.profile_id FROM instances i JOIN projects j ON j.id = i.project_id
+         WHERE i.id = ?1",
+        [instance_id],
+        |r| r.get::<_, Option<String>>(0),
+    )
+    .ok()
+    .flatten()
+}
+
 /// Keep the first of each set of paths that resolve to the same place, as its
 /// resolved form; drop paths that don't exist.
-#[allow(dead_code)] // see `distinct_dirs`
 pub fn dedupe_real(paths: impl IntoIterator<Item = PathBuf>) -> Vec<PathBuf> {
     let mut out: Vec<PathBuf> = Vec::new();
     for p in paths {
@@ -129,7 +198,7 @@ pub fn dedupe_real(paths: impl IntoIterator<Item = PathBuf>) -> Vec<PathBuf> {
     out
 }
 
-fn same_path(a: &Path, b: &Path) -> bool {
+pub(crate) fn same_path(a: &Path, b: &Path) -> bool {
     if cfg!(windows) {
         a.to_string_lossy().to_lowercase() == b.to_string_lossy().to_lowercase()
     } else {
@@ -276,9 +345,18 @@ pub fn profiles_list(db: State<'_, Db>) -> Result<Vec<Profile>, String> {
     list(&*lock(&db)?).map_err(|e| e.to_string())
 }
 
+/// Add a profile, then install Workbench's hooks and statusline into its
+/// `settings.json` (a no-op when that file is a link to one already done).
 #[tauri::command]
-pub fn profiles_add(db: State<'_, Db>, name: String, config_dir: String) -> Result<Profile, String> {
-    add(&*lock(&db)?, &name, &config_dir)
+pub fn profiles_add(
+    app: tauri::AppHandle,
+    db: State<'_, Db>,
+    name: String,
+    config_dir: String,
+) -> Result<Profile, String> {
+    let profile = add(&*lock(&db)?, &name, &config_dir)?;
+    crate::hooks::reinstall(&app);
+    Ok(profile)
 }
 
 #[tauri::command]
@@ -395,6 +473,9 @@ mod tests {
         let out = dedupe_real([target.clone(), link.clone(), missing]);
         if linked {
             assert_eq!(out.len(), 1, "{out:?}");
+            // A file reached through the link resolves to the real one.
+            std::fs::write(target.join("settings.json"), "{}").unwrap();
+            assert!(same_path(&real(&link.join("settings.json")), &real(&target.join("settings.json"))));
         }
         assert!(same_path(&out[0], &real(&target)));
         let _ = std::fs::remove_dir_all(base);

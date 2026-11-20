@@ -46,3 +46,17 @@ export function getSessionContext(instanceId: string): Promise<ContextFill | nul
 export function onUsageLimits(cb: (limits: RateLimits) => void): Promise<UnlistenFn> {
   return listen<RateLimits>("usage-limits-updated", (event) => cb(event.payload));
 }
+
+/** Another Claude profile's latest limits (profiles plan P1.2). The meter shows
+ *  Personal; these appear in its tooltip. */
+export interface ProfileLimits {
+  profileId: string;
+  name: string;
+  /** null until one of the profile's sessions has rendered a statusline. */
+  limits: RateLimits | null;
+}
+
+/** Every Claude profile other than Personal, with its latest limits. */
+export function getProfileUsageLimits(): Promise<ProfileLimits[]> {
+  return invoke("usage_limits_profiles");
+}

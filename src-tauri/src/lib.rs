@@ -414,6 +414,7 @@ pub fn run() {
             remote::assistant::assistant_remote_conns,
             remote::assistant::assistant_remote_push,
             statusline::usage_limits,
+            statusline::usage_limits_profiles,
             git::detect_repo,
             git::provision_worktree,
             git::run_worktree_setup,

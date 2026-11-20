@@ -14,7 +14,7 @@
 //!
 //! The events we subscribe to are the §4.4 subset the status engine acts on.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use serde_json::{json, Map, Value};
 
@@ -77,10 +77,9 @@ pub const PERMISSION_TIMEOUT_S: u64 = 60;
 /// Install (or refresh) the Workbench hooks pointing at `port`. Returns `Ok(true)`
 /// if the file was written, `Ok(false)` if it was already up to date (the common
 /// case on relaunch — proving the install is idempotent).
-pub fn install_hooks(port: u16) -> Result<bool, String> {
-    let path = settings_path()?;
+pub fn install_hooks(path: &Path, port: u16) -> Result<bool, String> {
     let url = format!("http://127.0.0.1:{port}{HOOK_PATH}");
-    install_hooks_at(&path, &url)
+    install_hooks_at(path, &url)
 }
 
 /// Core install, parameterised on path + URL so it's testable without touching a
@@ -99,8 +98,8 @@ fn install_hooks_at(path: &Path, url: &str) -> Result<bool, String> {
 /// Remove this build's hook entries, leaving foreign hooks (and the other build's
 /// Workbench entries) untouched. The dev build calls this on exit so its entries
 /// don't linger pointing at a dead port. Returns `Ok(true)` if the file was written.
-pub fn uninstall_hooks() -> Result<bool, String> {
-    uninstall_hooks_at(&settings_path()?)
+pub fn uninstall_hooks(path: &Path) -> Result<bool, String> {
+    uninstall_hooks_at(path)
 }
 
 fn uninstall_hooks_at(path: &Path) -> Result<bool, String> {
@@ -232,6 +231,10 @@ fn is_ours(hook: &Value) -> bool {
 /// crash mid-write can't truncate the user's config. `pub(crate)` so step 3.2's
 /// statusline installer writes the shared file the same crash-safe way.
 pub(crate) fn write_settings(path: &Path, settings: &Value) -> Result<(), String> {
+    // Write to a link's target, so a profile's `settings.json` that links to
+    // Personal's (profiles plan P1.2) stays a link instead of being renamed over.
+    let resolved = crate::profiles::real(path);
+    let path = resolved.as_path();
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir).map_err(|e| format!("creating {}: {e}", dir.display()))?;
     }
@@ -244,17 +247,11 @@ pub(crate) fn write_settings(path: &Path, settings: &Value) -> Result<(), String
     })
 }
 
-/// `~/.claude/settings.json`. `pub(crate)` so step 3.2 resolves the same file.
-pub(crate) fn settings_path() -> Result<PathBuf, String> {
-    let home = std::env::var_os("USERPROFILE")
-        .or_else(|| std::env::var_os("HOME"))
-        .ok_or("no home directory (USERPROFILE/HOME unset)")?;
-    Ok(PathBuf::from(home).join(".claude").join("settings.json"))
-}
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     fn temp_settings(tag: &str) -> PathBuf {
@@ -286,6 +283,30 @@ mod tests {
             }
         }
         n
+    }
+
+    /// A profile's `settings.json` that links to Personal's (profiles plan P1.2)
+    /// stays a link: the install writes through to the target.
+    #[test]
+    fn install_through_a_symlinked_settings_file_keeps_the_link() {
+        let target = temp_settings("link-target");
+        std::fs::write(&target, r#"{"theme":"dark"}"#).unwrap();
+        let link = target.with_file_name("profile-settings.json");
+        #[cfg(windows)]
+        let made = std::os::windows::fs::symlink_file(&target, &link).is_ok();
+        #[cfg(unix)]
+        let made = std::os::unix::fs::symlink(&target, &link).is_ok();
+        if !made {
+            eprintln!("skipped: no permission to make a symlink");
+            return;
+        }
+        let url = format!("http://127.0.0.1:1{HOOK_PATH}");
+        assert!(install_hooks_at(&link, &url).unwrap());
+        assert!(std::fs::symlink_metadata(&link).unwrap().file_type().is_symlink());
+        let written = read(&target);
+        assert_eq!(written["theme"], "dark");
+        assert_eq!(ours_count(&written), HOOK_EVENTS.len());
+        let _ = std::fs::remove_dir_all(target.parent().unwrap());
     }
 
     #[test]

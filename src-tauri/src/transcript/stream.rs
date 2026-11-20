@@ -44,7 +44,7 @@ use notify::{Config, RecommendedWatcher, RecursiveMode, Watcher};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager};
 
-use super::{claude_projects_dir, norm_dir, resolve_transcript};
+use super::{find_transcript, norm_dir};
 use crate::pty::PtyManager;
 
 /// New complete lines of a followed transcript.
@@ -306,6 +306,14 @@ fn accept_hook_path(projects_dir: &Path, reported: &str) -> Option<PathBuf> {
     norm_dir(reported).starts_with(&root).then_some(path)
 }
 
+/// [`accept_hook_path`] against every profile's `projects/`, as configured and as
+/// resolved (profiles plan P1.2).
+fn accept_hook_path_any(app: &AppHandle, reported: &str) -> Option<PathBuf> {
+    let db = app.state::<crate::db::Db>();
+    let roots = crate::profiles::projects_roots(&*db.conn.lock().ok()?);
+    roots.iter().find_map(|root| accept_hook_path(root, reported))
+}
+
 // --- state ------------------------------------------------------------------
 
 enum Msg {
@@ -375,9 +383,7 @@ fn target(app: &AppHandle, instance_id: &str) -> Target {
     // worktree) is looked for by session id before being trusted.
     let path = match reported {
         Some(p) if p.is_file() => Some(p),
-        reported => claude_projects_dir()
-            .and_then(|dir| resolve_transcript(&dir, &session_id))
-            .or(reported),
+        reported => find_transcript(app, &session_id).or(reported),
     };
     Target::Session { session_id, path }
 }
@@ -395,7 +401,7 @@ pub fn on_hook(
     let streams = app.state::<Streams>();
     let mut inner = streams.inner.lock().unwrap();
     if let Some(path) = transcript_path
-        .and_then(|p| claude_projects_dir().and_then(|dir| accept_hook_path(&dir, p)))
+        .and_then(|p| accept_hook_path_any(app, p))
     {
         // Sessions come and go; keep the map to the ones that are still live.
         if !inner.paths.contains_key(session_id) && inner.paths.len() >= 64 {
@@ -709,7 +715,7 @@ fn current(app: &AppHandle, instance_id: &str) -> (Option<String>, Option<PathBu
         // Duck can read and summarize a finished session (W3).
         Target::Keep => match last_session(app, instance_id) {
             Some(sid) => {
-                let path = claude_projects_dir().and_then(|dir| resolve_transcript(&dir, &sid));
+                let path = find_transcript(app, &sid);
                 (Some(sid), path)
             }
             None => (None, None),
@@ -790,6 +796,7 @@ fn session_id_ok(id: &str) -> bool {
 /// which may belong to no instance now.
 #[tauri::command(async)]
 pub fn transcript_read_session_back(
+    app: AppHandle,
     session_id: String,
     before_offset: Option<u64>,
     max_bytes: Option<u64>,
@@ -797,7 +804,7 @@ pub fn transcript_read_session_back(
     if !session_id_ok(&session_id) {
         return Err("not a session id".into());
     }
-    let path = claude_projects_dir().and_then(|dir| resolve_transcript(&dir, &session_id));
+    let path = find_transcript(&app, &session_id);
     page(Some(session_id), path, |p| read_back(p, before_offset, page_bytes(max_bytes)))
 }
 

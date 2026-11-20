@@ -29,8 +29,10 @@ main plan's Definition of Done applies.
    installed again inside the profile. After seeding, the two profiles change
    independently.
 5. **Duck stays on Personal.** Its own brain, and the transcripts it scans for itself,
-   use the Personal profile. **The usage-limit meter is per profile**, because each
-   account has its own limits.
+   use the Personal profile. **Each profile's limits are tracked separately**, because
+   each account has its own. The meter always shows Personal's, and the other
+   profiles' limits appear in its tooltip (decided 2026-11-20: Personal is the one
+   you usually want to see).
 6. **Remote (ssh) projects ignore the profile.** The remote machine has its own config.
 7. **Profiles are local to each machine.** They aren't replicated across the fleet,
    just like projects.
@@ -105,19 +107,29 @@ So every per-profile path is **resolved through links before use**:
     distinct real `settings.json`, after resolving links. Adding a profile installs
     into it. The dev build's exit cleanup uninstalls from all of them. The statusline
     script is written next to each real `settings.json`.
-  - **Transcripts.** `claude_projects_dir()` becomes `projects_dirs()` (distinct).
-    `resolve_transcript` searches all of them. `accept_hook_path` accepts a path under
-    any of them. The resume picker lists the project's own profile's dir only.
-  - **Usage limits per profile.** The statusline script POSTs `CLAUDE_CONFIG_DIR` along
-    with the payload. `LimitsState` becomes a map from profile to limits, persisted per
-    profile. The meter shows the focused project's profile, labelled when it isn't
-    Personal.
+  - **Transcripts.** `projects_dirs()` lists the distinct `projects/` folders, and
+    `find_transcript` searches all of them. A hook-reported path is accepted under any
+    profile's `projects/`, whether reached through a link or directly. The resume
+    picker searches every profile, still filtered by the recorded cwd, because its
+    callers know only the folder. *(The plan had said "the project's own profile only".
+    A session from another, unlinked profile in the same folder would be listed but
+    can't be resumed there. That's rare, and accepted.)* Duck's own reads
+    (`claude_projects_dir`) stay on Personal, and now honor Workbench's own
+    `CLAUDE_CONFIG_DIR`.
+  - **Usage limits per profile.** The statusline script adds `workbench_config_dir`
+    (its `CLAUDE_CONFIG_DIR`) to the POST. Ingest places a Workbench session by its
+    project's profile, and any other session by that dir. An unknown dir is dropped,
+    and a POST without the field counts as Personal. Personal keeps `LimitsState` and
+    drives the meter. Other profiles are stored in `meta`
+    (`usage_limits_snapshot:<id>`) and shown in the meter's tooltip
+    (`usage_limits_profiles`), read when the pointer hovers over it.
 - **Key files:** `src-tauri/src/hooks/{mod,install}.rs`, `src-tauri/src/statusline/mod.rs`,
   `src-tauri/src/transcript/{mod,stream}.rs`, the usage meter.
 - **Done when:** In a separate (non-linked) profile, a console goes busy and idle, its
-  transcript streams, and resume lists its sessions. Two accounts show two meters.
-  Tests: installing through a symlinked `settings.json` keeps the symlink;
-  `accept_hook_path` accepts a path in a second dir.
+  transcript streams, and resume lists its sessions. A tinywizard session's limits
+  appear in the meter's tooltip, not on the meter (**live test owed**). Tests:
+  installing through a symlinked `settings.json` keeps the symlink, and a file
+  reached through a junction resolves to the real one.
 
 ## Phase P2 — Profile contents
 
@@ -144,8 +156,7 @@ So every per-profile path is **resolved through links before use**:
 - **Done when:** In a tinywizard project, the MCP manager lists tinywizard's own
   `mcpServers`, and the skills manager lists the shared skills once.
 
-## Open questions
+## Settled since
 
-- Plugins in a seeded (not linked) profile: is installing them again inside the
-  profile enough, or should seeding offer a junction for `plugins/` the way
-  tinywizard does?
+- **Plugins in a seeded profile (2026-11-20):** a seeded profile installs its plugins
+  again and doesn't link `plugins/`. Tinywizard's existing links stay as they are.
