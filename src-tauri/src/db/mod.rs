@@ -298,6 +298,17 @@ const MIGRATIONS: &[&str] = &[
     r#"
     ALTER TABLE fleet_members ADD COLUMN lan TEXT;
     "#,
+    // v21 -> v22: Claude profiles (profiles plan P1.1). A profile is a Claude Code
+    // config dir (`CLAUDE_CONFIG_DIR`); a project with no profile runs on Personal.
+    r#"
+    CREATE TABLE profiles (
+        id          TEXT PRIMARY KEY,
+        name        TEXT NOT NULL,
+        config_dir  TEXT NOT NULL,
+        created_at  INTEGER NOT NULL
+    );
+    ALTER TABLE projects ADD COLUMN profile_id TEXT REFERENCES profiles(id) ON DELETE SET NULL;
+    "#,
 ];
 
 /// Apply any migrations the database hasn't seen yet, advancing

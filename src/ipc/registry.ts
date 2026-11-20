@@ -39,6 +39,9 @@ export interface Project {
   /** The folder its notes live in, shared across machines (step N3); null until
    *  its notes are linked or started. */
   notesKey: string | null;
+  /** The Claude profile (config dir) its consoles run under (profiles plan P1.1);
+   *  null is Personal. */
+  profileId: string | null;
   sortOrder: number;
   createdAt: number;
 }
@@ -104,6 +107,7 @@ export interface NewProject {
   remoteDir?: string | null;
   defaultModel?: string | null;
   defaultPermissionMode?: string | null;
+  profileId?: string | null;
 }
 
 export interface ProjectPatch {
@@ -117,6 +121,7 @@ export interface ProjectPatch {
   remoteDir?: string | null;
   defaultModel?: string | null;
   defaultPermissionMode?: string | null;
+  profileId?: string | null;
   sortOrder?: number;
 }
 

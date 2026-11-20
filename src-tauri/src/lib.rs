@@ -18,6 +18,7 @@ mod layout;
 mod mcp;
 mod notes;
 mod plugins;
+mod profiles;
 mod pty;
 mod registry;
 mod remote;
@@ -504,6 +505,11 @@ pub fn run() {
             git::git_watch_stop,
             git::git_cancel,
             git::git_command_log,
+            profiles::profiles_personal,
+            profiles::profiles_list,
+            profiles::profiles_add,
+            profiles::profiles_rename,
+            profiles::profiles_remove,
             registry::create_group,
             registry::get_groups,
             registry::edit_group,

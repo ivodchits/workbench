@@ -8,6 +8,14 @@ import { useCallback, useEffect, useState, type CSSProperties } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { GLYPH } from "../../theme";
 import { detectRepo } from "../../ipc/git";
+import {
+  addProfile,
+  listProfiles,
+  personalProfile,
+  removeProfile,
+  type ClaudeProfile,
+  type PersonalProfile,
+} from "../../ipc/profiles";
 import type { Group, Project } from "../../ipc/registry";
 import { addGroup, addProject, updateProject } from "../../state/registry";
 import { SESSION_MODELS } from "../../util/models";
@@ -24,6 +32,9 @@ interface ProjectDialogProps {
 /** Sentinel select values that aren't real group ids. */
 const NO_GROUP = "__none__";
 const NEW_GROUP = "__new__";
+/** Profile select values: Personal (no profile) and "add one". */
+const PERSONAL = "";
+const NEW_PROFILE = "__new__";
 
 function ProjectDialog({ project, groups, onClose }: ProjectDialogProps) {
   const editing = project !== undefined;
@@ -45,6 +56,11 @@ function ProjectDialog({ project, groups, onClose }: ProjectDialogProps) {
   const [model, setModel] = useState(project?.defaultModel ?? "");
   const [permissionMode, setPermissionMode] = useState(project?.defaultPermissionMode ?? "");
   const permissionModes = usePermissionModes(permissionMode || null);
+  const [profileChoice, setProfileChoice] = useState<string>(project?.profileId ?? PERSONAL);
+  const [profiles, setProfiles] = useState<ClaudeProfile[]>([]);
+  const [personal, setPersonal] = useState<PersonalProfile | null>(null);
+  const [newProfileName, setNewProfileName] = useState("");
+  const [newProfileDir, setNewProfileDir] = useState("");
   const [gitRepo, setGitRepo] = useState<boolean | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -65,6 +81,44 @@ function ProjectDialog({ project, groups, onClose }: ProjectDialogProps) {
     },
     [branch, name],
   );
+
+  const loadProfiles = useCallback(async () => {
+    try {
+      const [list, own] = await Promise.all([listProfiles(), personalProfile()]);
+      setProfiles(list);
+      setPersonal(own);
+    } catch (e) {
+      setError(String(e));
+    }
+  }, []);
+  useEffect(() => {
+    void loadProfiles();
+  }, [loadProfiles]);
+
+  const browseProfileDir = useCallback(async () => {
+    const picked = await open({
+      directory: true,
+      multiple: false,
+      title: "Choose the profile's Claude config folder",
+      defaultPath: newProfileDir || undefined,
+    });
+    if (typeof picked === "string") setNewProfileDir(picked);
+  }, [newProfileDir]);
+
+  const forgetProfile = useCallback(async () => {
+    const p = profiles.find((x) => x.id === profileChoice);
+    if (!p) return;
+    const others = p.projectCount - (project?.profileId === p.id ? 1 : 0);
+    const note = others > 0 ? ` ${others} other project(s) using it go back to Personal.` : "";
+    if (!window.confirm(`Forget the profile "${p.name}"? Its folder stays on disk.${note}`)) return;
+    try {
+      await removeProfile(p.id);
+      setProfileChoice(PERSONAL);
+      await loadProfiles();
+    } catch (e) {
+      setError(String(e));
+    }
+  }, [profiles, profileChoice, project, loadProfiles]);
 
   // In edit mode, surface the git state of the existing path on open — local
   // projects only (a remote project's path lives on the host, not this disk).
@@ -114,6 +168,14 @@ function ProjectDialog({ project, groups, onClose }: ProjectDialogProps) {
         groupId = groupChoice;
       }
 
+      // Resolve the Claude profile the same way: add the new one first if asked.
+      let profileId: string | null = profileChoice || null;
+      if (profileChoice === NEW_PROFILE) {
+        if (!newProfileName.trim()) throw new Error("Enter a name for the new profile.");
+        if (!newProfileDir.trim()) throw new Error("Choose a config folder for the new profile.");
+        profileId = (await addProfile(newProfileName, newProfileDir)).id;
+      }
+
       // A remote project mirrors its remote dir into `rootPath` (so display code
       // that reads the root keeps working) and carries no local worktree config; a
       // local project clears the remote fields. Sending the remote fields explicitly
@@ -130,6 +192,7 @@ function ProjectDialog({ project, groups, onClose }: ProjectDialogProps) {
             remoteDir: remoteDir.trim(),
             defaultModel: model || null,
             defaultPermissionMode: permissionMode || null,
+            profileId,
           }
         : {
             name: name.trim(),
@@ -142,6 +205,7 @@ function ProjectDialog({ project, groups, onClose }: ProjectDialogProps) {
             remoteDir: null,
             defaultModel: model || null,
             defaultPermissionMode: permissionMode || null,
+            profileId,
           };
       if (editing && project) {
         await updateProject(project.id, fields);
@@ -169,6 +233,9 @@ function ProjectDialog({ project, groups, onClose }: ProjectDialogProps) {
     copyEnv,
     model,
     permissionMode,
+    profileChoice,
+    newProfileName,
+    newProfileDir,
     onClose,
   ]);
 
@@ -286,6 +353,63 @@ function ProjectDialog({ project, groups, onClose }: ProjectDialogProps) {
           )}
         </Field>
 
+        {/* The Claude profile (account) its consoles run under (profiles plan P1.1).
+            Local only: a remote project's host has its own config. */}
+        {!remote && (
+          <Field label="claude profile">
+            <div style={{ display: "flex", gap: 7 }}>
+              <select
+                value={profileChoice}
+                onChange={(e) => setProfileChoice(e.target.value)}
+                style={{ ...inputStyle, flex: 1 }}
+              >
+                <option value={PERSONAL}>Personal{personal?.loggedIn === false ? " (not logged in)" : ""}</option>
+                {profiles.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.name}
+                    {p.loggedIn ? "" : " (not logged in)"}
+                  </option>
+                ))}
+                <option value={NEW_PROFILE}>+ new profile…</option>
+              </select>
+              {profiles.some((p) => p.id === profileChoice) && (
+                <button onClick={() => void forgetProfile()} style={buttonStyle} title="Forget this profile">
+                  forget
+                </button>
+              )}
+            </div>
+            {profileChoice === NEW_PROFILE && (
+              <>
+                <input
+                  value={newProfileName}
+                  onChange={(e) => setNewProfileName(e.target.value)}
+                  placeholder="profile name, e.g. Team"
+                  spellCheck={false}
+                  autoFocus
+                  style={{ ...inputStyle, marginTop: 7 }}
+                />
+                <div style={{ display: "flex", gap: 7, marginTop: 7 }}>
+                  <input
+                    value={newProfileDir}
+                    onChange={(e) => setNewProfileDir(e.target.value)}
+                    placeholder="config folder, e.g. ~/.claude-team"
+                    spellCheck={false}
+                    style={{ ...inputStyle, flex: 1 }}
+                  />
+                  <button onClick={() => void browseProfileDir()} style={buttonStyle}>
+                    browse…
+                  </button>
+                </div>
+              </>
+            )}
+            <ProfileHint
+              choice={profileChoice}
+              profiles={profiles}
+              personal={personal}
+            />
+          </Field>
+        )}
+
         {/* The model new sessions start on (step M1); each session can pick its own
             on its card. */}
         <Field label="default model">
@@ -375,6 +499,41 @@ function ProjectDialog({ project, groups, onClose }: ProjectDialogProps) {
         </div>
       </div>
     </Modal>
+  );
+}
+
+function ProfileHint({
+  choice,
+  profiles,
+  personal,
+}: {
+  choice: string;
+  profiles: ClaudeProfile[];
+  personal: PersonalProfile | null;
+}) {
+  const hint: CSSProperties = { font: "10px var(--wb-mono)", color: "var(--wb-textFaint)", marginTop: 4 };
+  if (choice === NEW_PROFILE) {
+    return (
+      <span style={hint}>
+        A folder you already set up is used as it is; a new one starts empty. Consoles get it as
+        CLAUDE_CONFIG_DIR, and the first one asks you to log in.
+      </span>
+    );
+  }
+  const p = profiles.find((x) => x.id === choice);
+  const dir = p ? p.configDir : personal?.configDir;
+  const loggedIn = p ? p.loggedIn : personal?.loggedIn;
+  if (!dir) return null;
+  return (
+    <span style={hint}>
+      {dir}
+      {loggedIn === false && (
+        <span style={{ color: "var(--wb-working)" }}>
+          {" "}
+          {GLYPH.warn} not logged in: the first console here will ask
+        </span>
+      )}
+    </span>
   );
 }
 
