@@ -96,6 +96,7 @@ import {
   gitCommitDetail,
   gitCreateBranch,
   gitDeleteBranch,
+  cleanupWorktree,
   gitDeleteRemoteBranch,
   gitDiscard,
   gitFetch,
@@ -146,6 +147,8 @@ import { revealPath } from "../../ipc/os";
 import { useGits, type GitSession } from "../../state/git";
 import { getRegistry } from "../../state/registry";
 import { getOpenConsoles } from "../../state/consoles";
+import { isConsoleLive, revertToRoot, sessionsInDir } from "../../state/worktree";
+import type { Instance } from "../../ipc/registry";
 import { openProjectFile } from "../../state/editors";
 import { registerCommand } from "../../keyboard/bus";
 import Modal from "../InstanceManager/Modal";
@@ -254,6 +257,10 @@ function absoluteIn(repoRoot: string, rel: string): string {
 type Confirm =
   | { kind: "checkout"; reference: string; warnLive: boolean }
   | { kind: "deleteBranch"; name: string }
+  // The worktree's folder goes with it, uncommitted work and all. `parked` are the
+  // rail's sessions in that folder (none running — those refuse the cleanup); they
+  // are pointed back at the project root afterwards.
+  | { kind: "cleanupWorktree"; branch: string; path: string; parked: Instance[] }
   | { kind: "discard"; tracked: string[]; untracked: string[] }
   | { kind: "stashDrop"; stash: Stash }
   | { kind: "push"; force: boolean }
@@ -719,6 +726,23 @@ function GitBody({
     branchFrom: (startPoint) => setCreating({ startPoint }),
     rename: setRenaming,
     deleteBranch: (name) => setConfirm({ kind: "deleteBranch", name }),
+    cleanupWorktree: (b) => {
+      const path = b.worktree;
+      if (!path) return;
+      const here = sessionsInDir(getRegistry().instances, path);
+      // A running session's console holds the folder open (Windows won't delete
+      // it) and would lose its working directory mid-turn — so refuse, and say who.
+      const live = here.filter((i) => isConsoleLive(i.id));
+      if (live.length > 0) {
+        const names = live.map((i) => `"${i.title}"`).join(", ");
+        setNotice({
+          kind: "err",
+          text: `${names} ${live.length === 1 ? "is" : "are"} running in ${path} — close ${live.length === 1 ? "it" : "them"} first`,
+        });
+        return;
+      }
+      setConfirm({ kind: "cleanupWorktree", branch: b.name, path, parked: here });
+    },
     push: requestPush,
     pull: () => void runNet("pulling", () => gitPull(repoRoot), "pulled"),
     // Merge, fast-forward and rebase all rewrite the working tree under whatever
@@ -1117,6 +1141,18 @@ function GitBody({
                   `reset ${mode} to ${commit.short}`,
                   `reset ${mode}`,
                 );
+                break;
+              }
+              case "cleanupWorktree": {
+                const { path, parked } = confirm;
+                void run(async () => {
+                  const out = await cleanupWorktree(repoRoot, path);
+                  // The folder is gone: sessions that worked there go back to the
+                  // project root rather than pointing at nothing.
+                  const project = getRegistry().projects.find((p) => p.id === session.projectId);
+                  if (project) for (const i of parked) await revertToRoot(i, project);
+                  return out;
+                }, (out) => out.replace(/\n/g, " · "));
                 break;
               }
               case "deleteTag": {
@@ -1760,6 +1796,25 @@ function describeConfirm(c: Confirm): { title: string; body: React.ReactNode; la
         ),
       };
     }
+    case "cleanupWorktree":
+      return {
+        title: "clean up worktree",
+        label: `${GLYPH.fail} clean up`,
+        danger: true,
+        body: (
+          <>
+            Delete the worktree at <Ref>{c.path}</Ref> from disk and force-delete its branch{" "}
+            <Ref>{c.branch}</Ref>? Uncommitted changes and untracked files in it are lost, and so
+            are commits on the branch that aren't merged anywhere.
+            {c.parked.length > 0 && (
+              <div style={{ marginTop: 8, color: "var(--wb-working)" }}>
+                {GLYPH.warn} {c.parked.map((i) => `"${i.title}"`).join(", ")}{" "}
+                {c.parked.length === 1 ? "works" : "work"} there and will be moved back to the project root.
+              </div>
+            )}
+          </>
+        ),
+      };
     case "deleteTag":
       return {
         title: "delete tag",

@@ -778,6 +778,86 @@ pub fn remove_worktree(
     Ok(())
 }
 
+/// Clean up a linked worktree from the Git panel's branch menu: delete its folder,
+/// prune git's record of it, and force-delete the branch it had checked out.
+///
+/// Unlike `remove_worktree` (session teardown), the folder isn't handed to `git
+/// worktree remove --force`: on Windows git's recursive delete walks *through*
+/// junctions, and a worktree borrowing the main checkout's `node_modules` that way
+/// would take the main checkout's packages with it. `delete_tree` unlinks links
+/// instead of entering them. Uncommitted work in the worktree goes too — the panel
+/// asks first. Refused for the main worktree and for anything that isn't one of
+/// this repo's worktrees.
+#[tauri::command]
+pub fn cleanup_worktree(repo_root: String, worktree_path: String) -> Result<String, String> {
+    let root = Path::new(&repo_root);
+    let list = worktrees_of(root)?;
+    let key = path_key(&worktree_path);
+    let w = list
+        .iter()
+        .find(|w| path_key(&w.path) == key)
+        .ok_or_else(|| format!("{worktree_path} isn't a worktree of this repo"))?;
+    if w.is_main {
+        return Err(format!("{} is the project's own folder — it can't be cleaned up", w.path));
+    }
+    if w.locked {
+        return Err(format!("{} is locked (git worktree unlock it first)", w.path));
+    }
+    let dir = PathBuf::from(&w.path);
+    if dir.exists() {
+        delete_tree(&dir).map_err(|e| format!("couldn't delete {}: {e}", w.path))?;
+    }
+    git_run(root, &["worktree", "prune"])?;
+    let mut done = vec![format!("removed worktree {}", w.path)];
+    if let Some(b) = w.branch.as_deref().filter(|b| !b.is_empty()) {
+        git_run(root, &["branch", "-D", b])
+            .map_err(|e| format!("removed the worktree, but deleting {b} failed: {e}"))?;
+        done.push(format!("deleted branch {b}"));
+    }
+    Ok(done.join("\n"))
+}
+
+/// Delete a directory tree without ever following a link out of it: a symlink or
+/// junction is removed as a link, its target untouched. Read-only files are made
+/// writable first (Windows refuses to delete them otherwise).
+fn delete_tree(dir: &Path) -> std::io::Result<()> {
+    for entry in std::fs::read_dir(dir)? {
+        let path = entry?.path();
+        let meta = std::fs::symlink_metadata(&path)?;
+        let ft = meta.file_type();
+        if ft.is_symlink() || is_reparse_point(&meta) {
+            // A directory link (symlink-to-dir or junction) goes with remove_dir on
+            // Windows, a file link with remove_file. Neither touches the target.
+            std::fs::remove_dir(&path).or_else(|_| std::fs::remove_file(&path))?;
+        } else if ft.is_dir() {
+            delete_tree(&path)?;
+        } else {
+            let mut perms = meta.permissions();
+            if perms.readonly() {
+                #[allow(clippy::permissions_set_readonly_false)]
+                perms.set_readonly(false);
+                std::fs::set_permissions(&path, perms)?;
+            }
+            std::fs::remove_file(&path)?;
+        }
+    }
+    std::fs::remove_dir(dir)
+}
+
+/// Whether `meta` (from `symlink_metadata`) is a reparse point — a junction, which
+/// `is_symlink` doesn't promise to report.
+#[cfg(windows)]
+fn is_reparse_point(meta: &std::fs::Metadata) -> bool {
+    use std::os::windows::fs::MetadataExt;
+    const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+    meta.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
+}
+
+#[cfg(not(windows))]
+fn is_reparse_point(_meta: &std::fs::Metadata) -> bool {
+    false
+}
+
 // ---------------------------------------------------------------------------
 // Diff / Review (step 2.7) — design §5 "Diff / Review".
 // ---------------------------------------------------------------------------
@@ -1420,6 +1500,9 @@ pub struct Branch {
     /// `None`. Git refuses to check such a branch out here, so the panel marks the
     /// row instead of letting the click fail.
     pub worktree: Option<String>,
+    /// That worktree is the project's own folder (the main worktree), which only
+    /// happens when the panel is looking at a linked one. It's never cleaned up.
+    pub worktree_main: bool,
 }
 
 /// The project's branches (step 3.11): local branches with ahead/behind, the
@@ -1474,7 +1557,10 @@ pub fn git_branches(repo_root: String) -> Result<Branches, String> {
         // The current worktree is in that map too, under the branch it has checked
         // out — which is this one when `is_head`. Skipping it there is what makes
         // the flag mean "held *somewhere else*" without comparing any paths.
-        let worktree = (!is_head).then(|| held.get(&name).cloned()).flatten();
+        let (worktree, worktree_main) = match held.get(&name).filter(|_| !is_head) {
+            Some((path, main)) => (Some(path.clone()), *main),
+            None => (None, false),
+        };
         local.push(Branch {
             name,
             upstream: (!upstream.is_empty()).then(|| upstream.to_owned()),
@@ -1485,6 +1571,7 @@ pub fn git_branches(repo_root: String) -> Result<Branches, String> {
             subject,
             date,
             worktree,
+            worktree_main,
         });
     }
     // HEAD is detached when no branch row was the current one, yet HEAD resolves.
@@ -1512,7 +1599,9 @@ pub fn git_branches(repo_root: String) -> Result<Branches, String> {
 /// already checked out in another worktree; until now that surfaced as a raw error
 /// string *after* the click. Display-only — the worktree lifecycle itself stays an
 /// instance-card action (steps 2.4 / 2.5).
-fn worktree_branches(root: &Path) -> std::collections::HashMap<String, String> {
+///
+/// Each path comes with whether it's the main worktree — the first record git prints.
+fn worktree_branches(root: &Path) -> std::collections::HashMap<String, (String, bool)> {
     let mut map = std::collections::HashMap::new();
     let Some(out) = git_stdout(root, &["worktree", "list", "--porcelain"]) else {
         return map;
@@ -1520,15 +1609,17 @@ fn worktree_branches(root: &Path) -> std::collections::HashMap<String, String> {
     // Records are blank-line separated, `worktree <path>` first and an optional
     // `branch <ref>` later; a detached worktree has no branch line at all.
     let mut path: Option<&str> = None;
+    let mut records = 0usize;
     for line in out.lines() {
         let line = line.trim_end();
         if let Some(p) = line.strip_prefix("worktree ") {
             path = Some(p.trim());
+            records += 1;
         } else if let Some(b) = line.strip_prefix("branch ") {
             let b = b.trim();
             let name = b.strip_prefix("refs/heads/").unwrap_or(b);
             if let Some(p) = path {
-                map.insert(name.to_owned(), p.to_owned());
+                map.insert(name.to_owned(), (p.to_owned(), records == 1));
             }
         } else if line.is_empty() {
             path = None;
@@ -3779,6 +3870,70 @@ mod tests {
             "but the branch *this* worktree has out isn't 'held elsewhere': {head:?}"
         );
         assert!(!head.subject.is_empty(), "and every row carries its tip subject");
+        assert!(!feature.worktree_main, "a linked worktree isn't the main one");
+
+        // Seen from the linked worktree, the root's branch is held by the main one.
+        let from_wt = git_branches(wt.clone()).unwrap();
+        let main = from_wt.local.iter().find(|b| b.worktree.is_some()).unwrap();
+        assert!(main.worktree_main, "the main worktree is flagged: {main:?}");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// The Git panel's worktree cleanup deletes the folder, its git record and the
+    /// branch — and unlinks a junction inside it rather than emptying its target.
+    #[test]
+    fn cleanup_worktree_removes_folder_record_and_branch_but_not_link_targets() {
+        let dir = temp_dir("cleanup-wt");
+        let Some(_base) = diverged_repo(&dir) else {
+            std::fs::remove_dir_all(&dir).ok();
+            return;
+        };
+        let root = dir.to_string_lossy().into_owned();
+        let wt_dir = dir.join("wt");
+        let wt = wt_dir.to_string_lossy().into_owned();
+        if git_run(&dir, &["worktree", "add", "-q", &wt, "feature"]).is_err() {
+            std::fs::remove_dir_all(&dir).ok();
+            return;
+        }
+        // Something outside the worktree that a link inside it points at.
+        let shared = dir.join("shared");
+        std::fs::create_dir_all(&shared).unwrap();
+        std::fs::write(shared.join("keep.txt"), "keep").unwrap();
+        let link = wt_dir.join("node_modules");
+        #[cfg(windows)]
+        let linked = std::process::Command::new("cmd")
+            .args(["/C", "mklink", "/J"])
+            .arg(&link)
+            .arg(&shared)
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false);
+        #[cfg(unix)]
+        let linked = std::os::unix::fs::symlink(&shared, &link).is_ok();
+        // An untracked, read-only file — the kind a plain delete trips on.
+        let ro = wt_dir.join("ro.txt");
+        std::fs::write(&ro, "x").unwrap();
+        let mut perms = std::fs::metadata(&ro).unwrap().permissions();
+        perms.set_readonly(true);
+        std::fs::set_permissions(&ro, perms).unwrap();
+
+        // The main worktree is refused outright.
+        assert!(cleanup_worktree(wt.clone(), root.clone()).is_err());
+
+        cleanup_worktree(root.clone(), wt.clone()).unwrap();
+        assert!(!wt_dir.exists(), "the folder is gone");
+        assert!(
+            !worktrees_of(&dir).unwrap().iter().any(|w| !w.is_main),
+            "git no longer lists it"
+        );
+        assert!(
+            !git_branches(root.clone()).unwrap().local.iter().any(|b| b.name == "feature"),
+            "the branch is deleted"
+        );
+        if linked {
+            assert!(shared.join("keep.txt").exists(), "the link's target survives");
+        }
 
         std::fs::remove_dir_all(&dir).ok();
     }

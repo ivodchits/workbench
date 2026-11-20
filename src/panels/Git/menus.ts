@@ -381,6 +381,9 @@ export interface BranchActions {
   branchFrom: (startPoint: string) => void;
   rename: (branch: Branch) => void;
   deleteBranch: (name: string) => void;
+  /** Delete the worktree holding this branch — folder, git record and branch —
+   *  after a confirm. Only offered on a branch a linked worktree has out. */
+  cleanupWorktree: (branch: Branch) => void;
   /** Repo-level push/pull — they act on HEAD, so they're only offered on it. */
   push: () => void;
   pull: () => void;
@@ -479,6 +482,18 @@ export function localBranchMenu(b: Branch, a: BranchActions): MenuEntry[] {
         ? "can't delete the branch you're on"
         : held ?? "force-delete this branch — asks first",
     },
+    // The way to delete a branch a worktree holds: take the worktree with it.
+    ...(b.worktree && !b.worktreeMain
+      ? [
+          {
+            label: "✗ clean up worktree",
+            danger: true,
+            onClick: () => a.cleanupWorktree(b),
+            disabled: a.busy,
+            title: `delete ${b.worktree} from disk, its worktree record and this branch — asks first`,
+          } satisfies MenuEntry,
+        ]
+      : []),
     {
       label: "⎇ create branch from",
       onClick: () => a.branchFrom(b.name),

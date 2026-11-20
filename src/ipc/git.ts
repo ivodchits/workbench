@@ -165,6 +165,15 @@ export function removeWorktree(
   return invoke("remove_worktree", { repoRoot, worktreePath, branch, deleteBranch, force });
 }
 
+/**
+ * Clean up a linked worktree from the Git panel: delete its folder (unlinking any
+ * junction inside rather than following it), prune git's record, and force-delete
+ * the branch it had out. Uncommitted work there is lost. Resolves to a summary.
+ */
+export function cleanupWorktree(repoRoot: string, worktreePath: string): Promise<string> {
+  return invoke("cleanup_worktree", { repoRoot, worktreePath });
+}
+
 // --- diff / review (step 2.7) -----------------------------------------------
 
 /** One changed file in an instance's diff vs its base (step 2.7). */
@@ -319,6 +328,9 @@ export interface Branch {
   /** Path of *another* worktree holding this branch (G4) — git won't let it be
    *  checked out here while that's true. Null when it's free. */
   worktree: string | null;
+  /** That worktree is the project's own folder (seen from a linked one) — it's
+   *  never offered for cleanup. */
+  worktreeMain: boolean;
 }
 
 /** The project's branches: locals (with ahead/behind), current, and remotes. */

@@ -243,7 +243,7 @@ describe("morning_briefing", () => {
   it("reports only the git exceptions of projects in use", async () => {
     const now = Date.now();
     const branch = (more: Record<string, unknown> = {}) => ({
-      name: "main", upstream: "origin/main", ahead: 0, behind: 0, isHead: true, short: "abc", subject: "", date: 0, worktree: null, ...more,
+      name: "main", upstream: "origin/main", ahead: 0, behind: 0, isHead: true, short: "abc", subject: "", date: 0, worktree: null, worktreeMain: false, ...more,
     });
     const branches = (b: ReturnType<typeof branch>) => ({ current: "main", detached: false, local: [b], remote: [], remotes: [] });
     const dirty = { path: "a.ts", index: " ", worktree: "M", untracked: false, conflicted: false };

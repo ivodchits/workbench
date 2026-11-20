@@ -250,6 +250,7 @@ describe("read tools", () => {
       subject: "",
       date: 0,
       worktree: null,
+      worktreeMain: false,
     };
     const commit = (
       short: string,
