@@ -310,6 +310,9 @@ struct PtySession {
     /// Stop the child's whole process tree, not just the child (a task: `npm` →
     /// `node` → a dev server would outlive its `cmd.exe`).
     kill_tree: bool,
+    /// What was spawned (`pty_spawn`); `None` for a remote one-shot command, which
+    /// no panel re-attaches to.
+    kind: Option<SpawnKind>,
 }
 
 /// Generations for [`PtySession::gen`].
@@ -582,7 +585,7 @@ fn norm_dir(p: &str) -> String {
 /// What to run in the PTY. `Shell` is the 0.2 spike path (debugging convenience);
 /// `Claude` is the real target — an interactive `claude` TUI for one instance.
 /// `Task` is a project toolbar action (step K1): the argv its plugin file gives.
-#[derive(Debug, Clone, Copy, Deserialize)]
+#[derive(Debug, Clone, Copy, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum SpawnKind {
     Shell,
@@ -865,6 +868,7 @@ pub fn pty_spawn(
             hub,
             gen,
             kill_tree: task.is_some(),
+            kind: Some(kind),
         },
     );
     watch_exit(app, instance_id, gen);
@@ -1080,6 +1084,38 @@ pub fn pty_session_live(state: State<'_, PtyManager>, instance_id: String) -> bo
     }
 }
 
+/// A PTY whose child is still running, as [`pty_live`] reports it.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LivePty {
+    id: String,
+    kind: SpawnKind,
+    cwd: String,
+    session_id: Option<String>,
+}
+
+/// Every PTY whose child is still running (exited ones reaped as in
+/// [`pty_session_live`]). The PTYs outlive the page: after a reload (Duck taking
+/// over from another machine, the renderer watchdog) the restored consoles and
+/// shells re-attach to these instead of coming back dormant, which made a
+/// relaunch replace — kill — the session still running under them.
+#[tauri::command]
+pub fn pty_live(state: State<'_, PtyManager>) -> Vec<LivePty> {
+    let live: Vec<(String, SpawnKind, String)> = {
+        let mut guard = state.sessions.lock().unwrap();
+        guard
+            .iter_mut()
+            .filter_map(|(id, s)| {
+                let running = !matches!(s.child.try_wait(), Ok(Some(_)));
+                s.kind.filter(|_| running).map(|k| (id.clone(), k, s.cwd.clone()))
+            })
+            .collect()
+    };
+    live.into_iter()
+        .map(|(id, kind, cwd)| LivePty { session_id: state.session_for_instance(&id), id, kind, cwd })
+        .collect()
+}
+
 /// Default working directory offered to the launcher form (the home dir).
 #[tauri::command]
 pub fn default_working_dir() -> Option<String> {
@@ -1167,6 +1203,7 @@ pub fn remote_cmd_spawn(
             hub: Arc::new(Mutex::new(OutputHub::default())),
             gen: NEXT_GEN.fetch_add(1, Ordering::Relaxed),
             kill_tree: false,
+            kind: None,
         },
     );
 

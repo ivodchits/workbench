@@ -43,8 +43,10 @@ import DecisionsPanel from "./DecisionsPanel";
 import DrawingPanel from "./Assistant/Canvas";
 import SketchPanel from "./Assistant/SketchView";
 import { GLYPH } from "../theme";
-import { useRegistry } from "../state/registry";
+import { getRegistry, loadRegistry, useRegistry } from "../state/registry";
+import { ptyLive, type LivePty } from "../ipc/pty";
 import {
+  adoptLiveConsoles,
   closeConsole,
   focusConsole,
   getActiveConsoleId,
@@ -188,6 +190,13 @@ const COMPONENTS = {
   sketch: SketchPanel as React.FunctionComponent<IDockviewPanelProps>,
 };
 
+/** The PTYs still running when the page loads, with the registry loaded (an
+ *  adopted console's remote target comes from its instance). */
+async function livePtysAtLoad(): Promise<LivePty[]> {
+  if (!getRegistry().loaded) await loadRegistry();
+  return ptyLive().catch((): LivePty[] => []);
+}
+
 /** A console panel carries its instance id in params; other panels don't. */
 function consoleInstanceId(panel: { params?: Record<string, unknown> }): string | null {
   const id = panel.params?.instanceId;
@@ -297,6 +306,9 @@ function Workspace() {
   const displayedProjectRef = useRef<string | null | undefined>(undefined);
   // Monotonic token so a fast double-switch lets the latest swap win.
   const swapTokenRef = useRef(0);
+  // What `pty_live` said when the page loaded: a shell of a project shown later
+  // re-attaches from it (consoles are all adopted at once, at the first swap).
+  const livePtysRef = useRef<LivePty[]>([]);
   // True only while we're programmatically clearing the dock for a swap, so the
   // panel-removed handler keeps those PTYs alive instead of tearing them down.
   const switchingRef = useRef(false);
@@ -858,8 +870,19 @@ function Workspace() {
     const token = ++swapTokenRef.current;
     const prev = displayedProjectRef.current;
     void (async () => {
-      const saved = activeProjectId ? await loadLayout(activeProjectId) : null;
+      // The PTYs still running (only the first swap after the page loads asks):
+      // a reload leaves them up, and the consoles and shells it restores attach
+      // to them rather than coming back dormant over a live session.
+      const first = prev === undefined;
+      const [saved, live] = await Promise.all([
+        activeProjectId ? loadLayout(activeProjectId) : Promise.resolve(null),
+        first ? livePtysAtLoad() : Promise.resolve(livePtysRef.current),
+      ]);
       if (token !== swapTokenRef.current) return; // superseded by a later switch
+      if (first) {
+        livePtysRef.current = live;
+        adoptLiveConsoles(live);
+      }
 
       restoredRef.current = false; // suspend persist during the swap
       if (prev != null) {
@@ -869,7 +892,7 @@ function Workspace() {
       switchingRef.current = true; // keep the outgoing project's PTYs alive
       if (saved) {
         hydrateDormant(saved.consoleInstanceIds);
-        hydrateShells(saved.shells);
+        hydrateShells(saved.shells, live);
         hydrateEditors(saved.editors);
         hydrateDiffs(saved.diffs);
         hydrateMcps(saved.mcps);

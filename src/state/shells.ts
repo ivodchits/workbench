@@ -22,6 +22,7 @@
 // the terminal pool and reports back through `markShellSpawned` / `markShellError`.
 
 import { useSyncExternalStore } from "react";
+import type { LivePty } from "../ipc/pty";
 
 export type ShellStatus = "dormant" | "spawning" | "running" | "error";
 
@@ -161,18 +162,24 @@ export interface ShellDescriptor extends ShellTarget {
  * Workspace to back the shell panels a saved layout restores (the box returns in
  * place, the PTY does not, until you relaunch it). Idempotent.
  */
-export function hydrateShells(descriptors: ShellDescriptor[]): void {
+export function hydrateShells(descriptors: ShellDescriptor[], live: LivePty[] = []): void {
   const present = new Set(state.open.map((s) => s.shellId));
+  // A shell still running in the backend (the page reloaded under it) comes back
+  // running, which attaches to its PTY rather than leaving it dormant.
+  const running = new Map(live.filter((p) => p.kind === "shell").map((p) => [p.id, p]));
   const additions = descriptors
     .filter((d) => !present.has(d.shellId))
-    .map<ShellSession>((d) => ({
-      shellId: d.shellId,
-      projectId: d.projectId,
-      cwd: d.cwd,
-      label: d.label,
-      status: "dormant",
-      error: null,
-    }));
+    .map<ShellSession>((d) => {
+      const pty = running.get(d.shellId);
+      return {
+        shellId: d.shellId,
+        projectId: d.projectId,
+        cwd: pty?.cwd ?? d.cwd,
+        label: d.label,
+        status: pty ? "running" : "dormant",
+        error: null,
+      };
+    });
   if (additions.length === 0) return;
   emit({ ...state, open: [...state.open, ...additions] });
 }

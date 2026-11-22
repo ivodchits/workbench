@@ -14,7 +14,7 @@
 // A tiny external store exposed to React via `useSyncExternalStore`.
 
 import { useSyncExternalStore } from "react";
-import type { RemoteSpawn, SpawnKind, SpawnResult } from "../ipc/pty";
+import type { LivePty, RemoteSpawn, SpawnKind, SpawnResult } from "../ipc/pty";
 import type { Instance } from "../ipc/registry";
 import { applyInstanceUsage, getRegistry, updateInstance } from "./registry";
 import { clearLiveStatus } from "./status";
@@ -227,6 +227,45 @@ export function resumeConsole(
     headless: isHeadless(instance.id) || undefined,
   };
   emit({ open: [...state.open, session], activeId: opts.background ? state.activeId : instance.id });
+}
+
+/**
+ * Bring back, as running, every console whose `claude` is still running in the
+ * backend but isn't open here — what a page reload leaves (Duck taking over from
+ * another machine reloads the page; so does the renderer watchdog). Its panel
+ * mounts as `running`, which attaches to the live PTY instead of spawning, so
+ * the session carries on with its scrollback replayed. Every project's, not just
+ * the displayed one's: a console of another project stays open in the background
+ * as it did before the reload (the Workspace docks it when that project shows).
+ */
+export function adoptLiveConsoles(live: LivePty[]): void {
+  const present = new Set(state.open.filter((c) => c.status !== "dormant").map((c) => c.instanceId));
+  const instances = getRegistry().instances;
+  const adopted = live.filter((p) => p.kind === "claude" && !present.has(p.id) && !isHeadless(p.id));
+  if (adopted.length === 0) return;
+  let webgl = liveWebglCount();
+  const sessions = new Map(
+    adopted.map((p) => {
+      const instance = instances.find((i) => i.id === p.id);
+      const session: ConsoleSession = {
+        instanceId: p.id,
+        cwd: p.cwd,
+        kind: "claude",
+        webgl: webgl++ < WEBGL_CAP,
+        status: "running",
+        sessionId: p.sessionId,
+        resumeSessionId: null,
+        remote: instance ? remoteSpawnFor(instance) : null,
+        error: null,
+        focusSeq: 0,
+      };
+      return [p.id, session];
+    }),
+  );
+  // A dormant placeholder for one of them is replaced in place.
+  const open = state.open.map((c) => sessions.get(c.instanceId) ?? c);
+  for (const [id, s] of sessions) if (!state.open.some((c) => c.instanceId === id)) open.push(s);
+  emit({ ...state, open });
 }
 
 /**

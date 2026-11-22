@@ -197,6 +197,23 @@ export function ptySessionLive(instanceId: string): Promise<boolean> {
   return invoke("pty_session_live", { instanceId });
 }
 
+/** A PTY whose child is still running (`pty_live`). */
+export interface LivePty {
+  /** The instance, shell or task id it was spawned under. */
+  id: string;
+  kind: SpawnKind;
+  cwd: string;
+  /** A local claude's session id, when it has one. */
+  sessionId: string | null;
+}
+
+/** Every PTY still running. They outlive the page, so a reload re-attaches the
+ *  restored consoles and shells to these rather than showing them dormant (a
+ *  dormant console's relaunch would kill the session still running under it). */
+export function ptyLive(): Promise<LivePty[]> {
+  return invoke("pty_live");
+}
+
 /** The home dir, used to prefill the launcher's working-dir field. */
 export function defaultWorkingDir(): Promise<string | null> {
   return invoke("default_working_dir");
