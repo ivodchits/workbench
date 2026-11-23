@@ -2438,7 +2438,8 @@ pub fn init(app: &AppHandle) {
             }),
             replica: Mutex::new(repl::Replica::new(dir.join(replica))),
             scratch: dir.join(format!("{replica}.snapshot")),
-            workspace: Mutex::new(crate::assistant::workspace::resolve(None).ok()),
+            // This machine's own folder (its settings), known before Duck starts.
+            workspace: Mutex::new(crate::assistant::workspace::resolve_configured(&dir).ok()),
             mirror: dir.join(mirror),
             files: crate::assistant::attachments::root(&dir),
         });
@@ -2497,7 +2498,6 @@ pub fn get(app: &AppHandle) -> Option<Arc<Fleet>> {
     app.try_state::<Arc<Fleet>>().map(|f| f.inner().clone())
 }
 
-/// Duck's workspace here, from the settings (F5.2: the repo the mirror follows).
 /// Take this machine off the fleet (no links) or put it back (F6.1).
 #[tauri::command]
 pub fn fleet_set_offline(fleet: State<'_, Arc<Fleet>>, on: bool) -> FleetStatus {
@@ -2539,6 +2539,7 @@ pub fn fleet_drained(fleet: State<'_, Arc<Fleet>>) {
     fleet.drained();
 }
 
+/// Duck's workspace here, from the settings (F5.2: the repo the mirror follows).
 #[tauri::command]
 pub fn fleet_set_workspace(fleet: State<'_, Arc<Fleet>>, workspace: Option<String>) -> Result<(), String> {
     fleet.set_workspace(crate::assistant::workspace::resolve(workspace.as_deref())?);

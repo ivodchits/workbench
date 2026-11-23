@@ -99,6 +99,27 @@ pub fn default_dir() -> Option<PathBuf> {
     Some(PathBuf::from(home).join("repos").join(name))
 }
 
+/// The workspace folder Duck's settings name on this machine, read straight from
+/// the webview's prefs store (`prefs.json`, `prefs.dev.json` in a debug build, in
+/// `app_data`). The settings are per machine, never shared by the fleet: the backend
+/// needs them before the webview starts Duck, or the fleet would mirror, bundle and
+/// promote into the default folder instead.
+pub fn configured(app_data: &Path) -> Option<String> {
+    let file = if cfg!(debug_assertions) { "prefs.dev.json" } else { "prefs.json" };
+    let text = std::fs::read_to_string(app_data.join(file)).ok()?;
+    configured_in(&text)
+}
+
+fn configured_in(prefs: &str) -> Option<String> {
+    let v: serde_json::Value = serde_json::from_str(prefs).ok()?;
+    v["assistant"]["workspace"].as_str().map(str::trim).filter(|s| !s.is_empty()).map(String::from)
+}
+
+/// The workspace this machine's settings name, else the default.
+pub fn resolve_configured(app_data: &Path) -> Result<PathBuf, String> {
+    resolve(configured(app_data).as_deref())
+}
+
 /// The workspace folder: `dir` (absolute, no `..`) or the default.
 pub fn resolve(dir: Option<&str>) -> Result<PathBuf, String> {
     match dir.map(str::trim).filter(|d| !d.is_empty()) {
@@ -466,6 +487,20 @@ mod tests {
         let d = std::env::temp_dir().join(format!("wb-workspace-{name}-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&d).unwrap();
         d
+    }
+
+    #[test]
+    fn the_configured_workspace_is_this_machines_setting() {
+        assert_eq!(configured_in(r#"{"assistant":{"workspace":" A:/repos/duck-data "}}"#).as_deref(), Some("A:/repos/duck-data"));
+        assert_eq!(configured_in(r#"{"assistant":{"workspace":null}}"#), None);
+        assert_eq!(configured_in(r#"{"assistant":{"workspace":""}}"#), None);
+        assert_eq!(configured_in(r#"{"theme":"dark"}"#), None);
+        assert_eq!(configured_in("not json"), None);
+        let d = scratch("prefs");
+        let file = if cfg!(debug_assertions) { "prefs.dev.json" } else { "prefs.json" };
+        std::fs::write(d.join(file), r#"{"assistant":{"workspace":"A:/repos/duck-data"}}"#).unwrap();
+        assert_eq!(resolve_configured(&d).unwrap(), PathBuf::from("A:/repos/duck-data"));
+        assert_eq!(resolve_configured(&d.join("none")).ok(), default_dir());
     }
 
     #[test]
