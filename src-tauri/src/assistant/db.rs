@@ -63,8 +63,9 @@ impl DuckDb {
             c.execute_batch("PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL;").map_err(|e| e.to_string())?;
             Ok(c)
         };
-        let installed = std::fs::copy(copy, live).map_err(|e| format!("installing the copy: {e}")).and_then(|_| {
+        let installed = install_copy(copy, live).and_then(|_| {
             let c = reopen(live)?;
+            check_integrity(&c)?;
             crate::db::run_migrations(&c, MIGRATIONS).map_err(|e| e.to_string())?;
             // A new history: the other machines take a snapshot of this one.
             c.execute_batch("DELETE FROM repl_state; DELETE FROM repl_log;").map_err(|e| e.to_string())?;
@@ -79,8 +80,8 @@ impl DuckDb {
             }
             Err(e) => {
                 // Put the old one back, as it was.
-                let _ = std::fs::remove_file(live);
                 for ext in ["", "-wal", "-shm"] {
+                    let _ = std::fs::remove_file(side(live, ext));
                     let _ = std::fs::rename(side(backup, ext), side(live, ext));
                 }
                 *conn = reopen(live).map_err(|x| format!("{e}; and reopening the old one: {x}"))?;
@@ -103,6 +104,29 @@ impl DuckDb {
             (key, value),
         )?;
         Ok(())
+    }
+}
+
+/// Put a consistent copy of the database at `copy` (WAL and all) at `to`. Not a
+/// file copy: a WAL-mode file on its own can be half a checkpoint, and a file
+/// copied from that is corrupt. `VACUUM INTO` reads it through SQLite, in one
+/// read transaction, so a write to it meanwhile can't tear it either.
+fn install_copy(copy: &Path, to: &Path) -> Result<(), String> {
+    let src = Connection::open_with_flags(copy, rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE)
+        .map_err(|e| format!("opening the copy: {e}"))?;
+    let _ = std::fs::remove_file(to);
+    src.execute("VACUUM INTO ?1", [to.to_string_lossy()]).map_err(|e| format!("installing the copy: {e}"))?;
+    Ok(())
+}
+
+/// Refuse a damaged database before it becomes Duck's.
+fn check_integrity(c: &Connection) -> Result<(), String> {
+    let mut stmt = c.prepare("PRAGMA integrity_check").map_err(|e| e.to_string())?;
+    let rows: Vec<String> = stmt.query_map([], |r| r.get(0)).map_err(|e| e.to_string())?.collect::<Result<_, _>>().map_err(|e| e.to_string())?;
+    if rows == ["ok"] {
+        Ok(())
+    } else {
+        Err(format!("the copy is damaged: {}", rows.into_iter().take(3).collect::<Vec<_>>().join("; ")))
     }
 }
 
@@ -422,6 +446,43 @@ mod tests {
         let err = db.become_copy(&live, &dir.join("broken.db"), &dir.join("again"), |_| Ok(()));
         assert!(err.is_err());
         assert_eq!(db.meta_get("who").unwrap().as_deref(), Some("the main's"));
+    }
+
+    #[test]
+    fn the_copy_is_installed_with_its_wal_and_a_damaged_one_is_refused() {
+        let dir = std::env::temp_dir().join(format!("wb-become-wal-{}", uuid::Uuid::new_v4().simple()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (live, copy) = (dir.join("duck.db"), dir.join("copy.db"));
+        let db = DuckDb::open(&live).unwrap();
+        db.meta_set("who", "the old me").unwrap();
+        // The copy's latest write is only in its WAL (no checkpoint, still open):
+        // a file copy of `copy.db` alone wouldn't have it.
+        let other = DuckDb::open(&copy).unwrap();
+        other.conn.lock().unwrap().execute_batch("PRAGMA wal_autocheckpoint = 0;").unwrap();
+        other.meta_set("who", "the main's").unwrap();
+        db.become_copy(&live, &copy, &dir.join("before-1"), |_| Ok(())).unwrap();
+        assert_eq!(db.meta_get("who").unwrap().as_deref(), Some("the main's"));
+        drop(other);
+
+        // A copy with a damaged page is refused, and the live one stays.
+        let bad = dir.join("bad.db");
+        {
+            let c = Connection::open(&bad).unwrap();
+            c.execute_batch("CREATE TABLE t (x TEXT); CREATE INDEX t_x ON t (x);").unwrap();
+            for i in 0..500 {
+                c.execute("INSERT INTO t VALUES (?1)", [format!("row {i} {}", "x".repeat(50))]).unwrap();
+            }
+        }
+        let mut bytes = std::fs::read(&bad).unwrap();
+        let page = 4096;
+        let last = bytes.len() / page - 1;
+        for b in &mut bytes[last * page + 100..last * page + 600] {
+            *b = 0x5a;
+        }
+        std::fs::write(&bad, bytes).unwrap();
+        assert!(db.become_copy(&live, &bad, &dir.join("before-2"), |_| Ok(())).is_err());
+        assert_eq!(db.meta_get("who").unwrap().as_deref(), Some("the main's"));
+        db.meta_set("who", "still writable").unwrap();
     }
 
     #[test]

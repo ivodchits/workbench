@@ -2208,7 +2208,9 @@ fn promote_here(app: &AppHandle, term: u64, dirs: Option<[String; 2]>) -> Result
     let live = dir.join(crate::assistant::db::FILE_NAME);
     let backup = dir.join(format!("{}.before-term-{term}", crate::assistant::db::FILE_NAME));
     let my_ws = d.workspace.lock().unwrap().clone();
-    let copy = d.replica.lock().unwrap().close().to_path_buf();
+    // Held until the copy is installed: a sync can't reopen it and write meanwhile.
+    let mut replica = d.replica.lock().unwrap();
+    let copy = replica.close().to_path_buf();
     let a = app.state::<Arc<crate::assistant::Assistant>>();
     a.db.become_copy(&live, &copy, &backup, |c| {
         if let (Some([ws, data]), Some(mine)) = (&dirs, &my_ws) {
@@ -2217,7 +2219,8 @@ fn promote_here(app: &AppHandle, term: u64, dirs: Option<[String; 2]>) -> Result
         }
         Ok(())
     })?;
-    d.replica.lock().unwrap().discard();
+    replica.discard();
+    drop(replica);
     // Duck's repo: the mirror's head, the old one kept.
     if let (Some(ws), Some(_)) = (my_ws, files::head(&d.mirror)) {
         let mirror = d.mirror.to_string_lossy().into_owned();
