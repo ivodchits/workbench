@@ -1100,8 +1100,9 @@ pub fn pty_live_list(state: State<'_, PtyManager>) -> Vec<LivePty> {
         let mut guard = state.sessions.lock().unwrap();
         guard
             .iter_mut()
-            .filter(|(_, s)| !matches!(s.child.try_wait(), Ok(Some(_))))
-            .map(|(id, s)| (id.clone(), s.cwd.clone()))
+            .filter_map(|(id, s)| {
+                (!matches!(s.child.try_wait(), Ok(Some(_)))).then(|| (id.clone(), s.cwd.clone()))
+            })
             .collect()
     };
     ids.into_iter()
