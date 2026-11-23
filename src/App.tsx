@@ -54,6 +54,7 @@ import { initFleet } from "./state/fleet";
 import { draftImageNames } from "./state/composer";
 import { prunePastedImages } from "./ipc/os";
 import RemoteApprovalHost from "./panels/RemoteApproval";
+import HandoverOverlay from "./panels/HandoverOverlay";
 import { getProfileUsageLimits, type ProfileLimits, type RateWindow } from "./ipc/usageLimits";
 import { formatCountdown, formatAgo } from "./util/format";
 import { GLYPH } from "./theme";
@@ -272,6 +273,8 @@ function App() {
       <RemoteMirror />
       {/* A newly paired device waits here for the desktop's yes (step R2). */}
       <RemoteApprovalHost />
+      {/* Closing while this machine holds Duck: the handover, and how it goes. */}
+      <HandoverOverlay />
     </div>
   );
 }

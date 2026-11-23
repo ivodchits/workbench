@@ -376,6 +376,9 @@ pub enum Ask {
     /// Hand me the lease of `term` (F6.1): your Duck finishes its turns, then you
     /// answer with your log's head for me to catch up to.
     Handover { term: u64 },
+    /// I'm quitting while I hold the lease of `term`: catch your copy up to my log's
+    /// `head` and take the next term from me (answered once you hold it).
+    TakeOver { term: u64, head: i64 },
 }
 
 /// One message on the peer link, as JSON text.

@@ -132,7 +132,7 @@ fn on_menu_event(app: &AppHandle, event: tauri::menu::MenuEvent) {
             let _ = app.emit(WAKE_TOGGLE_EVENT, on);
         }
         // Quits the whole app, hidden windows too, in order (`shutdown`).
-        MENU_EXIT => crate::shutdown::exit(app),
+        MENU_EXIT => crate::shutdown::request_exit(app),
         _ => {}
     }
 }

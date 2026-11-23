@@ -201,6 +201,28 @@ pub type DrainSink = Box<dyn Fn(bool) + Send + Sync>;
 /// Where a merge's notice goes (F6.2).
 pub type MergedSink = Box<dyn Fn(String) + Send + Sync>;
 
+/// How the handover on quitting is going (the webview's overlay).
+pub type LeaveSink = Box<dyn Fn(LeaveStatus) + Send + Sync>;
+
+/// The handover on quitting: this machine holds Duck, so it hands it to another
+/// before it goes.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LeaveStatus {
+    /// `draining` (Duck finishing its turns), `handing` (asking `to`), `waiting` (the
+    /// last round failed: `error`; tried again soon), `done`.
+    pub phase: String,
+    pub to: Option<String>,
+    pub error: Option<String>,
+    pub attempt: u32,
+}
+
+/// The capability a machine that answers [`Ask::TakeOver`] says in its beat.
+const CAP_TAKE_OVER: &str = "take-over";
+
+/// How long a failed handover on quitting waits before it tries again.
+const LEAVE_RETRY: Duration = Duration::from_secs(15);
+
 /// Takes host traffic from a peer: (its id, the text).
 pub type HostSink = Box<dyn Fn(&str, String) + Send + Sync>;
 
@@ -278,6 +300,14 @@ pub struct Fleet {
     /// A merge after a split is running, and where its notice goes (F6.2).
     merging: std::sync::atomic::AtomicBool,
     merged_sink: Mutex<Option<MergedSink>>,
+    /// Quitting: handing Duck over first (the loop in [`Fleet::leave`]).
+    leaving: std::sync::atomic::AtomicBool,
+    /// Wakes that loop (retry now, or cancel).
+    leave_wake: Notify,
+    leave_sink: Mutex<Option<LeaveSink>>,
+    /// A copy found damaged in a failover, so it isn't tried again until it changes
+    /// (and the notice is said once).
+    damaged_copy: Mutex<Option<repl::ReplicaState>>,
     /// Sessions other machines gave for a device, by (machine, device).
     relay_sessions: Mutex<HashMap<(String, String), (String, Instant)>>,
 }
@@ -532,6 +562,10 @@ impl Fleet {
             handing: std::sync::atomic::AtomicBool::new(false),
             merging: std::sync::atomic::AtomicBool::new(false),
             merged_sink: Mutex::new(None),
+            leaving: std::sync::atomic::AtomicBool::new(false),
+            leave_wake: Notify::new(),
+            leave_sink: Mutex::new(None),
+            damaged_copy: Mutex::new(None),
             host_sink: Mutex::new(None),
             duck: Mutex::new(None),
             snap_cache: Mutex::new(None),
@@ -1176,7 +1210,7 @@ impl Fleet {
         };
         if adopted {
             self.store.with(|c| store::set_lease(c, &l)).ok();
-            if lost {
+            if lost && !self.leaving.load(std::sync::atomic::Ordering::SeqCst) {
                 // Another machine holds Duck now: this one's takes turns again only
                 // as a stand-in, and its copy follows the new holder.
                 self.inner.lock().unwrap().draining = false;
@@ -1199,9 +1233,18 @@ impl Fleet {
         if let Some(old) = &from {
             let copy = self.duck().ok().map(|d| d.replica.lock().unwrap().state());
             if let Some(st) = copy.filter(|st| st.origin.as_deref() == Some(old.as_str())) {
-                if let Some(p) = self.promote.lock().unwrap().as_ref() {
-                    p(term, dirs)?;
+                if self.damaged_copy.lock().unwrap().as_ref() == Some(&st) {
+                    return Err(format!("{}; waiting for a good one", repl::DAMAGED));
                 }
+                if let Some(p) = self.promote.lock().unwrap().as_ref() {
+                    if let Err(e) = p(term, dirs) {
+                        if e.starts_with(repl::DAMAGED) {
+                            *self.damaged_copy.lock().unwrap() = Some(st);
+                        }
+                        return Err(e);
+                    }
+                }
+                *self.damaged_copy.lock().unwrap() = None;
                 // Where this machine took over from, for the merge if the old main
                 // wrote on while cut off (F6.2).
                 if let (Ok(d), Some(epoch)) = (self.duck(), st.epoch.as_deref()) {
@@ -1243,11 +1286,23 @@ impl Fleet {
         if offline || desired.as_deref() != Some(me.as_str()) || lease.holder == me && lease.term > 0 {
             return;
         }
+        if self.leaving.load(std::sync::atomic::Ordering::SeqCst) {
+            return;
+        }
         if heard {
             // Failover (or the first lease): the holder went quiet.
             let from = (lease.term > 0 && lease.holder != me).then(|| lease.holder.clone());
-            if let Err(e) = self.take_lease(from) {
+            let fresh_damage = self.damaged_copy.lock().unwrap().is_none();
+            if let Err(e) = self.take_lease(from.clone()) {
                 eprintln!("[fleet] couldn’t take Duck over: {e}");
+                // Failover: the old main is gone, so there's no good copy to fetch.
+                // Duck stays put rather than start here on older state; said once.
+                if fresh_damage && e.starts_with(repl::DAMAGED) {
+                    let name = from.as_deref().and_then(|f| self.name_of(f)).unwrap_or_else(|| "the machine Duck was on".into());
+                    self.say_merged(format!(
+                        "Duck couldn't move to this machine: its copy of Duck's state is damaged, and {name} is offline, so there's no good copy to fetch. Duck moves once {name} is back."
+                    ));
+                }
             }
             return;
         }
@@ -1292,7 +1347,196 @@ impl Fleet {
         if self.inner.lock().unwrap().lease != *lease {
             return Err("the lease moved meanwhile".into());
         }
-        self.take_lease(Some(lease.holder.clone()))
+        self.take_lease(Some(lease.holder.clone())).inspect_err(|e| self.refetch_if_damaged(e))
+    }
+
+    /// A damaged copy, while its main is reachable: drop it, and the next sync fetches
+    /// a fresh snapshot.
+    fn refetch_if_damaged(&self, e: &str) {
+        if e.starts_with(repl::DAMAGED) {
+            if let Ok(d) = self.duck() {
+                d.replica.lock().unwrap().discard();
+            }
+            *self.damaged_copy.lock().unwrap() = None;
+            eprintln!("[fleet] the copy of Duck's state was damaged; fetching a fresh one");
+        }
+    }
+
+    /// The other side of [`Fleet::leave`]: the holder of `term` is quitting. Catch the
+    /// copy up to its `head`, then take the next term.
+    async fn take_over(self: &Arc<Self>, term: u64, head: i64) -> Result<String, String> {
+        let from = {
+            let inner = self.inner.lock().unwrap();
+            if inner.lease.term != term || inner.lease.holder == inner.me {
+                return Err("its lease isn't the one this machine follows".into());
+            }
+            inner.lease.holder.clone()
+        };
+        if self.duck().is_ok() {
+            let mut last = None;
+            let mut tries = 0;
+            loop {
+                if let Err(e) = self.replicate().await {
+                    last = Some(e);
+                }
+                let st = self.duck()?.replica.lock().unwrap().state();
+                if st.origin.as_deref() == Some(from.as_str()) && st.seq >= head {
+                    break;
+                }
+                tries += 1;
+                if tries >= 120 {
+                    return Err(format!("its copy of Duck's state didn't catch up{}", last.map(|e| format!(" ({e})")).unwrap_or_default()));
+                }
+                tokio::time::sleep(Duration::from_millis(250)).await;
+            }
+        }
+        if self.inner.lock().unwrap().lease.term != term {
+            return Err("the lease moved meanwhile".into());
+        }
+        self.take_lease(Some(from)).inspect_err(|e| self.refetch_if_damaged(e))?;
+        Ok("ok".into())
+    }
+
+    // --- quitting while holding Duck ---------------------------------------------------
+
+    /// Whether quitting has to hand Duck over first: this machine holds it, and the
+    /// fleet has another machine that may run it.
+    pub fn must_hand_over(&self) -> bool {
+        let inner = self.inner.lock().unwrap();
+        inner.lease.term > 0
+            && inner.lease.holder == inner.me
+            && inner.members.iter().any(|m| !m.removed && m.id != inner.me && inner.config.can_be_main(&m.id))
+    }
+
+    pub fn on_leave(&self, sink: LeaveSink) {
+        *self.leave_sink.lock().unwrap() = Some(sink);
+    }
+
+    fn say_leave(&self, phase: &str, to: Option<String>, error: Option<String>, attempt: u32) {
+        if let Some(s) = self.leave_sink.lock().unwrap().as_ref() {
+            s(LeaveStatus { phase: phase.into(), to, error, attempt });
+        }
+    }
+
+    pub fn is_leaving(&self) -> bool {
+        self.leaving.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// Try the handover again now.
+    pub fn retry_leave(&self) {
+        self.leave_wake.notify_one();
+    }
+
+    /// Stay: stop handing over, and Duck takes its turns again.
+    pub fn cancel_leave(&self) {
+        self.leaving.store(false, std::sync::atomic::Ordering::SeqCst);
+        self.leave_wake.notify_one();
+    }
+
+    fn leave_cancelled(&self) -> bool {
+        if self.leaving.load(std::sync::atomic::Ordering::SeqCst) {
+            return false;
+        }
+        let holds = {
+            let mut inner = self.inner.lock().unwrap();
+            inner.draining = false;
+            inner.lease.holder == inner.me
+        };
+        if holds {
+            if let Some(s) = self.drain_sink.lock().unwrap().as_ref() {
+                s(false);
+            }
+        }
+        (self.notify)();
+        true
+    }
+
+    /// Hand Duck to the next machine that's online before quitting: Duck finishes its
+    /// turns, then the machines the list puts first are asked in turn to catch up and
+    /// take over. A failed round is said and tried again until one takes it (true) or
+    /// the user stays ([`Fleet::cancel_leave`]: false).
+    pub async fn leave(self: &Arc<Self>) -> bool {
+        self.leaving.store(true, std::sync::atomic::Ordering::SeqCst);
+        let mut attempt = 0;
+        self.say_leave("draining", None, None, attempt);
+        self.inner.lock().unwrap().draining = true;
+        (self.notify)();
+        let sink = self.drain_sink.lock().unwrap().is_some();
+        if sink {
+            if let Some(s) = self.drain_sink.lock().unwrap().as_ref() {
+                s(true);
+            }
+            tokio::select! {
+                _ = self.drained.notified() => {}
+                _ = tokio::time::sleep(Duration::from_secs(60)) => {}
+                _ = self.leave_wake.notified() => {}
+            }
+        }
+        loop {
+            if self.leave_cancelled() {
+                return false;
+            }
+            attempt += 1;
+            let (term, holds) = {
+                let inner = self.inner.lock().unwrap();
+                (inner.lease.term, inner.lease.holder == inner.me)
+            };
+            if !holds {
+                // Another machine took it meanwhile (it asked for it).
+                self.say_leave("done", None, None, attempt);
+                return true;
+            }
+            let head = match self.duck() {
+                Ok(d) => d.source.with(|c| repl::since(c, None, 0)).map(|a| a.head).unwrap_or(0),
+                Err(_) => 0,
+            };
+            let mut errors = Vec::new();
+            let candidates = self.successors();
+            if candidates.is_empty() {
+                errors.push("No other machine that can run Duck is online.".to_string());
+            }
+            for (id, able) in candidates {
+                let name = self.name_of(&id).unwrap_or_else(|| id.clone());
+                if !able {
+                    errors.push(format!("{name} runs an older Workbench that can't take Duck over: update it."));
+                    continue;
+                }
+                self.say_leave("handing", Some(name.clone()), None, attempt);
+                match self.ask_for(&id, Ask::TakeOver { term, head }, Duration::from_secs(180)).await {
+                    Ok(_) => {
+                        // Its beat, sent as it took the lease, comes first; a moment more.
+                        for _ in 0..50 {
+                            if self.inner.lock().unwrap().lease.holder == id {
+                                self.say_leave("done", Some(name), None, attempt);
+                                return true;
+                            }
+                            tokio::time::sleep(Duration::from_millis(100)).await;
+                        }
+                        errors.push(format!("{name} said it took Duck, but its lease never arrived."));
+                    }
+                    Err(e) => errors.push(format!("{name}: {e}.")),
+                }
+                if !self.leaving.load(std::sync::atomic::Ordering::SeqCst) {
+                    break;
+                }
+            }
+            self.say_leave("waiting", None, Some(errors.join("\n")), attempt);
+            let _ = tokio::time::timeout(LEAVE_RETRY, self.leave_wake.notified()).await;
+        }
+    }
+
+    /// The machines Duck could go to now, in the list's order: linked, allowed to be
+    /// main, and whether each can take it over (an older one can't).
+    fn successors(&self) -> Vec<(String, bool)> {
+        let inner = self.inner.lock().unwrap();
+        proto::ranked(&inner.members, &inner.config)
+            .into_iter()
+            .filter(|id| *id != inner.me && inner.config.can_be_main(id) && inner.links.contains_key(id))
+            .map(|id| {
+                let able = inner.beats.get(&id).is_some_and(|b| b.caps.iter().any(|c| c == CAP_TAKE_OVER));
+                (id, able)
+            })
+            .collect()
     }
 
     /// The holder's side of a handover: Duck finishes its turns (up to 60 s), then
@@ -1480,9 +1724,10 @@ impl Fleet {
     }
 
     /// A question from `peer` (the link's reader): the answer to send back.
-    async fn on_ask(&self, ask: Ask) -> Result<String, String> {
+    async fn on_ask(self: &Arc<Self>, ask: Ask) -> Result<String, String> {
         match ask {
             Ask::Handover { term } => self.give_handover(term).await,
+            Ask::TakeOver { term, head } => self.take_over(term, head).await,
             Ask::RelaySession { device } => self.book.relay_session(&device),
             Ask::Wake { id } => self.wake_here(&id),
             Ask::ReplLog { epoch, seq } => self.repl_log(epoch.as_deref(), seq),
@@ -2097,6 +2342,7 @@ fn local_caps() -> Vec<String> {
     if which::which("claude").is_ok() {
         caps.push("claude-code".into());
     }
+    caps.push(CAP_TAKE_OVER.into());
     caps
 }
 
@@ -2163,6 +2409,10 @@ pub fn init(app: &AppHandle) {
     let drain_app = app.clone();
     fleet.on_drain(Box::new(move |on| {
         let _ = drain_app.emit("fleet-drain", on);
+    }));
+    let leave_app = app.clone();
+    fleet.on_leave(Box::new(move |status| {
+        let _ = leave_app.emit("fleet-leaving", status);
     }));
     let merged_app = app.clone();
     fleet.on_merged(Box::new(move |text| {
@@ -2248,6 +2498,34 @@ pub fn get(app: &AppHandle) -> Option<Arc<Fleet>> {
 pub fn fleet_set_offline(fleet: State<'_, Arc<Fleet>>, on: bool) -> FleetStatus {
     fleet.set_offline(on);
     fleet.status()
+}
+
+/// Bring the main window up (from the tray, too): the handover on quitting shows there.
+pub fn show_main(app: &AppHandle) {
+    if let Some(w) = app.get_webview_window("main") {
+        let _ = w.unminimize();
+        let _ = w.show();
+        let _ = w.set_focus();
+    }
+}
+
+/// The handover on quitting: try again now.
+#[tauri::command]
+pub fn fleet_leave_retry(fleet: State<'_, Arc<Fleet>>) {
+    fleet.retry_leave();
+}
+
+/// The handover on quitting: stay open instead.
+#[tauri::command]
+pub fn fleet_leave_cancel(fleet: State<'_, Arc<Fleet>>) {
+    fleet.cancel_leave();
+}
+
+/// Quit without handing Duck over (the overlay's "Quit anyway"): the other machines
+/// take it over by themselves once this one goes quiet (failover).
+#[tauri::command]
+pub fn fleet_quit_now(app: AppHandle) {
+    crate::shutdown::exit(&app);
 }
 
 /// The webview's Duck finished its turns for a handover (F6.1).

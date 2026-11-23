@@ -937,3 +937,79 @@ async fn what_a_cut_off_main_wrote_is_merged_when_it_comes_back() {
     assert!(note.contains("desktop"), "{note}");
     assert!(merge::split(&c).unwrap().is_none(), "merged once, then the mark is gone");
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn quitting_hands_duck_over_and_a_damaged_copy_is_fetched_again() {
+    let ok = Arc::new(AtomicBool::new(false));
+    let laptop = instance("laptop", ok.clone());
+    let l = laptop.status().me.id;
+    until("the laptop holds", || holder(&laptop) == (1, Some(l.clone()))).await;
+    // A term ahead of the desktop's own first one, and pinned here, so the desktop
+    // never asks for Duck itself.
+    laptop.take_lease(None).unwrap();
+    laptop.set_pin(Some(l.clone())).unwrap();
+    let (lap_db, lap_repl) = duck_files("laptop");
+    lap_db.lock().unwrap().execute("INSERT INTO assistant_threads VALUES ('t1', 'on the laptop', 1)", []).unwrap();
+    laptop.set_duck(lap_repl);
+    // Alone, nothing to hand over to.
+    assert!(!laptop.must_hand_over());
+
+    let desktop = instance("desktop", ok.clone());
+    let (_desk_db, desk_repl) = duck_files("desktop");
+    desktop.set_duck(desk_repl);
+    // Its first install finds the copy damaged; the next (a fresh copy) works.
+    let promoted = Arc::new(std::sync::Mutex::new(0u32));
+    let p = promoted.clone();
+    desktop.on_promote(Box::new(move |_, _| {
+        let mut n = p.lock().unwrap();
+        *n += 1;
+        if *n == 1 {
+            return Err(format!("{} (test)", repl::DAMAGED));
+        }
+        Ok(())
+    }));
+    let d = desktop.status().me.id;
+    let code = join_string(&laptop).await;
+    desktop.join(&code).await.unwrap();
+    until("linked", || online(&laptop, "desktop") && online(&desktop, "laptop")).await;
+    until("the desktop follows", || desktop.status().config.pin.is_some() && holder(&desktop) == (2, Some(l.clone()))).await;
+    assert!(laptop.must_hand_over());
+
+    let said = Arc::new(std::sync::Mutex::new(Vec::<LeaveStatus>::new()));
+    let s = said.clone();
+    laptop.on_leave(Box::new(move |st| s.lock().unwrap().push(st)));
+    let lap = laptop.clone();
+    let leaving = tokio::spawn(async move { lap.leave().await });
+    // The first round fails on the damaged copy: said, and tried again at once here.
+    until("the damaged round is said", || said.lock().unwrap().iter().any(|s| s.phase == "waiting")).await;
+    {
+        let s = said.lock().unwrap();
+        let err = s.iter().find(|s| s.phase == "waiting").unwrap().error.clone().unwrap();
+        assert!(err.contains(repl::DAMAGED), "{err}");
+    }
+    laptop.retry_leave();
+    assert!(tokio::time::timeout(Duration::from_secs(20), leaving).await.unwrap().unwrap(), "handed over");
+    assert_eq!(*promoted.lock().unwrap(), 2, "installed on the second try, from a fresh copy");
+    until("both follow the desktop", || holder(&desktop) == (3, Some(d.clone())) && holder(&laptop) == (3, Some(d.clone()))).await;
+    assert!(said.lock().unwrap().iter().any(|s| s.phase == "done" && s.to.as_deref() == Some("desktop")));
+    // Leaving, the laptop doesn't ask for it back, though it's pinned.
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    assert_eq!(holder(&desktop), (3, Some(d.clone())));
+
+    // The desktop quits with nobody else up: it says so and waits, until it stays.
+    laptop.set_offline(true);
+    until("the laptop is gone", || !online(&desktop, "laptop")).await;
+    let said = Arc::new(std::sync::Mutex::new(Vec::<LeaveStatus>::new()));
+    let s = said.clone();
+    desktop.on_leave(Box::new(move |st| s.lock().unwrap().push(st)));
+    let desk = desktop.clone();
+    let leaving = tokio::spawn(async move { desk.leave().await });
+    until("nobody to hand to is said", || {
+        said.lock().unwrap().iter().any(|s| s.phase == "waiting" && s.error.as_deref().is_some_and(|e| e.contains("No other machine")))
+    })
+    .await;
+    desktop.cancel_leave();
+    assert!(!tokio::time::timeout(Duration::from_secs(5), leaving).await.unwrap().unwrap(), "stayed");
+    assert!(!desktop.is_leaving());
+    assert_eq!(holder(&desktop), (3, Some(d)));
+}

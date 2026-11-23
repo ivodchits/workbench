@@ -115,7 +115,13 @@ fn install_copy(copy: &Path, to: &Path) -> Result<(), String> {
     let src = Connection::open_with_flags(copy, rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE)
         .map_err(|e| format!("opening the copy: {e}"))?;
     let _ = std::fs::remove_file(to);
-    src.execute("VACUUM INTO ?1", [to.to_string_lossy()]).map_err(|e| format!("installing the copy: {e}"))?;
+    src.execute("VACUUM INTO ?1", [to.to_string_lossy()]).map_err(|e| {
+        use rusqlite::ErrorCode::{DatabaseCorrupt, NotADatabase};
+        match e.sqlite_error_code() {
+            Some(DatabaseCorrupt | NotADatabase) => format!("{} ({e})", crate::fleet::repl::DAMAGED),
+            _ => format!("installing the copy: {e}"),
+        }
+    })?;
     Ok(())
 }
 
@@ -126,7 +132,7 @@ fn check_integrity(c: &Connection) -> Result<(), String> {
     if rows == ["ok"] {
         Ok(())
     } else {
-        Err(format!("the copy is damaged: {}", rows.into_iter().take(3).collect::<Vec<_>>().join("; ")))
+        Err(format!("{} ({})", crate::fleet::repl::DAMAGED, rows.into_iter().take(3).collect::<Vec<_>>().join("; ")))
     }
 }
 

@@ -29,6 +29,10 @@ use serde_json::Value;
 pub const LOG_KEEP: i64 = 100_000;
 /// The most entries one answer carries.
 pub const BATCH: i64 = 1000;
+/// How an install of a copy that is damaged starts its error (`DuckDb::become_copy`):
+/// such a copy is fetched again rather than tried again.
+pub const DAMAGED: &str = "this machine's copy of Duck's state is damaged";
+
 /// A snapshot travels in chunks of this many bytes.
 pub const CHUNK: usize = 256 * 1024;
 

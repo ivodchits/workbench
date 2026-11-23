@@ -193,3 +193,32 @@ export function onFleetHost(cb: (from: string, text: string) => void): Promise<U
 export function onFleetChanged(cb: () => void): Promise<UnlistenFn> {
   return listen("fleet-changed", () => cb());
 }
+
+/** How the handover on quitting is going (this machine held Duck). */
+export interface LeaveStatus {
+  /** `draining` (Duck finishing its turns), `handing` (asking `to`), `waiting` (the
+   * last round failed: `error`, one reason per line; tried again soon), `done`. */
+  phase: "draining" | "handing" | "waiting" | "done";
+  to: string | null;
+  error: string | null;
+  attempt: number;
+}
+
+export function onFleetLeaving(cb: (s: LeaveStatus) => void): Promise<UnlistenFn> {
+  return listen<LeaveStatus>("fleet-leaving", (e) => cb(e.payload));
+}
+
+/** The handover on quitting: try again now. */
+export function fleetLeaveRetry(): Promise<void> {
+  return invoke("fleet_leave_retry");
+}
+
+/** The handover on quitting: stay open instead. */
+export function fleetLeaveCancel(): Promise<void> {
+  return invoke("fleet_leave_cancel");
+}
+
+/** Quit without handing Duck over: the other machines take it over by themselves. */
+export function fleetQuitNow(): Promise<void> {
+  return invoke("fleet_quit_now");
+}

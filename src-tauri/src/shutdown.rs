@@ -18,6 +18,30 @@ use tauri_plugin_global_shortcut::GlobalShortcutExt;
 /// How long the windows get to go before the app exits anyway.
 const WINDOWS_GRACE: Duration = Duration::from_secs(3);
 
+/// Quit as the user asked (the window's close, the tray's Exit). When this machine
+/// holds Duck and another could run it, Duck is handed over first: the webview shows
+/// how it goes (`fleet-leaving`), and the app quits once it's done. A second ask while
+/// that runs does nothing; the overlay has "Quit anyway".
+pub fn request_exit(app: &AppHandle) {
+    let Some(fleet) = crate::fleet::get(app) else { return exit(app) };
+    if fleet.is_leaving() {
+        crate::fleet::show_main(app);
+        return;
+    }
+    if !fleet.must_hand_over() {
+        return exit(app);
+    }
+    crate::fleet::show_main(app);
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        if fleet.leave().await {
+            // A moment for the overlay to say where Duck went.
+            tokio::time::sleep(Duration::from_millis(900)).await;
+            exit(&app);
+        }
+    });
+}
+
 /// Quit the app, cleanly. From any thread.
 pub fn exit(app: &AppHandle) {
     let handle = app.clone();

@@ -377,6 +377,9 @@ pub fn run() {
             fleet::fleet_host_send,
             fleet::fleet_set_workspace,
             fleet::fleet_drained,
+            fleet::fleet_leave_retry,
+            fleet::fleet_leave_cancel,
+            fleet::fleet_quit_now,
             fleet::fleet_set_offline,
             fleet::fleet_new_code,
             fleet::fleet_join,
@@ -569,7 +572,7 @@ pub fn run() {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 if win.label() == "main" {
                     api.prevent_close();
-                    shutdown::exit(win.app_handle());
+                    shutdown::request_exit(win.app_handle());
                 }
             }
         })
