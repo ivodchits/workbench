@@ -636,6 +636,74 @@ This document. Done when you've approved it; then H6 in `assistant-plan.md` poin
   shared thread forked, one notice, the mark gone). Live test owed: a split
   between the desktop and the laptop.)_
 
+### Step F6.3 — Duck restarts without reloading the window
+- **Depends on:** F6.1.
+- **Why:** taking Duck over (`promote_here` → `duck-promoted`) reloads the whole main
+  window, so Duck starts again on the installed copy. That resets everything else on
+  the page too: the drawer, editors, panels, scroll positions. `b24c0cc` made consoles
+  and shells reattach to their live PTYs after a reload, but the reload itself still
+  happens on every move, on both machines.
+- **What has to restart.** The backend already swapped `duck.db` under the same
+  connection (`DuckDb::become_copy`), so it needs nothing. What's stale is what the
+  page loaded from the old state in `initAssistant` (`src/assistant/index.ts`):
+  - **Read from `duck.db`:** the thread store (`createThreadStore`), settings, the trust
+    store, tasks, drawings, autopilots, routines, the decisions log, the waiting queue
+    (`fleetTools.load`), kept read positions (`readAloud` pref), the consolidator's
+    state, timings.
+  - **Read from Duck's workspace (reset to the mirror's head):** reminders and timers,
+    skills, memory, config.
+  - **Built on those:** the engine, the endpoint (`epRef`), the policy gate, the
+    delegate and trust watchers, the promoter, the replayer, the reminder clock,
+    housekeeping, `tickRoutines`, the nightly tidy.
+  - **Module globals pointing into them:** `consolidator`, `reminderAction`, `duck`'s
+    local endpoint, `viewing`.
+- **Build:**
+  - **A shell and a core.** Split `initAssistant` in two.
+    - **The shell** starts once and lives as long as the page: the fleet link and hub,
+      `hosts` and the PC tools, the hosted MCP sync and browser host, the reader and
+      announcer, desktop speech, the remote bridge, and the drawer's switch transport.
+    - **The core** is everything in "What has to restart". `startCore(shell)` returns
+      `{ endpoint, stop() }`.
+    - The shell's callbacks that now close over `engineRef`/`epRef` read the current
+      core instead.
+  - **A scope for every side effect.** The core registers each Tauri `listen`,
+    `setInterval`/`setTimeout`, store `subscribe`, `localPort.on…` and watcher start
+    through one `Scope`, and `stop()` undoes them all. The factories that start their
+    own timers or listeners take a `signal` or return a `dispose`. By the count today:
+    - `engine.ts` (4)
+    - `port.local.ts` (6, of which the core's registrations are the ones to scope)
+    - `tasks.ts` (2)
+    - `trust/watcher.ts` (2)
+    - `autopilot.ts`, `reminders.ts`, `announce.ts`, `fleet.ts` (1 each)
+    - `index.ts`'s own 6
+
+    A leak here is a doubled reminder, routine or permission answer, so the scope is
+    the step's main risk.
+  - **Stopping the core.** It stops taking turns (as the drain does), waits for running
+    turns up to 60 s, and aborts the rest. Then it disposes the scope and drops the
+    globals. Worker PTYs and tasks are the backend's and keep running; the new core's
+    `tasks.load()` finds them as a reload would.
+  - **The swap.** On `duck-promoted`, the shell stops the core, starts a new one, and
+    points the hub (`hub.setEndpoint`), the remote bridge's `duck`, and the switch
+    transport's local side at the new endpoint. The drawer starts over the way it
+    does on a switch (`onDuckSwitch`), and the phones re-sync as on a reconnect.
+    Replaces `location.reload()` at `index.ts:1092`.
+  - **Restart, not reload, for the rest.** A failed restart (the new core can't load)
+    leaves Duck off with a notice in the drawer and a "start Duck" retry. It doesn't
+    fall back to reloading the window.
+- **Key files:** `src/assistant/index.ts` (the split), a new `src/assistant/scope.ts`,
+  the factories above, `src/assistant/switchTransport.ts` (a `setLocal(t)` that
+  resubscribes like `use` does), `src/assistant/remoteBridge.ts`.
+- **Done when:**
+  - A test starts the core, stops it, and starts it again on fakes. One registration
+    of each listener and timer is left, and a reminder that comes due fires once.
+  - A turn running at stop either finishes or is aborted with its notice.
+  - Taking Duck over leaves the window as it was: consoles, editors and panels
+    untouched, and only the drawer starts over, showing the new main's threads.
+  - Live test owed: a handover and a failover between the desktop and the laptop.
+    Neither window reloads (the consoles' scrollback isn't replayed, the drawer shows
+    the moved threads), and a reminder fires once across the move.
+
 ## Phase F7 — Workbench on Linux (gate: the server exists)
 
 _(Deferred, 2026-11-19: F1–F6 are built and merged into main; F7 and F8 wait
