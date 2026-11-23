@@ -197,6 +197,19 @@ export function ptySessionLive(instanceId: string): Promise<boolean> {
   return invoke("pty_session_live", { instanceId });
 }
 
+/** A PTY whose child is still running (see `ptyLiveList`). */
+export interface LivePty {
+  instanceId: string;
+  sessionId: string | null;
+  cwd: string;
+}
+
+/** Every PTY whose child is still running. They outlive a page reload, so the
+ *  consoles and shells a restored layout brings back attach to them. */
+export function ptyLiveList(): Promise<LivePty[]> {
+  return invoke("pty_live_list");
+}
+
 /** The home dir, used to prefill the launcher's working-dir field. */
 export function defaultWorkingDir(): Promise<string | null> {
   return invoke("default_working_dir");

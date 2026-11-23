@@ -19,9 +19,9 @@
 //     for [`STALE`], its renderer is killed the same way. A debug build skips this:
 //     a DevTools breakpoint stops the heartbeat too.
 //
-// A reload resets the frontend (the saved layout comes back as dormant
-// placeholders), but the PTYs live here and keep running. Relaunching a console
-// replaces its old PTY, so no session ends up running twice.
+// A reload resets the frontend, but the PTYs live here and keep running: the
+// consoles and shells the saved layout restores attach to theirs again
+// (`pty_live_list`), so no session ends up running twice.
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::OnceLock;

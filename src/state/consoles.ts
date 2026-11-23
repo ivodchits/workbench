@@ -10,11 +10,13 @@
 // Dormant entries are how "reopen → same layout" works without auto-launching
 // `claude`: the box returns in place, the PTY does not. Clicking it relaunches a
 // fresh session; `Ctrl+Shift+R` relaunches it *resumed* (`resumeConsole`, step 3.8).
+// A placeholder whose PTY is still running (the page reloaded while the app kept
+// going) attaches to it instead (`adoptLive`).
 //
 // A tiny external store exposed to React via `useSyncExternalStore`.
 
 import { useSyncExternalStore } from "react";
-import type { RemoteSpawn, SpawnKind, SpawnResult } from "../ipc/pty";
+import { ptyLiveList, type LivePty, type RemoteSpawn, type SpawnKind, type SpawnResult } from "../ipc/pty";
 import type { Instance } from "../ipc/registry";
 import { applyInstanceUsage, getRegistry, updateInstance } from "./registry";
 import { clearLiveStatus } from "./status";
@@ -251,6 +253,40 @@ export function hydrateDormant(instanceIds: string[]): void {
     }));
   if (additions.length === 0) return;
   emit({ ...state, open: [...state.open, ...additions] });
+  void ptyLiveList()
+    .then((live) => adoptLive(live, additions.map((a) => a.instanceId)))
+    .catch(() => {});
+}
+
+/**
+ * Bring placeholders whose PTY is still running back to life: they mount as
+ * `running`, which attaches to the live PTY and replays its scrollback (the
+ * dock-back path) instead of spawning. The PTYs live in the backend, so after a
+ * page reload (a renderer crash, Duck moving to this machine) the sessions are
+ * still there; on a cold start there are none and the placeholders stay dormant.
+ * Only entries still dormant are touched: one relaunched meanwhile is left alone.
+ */
+export function adoptLive(live: LivePty[], instanceIds: string[]): void {
+  const byId = new Map(live.map((l) => [l.instanceId, l]));
+  const wanted = new Set(instanceIds);
+  let slots = WEBGL_CAP - liveWebglCount();
+  let changed = false;
+  const open = state.open.map((c) => {
+    const l = byId.get(c.instanceId);
+    if (!l || !wanted.has(c.instanceId) || c.status !== "dormant") return c;
+    changed = true;
+    const instance = getRegistry().instances.find((i) => i.id === c.instanceId);
+    return {
+      ...c,
+      cwd: l.cwd,
+      kind: "claude" as const,
+      webgl: slots-- > 0,
+      status: "running" as const,
+      sessionId: l.sessionId,
+      remote: instance ? remoteSpawnFor(instance) : null,
+    };
+  });
+  if (changed) emit({ ...state, open });
 }
 
 /**

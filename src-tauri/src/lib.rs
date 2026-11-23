@@ -191,6 +191,7 @@ pub fn run() {
             pty::pty_kill,
             pty::session_instance,
             pty::pty_session_live,
+            pty::pty_live_list,
             renderer_watchdog::ui_heartbeat,
             pty::default_working_dir,
             pty::remote_cmd_spawn,

@@ -18,10 +18,12 @@
 //   • spawning/running/error — a live PTY+terminal,
 //   • dormant — a placeholder restored from a saved layout, awaiting a relaunch.
 //
-// The store is pure state (no IO): the hosting `Shell` panel drives the PTY via
+// The store is pure state, except that restored placeholders ask once which PTYs
+// are still running (after a page reload) and attach to those. The hosting `Shell` panel drives the PTY via
 // the terminal pool and reports back through `markShellSpawned` / `markShellError`.
 
 import { useSyncExternalStore } from "react";
+import { ptyLiveList, type LivePty } from "../ipc/pty";
 
 export type ShellStatus = "dormant" | "spawning" | "running" | "error";
 
@@ -175,6 +177,24 @@ export function hydrateShells(descriptors: ShellDescriptor[]): void {
     }));
   if (additions.length === 0) return;
   emit({ ...state, open: [...state.open, ...additions] });
+  void ptyLiveList()
+    .then((live) => adoptLiveShells(live, additions.map((a) => a.shellId)))
+    .catch(() => {});
+}
+
+/** Shells whose PTY is still running (after a page reload) attach to it rather
+ *  than wait as placeholders; see `adoptLive` in the consoles store. */
+export function adoptLiveShells(live: LivePty[], shellIds: string[]): void {
+  const byId = new Map(live.map((l) => [l.instanceId, l]));
+  const wanted = new Set(shellIds);
+  let changed = false;
+  const open = state.open.map((s) => {
+    const l = byId.get(s.shellId);
+    if (!l || !wanted.has(s.shellId) || s.status !== "dormant") return s;
+    changed = true;
+    return { ...s, cwd: l.cwd, status: "running" as const, error: null };
+  });
+  if (changed) emit({ ...state, open });
 }
 
 /** Relaunch a dormant/errored shell in place — the panel already exists. */

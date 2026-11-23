@@ -1080,6 +1080,39 @@ pub fn pty_session_live(state: State<'_, PtyManager>, instance_id: String) -> bo
     }
 }
 
+/// A PTY whose child is still running, for a reloaded page to attach to.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LivePty {
+    instance_id: String,
+    session_id: Option<String>,
+    cwd: String,
+}
+
+/// Every PTY whose child is still running. The PTYs live here, not in the page,
+/// so when the page reloads (a renderer crash, Duck moving to this machine) the
+/// consoles and shells its saved layout restores can attach to their sessions
+/// rather than come back as placeholders. Children that already exited are left
+/// out, as in [`pty_session_live`].
+#[tauri::command]
+pub fn pty_live_list(state: State<'_, PtyManager>) -> Vec<LivePty> {
+    let ids: Vec<(String, String)> = {
+        let mut guard = state.sessions.lock().unwrap();
+        guard
+            .iter_mut()
+            .filter(|(_, s)| !matches!(s.child.try_wait(), Ok(Some(_))))
+            .map(|(id, s)| (id.clone(), s.cwd.clone()))
+            .collect()
+    };
+    ids.into_iter()
+        .map(|(instance_id, cwd)| LivePty {
+            session_id: state.session_for_instance(&instance_id),
+            instance_id,
+            cwd,
+        })
+        .collect()
+}
+
 /// Default working directory offered to the launcher form (the home dir).
 #[tauri::command]
 pub fn default_working_dir() -> Option<String> {
