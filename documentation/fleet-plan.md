@@ -703,6 +703,31 @@ This document. Done when you've approved it; then H6 in `assistant-plan.md` poin
   - Live test owed: a handover and a failover between the desktop and the laptop.
     Neither window reloads (the consoles' scrollback isn't replayed, the drawer shows
     the moved threads), and a reminder fires once across the move.
+- _(Built, 2026-11-23: `startShell` and `startCore`/`buildCore` in
+  `src/assistant/index.ts`, `src/assistant/scope.ts`, `createSwappableEndpoint` and
+  `SwitchTransport.restarted` in `switchTransport.ts`, `Engine.dispose`, the brain
+  host's listeners now unsubscribable, and `endpoint()`'s own subscriptions dropped
+  with it.
+  **Changed from the plan:**
+  - The phones' bridge stays in the shell rather than restarting: phones that are
+    hosts (H1) said hello to it once, and a new bridge wouldn't know them. It holds
+    the swappable endpoint; its reminders and offline imports go to the current core.
+  - Stopping the core doesn't wait for turns: by `duck-promoted` the backend has
+    already installed the new `duck.db`, so a turn left running would write into
+    the new state. Turns are stopped at once (this machine wasn't holding Duck, so
+    there are normally none).
+  - What's sent while Duck restarts waits (up to 100 messages) and goes to the new
+    core. A core that fails to start answers every request with the error and tries
+    again on the next one.
+  - A takeover that comes mid-restart restarts once more after it.
+  **Checked:** `restart.test.ts` runs the real start on a fake backend and restarts
+  twice: one of each Tauri listener and interval is left, the drawer starts over
+  each time and gets the new engine's threads, and nothing reloads the window. On
+  the old code it fails. It found `endpoint()`'s spend listener piling up on every
+  start, now fixed. Also `scope.test.ts`, the swappable endpoint and
+  `restarted` in `switchTransport.test.ts`, and the engine's dispose in
+  `brain.test.ts`. Live test owed: the Done when between the desktop and the
+  laptop.)_
 
 ## Phase F7 — Workbench on Linux (gate: the server exists)
 

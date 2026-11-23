@@ -11,6 +11,7 @@
 // turns since its last reply for a session that's running or resumed (the ones the
 // API answered meanwhile).
 
+import { unlisten } from "../scope";
 import type Anthropic from "@anthropic-ai/sdk";
 import type { StoredMessage } from "../../ipc/assistant";
 import {
@@ -82,9 +83,10 @@ export interface BrainHost {
   interrupt(threadId: string): Promise<void>;
   kill(threadId: string): Promise<void>;
   answer(callId: string, result: McpResult): Promise<void>;
-  onEvent(cb: (threadId: string, msg: BrainMessage) => void): void;
-  onExit(cb: (threadId: string, code: number | null, stderr: string) => void): void;
-  onToolCall(cb: (call: BrainToolCall) => void): void;
+  /** Each returns its unsubscribe (a restarted Duck drops the old engine's). */
+  onEvent(cb: (threadId: string, msg: BrainMessage) => void): () => void;
+  onExit(cb: (threadId: string, code: number | null, stderr: string) => void): () => void;
+  onToolCall(cb: (call: BrainToolCall) => void): () => void;
 }
 
 /** The protocol messages the brain's turn reads. */
@@ -111,9 +113,9 @@ export function createBrainHost(workspace: () => Promise<string>): BrainHost {
     interrupt: brainInterrupt,
     kill: brainKill,
     answer: brainToolResult,
-    onEvent: (cb) => void onBrainEvent((id, msg) => cb(id, msg as BrainMessage)),
-    onExit: (cb) => void onBrainExited(cb),
-    onToolCall: (cb) => void onBrainToolCall(cb),
+    onEvent: (cb) => unlisten(onBrainEvent((id, msg) => cb(id, msg as BrainMessage))),
+    onExit: (cb) => unlisten(onBrainExited(cb)),
+    onToolCall: (cb) => unlisten(onBrainToolCall(cb)),
   };
 }
 

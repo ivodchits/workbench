@@ -6,7 +6,7 @@
 // Files a message carries are stored on this machine; the main fetches them from
 // here by their id when it needs them (fleet plan F5.2).
 
-import { PROTOCOL_VERSION, type ClientMessage, type DuckEvent, type Stamped, type Transport } from "./protocol";
+import { PROTOCOL_VERSION, type ClientMessage, type DuckEndpoint, type DuckEvent, type Stamped, type Transport } from "./protocol";
 
 export interface SwitchTransport extends Transport {
   /** Talk to `remote` (another machine's Duck, named `where`), or back to this
@@ -15,6 +15,9 @@ export interface SwitchTransport extends Transport {
   /** The machine Duck is on when it isn't this one. */
   where(): string | null;
   onSwitch(cb: (where: string | null) => void): () => void;
+  /** This machine's Duck started again (F6.3): the drawer starts over as on a
+   *  switch, when it's talking to this machine's. */
+  restarted(): void;
 }
 
 export function createSwitchTransport(local: Transport): SwitchTransport {
@@ -47,6 +50,9 @@ export function createSwitchTransport(local: Transport): SwitchTransport {
       for (const cb of switched) cb(where);
     },
     where: () => where,
+    restarted() {
+      if (current === local) for (const cb of switched) cb(where);
+    },
     onSwitch(cb) {
       switched.add(cb);
       return () => void switched.delete(cb);
@@ -67,6 +73,55 @@ export function createLinkTransport(send: (msg: ClientMessage) => void): Transpo
     deliver(e) {
       const stamped = { ...e, v: PROTOCOL_VERSION } as Stamped<DuckEvent>;
       for (const cb of subs) cb(stamped);
+    },
+  };
+}
+
+/** This machine's Duck as one endpoint that outlives it (fleet plan F6.3): the
+ *  drawer, the phones and the other machines hold this, and a restart swaps the
+ *  engine's endpoint behind it. Every subscriber moves across; what's sent while
+ *  there's none (mid-restart) waits for the next. */
+export interface SwappableEndpoint extends DuckEndpoint {
+  /** Put `ep` behind it, or none (`null`) while Duck restarts. Every surface then
+   *  gets a fresh `sync` (the threads, the cards, the settings) from the new one. */
+  swap(ep: DuckEndpoint | null): void;
+}
+
+/** The most messages kept while Duck restarts; older ones are dropped. */
+const WAITING_MAX = 100;
+
+export function createSwappableEndpoint(): SwappableEndpoint {
+  let current: DuckEndpoint | null = null;
+  const subs = new Map<(e: DuckEvent) => void, () => void>();
+  const waiting: [ClientMessage, ((e: DuckEvent) => void) | undefined][] = [];
+  const fanOut = (e: DuckEvent) => {
+    for (const cb of subs.keys()) cb(e);
+  };
+  return {
+    handle(msg, reply) {
+      if (current) current.handle(msg, reply);
+      else {
+        waiting.push([msg, reply]);
+        if (waiting.length > WAITING_MAX) waiting.shift();
+      }
+    },
+    onEvent(cb) {
+      subs.set(cb, current ? current.onEvent(cb) : () => {});
+      return () => {
+        subs.get(cb)?.();
+        subs.delete(cb);
+      };
+    },
+    swap(ep) {
+      if (ep === current) return;
+      for (const [cb, off] of subs) {
+        off();
+        subs.set(cb, ep ? ep.onEvent(cb) : () => {});
+      }
+      current = ep;
+      if (!ep) return;
+      ep.handle({ type: "sync" }, fanOut);
+      for (const [msg, reply] of waiting.splice(0)) ep.handle(msg, reply);
     },
   };
 }

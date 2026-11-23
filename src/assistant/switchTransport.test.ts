@@ -7,7 +7,7 @@ import { createFleetHub, runFleetLink, serveFleet } from "./fleetHosts";
 import { createHosts } from "./hosts";
 import type { WorkbenchPort } from "./port";
 import { createLocalTransport, type ClientMessage, type DuckEndpoint, type DuckEvent } from "./protocol";
-import { createLinkTransport, createSwitchTransport } from "./switchTransport";
+import { createLinkTransport, createSwappableEndpoint, createSwitchTransport } from "./switchTransport";
 
 /** An engine that answers `sync` with its own threads, and says "changed" to all. */
 function fakeEndpoint(name: string): DuckEndpoint & { got: ClientMessage[]; broadcast(e: DuckEvent): void } {
@@ -103,5 +103,40 @@ describe("the drawer's transport", () => {
     expect(drawer.where()).toBeNull();
     drawer.send({ type: "sync" });
     expect(threadsOf(seen).slice(-1)[0]).toBe("laptop's");
+  });
+});
+
+describe("Duck restarting behind one endpoint (F6.3)", () => {
+  it("moves every subscriber to the new engine, holds what's sent meanwhile, and syncs everyone", () => {
+    const ep = createSwappableEndpoint();
+    const old = fakeEndpoint("old");
+    ep.swap(old);
+    const seen: string[] = [];
+    const off = ep.onEvent((e) => seen.push(e.type === "threads" ? `threads:${e.threads[0].id}` : e.type));
+    old.broadcast({ type: "threadDeleted", threadId: "x" });
+    ep.swap(null);
+    old.broadcast({ type: "threadDeleted", threadId: "y" });
+    const replies: DuckEvent[] = [];
+    ep.handle({ type: "sync" }, (e) => replies.push(e));
+    const next = fakeEndpoint("new");
+    ep.swap(next);
+    // Everyone's resynced from the new engine, and the held request is answered by it.
+    expect(seen).toEqual(["threadDeleted", "threads:new"]);
+    expect(replies).toMatchObject([{ type: "threads", threads: [{ id: "new" }] }]);
+    expect(next.got.map((m) => m.type)).toEqual(["sync", "sync"]);
+    next.broadcast({ type: "threadDeleted", threadId: "z" });
+    off();
+    next.broadcast({ type: "threadDeleted", threadId: "w" });
+    expect(seen).toEqual(["threadDeleted", "threads:new", "threadDeleted"]);
+  });
+
+  it("tells the drawer to start over only while it talks to this machine's Duck", () => {
+    const drawer = createSwitchTransport(createLocalTransport(fakeEndpoint("here")));
+    const starts: (string | null)[] = [];
+    drawer.onSwitch((w) => starts.push(w));
+    drawer.restarted();
+    drawer.use({ transport: createLinkTransport(() => {}), where: "laptop" });
+    drawer.restarted();
+    expect(starts).toEqual([null, "laptop"]);
   });
 });

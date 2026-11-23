@@ -99,7 +99,8 @@ import { createRegistry, toolsOn } from "./tools/registry";
 import { connectLocal, createHosts, type MachineRef } from "./hosts";
 import { createFleetHub, runFleetLink, serveFleet } from "./fleetHosts";
 import { createFleetPort, type FleetPort } from "./port.fleet";
-import { createSwitchTransport, type SwitchTransport } from "./switchTransport";
+import { createSwappableEndpoint, createSwitchTransport, type SwappableEndpoint, type SwitchTransport } from "./switchTransport";
+import { createScope, type Scope } from "./scope";
 import { createFleetTools, type FleetTools } from "./fleet";
 import { createRemotes } from "./remotes";
 import { gitOriginUrl } from "../ipc/git";
@@ -348,28 +349,34 @@ export function endpoint(
   reminders?: RemindersHost,
   drawings?: Drawings,
   fleet?: FleetTools,
-): DuckEndpoint {
+): DuckEndpoint & { dispose(): void } {
   const listeners = new Set<(ev: DuckEvent) => void>();
+  /** Its subscriptions, dropped when Duck restarts (F6.3): the spend, the reader
+   *  and the waiting queue outlive this endpoint. */
+  const offs: (() => unknown)[] = [];
+  const own = (off: (() => unknown) | undefined) => {
+    if (off) offs.push(off);
+  };
   const say = (ev: DuckEvent) => {
     for (const l of listeners) l(ev);
   };
   const fail = (err: unknown) =>
     say({ type: "error", message: errorMessage(err) });
-  e.onEvent(say);
+  own(e.onEvent(say));
 
   // The spend line: the month from the ledger, each turn from the meter.
   const meter = createTurnMeter();
-  e.onEvent((ev) => {
+  own(e.onEvent((ev) => {
     if (ev.type === "turnState") meter.state(ev.threadId, ev.state);
-  });
+  }));
   const sendSpend = async (to = say) => {
     if (spend)
       to({ type: "spend", spend: await spend.get(), turns: meter.turns() });
   };
-  spend?.onUsage((r) => {
+  own(spend?.onUsage((r) => {
     meter.usage(r.purpose, r.costUsd);
     void sendSpend().catch(fail);
-  });
+  }));
 
   // How long each turn took, on which brain (step D3).
   if (timings) {
@@ -382,19 +389,19 @@ export function endpoint(
       },
       keep: (t) => void timings.add(t).catch((err: unknown) => console.warn("duck: a turn's timing was dropped", err)),
     });
-    e.onEvent((ev) => clock.event(ev));
+    own(e.onEvent((ev) => clock.event(ev)));
   }
 
-  trust?.subscribe((c) => {
+  own(trust?.subscribe((c) => {
     if (c.decision) say({ type: "decision", row: c.decision });
     else say({ type: "trust", trust: trustView(trust) });
-  });
+  }));
   const sendTasks = (to = say) => {
     if (tasks) to({ type: "tasks", tasks: tasks.list().map(taskView) });
   };
-  tasks?.subscribe(() => sendTasks());
+  own(tasks?.subscribe(() => sendTasks()));
   // Drawings (G3): every change, and the canvas to open where it was asked for.
-  drawings?.subscribe((drawing, open) => say({ type: "drawing", drawing, ...(open && { open }) }));
+  own(drawings?.subscribe((drawing, open) => say({ type: "drawing", drawing, ...(open && { open }) })));
   const needDrawings = () => {
     if (!drawings) throw new Error("Drawings aren't available here.");
     return drawings;
@@ -408,7 +415,7 @@ export function endpoint(
       .map((a) => ({ instanceId: a.instanceId, session: title(a.instanceId), threadId: a.threadId, state: a.state, text: badgeText(a) }));
     to({ type: "autopilots", autopilots });
   };
-  autopilot?.subscribe(() => sendAutopilots());
+  own(autopilot?.subscribe(() => sendAutopilots()));
   const sendRoutines = async (to = say) => {
     if (!routines) return;
     const st = await routines.backup.status().catch(() => null);
@@ -423,7 +430,7 @@ export function endpoint(
       backup: st && { repo: st.repo, remote: st.remote, ahead: st.ahead, failing },
     });
   };
-  routines?.routines.subscribe(() => void sendRoutines().catch(fail));
+  own(routines?.routines.subscribe(() => void sendRoutines().catch(fail)));
   const skillsEvent = (list: Skill[]): DuckEvent => ({
     type: "skills",
     skills: list.map((x) => ({
@@ -440,8 +447,8 @@ export function endpoint(
   const sendSkills = async (to = say) => {
     if (skills) to(skillsEvent(await skills.list()));
   };
-  skills?.onChange((list) => say(skillsEvent(list)));
-  reader?.subscribe((v) => say({ type: "reader", reader: v }));
+  own(skills?.onChange((list) => say(skillsEvent(list))));
+  own(reader?.subscribe((v) => say({ type: "reader", reader: v })));
   // The open reminders (H8), for the widget.
   const sendReminders = (to = say, pulse = false) => {
     if (!reminders) return;
@@ -453,13 +460,13 @@ export function endpoint(
       ...(pulse && { pulse }),
     });
   };
-  reminders?.subscribe((pulse) => sendReminders(say, pulse));
+  own(reminders?.subscribe((pulse) => sendReminders(say, pulse)));
   // The work waiting for a machine that's off (fleet plan F3.2).
   const sendWaiting = (to = say) => {
     if (!fleet) return;
     to({ type: "waiting", items: fleet.waiting().map((w) => ({ id: w.id, machine: w.machineName, task: w.task, at: w.at })) });
   };
-  fleet?.onChange(() => sendWaiting());
+  own(fleet?.onChange(() => sendWaiting()));
   const needTrust = () => {
     if (!trust) throw new Error("Duck's trust settings didn't load.");
     return trust;
@@ -467,7 +474,7 @@ export function endpoint(
   const sendPromotions = (to = say) => {
     if (promoter) to({ type: "promotions", promotions: promoter.list() });
   };
-  promoter?.subscribe(() => sendPromotions());
+  own(promoter?.subscribe(() => sendPromotions()));
   const needPromoter = () => {
     if (!promoter) throw new Error("Promotions aren't available here.");
     return promoter;
@@ -708,468 +715,732 @@ export function endpoint(
         listeners.delete(cb);
       };
     },
+    dispose() {
+      for (const off of offs.splice(0)) off();
+      listeners.clear();
+    },
   };
 }
+
+/** What restarts when Duck moves to this machine (fleet plan F6.3): everything
+ *  loaded from `duck.db` and Duck's workspace, and what's built on it. */
+interface Core {
+  store: ReturnType<typeof createThreadStore>;
+  settings: Awaited<ReturnType<typeof loadSettings>>;
+  engine: Engine;
+  endpoint: DuckEndpoint;
+  reminders: ReturnType<typeof createReminders>;
+  actOnReminder(id: string, action: ReminderAction): Promise<void>;
+  activeThread(): Promise<string>;
+  /** Stop it for good: turns still running are stopped, every listener, timer and
+   *  watcher it started is undone. */
+  stop(): void;
+}
+
+/** What lives as long as the page (fleet plan F6.3): the fleet's link and hub, the
+ *  hosts and this PC's tools, the hosted MCP servers, the reader, the announcer,
+ *  the phones' bridge, and the endpoint every surface holds. It reaches Duck's
+ *  current core through `current`. */
+interface Shell {
+  endpoint: SwappableEndpoint;
+  drawer: SwitchTransport;
+  current(): Core | null;
+  /** Start a core and put it behind the endpoint; stop the one before. */
+  restart(): Promise<void>;
+}
+
+let shell: Shell | null = null;
 
 /** Start Duck. Idempotent; a failure to load (no backend) leaves Duck off and is
  *  retried on the next call. */
 export function initAssistant(): Promise<void> {
   started ??= (async () => {
-    const startedAt = Date.now();
-    const s = createThreadStore(ipcBackend);
-    await s.load();
-    const settings = await loadSettings();
-    // Without its store, trust falls back to W2's cards rather than keeping Duck off.
-    const trust = await createTrustStore(ipcTrustBackend).catch((e: unknown) => {
-      console.error("duck: trust didn't load; every consequential call asks", e);
-      return null;
-    });
-    // Worker tasks (D1) report into their thread as Workbench events; the engine
-    // that takes them is made just below.
-    let engineRef: Engine | null = null;
-    /** The level of the next Workbench event in each thread (V5). */
-    const levels = new Map<string, Level>();
-    // Drawings (G3) are a kind of task: their reports and warmth are theirs.
-    let drawingsRef: Drawings | null = null;
-    const tasks = createTaskManager({
-      port: localPort,
-      backend: ipcTaskBackend,
-      settings: settings.get,
-      tell: (threadId, text, level) => {
-        levels.set(threadId, level ?? "report");
-        void engineRef
-          ?.send({ threadId, text: eventText(text), source: "event" })
-          .catch((e: unknown) => console.warn("duck: a task report was dropped", e));
+    shell ??= await startShell();
+    if (!shell.current()) await shell.restart();
+    if (!shell.current()) throw new Error("Duck's core didn't start");
+    duck = shell.drawer;
+  })().catch((e: unknown) => {
+    started = null;
+    console.error("duck: init failed", e);
+  });
+  return started;
+}
+
+async function startShell(): Promise<Shell> {
+  const startedAt = Date.now();
+  let core: Core | null = null;
+  /** The settings of the core running, or of the last one while it restarts. */
+  let settings: Core["settings"] | null = null;
+  const settingsNow = () => {
+    if (!settings) throw new Error("Duck isn't started yet.");
+    return settings.get();
+  };
+  const engineNow = () => core?.engine ?? null;
+  // Read-aloud (V3): positions in the prefs, heard on the phone that asked or here.
+  const kept = new Map<string, ReadPosition>(
+    Object.entries(await getPref("readAloud", {}).catch(() => ({}) as Record<string, ReadPosition>)),
+  );
+  const readerListeners = new Set<(v: ReaderView | null) => void>();
+  let bridge: RemoteBridge | null = null;
+  const ru = (t: string, signal: AbortSignal) => oneShot("speakable_ru", t, { signal });
+  const reader = new Reader({
+    narrate: (t, signal) => oneShot("narrate", t, { signal }),
+    prepare: (sentence) => prepareSentence(sentence, ru),
+    load: (k) => kept.get(k),
+    save(k, p) {
+      if (p) kept.set(k, p);
+      else kept.delete(k);
+      const newest = [...kept.values()].sort((a, b) => b.at - a.at).slice(0, KEPT_READS);
+      void setPref("readAloud", Object.fromEntries(newest.map((x) => [x.key, x]))).catch(() => {});
+    },
+    // A message's listen button (no thread) has no reply to wait for.
+    quiet: (threadId) =>
+      !threadId ? Promise.resolve() : Promise.race([
+        (async () => {
+          for (;;) {
+            const e = engineNow();
+            if (!e || e.state(threadId) === "idle" || e.state(threadId) === "waiting") break;
+            await new Promise((r) => setTimeout(r, 100));
+          }
+          await Promise.all([desktopSpeech?.quiet(threadId), bridge?.quiet(threadId)]);
+        })(),
+        new Promise<void>((r) => setTimeout(r, QUIET_MAX_MS)),
+      ]),
+    changed: (v) => {
+      for (const l of readerListeners) l(v);
+    },
+    ended: (threadId, why) => {
+      if (why === "the end") return;
+      if (!threadId) {
+        console.warn(`duck: reading a message stopped: ${why}`);
+        return;
+      }
+      void engineNow()
+        ?.notice(threadId, { kind: "reader", text: `Reading stopped: ${why}.` })
+        .catch((e: unknown) => console.warn("duck: a reader notice was dropped", e));
+    },
+  });
+  const readerHost: ReaderHost = {
+    reader,
+    voiceFor(threadId) {
+      const v = bridge?.voiceFor(threadId) ?? desktopSpeech?.voice;
+      if (!v) throw new Error("There's no voice to read with yet: open Duck's drawer once on this PC.");
+      return v;
+    },
+    lastKept: () => [...kept.values()].sort((a, b) => b.at - a.at)[0] ?? null,
+    summarize: (text, signal) => oneShot("spoken_summary", text, { signal }),
+  };
+  const readerLink: ReaderLink = {
+    reader,
+    listen(req, phone) {
+      const voice = phone === undefined ? desktopSpeech?.voice : bridge?.voiceOn(phone);
+      if (!voice)
+        throw new Error(
+          phone === undefined ? "This PC's voice isn't running yet: open Duck's drawer once." : "That phone isn't connected anymore.",
+        );
+      if (phone === undefined && !desktopSpeech?.speakOn())
+        throw new Error("Speak is off on this PC: turn it on with the speaker by Duck's button.");
+      const job = listenJob(req);
+      if (job.sections.length === 0) throw new Error("There's nothing in that message to read.");
+      reader.start(job, voice, reader.resumable(job));
+    },
+    subscribe(cb) {
+      readerListeners.add(cb);
+      return () => readerListeners.delete(cb);
+    },
+  };
+  // Announcements (V5).
+  const announcer = new Announcer({
+    settings: () => settingsNow().announce,
+    dndUntil: () => settingsNow().dndUntil,
+    // Unknown presence counts as away: a push rather than talking to an empty room.
+    presence: () => getPresence().catch(() => ({ idleMs: 3_600_000, locked: false, fullScreen: false, focus: null })),
+    speakOn: () => desktopSpeech?.speakOn() ?? false,
+    busy: () => (desktopSpeech?.busy() ?? false) || (reader.view()?.state === "reading" && reader.view()?.where === "desktop"),
+    sayHere: (text, threadId) => desktopSpeech?.announce(text, threadId) ?? Promise.resolve(false),
+    phones: () => bridge?.phones() ?? 0,
+    sayOnPhones: (text, threadId) => bridge?.announce(text, threadId),
+    push: (threadId, title, body) => ipcLink.push(threadId, title, body),
+  });
+  // Through the endpoint, so every surface hears the new settings.
+  const endpointSwap = createSwappableEndpoint();
+  const quietHost: QuietHost = {
+    setDnd(until) {
+      endpointSwap.handle({ type: "dnd", until });
+    },
+    speakOn: () => desktopSpeech?.speakOn() ?? null,
+    setSpeakOn(on) {
+      if (!desktopSpeech) throw new Error("This PC's voice isn't running yet (open Duck's drawer once).");
+      desktopSpeech.setSpeakOn(on);
+    },
+  };
+  // Duck's own processes for stdio MCP servers, your Firefox bridge first (B2).
+  const registry = createRegistry(TOOLS, { deferred: DEFERRED, server: SERVER_TOOLS });
+  const browser = createBrowserHost({ call: mcpHostCall, startProfile: firefoxStartProfile });
+  const hosted = createHostedSync({
+    registry,
+    settings: settingsNow,
+    listTools: mcpHostTools,
+    servers: mcpHostServers,
+    running: mcpHostRunning,
+    refLine: browser.refLine,
+  });
+  // Tools that run where they act (H1): the PC's here, in process (H2: Steam,
+  // the media sessions, opening a link); the phone's over its socket.
+  let self: MachineRef | null = null;
+  const hosts = createHosts((host) => toolsOn(TOOLS, host), () => self);
+  const pcTools = pcHandlers({
+    library: steamLibrary,
+    storeSearch: steamStoreSearch,
+    activity: steamActivity,
+    open: pcOpen,
+    nowPlaying: mediaNowPlaying,
+    control: mediaControl,
+  });
+  connectLocal(hosts, "pc", pcTools);
+  // The other Workbench machines (fleet plan F3.1): at the main, their `pc` and
+  // their Workbench come over the fleet's link, and Duck's tools see every
+  // machine's sessions through one port; elsewhere, this machine serves its own
+  // to the main.
+  const hostSend = (to: string, text: string) =>
+    void fleetHostSend(to, text).catch((e: unknown) => console.warn("duck: a message to another machine was dropped", e));
+  // The user's machines and the work waiting for one that's off (F3.2); a task
+  // goes back to its thread when its machine connects. Its queue is in duck.db,
+  // loaded again by each core.
+  const fleetTools = createFleetTools({
+    store: { put: waitingPut, list: waitingList, delete: waitingDelete },
+    wakeSend: fleetWake,
+    tell: async (threadId, text) => {
+      const e = engineNow();
+      if (!e) throw new Error("Duck isn't started");
+      await e.send({ threadId, text: eventText(text), source: "event" });
+    },
+  });
+  // Projects' git remotes (F3.2), to tell the same project on two machines.
+  const gitRemotes = createRemotes(gitOriginUrl);
+  let fleetPort: FleetPort | null = null;
+  const hub = createFleetHub({
+    hosts,
+    send: hostSend,
+    events: (n, a) => fleetPort?.dispatch(n, a),
+    connected: (id) => {
+      if (duckHere) void fleetTools.connected(id);
+    },
+  });
+  const port = createFleetPort(localPort, () => self?.name ?? "this computer", () => hub.ports(), gitRemotes);
+  fleetPort = port;
+  const fleetLink = runFleetLink({
+    status: () => fleetStatus().catch(() => null),
+    hub,
+    serve: (main, name) => serveFleet({ main, name, pc: pcTools, port: localPort, send: hostSend, remotes: gitRemotes }),
+    setSelf: (m) => (self = m),
+    onStatus: (s) => {
+      fleetTools.setStatus(s);
+      duckHere = !s.config.duck || s.config.duck === s.me.id;
+    },
+    send: hostSend,
+  });
+  void onFleetHost((from, text) => fleetLink.receive(from, text)).catch(() => {});
+  // The election (F6.1): a handover waits for Duck's turns to finish (up to a
+  // minute; the backend stops waiting then).
+  void onFleetDrain((on) => {
+    fleetDraining = on;
+    if (!on) return;
+    void (async () => {
+      const until = Date.now() + 60_000;
+      const busy = () => {
+        const c = core;
+        return !!c && c.store.threads().some((t) => c.engine.state(t.id) !== "idle");
+      };
+      while (Date.now() < until && busy()) await new Promise((r) => setTimeout(r, 500));
+      await fleetDrained().catch(() => {});
+    })();
+  }).catch(() => {});
+  // A merge after a split (F6.2): said in the latest thread.
+  void onFleetMerged((text) => {
+    const t = core?.store.threads()[0];
+    if (t) void core?.engine.notice(t.id, { kind: "note", text }).catch(() => {});
+  }).catch(() => {});
+  void onFleetChanged(() => void fleetLink.look()).catch(() => {});
+  void fleetLink.look();
+
+  const drawer = createSwitchTransport(createLocalTransport(endpointSwap));
+  hub.setEndpoint(endpointSwap);
+  fleetLink.setDrawer(drawer);
+  // The phones' reminders follow whichever core is running.
+  const phoneReminderSubs = new Set<() => void>();
+  const coreOrThrow = () => {
+    if (!core) throw new Error("Duck is restarting; try again in a moment.");
+    return core;
+  };
+  bridge = startRemoteBridge({
+    duck: endpointSwap,
+    link: ipcLink,
+    watching: () => document.hasFocus() && !document.hidden,
+    fixVoice: (text) =>
+      voiceMessage(text, [
+        ...localPort.listProjects().map((p) => p.name),
+        ...localPort.listSessions().map((x) => x.title),
+      ]),
+    prepare: (sentence) => prepareSentence(sentence, (t, signal) => oneShot("speakable_ru", t, { signal })),
+    render: async (text, lang) => {
+      const id = crypto.randomUUID();
+      return { id, seconds: await ttsRender(id, text, lang) };
+    },
+    warm: (ru) => void ttsWarm(ru).catch(() => {}),
+    hosts,
+    attach: attachBytes,
+    phoneReminders: {
+      alarms: () => phoneAlarms(core?.reminders.list() ?? [], Date.now()),
+      subscribe: (cb) => {
+        phoneReminderSubs.add(cb);
+        return () => void phoneReminderSubs.delete(cb);
       },
-      report: (t) => drawingsRef?.report(t) ?? Promise.resolve(null),
-      keepWarm: (t) => drawingsRef?.keepWarm(t) ?? false,
-      // What a worker made (G1): chips in its thread, before the report.
-      files: (threadId, files, title) =>
-        void engineRef
-          ?.notice(threadId, { kind: "files", text: `Files from ${title}`, files })
-          .catch((e: unknown) => console.warn("duck: a task's files weren't posted", e)),
-    });
-    const drawings = createDrawings({
-      tasks,
-      backend: ipcDrawingBackend,
-      render: {
-        svg: renderSvg,
-        png: toPng,
-        // An image (G6): its picture as the engine sends it (at most 1568 px).
-        image: async (f) => {
-          const p = await attachPrepare(f.id, f.name);
-          return imageAsSvg(`data:${p.mediaType ?? f.mime};base64,${await attachData(f.id, f.name, "image")}`);
-        },
+      act: (id, action) => coreOrThrow().actOnReminder(id, action),
+    },
+    // What the phone's offline brain made (H7): reminders by id, each
+    // conversation a thread of its own.
+    offline: async (records, threads) => {
+      const c = coreOrThrow();
+      const took = { reminders: [] as string[], threads: [] as string[] };
+      for (const r of records) {
+        try {
+          if (!c.reminders.list().some((x) => x.id === r.id)) {
+            const threadId = await c.activeThread();
+            await changeReminder({ reminders: c.reminders, notice: (n) => c.engine.notice(threadId, n) }, null, () => ({
+              after: r,
+              message: `reminders: added "${r.title.slice(0, 60)}" on the phone, offline`,
+              chip: `Reminder added on the phone, offline: ${r.title}`,
+            }));
+          }
+          took.reminders.push(r.id);
+        } catch (e) {
+          console.warn("duck: reminders", e);
+        }
+      }
+      for (const t of threads) {
+        await c.engine.importThread({
+          id: t.id,
+          title: OFFLINE_TITLE(t.title),
+          messages: t.messages.map((m) => ({ role: m.role, text: m.text, source: m.voice ? "phone-voice" : "phone" })),
+        });
+        took.threads.push(t.id);
+      }
+      return took;
+    },
+  });
+
+  const deps: CoreDeps = {
+    startedAt,
+    readerHost,
+    readerLink,
+    quietHost,
+    announcer,
+    registry,
+    browser,
+    hosted,
+    hosts,
+    fleetPort: port,
+    fleetTools,
+    remindersChanged: () => {
+      for (const cb of phoneReminderSubs) cb();
+    },
+  };
+  let restarting: Promise<void> | null = null;
+  /** Asked again while restarting (another takeover): once more after. */
+  let again = false;
+  const restart = (): Promise<void> => {
+    if (restarting) {
+      again = true;
+      return restarting;
+    }
+    return (restarting = (async () => {
+      const old = core;
+      core = null;
+      endpointSwap.swap(null);
+      // The old core's state is gone from under it (the new duck.db is in): what
+      // it was doing stops now rather than write into the new state.
+      old?.stop();
+      try {
+        const next = await startCore(deps);
+        core = next;
+        settings = next.settings;
+        endpointSwap.swap(next.endpoint);
+        deps.remindersChanged();
+        drawer.restarted();
+        void hosted.sync().catch((e: unknown) => console.warn("duck: the hosted MCP servers didn't load", e));
+      } catch (e) {
+        console.error("duck: Duck didn't start", e);
+        // Every surface is told; the next message tries again.
+        endpointSwap.swap(failedEndpoint(e, () => void restart()));
+      }
+    })().finally(() => {
+      restarting = null;
+      if (again) {
+        again = false;
+        void restart();
+      }
+    }));
+  };
+  // Taking Duck over from another machine (F6.1) installed its state: Duck starts
+  // again on it, without reloading the window (F6.3).
+  void onDuckPromoted(() => void restart()).catch(() => {});
+  return { endpoint: endpointSwap, drawer, current: () => core, restart };
+}
+
+/** An endpoint for a Duck that didn't start: every request gets the error and
+ *  asks for another try. */
+function failedEndpoint(err: unknown, retry: () => void): DuckEndpoint {
+  const message = `Duck didn't start: ${errorMessage(err)}. Trying again.`;
+  let tried = false;
+  return {
+    handle(_msg, reply) {
+      reply?.({ type: "error", message });
+      if (!tried) {
+        tried = true;
+        retry();
+      }
+    },
+    onEvent: () => () => {},
+  };
+}
+
+/** What a core gets from the shell. */
+interface CoreDeps {
+  startedAt: number;
+  readerHost: ReaderHost;
+  readerLink: ReaderLink;
+  quietHost: QuietHost;
+  announcer: Announcer;
+  registry: ReturnType<typeof createRegistry>;
+  browser: ReturnType<typeof createBrowserHost>;
+  hosted: HostedSync;
+  hosts: ReturnType<typeof createHosts>;
+  fleetPort: FleetPort;
+  fleetTools: ReturnType<typeof createFleetTools>;
+  /** The reminders changed: the phones' alarms follow. */
+  remindersChanged(): void;
+}
+
+/** Load Duck's state and start it (the restartable half, F6.3). Every side effect
+ *  goes through `scope`, undone by `stop`. */
+async function startCore(d: CoreDeps): Promise<Core> {
+  const scope = createScope();
+  try {
+    return await buildCore(d, scope);
+  } catch (e) {
+    scope.dispose();
+    throw e;
+  }
+}
+
+async function buildCore(d: CoreDeps, scope: Scope): Promise<Core> {
+  const { announcer } = d;
+  const s = createThreadStore(ipcBackend);
+  await s.load();
+  const settings = await loadSettings();
+  // Without its store, trust falls back to W2's cards rather than keeping Duck off.
+  const trust = await createTrustStore(ipcTrustBackend).catch((e: unknown) => {
+    console.error("duck: trust didn't load; every consequential call asks", e);
+    return null;
+  });
+  // Worker tasks (D1) report into their thread as Workbench events; the engine
+  // that takes them is made just below.
+  let engineRef: Engine | null = null;
+  /** The level of the next Workbench event in each thread (V5). */
+  const levels = new Map<string, Level>();
+  // Drawings (G3) are a kind of task: their reports and warmth are theirs.
+  let drawingsRef: Drawings | null = null;
+  const tasks = createTaskManager({
+    port: localPort,
+    backend: ipcTaskBackend,
+    settings: settings.get,
+    tell: (threadId, text, level) => {
+      levels.set(threadId, level ?? "report");
+      void engineRef
+        ?.send({ threadId, text: eventText(text), source: "event" })
+        .catch((e: unknown) => console.warn("duck: a task report was dropped", e));
+    },
+    report: (t) => drawingsRef?.report(t) ?? Promise.resolve(null),
+    keepWarm: (t) => drawingsRef?.keepWarm(t) ?? false,
+    // What a worker made (G1): chips in its thread, before the report.
+    files: (threadId, files, title) =>
+      void engineRef
+        ?.notice(threadId, { kind: "files", text: `Files from ${title}`, files })
+        .catch((e: unknown) => console.warn("duck: a task's files weren't posted", e)),
+  });
+  scope.add(() => tasks.dispose());
+  const drawings = createDrawings({
+    tasks,
+    backend: ipcDrawingBackend,
+    render: {
+      svg: renderSvg,
+      png: toPng,
+      // An image (G6): its picture as the engine sends it (at most 1568 px).
+      image: async (f) => {
+        const p = await attachPrepare(f.id, f.name);
+        return imageAsSvg(`data:${p.mediaType ?? f.mime};base64,${await attachData(f.id, f.name, "image")}`);
       },
-      notice: (threadId, n) =>
-        void engineRef?.notice(threadId, n).catch((e: unknown) => console.warn("duck: a drawing's card was dropped", e)),
-    });
-    drawingsRef = drawings;
-    // A drawing worker looks at its drawing (G4): its `render` calls come from
-    // Duck's MCP server and are answered with the canvas's renderer.
-    void onWorkerRender((call) =>
+    },
+    notice: (threadId, n) =>
+      void engineRef?.notice(threadId, n).catch((e: unknown) => console.warn("duck: a drawing's card was dropped", e)),
+  });
+  scope.add(() => drawings.dispose());
+  drawingsRef = drawings;
+  // A drawing worker looks at its drawing (G4): its `render` calls come from
+  // Duck's MCP server and are answered with the canvas's renderer.
+  scope.listen(
+    onWorkerRender((call) =>
       void drawings
         .renderFor(call.instanceId, call.input)
         .catch((e: unknown): McpResult => ({ content: [{ type: "text", text: `The render failed: ${errorMessage(e)}` }], isError: true }))
         .then((result) => brainToolResult(call.callId, result)),
-    );
-    // What Duck settles for sessions on autopilot or handed to it: one file per
-    // session, shown beside its console.
-    const decisionsLog = createDecisionsLog({
-      backend: ipcDecisionsLogBackend,
-      changed: (id) => localPort.decisionsLogged(id),
-    });
-    // Plan autopilots (P1) report the same way; their step log is notices.
-    const autopilot = createAutopilot({
-      port: localPort,
-      backend: ipcAutopilotBackend,
-      journal: decisionsLog,
-      call: (r) => structured(r),
-      readFile,
-      plans: ipcPlanStore,
-      tell: (threadId, text, level) => {
-        levels.set(threadId, level ?? "report");
-        void engineRef
-          ?.send({ threadId, text: eventText(text), source: "event" })
-          .catch((e: unknown) => console.warn("duck: an autopilot report was dropped", e));
+    ),
+  );
+  // What Duck settles for sessions on autopilot or handed to it: one file per
+  // session, shown beside its console.
+  const decisionsLog = createDecisionsLog({
+    backend: ipcDecisionsLogBackend,
+    changed: (id) => localPort.decisionsLogged(id),
+  });
+  // Plan autopilots (P1) report the same way; their step log is notices.
+  const autopilot = createAutopilot({
+    port: localPort,
+    backend: ipcAutopilotBackend,
+    journal: decisionsLog,
+    call: (r) => structured(r),
+    readFile,
+    plans: ipcPlanStore,
+    tell: (threadId, text, level) => {
+      levels.set(threadId, level ?? "report");
+      void engineRef
+        ?.send({ threadId, text: eventText(text), source: "event" })
+        .catch((e: unknown) => console.warn("duck: an autopilot report was dropped", e));
+    },
+    notice: (threadId, text) =>
+      void engineRef
+        ?.notice(threadId, { kind: "autopilot", text })
+        .catch((e: unknown) => console.warn("duck: an autopilot step line was dropped", e)),
+  });
+  scope.add(() => autopilot.dispose());
+  const summaries = createSummarizer({
+    port: localPort,
+    backend: ipcSummaryBackend,
+    call: (input, signal) => oneShot("summary", input, { schema: Summary, signal }),
+  });
+  // The done alert's body (W3, when the setting is on): the turn's headline.
+  localPort.setDoneSummary(async (id, reply) => {
+    if (!settings.get().summaryOnDone) return null;
+    const x = localPort.listSessions().find((y) => y.id === id);
+    return x ? ((await summaries.summarize(x, { reply })).summary?.headline ?? null) : null;
+  });
+  scope.add(() => localPort.setDoneSummary(null));
+  // Long-term memory (L1), tidied every night (L2).
+  const memory = createMemoryHost(() => settings.get().workspace);
+  const tidier = createConsolidator({
+    threads: () => s.threads(),
+    messages: (id) => s.messages(id),
+    tasks: () => tasks.list(),
+    list: () => memoryList(settings.get().workspace),
+    apply: (plan, message) => memoryApply(settings.get().workspace, plan, message),
+    state: { get: memoryStateGet, set: memoryStateSet },
+    call: (input, signal) => oneShot("consolidate", input, { schema: Consolidation, signal }),
+    idleMs: () => getPresence().then((p) => p.idleMs),
+  });
+  memory.question = () => tidier.question();
+  memory.suggestion = () => tidier.suggestion();
+  memory.skillOffer = () => tidier.skillOffer();
+  // Routines (step L4): the backup, the weekly housekeeping, the monthly docs
+  // clean-up, and the user's own.
+  const ws = () => settings.get().workspace;
+  // Reminders (H8): `reminders.json` in Duck's repo, read again on a hand edit.
+  const remindersBackend: RemindersBackend = {
+    read: () => remindersRead(ws()),
+    put: (id, before, after, message) => remindersPut(ws(), id, before, after, message),
+    seen: remindersSeen,
+    setSeen: reminderSeenSet,
+    timers: timersList,
+    setTimer: timerSet,
+  };
+  const reminders = createReminders({ backend: remindersBackend, spellMinutes: () => settings.get().reminderSpellMinutes });
+  const warnReminders = (e: unknown) => console.warn("duck: reminders", e);
+  const watchReminders = () => {
+    void remindersWatch(ws()).catch(warnReminders);
+    // The repo the other machines mirror (fleet plan F5.2).
+    void fleetSetWorkspace(ws() || null).catch(() => {});
+    void reminders.load().catch(warnReminders);
+  };
+  watchReminders();
+  void reminders.loadTimers().catch(warnReminders);
+  scope.add(onRemindersChanged(() => void reminders.load().catch(warnReminders)));
+  scope.add(reminders.subscribe((pulse) => pulse || d.remindersChanged()));
+  const git: GitLane = {
+    status: () => backupStatus(ws()),
+    push: () => backupPush(ws()),
+    review: (b) => branchReview(ws(), b),
+    housekeep: (cutoff) => housekeep(ws(), cutoff),
+  };
+  let housekeeping: Housekeeping | null = null;
+  const routines = createRoutines({
+    backend: ipcRoutineBackend,
+    run: (r) => (housekeeping ? housekeeping.run(r) : Promise.reject(new Error("housekeeping isn't ready"))),
+    idleMs: () => getPresence().then((p) => p.idleMs),
+  });
+  const pushAfterTidy = () => {
+    const b = routines.list().find((r) => r.action.kind === "job" && r.action.job === "backup");
+    if (b) void routines.runNow(b.id).catch((e: unknown) => console.warn("duck: the backup after the tidy failed", e));
+  };
+  housekeeping = createHousekeeping({
+    routines,
+    tasks,
+    port: localPort,
+    settings: settings.get,
+    git,
+    duckProject: async () => (await localPort.ensureProject("Duck", await workspacePrepare(ws()))).id,
+    threads: {
+      list: () => s.threads(),
+      create: async (title) => {
+        if (!engineRef) throw new Error("Duck isn't started yet.");
+        return (await engineRef.newThread(undefined, title)).id;
       },
-      notice: (threadId, text) =>
-        void engineRef
-          ?.notice(threadId, { kind: "autopilot", text })
-          .catch((e: unknown) => console.warn("duck: an autopilot step line was dropped", e)),
-    });
-    const summaries = createSummarizer({
-      port: localPort,
-      backend: ipcSummaryBackend,
-      call: (input, signal) => oneShot("summary", input, { schema: Summary, signal }),
-    });
-    // The done alert's body (W3, when the setting is on): the turn's headline.
-    localPort.setDoneSummary(async (id, reply) => {
-      if (!settings.get().summaryOnDone) return null;
-      const s = localPort.listSessions().find((x) => x.id === id);
-      return s ? ((await summaries.summarize(s, { reply })).summary?.headline ?? null) : null;
-    });
-    // Read-aloud (V3): positions in the prefs, heard on the phone that asked or here.
-    const kept = new Map<string, ReadPosition>(
-      Object.entries(await getPref("readAloud", {}).catch(() => ({}) as Record<string, ReadPosition>)),
-    );
-    const readerListeners = new Set<(v: ReaderView | null) => void>();
-    let bridge: RemoteBridge | null = null;
-    const ru = (t: string, signal: AbortSignal) => oneShot("speakable_ru", t, { signal });
-    const reader = new Reader({
-      narrate: (t, signal) => oneShot("narrate", t, { signal }),
-      prepare: (sentence) => prepareSentence(sentence, ru),
-      load: (k) => kept.get(k),
-      save(k, p) {
-        if (p) kept.set(k, p);
-        else kept.delete(k);
-        const newest = [...kept.values()].sort((a, b) => b.at - a.at).slice(0, KEPT_READS);
-        void setPref("readAloud", Object.fromEntries(newest.map((x) => [x.key, x]))).catch(() => {});
+      remove: async (id) => {
+        if (!engineRef) throw new Error("Duck isn't started yet.");
+        await engineRef.deleteThread(id);
       },
-      // A message's listen button (no thread) has no reply to wait for.
-      quiet: (threadId) =>
-        !threadId ? Promise.resolve() : Promise.race([
-          (async () => {
-            while (engineRef && engineRef.state(threadId) !== "idle" && engineRef.state(threadId) !== "waiting")
-              await new Promise((r) => setTimeout(r, 100));
-            await Promise.all([desktopSpeech?.quiet(threadId), bridge?.quiet(threadId)]);
-          })(),
-          new Promise<void>((r) => setTimeout(r, QUIET_MAX_MS)),
-        ]),
-      changed: (v) => {
-        for (const l of readerListeners) l(v);
-      },
-      ended: (threadId, why) => {
-        if (why === "the end") return;
-        if (!threadId) {
-          console.warn(`duck: reading a message stopped: ${why}`);
-          return;
-        }
-        void engineRef
-          ?.notice(threadId, { kind: "reader", text: `Reading stopped: ${why}.` })
-          .catch((e: unknown) => console.warn("duck: a reader notice was dropped", e));
-      },
+    },
+    busy: (id) => {
+      const state = engineRef?.state(id) ?? "idle";
+      if (state !== "idle") return state === "waiting" ? "parked on a card" : "a reply is running";
+      if (s.pending().some((b) => b.threadId === id)) return "parked on a card";
+      if (watchedThreads().has(id)) return "it watches a session";
+      const now = Date.now();
+      for (const v of viewing.values()) if (v.threadId === id && now - v.at < VIEWED_MS) return "open on a surface";
+      return null;
+    },
+    piloted: () => new Set(autopilot.list().filter((a) => a.state !== "stopped").map((a) => a.threadId)),
+    consolidatedTo: async () => (await tidier.last())?.at ?? null,
+    resultJson: (t) => taskResult(t.workspace, t.folder).then((r) => r.json),
+    pruneFiles: attachPrune,
+    pruneDecisionLogs: () => decisionsLog.prune(),
+    prunePlans: () => ipcPlanStore.prune(autopilot.list().filter((a) => a.state !== "stopped").map((a) => a.instanceId)),
+    tell: (threadId, text, level) => {
+      levels.set(threadId, level);
+      void engineRef
+        ?.send({ threadId, text: eventText(text), source: "event" })
+        .catch((e: unknown) => console.warn("duck: a routine's report was dropped", e));
+    },
+  });
+  scope.add(() => housekeeping?.dispose());
+  // Duck's skills (S2): the files in the workspace's skills/, read on every request.
+  const skills = createSkills({
+    store: {
+      list: () => skillsList(settings.get().workspace),
+      write: (name, text, expected, message) => skillWrite(settings.get().workspace, name, text, expected, message),
+    },
+    tools: () => TOOL_NAMES,
+    disabled: () => settings.get().disabledSkills,
+  });
+  // The modes they declare are known before any thread of theirs runs.
+  await skills.list().catch((e: unknown) => console.warn("duck: the skills couldn't be read", e));
+  const routinesHost: RoutinesHost = {
+    routines,
+    housekeeping,
+    backup: { status: git.status, create: (name) => backupCreate(ws(), name) },
+  };
+  memory.tidy = () =>
+    tidier.run().then((r) => {
+      pushAfterTidy();
+      return r;
     });
-    const readerHost: ReaderHost = {
-      reader,
-      voiceFor(threadId) {
-        const v = bridge?.voiceFor(threadId) ?? desktopSpeech?.voice;
-        if (!v) throw new Error("There's no voice to read with yet: open Duck's drawer once on this PC.");
-        return v;
-      },
-      lastKept: () => [...kept.values()].sort((a, b) => b.at - a.at)[0] ?? null,
-      summarize: (text, signal) => oneShot("spoken_summary", text, { signal }),
-    };
-    // Announcements (V5).
-    const announcer = new Announcer({
-      settings: () => settings.get().announce,
-      dndUntil: () => settings.get().dndUntil,
-      // Unknown presence counts as away: a push rather than talking to an empty room.
-      presence: () => getPresence().catch(() => ({ idleMs: 3_600_000, locked: false, fullScreen: false, focus: null })),
-      speakOn: () => desktopSpeech?.speakOn() ?? false,
-      busy: () => (desktopSpeech?.busy() ?? false) || (reader.view()?.state === "reading" && reader.view()?.where === "desktop"),
-      sayHere: (text, threadId) => desktopSpeech?.announce(text, threadId) ?? Promise.resolve(false),
-      phones: () => bridge?.phones() ?? 0,
-      sayOnPhones: (text, threadId) => bridge?.announce(text, threadId),
-      push: (threadId, title, body) => ipcLink.push(threadId, title, body),
-    });
-    // Through the endpoint, so every surface hears the new settings.
-    let epRef: DuckEndpoint | null = null;
-    const quietHost: QuietHost = {
-      setDnd(until) {
-        if (!epRef) throw new Error("Duck isn't started yet.");
-        epRef.handle({ type: "dnd", until });
-      },
-      speakOn: () => desktopSpeech?.speakOn() ?? null,
-      setSpeakOn(on) {
-        if (!desktopSpeech) throw new Error("This PC's voice isn't running yet (open Duck's drawer once).");
-        desktopSpeech.setSpeakOn(on);
-      },
-    };
-    // Long-term memory (L1), tidied every night (L2).
-    const memory = createMemoryHost(() => settings.get().workspace);
-    const tidier = createConsolidator({
-      threads: () => s.threads(),
-      messages: (id) => s.messages(id),
-      tasks: () => tasks.list(),
-      list: () => memoryList(settings.get().workspace),
-      apply: (plan, message) => memoryApply(settings.get().workspace, plan, message),
-      state: { get: memoryStateGet, set: memoryStateSet },
-      call: (input, signal) => oneShot("consolidate", input, { schema: Consolidation, signal }),
-      idleMs: () => getPresence().then((p) => p.idleMs),
-    });
-    memory.question = () => tidier.question();
-    memory.suggestion = () => tidier.suggestion();
-    memory.skillOffer = () => tidier.skillOffer();
-    // Routines (step L4): the backup, the weekly housekeeping, the monthly docs
-    // clean-up, and the user's own.
-    const ws = () => settings.get().workspace;
-    // Reminders (H8): `reminders.json` in Duck's repo, read again on a hand edit.
-    const remindersBackend: RemindersBackend = {
-      read: () => remindersRead(ws()),
-      put: (id, before, after, message) => remindersPut(ws(), id, before, after, message),
-      seen: remindersSeen,
-      setSeen: reminderSeenSet,
-      timers: timersList,
-      setTimer: timerSet,
-    };
-    const reminders = createReminders({ backend: remindersBackend, spellMinutes: () => settings.get().reminderSpellMinutes });
-    const warnReminders = (e: unknown) => console.warn("duck: reminders", e);
-    const watchReminders = () => {
-      void remindersWatch(ws()).catch(warnReminders);
-      // The repo the other machines mirror (fleet plan F5.2).
-      void fleetSetWorkspace(ws() || null).catch(() => {});
-      void reminders.load().catch(warnReminders);
-    };
-    watchReminders();
-    void reminders.loadTimers().catch(warnReminders);
-    onRemindersChanged(() => void reminders.load().catch(warnReminders));
-    const git: GitLane = {
-      status: () => backupStatus(ws()),
-      push: () => backupPush(ws()),
-      review: (b) => branchReview(ws(), b),
-      housekeep: (cutoff) => housekeep(ws(), cutoff),
-    };
-    let housekeeping: Housekeeping | null = null;
-    const routines = createRoutines({
-      backend: ipcRoutineBackend,
-      run: (r) => (housekeeping ? housekeeping.run(r) : Promise.reject(new Error("housekeeping isn't ready"))),
-      idleMs: () => getPresence().then((p) => p.idleMs),
-    });
-    const pushAfterTidy = () => {
-      const b = routines.list().find((r) => r.action.kind === "job" && r.action.job === "backup");
-      if (b) void routines.runNow(b.id).catch((e: unknown) => console.warn("duck: the backup after the tidy failed", e));
-    };
-    housekeeping = createHousekeeping({
-      routines,
-      tasks,
-      port: localPort,
-      settings: settings.get,
-      git,
-      duckProject: async () => (await localPort.ensureProject("Duck", await workspacePrepare(ws()))).id,
-      threads: {
-        list: () => s.threads(),
-        create: async (title) => {
-          if (!engineRef) throw new Error("Duck isn't started yet.");
-          return (await engineRef.newThread(undefined, title)).id;
-        },
-        remove: async (id) => {
-          if (!engineRef) throw new Error("Duck isn't started yet.");
-          await engineRef.deleteThread(id);
-        },
-      },
-      busy: (id) => {
-        const state = engineRef?.state(id) ?? "idle";
-        if (state !== "idle") return state === "waiting" ? "parked on a card" : "a reply is running";
-        if (s.pending().some((b) => b.threadId === id)) return "parked on a card";
-        if (watchedThreads().has(id)) return "it watches a session";
-        const now = Date.now();
-        for (const v of viewing.values()) if (v.threadId === id && now - v.at < VIEWED_MS) return "open on a surface";
-        return null;
-      },
-      piloted: () => new Set(autopilot.list().filter((a) => a.state !== "stopped").map((a) => a.threadId)),
-      consolidatedTo: async () => (await tidier.last())?.at ?? null,
-      resultJson: (t) => taskResult(t.workspace, t.folder).then((r) => r.json),
-      pruneFiles: attachPrune,
-      pruneDecisionLogs: () => decisionsLog.prune(),
-      prunePlans: () => ipcPlanStore.prune(autopilot.list().filter((a) => a.state !== "stopped").map((a) => a.instanceId)),
-      tell: (threadId, text, level) => {
-        levels.set(threadId, level);
-        void engineRef
-          ?.send({ threadId, text: eventText(text), source: "event" })
-          .catch((e: unknown) => console.warn("duck: a routine's report was dropped", e));
-      },
-    });
-    // Duck's skills (S2): the files in the workspace's skills/, read on every request.
-    const skills = createSkills({
-      store: {
-        list: () => skillsList(settings.get().workspace),
-        write: (name, text, expected, message) => skillWrite(settings.get().workspace, name, text, expected, message),
-      },
-      tools: () => TOOL_NAMES,
-      disabled: () => settings.get().disabledSkills,
-    });
-    // The modes they declare are known before any thread of theirs runs.
-    await skills.list().catch((e: unknown) => console.warn("duck: the skills couldn't be read", e));
-    const routinesHost: RoutinesHost = {
-      routines,
-      housekeeping,
-      backup: { status: git.status, create: (name) => backupCreate(ws(), name) },
-    };
-    memory.tidy = () =>
-      tidier.run().then((r) => {
-        pushAfterTidy();
-        return r;
-      });
-    consolidator = tidier;
-    setInterval(
-      () =>
-        void tidier
-          .tick()
-          .then((r) => r && pushAfterTidy())
-          .catch((e: unknown) => console.warn("duck: the nightly memory tidy failed", e)),
-      TIDY_CHECK_MS,
-    );
-    // Duck's own processes for stdio MCP servers, your Firefox bridge first (B2).
-    const registry = createRegistry(TOOLS, { deferred: DEFERRED, server: SERVER_TOOLS });
-    const browser = createBrowserHost({ call: mcpHostCall, startProfile: firefoxStartProfile });
-    const hosted = createHostedSync({
-      registry,
-      settings: settings.get,
-      listTools: mcpHostTools,
-      servers: mcpHostServers,
-      running: mcpHostRunning,
-      refLine: browser.refLine,
-    });
-    void hosted.sync().catch((e: unknown) => console.warn("duck: the hosted MCP servers didn't load", e));
-    // Tools that run where they act (H1): the PC's here, in process (H2: Steam,
-    // the media sessions, opening a link); the phone's over its socket.
-    let self: MachineRef | null = null;
-    const hosts = createHosts((host) => toolsOn(TOOLS, host), () => self);
-    const pcTools = pcHandlers({
-      library: steamLibrary,
-      storeSearch: steamStoreSearch,
-      activity: steamActivity,
-      open: pcOpen,
-      nowPlaying: mediaNowPlaying,
-      control: mediaControl,
-    });
-    connectLocal(hosts, "pc", pcTools);
-    // The other Workbench machines (fleet plan F3.1): at the main, their `pc` and
-    // their Workbench come over the fleet's link, and Duck's tools see every
-    // machine's sessions through one port; elsewhere, this machine serves its own
-    // to the main.
-    const hostSend = (to: string, text: string) =>
-      void fleetHostSend(to, text).catch((e: unknown) => console.warn("duck: a message to another machine was dropped", e));
-    // The user's machines and the work waiting for one that's off (F3.2); a task
-    // goes back to its thread when its machine connects.
-    const fleetTools = createFleetTools({
-      store: { put: waitingPut, list: waitingList, delete: waitingDelete },
-      wakeSend: fleetWake,
-      tell: async (threadId, text) => {
-        if (!engineRef) throw new Error("Duck isn't started");
-        await engineRef.send({ threadId, text: eventText(text), source: "event" });
-      },
-    });
-    void fleetTools.load().catch((e: unknown) => console.warn("duck: the waiting queue didn't load", e));
-    // Projects' git remotes (F3.2), to tell the same project on two machines.
-    const gitRemotes = createRemotes(gitOriginUrl);
-    let fleetPort: FleetPort | null = null;
-    const hub = createFleetHub({
-      hosts,
-      send: hostSend,
-      events: (n, a) => fleetPort?.dispatch(n, a),
-      connected: (id) => {
-        if (duckHere) void fleetTools.connected(id);
-      },
-    });
-    fleetPort = createFleetPort(localPort, () => self?.name ?? "this computer", () => hub.ports(), gitRemotes);
-    const fleetLink = runFleetLink({
-      status: () => fleetStatus().catch(() => null),
-      hub,
-      serve: (main, name) => serveFleet({ main, name, pc: pcTools, port: localPort, send: hostSend, remotes: gitRemotes }),
-      setSelf: (m) => (self = m),
-      onStatus: (s) => {
-        fleetTools.setStatus(s);
-        duckHere = !s.config.duck || s.config.duck === s.me.id;
-      },
-      send: hostSend,
-    });
-    void onFleetHost((from, text) => fleetLink.receive(from, text)).catch(() => {});
-    // The election (F6.1): a handover waits for Duck's turns to finish (up to a
-    // minute; the backend stops waiting then), and taking over from another
-    // machine starts Duck again on the copy it installed.
-    void onFleetDrain((on) => {
-      fleetDraining = on;
-      if (!on) return;
-      void (async () => {
-        const until = Date.now() + 60_000;
-        while (Date.now() < until && engineRef && s.threads().some((t) => engineRef!.state(t.id) !== "idle"))
-          await new Promise((r) => setTimeout(r, 500));
-        await fleetDrained().catch(() => {});
-      })();
-    }).catch(() => {});
-    void onDuckPromoted(() => location.reload()).catch(() => {});
-    // A merge after a split (F6.2): said in the latest thread.
-    void onFleetMerged((text) => {
-      const t = s.threads()[0];
-      if (t) void engineRef?.notice(t.id, { kind: "note", text }).catch(() => {});
-    }).catch(() => {});
-    void onFleetChanged(() => void fleetLink.look()).catch(() => {});
-    void fleetLink.look();
-    const engine = createEngine({
-      attachments: {
-        prepare: attachPrepare,
-        data: attachData,
-        toSession: (dir, files) => attachToSession(dir, files.map((f) => [f.id, f.name])),
-      },
-      tasks,
-      drawings,
-      images: { key: imageKey, generate: imageGenerate },
-      autopilot,
-      decisions: decisionsLog,
-      summaries,
-      reader: readerHost,
-      screen: screenHost,
-      quiet: quietHost,
-      haiku: (input, signal) => oneShot("haiku_task", input, { signal }),
-      mcp: createMcpHost(mcpRequest),
-      hosted: { call: mcpHostCall, browser },
-      hosts,
-      music: youtubeMusic({ search: youtubeSearch }),
-      reminders,
-      google: createGoogleHost(
-        { workspacePrepare, sheetExport, sheetCells, sheetDraft, sheetDrafts, sheetSearch, sheetRead },
-        createDriveHost({
-          workspacePrepare,
-          driveSearch,
-          driveFile,
-          driveCopy,
-          driveRename,
-          driveMove,
-          driveCreateFolder,
-          driveTrash,
-          driveDownload,
-          driveUpload,
-        }),
-      ),
-      core: createCoreHost(() => settings.get().workspace),
-      memory,
-      config: createConfig(ipcConfigStore(() => settings.get().workspace)),
-      routines: routinesHost,
-      skills,
-      eventLevel: (threadId, level) => levels.set(threadId, level),
-      store: s,
-      registry,
-      // Every machine's Workbench, for Duck's tools (fleet plan F3.1).
-      port: fleetPort,
-      fleet: fleetTools,
-      gate: createPolicy({ settings: settings.get, trust, messages: s.loaded }),
-      settings: settings.get,
-      degraded: () => localPort.spend().then((x) => x.softReached),
-      brain: createBrainHost(() => workspacePrepare(settings.get().workspace)),
-      limits: () => localPort.usageLimits(),
-      stream: async (params, opts) =>
-        (await getClient()).beta.messages.stream(params, opts),
-      nameThread: (text) => oneShot("title", text.slice(0, 2000)),
-    });
-    const trustNotice = (threadId: string, text: string) =>
-      void engine
-        .notice(threadId, { kind: "trust", text })
-        .catch((e: unknown) => console.warn("duck: a trust notice was dropped", e));
-    // Questions and plans outside autopilot runs and workers (T3).
-    const delegate = trust
-      ? startDelegateWatcher({
-          port: localPort,
-          trust,
-          call: (r) => structured(r),
-          notice: trustNotice,
-          planApproval: () => settings.get().planApproval,
-          skip: (id) => autopilot.get(id)?.state === "running",
-        })
-      : null;
-    // Claude Code permission prompts (T2): decided under the same trust store.
-    if (trust)
+  consolidator = tidier;
+  scope.add(() => {
+    if (consolidator === tidier) consolidator = null;
+  });
+  scope.every(TIDY_CHECK_MS, () =>
+    void tidier
+      .tick()
+      .then((r) => r && pushAfterTidy())
+      .catch((e: unknown) => console.warn("duck: the nightly memory tidy failed", e)),
+  );
+  const { hosts, fleetPort, fleetTools, registry, browser, hosted } = d;
+  void fleetTools.load().catch((e: unknown) => console.warn("duck: the waiting queue didn't load", e));
+  const engine = createEngine({
+    attachments: {
+      prepare: attachPrepare,
+      data: attachData,
+      toSession: (dir, files) => attachToSession(dir, files.map((f) => [f.id, f.name])),
+    },
+    tasks,
+    drawings,
+    images: { key: imageKey, generate: imageGenerate },
+    autopilot,
+    decisions: decisionsLog,
+    summaries,
+    reader: d.readerHost,
+    screen: screenHost,
+    quiet: d.quietHost,
+    haiku: (input, signal) => oneShot("haiku_task", input, { signal }),
+    mcp: createMcpHost(mcpRequest),
+    hosted: { call: mcpHostCall, browser },
+    hosts,
+    music: youtubeMusic({ search: youtubeSearch }),
+    reminders,
+    google: createGoogleHost(
+      { workspacePrepare, sheetExport, sheetCells, sheetDraft, sheetDrafts, sheetSearch, sheetRead },
+      createDriveHost({
+        workspacePrepare,
+        driveSearch,
+        driveFile,
+        driveCopy,
+        driveRename,
+        driveMove,
+        driveCreateFolder,
+        driveTrash,
+        driveDownload,
+        driveUpload,
+      }),
+    ),
+    core: createCoreHost(() => settings.get().workspace),
+    memory,
+    config: createConfig(ipcConfigStore(() => settings.get().workspace)),
+    routines: routinesHost,
+    skills,
+    eventLevel: (threadId, level) => levels.set(threadId, level),
+    store: s,
+    registry,
+    // Every machine's Workbench, for Duck's tools (fleet plan F3.1).
+    port: fleetPort,
+    fleet: fleetTools,
+    gate: createPolicy({ settings: settings.get, trust, messages: s.loaded }),
+    settings: settings.get,
+    degraded: () => localPort.spend().then((x) => x.softReached),
+    brain: createBrainHost(() => workspacePrepare(settings.get().workspace)),
+    limits: () => localPort.usageLimits(),
+    stream: async (params, opts) =>
+      (await getClient()).beta.messages.stream(params, opts),
+    nameThread: (text) => oneShot("title", text.slice(0, 2000)),
+  });
+  // Stopped first on the way down: nothing new starts while the rest goes.
+  scope.add(() => engine.dispose());
+  const trustNotice = (threadId: string, text: string) =>
+    void engine
+      .notice(threadId, { kind: "trust", text })
+      .catch((e: unknown) => console.warn("duck: a trust notice was dropped", e));
+  // Questions and plans outside autopilot runs and workers (T3).
+  const delegate = trust
+    ? startDelegateWatcher({
+        port: localPort,
+        trust,
+        call: (r) => structured(r),
+        notice: trustNotice,
+        planApproval: () => settings.get().planApproval,
+        skip: (id) => autopilot.get(id)?.state === "running",
+      })
+    : null;
+  if (delegate) scope.add(() => delegate.stop());
+  // Claude Code permission prompts (T2): decided under the same trust store.
+  if (trust)
+    scope.add(
       startTrustWatcher({
         port: localPort,
         trust,
@@ -1177,54 +1448,61 @@ export function initAssistant(): Promise<void> {
         answering: () => settings.get().answerSessionPrompts,
         holdOther: delegate ? (id) => delegate.hold(id) : undefined,
         notice: trustNotice,
-      });
-    // The trust layer's decisions on a session on autopilot, or one handed to Duck
-    // (its permission prompts, T3's answers and plan approvals), go to the
-    // session's decisions log too.
-    trust?.subscribe(({ decision }) => {
-      const id = decision ? sessionOfRow(decision) : null;
-      if (!decision || !id) return;
-      const session = localPort.listSessions().find((x) => x.id === id);
-      if (!session) return;
-      const entry = trustEntry(decision, session.title);
-      if (!entry) return;
-      const piloted = (autopilot.get(id)?.state ?? "stopped") !== "stopped";
-      void (piloted ? Promise.resolve(true) : localPort.sessionContext(id).then((c) => c.delegated, () => false)).then(
-        (logged) => (logged ? decisionsLog.record(entry) : undefined),
-      );
-    });
-    // Often-approved patterns, offered for Claude Code's allow list (T3).
-    const promoter = trust
-      ? createPromoter({
-          trust,
-          projects: () => localPort.listProjects(),
-          settled: () => settings.get().settledPromotions,
-          settle: (keys) => settings.set({ settledPromotions: keys }).then(() => {}),
-          readSettings: claudeLocalSettingsRead,
-          writeSettings: claudeLocalSettingsWrite,
+      }),
+    );
+  // The trust layer's decisions on a session on autopilot, or one handed to Duck
+  // (its permission prompts, T3's answers and plan approvals), go to the
+  // session's decisions log too.
+  if (trust)
+    scope.add(
+      trust.subscribe(({ decision }) => {
+        const id = decision ? sessionOfRow(decision) : null;
+        if (!decision || !id) return;
+        const session = localPort.listSessions().find((x) => x.id === id);
+        if (!session) return;
+        const entry = trustEntry(decision, session.title);
+        if (!entry) return;
+        const piloted = (autopilot.get(id)?.state ?? "stopped") !== "stopped";
+        void (piloted ? Promise.resolve(true) : localPort.sessionContext(id).then((c) => c.delegated, () => false)).then(
+          (logged) => (logged ? decisionsLog.record(entry) : undefined),
+        );
+      }),
+    );
+  // Often-approved patterns, offered for Claude Code's allow list (T3).
+  const promoter = trust
+    ? createPromoter({
+        trust,
+        projects: () => localPort.listProjects(),
+        settled: () => settings.get().settledPromotions,
+        settle: (keys) => settings.set({ settledPromotions: keys }).then(() => {}),
+        readSettings: claudeLocalSettingsRead,
+        writeSettings: claudeLocalSettingsWrite,
+      })
+    : undefined;
+  const replayer: Replayer | undefined = trust
+    ? async (days, judgeMax, progress) =>
+        replay(await replayCalls(days, REPLAY_MAX_CALLS), {
+          config: trust.config(),
+          projects: localPort.listProjects(),
+          judge: judgeMax > 0 ? (r) => structured(r) : null,
+          judgeMax,
+          home: (await homeDir().catch(() => null)) ?? undefined,
+          progress,
         })
-      : undefined;
-    const replayer: Replayer | undefined = trust
-      ? async (days, judgeMax, progress) =>
-          replay(await replayCalls(days, REPLAY_MAX_CALLS), {
-            config: trust.config(),
-            projects: localPort.listProjects(),
-            judge: judgeMax > 0 ? (r) => structured(r) : null,
-            judgeMax,
-            home: (await homeDir().catch(() => null)) ?? undefined,
-            progress,
-          })
-      : undefined;
-    engineRef = engine;
-    // Anything you say pauses a read (you've moved on; "continue reading" resumes).
+    : undefined;
+  engineRef = engine;
+  // Anything you say pauses a read (you've moved on; "continue reading" resumes).
+  scope.add(
     engine.onEvent((ev) => {
       if (ev.type === "message" && ev.message.role === "user" && USER_SOURCES.has(ev.message.source)) {
-        reader.pause();
+        d.readerHost.reader.pause();
         announcer.answeredThread(ev.message.threadId);
       }
-    });
-    // A Workbench event's turn: its reply is the news.
-    const eventTurns = new Map<string, { level: Level; reply: string; seq: number }>();
+    }),
+  );
+  // A Workbench event's turn: its reply is the news.
+  const eventTurns = new Map<string, { level: Level; reply: string; seq: number }>();
+  scope.add(
     engine.onEvent((ev) => {
       if (ev.type === "message") {
         const m = ev.message;
@@ -1260,64 +1538,68 @@ export function initAssistant(): Promise<void> {
           key: `card:${r.toolUseId}`,
         });
       } else if (ev.type === "confirmed") announcer.answered(`card:${ev.toolUseId}`);
-    });
-    // Where a reminder's line goes: the thread the drawer shows, else the latest.
-    const activeThread = async (): Promise<string> => {
-      const v = viewing.get("desktop");
-      if (v && s.thread(v.threadId)) return v.threadId;
-      return s.threads()[0]?.id ?? (await engine.newThread(undefined, "Reminders")).id;
-    };
-    // Timed reminders, announced once when due (late when the app was closed).
-    void createReminderClock({
-      reminders,
-      backend: remindersBackend,
-      startedAt,
-      // Every channel at once (H4): the thread, the announcer (spoken with Speak
-      // on), the widget's pulse, and a push to the phone with Done and Snooze.
-      // Only where Duck's lease is (F6.1): a machine standing by doesn't fire them.
-      announce: (r, late, at) =>
-        void (async () => {
-          if (!duckHere) return;
-          const threadId = await activeThread();
-          const text = late ? `Reminder, late (it was due ${dueText(at)}): ${r.title}` : `Reminder: ${r.title}`;
-          await engine.notice(threadId, { kind: "reminder", text });
-          announcer.add({ level: "report", text, threadId, key: `reminder:${r.id}` });
-          reminders.pulse();
-          const body = [late && `Late: it was due ${dueText(at)}`, r.details, r.repeat && repeatText(r.repeat)].filter(Boolean).join(" · ");
-          await reminderPush(r.id, threadId, `⏰ ${r.title}`, body, true);
-        })().catch(warnReminders),
-      ring: (t, late) =>
-        void (async () => {
-          if (!duckHere) return;
-          const threadId = t.threadId && s.thread(t.threadId) ? t.threadId : await activeThread();
-          const what = t.label ? `${t.label} (${t.length})` : t.length;
-          const text = late ? `Timer done while the app was closed: ${what}` : `Timer done: ${what}`;
-          await engine.notice(threadId, { kind: "reminder", text });
-          announcer.add({ level: "report", text, threadId, key: `timer:${t.id}` });
-          reminders.pulse();
-          await reminderPush(t.id, threadId, `⏲ ${t.label ?? "Timer"}`, `${t.length} timer done`, false);
-        })().catch(warnReminders),
+    }),
+  );
+  // Where a reminder's line goes: the thread the drawer shows, else the latest.
+  const activeThread = async (): Promise<string> => {
+    const v = viewing.get("desktop");
+    if (v && s.thread(v.threadId)) return v.threadId;
+    return s.threads()[0]?.id ?? (await engine.newThread(undefined, "Reminders")).id;
+  };
+  // Timed reminders, announced once when due (late when the app was closed).
+  void createReminderClock({
+    reminders,
+    backend: remindersBackend,
+    startedAt: d.startedAt,
+    // Every channel at once (H4): the thread, the announcer (spoken with Speak
+    // on), the widget's pulse, and a push to the phone with Done and Snooze.
+    // Only where Duck's lease is (F6.1): a machine standing by doesn't fire them.
+    announce: (r, late, at) =>
+      void (async () => {
+        if (!duckHere || scope.disposed) return;
+        const threadId = await activeThread();
+        const text = late ? `Reminder, late (it was due ${dueText(at)}): ${r.title}` : `Reminder: ${r.title}`;
+        await engine.notice(threadId, { kind: "reminder", text });
+        announcer.add({ level: "report", text, threadId, key: `reminder:${r.id}` });
+        reminders.pulse();
+        const body = [late && `Late: it was due ${dueText(at)}`, r.details, r.repeat && repeatText(r.repeat)].filter(Boolean).join(" · ");
+        await reminderPush(r.id, threadId, `⏰ ${r.title}`, body, true);
+      })().catch(warnReminders),
+    ring: (t, late) =>
+      void (async () => {
+        if (!duckHere || scope.disposed) return;
+        const threadId = t.threadId && s.thread(t.threadId) ? t.threadId : await activeThread();
+        const what = t.label ? `${t.label} (${t.length})` : t.length;
+        const text = late ? `Timer done while the app was closed: ${what}` : `Timer done: ${what}`;
+        await engine.notice(threadId, { kind: "reminder", text });
+        announcer.add({ level: "report", text, threadId, key: `timer:${t.id}` });
+        reminders.pulse();
+        await reminderPush(t.id, threadId, `⏲ ${t.label ?? "Timer"}`, `${t.length} timer done`, false);
+      })().catch(warnReminders),
+  })
+    .then((clock) => {
+      scope.add(() => clock.stop());
+      scope.add(reminders.subscribe((pulse) => pulse || clock.arm()));
+      clock.arm();
     })
-      .then((clock) => {
-        reminders.subscribe((pulse) => pulse || clock.arm());
-        clock.arm();
-      })
-      .catch(warnReminders);
-    // A push's Done or Snooze, tapped on the phone (H4): the same change Duck's
-    // tools make, with its chip in the thread.
-    // Done or Snooze from a notification: the push's (H4), or the phone app's own (H5).
-    // Done or Dismiss from the drawer's reminders list goes the same way.
-    const actOnReminder = async (id: string, action: ReminderAction) => {
-      const threadId = await activeThread();
-      const until = localStamp(new Date(Date.now() + SNOOZE_MINUTES * 60_000));
-      await changeReminder({ reminders, notice: (n) => engine.notice(threadId, n) }, id, (now) => {
-        if (!now || now.state !== "open") throw new Error("it's no longer open");
-        return action === "snooze" ? snoozing(now, until) : closing(now, action, new Date());
-      });
-    };
-    reminderAction = actOnReminder;
-    onReminderAction(({ id, action }) => void actOnReminder(id, action).catch(warnReminders));
-    // A session you start: its project's reminders, one line (no model turn).
+    .catch(warnReminders);
+  // Done or Snooze from a notification: the push's (H4), or the phone app's own (H5).
+  // Done or Dismiss from the drawer's reminders list goes the same way.
+  const actOnReminder = async (id: string, action: ReminderAction) => {
+    const threadId = await activeThread();
+    const until = localStamp(new Date(Date.now() + SNOOZE_MINUTES * 60_000));
+    await changeReminder({ reminders, notice: (n) => engine.notice(threadId, n) }, id, (now) => {
+      if (!now || now.state !== "open") throw new Error("it's no longer open");
+      return action === "snooze" ? snoozing(now, until) : closing(now, action, new Date());
+    });
+  };
+  reminderAction = actOnReminder;
+  scope.add(() => {
+    if (reminderAction === actOnReminder) reminderAction = null;
+  });
+  scope.add(onReminderAction(({ id, action }) => void actOnReminder(id, action).catch(warnReminders)));
+  // A session you start: its project's reminders, one line (no model turn).
+  scope.add(
     localPort.onSessionYouStarted((_id, projectId) => {
       const list = reminders.forProject(projectId);
       if (!list.length) return;
@@ -1326,135 +1608,65 @@ export function initAssistant(): Promise<void> {
         .then((threadId) => engine.notice(threadId, { kind: "reminder", text: projectLine(name, list) }))
         .then(() => reminders.pulse())
         .catch(warnReminders);
-    });
-    await tasks.load().catch((e: unknown) => console.error("duck: worker tasks didn't load", e));
-    await drawings.load().catch((e: unknown) => console.error("duck: drawings didn't load", e));
-    await autopilot.load().catch((e: unknown) => console.error("duck: autopilots didn't load", e));
-    await routines.load().catch((e: unknown) => console.error("duck: routines didn't load", e));
-    void housekeeping.check().catch(() => {});
-    // The first check soon after start: a routine missed while the app was closed
-    // runs once now.
-    const tickRoutines = () => {
-      if (duckHere) void routines.tick().catch((e: unknown) => console.warn("duck: a routine failed", e));
-    };
-    setTimeout(tickRoutines, 30_000);
-    setInterval(tickRoutines, ROUTINE_CHECK_MS);
-    const ep = endpoint(
-      engine,
-      s,
-      ledger,
-      settings,
-      trust,
-      replayer,
-      tasks,
-      autopilot,
-      {
-        reader,
-        listen(req, phone) {
-          const voice = phone === undefined ? desktopSpeech?.voice : bridge?.voiceOn(phone);
-          if (!voice)
-            throw new Error(
-              phone === undefined ? "This PC's voice isn't running yet: open Duck's drawer once." : "That phone isn't connected anymore.",
-            );
-          if (phone === undefined && !desktopSpeech?.speakOn())
-            throw new Error("Speak is off on this PC: turn it on with the speaker by Duck's button.");
-          const job = listenJob(req);
-          if (job.sections.length === 0) throw new Error("There's nothing in that message to read.");
-          reader.start(job, voice, reader.resumable(job));
-        },
-        subscribe(cb) {
-          readerListeners.add(cb);
-          return () => readerListeners.delete(cb);
-        },
-      },
-      () => {
-        announcer.poke();
-        // The workspace may have moved: watch and read its reminders.
-        watchReminders();
-      },
-      routinesHost,
-      skills,
-      promoter,
-      {
-        add: (t) => timingAdd(t.at, JSON.stringify(t)),
-        since: async (ms) => (await timingsSince(ms)).flatMap((r) => {
-          try {
-            return [JSON.parse(r) as TurnTiming];
-          } catch {
-            return [];
-          }
-        }),
-        fiveHour: async () => (await localPort.usageLimits())?.fiveHour?.usedPercentage ?? null,
-      },
-      hosted,
-      reminders,
-      drawings,
-      fleetTools,
-    );
-    epRef = ep;
-    // The drawer talks to this engine, or to the main's when that's another
-    // machine (fleet plan F3.1b); the other machines' drawers talk to this one.
-    const drawer = createSwitchTransport(createLocalTransport(ep));
-    duck = drawer;
-    hub.setEndpoint(ep);
-    fleetLink.setDrawer(drawer);
-    bridge = startRemoteBridge({
-      duck: ep,
-      link: ipcLink,
-      watching: () => document.hasFocus() && !document.hidden,
-      fixVoice: (text) =>
-        voiceMessage(text, [
-          ...localPort.listProjects().map((p) => p.name),
-          ...localPort.listSessions().map((x) => x.title),
-        ]),
-      prepare: (sentence) => prepareSentence(sentence, (t, signal) => oneShot("speakable_ru", t, { signal })),
-      render: async (text, lang) => {
-        const id = crypto.randomUUID();
-        return { id, seconds: await ttsRender(id, text, lang) };
-      },
-      warm: (ru) => void ttsWarm(ru).catch(() => {}),
-      hosts,
-      attach: attachBytes,
-      phoneReminders: {
-        alarms: () => phoneAlarms(reminders.list(), Date.now()),
-        subscribe: (cb) => reminders.subscribe((pulse) => pulse || cb()),
-        act: actOnReminder,
-      },
-      // What the phone's offline brain made (H7): reminders by id, each
-      // conversation a thread of its own.
-      offline: async (records, threads) => {
-        const took = { reminders: [] as string[], threads: [] as string[] };
-        for (const r of records) {
-          try {
-            if (!reminders.list().some((x) => x.id === r.id)) {
-              const threadId = await activeThread();
-              await changeReminder({ reminders, notice: (n) => engine.notice(threadId, n) }, null, () => ({
-                after: r,
-                message: `reminders: added "${r.title.slice(0, 60)}" on the phone, offline`,
-                chip: `Reminder added on the phone, offline: ${r.title}`,
-              }));
-            }
-            took.reminders.push(r.id);
-          } catch (e) {
-            warnReminders(e);
-          }
+    }),
+  );
+  await tasks.load().catch((e: unknown) => console.error("duck: worker tasks didn't load", e));
+  await drawings.load().catch((e: unknown) => console.error("duck: drawings didn't load", e));
+  await autopilot.load().catch((e: unknown) => console.error("duck: autopilots didn't load", e));
+  await routines.load().catch((e: unknown) => console.error("duck: routines didn't load", e));
+  void housekeeping.check().catch(() => {});
+  // The first check soon after start: a routine missed while the app was closed
+  // runs once now.
+  const tickRoutines = () => {
+    if (duckHere && !scope.disposed) void routines.tick().catch((e: unknown) => console.warn("duck: a routine failed", e));
+  };
+  scope.after(30_000, tickRoutines);
+  scope.every(ROUTINE_CHECK_MS, tickRoutines);
+  const ep = endpoint(
+    engine,
+    s,
+    ledger,
+    settings,
+    trust,
+    replayer,
+    tasks,
+    autopilot,
+    d.readerLink,
+    () => {
+      announcer.poke();
+      // The workspace may have moved: watch and read its reminders.
+      watchReminders();
+    },
+    routinesHost,
+    skills,
+    promoter,
+    {
+      add: (t) => timingAdd(t.at, JSON.stringify(t)),
+      since: async (ms) => (await timingsSince(ms)).flatMap((r) => {
+        try {
+          return [JSON.parse(r) as TurnTiming];
+        } catch {
+          return [];
         }
-        for (const t of threads) {
-          await engine.importThread({
-            id: t.id,
-            title: OFFLINE_TITLE(t.title),
-            messages: t.messages.map((m) => ({ role: m.role, text: m.text, source: m.voice ? "phone-voice" : "phone" })),
-          });
-          took.threads.push(t.id);
-        }
-        return took;
-      },
-    });
-  })().catch((e: unknown) => {
-    started = null;
-    console.error("duck: init failed", e);
-  });
-  return started;
+      }),
+      fiveHour: async () => (await localPort.usageLimits())?.fiveHour?.usedPercentage ?? null,
+    },
+    hosted,
+    reminders,
+    drawings,
+    fleetTools,
+  );
+  scope.add(() => ep.dispose());
+  return {
+    store: s,
+    settings,
+    engine,
+    endpoint: ep,
+    reminders,
+    actOnReminder,
+    activeThread,
+    stop: () => scope.dispose(),
+  };
 }
 
 /** Tidy Duck's long-term memory now (the Memory view's button). */

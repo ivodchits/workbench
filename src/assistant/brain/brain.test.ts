@@ -212,6 +212,9 @@ interface Io {
 
 let msgId = 0;
 function fakeBrain(scripts: Script[]) {
+  const kills: string[] = [];
+  /** The listeners the engine holds (F6.3: a disposed engine drops them). */
+  const listening = new Set(["event", "exit", "tool"]);
   const on: {
     event?: (id: string, m: BrainMessage) => void;
     exit?: (id: string, code: number | null, stderr: string) => void;
@@ -262,15 +265,17 @@ function fakeBrain(scripts: Script[]) {
     async interrupt(threadId) {
       interrupts.push(threadId);
     },
-    async kill() {},
+    async kill(threadId) {
+      kills.push(threadId);
+    },
     async answer(callId, result) {
       answers.get(callId)?.(result);
     },
-    onEvent: (cb) => void (on.event = cb),
-    onExit: (cb) => void (on.exit = cb),
-    onToolCall: (cb) => void (on.tool = cb),
+    onEvent: (cb) => ((on.event = cb), () => void listening.delete("event")),
+    onExit: (cb) => ((on.exit = cb), () => void listening.delete("exit")),
+    onToolCall: (cb) => ((on.tool = cb), () => void listening.delete("tool")),
   };
-  return { host, sent, spawns, interrupts, scripts };
+  return { host, sent, spawns, interrupts, scripts, kills, listening };
 }
 
 /** The API, scripted: each step a reply or an error. */
@@ -525,5 +530,26 @@ describe("turns on the subscription brain", () => {
     ms = store.loaded(id);
     expect(last(ms, 2)).toMatchObject({ role: "assistant", content: [{ type: "text", text: "A long" }] });
     expect(last(notices(ms), 1)).toBe("Stopped.");
+  });
+
+  it("stops for good when disposed: the turn stopped, the brain ended, its listeners dropped, sends refused (F6.3)", async () => {
+    const { engine, store, brain } = await setup({
+      policy: "subscription",
+      scripts: [
+        async (_t, io) => {
+          io.say({ type: "stream_event", event: { type: "content_block_delta", delta: { type: "text_delta", text: "Half" } } });
+          await until(() => brain.interrupts.length === 1);
+          io.done("error_during_execution", { is_error: true });
+        },
+      ],
+    });
+    const id = await engine.send({ threadId: null, text: "a long one", source: "desktop" });
+    await until(() => engine.state(id) === "streaming");
+    engine.dispose();
+    await engine.settled(id);
+    expect(last(notices(store.loaded(id)), 1)).toBe("Stopped.");
+    expect(brain.kills).toEqual([id]);
+    expect([...brain.listening]).toEqual([]);
+    await expect(engine.send({ threadId: id, text: "more", source: "desktop" })).rejects.toThrow(/restarting/);
   });
 });

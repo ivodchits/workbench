@@ -356,6 +356,10 @@ export interface Engine {
   /** Compact a thread (step A6): now, or once the turn running there is over.
    *  Resolves once it's started or scheduled; `settled` waits for it. */
   compact(threadId: string): Promise<void>;
+  /** Stop for good (fleet plan F6.3: Duck restarts on another state): turns still
+   *  running are stopped, queues dropped, the subscription brains ended, and the
+   *  brain listeners dropped. Parked confirmations stay stored. Sends after it fail. */
+  dispose(): void;
 }
 
 // ── history → request ───────────────────────────────────────────────────────
@@ -833,14 +837,19 @@ export function createEngine(deps: EngineDeps): Engine {
   /** The subscription brains running, and the turns listening to them. */
   const live = new Map<string, LiveBrain>();
   const brainRuns = new Map<string, BrainRun>();
-  deps.brain?.onEvent((threadId, msg) => brainRuns.get(threadId)?.message(msg));
-  deps.brain?.onExit((threadId, code, stderr) => {
+  let disposed = false;
+  const offBrain: (() => void)[] = [];
+  const brainOff = (off: (() => void) | undefined) => {
+    if (off) offBrain.push(off);
+  };
+  brainOff(deps.brain?.onEvent((threadId, msg) => brainRuns.get(threadId)?.message(msg)));
+  brainOff(deps.brain?.onExit((threadId, code, stderr) => {
     const b = live.get(threadId);
     if (b) clearTimeout(b.idle);
     live.delete(threadId);
     brainRuns.get(threadId)?.exit(code, stderr);
-  });
-  deps.brain?.onToolCall((call) => void brainCall(call));
+  }));
+  brainOff(deps.brain?.onToolCall((call) => void brainCall(call)));
 
   const emit = (e: DuckEvent) => {
     for (const l of listeners) {
@@ -1820,6 +1829,7 @@ export function createEngine(deps: EngineDeps): Engine {
   }
 
   async function send(input: SendInput): Promise<string> {
+    if (disposed) throw new Error("Duck is restarting; send that again in a moment.");
     const threadId = await ensureThread(input.threadId, input.mode);
     const msg = { ...input, threadId };
     delete msg.mode;
@@ -1869,6 +1879,22 @@ export function createEngine(deps: EngineDeps): Engine {
 
   return {
     send,
+
+    dispose() {
+      if (disposed) return;
+      disposed = true;
+      queues.clear();
+      for (const t of turns.values()) {
+        t.held?.decide(true);
+        t.ctl.abort();
+      }
+      for (const [id, b] of live) {
+        clearTimeout(b.idle);
+        void deps.brain?.kill(id).catch(() => {});
+      }
+      live.clear();
+      for (const off of offBrain.splice(0)) off();
+    },
 
     async newThread(mode, title) {
       const made = await store.create(mode);
