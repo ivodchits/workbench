@@ -36,6 +36,7 @@ function AssistantMenu() {
       const [k, s] = await Promise.all([getKeyStatus(), getSpend()]);
       setKeyStatus(k);
       setSpend(s);
+      setError(null); // an old failure shouldn't outlive a good load
     } catch (e) {
       setError(String(e));
     }
