@@ -1399,13 +1399,15 @@ impl Fleet {
 
     // --- quitting while holding Duck ---------------------------------------------------
 
-    /// Whether quitting has to hand Duck over first: this machine holds it, and the
-    /// fleet has another machine that may run it.
+    /// Whether quitting has to hand Duck over first: this machine holds it, and
+    /// another machine that may run it is online. The last one up just closes: Duck
+    /// stays here until a machine comes up and takes it over.
     pub fn must_hand_over(&self) -> bool {
-        let inner = self.inner.lock().unwrap();
-        inner.lease.term > 0
-            && inner.lease.holder == inner.me
-            && inner.members.iter().any(|m| !m.removed && m.id != inner.me && inner.config.can_be_main(&m.id))
+        let holds = {
+            let inner = self.inner.lock().unwrap();
+            inner.lease.term > 0 && inner.lease.holder == inner.me
+        };
+        holds && !self.successors().is_empty()
     }
 
     pub fn on_leave(&self, sink: LeaveSink) {
@@ -1493,7 +1495,9 @@ impl Fleet {
             let mut errors = Vec::new();
             let candidates = self.successors();
             if candidates.is_empty() {
-                errors.push("No other machine that can run Duck is online.".to_string());
+                // The others went away meanwhile: the last one up just closes.
+                self.say_leave("done", None, None, attempt);
+                return true;
             }
             for (id, able) in candidates {
                 let name = self.name_of(&id).unwrap_or_else(|| id.clone());

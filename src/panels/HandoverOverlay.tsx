@@ -55,7 +55,9 @@ function HandoverOverlay() {
       line = `Handing Duck to ${status.to ?? "another machine"}…`;
       break;
     case "done":
-      line = status.to ? `Duck is on ${status.to} now. Closing…` : "Duck is on another machine now. Closing…";
+      line = status.to
+        ? `Duck is on ${status.to} now. Closing…`
+        : "No other machine is online now, so Duck stays here. Closing…";
       break;
     default:
       line = "Duck couldn't be handed over.";

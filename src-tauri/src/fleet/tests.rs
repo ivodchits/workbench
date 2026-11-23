@@ -996,20 +996,15 @@ async fn quitting_hands_duck_over_and_a_damaged_copy_is_fetched_again() {
     tokio::time::sleep(Duration::from_millis(1500)).await;
     assert_eq!(holder(&desktop), (3, Some(d.clone())));
 
-    // The desktop quits with nobody else up: it says so and waits, until it stays.
+    // The desktop quits with nobody else up: the last one just closes.
     laptop.set_offline(true);
     until("the laptop is gone", || !online(&desktop, "laptop")).await;
+    assert!(!desktop.must_hand_over());
+    // And a handover whose others went away meanwhile ends the same way.
     let said = Arc::new(std::sync::Mutex::new(Vec::<LeaveStatus>::new()));
     let s = said.clone();
     desktop.on_leave(Box::new(move |st| s.lock().unwrap().push(st)));
-    let desk = desktop.clone();
-    let leaving = tokio::spawn(async move { desk.leave().await });
-    until("nobody to hand to is said", || {
-        said.lock().unwrap().iter().any(|s| s.phase == "waiting" && s.error.as_deref().is_some_and(|e| e.contains("No other machine")))
-    })
-    .await;
-    desktop.cancel_leave();
-    assert!(!tokio::time::timeout(Duration::from_secs(5), leaving).await.unwrap().unwrap(), "stayed");
-    assert!(!desktop.is_leaving());
+    assert!(tokio::time::timeout(Duration::from_secs(5), desktop.leave()).await.unwrap(), "closes");
+    assert!(said.lock().unwrap().iter().any(|s| s.phase == "done" && s.to.is_none()));
     assert_eq!(holder(&desktop), (3, Some(d)));
 }
