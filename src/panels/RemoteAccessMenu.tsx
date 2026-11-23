@@ -405,8 +405,11 @@ function FleetSection() {
             style={inputStyle}
           />
         )}
+        {fleet.config.duck === fleet.me.id && <MainBadge term={fleet.config.leaseTerm} />}
         <span style={{ color: "var(--wb-textFaint)", fontSize: 10 }} title={`fleet id ${fleet.me.id}`}>
-          {fleet.listening ?? (fleet.tailnet ? "not listening" : "no tailnet")}
+          {[versionOf(fleet.me), fleet.listening ?? (fleet.tailnet ? "not listening" : "no tailnet")]
+            .filter(Boolean)
+            .join(" · ")}
         </span>
       </Row>
 
@@ -437,6 +440,7 @@ function FleetSection() {
           <MachineRow
             key={m.id}
             m={m}
+            main={fleet.config.duck === m.id ? fleet.config.leaseTerm : null}
             canWake={fleet.config.wake.includes(m.id)}
             busy={busy}
             onRemove={() => void run(() => fleetRemove(m.id))}
@@ -713,10 +717,35 @@ function PriorityList({
   );
 }
 
+/** A machine's app version, as its row says it. */
+function versionOf(m: FleetMember): string | null {
+  return m.version ? `v${m.version}${m.build === "debug" ? " dev" : ""}` : null;
+}
+
+/** Marks the machine Duck runs on now: the fleet's main (the lease's holder). */
+function MainBadge({ term }: { term: number }) {
+  return (
+    <span
+      title={term > 0 ? `the main: Duck runs here (term ${term})` : "the main: Duck runs here"}
+      style={{
+        color: "var(--wb-accent)",
+        border: "1px solid var(--wb-accent)",
+        padding: "0 4px",
+        fontSize: 9.5,
+        lineHeight: "14px",
+        flexShrink: 0,
+      }}
+    >
+      main
+    </span>
+  );
+}
+
 /** One other machine: online or when last heard from, what it runs, waking it
  *  (Wake-on-LAN, F4.1), remove. */
 function MachineRow({
   m,
+  main,
   canWake,
   busy,
   onRemove,
@@ -724,6 +753,8 @@ function MachineRow({
   onWake,
 }: {
   m: FleetMember;
+  /** Duck runs there: the lease's term. */
+  main: number | null;
   canWake: boolean;
   busy: boolean;
   onRemove: () => void;
@@ -735,7 +766,7 @@ function MachineRow({
     : m.lastSeen
       ? `seen ${formatAgo(m.lastSeen)}`
       : "never connected";
-  const detail = [seen, m.version && `v${m.version}${m.build === "debug" ? " dev" : ""}`, m.os];
+  const detail = [seen, versionOf(m), m.os];
   const where = [
     m.host ?? m.ip,
     `${m.ip}:${m.port}`,
@@ -754,6 +785,12 @@ function MachineRow({
           }}
         >
           {m.name}
+          {main !== null && (
+            <>
+              {" "}
+              <MainBadge term={main} />
+            </>
+          )}
         </div>
         <div
           style={{ color: "var(--wb-textFaint)", fontSize: 10 }}

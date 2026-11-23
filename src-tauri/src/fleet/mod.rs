@@ -2143,6 +2143,7 @@ impl Fleet {
         me.online = true;
         me.version = Some(self.cfg.version.clone());
         me.os = Some(std::env::consts::OS.into());
+        me.build = Some(if cfg!(debug_assertions) { "debug" } else { "release" }.into());
         me.caps = self.caps.clone();
         let mut members: Vec<MemberView> = Self::others_live(&inner).map(view).collect();
         members.sort_by_key(|m| m.name.to_lowercase());
