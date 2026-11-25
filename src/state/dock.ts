@@ -25,6 +25,11 @@ export function getActivePanelId(): string | null {
   return api?.activePanel?.id ?? null;
 }
 
+/** The dock's active panel's content element, or null. */
+export function getActivePanelElement(): HTMLElement | null {
+  return api?.activePanel?.view.content.element ?? null;
+}
+
 /** Open a panel to the right of `besideId` (or wherever dockview puts it when that
  *  isn't docked), or bring it forward when one with its id is already open. */
 export function openPanelBeside(

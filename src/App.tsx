@@ -25,6 +25,8 @@ import ResumePickerHost from "./panels/ResumePicker";
 import KeymapEditorHost from "./panels/KeymapEditor";
 import { canShowTranscript, getActiveConsoleId, getOpenConsoles, useConsoles } from "./state/consoles";
 import { initViewModes, toggleViewMode } from "./state/viewMode";
+import { getActivePanelId } from "./state/dock";
+import { REMOTE_CONSOLE_PREFIX } from "./panels/remoteSession";
 import { copyLastResponse } from "./panels/consoleCommands";
 import { useRegistry } from "./state/registry";
 import {
@@ -177,6 +179,9 @@ function App() {
   useEffect(
     () =>
       registerCommand("toggleTranscriptView", () => {
+        // Another machine's session in the front tab: its tab has both views too.
+        const panel = getActivePanelId();
+        if (panel?.startsWith(REMOTE_CONSOLE_PREFIX)) return toggleViewMode(panel, "transcript");
         const id = getActiveConsoleId();
         const session = getOpenConsoles().find((c) => c.instanceId === id);
         if (id && canShowTranscript(session)) toggleViewMode(id);

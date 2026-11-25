@@ -47,6 +47,7 @@ import { takeLaunchPrompt } from "../state/launchPrompt";
 import { isHeadless, sendHeadless } from "../state/headless";
 import { duckHoldsFocus } from "../state/focusGuard";
 import { isSpeaking, speak, stopSpeaking } from "../util/speech";
+import { registerScrollTerminal } from "../keyboard/pageScroll";
 
 interface TermEntry {
   /** The element xterm renders into; re-parented across mounts, never recreated. */
@@ -337,6 +338,7 @@ export function acquire(container: HTMLDivElement, opts: AcquireOptions): void {
   const fit = new FitAddon();
   term.loadAddon(fit);
   term.open(host);
+  registerScrollTerminal(term);
 
   term.attachCustomKeyEventHandler((e) => {
     // Shift+Enter in a claude console inserts a line break instead of submitting

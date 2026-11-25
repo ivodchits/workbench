@@ -25,15 +25,28 @@ import { fleetSocketOpen, type FleetSocket } from "../ipc/fleet";
 import type { RemoteInstance, TermControl } from "../remote/protocol";
 import { withQuery } from "../transcript/fleetSource";
 import type { LiveStatus } from "../state/status";
+import { formatTokens } from "../util/format";
+import { registerScrollTerminal } from "../keyboard/pageScroll";
 import TranscriptView from "./TranscriptView";
-import { sendRemote, useMachineName, useRemoteInstance, type RemoteConsoleParams } from "./remoteSession";
+import {
+  remoteConsolePanelId,
+  sendRemote,
+  useMachineName,
+  useRemoteInstance,
+  type RemoteConsoleParams,
+} from "./remoteSession";
+import { setViewMode, useViewMode, type ViewMode } from "../state/viewMode";
 
 
 function RemoteConsole(props: IDockviewPanelProps<RemoteConsoleParams>) {
   const { machine, remoteInstance } = props.params;
   const name = useMachineName(machine);
   const { inst, online } = useRemoteInstance(machine, remoteInstance);
-  const [mode, setMode] = useState<"transcript" | "terminal">("transcript");
+  // Kept in the view-mode store like a local console's, so a project switch (which
+  // unmounts the tab) brings it back showing what it showed.
+  const viewKey = remoteConsolePanelId(machine, remoteInstance);
+  const mode = useViewMode(viewKey, "transcript");
+  const setMode = (m: ViewMode) => setViewMode(viewKey, m);
   const title = inst?.title ?? props.params.title;
 
   useEffect(() => {
@@ -86,7 +99,7 @@ function RemoteConsole(props: IDockviewPanelProps<RemoteConsoleParams>) {
         <span style={{ color: phase === "needs_you" ? "var(--wb-needs)" : "var(--wb-textFaint)" }}>
           {phase === "working" && <Spinner size={10} color="var(--wb-working)" />} {status}
         </span>
-        <span style={{ marginLeft: "auto", display: "flex", gap: 10 }}>
+        <span style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 10 }}>
           {inst && inst.live && phase === "working" && (
             <HeaderButton onClick={() => sendRemote(machine, { type: "interrupt", instanceId: remoteInstance })}>
               interrupt
@@ -105,6 +118,7 @@ function RemoteConsole(props: IDockviewPanelProps<RemoteConsoleParams>) {
           <HeaderButton onClick={() => setMode(mode === "transcript" ? "terminal" : "transcript")}>
             {mode === "transcript" ? "terminal ▸" : "transcript ▸"}
           </HeaderButton>
+          {inst && inst.ctxTokens > 0 && <span>ctx {formatTokens(inst.ctxTokens)}</span>}
         </span>
       </div>
       {!online ? (
@@ -218,6 +232,7 @@ function RemoteTerminal({
       theme: deriveXtermTheme(),
     });
     term.open(host);
+    registerScrollTerminal(term);
     termRef.current = term;
     let socket: FleetSocket | null = null;
     let stopped = false;

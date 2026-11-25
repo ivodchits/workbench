@@ -21,17 +21,19 @@ interface Changed {
   mode: ViewMode;
 }
 
-/** Instances showing their transcript. Replaced, never mutated (it is the
- *  `useSyncExternalStore` snapshot). */
-let inTranscript: ReadonlySet<string> = new Set();
+/** The mode each instance was put in (true = transcript); an instance never set
+ *  shows its default. A remote console's tab (keyed by its panel id) defaults to
+ *  the transcript, a local console to its terminal, so both are stored either way.
+ *  Replaced, never mutated. */
+let modes: ReadonlyMap<string, boolean> = new Map();
 const listeners = new Set<() => void>();
 
 function apply(instanceId: string, mode: ViewMode): boolean {
-  if ((mode === "transcript") === inTranscript.has(instanceId)) return false;
-  const next = new Set(inTranscript);
-  if (mode === "transcript") next.add(instanceId);
-  else next.delete(instanceId);
-  inTranscript = next;
+  const on = mode === "transcript";
+  if (modes.get(instanceId) === on) return false;
+  const next = new Map(modes);
+  next.set(instanceId, on);
+  modes = next;
   for (const l of listeners) l();
   return true;
 }
@@ -45,9 +47,8 @@ export function initViewModes(): Promise<void> {
     try {
       await listen<Changed>(CHANGED_EVENT, (e) => void apply(e.payload.instanceId, e.payload.mode));
       const saved = await getPref("transcriptView", {});
-      const next = new Set(inTranscript);
-      for (const [id, on] of Object.entries(saved)) if (on) next.add(id);
-      inTranscript = next;
+      // Saved first, so a toggle made while loading wins over the stored mode.
+      modes = new Map([...Object.entries(saved), ...modes]);
       for (const l of listeners) l();
     } catch {
       // Not running under Tauri: every console simply stays on its terminal.
@@ -56,21 +57,22 @@ export function initViewModes(): Promise<void> {
   return started;
 }
 
-export function getViewMode(instanceId: string): ViewMode {
-  return inTranscript.has(instanceId) ? "transcript" : "terminal";
+export function getViewMode(instanceId: string, fallback: ViewMode = "terminal"): ViewMode {
+  const on = modes.get(instanceId);
+  return on === undefined ? fallback : on ? "transcript" : "terminal";
 }
 
 export function setViewMode(instanceId: string, mode: ViewMode): void {
   if (!apply(instanceId, mode)) return;
   // After the load, so a toggle made before it finishes can't save a partial set.
   void initViewModes().then(() =>
-    setPref("transcriptView", Object.fromEntries([...inTranscript].map((id) => [id, true]))),
+    setPref("transcriptView", Object.fromEntries(modes)),
   );
   void emit(CHANGED_EVENT, { instanceId, mode } satisfies Changed).catch(() => {});
 }
 
-export function toggleViewMode(instanceId: string): void {
-  setViewMode(instanceId, getViewMode(instanceId) === "transcript" ? "terminal" : "transcript");
+export function toggleViewMode(instanceId: string, fallback: ViewMode = "terminal"): void {
+  setViewMode(instanceId, getViewMode(instanceId, fallback) === "transcript" ? "terminal" : "transcript");
 }
 
 function subscribe(cb: () => void): () => void {
@@ -81,6 +83,6 @@ function subscribe(cb: () => void): () => void {
 }
 
 /** Subscribe a component to one instance's view mode. */
-export function useViewMode(instanceId: string): ViewMode {
-  return useSyncExternalStore(subscribe, () => getViewMode(instanceId));
+export function useViewMode(instanceId: string, fallback: ViewMode = "terminal"): ViewMode {
+  return useSyncExternalStore(subscribe, () => getViewMode(instanceId, fallback));
 }

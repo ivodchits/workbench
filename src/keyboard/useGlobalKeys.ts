@@ -13,6 +13,7 @@ import { isKeymapCapturing, matchCommand } from "./keymap";
 import { overrideKey, runCommand } from "./bus";
 import { dispatch } from "./commands";
 import { markFocusIntent, watchFocusIntent } from "../state/focusGuard";
+import { pageScrollKey } from "./pageScroll";
 
 /** Install the global keymap listener for the lifetime of the app. */
 export function useGlobalKeys(): void {
@@ -22,7 +23,14 @@ export function useGlobalKeys(): void {
       // pressed is captured as a binding rather than firing its current action.
       if (isKeymapCapturing()) return;
       const match = matchCommand(e, "global");
-      if (!match) return;
+      if (!match) {
+        // PgUp/PgDn scroll the active session (outside the keymap: see pageScroll).
+        if (pageScrollKey(e)) {
+          e.preventDefault();
+          e.stopPropagation();
+        }
+        return;
+      }
       e.preventDefault();
       e.stopPropagation();
       // A chord is asked for: the focus it moves goes ahead, even out of Duck's drawer.
