@@ -46,6 +46,9 @@ export interface WorkerEntity extends Body {
   overhead: Overhead | null;
   /** The status glyph on the name tag; none when there's no session. */
   tag: TagGlyph | null;
+  /** Their session is on another machine (fleet plan F9.3): its name, for the
+   *  small mark over their head. */
+  elsewhere?: string | null;
   /** Lying on a table: how far over the feet the sprite is drawn (the spot's `lift`). */
   lift?: number;
 }

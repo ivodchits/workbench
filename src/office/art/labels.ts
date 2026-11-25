@@ -53,6 +53,18 @@ export function nameTag(name: string, rim: string, glyph: TagGlyph | null): Bitm
   return out;
 }
 
+/** Over another machine's worker (fleet plan F9.3): the machine's initial in a
+ *  small box, so this machine's office looks as it did. */
+export function machineMark(machine: string): Bitmap {
+  const letter = (machine.trim()[0] ?? "?").toUpperCase();
+  const w = 1 + 1 + textWidth(letter) + 1 + 1;
+  const h = 1 + 1 + FONT_H + 1 + 1;
+  const out = bitmap(w, h);
+  draw(out, { rows: box(w, h) }, { e: "#7daea3", f: STATUS.dark });
+  drawText(out, letter, 2, 2, "#ffffff");
+  return out;
+}
+
 /** What a head can have over it. `needs`, `question` and `escalated` are bubbles in
  *  the plan; as icons they're the compact form, for a crowded room. */
 export type Overhead = "working" | "needs" | "question" | "escalated" | "stuck" | "done";

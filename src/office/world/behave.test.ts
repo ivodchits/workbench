@@ -87,6 +87,8 @@ describe("workers doing what their session is doing", () => {
     expect([by("compacting").seat, by("compacting").anim]).toEqual([by("compacting").home, "document"]);
     expect([by("web").anim, by("read").anim, by("stuck").anim, by("done").anim]).toEqual(["newspaper", "document", "sleep", "coffee"]);
     expect(by("escalated").bubble).toEqual({ text: "!", tone: "alert", pulse: true });
+    // Only the other machine's worker has its mark (fleet plan F9.3).
+    expect([by("web").elsewhere, by("read").elsewhere]).toEqual(["laptop", null]);
     // Two contractors at the extra desks, one with the bubble.
     expect(world.contractors.map((c) => c.bubble?.text ?? null)).toEqual([null, "!"]);
   });

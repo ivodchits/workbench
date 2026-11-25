@@ -67,6 +67,10 @@ export interface RemoteInstance {
   choice: RemoteChoice | null;
   /** What it did last, for the card's status lines; absent from older desktops. */
   latest?: RemoteLatest;
+  /** The office only (fleet plan F9.3): another machine's session, by that
+   *  machine's id, and the name of the machine it's on (this one's too). */
+  machine?: string;
+  machineName?: string;
 }
 
 /** A session's latest activity, as the phone's dashboard card shows it. */

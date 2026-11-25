@@ -14,6 +14,7 @@ import type { StandupAnswer, StandupRequest } from "../remote/standup";
 import type { SpanishAnswer, SpanishRequest } from "../remote/spanish";
 import type { RemoteAction, RemoteSnapshot } from "../remote/protocol";
 import type { ChatterState } from "./chatter";
+import { mergeFleet, toMachine, transcriptParams, type OfficeFrame } from "./fleet";
 
 const API = "/office/api";
 const SESSION_KEY = "wb-office-session";
@@ -153,7 +154,7 @@ export function connect(onState: (state: LinkState) => void, onNotes?: (projectI
         const data = JSON.parse(String(e.data)) as Partial<RemoteSnapshot> & { type?: string; projectId?: string };
         if (data.type === "notes") {
           if (typeof data.projectId === "string") onNotes?.(data.projectId);
-        } else if (Array.isArray(data.instances)) onState({ kind: "live", snapshot: data as RemoteSnapshot });
+        } else if (Array.isArray(data.instances)) onState({ kind: "live", snapshot: mergeFleet(data as OfficeFrame) });
       } catch {
         // Not JSON: nothing like that is sent.
       }
@@ -213,7 +214,8 @@ export function connect(onState: (state: LinkState) => void, onNotes?: (projectI
     },
     send(action) {
       if (socket?.readyState !== WebSocket.OPEN) return false;
-      socket.send(JSON.stringify(action));
+      // Another machine's worker's goes to its machine (fleet plan F9.3).
+      socket.send(JSON.stringify(toMachine(action)));
       return true;
     },
     async cost() {
@@ -256,7 +258,7 @@ export function connect(onState: (state: LinkState) => void, onNotes?: (projectI
     standup: (req) => call<StandupAnswer>("POST", "standup", req),
     spanish: (req) => call<SpanishAnswer>("POST", "spanish", req),
     socket(path, params) {
-      return session ? socketTo(path, params) : null;
+      return session ? socketTo(path, path === "transcript" ? transcriptParams(params) : params) : null;
     },
   };
 }

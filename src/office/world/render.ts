@@ -12,7 +12,7 @@
 import { FRAME_H, frame } from "../art/characters";
 import { DUCK_ANIMS, DUCK_H, DUCK_W, duckFrame } from "../art/duck";
 import { FERNANDO_ANIMS, FERNANDO_H, FERNANDO_W, fernandoFrame } from "../art/fernando";
-import { nameTag, speechBubble, statusIcon } from "../art/labels";
+import { machineMark, nameTag, speechBubble, statusIcon } from "../art/labels";
 import { BALL_H, BALL_W, HEART_H, HEART_W, LUPA_ANIMS, LUPA_H, ballFrame, heartFrame, lupaFrame, lupaView } from "../art/lupa";
 import { textBitmap } from "../art/font";
 import { PROPS, clockAt, floorTile, propFrame, type PropName } from "../art/props";
@@ -479,6 +479,8 @@ function drawOverhead(ctx: CanvasRenderingContext2D, e: Entity, at: Point, view:
   if (e.kind === "worker") {
     const w = e.worker;
     if (e.overhead && !e.bubble) layers.push(cached(`icon/${e.overhead}`, () => statusIcon(e.overhead!)));
+    // Another machine's worker (fleet plan F9.3): a small mark with its initial.
+    if (e.elsewhere && !e.bubble) layers.push(cached(`mark/${e.elsewhere}`, () => machineMark(e.elsewhere!)));
     if (view.tags || view.hover === w.id || view.selected === w.id || view.asking === w.id) {
       layers.push(cached(`tag/${w.id}/${e.tag}`, () => nameTag(w.name, w.look.top.base, e.tag)));
     }

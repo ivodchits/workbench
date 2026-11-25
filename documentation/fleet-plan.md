@@ -932,6 +932,41 @@ and drive them as the phone does.
   permission is approved from the desktop's office. With the laptop shut down, its
   workers leave, and they come back when it returns. Live test owed: on the two
   machines, in headless Chrome as well.
+- _(Built, 2026-11-24: `frame`, `route_action` and the transcript proxy in
+  `src-tauri/src/remote/office.rs`, `office_fleet_changed` in `remote/mod.rs`,
+  `src/office/fleet.ts`, and the mark in `world/behave.ts`, `world/render.ts` and
+  `art/labels.ts`.
+  **Changed from the plan:**
+  - The office server keeps its one snapshot frame and adds the others to it
+    (`fleet: { here, peers }`), only on the office's socket, not the phone's. The
+    page merges them in `net.ts`, as it receives them, into the one snapshot
+    the rest of the office already runs on. So `liveOffice.ts`, `roster.ts`,
+    `sessions.ts` and `assign.ts` didn't change.
+  - Another machine's session has the id `m:<machine>:<instance>`. A merged
+    project's sessions take this machine's project id (one room, one team). A
+    project only on another machine is a room of its own while it has sessions.
+  - Actions and transcripts carry the machine back: the page puts `machine` on an
+    action, and the office server sends it there (`FleetView::action`) instead of to
+    this webview. A transcript socket with `machine=` is piped to that machine's
+    `/api/transcript`.
+  - The head mark is the machine's initial in a small teal box, shown where the
+    status icon goes and only when there's no bubble. The sidebar line starts with
+    `on <machine>` for everyone, once there's more than one machine.
+  - A machine that goes takes its sessions out of the merged snapshot, so its
+    workers leave the way they do when a session ends.
+  - **Not done here: the standup's "what got done" for the other machine.** Its
+    workers attend (they're on the floor), but the report still reads this
+    machine's transcripts. Reading the laptop's would need a new relayed read. Track
+    J's J4 (the standup reads the daily log, which covers every machine) closes this.
+    Chatter takes everyone in without change, since it works on the workers on the
+    floor.
+  **Checked:** `office/fleet.test.ts` (no peers is unchanged, a matched project's
+  sessions in its room with ids that don't collide, a remote-only room, no room for
+  a project with no sessions, actions, `create` and transcripts sent back with their
+  own ids), the office's Rust tests for the frame and the query, `behave.test.ts`
+  (only the other machine's worker has the mark), and the preview in headless Edge
+  (the art preview's reading worker now has the mark). Live test owed: the Done
+  when on the two machines.)_
 
 ## Phase F7 — Workbench on Linux (gate: the server exists)
 

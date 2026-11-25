@@ -118,6 +118,7 @@ export function behave(office: OfficeMap, world: World, staff: Staff, ms: number
       staff.plans.delete(id);
       w.tag = null;
       w.overhead = null;
+      w.elsewhere = null;
       if (isStatusBubble(w.bubble)) w.bubble = null;
       leaveIdle(staff, id);
       staff.spots.delete(id);
@@ -127,6 +128,7 @@ export function behave(office: OfficeMap, world: World, staff: Staff, ms: number
       staff.plans.delete(id);
       w.tag = null;
       w.overhead = null;
+      w.elsewhere = null;
       if (isStatusBubble(w.bubble)) w.bubble = null;
       const standup = staff.standup?.seats.get(id);
       if (standup) atStandup(office, staff, w, standup, ms, instant);
@@ -138,6 +140,7 @@ export function behave(office: OfficeMap, world: World, staff: Staff, ms: number
       const plan = choose(staff.plans.get(id), want, job.instance.phase, ms, instant);
       staff.plans.set(id, plan);
       w.tag = job.tag;
+      w.elsewhere = job.instance.machine ? job.instance.machineName ?? "elsewhere" : null;
       if (want.bubble || isStatusBubble(w.bubble)) w.bubble = want.bubble;
       go(office, staff, w, job.desk, cheering(staff, id, ms) ? cheer(plan) : plan, ms, instant);
       // At the desk, the monitor says they're working.

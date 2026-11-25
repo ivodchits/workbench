@@ -1053,7 +1053,13 @@ impl Fleet {
         PhoneFleet { here: inner.me.clone(), main, pinned: cfg.pin.is_some(), instances }
     }
 
-    fn name_of(&self, id: &str) -> Option<String> {
+    /// This machine's fleet id.
+    pub fn id(&self) -> String {
+        self.me()
+    }
+
+    /// A member's name (this machine's own too).
+    pub fn name_of(&self, id: &str) -> Option<String> {
         self.inner.lock().unwrap().members.iter().find(|m| m.id == id).map(|m| m.name.clone())
     }
 
@@ -2486,6 +2492,8 @@ pub fn init(app: &AppHandle) {
         fleet.clone(),
         Box::new(move |entry| {
             let _ = view_app.emit("fleet-view", entry);
+            // The office has everyone on one floor (F9.3).
+            crate::remote::office_fleet_changed(&view_app);
         }),
     );
     app.manage(fleet_view.clone());

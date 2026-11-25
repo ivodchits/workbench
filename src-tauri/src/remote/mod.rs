@@ -1093,10 +1093,21 @@ pub fn remote_push_snapshot(state: State<'_, Arc<RemoteState>>, json: String) {
     let st = state.inner();
     let mut inner = st.inner.lock().unwrap();
     inner.snapshot = json.clone();
-    st.office.push(&json);
+    st.office.push(&office::frame(st, &json));
     if let Some(tx) = &inner.tx {
         let _ = tx.send(json); // Err only means no WS clients are connected
     }
+}
+
+/// Another machine's snapshot changed, came or went (fleet plan F9.3): the office
+/// gets its frame again.
+pub fn office_fleet_changed(app: &AppHandle) {
+    let Some(state) = app.try_state::<Arc<RemoteState>>() else { return };
+    if !state.office.running() {
+        return;
+    }
+    let snap = state.inner.lock().unwrap().snapshot.clone();
+    state.office.push(&office::frame(&state, &snap));
 }
 
 /// Tell connected phones (and the office) that a project's notes changed (step R8), on the dashboard

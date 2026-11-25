@@ -47,7 +47,7 @@ use std::sync::{Arc, Mutex};
 
 use axum::body::Bytes;
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
-use axum::extract::{DefaultBodyLimit, Query, Request, State};
+use axum::extract::{DefaultBodyLimit, Query, RawQuery, Request, State};
 use axum::http::{header, HeaderMap, StatusCode};
 use axum::middleware::{self, Next};
 use axum::response::{Html, IntoResponse, Redirect, Response};
@@ -380,6 +380,60 @@ fn prefs_ok(body: &[u8]) -> Option<String> {
     }
 }
 
+/// The office's snapshot frame (fleet plan F9.3): this machine's snapshot, and the
+/// other machines' beside it as `fleet: { here, peers: [{machine, name, snapshot}] }`,
+/// so the page puts everyone on one floor. Just this machine's with no peers.
+pub(super) fn frame(state: &RemoteState, local: &str) -> String {
+    let Some(view) = state.app.try_state::<Arc<crate::fleet::view::FleetView>>() else {
+        return local.to_string();
+    };
+    let peers = view.snapshots();
+    let Some(fleet) = crate::fleet::get(&state.app) else {
+        return local.to_string();
+    };
+    compose(local, &fleet.id(), |m| fleet.name_of(m), &peers)
+}
+
+fn compose(local: &str, me: &str, name_of: impl Fn(&str) -> Option<String>, peers: &[(String, String)]) -> String {
+    if peers.is_empty() {
+        return local.to_string();
+    }
+    let Ok(mut v) = serde_json::from_str::<Value>(local) else {
+        return local.to_string();
+    };
+    let list: Vec<Value> = peers
+        .iter()
+        .filter_map(|(m, s)| {
+            let snapshot: Value = serde_json::from_str(s).ok()?;
+            Some(json!({ "machine": m, "name": name_of(m).unwrap_or_else(|| m.clone()), "snapshot": snapshot }))
+        })
+        .collect();
+    if let Some(obj) = v.as_object_mut() {
+        obj.insert("fleet".into(), json!({ "here": name_of(me).unwrap_or_default(), "peers": list }));
+    }
+    v.to_string()
+}
+
+/// An action from the office: to another machine when it names one (a worker of
+/// theirs, F9.3), else to the webview as the phone's are.
+fn route_action(state: &Arc<RemoteState>, mut action: Value) {
+    let machine = action.as_object_mut().and_then(|o| o.remove("machine")).and_then(|m| m.as_str().map(str::to_string));
+    let here = crate::fleet::get(&state.app).map(|f| f.id());
+    match (machine, state.app.try_state::<Arc<crate::fleet::view::FleetView>>()) {
+        (Some(m), Some(view)) if Some(&m) != here.as_ref() => {
+            let view = view.inner().clone();
+            tauri::async_runtime::spawn(async move {
+                if let Err(e) = view.action(&m, &action).await {
+                    eprintln!("[office] an action for {m}: {e}");
+                }
+            });
+        }
+        _ => {
+            let _ = state.app.emit("remote-action", action);
+        }
+    }
+}
+
 /// One action, forwarded to the webview as the phone's are.
 async fn api_action(State(state): State<Arc<RemoteState>>, headers: HeaderMap, body: Bytes) -> Response {
     if !state.office.valid(bearer(&headers).as_deref()) {
@@ -387,7 +441,7 @@ async fn api_action(State(state): State<Arc<RemoteState>>, headers: HeaderMap, b
     }
     match serde_json::from_slice::<Value>(&body) {
         Ok(action) => {
-            let _ = state.app.emit("remote-action", action);
+            route_action(&state, action);
             StatusCode::OK.into_response()
         }
         Err(_) => StatusCode::BAD_REQUEST.into_response(),
@@ -406,7 +460,8 @@ async fn snapshots(mut socket: WebSocket, state: Arc<RemoteState>) {
     let Some(mut rx) = state.office.inner.lock().unwrap().tx.as_ref().map(|tx| tx.subscribe()) else {
         return;
     };
-    let initial = state.inner.lock().unwrap().snapshot.clone();
+    let local = state.inner.lock().unwrap().snapshot.clone();
+    let initial = frame(&state, &local);
     if socket.send(Message::Text(initial.into())).await.is_err() {
         return;
     }
@@ -425,7 +480,7 @@ async fn snapshots(mut socket: WebSocket, state: Arc<RemoteState>) {
             incoming = socket.recv() => match incoming {
                 Some(Ok(Message::Text(t))) => {
                     if let Ok(action) = serde_json::from_str::<Value>(t.as_str()) {
-                        let _ = state.app.emit("remote-action", action);
+                        route_action(&state, action);
                     }
                 }
                 Some(Ok(Message::Close(_))) | None | Some(Err(_)) => break,
@@ -435,14 +490,69 @@ async fn snapshots(mut socket: WebSocket, state: Arc<RemoteState>) {
     }
 }
 
+/// Another machine's worker's transcript (F9.3): `machine` names it, and the rest of
+/// the query goes to its `/api/transcript` over the fleet view, frames both ways.
+async fn peer_transcript(mut socket: WebSocket, state: Arc<RemoteState>, machine: String, query: String) {
+    let Some(view) = state.app.try_state::<Arc<crate::fleet::view::FleetView>>().map(|v| v.inner().clone()) else {
+        return;
+    };
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<crate::fleet::view::SocketMsg>();
+    let Ok(id) = view.open(&machine, &format!("/api/transcript?{query}"), Box::new(move |m| {
+        let _ = tx.send(m);
+    })) else {
+        return;
+    };
+    loop {
+        tokio::select! {
+            down = rx.recv() => match down {
+                Some(crate::fleet::view::SocketMsg::Text { d }) => {
+                    if socket.send(Message::Text(d.into())).await.is_err() {
+                        break;
+                    }
+                }
+                Some(crate::fleet::view::SocketMsg::Closed { .. }) | None => break,
+                _ => {}
+            },
+            up = socket.recv() => match up {
+                Some(Ok(Message::Text(t))) => {
+                    let _ = view.send(id, crate::fleet::view::SocketOut::Text(t.as_str().to_string()));
+                }
+                Some(Ok(Message::Close(_))) | None | Some(Err(_)) => break,
+                _ => {}
+            },
+        }
+    }
+    view.close(id);
+}
+
+/// `machine=<id>` out of a query string: the machine and the rest.
+fn split_machine(query: &str) -> (Option<String>, String) {
+    let mut machine = None;
+    let rest: Vec<&str> = query
+        .split('&')
+        .filter(|kv| match kv.strip_prefix("machine=") {
+            Some(m) => {
+                machine = Some(m.to_string());
+                false
+            }
+            None => !kv.is_empty(),
+        })
+        .collect();
+    (machine, rest.join("&"))
+}
+
 async fn api_transcript(
     ws: WebSocketUpgrade,
     State(state): State<Arc<RemoteState>>,
     headers: HeaderMap,
     Query(q): Query<TranscriptQuery>,
+    RawQuery(raw): RawQuery,
 ) -> Response {
     if !state.office.valid(subprotocol_token(&headers).as_deref()) {
         return StatusCode::UNAUTHORIZED.into_response();
+    }
+    if let (Some(machine), rest) = split_machine(raw.as_deref().unwrap_or("")) {
+        return ws.protocols([SUBPROTOCOL]).on_upgrade(move |socket| peer_transcript(socket, state, machine, rest));
     }
     // An office session lasts as long as the app, so nothing ends the socket early.
     ws.protocols([SUBPROTOCOL]).on_upgrade(move |socket| transcript::follow(socket, state, q, || true))
@@ -541,6 +651,25 @@ pub async fn office_commits(repo_roots: Vec<String>, since: i64) -> Result<Vec<R
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_frame_carries_the_other_machines_beside_this_ones() {
+        let local = r#"{"instances":[{"id":"a"}]}"#;
+        assert_eq!(compose(local, "me", |_| None, &[]), local);
+        let names = |m: &str| Some(if m == "me" { "desktop".to_string() } else { "laptop".to_string() });
+        let out: Value = serde_json::from_str(&compose(local, "me", names, &[("L".into(), r#"{"instances":[]}"#.into())])).unwrap();
+        assert_eq!(out["instances"][0]["id"], "a");
+        assert_eq!(out["fleet"]["here"], "desktop");
+        assert_eq!(out["fleet"]["peers"][0]["machine"], "L");
+        assert_eq!(out["fleet"]["peers"][0]["name"], "laptop");
+        assert_eq!(out["fleet"]["peers"][0]["snapshot"]["instances"], json!([]));
+    }
+
+    #[test]
+    fn a_transcript_query_names_its_machine() {
+        assert_eq!(split_machine("instance=x&machine=L&offset=3"), (Some("L".into()), "instance=x&offset=3".into()));
+        assert_eq!(split_machine("instance=x"), (None, "instance=x".into()));
+    }
 
     #[test]
     fn accepts_only_its_own_host() {

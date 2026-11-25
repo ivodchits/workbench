@@ -121,7 +121,8 @@ export function createPanel(root: HTMLElement, link: Link, onClose: () => void, 
   function paint(who: Who): void {
     const i = who.instance;
     name.textContent = nameOf(who);
-    what.textContent = i ? [i.projectName, titleOf(i), i.branch].filter(Boolean).join(" · ") : "";
+    // Which machine it's on, once there's more than one (fleet plan F9.3).
+    what.textContent = i ? [i.machineName && `on ${i.machineName}`, i.projectName, titleOf(i), i.branch].filter(Boolean).join(" · ") : "";
     const phase = i ? (i.phase ?? "idle") : null;
     state.className = `state phase-${phase ?? "none"}`;
     state.textContent = i ? `${GLYPH[phase!] ?? "·"} ${i.live ? phaseText(i) : "not running"}` : "";

@@ -47,7 +47,8 @@ export const EVERY_STATE: RemoteInstance[] = [
   instance("bash", "dem", { activity: "bash" }),
   instance("needs", "twr", { phase: "needs_you" }),
   instance("question", "twr", { phase: "needs_you", choice: question }),
-  instance("web", "misc", { activity: "web" }),
+  // Another machine's session (fleet plan F9.3): the small mark over the head.
+  instance("web", "misc", { activity: "web", machine: "L", machineName: "laptop" }),
   instance("read", "misc", { activity: "read" }),
   instance("compacting", "misc", { compacting: true }),
   instance("escalated", "misc", { phase: "needs_you", escalated: true }),
