@@ -36,8 +36,8 @@ use super::server::{authed, bearer, client_addr, ws_authed, SUBPROTOCOL};
 use super::RemoteState;
 
 /// What `/m/<machine>/` carries: a machine's sessions and what belongs to them.
-pub(super) const MACHINE_ROUTES: [&str; 6] =
-    ["api/ws", "api/action", "api/term", "api/transcript", "api/notes", "api/session/"];
+pub(super) const MACHINE_ROUTES: [&str; 7] =
+    ["api/ws", "api/action", "api/term", "api/transcript", "api/notes", "api/session/", "api/media"];
 
 /// The largest body relayed: an upload's.
 const BODY_MAX: usize = super::uploads::FILE_MAX;
@@ -146,8 +146,11 @@ async fn forward(state: &Arc<RemoteState>, peer: SocketAddr, id: &str, path: &st
             .header(RELAYED, "1")
             .timeout(HTTP_TIMEOUT)
             .body(body.clone());
-        if let Some(t) = headers.get(header::CONTENT_TYPE) {
-            up = up.header(header::CONTENT_TYPE, t);
+        // A player's range (a shown video, S3) is asked for over there as it was here.
+        for name in [header::CONTENT_TYPE, header::RANGE] {
+            if let Some(t) = headers.get(&name) {
+                up = up.header(name, t);
+            }
         }
         let resp = match up.send().await {
             Ok(r) => r,
@@ -159,7 +162,13 @@ async fn forward(state: &Arc<RemoteState>, peer: SocketAddr, id: &str, path: &st
         }
         let status = resp.status();
         let mut out = Response::builder().status(status);
-        for name in [header::CONTENT_TYPE, header::CONTENT_DISPOSITION, header::CACHE_CONTROL] {
+        for name in [
+            header::CONTENT_TYPE,
+            header::CONTENT_DISPOSITION,
+            header::CACHE_CONTROL,
+            header::CONTENT_RANGE,
+            header::ACCEPT_RANGES,
+        ] {
             if let Some(v) = resp.headers().get(&name) {
                 out = out.header(name, v);
             }
@@ -261,7 +270,7 @@ mod tests {
 
     #[test]
     fn only_a_machines_routes_are_relayed() {
-        for ok in ["api/ws", "api/action", "api/term", "api/transcript", "api/notes", "api/notes/list", "api/session/upload"] {
+        for ok in ["api/ws", "api/action", "api/term", "api/transcript", "api/notes", "api/notes/list", "api/session/upload", "api/media/0a1b", "api/media/0a1b/info"] {
             assert!(machine_route(ok), "{ok}");
         }
         for no in ["api/fleet", "api/auth/session", "pair", "api/assistant", "api/wsx", "api/notes/../push", "api/push/test", ""] {

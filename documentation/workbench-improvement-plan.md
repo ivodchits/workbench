@@ -2609,6 +2609,52 @@ on 2026-11-24, to be built **after the fleet plan's F9** (S3 needs F9.2).
   and opens in the viewer. A 30 MB clip plays. A 1 GB render shows the card, and
   **Open on laptop** opens it in the laptop's player. The phone shows the same
   screenshot. Live test owed: on the two machines.
+- _(Built, 2026-11-24:
+  - **The route:** `remote/media.rs` (new), `GET /api/media/{id}` and
+    `/api/media/{id}/info`. They have the same bearer check as the other routes and
+    serve registered files only, through `media::serve::registered`, the same code as
+    the `wbmedia` scheme. The info leaves the path out.
+    - `api/media` is in the relay's `MACHINE_ROUTES` and in the phone's list.
+    - **Added:** the relay now passes a request's `Range` through, and a response's
+      `Content-Range` and `Accept-Ranges` back. Without that, a relayed video couldn't
+      seek.
+  - **This machine:** `media/fleet.rs` (new) serves `wbmedia://…/m/<machine>/<id>`.
+    - It asks that machine for the info first, through `FleetView::get`, a signed GET
+      over the peer link's session.
+    - Within the limits it fetches the whole file once into
+      `<app cache>/fleet-media`, then serves ranges from there. The least recently
+      used file goes first above 500 MB, never the one just fetched.
+    - A cached file whose size no longer matches is fetched again. One that's still
+      cached shows while that machine is away.
+    - **Fetch anyway** (`?big=1`) passes each range straight through and caches
+      nothing.
+    - `fleet_media_info` is the command for the strip.
+  - **The strip:** `transcript/peerMedia.ts` (new) is shared by the desktop and the
+    phone, so it has no Tauri in it.
+    - `peerRef` applies the limits. A bigger file is a card ("video on laptop") that
+      keeps what it would be (`MediaRef.held`).
+    - `heldActions` gives **open on laptop** and **fetch anyway**. The viewer's
+      extra actions (`ViewerActions.more`) can answer with the fetched item, even
+      later, and the viewer then plays it in place.
+    - `state/fleetMedia.ts` is the remote console's source and actions
+      (`RemoteConsole.tsx`).
+  - **Open on laptop** is a new `openMedia` remote action, with the id only. The
+    machine that has the file looks up its path and opens it (`remoteActions.ts`).
+  - **The phone:** `pwa/media.ts` (new). A media element can't send the device token,
+    so files are fetched with it into blob URLs, under the same limits. **Fetch
+    anyway** fetches the whole file. The machine named is the one the page shows.
+  - **Not done:** the office sidebar still shows "not available here" cards for
+    files shown with the tool. It's a browser page on the office server, which has
+    neither the scheme nor the phone's token. (Tool-returned pictures, S1, show
+    there.)
+  **Checked:**
+  - Rust: the limits, the cache's eviction order (never the new file), the page's
+    `%XX` decoding, and the relay's route list taking `api/media`.
+  - Vitest (`peerMedia.test.ts`): the limits, the card for a big file and for a gone
+    or unknown one, and in the viewer **open on laptop**, then **fetch anyway**
+    playing the video in place.
+  - The phone's bundle builds (`build:pwa`).
+  **Live test owed:** the Done when, on the two machines and the phone.)_
 
 ### Track J — The daily log
 
@@ -2844,7 +2890,7 @@ any session, which lowers the urgency and makes the terminal bugs easier to comp
 | 6 | `@codemirror/merge` vs extending `UnifiedDiff` — **`@codemirror/merge`**; the edit mode folds into the diff | V1 |
 | 7 | Notes storage location (the phone, R8, reads the same store) | N1 |
 | 8 | How the PWA bundle is embedded on a fresh clone — **built, not committed**; `build.rs` says what to run | R1 |
-| 9 | Size limits for media from another machine — **proposed:** 20 MB pictures, 50 MB video and sound, a 500 MB cache | S3 |
+| 9 | Size limits for media from another machine — **built as proposed:** 20 MB pictures, 50 MB video and sound, a 500 MB cache | S3 |
 
 ---
 
@@ -2883,7 +2929,7 @@ any session, which lowers the urgency and makes the terminal bugs easier to comp
 | K1 | Project toolbar: plugin file, toolbar, task runs | ☑ |
 | S1 | Pictures that tools return, in the transcript | ☑ |
 | S2 | `show_media` tool, strip and viewer | ☑ |
-| S3 | Media from another machine | ☐ |
+| S3 | Media from another machine | ☑ |
 | J1 | Daily log: capture and tidy, on the main | ☐ |
 | J2 | Daily log window | ☐ |
 | J3 | Quitting waits for the log | ☐ |

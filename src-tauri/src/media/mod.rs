@@ -15,6 +15,7 @@
 //! - **Opening apps anyway** ([`refuse`]): a hook answer refuses a shell command that
 //!   only opens a media file, while the setting is on (it is by default).
 
+pub mod fleet;
 pub mod refuse;
 pub mod serve;
 

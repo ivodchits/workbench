@@ -66,7 +66,7 @@ pub fn run() {
         // Files a session showed with `show_media` (improvement plan S2), by id only.
         .register_asynchronous_uri_scheme_protocol(media::serve::SCHEME, |ctx, request, responder| {
             let app = ctx.app_handle().clone();
-            tauri::async_runtime::spawn_blocking(move || responder.respond(media::serve::serve(&app, &request)));
+            tauri::async_runtime::spawn(async move { responder.respond(media::serve::serve(app, request).await) });
         })
         .setup(|app| {
             // Open the registry database under the OS app-data dir so it
@@ -392,6 +392,7 @@ pub fn run() {
             media::media_list,
             media::media_refuse_get,
             media::media_refuse_set,
+            media::fleet::fleet_media_info,
             fleet::fleet_host_send,
             fleet::fleet_set_workspace,
             fleet::fleet_drained,

@@ -59,6 +59,7 @@
 pub mod assistant;
 pub(crate) mod auth;
 pub(crate) mod funnel;
+mod media;
 mod notes;
 pub mod office;
 pub mod push;

@@ -10,6 +10,8 @@
 // from `App.tsx`, not the torn-off window.
 
 import { answerPermission } from "../ipc/hooks";
+import { mediaInfo } from "../ipc/media";
+import { openPath } from "../ipc/os";
 import { ENTER_KEY, INTERRUPT_KEY, ptyWrite } from "../ipc/pty";
 import { onRemoteAction, type RemoteAction } from "../ipc/remote";
 import type { Instance, Project } from "../ipc/registry";
@@ -43,6 +45,13 @@ export function handleRemoteAction(action: RemoteAction): void {
   }
   if (action.type === "choose") {
     chooseRemote(action);
+    return;
+  }
+  if (action.type === "openMedia") {
+    // A registered file only: its path is looked up here, never sent (S3).
+    void mediaInfo([action.mediaId])
+      .then(([info]) => (info && info.state !== "gone" ? openPath(info.path) : undefined))
+      .catch(() => {});
     return;
   }
   const { type, instanceId, text } = action;

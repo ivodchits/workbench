@@ -116,6 +116,9 @@ async fn run(listener: std::net::TcpListener, state: Arc<RemoteState>) -> std::i
         .route("/api/action", post(api_action))
         .route("/api/term", get(api_term))
         .route("/api/transcript", get(super::transcript::api_transcript))
+        // Files a session showed with `show_media` (improvement plan S3).
+        .route("/api/media/{id}", get(super::media::file))
+        .route("/api/media/{id}/info", get(super::media::info))
         // Duck (step R1).
         .route("/api/assistant", get(super::assistant::api_assistant))
         .route(

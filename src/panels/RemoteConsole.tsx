@@ -28,6 +28,7 @@ import { createFeed, type Feed } from "../transcript/feed";
 import { fleetTranscriptSource, withQuery } from "../transcript/fleetSource";
 import { createRenderer, renderPendingTool } from "../transcript/render";
 import { attachMediaViewer } from "../transcript/media";
+import { fleetActions, fleetMedia } from "../state/fleetMedia";
 import { sendRemote, useMachineName, useRemoteInstance, type RemoteConsoleParams } from "./remoteSession";
 
 
@@ -157,12 +158,14 @@ function RemoteTranscript({
   const [state, setState] = useState({ count: 0, ready: false, loading: false, hasEarlier: false });
   const [link, setLink] = useState(true);
   const stuck = useRef(true);
+  const machineName = useMachineName(machine);
 
   useEffect(() => {
     const scroll = scrollRef.current;
     const list = listRef.current;
     if (!scroll || !list) return;
-    const renderer = createRenderer(list, {});
+    // A file shown over there comes from there (improvement plan S3).
+    const renderer = createRenderer(list, { media: fleetMedia(machine, machineName) });
     stuck.current = true;
     const feed = createFeed(fleetTranscriptSource(machine, instance, setLink), (why) => {
       const follow = why === "reset" || stuck.current;
@@ -180,7 +183,8 @@ function RemoteTranscript({
     };
     scroll.addEventListener("scroll", onScroll);
     // A picture's thumbnail opens the viewer over the tab (improvement plan S1).
-    const detach = scroll.parentElement?.parentElement ? attachMediaViewer(scroll, scroll.parentElement.parentElement) : null;
+    const host = scroll.parentElement?.parentElement;
+    const detach = host ? attachMediaViewer(scroll, host, fleetActions(machine, machineName)) : null;
     return () => {
       detach?.();
       scroll.removeEventListener("scroll", onScroll);
@@ -188,7 +192,7 @@ function RemoteTranscript({
       feedRef.current = null;
       renderer.clear();
     };
-  }, [machine, instance]);
+  }, [machine, instance, machineName]);
 
   const onLink = (e: React.MouseEvent) => {
     const a = e.target instanceof Element ? e.target.closest("a[href]") : null;

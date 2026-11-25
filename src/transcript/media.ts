@@ -24,12 +24,41 @@ export interface MediaRef {
   note?: string;
   /** Gone since it was shown: a card with nothing to open. */
   gone?: boolean;
+  /** Another machine's file too big to fetch without asking (S3): a card, and what
+   *  it would be once fetched. */
+  held?: MediaKind;
+}
+
+/** Pictures up to 20 MB and video or sound up to 50 MB are fetched from another
+ *  machine without asking (S3, `media/fleet.rs`); anything else is a card. */
+export const IMAGE_MAX = 20 * 1024 * 1024;
+export const AV_MAX = 50 * 1024 * 1024;
+
+export function fetchable(kind: MediaKind, size: number): boolean {
+  return kind === "image" ? size <= IMAGE_MAX : kind === "video" || kind === "audio" ? size <= AV_MAX : false;
+}
+
+/** "picture", "video", "sound", "file". */
+export function kindWord(kind: MediaKind): string {
+  return kind === "image" ? "picture" : kind === "audio" ? "sound" : kind;
+}
+
+/** Another thing a file card offers: "fetch anyway". Its `run` may give the item
+ *  as it is now (fetched), which the viewer then shows. */
+export interface ExtraAction {
+  label: string;
+  title?: string;
+  run(): MediaRef | void | Promise<MediaRef | void>;
 }
 
 /** What the host can do with a registered file, offered in the viewer. */
 export interface ViewerActions {
   /** Open it in its default app. */
   open?(ref: MediaRef): void;
+  /** What `open` is called: "open on laptop" for another machine's. */
+  openLabel?: string;
+  /** More a file card offers. */
+  more?(ref: MediaRef): ExtraAction[];
   /** Show it in its folder. */
   reveal?(ref: MediaRef): void;
   /** Move it into a panel of its own. */
@@ -65,7 +94,7 @@ const FILE_GLYPH: Record<MediaKind, string> = { image: "▣", video: "▶", audi
 function cardLines(ref: MediaRef): HTMLElement[] {
   const facts = [ref.size !== undefined ? sizeWords(ref.size) : "", ref.note ?? ""].filter(Boolean).join(" · ");
   return [
-    el("span", "wb-tx-file-name", `${FILE_GLYPH[ref.kind]} ${ref.label}`),
+    el("span", "wb-tx-file-name", `${FILE_GLYPH[ref.held ?? ref.kind]} ${ref.label}`),
     ...(facts ? [el("span", "wb-tx-file-facts", facts)] : []),
   ];
 }
@@ -173,10 +202,12 @@ function button(label: string, title: string, onClick: () => void): HTMLButtonEl
  */
 export function openMediaViewer(
   host: HTMLElement,
-  list: readonly MediaRef[],
+  items: readonly MediaRef[],
   index: number,
   actions: ViewerActions = {},
 ): MediaViewer {
+  // Its own copy: "fetch anyway" puts the fetched item in its place.
+  const list = [...items];
   open.get(host)?.close();
   const back = document.activeElement instanceof HTMLElement ? document.activeElement : null;
 
@@ -250,8 +281,25 @@ export function openMediaViewer(
     if (why) card.append(el("span", "wb-tx-file-facts", why));
     if (!ref.gone) {
       const row = el("div", "wb-media-file-actions");
-      if (actions.open) row.append(button("open externally", "open it in its default app", () => actions.open!(ref)));
+      if (actions.open)
+        row.append(button(actions.openLabel ?? "open externally", "open it in its default app", () => actions.open!(ref)));
       if (actions.reveal) row.append(button("show in folder", "show it in its folder", () => actions.reveal!(ref)));
+      for (const extra of actions.more?.(ref) ?? []) {
+        row.append(
+          button(extra.label, extra.title ?? extra.label, () => {
+            const was = at;
+            void Promise.resolve(extra.run()).then(
+              (now) => {
+                if (!now) return;
+                list[was] = now;
+                // Still on it, and still open: show it as it is now.
+                if (at === was && open.get(host) === viewer) show(was);
+              },
+              () => {},
+            );
+          }),
+        );
+      }
       if (row.childElementCount) card.append(row);
     }
     return card;

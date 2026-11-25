@@ -22,6 +22,7 @@ import type { RemoteInstance } from "../remote/protocol";
 import { createFeed, type Feed } from "../transcript/feed";
 import { createRenderer, markListening, type TranscriptRenderer } from "../transcript/render";
 import { attachMediaViewer } from "../transcript/media";
+import { phoneActions, phoneMedia } from "./media";
 import { listenPrefix, listenRequest, listeningTo } from "../assistant/listen";
 import type { ReaderView } from "../assistant/reader";
 import { controlReader, listenOnPhone, onReader, paintReaderBar } from "./duck";
@@ -435,7 +436,7 @@ export function showTranscript(id: string, it: RemoteInstance | undefined): void
     hideTranscript();
     current = id;
     stuck = true;
-    renderer = createRenderer($("tx-list"), { listen: true });
+    renderer = createRenderer($("tx-list"), { listen: true, media: phoneMedia });
     listenNote(null);
     report("connecting…");
     const text = $<HTMLTextAreaElement>("tx-text");
@@ -537,7 +538,7 @@ export function initTranscript(link: (text: string) => void, terminal: () => voi
   switchToTerminal = terminal;
   const s = scroller();
   // A picture's thumbnail opens the viewer over the transcript (improvement plan S1).
-  attachMediaViewer(s, $("tx-view"));
+  attachMediaViewer(s, $("tx-view"), phoneActions());
   s.addEventListener(
     "scroll",
     () => {

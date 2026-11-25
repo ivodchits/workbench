@@ -13,7 +13,7 @@ export const FLEET_KEY = "wb-fleet";
 const PICK_KEY = "wb-machine";
 
 /** The routes that belong to a machine's sessions (`relay::MACHINE_ROUTES`). */
-const MACHINE_ROUTES = ["/api/ws", "/api/action", "/api/term", "/api/transcript", "/api/notes", "/api/session/"];
+const MACHINE_ROUTES = ["/api/ws", "/api/action", "/api/term", "/api/transcript", "/api/notes", "/api/session/", "/api/media"];
 
 function read(key: string): string | null {
   try {

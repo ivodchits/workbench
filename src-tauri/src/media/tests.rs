@@ -171,3 +171,47 @@ fn sizes_read_plainly() {
     assert_eq!(size_words(200 * 1024 * 1024), "200 MB");
     assert_eq!(size_words(1288490189), "1.2 GB");
 }
+
+#[test]
+fn another_machines_file_is_fetched_within_the_limits_only() {
+    use super::fleet::{within_limits, AV_MAX, IMAGE_MAX};
+    assert!(within_limits("image", IMAGE_MAX));
+    assert!(!within_limits("image", IMAGE_MAX + 1));
+    assert!(within_limits("video", 30 * 1024 * 1024));
+    assert!(within_limits("audio", AV_MAX));
+    assert!(!within_limits("video", 1 << 30));
+    // A file card is never fetched: it opens over there.
+    assert!(!within_limits("file", 10));
+}
+
+#[test]
+fn the_cache_drops_the_least_recently_used_first_but_never_the_new_one() {
+    use std::time::{Duration, SystemTime};
+    let dir = temp_dir("cache");
+    let at = |name: &str, len: usize, secs_ago: u64| {
+        let p = dir.join(name);
+        std::fs::write(&p, vec![0u8; len]).unwrap();
+        let f = std::fs::File::options().write(true).open(&p).unwrap();
+        f.set_modified(SystemTime::now() - Duration::from_secs(secs_ago)).unwrap();
+        p
+    };
+    at("old", 400, 300);
+    at("mid", 400, 200);
+    let fresh = at("new", 400, 400);
+    super::fleet::evict(&dir, &fresh, 900);
+    let mut left: Vec<_> = std::fs::read_dir(&dir).unwrap().flatten().map(|e| e.file_name().into_string().unwrap()).collect();
+    left.sort();
+    // "new" is the oldest by time but is the one just fetched; "old" went.
+    assert_eq!(left, ["mid", "new"]);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn the_page_s_encoding_is_undone() {
+    use super::serve::decode;
+    assert_eq!(decode("m/lap%20top/0a1b"), "m/lap top/0a1b");
+    assert_eq!(decode("m/a%2Fb/0a"), "m/a/b/0a");
+    assert_eq!(decode("50%"), "50%");
+    assert_eq!(decode("%zz"), "%zz");
+    assert_eq!(decode("ab%4"), "ab%4");
+}

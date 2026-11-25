@@ -200,8 +200,16 @@ export interface RemoteChooseAction {
   option: number | "deny";
 }
 
+/** Open a file a session showed (improvement plan S3) in its default app on the
+ *  machine that has it: "open on laptop" for one too big to fetch. Only a registered
+ *  id, never a path. */
+export interface RemoteOpenMediaAction {
+  type: "openMedia";
+  mediaId: string;
+}
+
 /** An action message from a remote client, routed to the frontend handler. */
-export type RemoteAction = RemoteInstanceAction | RemoteCreateAction | RemoteChooseAction;
+export type RemoteAction = RemoteInstanceAction | RemoteCreateAction | RemoteChooseAction | RemoteOpenMediaAction;
 
 /** A text frame on the terminal-mirror socket (`/api/term`); output itself is binary. */
 export type TermControl =

@@ -38,6 +38,8 @@ const SCAN_EVERY: Duration = Duration::from_secs(2);
 /// After a failed connect, how long before trying that machine again.
 const RETRY_AFTER: Duration = Duration::from_secs(10);
 const HTTP_TIMEOUT: Duration = Duration::from_secs(20);
+/// A shown file (50 MB at most unless asked) has this long to arrive.
+const MEDIA_TIMEOUT: Duration = Duration::from_secs(300);
 
 /// What a machine's view is now, for the webview.
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -220,6 +222,31 @@ impl FleetView {
         self.fleet
             .relay_target(id)
             .ok_or_else(|| "that machine isn’t connected, or its remote access is off".to_string())
+    }
+
+    /// A signed `GET` of machine `id`'s `path` (with `range`, when given): its
+    /// answer, whatever its status but a refused session, which is asked for again
+    /// once. For its media (improvement plan S3), so the timeout is a big file's.
+    pub async fn get(&self, id: &str, path: &str, range: Option<&str>) -> Result<reqwest::Response, String> {
+        let target = self.target(id)?;
+        let client = reqwest::Client::new();
+        let mut fresh = false;
+        loop {
+            let session = self.fleet.peer_session(id, fresh).await?;
+            let mut req = client
+                .get(format!("http://{target}{path}"))
+                .header(reqwest::header::AUTHORIZATION, format!("Bearer {session}"))
+                .timeout(MEDIA_TIMEOUT);
+            if let Some(r) = range {
+                req = req.header(reqwest::header::RANGE, r);
+            }
+            let resp = req.send().await.map_err(|e| format!("couldn’t reach that machine: {e}"))?;
+            if resp.status() == StatusCode::UNAUTHORIZED && !fresh {
+                fresh = true;
+                continue;
+            }
+            return Ok(resp);
+        }
     }
 
     /// Send `action` (a `RemoteAction`'s JSON) to machine `id`.
