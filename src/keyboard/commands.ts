@@ -49,6 +49,7 @@ export function runAction(command: CommandId, arg?: number): void {
     // are the same no-op when none is open.
     case "focusRail":
     case "newInstance":
+    case "newInstanceRemote":
     case "newEditor":
     case "newShell":
     case "resumeLastSession":

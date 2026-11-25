@@ -40,6 +40,7 @@ export type CommandId =
   | "splitPanel"
   | "closePanel"
   | "newInstance"
+  | "newInstanceRemote"
   | "newEditor"
   | "newShell"
   | "resumeLastSession"
@@ -156,6 +157,7 @@ const RAW_BINDINGS: RawBinding[] = [
   { chord: "Ctrl+Shift+W", command: "closePanel", scope: "global", title: "Close the focused panel" },
   // --- global: instance control --------------------------------------------
   { chord: "Ctrl+Shift+N", command: "newInstance", scope: "global", title: "New instance in the active project" },
+  { chord: "Ctrl+Alt+Shift+N", command: "newInstanceRemote", scope: "global", title: "New instance of the active project on the other machine" },
   { chord: "Ctrl+Shift+E", command: "newEditor", scope: "global", title: "Open the editor for the active project" },
   { chord: "Ctrl+Shift+T", command: "newShell", scope: "global", title: "New shell in the active project" },
   // Open the resume-session picker for the active project (step 4.x): choose a

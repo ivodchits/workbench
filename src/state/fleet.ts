@@ -37,6 +37,10 @@ function subscribe(l: () => void): () => void {
   return () => listeners.delete(l);
 }
 
+export function getFleetStatus(): FleetStatus | null {
+  return status;
+}
+
 /** The fleet's status; null until the first load. */
 export function useFleet(): FleetStatus | null {
   return useSyncExternalStore(subscribe, () => status);

@@ -38,6 +38,7 @@ import GitPanel, { type GitPanelParams } from "./Git";
 import NotesPanel, { type NotesPanelParams } from "./Notes";
 import TaskPanel, { type TaskPanelParams } from "./TaskPanel";
 import PreviewPanel from "./PreviewPanel";
+import RemoteConsole from "./RemoteConsole";
 import PlanPanel from "./PlanPanel";
 import DecisionsPanel from "./DecisionsPanel";
 import DrawingPanel from "./Assistant/Canvas";
@@ -132,7 +133,7 @@ import {
   SCHEMA_VERSION,
   type SavedLayout,
 } from "../state/layout";
-import { routePanelFocus, setDockApi } from "../state/dock";
+import { routePanelFocus, setDisplayedProject, setDockApi } from "../state/dock";
 import { registerLayoutController } from "../state/presets";
 import { tearOff } from "../state/tearoff";
 import { release } from "./terminalPool";
@@ -186,6 +187,9 @@ const COMPONENTS = {
   drawing: DrawingPanel as React.FunctionComponent<IDockviewPanelProps>,
   // Duck's sketch pad popped out (step G5): one shared sketch, no params.
   sketch: SketchPanel as React.FunctionComponent<IDockviewPanelProps>,
+  // Another machine's session (fleet plan F9.2): its machine and instance in params,
+  // everything else from the fleet view, so it persists as part of the tree too.
+  remoteConsole: RemoteConsole as React.FunctionComponent<IDockviewPanelProps>,
 };
 
 /** A console panel carries its instance id in params; other panels don't. */
@@ -886,6 +890,7 @@ function Workspace() {
       }
       switchingRef.current = false;
       displayedProjectRef.current = activeProjectId;
+      setDisplayedProject(activeProjectId);
       restoredRef.current = true;
 
       // Settle: add any live console/shell/editor/diff for this project the saved

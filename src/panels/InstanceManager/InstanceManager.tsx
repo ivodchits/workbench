@@ -79,6 +79,14 @@ import InstanceCard from "./InstanceCard";
 import Modal from "./Modal";
 import WorktreePicker from "./WorktreePicker";
 import { pickKillTarget } from "./killTarget";
+import RemoteInstanceCard from "./RemoteInstanceCard";
+import { remoteStatus } from "../remoteSession";
+import { FleetSection, MachineDivider, RemotePicker } from "./FleetRail";
+import { getFleetRail, offlineWhy, useFleetRail } from "../../state/useFleetRail";
+import { newSessionElsewhere, targetsFor } from "../../state/fleetCreate";
+import { useFleet } from "../../state/fleet";
+import { useFleetViews } from "../../state/fleetView";
+import type { MachineSessions } from "../../state/fleetRail";
 
 // Create a new instance with no dialog: the title is the next free integer for the
 // project (1, 2, 3, …), the task note is empty, and the worktree toggle is off —
@@ -120,6 +128,11 @@ function InstanceManager({ onCollapse }: InstanceManagerProps) {
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
   const [needsYouOnly, setNeedsYouOnly] = useState(false);
   const railRef = useRef<HTMLDivElement>(null);
+  // The other machines' sessions (fleet plan F9.2).
+  const fleetRail = useFleetRail();
+  const fleetStatus = useFleet();
+  const fleetViews = useFleetViews();
+  const whyOffline = (machine: string) => offlineWhy(fleetStatus, fleetViews.get(machine), machine);
 
   useEffect(() => {
     void loadRegistry();
@@ -180,6 +193,12 @@ function InstanceManager({ onCollapse }: InstanceManagerProps) {
       registerCommand("newInstance", () => {
         const proj = getRegistry().projects.find((p) => p.id === getActiveProject());
         if (proj) void spawnInstance(proj);
+      }),
+      // A session of the active project on the other machine (fleet plan F9.2).
+      registerCommand("newInstanceRemote", () => {
+        const proj = getRegistry().projects.find((p) => p.id === getActiveProject());
+        if (proj) newSessionElsewhere(getFleetRail(), proj.id, proj.name);
+        else flash("Pick a project first.");
       }),
       registerCommand("newEditor", () => {
         const proj = getRegistry().projects.find((p) => p.id === getActiveProject());
@@ -639,7 +658,12 @@ function InstanceManager({ onCollapse }: InstanceManagerProps) {
                 </button>
                 {!isCollapsed &&
                   sec.projects
-                    .filter((p) => !needsYouOnly || filteredInstancesByProject.has(p.id))
+                    .filter(
+                      (p) =>
+                        !needsYouOnly ||
+                        filteredInstancesByProject.has(p.id) ||
+                        (fleetRail.merged.get(p.id) ?? []).some((m) => m.instances.some((i) => remoteStatus(i).needsYou)),
+                    )
                     .map((p) => (
                     <ProjectNode
                       key={p.id}
@@ -671,11 +695,20 @@ function InstanceManager({ onCollapse }: InstanceManagerProps) {
                       onNewInWorktree={() => setWorktreePick({ project: p, instance: null })}
                       onToggleWorktree={setWorktreeTarget}
                       onKill={setKillTarget}
+                      others={fleetRail.merged.get(p.id) ?? []}
+                      needsYouOnly={needsYouOnly}
+                      whyOffline={whyOffline}
+                      remoteTargets={targetsFor(fleetRail, p.id)}
+                      onNewRemote={() => newSessionElsewhere(fleetRail, p.id, p.name)}
                     />
                   ))}
               </div>
             );
           })}
+
+          {fleetRail.sections.length > 0 && (
+            <FleetSection sections={fleetRail.sections} needsYouOnly={needsYouOnly} whyOffline={whyOffline} />
+          )}
         </div>
 
         <button onClick={() => setAddingProject(true)} style={footerActionStyle}>
@@ -731,6 +764,7 @@ function InstanceManager({ onCollapse }: InstanceManagerProps) {
             }}
           />
         ))}
+      <RemotePicker />
       {worktreePick && (
         <WorktreePicker
           project={worktreePick.project}
@@ -785,6 +819,14 @@ interface ProjectNodeProps {
   onNewInWorktree: () => void;
   onToggleWorktree: (instance: Instance) => void;
   onKill: (instance: Instance) => void;
+  /** The other machines with this project, and their sessions in it (F9.2). */
+  others: MachineSessions[];
+  needsYouOnly: boolean;
+  /** Why a machine's view is down (`offline`, …). */
+  whyOffline: (machine: string) => string;
+  /** The machines a session of this project could start on. */
+  remoteTargets: { machine: string; name: string; online: boolean }[];
+  onNewRemote: () => void;
 }
 
 function ProjectNode({
@@ -814,6 +856,11 @@ function ProjectNode({
   onNewInWorktree,
   onToggleWorktree,
   onKill,
+  others,
+  needsYouOnly,
+  whyOffline,
+  remoteTargets,
+  onNewRemote,
 }: ProjectNodeProps) {
   const [hover, setHover] = useState(false);
   // The "⋯" overflow menu (edit CLAUDE.md / MCP servers / edit project). Kept open
@@ -840,6 +887,13 @@ function ProjectNode({
       mergeStatus(consoleStatusById.get(i.id) ?? null, liveStatuses.get(i.id) ?? null, i.status)
         .done,
   ).length;
+  // The other machines' sessions count too (F9.2): the tile covers the project.
+  const remoteInstances = others.flatMap((m) => m.instances);
+  const totalCount = instances.length + remoteInstances.length;
+  const runningAll = running + remoteInstances.filter((i) => i.live).length;
+  const needsAll = needsYou + remoteInstances.filter((i) => remoteStatus(i).needsYou).length;
+  const doneAll = done + remoteInstances.filter((i) => remoteStatus(i).done).length;
+  const onlineTargets = remoteTargets.filter((t) => t.online);
 
   // Rail single-keys for a focused project tile: Enter opens (selects + expands),
   // Left/Right collapse/expand. Everything else (j/k nav, n, p, Esc) bubbles to
@@ -915,6 +969,15 @@ function ProjectNode({
             <ProjectAction label="new instance" onClick={onNewInstance} fontSize={15.75}>
               +
             </ProjectAction>
+            {onlineTargets.length > 0 && (
+              <ProjectAction
+                label={`new instance on ${onlineTargets.length === 1 ? onlineTargets[0].name : "another machine"} (Ctrl+Alt+Shift+N)`}
+                onClick={onNewRemote}
+                fontSize={13}
+              >
+                {GLYPH.remote}+
+              </ProjectAction>
+            )}
             {isRemote ? (
               // Remote: the host-aware actions. A Project Shell runs over SSH on the
               // host (step 3.12). "Sync" reconciles tmux sessions (and offers adopting
@@ -1019,19 +1082,19 @@ function ProjectNode({
             color: "var(--wb-textFaint)",
           }}
         >
-          {instances.length === 0 ? (
+          {totalCount === 0 ? (
             <span>no instances</span>
           ) : (
             <>
               <span>
-                {instances.length} instance{instances.length === 1 ? "" : "s"}
+                {totalCount} instance{totalCount === 1 ? "" : "s"}
               </span>
-              {running > 0 && <span style={{ color: "var(--wb-accent)" }}>{running} running</span>}
-              {done > 0 && (
-                <span style={{ color: "var(--wb-done)" }}>● {done} done</span>
+              {runningAll > 0 && <span style={{ color: "var(--wb-accent)" }}>{runningAll} running</span>}
+              {doneAll > 0 && (
+                <span style={{ color: "var(--wb-done)" }}>● {doneAll} done</span>
               )}
-              {needsYou > 0 && (
-                <span style={{ color: "var(--wb-needs)" }}>● {needsYou} need you</span>
+              {needsAll > 0 && (
+                <span style={{ color: "var(--wb-needs)" }}>● {needsAll} need you</span>
               )}
             </>
           )}
@@ -1058,6 +1121,20 @@ function ProjectNode({
               onKill={() => onKill(i)}
             />
           ))}
+          {others.map((m) => {
+            const why = whyOffline(m.machine);
+            const online = remoteTargets.find((t) => t.machine === m.machine)?.online ?? false;
+            const shown = needsYouOnly ? m.instances.filter((i) => remoteStatus(i).needsYou) : m.instances;
+            if (online && shown.length === 0) return null;
+            return (
+              <div key={m.machine}>
+                <MachineDivider name={m.machineName} offline={online ? null : why} />
+                {shown.map((i) => (
+                  <RemoteInstanceCard key={i.id} inst={i} machine={m.machine} machineName={m.machineName} localProject={project.id} />
+                ))}
+              </div>
+            );
+          })}
           <div style={{ display: "flex", alignItems: "center" }}>
             <button onClick={onNewInstance} style={{ ...newInstanceRowStyle, flex: 1 }}>
               <span style={{ color: "var(--wb-accent)" }}>+</span> new instance

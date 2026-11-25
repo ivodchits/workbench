@@ -44,6 +44,37 @@ export function openPanelBeside(
   });
 }
 
+/** The project whose tree the dock shows now (set by `Workspace` once a swap is
+ *  committed). */
+let displayed: string | null = null;
+
+export function setDisplayedProject(id: string | null): void {
+  displayed = id;
+}
+
+export function getDisplayedProject(): string | null {
+  return displayed;
+}
+
+/** Open `panel` in project `projectId`'s workspace once the dock shows it (after a
+ *  project switch, a few frames later); gives up after about two seconds. */
+export function openPanelInProject(
+  projectId: string,
+  panel: { id: string; component: string; title: string; params: Record<string, unknown> },
+): void {
+  let tries = 0;
+  const tick = () => {
+    if (!api) return;
+    if (displayed === projectId) {
+      openPanelBeside(null, panel);
+      api.getPanel(panel.id)?.api.setActive();
+      return;
+    }
+    if (++tries < 120) requestAnimationFrame(tick);
+  };
+  tick();
+}
+
 /** `openPanelBeside`, once `besideId` is docked: after a project switch its console
  *  shows up a few frames later. Opens anyway (wherever dockview puts it) when it
  *  doesn't within about two seconds. */

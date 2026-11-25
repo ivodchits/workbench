@@ -871,6 +871,40 @@ and drive them as the phone does.
   the active project. With the laptop shut down, its lines read `offline`, its cards
   are gone, and the shortcut says it's offline. Live test owed: all of it on the two
   machines.
+- _(Built, 2026-11-24: `src/panels/RemoteConsole.tsx`, `src/panels/remoteSession.ts`,
+  `src/panels/InstanceManager/RemoteInstanceCard.tsx` and `FleetRail.tsx`,
+  `src/transcript/fleetSource.ts`, `src/state/fleetCreate.ts`,
+  `src/state/useFleetRail.ts`, `openPanelInProject` in `src/state/dock.ts`, and
+  `newInstanceRemote` in `keymap.ts`.
+  **Changed from the plan:**
+  - The remote card is its own small component (`RemoteInstanceCard`), not
+    `InstanceCard` with a flag. The local card is built on the registry's instance
+    and this machine's stores (queue, trust, Duck's tasks, accent, model), none of
+    which a remote session has. It shows the snapshot's dot, title, needs-you badge,
+    latest line, branch and context, and a machine mark. Its hover actions are
+    interrupt, start and stop.
+  - The remote console tab has its own transcript view, not `TranscriptView` with a
+    relayed source. The local one is wired to this machine's pending prompts, plans,
+    composer drafts and Duck's reader. The remote one uses the same feed and
+    renderer, over the phone's transcript source (`pwa/transcriptSource.ts`) on a
+    relayed socket. The choice card comes from the snapshot's `choice` and sends
+    `choose`; the composer sends `prompt`.
+  - The tab's binding lives in its panel params (like a plan tab), so it's kept in
+    the project's saved layout. A tab whose machine is offline says so and comes
+    back to life with it. A merged project's session opens in that project's
+    workspace; a remote-only one opens in the workspace on screen.
+  - The terminal is sized to the owner's PTY and scaled down with a CSS transform
+    when the panel is smaller. It never resizes the other machine.
+  - The machine's line says why its view is down: `offline`, `remote access off
+    there`, or `connecting…`.
+  - The bottom section's folds are kept in `localStorage`. The project folds above
+    are as before.
+  - With the needs-you filter on, remote cards are filtered the same way.
+  **Checked:** `fleetCreate.test.ts` (straight to the one machine as its own project
+  id, offline and missing say so and send nothing, a picker with two machines),
+  `FleetRail.test.tsx` (the band, a machine, its project and session, the folded
+  `no sessions` group opening, an offline machine as one line), and the full suite
+  (tsc, eslint, 1598 tests). Live test owed: the Done when, on the two machines.)_
 
 ### Step F9.3 — The office: everyone's sessions on one floor
 - **Depends on:** F9.1.
