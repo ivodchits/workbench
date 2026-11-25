@@ -729,6 +729,152 @@ This document. Done when you've approved it; then H6 in `assistant-plan.md` poin
   `brain.test.ts`. Live test owed: the Done when between the desktop and the
   laptop.)_
 
+## Phase F9 — Every machine's sessions, everywhere
+
+_(Planned, 2026-11-24. F2.2's relay is now tested live on the desktop and the
+laptop, which this phase is built on.)_
+
+Until now another machine's sessions could be seen only from the phone (the machine
+picker) or by Duck (the fleet port). F9 brings them into the desktop app's rail and
+into the office: you see the whole fleet's sessions from whichever machine you sit at,
+and drive them as the phone does.
+
+**Decisions this phase works to (settled 2026-11-24):**
+
+1. **One project, two groups of sessions.** A project on both machines is one entry in
+   the rail. Its sessions are split by machine: this machine's first, then a thin
+   divider with the other machine's name (`── laptop ──`) and that machine's sessions.
+2. **Projects only on the other machine** go below everything else in the rail, after a
+   heavier separator of a different kind (a full-width band: `OTHER MACHINES`). There's
+   one header per machine, and its projects follow in name order.
+3. **Which projects are "the same".** First by git remote, as Duck already does (F3.2:
+   `remotes.ts`, every URL form alike). When neither project has a remote, by name. Two
+   projects with the same name but different remotes are kept apart, each with its
+   machine's name on the other's entry.
+4. **Remote-only projects with no sessions** aren't listed among the rest. They're in
+   a folded `No sessions` group at the end of their machine's section, so a session
+   can still be started in one.
+5. **A machine that goes offline.** Its sessions leave the rail. Its divider or header
+   stays as one dim line (`laptop · offline`), so you can tell it's gone and not empty.
+   It goes back to normal when the machine comes back.
+6. **What you can do with another machine's session.** Everything the phone can: its
+   transcript, and its **live terminal** (the phone's console mirror, `/api/term`,
+   already relayed), prompt, approve or deny, interrupt, start, stop, answer a choice.
+   A remote card's menu has no kill, worktree or edit items.
+7. **Groups.** The rail's groups stay this machine's. A merged project sits in this
+   machine's group. A remote-only project is listed under its machine in the bottom
+   section, without the other machine's groups.
+8. **The office: one floor, everyone on it.** The other machine's sessions are workers
+   like the rest, in their project's room when the project is merged. A small mark
+   tells them apart (a tag with the machine's name in the sidebar, and a small
+   marker over their head).
+9. **New session on the other machine:** `Ctrl+Alt+Shift+N`, and a button on the
+   project's row in the rail. With one other machine (the expected case) it goes
+   straight there. With more than one, a small picker asks which.
+
+### Step F9.1 — The fleet view: every machine's snapshot, here
+- **Depends on:** F2.2.
+- **Build:**
+  - **A view per peer.** A backend `fleet::view` holds one relayed dashboard socket
+    (`/m/<machine>/api/ws`, F2.2's relay and its relay session) per live peer, and
+    emits `fleet-view { machine, snapshot | null }` on every frame and when a link
+    goes. It opens when a peer comes up and closes when it goes. A peer that has
+    remote access off has no socket; its line says to turn it on there.
+  - **The snapshot gets the remote.** `RemoteProject` gains `gitRemote` (optional, so
+    older peers still parse), read from the same lookup Duck's port uses.
+  - **Matching** (decision 3) in one pure function, `fleetRail.ts`: this machine's
+    registry and the peers' snapshots in; merged projects, each with sessions per
+    machine, and the remote-only projects per machine out.
+  - **Actions.** `fleet_view_action(machine, action)` sends a `RemoteAction` to that
+    machine through the relay's `api/action`.
+- **Key files:** `src-tauri/src/fleet/view.rs` (new), `src-tauri/src/remote/relay.rs`,
+  `src/remote/protocol.ts`, `src/state/fleetView.ts` (new), `src/state/fleetRail.ts`
+  (new), `src/ipc/fleet.ts`.
+- **Done when:** a test feeds two snapshots (one peer has the same repo under another
+  folder name, one has a project with no remote but the same name, one has the same
+  name with a different remote, and one is only there) and gets the groupings of
+  decisions 1–4. A Rust test opens a view on a loopback peer, gets its snapshot, and
+  gets `null` when the link goes. Live test owed: the laptop's snapshot arrives on the
+  desktop.
+
+### Step F9.2 — The rail: two groups per project, and the other machines below
+- **Depends on:** F9.1.
+- **Build:**
+  - **Merged projects.** `InstanceManager.tsx` draws a project's own cards, then the
+    machine divider and the other machine's cards. The project's count and status dot
+    cover both machines.
+  - **The bottom section.** After the last group, the `OTHER MACHINES` band, then one
+    header per machine (with `offline` when its view is gone), its remote-only
+    projects that have sessions, and last a folded `No sessions` group with the rest
+    (decision 4). All of them fold like groups, and the fold state is remembered.
+  - **Remote cards.** `InstanceCard` with a machine mark, fed from the snapshot
+    (phase, activity, needs-you, context). The menu offers only decision 6's actions.
+    Rail keyboard navigation goes through them like any other card.
+  - **Opening one** opens a remote console tab, titled with the machine. Like a
+    local console it switches between transcript and terminal, and it opens in the
+    view the local consoles use:
+    - **Transcript:** `TranscriptView` with a relayed source (`api/transcript`
+      through `/m/<machine>/`, as the phone reads it) in place of the local file. Its
+      composer sends `prompt`, and its choice card sends `choose`.
+    - **Terminal:** an xterm on the relayed `api/term`, as the phone's console mirror
+      (`src/pwa/mirror.ts`): scrollback replayed on connect, raw keys up. It keeps the
+      owner's PTY size (the `size` control frame) and never resizes the other
+      machine's terminal, so the window over there isn't disturbed. It's scaled down
+      when the panel is smaller. `notrunning` shows the card's start button.
+  - **New session on the other machine** (decision 9):
+    - A button on a project's row, next to its `+`, shown when the other machine
+      has the project (the merged entry) and is online. Its tooltip names the machine.
+      For a remote-only project the row's `+` is already that machine's.
+    - `Ctrl+Alt+Shift+N` (`newInstanceRemote` in `keymap.ts`, next to
+      `Ctrl+Shift+N`'s `newInstance`) does the same for the active project.
+    - Both send `create` with the other machine's id for the matched project. The
+      new card shows up under that machine's divider, from the next snapshot.
+    - With more than one other machine that has the project, a small picker lists
+      them, each with online or offline. Offline ones can't be picked.
+    - The project isn't on the other machine, or that machine is offline: a toast
+      says so, and nothing is sent.
+- **Key files:** `src/panels/InstanceManager/InstanceManager.tsx`, `InstanceCard.tsx`,
+  `src/panels/TranscriptView.tsx`, `src/panels/ConsolePanel.tsx`, a new
+  `src/panels/RemoteConsole.tsx`, `src/transcript/` (a relayed source next to
+  `desktopSource.ts`), `src/panels/Workspace.tsx`, `src/keyboard/keymap.ts`.
+- **Done when:** on the desktop, the workbench project shows the desktop's sessions,
+  then `── laptop ──` and the laptop's. A project only on the laptop is under the
+  band, and one with no sessions is in the folded group, from where a session starts.
+  A laptop session opens. In the transcript, a prompt typed runs on the laptop and its
+  permission question is answered from the desktop. In the terminal, a choice made
+  with the arrow keys and Enter reaches the laptop's TUI, and the laptop's own window
+  keeps its size. `Ctrl+Alt+Shift+N` and the row's button start a laptop session in
+  the active project. With the laptop shut down, its lines read `offline`, its cards
+  are gone, and the shortcut says it's offline. Live test owed: all of it on the two
+  machines.
+
+### Step F9.3 — The office: everyone's sessions on one floor
+- **Depends on:** F9.1.
+- **Build:**
+  - **The data.** The office server sends this machine's snapshot and the peers'
+    (`fleet::view`'s), keyed by machine. A worker's id is its machine and its
+    instance, so two machines' workers never collide.
+  - **One office.** The page merges them with `fleetRail.ts`'s matching, so a
+    project on both machines is one room and one team (decision 3). It has 14 desks:
+    sessions past those are contractors, as today.
+  - **The mark** (decision 8). The worker sidebar has a tag with the machine's name.
+    A small marker over the worker's head shows only for the other machine's
+    sessions, so this machine's office looks as it does now.
+  - **Actions.** The sidebar's prompt, approvals and choices for another machine's
+    worker go to that machine through `fleet_view_action`. Chatter and the standup
+    take everyone in, since everyone is on one floor. The standup's "what got done"
+    reads each project's commits on the machine that has them.
+  - **A machine that goes:** its workers finish where they are and go home (walk
+    out the door), like a session ending. They come back when it does.
+- **Key files:** `src/office/net.ts`, `liveOffice.ts`, `roster.ts`,
+  `world/sessions.ts`, `world/assign.ts`, `sidebar.ts`, `src-tauri/src/remote/office/`
+  (the server's socket), `src/state/officeStandup.ts`.
+- **Done when:** the desktop's office has the laptop's sessions as workers, in their
+  project's room, moving as they work, with the laptop marker. A laptop worker's
+  permission is approved from the desktop's office. With the laptop shut down, its
+  workers leave, and they come back when it returns. Live test owed: on the two
+  machines, in headless Chrome as well.
+
 ## Phase F7 — Workbench on Linux (gate: the server exists)
 
 _(Deferred, 2026-11-19: F1–F6 are built and merged into main; F7 and F8 wait
@@ -781,8 +927,7 @@ for later, with the server.)_
 ## Later
 
 - **One sessions list for the whole fleet** on the phone, grouped by machine, as well as
-  the picker.
-- **The office showing several machines** (one floor per machine).
+  the picker. F9.1's fleet view and `fleetRail.ts` are most of it.
 - **Moving a session's work between machines** (push the branch from one, pick it up on
   the other).
 

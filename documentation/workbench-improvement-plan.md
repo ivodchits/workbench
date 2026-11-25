@@ -31,6 +31,8 @@ ACP, which this plan deliberately does not adopt (see Guardrails).
 | **P — Plans** | An on-demand "open plan" button (never automatic) |
 | **A — Agent review** | "Review with a fresh agent" |
 | **M — Mods** | Run summary on done, as a Claude Code mod |
+| **J — Daily log** | A window with what got done each day, per project and across all of them and every machine, in plain producer-facing words, built on the main from transcripts and git and synced in Duck's repo; the office standup reads it (added 2026-11-24) |
+| **S — Showing media** | A `show_media` tool for sessions; pictures, video and sound shown in the transcript and a viewer instead of other apps; from other machines too (added 2026-11-24) |
 
 **Out of scope (decided 2026-10-12):** before-request snapshots (git covers it),
 a permission-mode switch, auto-opening plans, web preview device toolbar, editor blame,
@@ -2393,6 +2395,310 @@ button for another project. Asked for on 2026-10-19.
       the spinner, then ✓.
     - **Plugins: edit** from the palette opened `plugins.json` in the project's editor.
 
+### Track S — Showing media in sessions
+
+Agents often show their work as pictures, videos or sound. Today they save a file and
+open it in another app (a media player, the photo viewer), so the windows pile up. This
+track lets an agent show a file **in the session itself**: a short strip of thumbnails
+in the transcript, opened in a viewer inside the console only when clicked. Asked for
+on 2026-11-24, to be built **after the fleet plan's F9** (S3 needs F9.2).
+
+**Decided (2026-11-24):**
+- **An explicit tool, not guessing.** Workbench gives its sessions a `show_media` tool.
+  Watching for written files would catch scratch files, miss the ones that matter, and
+  can't know what the agent meant to show.
+- **Only Workbench's sessions get it.** The tool is an HTTP MCP server on the hook
+  server's port, passed to `claude` with `--mcp-config` when Workbench starts a console
+  (`session_args`, next to `--session-id`). The URL names the instance, so a call knows
+  its session without matching hook events. Nothing goes into `~/.claude.json`, and a
+  `claude` started by hand doesn't see the tool. A project on an SSH host doesn't get it,
+  since its files are on that host.
+- **In Workbench, not a Claude Code plugin.** Workbench already installs its own hooks.
+  A plugin would only help if the tool were wanted outside Workbench.
+- **Only registered files are served.** A file is served only when an agent showed it,
+  by its id. No route reads an arbitrary path.
+- **Other machines (S3):** small files are fetched and shown, and big ones offer
+  **Open on <machine>**, which opens them in the default app over there.
+
+#### Step S1 — Pictures that tools return, in the transcript
+
+- **Goal:** Screenshots and pictures returned by tools (a browser MCP's screenshot,
+  `Read` on an image) show in the transcript. Today only pasted pictures do:
+  `toolResult` (`transcript/model.ts`) keeps a result's text and drops its image blocks.
+- **Depends on:** nothing.
+- **Build:**
+  - The model keeps a tool result's image blocks (type checked against the same list
+    as pasted pictures).
+  - The renderer draws them as the media strip described in S2 (thumbnails, a click
+    opens the viewer), so S2 reuses both.
+  - The phone's transcript (R4) shows them the same way.
+- **Done when:** a session that takes a browser screenshot and one that `Read`s a PNG
+  both show the picture under the tool call, and a click opens it full size inside the
+  console panel. The fixture tests cover a result with text and two images.
+
+#### Step S2 — The `show_media` tool, the strip and the viewer
+
+- **Goal:** An agent shows a picture, video or sound file in its session instead of
+  opening another app.
+- **Depends on:** S1.
+- **Build:**
+  - **The tool.** `show_media({ paths: string[], caption?: string })` on
+    `http://127.0.0.1:<hook port>/mcp/<instance>` (`src-tauri/src/media/`, new).
+    - It checks each file and registers it in `workbench.db` (`session_media`: id,
+      instance, path, size, type, modified time, when shown).
+    - The result names what was shown and ends with a line the renderer reads,
+      `media: <id> <id> …`, so the transcript (here and on other machines) knows
+      which files the call showed.
+    - A missing file is an error the agent sees. A type that can't be played here is
+      registered anyway and shown as a file card.
+    - The tool's description, and one line added through `--append-system-prompt`,
+      tell the agent to use it instead of opening files in other apps.
+  - **Serving.** A `wbmedia://<id>` URI scheme in the webview that serves registered
+    files only, with `Range`, so a video plays without being read whole. A file that
+    changed since it was shown is served as it is now. A deleted one shows "file gone".
+  - **What plays here.** Pictures (png, jpg, gif, webp, avif, bmp, svg as an
+    `<img>`), video (mp4, webm, and mov when it's H.264), and sound (mp3, wav, ogg,
+    m4a, flac). Anything else gets a file card with **Open externally** and **Show in
+    folder**.
+  - **In the transcript.** The `show_media` call draws as a strip of thumbnails about
+    120 px high, scrolling sideways, with the caption. A video shows its first frame
+    and a play mark, and a sound file a small player.
+  - **The viewer.** A click opens the viewer over the console panel only, not the
+    whole window:
+    - pictures fit to the panel, with 1:1, zoom and pan;
+    - video and sound have their controls;
+    - the arrow keys move through the session's media, and Esc closes it.
+  - **Pop out** moves an item into a dockable media panel, like the preview panel
+    (`PreviewPanel.tsx`), restored with the layout.
+  - **In terminal view.** The console tab gets a media badge with how many files were
+    shown since you last looked. A click opens the session's media tray (all of it,
+    newest first) with the same viewer.
+  - **Opening apps anyway** _(setting, on by default)_: a `PreToolUse` hook answer
+    refuses a shell command that only opens a media file (`start`, `Invoke-Item`,
+    `ii`, `explorer`, `open` with a media extension), with the reason "use
+    show_media". If the hook server doesn't answer with decisions yet, this adds it.
+- **Key files:** `src-tauri/src/media/` (new), `src-tauri/src/hooks/server.rs`,
+  `src-tauri/src/pty/mod.rs` (`session_args`), `src-tauri/src/db/` (the table),
+  `src/transcript/model.ts`, `src/transcript/render.ts`, a new
+  `src/panels/MediaViewer.tsx` and `MediaPanel.tsx`, `src/panels/ConsolePanel.tsx`.
+- **Done when:**
+  - A session asked to render a chart calls `show_media`. The chart shows under the
+    call and opens in the viewer, and no other app's window opens.
+  - A 200 MB mp4 shown the same way plays and seeks at once.
+  - An agent that tries `start out.png` is refused and uses the tool.
+  - The badge counts in terminal view, and its tray opens the same files.
+  - A request for an unregistered id or a path gets nothing.
+  - A `claude` started by hand has no `show_media`.
+
+#### Step S3 — Media from another machine
+
+- **Goal:** A session on the other machine (fleet plan F9.2) shows its media here
+  too. Small files are fetched, and big ones are opened over there.
+- **Depends on:** S2, fleet plan F9.2.
+- **Build:**
+  - **The route.** `GET /api/media/<id>` on the remote server (bearer auth, `Range`),
+    serving that machine's registered files only. It's added to the relay's
+    `MACHINE_ROUTES` (`remote/relay.rs`) and to the phone's list (`pwa/machine.ts`).
+  - **What's fetched.** Pictures up to 20 MB and video or sound up to 50 MB, streamed
+    with `Range` and kept in a cache on this machine (500 MB, least recently used
+    goes first). The relayed transcript already carries the `media:` line, and a
+    metadata call (`/api/media/<id>/info`) gives the size and type before anything is
+    fetched.
+  - **Bigger than that:** a card that says "1.2 GB video on laptop", with **Open on
+    laptop** (an `openMedia` remote action: that machine opens it in its default
+    app) and **Fetch anyway**.
+  - **The phone** gets the same strip and rules through the same route.
+- **Key files:** `src-tauri/src/remote/server.rs`, `src-tauri/src/remote/relay.rs`,
+  `src/remote/protocol.ts`, the relayed transcript source from F9.2, `src/pwa/`.
+- **Done when:** from the desktop, a laptop session's screenshot shows in its strip
+  and opens in the viewer. A 30 MB clip plays. A 1 GB render shows the card, and
+  **Open on laptop** opens it in the laptop's player. The phone shows the same
+  screenshot. Live test owed: on the two machines.
+
+### Track J — The daily log
+
+What got done each day, in plain words, in a window of its own: per project, and
+across every project with entries that day, from **every machine in the fleet**. It's
+written to be read out at a standup for producers: what was done, not how. No code,
+files, branches or commit ids. Work that was undone later in the day is one entry
+that says so ("Added X; reverted later that day"), not two. Asked for on 2026-11-24.
+
+**Decided (2026-11-24):**
+- **Built last:** after the fleet plan's F9 and Track S, one at a time, nothing in
+  parallel. It covers every machine from the start, so it needs F9.1.
+- **Two passes.** A short capture pass runs while you work and turns what's new into
+  rough notes. A tidy pass rewrites the day as a whole, because only the whole day
+  shows that something was later reverted or redone.
+- **Only the main runs it**, for every machine. The main reads the other machines'
+  new transcript text and commits over the fleet link, the way Duck already reaches
+  their sessions and `git` (F3.1). It spends Duck's budget, which lives on the main.
+  When the main moves (F6.1), the new main carries on from the same state.
+- **Kept in Duck's repo, so it syncs.** `daylog/` in Duck's data repo: the main is
+  the only one that commits, every machine gets it as bundles (F5.2), and it's
+  backed up to its `origin` with the rest. Not the notes repo: any machine writes
+  there, and the log would clutter the notes list.
+- **Notes are a union; entries are made from them.** Capture notes are only ever
+  added, each keyed by its machine, session and transcript offset (or commit), so
+  the same work is never noted twice. Entries are rewritten from the notes by the
+  tidy. So after a split (F6.2: two machines each ran as main for a while), merging
+  is a union of both sides' notes, and the days they touched are tidied again.
+- **Any work counts**: finished, reverted, or left mid-run when the day ended
+  (`in progress`).
+- **A day runs from 04:00 to 04:00**, so work past midnight counts for the day it
+  belongs to.
+- **The all-projects view is grouped by project**, the busiest first, each with its
+  entries in time order.
+- **Entries can be edited or hidden by hand**, from any machine. An edited entry is
+  kept as written, and later tidies leave it alone.
+- **Refresh** runs a capture and a tidy now.
+- **Quitting waits for the log**: with work since the last run, quitting first runs
+  one, with a window that shows its progress.
+
+#### Step J1 — The log: capture and tidy, on the main, for every machine
+
+- **Goal:** Each project gets an ordered list of plain entries for each day, from
+  every machine, kept up to date while you work and synced to all of them.
+- **Depends on:** fleet plan F9.1, F5.2.
+- **Build:**
+  - **Sources, per machine, per project, per day:**
+    - its sessions' transcripts, only the part past the last capture's offset (as
+      the standup reads them: `list_project_sessions`, `readSessionBack`), read over
+      the fleet port for another machine;
+    - its commits on any branch, with their messages, from that machine (unpushed
+      work counts). `Revert "…"` commits and branch resets (from the reflog) are
+      marked as undoing earlier work.
+
+    A machine that's off is read when it's back. Its work lands on the day it was
+    done, and that day is tidied again.
+  - **Capture** (every 30 minutes while some machine has new activity, and when a
+    session ends): Haiku turns what's new into rough notes `{time, text, kind:
+    done | started | undone | fixed, machine, source}`. Nothing new, no call.
+  - **Tidy** (after a capture that added notes, at most once an hour, and a final one
+    once the day is over, at the first idle moment): a stronger model gets the day's
+    notes and current entries and writes the day again:
+    - one entry per piece of work, in time order;
+    - repeats merged, across machines too;
+    - work later undone folded into its entry, with its status `reverted`;
+    - work started and not finished kept as `in progress`;
+    - small talk and dead ends dropped.
+
+    A past day stops changing after its final tidy. It changes again only when late
+    notes arrive (a machine that was off) or it's refreshed by hand.
+  - **The files**, in Duck's repo:
+    - `daylog/notes/<day>.jsonl` (only ever added to);
+    - `daylog/days/<day>.json` (the entries: `{id, project, title, detail?, status,
+      from, to, machines, edited}`, projects named by F9.1's matching);
+    - `daylog/state.json` (the offsets per machine and session, and when each day
+      was last tidied).
+
+    Each run is one commit on the git queue, like the memory commits.
+  - **The words.** The tidy prompt asks for plain, short, producer-facing lines, and a
+    check removes anything that looks like a path, a code name in backticks, or a
+    commit id.
+  - **Cost.** It runs on Duck's budget, under its own purpose (`daylog`), and stops
+    when the cap is reached. A day with nothing new costs nothing.
+  - **Backfill.** On first run it offers to build the past 30 days from the
+    transcripts and git history still on every machine, oldest first, in the
+    background.
+- **Key files:** `src/assistant/daylog.ts` (new; the passes, on the main's core),
+  `src/assistant/port.remote.ts` (reading another machine's transcript and git log
+  from an offset), `src-tauri/src/daylog/` (new; the files, the git and reflog reads),
+  `src/assistant/index.ts` (started with the core, so it moves with the main).
+- **Done when:** fixture tests:
+  - A day where a feature was added in the morning and reverted in the afternoon
+    tidies to one `reverted` entry.
+  - A fix done on the laptop and finished on the desktop becomes one entry, marked
+    with both machines.
+  - A session cut off mid-run is an `in progress` entry.
+  - No entry contains a path, backticks or a hash.
+  - A capture with nothing new makes no call, and a note is never taken twice from
+    the same offset.
+  - An edited entry survives a tidy.
+  - Two sides' notes after a split merge to the same day a single main would have
+    written.
+
+  Live (owed until it's used for a day): a day of real work on both machines reads
+  as one sensible list by evening, on both machines.
+
+#### Step J2 — The daily log window
+
+- **Goal:** Read any day's log, per project or for all of them, on any machine.
+- **Depends on:** J1.
+- **Build:**
+  - **A window of its own** (`index.html?window=daylog`, like the voice overlay's),
+    opened from a title bar button, the command palette and a shortcut. One window:
+    opening it again focuses it. It reads this machine's copy of Duck's repo, so it
+    works with the main away (as of the last sync, which it says).
+  - **The day bar:** `‹  Tuesday, 24 November  ›` and a calendar button. `›` is
+    greyed on today. The calendar is a month grid: days with entries are marked,
+    days in the future can't be picked, and **Today** jumps back.
+  - **The list.**
+    - **All projects** (the default): every project with entries that day, grouped,
+      the busiest first.
+    - **One project:** picked from a side list of the day's projects, each with its
+      count.
+    - Each entry is its title, a short detail line when there is one, the time, a
+      small machine mark, and a `reverted` or `in progress` mark. Reverted entries
+      are dimmed.
+  - **Today is live:** it updates as each tidy reaches this machine, with
+    "updated 14:20".
+  - **Refresh** asks the main to run a capture and a tidy now, and shows its progress
+    in the window. With the main unreachable, it's off and says why.
+  - **Edit and hide** from an entry's menu. On a machine that isn't the main, the
+    change goes to the main over the fleet link, and the main commits it.
+  - **Copy** puts the day (or the project) on the clipboard as plain text, ready to
+    paste into a chat.
+- **Key files:** `src/daylog/` (new: the window's page, `DayBar`, `Calendar`, the
+  list), `src-tauri/src/window.rs`, `src/keyboard/keymap.ts`, `src/App.tsx` (the
+  button), `src/assistant/fleetHosts.ts` (refresh and edits to the main).
+- **Done when:** the window opens on today with all projects, `‹` and `›` move by day
+  (`›` greyed on today), the calendar jumps to a marked day, a project's view shows
+  only its entries, Refresh from the laptop runs on the desktop (the main) and the
+  laptop's window updates, an edit made on the laptop sticks after the next tidy, and
+  Copy pastes clean text.
+
+#### Step J3 — Quitting waits for the log
+
+- **Goal:** Closing Workbench never leaves the day's log behind.
+- **Depends on:** J2.
+- **Build:**
+  - **When.** On quit (the tray's Exit, `shutdown.rs`, before anything is stopped),
+    if this machine's sessions have work past the last capture's offsets, or this
+    machine is the main and any machine has.
+  - **The run.**
+    - On the main: a capture and a tidy of today, and the commit.
+    - On another machine: it asks the main to capture this machine's work and tidy,
+      and waits for that commit to arrive (so its own copy is current too).
+  - **The window**: "Updating the daily log", with the steps as they go (reading the
+    laptop's sessions, writing up, tidying the day, saving) and **Quit anyway**.
+    When it's done, the quit carries on by itself.
+  - **The main unreachable** (a machine closing on its own): the window says so, and
+    offers **Quit anyway**. Nothing is lost: the offsets are where they were, and the
+    main reads the work the next time this machine is on.
+  - **Limits.** It gives up after 3 minutes, says so, and quits. A Windows shutdown
+    doesn't wait. Both are caught up on the next run, the same way.
+- **Key files:** `src-tauri/src/shutdown.rs`, `src/daylog/` (the progress window),
+  `src/assistant/daylog.ts`.
+- **Done when:** quitting after work shows the window, runs, and quits by itself. It
+  does this on the main and on the laptop (which waits for the main's commit).
+  Quitting with nothing new quits at once. **Quit anyway** quits at once. With the
+  main gone, the laptop's quit says so, and the work shows up in the log after the
+  next run.
+
+#### Step J4 — The office standup reads the log
+
+- **Goal:** The standup reports what the log says, so the two always agree, the
+  standup covers every machine, and it costs less.
+- **Depends on:** J1.
+- **Build:** `officeStandup.ts` takes the day's entries for each project from Duck's
+  repo instead of reading transcripts. One short Haiku call turns them into the
+  team's spoken lines (the format it has now, `done` and `next`). A day with no log
+  (from before J1, not backfilled) falls back to the transcript reading.
+- **Key files:** `src/state/officeStandup.ts`, `src/remote/standup.ts`.
+- **Done when:** the standup's lines match the log's entries for the day, including
+  the laptop's work, a reverted entry is said as reverted, and a day from before the
+  log still gets a standup.
+
 ---
 
 ## Sequencing
@@ -2412,7 +2718,13 @@ T2 ─ R1 ─ R4 ─────────────── R5
 T2 ─ P1
 M1
 N1 ─ K1 (parallel with the assistant plan, in its own worktree)
+S1 ─ S2 ─ S3 (S3 also needs the fleet plan's F9.2)
+J1 ─ J2 ─ J3 (J1 needs the fleet plan's F9.1 and F5.2)
+J1 ─ J4
 ```
+
+**Track S** comes after the fleet plan's F9 (decided 2026-11-24): S1, S2, then S3.
+**Track J** comes after Track S, last of all, one step at a time: J1, J2, J3, J4.
 
 Suggested order: **C1 → T0 → T1 → T2 → T3 → T4 → T5 → C2 → C3 → D1 → R1 → R7 → R2 → R3 → R4 →
 R5 → V1 → V2 → V3 → N1 → R8 → P1 → R6 → A1**, with M1, N2 and D2 whenever convenient. N3
@@ -2437,6 +2749,7 @@ any session, which lowers the urgency and makes the terminal bugs easier to comp
 | 6 | `@codemirror/merge` vs extending `UnifiedDiff` — **`@codemirror/merge`**; the edit mode folds into the diff | V1 |
 | 7 | Notes storage location (the phone, R8, reads the same store) | N1 |
 | 8 | How the PWA bundle is embedded on a fresh clone — **built, not committed**; `build.rs` says what to run | R1 |
+| 9 | Size limits for media from another machine — **proposed:** 20 MB pictures, 50 MB video and sound, a 500 MB cache | S3 |
 
 ---
 
@@ -2473,3 +2786,10 @@ any session, which lowers the urgency and makes the terminal bugs easier to comp
 | A1 | Review with a fresh agent | ☑ |
 | M1 | Run summary on done (mod) | ☐ |
 | K1 | Project toolbar: plugin file, toolbar, task runs | ☑ |
+| S1 | Pictures that tools return, in the transcript | ☐ |
+| S2 | `show_media` tool, strip and viewer | ☐ |
+| S3 | Media from another machine | ☐ |
+| J1 | Daily log: capture and tidy, on the main | ☐ |
+| J2 | Daily log window | ☐ |
+| J3 | Quitting waits for the log | ☐ |
+| J4 | Standup reads the log | ☐ |
