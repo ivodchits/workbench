@@ -520,6 +520,8 @@ export interface DayLog {
   tidy(opts?: { days?: string[]; force?: boolean; onStep?: (s: Step) => void }): Promise<string[]>;
   /** A capture and a tidy now. */
   refresh(onStep?: (s: Step) => void): Promise<RunReport>;
+  /** A capture and a tidy of today only (quitting, J3). */
+  quitRun(onStep?: (s: Step) => void): Promise<RunReport>;
   /** The timer's look: a capture when due, then the tidies due. */
   tick(): Promise<void>;
   /** A session ended: a capture soon. */
@@ -759,6 +761,12 @@ export function createDayLog(deps: DayLogDeps): DayLog {
         const r = await runCapture(onStep);
         if (!r.capped) r.tidied = await runTidy({ onStep });
         onStep?.({ step: "done" });
+        return r;
+      }),
+    quitRun: (onStep) =>
+      serial(async () => {
+        const r = await runCapture(onStep);
+        if (!r.capped) r.tidied = await runTidy({ days: [dayOf(now())], onStep });
         return r;
       }),
     async tick() {

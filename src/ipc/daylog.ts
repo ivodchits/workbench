@@ -90,6 +90,22 @@ export const openDayLogWindow = (): Promise<void> => invoke("window_open_daylog"
 /** A save on this machine (the main) changed the log. */
 export const onDaylogChanged = (cb: () => void): Promise<UnlistenFn> => listen("daylog-changed", () => cb());
 
+// ── quitting (J3) ──
+
+/** The backend asks before a quit; answer with `daylogQuitAck`, then `daylogQuitFinished`. */
+export const onDaylogQuit = (cb: () => void): Promise<UnlistenFn> => listen("daylog-quit", () => cb());
+export const daylogQuitAck = (): Promise<void> => invoke("daylog_quit_ack");
+export const daylogQuitFinished = (): Promise<void> => invoke("daylog_quit_finished");
+export const daylogQuitCancel = (): Promise<void> => invoke("daylog_quit_cancel");
+/** Bring the main window up: the quit's run shows there. */
+export const daylogQuitShow = (): Promise<void> => invoke("daylog_quit_show");
+/** Wait for the log's commits (at most 20 s); false when they didn't all finish. */
+export const daylogFlush = (workspace: string | null): Promise<boolean> => invoke("daylog_flush", { workspace });
+/** When `machine` was last read, by this machine's copy (epoch ms). */
+export const daylogReadAt = (machine: string): Promise<number | null> => invoke("daylog_read_at", { machine });
+/** Sync the mirror of the main's repo now; its head (null: the main is here). */
+export const daylogSyncMirror = (): Promise<string | null> => invoke("daylog_sync_mirror");
+
 /** A session's transcript read forward from `fromOffset`, by its id. */
 export const readSessionForward = (sessionId: string, fromOffset: number, maxBytes?: number): Promise<TranscriptPage> =>
   invoke("transcript_read_session", { sessionId, fromOffset, maxBytes });

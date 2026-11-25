@@ -2950,6 +2950,45 @@ that says so ("Added X; reverted later that day"), not two. Asked for on 2026-11
   Quitting with nothing new quits at once. **Quit anyway** quits at once. With the
   main gone, the laptop's quit says so, and the work shows up in the log after the
   next run.
+- _(Built, 2026-11-24:
+  - **The gate:** `shutdown::request_exit` now asks the main window first, with the
+    `daylog-quit` event, and the quit (and the handover after it) carries on at
+    `daylog_quit_finished`.
+    - The window must say it's on it within 8 seconds (`daylog_quit_ack`), or the
+      quit goes on. Either way it goes on after 185 seconds.
+    - "Keep Workbench open" (`daylog_quit_cancel`), or calling off a handover, makes
+      the next quit ask again.
+  - **The run:** `assistant/daylogQuit.ts` (new), started from the shell in
+    `assistant/index.ts`.
+    - **On the main:** `DayLog.quitRun` captures every machine and tidies today.
+      Then `daylog_flush` waits for the commit on the git queue (new
+      `gitqueue::flush`), so the quit can't cut it off.
+    - **On another machine:** it works only when this machine's sessions were
+      written to after the main last read it. That time comes from the copy's state
+      (`daylog_read_at`).
+    - It then sends `daylog.run` through the drawer (as J2), waits for
+      `daylog.done`, and syncs the mirror (`daylog_sync_mirror`, new
+      `Fleet::sync_repo_now`) until its head moves.
+  - **The window:** `panels/DayLogQuitOverlay.tsx` (new), "updating the daily log",
+    with the steps as they go, **quit anyway** and **keep Workbench open**.
+    - It shows only once a run has taken 0.6 seconds, so a quit with nothing new just
+      goes.
+    - When it shows, the main window comes up (`daylog_quit_show`), for a quit from
+      the tray.
+    - With the main unreachable it says so and waits for **quit anyway**.
+    - At 3 minutes it says it gave up, and quits.
+  - A Windows shutdown doesn't come through `request_exit`, so it doesn't wait.
+  **Checked:**
+  - Vitest (`daylogQuit.test.ts`):
+    - on the main, nothing new quits at once with no window, and work shows the run
+      and quits after it;
+    - on the laptop, nothing new doesn't ask the main;
+    - with work, it waits for the mirror's head to move;
+    - with the main unreachable it waits;
+    - the limit gives up and quits;
+    - keeping Workbench open stops a later quit.
+  - Rust: a flush waits for the jobs queued before it.
+  **Live test owed:** the Done when, on the main and on the laptop.)_
 
 #### Step J4 — The office standup reads the log
 
@@ -3057,5 +3096,5 @@ any session, which lowers the urgency and makes the terminal bugs easier to comp
 | S3 | Media from another machine | ☑ |
 | J1 | Daily log: capture and tidy, on the main | ☑ |
 | J2 | Daily log window | ☑ |
-| J3 | Quitting waits for the log | ☐ |
+| J3 | Quitting waits for the log | ☑ |
 | J4 | Standup reads the log | ☐ |

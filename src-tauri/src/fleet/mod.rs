@@ -1855,6 +1855,16 @@ impl Fleet {
         }
     }
 
+    /// Bring the mirror of the main's repo up to date now, whatever the schedule
+    /// says, and say its head (the daily log's quit, J3). None when Duck's main is
+    /// this machine.
+    pub async fn sync_repo_now(self: &Arc<Self>) -> Result<Option<String>, String> {
+        let Some(main) = self.duck_source() else { return Ok(None) };
+        let d = self.duck()?;
+        self.sync_repo(&main, &d).await?;
+        Ok(files::head(&d.mirror))
+    }
+
     /// Bring the mirror of the main's repo up to date.
     async fn sync_repo(self: &Arc<Self>, main: &str, d: &DuckRepl) -> Result<(), String> {
         let have = files::head(&d.mirror);
@@ -2633,6 +2643,7 @@ pub fn fleet_leave_retry(fleet: State<'_, Arc<Fleet>>) {
 /// The handover on quitting: stay open instead.
 #[tauri::command]
 pub fn fleet_leave_cancel(fleet: State<'_, Arc<Fleet>>) {
+    crate::shutdown::reset_daylog();
     fleet.cancel_leave();
 }
 

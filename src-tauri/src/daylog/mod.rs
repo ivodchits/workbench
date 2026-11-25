@@ -439,6 +439,31 @@ pub fn daylog_days(app: AppHandle) -> Result<Copy, String> {
     })
 }
 
+/// Wait for the log's commits to be made (quitting, J3): at most 20 seconds.
+#[tauri::command(async)]
+pub fn daylog_flush(workspace: Option<String>) -> Result<bool, String> {
+    let ws = crate::assistant::workspace::resolve(workspace.as_deref())?;
+    Ok(crate::gitqueue::flush(&ws, std::time::Duration::from_secs(20)))
+}
+
+/// When machine `machine` was last read, as this machine's copy of the log says
+/// (epoch ms; null: never). Quitting asks it (J3): work after it isn't logged yet.
+#[tauri::command(async)]
+pub fn daylog_read_at(app: AppHandle, machine: String) -> Result<Option<i64>, String> {
+    let (ws, _) = copy(&app)?;
+    let state: Option<Value> = std::fs::read_to_string(ws.join(STATE)).ok().and_then(|t| serde_json::from_str(&t).ok());
+    Ok(state.and_then(|s| s["machines"][&machine]["readAt"].as_i64()))
+}
+
+/// Bring the mirror of the main's repo up to date now, and say its head (J3: a quit
+/// on a machine that isn't the main waits for the log's commit to arrive). None when
+/// the main is this machine.
+#[tauri::command]
+pub async fn daylog_sync_mirror(app: AppHandle) -> Result<Option<String>, String> {
+    let Some(fleet) = crate::fleet::get(&app) else { return Ok(None) };
+    fleet.sync_repo_now().await
+}
+
 /// One day's entries in the copy this machine reads (J2).
 #[tauri::command(async)]
 pub fn daylog_day(app: AppHandle, day: String) -> Result<Option<Value>, String> {

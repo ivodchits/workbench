@@ -58,6 +58,7 @@ import { draftImageNames } from "./state/composer";
 import { prunePastedImages } from "./ipc/os";
 import RemoteApprovalHost from "./panels/RemoteApproval";
 import HandoverOverlay from "./panels/HandoverOverlay";
+import DayLogQuitOverlay from "./panels/DayLogQuitOverlay";
 import { getProfileUsageLimits, type ProfileLimits, type RateWindow } from "./ipc/usageLimits";
 import { formatCountdown, formatAgo } from "./util/format";
 import { GLYPH } from "./theme";
@@ -281,6 +282,7 @@ function App() {
       <RemoteApprovalHost />
       {/* Closing while this machine holds Duck: the handover, and how it goes. */}
       <HandoverOverlay />
+      <DayLogQuitOverlay />
     </div>
   );
 }

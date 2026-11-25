@@ -57,6 +57,8 @@ import {
   CAPTURE_SYSTEM,
   CaptureOut,
   createDayLog,
+  dayBounds,
+  dayOf,
   PURPOSE as DAYLOG_PURPOSE,
   TIDY_SYSTEM,
   TidyOut,
@@ -68,7 +70,19 @@ import {
 import type { Activity } from "./daylogSource";
 import { startDayLogBridge, type DayLogRequest } from "./daylogBridge";
 import { emit, listen } from "@tauri-apps/api/event";
-import { daylogLoad, daylogSave } from "../ipc/daylog";
+import {
+  daylogFlush,
+  daylogLoad,
+  daylogQuitAck,
+  daylogQuitFinished,
+  daylogQuitShow,
+  daylogReadAt,
+  daylogSave,
+  daylogSyncMirror,
+  onDaylogQuit,
+} from "../ipc/daylog";
+import { quitRun, setQuitStatus } from "./daylogQuit";
+import { listProjectSessions } from "../ipc/sessions";
 import { MAIN_MODEL, PRIMITIVE_MODEL } from "./prompt";
 import { createEngine, eventText, type Engine } from "./engine";
 import { createBrainHost } from "./brain/subscription";
@@ -1012,20 +1026,60 @@ async function startShell(): Promise<Shell> {
   hub.setEndpoint(endpointSwap);
   fleetLink.setDrawer(drawer);
   // The daily log's window (J2) reaches Duck's main through the drawer's transport.
+  const dayLogWhere = (why: string) =>
+    duckHere
+      ? { available: true, main: null, why: null }
+      : drawer.where()
+        ? { available: true, main: drawer.where(), why: null }
+        : { available: false, main: null, why };
   startDayLogBridge({
     transport: drawer,
-    where: () =>
-      duckHere
-        ? { available: true, main: null, why: null }
-        : drawer.where()
-          ? { available: true, main: drawer.where(), why: null }
-          : { available: false, main: null, why: "Duck's main machine isn't connected now." },
+    where: () => dayLogWhere("Duck's main machine isn't connected now."),
     listen: (cb) => {
       const off = listen<DayLogRequest>("daylog-request", ({ payload }) => cb(payload));
       return () => void off.then((f) => f());
     },
     emit: (ev) => void emit("daylog-event", ev).catch(() => {}),
   });
+  // Quitting waits for the daily log (J3): the backend asks here first.
+  void onDaylogQuit(() => {
+    void quitRun({
+      here: () => (duckHere ? dayLog : null),
+      readAt: () => daylogReadAt(self?.id ?? "local"),
+      workSince: async (since) => {
+        // A minute's slack: the file's time and the main's clock needn't agree.
+        const after = since - 60_000;
+        for (const p of localPort.listProjects().filter((x) => !x.remote)) {
+          const ss = await listProjectSessions(p.rootPath).catch(() => []);
+          if (ss.some((s) => s.modifiedAt * 1000 > after)) return true;
+        }
+        return false;
+      },
+      reachable: () =>
+        dayLogWhere("Duck's main machine isn't connected now. This machine's work is logged the next time both are on."),
+      askMain: (onStep) =>
+        new Promise<DayLogReport>((resolve, reject) => {
+          const requestId = crypto.randomUUID();
+          const off = drawer.subscribe((ev) => {
+            if (ev.type === "daylog.step" && ev.requestId === requestId) onStep(ev.step);
+            if (ev.type !== "daylog.done" || ev.requestId !== requestId) return;
+            off();
+            if (ev.error) reject(new Error(ev.error));
+            else resolve(ev.report ?? { notes: 0, calls: 0, tidied: [], away: [], capped: false });
+          });
+          drawer.send({ type: "daylog.run", requestId, what: "refresh" });
+        }),
+      syncMirror: daylogSyncMirror,
+      flush: () => daylogFlush(settings?.get().workspace ?? null),
+      ack: () => void daylogQuitAck().catch(() => {}),
+      finish: () => void daylogQuitFinished().catch(() => {}),
+      show: (s) => {
+        if (s) void daylogQuitShow().catch(() => {});
+        setQuitStatus(s);
+      },
+      todayStart: () => dayBounds(dayOf(Date.now())).start,
+    });
+  }).catch(() => {});
   // The phones' reminders follow whichever core is running.
   const phoneReminderSubs = new Set<() => void>();
   const coreOrThrow = () => {

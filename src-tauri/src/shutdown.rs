@@ -11,18 +11,103 @@
 //! A bare `app.exit` only hid the windows: WebView2 found its host gone and logged
 //! `Failed to unregister class Chrome_WidgetWin_0. Error = 1412` to the terminal.
 
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::time::Duration;
-use tauri::{AppHandle, Manager};
+use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_global_shortcut::GlobalShortcutExt;
 
 /// How long the windows get to go before the app exits anyway.
 const WINDOWS_GRACE: Duration = Duration::from_secs(3);
 
-/// Quit as the user asked (the window's close, the tray's Exit). When this machine
-/// holds Duck and another could run it, Duck is handed over first: the webview shows
-/// how it goes (`fleet-leaving`), and the app quits once it's done. A second ask while
-/// that runs does nothing; the overlay has "Quit anyway".
+/// How long the daily log may hold a quit up (J3), and how long the main window has
+/// to say it's on it.
+const DAYLOG_LIMIT: Duration = Duration::from_secs(185);
+const DAYLOG_ACK: Duration = Duration::from_secs(8);
+
+/// The daily log's turn on quitting: not asked yet, running, said yes to (acked),
+/// done.
+static DAYLOG: AtomicU8 = AtomicU8::new(0);
+const LOG_IDLE: u8 = 0;
+const LOG_ASKED: u8 = 1;
+const LOG_ACKED: u8 = 2;
+const LOG_DONE: u8 = 3;
+
+/// Quit as the user asked (the window's close, the tray's Exit). The daily log goes
+/// first (J3): the main window brings it up to date, or says there's nothing to, and
+/// then the quit carries on ([`daylog_quit_finished`]). It gets [`DAYLOG_LIMIT`],
+/// and a window that doesn't answer gets [`DAYLOG_ACK`].
 pub fn request_exit(app: &AppHandle) {
+    match DAYLOG.load(Ordering::SeqCst) {
+        LOG_ASKED | LOG_ACKED => {
+            crate::fleet::show_main(app);
+            return;
+        }
+        LOG_DONE => return after_log(app),
+        _ => {}
+    }
+    if app.get_webview_window("main").is_none() || app.emit_to("main", "daylog-quit", ()).is_err() {
+        return after_log(app);
+    }
+    DAYLOG.store(LOG_ASKED, Ordering::SeqCst);
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(DAYLOG_ACK).await;
+        if DAYLOG.load(Ordering::SeqCst) == LOG_ASKED {
+            eprintln!("[exit] the main window didn't answer for the daily log; quitting");
+            return log_finished(&app);
+        }
+        tokio::time::sleep(DAYLOG_LIMIT - DAYLOG_ACK).await;
+        if DAYLOG.load(Ordering::SeqCst) == LOG_ACKED {
+            eprintln!("[exit] the daily log took too long; quitting");
+            log_finished(&app);
+        }
+    });
+}
+
+fn log_finished(app: &AppHandle) {
+    // Only a quit that's waiting goes on: after "keep Workbench open" this is nothing.
+    let swap = |from| DAYLOG.compare_exchange(from, LOG_DONE, Ordering::SeqCst, Ordering::SeqCst).is_ok();
+    if swap(LOG_ASKED) || swap(LOG_ACKED) {
+        after_log(app);
+    }
+}
+
+/// The main window is bringing the daily log up to date for a quit.
+#[tauri::command]
+pub fn daylog_quit_ack() {
+    let _ = DAYLOG.compare_exchange(LOG_ASKED, LOG_ACKED, Ordering::SeqCst, Ordering::SeqCst);
+}
+
+/// The quit's daily log run shows its window: bring the main window up (a quit from
+/// the tray finds it hidden).
+#[tauri::command]
+pub fn daylog_quit_show(app: AppHandle) {
+    crate::fleet::show_main(&app);
+}
+
+/// Keep Workbench open after all: the next quit asks the daily log again.
+#[tauri::command]
+pub fn daylog_quit_cancel() {
+    DAYLOG.store(LOG_IDLE, Ordering::SeqCst);
+}
+
+/// A handover on quitting was called off (`fleet_leave_cancel`): the next quit asks
+/// the daily log again.
+pub fn reset_daylog() {
+    DAYLOG.store(LOG_IDLE, Ordering::SeqCst);
+}
+
+/// The daily log is up to date (or "Quit anyway"): the quit carries on.
+#[tauri::command]
+pub fn daylog_quit_finished(app: AppHandle) {
+    log_finished(&app);
+}
+
+/// The quit, once the daily log has had its turn. When this machine holds Duck and
+/// another could run it, Duck is handed over first: the webview shows how it goes
+/// (`fleet-leaving`), and the app quits once it's done. A second ask while that runs
+/// does nothing; the overlay has "Quit anyway".
+fn after_log(app: &AppHandle) {
     let Some(fleet) = crate::fleet::get(app) else { return exit(app) };
     if fleet.is_leaving() {
         crate::fleet::show_main(app);

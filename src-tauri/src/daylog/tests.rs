@@ -126,3 +126,17 @@ fn an_old_main_s_branch_notes_are_found() {
     assert!(branch_notes(&ws, "2026-12-01").is_empty());
     let _ = std::fs::remove_dir_all(ws);
 }
+
+#[test]
+fn a_flush_waits_for_the_jobs_before_it() {
+    let ws = temp("flush");
+    let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let d = done.clone();
+    crate::gitqueue::submit(&ws, move |_| {
+        std::thread::sleep(std::time::Duration::from_millis(150));
+        d.store(true, std::sync::atomic::Ordering::SeqCst);
+    });
+    assert!(crate::gitqueue::flush(&ws, std::time::Duration::from_secs(5)));
+    assert!(done.load(std::sync::atomic::Ordering::SeqCst));
+    let _ = std::fs::remove_dir_all(ws);
+}

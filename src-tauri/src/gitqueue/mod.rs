@@ -40,6 +40,16 @@ pub fn submit(repo: &Path, job: impl FnOnce(&Path) + Send + 'static) {
     map.insert(repo.to_path_buf(), spawn_worker(repo.to_path_buf(), job));
 }
 
+/// Wait until every job queued for `repo` so far has run, at most `timeout`. True
+/// when they all have (quitting waits for the daily log's commit, J3).
+pub fn flush(repo: &Path, timeout: std::time::Duration) -> bool {
+    let (tx, rx) = channel::<()>();
+    submit(repo, move |_| {
+        let _ = tx.send(());
+    });
+    rx.recv_timeout(timeout).is_ok()
+}
+
 fn spawn_worker(repo: PathBuf, first: Job) -> Sender<Job> {
     let (tx, rx) = channel::<Job>();
     tx.send(first).expect("a fresh channel takes a job");
