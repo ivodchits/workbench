@@ -44,7 +44,7 @@ import { closeNotes, getOpenNotes, openNotes } from "../../state/notes";
 import { getLiveStatuses, useLiveStatuses, type LiveStatus } from "../../state/status";
 import { mergeStatus } from "./status";
 import { getActiveProject, setActiveProject, useActiveProject } from "../../state/activeProject";
-import { activatePanel, focusActivePanel } from "../../state/dock";
+import { activatePanel, focusActivePanel, getActivePanelId } from "../../state/dock";
 import { release } from "../terminalPool";
 import RemoteCommandTerminal from "./RemoteCommandTerminal";
 import {
@@ -78,15 +78,16 @@ import ProjectDialog from "./ProjectDialog";
 import InstanceCard from "./InstanceCard";
 import Modal from "./Modal";
 import WorktreePicker from "./WorktreePicker";
-import { pickKillTarget } from "./killTarget";
+import { pickKillTarget, pickRemoteKillTarget } from "./killTarget";
 import RemoteInstanceCard from "./RemoteInstanceCard";
-import { remoteStatus } from "../remoteSession";
+import { REMOTE_CONSOLE_PREFIX, remoteStatus } from "../remoteSession";
 import { FleetSection, MachineDivider, RemotePicker } from "./FleetRail";
 import RemoteSessionDialogs from "../RemoteSessionDialogs";
 import { getFleetRail, offlineWhy, useFleetRail } from "../../state/useFleetRail";
 import { newSessionElsewhere, targetsFor } from "../../state/fleetCreate";
-import { useFleet } from "../../state/fleet";
-import { useFleetViews } from "../../state/fleetView";
+import { getFleetStatus, useFleet } from "../../state/fleet";
+import { getFleetViews, useFleetViews } from "../../state/fleetView";
+import { askKillRemote } from "../../state/remoteSessionDialogs";
 import type { MachineSessions } from "../../state/fleetRail";
 
 // Create a new instance with no dialog: the title is the next free integer for the
@@ -210,7 +211,20 @@ function InstanceManager({ onCollapse }: InstanceManagerProps) {
         if (proj) newShellForProject(proj);
       }),
       registerCommand("killInstance", () => {
-        // Only ever the selected project's focused session — see killTarget.ts.
+        // Another machine's session when that's what you're on: its rail card has
+        // keyboard focus, or its remote console tab is the active panel.
+        const focusedRemote = (document.activeElement as HTMLElement | null)?.dataset.wbRemoteInstance;
+        const panelId = getActivePanelId();
+        const remoteKey = focusedRemote ?? (panelId?.startsWith(REMOTE_CONSOLE_PREFIX) ? panelId.slice(REMOTE_CONSOLE_PREFIX.length) : undefined);
+        if (remoteKey) {
+          const members = getFleetStatus()?.members ?? [];
+          const nameOf = (m: string) => members.find((x) => x.id === m)?.name ?? "the other machine";
+          const pick = pickRemoteKillTarget(remoteKey, getFleetViews(), nameOf);
+          if (pick.kind === "target") askKillRemote(pick.machine, nameOf(pick.machine), pick.inst);
+          else flash(pick.reason);
+          return;
+        }
+        // Otherwise only ever the selected project's focused session — see killTarget.ts.
         const { instances, projects } = getRegistry();
         const projectId = getActiveProject();
         const name = projects.find((p) => p.id === projectId)?.name;

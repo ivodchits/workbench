@@ -21,7 +21,9 @@ export interface RemoteConsoleParams {
   title: string;
 }
 
-export const remoteConsolePanelId = (machine: string, instance: string) => `rconsole:${machine}:${instance}`;
+/** Every remote console tab id starts with this. */
+export const REMOTE_CONSOLE_PREFIX = "rconsole:";
+export const remoteConsolePanelId = (machine: string, instance: string) => `${REMOTE_CONSOLE_PREFIX}${machine}:${instance}`;
 
 /** Send an action to the session's machine; a failure is flashed. */
 export function sendRemote(machine: string, action: RemoteAction): void {
