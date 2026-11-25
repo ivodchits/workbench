@@ -27,6 +27,7 @@ import type { RemoteChoice, RemoteInstance, TermControl } from "../remote/protoc
 import { createFeed, type Feed } from "../transcript/feed";
 import { fleetTranscriptSource, withQuery } from "../transcript/fleetSource";
 import { createRenderer, renderPendingTool } from "../transcript/render";
+import { attachMediaViewer } from "../transcript/media";
 import { sendRemote, useMachineName, useRemoteInstance, type RemoteConsoleParams } from "./remoteSession";
 
 
@@ -178,7 +179,10 @@ function RemoteTranscript({
       stuck.current = scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight < STICK_PX;
     };
     scroll.addEventListener("scroll", onScroll);
+    // A picture's thumbnail opens the viewer over the tab (improvement plan S1).
+    const detach = scroll.parentElement?.parentElement ? attachMediaViewer(scroll, scroll.parentElement.parentElement) : null;
     return () => {
+      detach?.();
       scroll.removeEventListener("scroll", onScroll);
       feed.stop();
       feedRef.current = null;

@@ -21,6 +21,7 @@ import { fixNames } from "../assistant/voiceNames";
 import type { RemoteInstance } from "../remote/protocol";
 import { createFeed, type Feed } from "../transcript/feed";
 import { createRenderer, markListening, type TranscriptRenderer } from "../transcript/render";
+import { attachMediaViewer } from "../transcript/media";
 import { listenPrefix, listenRequest, listeningTo } from "../assistant/listen";
 import type { ReaderView } from "../assistant/reader";
 import { controlReader, listenOnPhone, onReader, paintReaderBar } from "./duck";
@@ -535,6 +536,8 @@ export function initTranscript(link: (text: string) => void, terminal: () => voi
   onLink = link;
   switchToTerminal = terminal;
   const s = scroller();
+  // A picture's thumbnail opens the viewer over the transcript (improvement plan S1).
+  attachMediaViewer(s, $("tx-view"));
   s.addEventListener(
     "scroll",
     () => {

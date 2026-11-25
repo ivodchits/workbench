@@ -26,6 +26,7 @@ import { createFeed, plansIn, userPrompts, type Feed } from "../transcript/feed"
 import { notePlans } from "../state/plans";
 import { openPlan } from "./openPlan";
 import { createRenderer, markListening } from "../transcript/render";
+import { attachMediaViewer } from "../transcript/media";
 import { listenPrefix, listenRequest, listeningTo } from "../assistant/listen";
 import { listenToMessage, useDuckState } from "./Assistant/duckState";
 import ReaderBar from "./Assistant/ReaderBar";
@@ -209,6 +210,11 @@ function TranscriptView({ instanceId, live, onShowTerminal }: TranscriptViewProp
     if (listRef.current)
       markListening(listRef.current, listenId && listenState ? { itemId: listenId, state: listenState } : null);
   }, [listenId, listenState, feedState.rev]);
+
+  // A picture's thumbnail opens the viewer over this panel (improvement plan S1).
+  useEffect(() => {
+    if (scrollRef.current && rootRef.current) return attachMediaViewer(scrollRef.current, rootRef.current);
+  }, []);
 
   useEffect(() => {
     if (!listenNote) return;

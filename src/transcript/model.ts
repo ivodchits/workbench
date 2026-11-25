@@ -45,11 +45,17 @@ interface ItemBase {
   timestamp: string | null;
 }
 
+/** A picture carried in the transcript itself (base64), of a type the webview shows. */
+export interface TxImage {
+  mediaType: string;
+  data: string;
+}
+
 /** Something the user typed. */
 export interface UserItem extends ItemBase {
   kind: "user";
   text: string;
-  images: { mediaType: string; data: string }[];
+  images: TxImage[];
 }
 
 /** A block of the assistant's answer, as markdown. */
@@ -74,6 +80,8 @@ export interface ToolItem extends ItemBase {
   status: ToolStatus;
   /** The result as the model saw it. */
   resultText: string | null;
+  /** Pictures in the result (a browser screenshot, `Read` on an image), step S1. */
+  images: TxImage[];
   /** Bash: what the command printed. */
   stdout: string | null;
   stderr: string | null;
@@ -219,6 +227,25 @@ function stripAnsi(text: string): string {
 
 const INTERRUPTED = /^\[Request interrupted by user( for tool use)?\]$/;
 
+const IMAGE_TYPES = /^image\/(png|jpeg|gif|webp)$/;
+
+/** A content block as a picture we can show, or null: base64 of an allowed type only. */
+function imageOf(block: Json): TxImage | null {
+  if (block.type !== "image" || !isObject(block.source)) return null;
+  const mediaType = str(block.source.media_type) ?? "";
+  const data = str(block.source.data);
+  return block.source.type === "base64" && data && IMAGE_TYPES.test(mediaType) ? { mediaType, data } : null;
+}
+
+/** A `tool_result` block's pictures. */
+function resultImages(content: unknown): TxImage[] {
+  if (!Array.isArray(content)) return [];
+  return content.flatMap((b) => {
+    const image = isObject(b) ? imageOf(b) : null;
+    return image ? [image] : [];
+  });
+}
+
 /** A `tool_result` block's content as text (it is a string, or text blocks). */
 function resultText(content: unknown): string {
   if (typeof content === "string") return content;
@@ -277,6 +304,7 @@ function toolUse(state: State, line: Json, block: Json): void {
     input,
     status: "running",
     resultText: null,
+    images: [],
     stdout: null,
     stderr: null,
     diff: null,
@@ -312,6 +340,7 @@ function toolResult(state: State, line: Json, block: Json): void {
   if (!item || item.status !== "running") return;
   item.rev++;
   item.resultText = resultText(block.content);
+  item.images = resultImages(block.content);
   item.status =
     line.toolDenialKind !== undefined ? "denied" : block.is_error === true ? "error" : "ok";
 
@@ -447,8 +476,6 @@ function wrapped(state: State, line: Json, text: string): boolean {
   return t.startsWith("<local-command-caveat>");
 }
 
-const IMAGE_TYPES = /^image\/(png|jpeg|gif|webp)$/;
-
 /** The TUI marks pasted text for the model with `<pasted_content id="…">` (the
  *  closing tag carries the id too); the user only typed what is inside. */
 const PASTED = /<\/?pasted_content(?:\s+id="[^"]*")?\s*>\n?/g;
@@ -469,7 +496,7 @@ function userLine(state: State, line: Json): void {
   }
 
   const texts: string[] = [];
-  const images: UserItem["images"] = [];
+  const images: TxImage[] = [];
   if (typeof content === "string") {
     texts.push(content);
   } else if (Array.isArray(content)) {
@@ -479,12 +506,9 @@ function userLine(state: State, line: Json): void {
         toolResult(state, line, block);
       } else if (block.type === "text" && typeof block.text === "string") {
         texts.push(block.text);
-      } else if (block.type === "image" && isObject(block.source)) {
-        const mediaType = str(block.source.media_type) ?? "";
-        const data = str(block.source.data);
-        if (block.source.type === "base64" && data && IMAGE_TYPES.test(mediaType)) {
-          images.push({ mediaType, data });
-        }
+      } else {
+        const image = imageOf(block);
+        if (image) images.push(image);
       }
     }
   }

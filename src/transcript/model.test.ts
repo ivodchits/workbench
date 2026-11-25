@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { fixtures, sessionLines, sessionNames } from "./fixtures.test-util";
+import { fixtures, screenshotLines, sessionLines, sessionNames } from "./fixtures.test-util";
 import { createTranscript, type Item, type ToolItem } from "./model";
 
 function fold(lines: string[], sidechain = false): Item[] {
@@ -11,6 +11,23 @@ function fold(lines: string[], sidechain = false): Item[] {
 const foldFixture = (name: string) => fold(fixtures[name]);
 const tools = (items: Item[]) => items.filter((i): i is ToolItem => i.kind === "tool");
 const kinds = (items: Item[]) => items.map((i) => i.kind);
+
+describe("pictures tools return (S1)", () => {
+  it("keeps a result's pictures next to its text, of the types we show only", () => {
+    const [tool] = tools(fold(screenshotLines));
+    expect(tool.status).toBe("ok");
+    expect(tool.resultText).toBe("Captured 2 screenshots");
+    expect(tool.images).toEqual([
+      { mediaType: "image/png", data: "iVBORw0KGgo=" },
+      { mediaType: "image/jpeg", data: "/9j/4AAQ" },
+    ]);
+  });
+
+  it("has none before the result, and none for a text-only one", () => {
+    expect(tools(fold(screenshotLines.slice(0, 1)))[0].images).toEqual([]);
+    expect(tools(foldFixture("03-bash-auto-allowed")).every((t) => t.images.length === 0)).toBe(true);
+  });
+});
 
 describe("T0 fixtures", () => {
   it("has all of them", () => {

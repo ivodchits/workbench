@@ -115,6 +115,7 @@ body {
 }
 
 :is(#session, #duck, #hire, #notes, #ask, #lesson) {
+  position: relative;
   flex: 1;
   min-height: 0;
   display: flex;

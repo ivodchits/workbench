@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { describe, expect, it } from "vitest";
 
-import { fixtures, sessionLines } from "./fixtures.test-util";
+import { fixtures, screenshotLines, sessionLines } from "./fixtures.test-util";
 import { createTranscript, type Item } from "./model";
 import { createRenderer, markListening, renderItem } from "./render";
 
@@ -261,5 +261,31 @@ describe("a message's listen button", () => {
     markListening(host, null);
     expect(reply.classList.contains("wb-tx-listen-paused")).toBe(false);
     expect(reply.title).toBe("listen");
+  });
+});
+
+describe("pictures under a tool call (S1)", () => {
+  it("shows them as thumbnails outside the closed card", () => {
+    const [tool] = fold(screenshotLines).filter((i) => i.kind === "tool");
+    const node = renderItem(tool);
+    const card = node.querySelector("details");
+    expect(card?.open).toBe(false);
+    const thumbs = [...node.querySelectorAll<HTMLButtonElement>(".wb-tx-thumb")];
+    expect(thumbs).toHaveLength(2);
+    expect(thumbs.every((t) => !card?.contains(t))).toBe(true);
+    expect(thumbs.map((t) => t.querySelector("img")?.getAttribute("src"))).toEqual([
+      "data:image/png;base64,iVBORw0KGgo=",
+      "data:image/jpeg;base64,/9j/4AAQ",
+    ]);
+  });
+
+  it("draws a tool with no pictures as the card alone", () => {
+    const [tool] = fold(fixtures["03-bash-auto-allowed"]).filter((i) => i.kind === "tool");
+    expect(renderItem(tool) instanceof HTMLDetailsElement).toBe(true);
+  });
+
+  it("makes a pasted picture a thumbnail too", () => {
+    const pasted = fold(fixtures["14-image-paste"]).find((i) => i.kind === "user");
+    expect(pasted && renderItem(pasted).querySelectorAll(".wb-tx-thumb")).toHaveLength(1);
   });
 });

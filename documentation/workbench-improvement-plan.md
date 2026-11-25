@@ -2435,6 +2435,36 @@ on 2026-11-24, to be built **after the fleet plan's F9** (S3 needs F9.2).
 - **Done when:** a session that takes a browser screenshot and one that `Read`s a PNG
   both show the picture under the tool call, and a click opens it full size inside the
   console panel. The fixture tests cover a result with text and two images.
+- _(Built, 2026-11-24:
+  - **The model:** `ToolItem.images` (`transcript/model.ts`), from the result's image
+    blocks, checked against the same list as pasted pictures (`imageOf`, shared by
+    both).
+  - **The strip and the viewer:** `src/transcript/media.ts` (new), framework-free like
+    the renderer:
+    - `mediaStrip` draws the thumbnails, 120 px high and scrolling sideways. A tool's
+      strip sits under its card, outside it, so it shows while the card is closed.
+      Pasted pictures use the same strip.
+    - `openMediaViewer` opens over the panel showing the transcript. A picture fits
+      the panel (never enlarged), and there's 1:1, zoom (wheel, pinch, the buttons, `+`
+      and `-`), pan (drag), double-click between fit and 1:1, the arrow keys through
+      every thumbnail in the transcript, and Esc. Its keys and clicks don't reach the
+      transcript under it.
+    - `attachMediaViewer(scope, host)` is how a view gets the viewer.
+  - **Where it shows:** the console's transcript (`TranscriptView.tsx`), the remote
+    console tab (`RemoteConsole.tsx`, F9.2), the phone (`pwa/transcript.ts`, over
+    `#tx-view`), and the office sidebar (`office/panel.ts`), which also uses the
+    renderer.
+  **Checked:**
+  - `model.test.ts`: a result with text, two pictures and an SVG keeps the two.
+  - `render.test.ts`: the thumbnails are outside the closed card, a tool with no
+    pictures is the card alone, and a pasted picture is a thumbnail.
+  - `media.test.ts`: the viewer opens at the clicked picture, the arrows go across
+    strips and wrap, Esc closes it and its keys stay in, and there's one viewer per
+    host.
+  - Headless Edge, on a page built from the real renderer: the strip, the viewer
+    fitting a tall picture, the arrows, 1:1 and Esc.
+  Live test owed: the Done when, in the app, with a browser screenshot and a `Read` of
+  a PNG.)_
 
 #### Step S2 — The `show_media` tool, the strip and the viewer
 
@@ -2786,7 +2816,7 @@ any session, which lowers the urgency and makes the terminal bugs easier to comp
 | A1 | Review with a fresh agent | ☑ |
 | M1 | Run summary on done (mod) | ☐ |
 | K1 | Project toolbar: plugin file, toolbar, task runs | ☑ |
-| S1 | Pictures that tools return, in the transcript | ☐ |
+| S1 | Pictures that tools return, in the transcript | ☑ |
 | S2 | `show_media` tool, strip and viewer | ☐ |
 | S3 | Media from another machine | ☐ |
 | J1 | Daily log: capture and tidy, on the main | ☐ |

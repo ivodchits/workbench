@@ -14,6 +14,7 @@ import { el } from "../pwa/dom";
 import { transcriptSource } from "../pwa/transcriptSource";
 import { createFeed, type Feed } from "../transcript/feed";
 import { createRenderer, type TranscriptRenderer } from "../transcript/render";
+import { attachMediaViewer } from "../transcript/media";
 import { phaseText, titleOf, whoText, type Who } from "./describe";
 import type { Link } from "./net";
 
@@ -72,6 +73,8 @@ export function createPanel(root: HTMLElement, link: Link, onClose: () => void, 
   const free = el("p", "muted free", "No session: drag them onto a free desk to give them one.");
 
   root.replaceChildren(head, card.root, needs, scroll, jump, composer, free);
+  // A picture's thumbnail opens the viewer over the panel (improvement plan S1).
+  attachMediaViewer(scroll, root);
 
   let current: string | null = null;
   let live: RemoteInstance | null = null;

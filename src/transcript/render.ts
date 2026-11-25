@@ -25,9 +25,11 @@ import type {
   Item,
   ToolItem,
   ToolStatus,
+  TxImage,
   UserItem,
 } from "./model";
 import { inputStr, toolTarget, toolTitle } from "./summary";
+import { mediaStrip, type MediaRef } from "./media";
 
 /** Output longer than this is cut, with a "show all" button. */
 const CLIP_LINES = 40;
@@ -339,6 +341,25 @@ function toolBody(item: ToolItem): Child[] {
   return [labelled("input", output(JSON.stringify(item.input, null, 2))), result && labelled("result", result)];
 }
 
+/** Pictures as the media strip's thumbnails. The media type was checked against an
+ *  allow-list by the model. */
+function imageRefs(images: readonly TxImage[], label: string): MediaRef[] {
+  return images.map((image, i) => ({
+    kind: "image",
+    src: `data:${image.mediaType};base64,${image.data}`,
+    label: images.length > 1 ? `${label} ${i + 1}` : label,
+  }));
+}
+
+/** A tool's card, with the pictures its result returned under it (step S1): they
+ *  show without opening the card. */
+function toolBlock(item: ToolItem): HTMLElement {
+  const details = toolCard(item);
+  if (item.images.length === 0) return details;
+  const label = `${toolTitle(item)} ${toolTarget(item)}`.trim();
+  return el("div", "wb-tx-tool-media", details, mediaStrip(imageRefs(item.images, label)));
+}
+
 function toolCard(item: ToolItem): HTMLElement {
   const hunks = item.name === "Edit" || item.name === "Write" ? diffOf(item) : null;
   const glyph = el("span", "wb-tx-status", STATUS_GLYPH[item.status]);
@@ -372,6 +393,7 @@ export function renderPendingTool(name: string, input: Record<string, unknown>):
     input,
     status: "running",
     resultText: null,
+    images: [],
     stdout: null,
     stderr: null,
     diff: null,
@@ -402,13 +424,7 @@ function userBlock(item: UserItem, listen: boolean): HTMLElement {
     text,
     listen && item.text.trim() !== "" && listenButton(),
   );
-  for (const image of item.images) {
-    const img = el("img", "wb-tx-image");
-    // The media type was checked against an allow-list by the model.
-    img.src = `data:${image.mediaType};base64,${image.data}`;
-    img.alt = "pasted image";
-    text.append(img);
-  }
+  if (item.images.length > 0) text.append(mediaStrip(imageRefs(item.images, "pasted image")));
   return node;
 }
 
@@ -467,7 +483,7 @@ export function renderItem(item: Item, opts: RenderOptions = {}): HTMLElement {
         : el("div", "wb-tx-thinking wb-tx-marker", "thought");
       break;
     case "tool":
-      node = toolCard(item);
+      node = toolBlock(item);
       break;
     case "command":
       node = commandBlock(item);
