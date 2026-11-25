@@ -668,16 +668,19 @@ const WATCH_LOOK_MS = 5_000;
 
 /** Where the session is for a watch: at rest only when it isn't compacting and no
  *  prompt of Duck's is on its way in (its phase doesn't show those yet). A `/compact`
- *  from a finished turn leaves the phase at done throughout. */
+ *  from a finished turn leaves the phase at done throughout. An answered prompt the
+ *  session hasn't taken yet keeps it at needs-you: that's no prompt to tell of. */
 const settledAs = (port: WorkbenchPort, s: SessionRef): SessionPhase | null =>
-  s.compacting || port.promptPending(s.id) ? null : s.phase;
+  s.compacting || port.promptPending(s.id) || (s.phase === "needs_you" && (s.choice?.sent ?? null) !== null)
+    ? null
+    : s.phase;
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 export const waitForSession = defineTool({
   name: "wait_for_session",
   description:
-    "Watch a session and get told when it finishes its turn (done), starts waiting on the user (needs_you), or either. A compaction isn't the end: a session that is compacting, or that a prompt of yours is still going into, is waited for. Returns at once; the news arrives later as a <workbench_event> message, and then you tell the user. Use it for \"tell me when it's done\". Watches don't survive an app restart.",
+    "Watch a session and get told when it finishes its turn (done), starts waiting on the user (needs_you), or either. A watch on needs_you or either tells every prompt the session opens (a permission request, a question, a plan), one event each, including one right after a prompt you answered, and keeps watching: either ends at the end of the turn, needs_you at the timeout. There's no need to watch again after answering. A compaction isn't the end: a session that is compacting, or that a prompt of yours is still going into, is waited for. Returns at once; the news arrives later as a <workbench_event> message, and then you tell the user. Use it for \"tell me when it's done\". Watches don't survive an app restart.",
   schema: z.object({
     ...sessionArgs,
     until: z.enum(["done", "needs_you", "either"]).default("either"),
@@ -701,39 +704,100 @@ export const waitForSession = defineTool({
     };
     // A session that has just started reports no phase yet ("offline"): wait
     // anyway, the timeout covers one that never runs.
+    let open: SessionRef | null = null;
     if (there(s)) {
       // A finished turn may be about to take a prompt sent alongside this call.
       if (s.phase === "done" || s.phase === "idle") await sleep(ALREADY_GRACE_MS);
       s = current() ?? s;
-      if (there(s)) return { session: s.title, already: s.phase };
+      if (there(s)) {
+        if (s.phase !== "needs_you") return { session: s.title, already: s.phase };
+        // Waiting on a prompt now: said here, and the ones after it are told.
+        open = s;
+      }
     }
 
     const key = `${threadId}:${s.id}`;
     watches.get(key)?.();
     const name = `"${s.title}" (${projectName(port, s)}, id ${s.id})`;
-    const tell = (phase: SessionPhase) => {
+    const prompts = until !== "done";
+    /** The prompts told (or open when the watch began), by id: each is told once. */
+    const told = new Set<string>();
+    /** This stretch of needs-you was told; `bare`: before its prompt was in the
+     *  store, so the prompt that turns up for it isn't told again. */
+    let toldNow = false;
+    let bare = false;
+    let stopped = false;
+    if (open) {
+      toldNow = true;
+      if (open.choice) told.add(open.choice.id);
+      else bare = true;
+    }
+    const finish = (phase: SessionPhase) => {
       stop();
+      ctx.later(`Session ${name} is now ${phase}. The user asked to be told.`);
+    };
+    /** A needs-you: tell its prompt once the trust watcher has had its say (one it
+     *  answers itself isn't news), and go on watching. */
+    const prompted = (now: SessionRef) => {
+      const c = now.choice;
+      if (c) {
+        if (told.has(c.id)) return;
+        told.add(c.id);
+        if (bare) {
+          bare = false;
+          return;
+        }
+      } else {
+        if (toldNow) return;
+        bare = true;
+      }
+      toldNow = true;
+      void port.tellNeedsYou(now.id).then((yes) => {
+        const again = current();
+        if (!yes || stopped || !again) return;
+        const shown = again.choice;
+        // Answered, or closed, while the hold decided: nothing to tell.
+        if (c ? shown?.id !== c.id || shown.sent !== null : again.phase !== "needs_you") return;
+        if (shown) told.add(shown.id);
+        if (!c && shown) bare = false;
+        const why = shown ? `: ${choiceLine(shown)}` : "";
+        const next = until === "either" ? "for its next prompt and the end of its turn" : "for its next prompt";
+        ctx.later(`Session ${name} is now needs_you${why}. The user asked to be told. Still watching it ${next}.`);
+      });
+    };
+    const look = (phase: SessionPhase | null, now: SessionRef | undefined) => {
+      if (stopped) return;
+      if (phase === "ended") return finish(phase);
+      // Compacting, or a prompt or an answer still going in: not yet.
+      if (phase === null) return;
+      if (phase === "needs_you") {
+        if (prompts && now) prompted(now);
+        return;
+      }
+      toldNow = false;
+      bare = false;
+      if (phase !== "working" && reached(until, phase)) finish(phase);
+    };
+    const settled = () => {
       const now = current();
-      const why = phase === "needs_you" && now?.choice ? `: ${choiceLine(now.choice)}` : "";
-      ctx.later(`Session ${name} is now ${phase}${why}. The user asked to be told.`);
+      look(now ? settledAs(port, now) : null, now);
     };
     const off = port.onPhase((id, phase) => {
-      if (id !== s.id || !reached(until, phase)) return;
+      if (id !== s.id) return;
       // Done while it still compacts, or before Duck's prompt went in: not yet.
       const now = current();
       if (phase !== "ended" && now && settledAs(port, now) === null) return;
-      tell(phase);
+      look(phase, now);
     });
+    // A prompt right after another opens with no phase change: its choice does.
+    const offChoices = prompts ? port.onChoices(settled) : () => {};
     // A compaction from rest ends with no phase change.
     const offCompaction = port.onCompactionEnd((id) => {
-      const now = current();
-      if (id === s.id && now && there(now)) tell(now.phase);
+      if (id === s.id) settled();
     });
-    // And for anything both missed (a prompt that wasn't taken, say).
-    const look = setInterval(() => {
-      const now = current();
-      if (now && there(now)) tell(now.phase);
-    }, WATCH_LOOK_MS);
+    // And for anything they all missed (a prompt that wasn't taken, an event lost
+    // on the way from another machine).
+    const timerLook = setInterval(settled, WATCH_LOOK_MS);
     const timer = setTimeout(() => {
       stop();
       const now = current();
@@ -742,13 +806,16 @@ export const waitForSession = defineTool({
       );
     }, timeoutMin * 60_000);
     function stop() {
+      stopped = true;
       off();
+      offChoices();
       offCompaction();
-      clearInterval(look);
+      clearInterval(timerLook);
       clearTimeout(timer);
       if (watches.get(key) === stop) watches.delete(key);
     }
     watches.set(key, stop);
+    if (open) return { session: s.title, already: "needs_you", watching: until, forMinutes: timeoutMin };
     return { session: s.title, watching: until, forMinutes: timeoutMin };
   },
 });

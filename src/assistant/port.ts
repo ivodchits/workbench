@@ -299,6 +299,11 @@ export interface WorkbenchPort {
    *  phone push, Duck's session watches): it resolves false for a prompt it
    *  answered, true to tell the user. Returns the unregister. */
   holdNeedsYou(hold: (instanceId: string) => Promise<boolean>): () => void;
+  /** Ask that hold about the session's needs-you now: false when Duck answered
+   *  (or refused) its prompt itself, true to tell the user (at once with no hold).
+   *  For a prompt that opens with no phase change (one right after another), which
+   *  `onPhase` never reports. Asked on the machine Duck runs on, for any session. */
+  tellNeedsYou(instanceId: string): Promise<boolean>;
   /** What a session is for, for judging its prompts. */
   sessionContext(instanceId: string): Promise<SessionContext>;
   /** A line under the session's card in the rail ("auto-approved `npm test`"). */

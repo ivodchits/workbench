@@ -6,6 +6,8 @@ import { createFleetHub, serveFleet, type FleetServing } from "./fleetHosts";
 import { connectLocal, createHosts } from "./hosts";
 import type { ChoiceRef, ProjectRef, SessionRef, WorkbenchPort } from "./port";
 import { createFleetPort } from "./port.fleet";
+import { toolCtx } from "./fakePort.test-util";
+import { clearWatches, waitForSession } from "./tools/act";
 
 const project = (id: string, name: string, root: string): ProjectRef => ({ id, name, rootPath: root, group: null, remote: false });
 
@@ -34,6 +36,10 @@ function fakePort(projects: ProjectRef[], sessions: SessionRef[]) {
   const noop = () => () => {};
   const calls: string[] = [];
   const port = {
+    async tellNeedsYou(id: string) {
+      calls.push(`hold ${id}`);
+      return true;
+    },
     listProjects: () => projects,
     listSessions: (pid?: string) => (pid ? sessions.filter((s) => s.projectId === pid) : sessions),
     promptPending: () => false,
@@ -68,6 +74,10 @@ function fakePort(projects: ProjectRef[], sessions: SessionRef[]) {
   return {
     port: port as unknown as WorkbenchPort,
     calls,
+    /** Its prompt changes, with no event (as a lost one). */
+    setChoice(id: string, c: ChoiceRef | null) {
+      sessions.find((x) => x.id === id)!.choice = c;
+    },
     setPhase(id: string, p: SessionRef["phase"]) {
       const s = sessions.find((x) => x.id === id)!;
       const prev = s.phase;
@@ -95,6 +105,7 @@ let serving: FleetServing | null = null;
 afterEach(() => {
   serving?.stop();
   serving = null;
+  clearWatches();
   vi.useRealTimers();
 });
 
@@ -180,5 +191,26 @@ describe("Duck's hosts across the fleet", () => {
     hub.gone("L");
     await expect(hosts.call("pc", "media_control", {}, signal, "laptop")).rejects.toThrow(/isn't connected/);
     expect(fleet.listProjects().map((p) => p.id)).toEqual(["pd"]);
+  });
+
+  it("tells a watch every prompt on the laptop, the second one with no event at all", async () => {
+    vi.useFakeTimers();
+    const { fleet, laptop, desktop } = pair();
+    await vi.advanceTimersByTimeAsync(0);
+    const ctx = toolCtx(fleet);
+    laptop.setPhase("sl", "working");
+    await vi.advanceTimersByTimeAsync(0);
+    expect(await waitForSession.run(waitForSession.schema.parse({ session: "sl" }), ctx)).toMatchObject({ watching: "either" });
+    laptop.setPhase("sl", "needs_you"); // its prompt c1 is open
+    await vi.advanceTimersByTimeAsync(0);
+    expect(ctx.posted).toHaveLength(1);
+    expect(ctx.posted[0]).toMatch(/is now needs_you: .*npm test/);
+    // Answered there and straight into the next prompt: the phase never moves.
+    laptop.setChoice("sl", { ...choice, id: "c2", input: { command: "npm run tauri build" } });
+    await vi.advanceTimersByTimeAsync(8_000); // the laptop's state push, then the watch's look
+    expect(ctx.posted).toHaveLength(2);
+    expect(ctx.posted[1]).toMatch(/npm run tauri build/);
+    // The main's trust hold was asked about both.
+    expect(desktop.calls.filter((c) => c === "hold sl")).toHaveLength(2);
   });
 });

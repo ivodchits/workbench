@@ -471,6 +471,7 @@ export function fakePort(data: FakePortData = {}): FakePort {
       for (const l of [...choiceListeners]) l();
       return ok;
     },
+    tellNeedsYou: (id) => (port.hold ? port.hold(id) : Promise.resolve(true)),
     holdNeedsYou(hold) {
       port.hold = hold;
       return () => {

@@ -720,6 +720,7 @@ export const localPort: WorkbenchPort = {
   },
   onChoices: (cb) => onChoicesChanged(cb),
   holdNeedsYou: (hold) => setPromptHold(hold),
+  tellNeedsYou: (id) => shouldTell(id),
   async sessionContext(id): Promise<SessionContext> {
     instance(id);
     const m = await storedMandate(id);

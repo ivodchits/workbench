@@ -175,6 +175,8 @@ export function createFleetPort(
     answerHeld: (id, cid, d) => route(bySession(id), "answerHeld", [id, cid, d], () => local.answerHeld(id, cid, d)) as never,
     onChoices: (cb) => on(choices, cb),
     holdNeedsYou: (hold) => local.holdNeedsYou(hold),
+    // The hold is the trust watcher's here, which decides every machine's prompts.
+    tellNeedsYou: (id) => local.tellNeedsYou(id),
     sessionContext: (id) => route(bySession(id), "sessionContext", [id], () => local.sessionContext(id)) as never,
     noteSession: (id, line) => fire(bySession(id), "noteSession", [id, line], () => local.noteSession(id, line)),
     adviseChoice: (id, advice) => fire(bySession(id), "adviseChoice", [id, advice], () => local.adviseChoice(id, advice)),

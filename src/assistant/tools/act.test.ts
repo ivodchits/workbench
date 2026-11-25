@@ -404,7 +404,8 @@ describe("wait_for_session", () => {
     expect(ctx.posted).toHaveLength(1);
 
     const already = await run(waitForSession, { session: "api" });
-    expect(already.out).toEqual({ session: "api", already: "needs_you" });
+    // At a prompt already: said, and the watch goes on for the next one.
+    expect(already.out).toEqual({ session: "api", already: "needs_you", watching: "either", forMinutes: 60 });
     // Just started, no phase yet: it waits rather than refusing.
     const fresh = await run(waitForSession, { session: "old" });
     expect(fresh.out).toMatchObject({ watching: "either" });
@@ -472,6 +473,139 @@ describe("wait_for_session around compactions and prompts", () => {
     const { ctx } = await start({ session: "plans", until: "done" }, d);
     d.sessions!.find((x) => x.id === "i9")!.compacting = false; // no event came
     await vi.advanceTimersByTimeAsync(5_000);
+    expect(ctx.posted).toHaveLength(1);
+  });
+});
+
+describe("wait_for_session on every prompt", () => {
+  const prompt = (id: string, extra: Partial<ChoiceRef> = {}): ChoiceRef => ({ ...choice, id, ...extra });
+  /** A session "tests" (i2) at work, its prompts set by hand. */
+  function setup(input: Record<string, unknown> = {}) {
+    vi.useFakeTimers();
+    const d = data();
+    const s = d.sessions!.find((x) => x.id === "i2")!;
+    const port = fakePort(d);
+    const ctx = toolCtx(port);
+    const out = waitForSession.run(waitForSession.schema.parse({ session: "tests", ...input }), ctx);
+    /** Open a prompt as the status engine and the choice store would. */
+    const open = (c: ChoiceRef, withPhase = true) => {
+      const prev = s.phase;
+      s.phase = "needs_you";
+      port.setChoice("i2", c);
+      if (withPhase && prev !== "needs_you") port.phase("i2", "needs_you", prev);
+    };
+    const answered = (c: ChoiceRef) => port.setChoice("i2", { ...c, sent: "Yes" });
+    const working = () => {
+      port.setChoice("i2", null);
+      s.phase = "working";
+      port.phase("i2", "working", "needs_you");
+    };
+    const flush = () => vi.advanceTimersByTimeAsync(0);
+    return { d, s, port, ctx, out, open, answered, working, flush };
+  }
+
+  it("tells each prompt in turn, keeps watching after one, and ends with the turn", async () => {
+    const { s, port, ctx, out, open, answered, working, flush } = setup();
+    expect(await out).toMatchObject({ watching: "either" });
+    open(prompt("a"));
+    await flush();
+    expect(ctx.posted).toHaveLength(1);
+    expect(ctx.posted[0]).toMatch(/is now needs_you: .*npm test.*Still watching it for its next prompt and the end of its turn\./);
+    // Answered, taken, and a second prompt opens: told as well.
+    answered(prompt("a"));
+    working();
+    open(prompt("b", { input: { command: "npm run build" } }));
+    await flush();
+    expect(ctx.posted).toHaveLength(2);
+    expect(ctx.posted[1]).toMatch(/npm run build/);
+    // The turn ends: told, and that's the end of the watch.
+    working();
+    s.phase = "done";
+    port.phase("i2", "done", "working");
+    expect(ctx.posted[2]).toMatch(/is now done\./);
+    open(prompt("c"));
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(ctx.posted).toHaveLength(3);
+  });
+
+  it("tells a prompt that opens right after another with no phase change", async () => {
+    const { ctx, out, open, answered, flush } = setup({ until: "needs_you" });
+    await out;
+    open(prompt("a"));
+    await flush();
+    answered(prompt("a"));
+    await flush();
+    expect(ctx.posted).toHaveLength(1);
+    open(prompt("b")); // still needs-you: only the choice changed
+    await flush();
+    expect(ctx.posted).toHaveLength(2);
+    expect(ctx.posted[1]).toMatch(/Still watching it for its next prompt\.$/);
+  });
+
+  it("tells a needs-you once when its prompt reaches the store after the phase", async () => {
+    const { s, port, ctx, out, flush } = setup();
+    await out;
+    s.phase = "needs_you";
+    port.phase("i2", "needs_you", "working");
+    port.setChoice("i2", prompt("a"));
+    await flush();
+    port.setChoice("i2", { ...prompt("a"), optionsFrom: "terminal" }); // its options read
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(ctx.posted).toHaveLength(1);
+  });
+
+  it("leaves out a prompt the trust watcher answers itself", async () => {
+    const { port, ctx, out, open, working, flush } = setup();
+    await out;
+    port.holdNeedsYou(async () => {
+      working(); // allowed: the session goes on
+      return false;
+    });
+    open(prompt("a"));
+    await flush();
+    expect(ctx.posted).toEqual([]);
+  });
+
+  it("notices on its own look a prompt whose events never came (another machine's, say)", async () => {
+    const { ctx, out, open, flush } = setup();
+    await out;
+    open(prompt("a"), false);
+    await flush();
+    expect(ctx.posted).toHaveLength(1); // the choice event
+    const second = setup();
+    await second.out;
+    second.s.phase = "needs_you";
+    second.s.choice = prompt("z"); // the mirror moved, no event at all
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(second.ctx.posted).toHaveLength(1);
+    expect(second.ctx.posted[0]).toMatch(/is now needs_you/);
+  });
+
+  it("watched right after an answer, waits for the next prompt instead of calling the old one already there", async () => {
+    vi.useFakeTimers();
+    const d = data();
+    const s = d.sessions!.find((x) => x.id === "i1")!; // "api", at prompt c7
+    s.choice = { ...choice, sent: "Yes" };
+    const port = fakePort(d);
+    const ctx = toolCtx(port);
+    expect(await waitForSession.run(waitForSession.schema.parse({ session: "api" }), ctx)).toMatchObject({ watching: "either" });
+    expect(await waitForSession.run(waitForSession.schema.parse({ session: "api", until: "needs_you" }), ctx)).not.toHaveProperty("already");
+    port.setChoice("i1", prompt("c8"));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(ctx.posted).toHaveLength(1); // the second watch replaced the first
+  });
+
+  it("at a prompt already, tells only the ones after it", async () => {
+    vi.useFakeTimers();
+    const port = fakePort(data());
+    const ctx = toolCtx(port);
+    const out = await waitForSession.run(waitForSession.schema.parse({ session: "api" }), ctx);
+    expect(out).toMatchObject({ already: "needs_you", watching: "either" });
+    port.setChoice("i1", choice); // the same prompt, its options read again
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(ctx.posted).toEqual([]);
+    port.setChoice("i1", prompt("c8"));
+    await vi.advanceTimersByTimeAsync(0);
     expect(ctx.posted).toHaveLength(1);
   });
 });
