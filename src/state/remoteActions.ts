@@ -248,11 +248,14 @@ export function interruptSession(instanceId: string): void {
   markInterrupted(instanceId);
 }
 
-/** Open (or focus) the console for an instance resolved from the registry. No-op if
- *  the id isn't a known instance. */
+/** Open the console for an instance resolved from the registry. No-op if the id isn't
+ *  a known instance. In the background, as `resumeRemote` does: a console's PTY
+ *  spawns when its terminal mounts and the dock mounts only the shown project's, so
+ *  a foreground open of another project's session never started (`BackgroundConsoles`
+ *  mounts it). It docks as usual when its project is the one shown. */
 function startInstance(instanceId: string): void {
   const instance = getRegistry().instances.find((i) => i.id === instanceId);
-  if (instance) openConsole(instance);
+  if (instance) openConsole(instance, { background: true });
 }
 
 /** How often a new console's screen is looked at for the prompt box. */

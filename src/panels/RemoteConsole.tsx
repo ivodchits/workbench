@@ -43,6 +43,15 @@ function RemoteConsole(props: IDockviewPanelProps<RemoteConsoleParams>) {
     props.api.setTitle(`${title} · ${name}`);
   }, [props.api, title, name]);
 
+  // Killed (from the rail here or over there): close the tab, as a local console's
+  // does. Only once this tab has seen the session, so a snapshot taken before that
+  // machine's registry loaded doesn't close a restored tab.
+  const seen = useRef(false);
+  useEffect(() => {
+    if (inst) seen.current = true;
+    else if (online && seen.current) props.api.close();
+  }, [inst, online, props.api]);
+
   const phase = inst?.phase ?? null;
   const status = !online
     ? `${name} · offline`
