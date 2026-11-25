@@ -180,7 +180,9 @@ export default function RemoteMirror(): null {
     }),
   );
   // The phone's unread dot on its Duck button: each thread's last change.
-  const duckThreadsKey = JSON.stringify(duckStore.threads.map((t) => ({ id: t.id, updated: t.updated })));
+  const duckThreadsKey = JSON.stringify(
+    duckStore.threads.map((t) => ({ id: t.id, updated: t.updated, seen: t.seen, news: t.news })),
+  );
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
   // The projects' git remotes (fleet plan F9.1), as their lookups finish.
   const remotesVersion = useGitRemotesVersion();
@@ -252,7 +254,7 @@ export default function RemoteMirror(): null {
           gitRemote: gitRemoteOf(p) ?? null,
         })),
         duck: JSON.parse(duckKey) as RemoteDuck,
-        duckThreads: JSON.parse(duckThreadsKey) as { id: string; updated: number }[],
+        duckThreads: JSON.parse(duckThreadsKey) as { id: string; updated: number; seen?: number; news?: number }[],
         created: [...created],
       };
       void remotePushSnapshot(JSON.stringify(snapshot)).catch(() => {});

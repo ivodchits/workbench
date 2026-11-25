@@ -90,6 +90,7 @@ const id = z.string().min(1).max(200);
 const Message = z.discriminatedUnion("type", [
   z.object({ type: z.literal("sync") }),
   z.object({ type: z.literal("thread.open"), threadId: id }),
+  z.object({ type: z.literal("thread.seen"), threadId: id, at: z.number().int().nonnegative() }),
   z.object({ type: z.literal("thread.new") }),
   z.object({
     type: z.literal("send"),

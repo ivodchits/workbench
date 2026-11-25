@@ -256,6 +256,12 @@ pub fn assistant_thread_keep(ctx: Db<'_>, thread_id: String, keep: bool) -> Resu
     threads::set_keep(&lock(&ctx), &thread_id, keep)
 }
 
+/// Read a thread up to `at` (epoch ms); true when that moved its mark.
+#[tauri::command]
+pub fn assistant_thread_seen(ctx: Db<'_>, thread_id: String, at: i64) -> Result<bool, String> {
+    threads::set_seen(&lock(&ctx), &thread_id, at)
+}
+
 /// Append one message; `message.seq` must be the thread's next (append-only).
 #[tauri::command]
 pub fn assistant_message_append(ctx: Db<'_>, message: Message) -> Result<(), String> {

@@ -4,6 +4,11 @@
 //
 // A thread is unread when it changed after it was last seen here; the count is
 // Duck's replies and notices since then, when this page heard them arrive.
+//
+// Since 2026-11-25 Duck also keeps a read mark per thread (`seen`, next to its
+// `news`), shared by every desktop and phone: a thread read anywhere is read here,
+// and this phone tells Duck what it shows (`thread.seen`). The local marks stay
+// for a thread without them (the offline brain's) and for the counts.
 
 /** localStorage key. */
 const KEY = "wb-duck-seen";
@@ -21,6 +26,10 @@ export interface Seen {
 export interface ThreadStamp {
   id: string;
   updated: number;
+  /** Duck's shared read mark and the thread's newest news (epoch ms); absent
+   *  from older desktops and the offline brain's threads. */
+  seen?: number;
+  news?: number;
 }
 
 /** The roles that are news: Duck's replies and its notices (a task's files, a
@@ -52,6 +61,14 @@ export function noteMessage(s: Seen, m: { threadId: string; role: string; ts: nu
 
 /** Whether `t` has news, and how many messages if this page counted them. */
 export function unreadOf(s: Seen, t: ThreadStamp): { unread: boolean; n: number } {
+  if (t.news !== undefined) {
+    // Duck's marks: read on any surface is read here; what was counted before
+    // that read doesn't count.
+    const read = Math.max(t.seen ?? 0, s.at[t.id] ?? 0);
+    const c = s.counts[t.id];
+    const n = c && c.ts > read ? c.n : 0;
+    return { unread: t.news > read, n: t.news > read ? n : 0 };
+  }
   const n = s.counts[t.id]?.n ?? 0;
   return { unread: n > 0 || t.updated > (s.at[t.id] ?? s.since), n };
 }

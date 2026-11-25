@@ -82,6 +82,11 @@ export interface ThreadRow {
   updated: number;
   /** Kept from the clean-up of idle threads (step L4). */
   keep?: boolean;
+  /** Read up to here (epoch ms), on every surface: replies and notices after it
+   *  are unread. Absent from a phone's offline brain's threads. */
+  seen?: number;
+  /** The newest reply or notice in it (epoch ms; 0: none yet). */
+  news?: number;
 }
 
 /** `notice` is shown in the thread but never sent to the API. */
@@ -116,6 +121,9 @@ export const threadTitle = (threadId: string, title: string): Promise<void> =>
 /** Keep a thread from the clean-up of idle threads (step L4), or stop keeping it. */
 export const threadKeep = (threadId: string, keep: boolean): Promise<void> =>
   invoke("assistant_thread_keep", { threadId, keep });
+/** Read a thread up to `at` (epoch ms); true when that moved its mark. */
+export const threadSeen = (threadId: string, at: number): Promise<boolean> =>
+  invoke("assistant_thread_seen", { threadId, at });
 /** Delete a thread with its messages and parked batches (step A4). */
 export const threadDelete = (threadId: string): Promise<void> =>
   invoke("assistant_thread_delete", { threadId });

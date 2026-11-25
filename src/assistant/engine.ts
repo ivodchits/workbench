@@ -332,6 +332,9 @@ export interface Engine {
   deleteThread(threadId: string): Promise<void>;
   /** Keep a thread from the clean-up of idle threads (step L4), or stop. */
   keepThread(threadId: string, keep: boolean): Promise<void>;
+  /** A surface showed a thread up to `at` (its newest reply or notice): read
+   *  there, so read everywhere. */
+  seeThread(threadId: string, at: number): Promise<void>;
   stop(threadId: string): void;
   /** A provisional turn stands: its message is kept and the reply carries on. */
   commit(threadId: string): void;
@@ -1918,6 +1921,10 @@ export function createEngine(deps: EngineDeps): Engine {
       const t = await store.setKeep(threadId, keep);
       if (!t) throw new Error(`no thread ${threadId}`);
       emit({ type: "thread", thread: t });
+    },
+    async seeThread(threadId, at) {
+      const t = await store.setSeen(threadId, at);
+      if (t) emit({ type: "thread", thread: t });
     },
 
     stop(threadId) {

@@ -104,7 +104,15 @@ export function apply(v: DuckView, f: RemoteDuckFrame, adopting: boolean): { vie
       if (have && !have.some((x) => x.seq === m.seq)) v = { ...v, messages: { ...v.messages, [m.threadId]: [...have, m] } };
       if (m.role === "assistant") v = { ...v, streaming: { ...v.streaming, [m.threadId]: "" } };
       const t = v.threads.find((x) => x.id === m.threadId);
-      if (t && t.updated < m.ts) v = { ...v, threads: [{ ...t, updated: m.ts }, ...v.threads.filter((x) => x.id !== m.threadId)] };
+      const isNews = m.role === "assistant" || m.role === "notice";
+      if (t && (t.updated < m.ts || (isNews && t.news !== undefined && t.news < m.ts)))
+        v = {
+          ...v,
+          threads: [
+            { ...t, updated: Math.max(t.updated, m.ts), ...(isNews && t.news !== undefined && { news: m.ts }) },
+            ...v.threads.filter((x) => x.id !== m.threadId),
+          ],
+        };
       break;
     }
     case "delta":

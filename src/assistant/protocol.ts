@@ -311,6 +311,9 @@ export type ClientMessage =
   | { type: "thread.keep"; threadId: string; keep: boolean }
   /** The thread a surface shows now (null: none), so housekeeping leaves it (L4). */
   | { type: "thread.view"; surface: string; threadId: string | null }
+  /** A surface showed a thread up to `at` (epoch ms, its newest reply or notice
+   *  there): read on every surface. */
+  | { type: "thread.seen"; threadId: string; at: number }
   /** Pause, resume, delete or run now a routine (step L4). */
   | { type: "routine.set"; id: string; action: "pause" | "resume" | "delete" | "run" }
   /** Set up the backup: a private GitHub repo (the settings' button, step L4). */

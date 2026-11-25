@@ -9,6 +9,12 @@
 // a thread finishes its turn and you're not watching the drawer, a desktop toast
 // names the thread. Both persist with the drawer's prefs.
 //
+// Read marks follow you between machines (2026-11-25): Duck keeps each thread's
+// `seen` (read up to) next to its `news` (newest reply or notice) in duck.db. A
+// thread on screen here is sent as `thread.seen`, so it's read on every desktop
+// and phone; a thread whose news no surface has read is unread here too, even if
+// it came in while this machine was off. The counts stay this desktop's own.
+//
 // Like every surface it only speaks the protocol: `sync` on connect, `thread.open`
 // for a thread's history, then live events. The open thread, the drawer's width
 // and the queue-or-interrupt choice persist in prefs.
@@ -240,17 +246,47 @@ export function dropWaiting(id: string): void {
 }
 
 export function clearUnread(): void {
+  for (const t of state.threads) markRead(t);
   set({ unread: {} });
   savePrefs({ unread: {} });
 }
 
-/** The thread is on screen now: nothing in it is unread. */
+/** Tell Duck a thread is read up to its newest news, for every surface. */
+function markRead(t: ThreadRow | undefined): void {
+  if (t?.news && t.news > (t.seen ?? 0)) post({ type: "thread.seen", threadId: t.id, at: t.news });
+}
+
+/** The thread is on screen now: nothing in it is unread, here or anywhere. */
 function seen(threadId: string | null): void {
-  if (!threadId || !state.unread[threadId] || !onScreen(threadId)) return;
+  if (!threadId || !onScreen(threadId)) return;
+  markRead(state.threads.find((t) => t.id === threadId));
+  if (!state.unread[threadId]) return;
   const unread = { ...state.unread };
   delete unread[threadId];
   set({ unread });
   savePrefs({ unread });
+}
+
+/** Duck's read marks, as a thread list brings them: what was read on another
+ *  surface is read here, and news no surface read is unread here. */
+function reconcileRead(): void {
+  let unread: Record<string, number> | null = null;
+  for (const t of state.threads) {
+    if (t.news === undefined) continue;
+    const fresh = t.news > (t.seen ?? 0);
+    if (!fresh && state.unread[t.id]) {
+      unread ??= { ...state.unread };
+      delete unread[t.id];
+    } else if (fresh && !state.unread[t.id] && !onScreen(t.id)) {
+      unread ??= { ...state.unread };
+      unread[t.id] = 1;
+    }
+  }
+  if (unread) {
+    set({ unread });
+    savePrefs({ unread });
+  }
+  seen(state.current);
 }
 
 /** A reply's first line with text, for the news. */
@@ -272,6 +308,7 @@ function noteReply(m: StoredMessage): void {
   if (onScreen(m.threadId)) {
     set({ news });
     savePrefs({ news });
+    seen(m.threadId);
     return;
   }
   // One per turn: a turn's replies between tool calls are one piece of news.
@@ -301,6 +338,7 @@ function onEvent(e: DuckEvent): void {
         const saved = e.threads.find((t) => t.id === state.prefs.threadId);
         openThread((saved ?? e.threads[0])?.id ?? null);
       }
+      reconcileRead();
       break;
     }
     case "thread": {
@@ -315,6 +353,7 @@ function onEvent(e: DuckEvent): void {
         set({ messages: { ...state.messages, [e.thread.id]: [] } });
         openThread(e.thread.id);
       }
+      reconcileRead();
       break;
     }
     case "threadDeleted": {
@@ -381,10 +420,7 @@ function onEvent(e: DuckEvent): void {
         patch.provisional = { ...state.provisional, [m.threadId]: "" };
       if (have && !have.some((x) => x.seq === m.seq))
         patch.messages = { ...state.messages, [m.threadId]: [...have, m] };
-      if (m.role === "assistant") {
-        patch.streaming = { ...state.streaming, [m.threadId]: "" };
-        noteReply(m);
-      }
+      if (m.role === "assistant") patch.streaming = { ...state.streaming, [m.threadId]: "" };
       // Spoken replies (V2): a message of yours decides whether its reply is spoken.
       // Only the open thread: a thread Duck splits off carries your source too.
       if (m.role === "user" && m.threadId === state.current && !early) {
@@ -402,14 +438,17 @@ function onEvent(e: DuckEvent): void {
             [m.threadId]: waiting.filter((_, j) => j !== i),
           };
       }
-      // Bump the thread to the top of the list.
+      // Bump the thread to the top of the list; a reply or notice is its news.
       const t = state.threads.find((x) => x.id === m.threadId);
-      if (t && t.updated < m.ts)
+      const isNews = m.role === "assistant" || m.role === "notice";
+      if (t && (t.updated < m.ts || (isNews && (t.news ?? 0) < m.ts)))
         patch.threads = [
-          { ...t, updated: m.ts },
+          { ...t, updated: Math.max(t.updated, m.ts), ...(isNews && { news: m.ts }) },
           ...state.threads.filter((x) => x.id !== m.threadId),
         ];
       set(patch);
+      // After the bump: a reply landing on screen is read with its news.
+      if (m.role === "assistant") noteReply(m);
       break;
     }
     case "delta":

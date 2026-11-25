@@ -153,7 +153,7 @@ export interface RemoteSnapshot {
   /** Duck's threads and when each last changed (epoch ms), for the phone's unread
    *  dot on its Duck button while Duck's own socket is closed; absent from older
    *  desktops. */
-  duckThreads?: { id: string; updated: number }[];
+  duckThreads?: { id: string; updated: number; seen?: number; news?: number }[];
 }
 
 /** The action set a remote client can drive (design §11 "Expose:"). */
@@ -271,6 +271,8 @@ export type RemoteDuckMessage =
   /** The thread list, open confirmations, settings, trust, tasks and the spend. */
   | { type: "sync" }
   | { type: "thread.open"; threadId: string }
+  /** Read up to `at` (the thread's newest news shown): read on every surface. */
+  | { type: "thread.seen"; threadId: string; at: number }
   | { type: "thread.new" }
   | {
       type: "send";

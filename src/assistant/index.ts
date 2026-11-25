@@ -646,6 +646,9 @@ export function endpoint(
       case "thread.keep":
         await e.keepThread(msg.threadId, msg.keep);
         return;
+      case "thread.seen":
+        await e.seeThread(msg.threadId, msg.at);
+        return;
       case "thread.view":
         if (msg.threadId) viewing.set(msg.surface, { threadId: msg.threadId, at: Date.now() });
         else viewing.delete(msg.surface);

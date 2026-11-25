@@ -20,6 +20,11 @@ pub struct Thread {
     pub updated: i64,
     /// Kept from L4's clean-up of idle threads (the pin in the thread list).
     pub keep: bool,
+    /// Read up to here (epoch ms): Duck's replies and notices after it are unread,
+    /// on every surface (desktops and phones alike).
+    pub seen: i64,
+    /// The newest of Duck's replies and notices in it (epoch ms; 0: none yet).
+    pub news: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -42,6 +47,10 @@ pub struct Pending {
     pub data: Value,
 }
 
+/// A thread row's `news`: its newest reply or notice.
+const NEWS: &str = "COALESCE((SELECT MAX(ts) FROM assistant_messages m
+     WHERE m.thread_id = assistant_threads.id AND m.role IN ('assistant', 'notice')), 0)";
+
 const ROLES: &[&str] = &["user", "assistant", "system", "notice"];
 
 fn thread_row(r: &rusqlite::Row) -> rusqlite::Result<Thread> {
@@ -52,6 +61,8 @@ fn thread_row(r: &rusqlite::Row) -> rusqlite::Result<Thread> {
         created: r.get(3)?,
         updated: r.get(4)?,
         keep: r.get::<_, i64>(5)? != 0,
+        seen: r.get(6)?,
+        news: r.get(7)?,
     })
 }
 
@@ -73,7 +84,7 @@ pub fn create(conn: &Connection, id: &str, mode: &str, now: i64) -> Result<Threa
 
 pub fn get(conn: &Connection, id: &str) -> Result<Option<Thread>, String> {
     conn.query_row(
-        "SELECT id, title, mode, created, updated, keep FROM assistant_threads WHERE id = ?1",
+        &format!("SELECT id, title, mode, created, updated, keep, seen, {NEWS} FROM assistant_threads WHERE id = ?1"),
         [id],
         thread_row,
     )
@@ -85,13 +96,23 @@ pub fn get(conn: &Connection, id: &str) -> Result<Option<Thread>, String> {
 pub fn list(conn: &Connection) -> Result<Vec<Thread>, String> {
     let mut stmt = conn
         .prepare(
-            "SELECT id, title, mode, created, updated, keep FROM assistant_threads
-             ORDER BY updated DESC, created DESC",
+            &format!("SELECT id, title, mode, created, updated, keep, seen, {NEWS} FROM assistant_threads
+             ORDER BY updated DESC, created DESC"),
         )
         .map_err(|e| e.to_string())?;
     let rows = stmt.query_map([], thread_row).map_err(|e| e.to_string())?;
     rows.collect::<rusqlite::Result<_>>()
         .map_err(|e| e.to_string())
+}
+
+/// Read a thread up to `at` (epoch ms, the newest reply or notice the surface
+/// showed). Never goes back: a slower surface can't make read news unread again.
+/// True when it moved.
+pub fn set_seen(conn: &Connection, id: &str, at: i64) -> Result<bool, String> {
+    let n = conn
+        .execute("UPDATE assistant_threads SET seen = ?2 WHERE id = ?1 AND seen < ?2", (id, at))
+        .map_err(|e| e.to_string())?;
+    Ok(n > 0)
 }
 
 /// Pin a thread so the clean-up of idle threads (L4) leaves it, or unpin it.
@@ -306,6 +327,23 @@ mod tests {
         assert_eq!(p[0].data["calls"][1], 2);
         pending_clear(&conn, "b1").unwrap();
         assert!(pending_list(&conn).unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_thread_is_read_up_to_its_mark_and_never_back() {
+        let db = DuckDb::open_in_memory().unwrap();
+        let mut conn = db.conn.lock().unwrap();
+        create(&conn, "t1", "chat", 1).unwrap();
+        append(&mut conn, &msg(0, "user", 10)).unwrap();
+        assert_eq!(get(&conn, "t1").unwrap().unwrap().news, 0, "your own words aren't news");
+        append(&mut conn, &msg(1, "assistant", 20)).unwrap();
+        append(&mut conn, &msg(2, "user", 30)).unwrap();
+        let t = get(&conn, "t1").unwrap().unwrap();
+        assert_eq!((t.seen, t.news), (0, 20));
+        assert!(set_seen(&conn, "t1", 20).unwrap());
+        assert!(!set_seen(&conn, "t1", 15).unwrap(), "an older mark changes nothing");
+        assert!(!set_seen(&conn, "nope", 99).unwrap());
+        assert_eq!(list(&conn).unwrap()[0].seen, 20);
     }
 
     #[test]

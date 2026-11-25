@@ -38,4 +38,20 @@ describe("unread threads", () => {
     expect(s.counts).toEqual({});
     expect(prune(s, ["b"])).toBe(s);
   });
+
+  it("follows Duck's shared read marks, read on another surface or not", () => {
+    let s = noteMessage(freshSeen(0), msg("a", 10));
+    s = noteMessage(s, msg("a", 20));
+    // Read on another machine up to 20: read here too, its count gone.
+    expect(unreadOf(s, { id: "a", updated: 20, news: 20, seen: 20 })).toEqual({ unread: false, n: 0 });
+    // Unread everywhere: unread here, even from before this phone first looked.
+    expect(unreadOf(freshSeen(100), { id: "b", updated: 50, news: 50, seen: 0 })).toEqual({ unread: true, n: 0 });
+    // Seen here but the mark not back yet: still read.
+    expect(unreadOf(markSeen(s, "a", 20), { id: "a", updated: 20, news: 20, seen: 5 }).unread).toBe(false);
+    // New news after the shared mark counts what came after it.
+    s = noteMessage(s, msg("a", 30));
+    expect(unreadOf(s, { id: "a", updated: 30, news: 30, seen: 20 })).toEqual({ unread: true, n: 3 });
+    // Your own message isn't news.
+    expect(unreadOf(freshSeen(0), { id: "c", updated: 40, news: 0, seen: 0 }).unread).toBe(false);
+  });
 });

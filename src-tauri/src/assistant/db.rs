@@ -414,6 +414,13 @@ pub(super) const MIGRATIONS: &[&str] = &[
         created_at  INTEGER NOT NULL
     );
     "#,
+    // Read marks that follow you between machines: each thread read up to `seen`
+    // (epoch ms), kept here rather than on each surface. What's there now counts
+    // as read, so nothing floods in as unread on the first start.
+    r#"
+    ALTER TABLE assistant_threads ADD COLUMN seen INTEGER NOT NULL DEFAULT 0;
+    UPDATE assistant_threads SET seen = updated;
+    "#,
 ];
 
 #[cfg(test)]
@@ -494,7 +501,7 @@ mod tests {
     #[test]
     fn s1_threads_from_before_modes_are_the_assistants() {
         let conn = Connection::open_in_memory().unwrap();
-        crate::db::run_migrations(&conn, &MIGRATIONS[..MIGRATIONS.len() - 7]).unwrap();
+        crate::db::run_migrations(&conn, &MIGRATIONS[..MIGRATIONS.len() - 8]).unwrap();
         conn.execute("INSERT INTO assistant_threads (id, mode, created, updated) VALUES ('old', 'chat', 1, 1)", []).unwrap();
         crate::db::run_migrations(&conn, MIGRATIONS).unwrap();
         let mode: String = conn.query_row("SELECT mode FROM assistant_threads WHERE id = 'old'", [], |r| r.get(0)).unwrap();

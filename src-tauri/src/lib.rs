@@ -286,6 +286,7 @@ pub fn run() {
             assistant::assistant_timing_add,
             assistant::assistant_timings,
             assistant::assistant_thread_keep,
+            assistant::assistant_thread_seen,
             assistant::assistant_config_pinned,
             assistant::assistant_worker_register,
             assistant::assistant_task_put,

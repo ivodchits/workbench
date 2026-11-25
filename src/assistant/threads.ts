@@ -69,6 +69,8 @@ export interface ThreadBackend {
   pendingClear(id: string): Promise<void>;
   /** Step L4; a backend without it keeps the pin in memory only. */
   threadKeep?(threadId: string, keep: boolean): Promise<void>;
+  /** Read marks that follow you between machines; without it, memory only. */
+  threadSeen?(threadId: string, at: number): Promise<boolean>;
 }
 
 export const ipcBackend: ThreadBackend = ipc;
@@ -87,6 +89,8 @@ export interface ThreadStore {
   setTitle(threadId: string, title: string): Promise<ThreadRow | undefined>;
   /** Keep a thread from housekeeping's clean-up of idle threads (step L4). */
   setKeep(threadId: string, keep: boolean): Promise<ThreadRow | undefined>;
+  /** Read a thread up to `at` (never back): the row when its mark moved. */
+  setSeen(threadId: string, at: number): Promise<ThreadRow | undefined>;
   append(
     threadId: string,
     role: StoredRole,
@@ -181,6 +185,14 @@ export function createThreadStore(
       emit();
       return threads.find((t) => t.id === threadId);
     },
+    async setSeen(threadId, at) {
+      const t = threads.find((x) => x.id === threadId);
+      if (!t || at <= (t.seen ?? 0)) return undefined;
+      await backend.threadSeen?.(threadId, at);
+      patchThread(threadId, { seen: at });
+      emit();
+      return threads.find((x) => x.id === threadId);
+    },
     append(threadId, role, content, source) {
       const prev = tails.get(threadId) ?? Promise.resolve();
       const next = prev
@@ -202,6 +214,7 @@ export function createThreadStore(
               m.ts,
               threads.find((t) => t.id === threadId)?.updated ?? 0,
             ),
+            ...((role === "assistant" || role === "notice") && { news: m.ts }),
           });
           sortThreads();
           emit();

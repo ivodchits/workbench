@@ -212,11 +212,14 @@ function viewing(): string | null {
   return shown && !document.hidden && panel === "chat" ? view.current : null;
 }
 
-/** Mark the thread on screen seen, up to its last change. */
+/** Mark the thread on screen seen, up to its last change, here and (Duck's
+ *  shared mark) on every other surface. */
 function seeCurrent(): void {
   const id = viewing();
   const t = id ? view.threads.find((x) => x.id === id) : undefined;
   if (seen && t) setSeen(markSeen(seen, t.id, t.updated));
+  if (t?.news && t.news > (t.seen ?? 0) && view.synced && ws?.readyState === WebSocket.OPEN)
+    post({ type: "thread.seen", threadId: t.id, at: t.news });
 }
 
 /** The unread dots: on the Duck button (any thread), and on the thread picker
@@ -665,8 +668,16 @@ function onFrame(f: RemoteDuckFrame): void {
   if (view.threads !== before.threads || view.messages !== before.messages || view.current !== before.current) keepCache(cacheOf(view));
   if (seen && f.type === "message") {
     const m = f.message;
-    setSeen(viewing() === m.threadId ? markSeen(seen, m.threadId, m.ts) : noteMessage(seen, m));
+    if (viewing() === m.threadId) {
+      setSeen(markSeen(seen, m.threadId, m.ts));
+      seeCurrent();
+    } else setSeen(noteMessage(seen, m));
   } else if (seen && f.type === "threads") setSeen(prune(seen, view.threads.map((t) => t.id)));
+  // A read mark from Duck (read on another surface), or the list on connect.
+  if (f.type === "thread" || f.type === "threads") {
+    paintUnread();
+    seeCurrent();
+  }
   if (r.fx.open) openThread(r.fx.open);
   if (r.fx.refetch && view.current) post({ type: "thread.open", threadId: view.current });
   if (f.type === "goThread" && f.surface === "phone" && view.threads.some((t) => t.id === f.threadId)) {
