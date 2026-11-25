@@ -3003,6 +3003,38 @@ that says so ("Added X; reverted later that day"), not two. Asked for on 2026-11
 - **Done when:** the standup's lines match the log's entries for the day, including
   the laptop's work, a reverted entry is said as reverted, and a day from before the
   log still gets a standup.
+- _(Built, 2026-11-24:
+  - **Which day:** `standup` in `state/officeStandup.ts` first asks the log
+    (`StandupLog`).
+    - The log covers the days from the day it began (`startedAt`, now returned by
+      `daylog_days`), or 30 days before that once the backfill is done.
+    - Going back from yesterday, the first covered day with entries that aren't
+      hidden is the standup's day.
+    - A week the log covers with nothing in it is a quiet week.
+    - Reaching a day from before the log, it reads the transcripts as before.
+  - **The lines:** one Haiku call (`LOG_SYSTEM`, the `office_standup` purpose) for the
+    busiest projects at once.
+    - Each project's entries go in with their status, and a reverted entry is said as
+      reverted. In-progress work goes to `next`.
+    - The lines go through the same `cleanReport` as before.
+  - **Every machine:** the entries are read from this machine's copy (Duck's own, or
+    the mirror of the main's), so the laptop's work is in them.
+    - A project this machine has is named as here and keeps its id. The match is by
+      the log's key: the git remote, else the name.
+    - A project only another machine has goes under the log's key, and the office
+      gives it to whoever's free.
+  - `sessions` in a report from the log is its number of entries. The office doesn't
+    show it.
+  **Checked:**
+  - Vitest (`officeStandup.test.ts`):
+    - yesterday from the log in one call, with `[reverted]` and `[in progress]` in the
+      input and hidden entries left out;
+    - the laptop-only project reported under its key;
+    - a day before the log read from the transcripts;
+    - a covered, empty week is quiet.
+  - The phone and office bundles build.
+  **Live test owed:** the Done when, on a morning after a logged day with the
+  laptop's work in it.)_
 
 ---
 
@@ -3097,4 +3129,4 @@ any session, which lowers the urgency and makes the terminal bugs easier to comp
 | J1 | Daily log: capture and tidy, on the main | ☑ |
 | J2 | Daily log window | ☑ |
 | J3 | Quitting waits for the log | ☑ |
-| J4 | Standup reads the log | ☐ |
+| J4 | Standup reads the log | ☑ |

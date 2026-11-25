@@ -1,9 +1,10 @@
 // The morning standup (office plan O5.5): what the office page asks of
 // `/office/api/standup` and what comes back. The page asks on the day it is; the
-// webview (`state/officeStandup.ts`) finds the last day before it that had sessions
-// (yesterday, or the latest of the week before), reads those sessions' transcripts
-// project by project, and has Haiku say what each project's team got done. Workbench's
-// Rust core keeps the answer for the day, so asking again costs nothing.
+// webview (`state/officeStandup.ts`) finds the last day before it that had work
+// (yesterday, or the latest of the week before) and has Haiku say what each project's
+// team got done: from the daily log's entries, every machine's, for a day the log
+// covers (improvement plan J4), else from that day's transcripts, project by project.
+// Workbench's Rust core keeps the answer for the day, so asking again costs nothing.
 
 export interface StandupRequest {
   /** The page's local date, `YYYY-MM-DD`: the day of the standup. */
@@ -17,7 +18,7 @@ export interface StandupReport {
   projectId: string;
   /** The project's name. */
   project: string;
-  /** Sessions on the day. */
+  /** Sessions on the day (from the log: its entries). */
   sessions: number;
   /** Two or three lines on what got done. */
   done: string[];

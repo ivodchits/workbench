@@ -422,6 +422,9 @@ pub struct Copy {
     /// state at all (the log has run).
     pub backfill: Option<String>,
     pub started: bool,
+    /// When the log began (epoch ms): the days it covers start there, or 30 days
+    /// before once the backfill is done (J4).
+    pub started_at: Option<i64>,
 }
 
 /// The days with entries in the copy this machine reads (J2).
@@ -435,6 +438,7 @@ pub fn daylog_days(app: AppHandle) -> Result<Copy, String> {
         synced_at,
         backfill: state.as_ref().and_then(|s| s["backfill"].as_str().map(String::from)),
         started: state.is_some(),
+        started_at: state.as_ref().and_then(|s| s["startedAt"].as_i64()),
         days: days(&ws).into_iter().map(|(day, entries)| DayCount { day, entries }).collect(),
     })
 }

@@ -63,6 +63,8 @@ export interface LogCopy {
   backfill: string | null;
   /** The log has run at least once. */
   started: boolean;
+  /** When it began, epoch ms. */
+  startedAt: number | null;
 }
 
 export const daylogGit = (dir: string, since: number): Promise<GitActivity> => invoke("daylog_git", { dir, since: Math.floor(since) });
