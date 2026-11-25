@@ -95,6 +95,9 @@ impl DeviceBook for Book {
             None => Err("no such device here".into()),
         }
     }
+    fn peer_session(&self, machine: &str) -> Result<String, String> {
+        Ok(format!("peer-session-for-{machine}"))
+    }
 }
 
 impl Book {
@@ -1007,4 +1010,74 @@ async fn quitting_hands_duck_over_and_a_damaged_copy_is_fetched_again() {
     assert!(tokio::time::timeout(Duration::from_secs(5), desktop.leave()).await.unwrap(), "closes");
     assert!(said.lock().unwrap().iter().any(|s| s.phase == "done" && s.to.is_none()));
     assert_eq!(holder(&desktop), (3, Some(d)));
+}
+
+/// A remote server's two routes the fleet view uses, on loopback: the dashboard
+/// socket sends `snapshot` to a peer session, and actions are kept.
+async fn fake_remote(snapshot: &'static str, actions: Arc<std::sync::Mutex<Vec<String>>>) -> u16 {
+    use axum::extract::ws::{Message as Down, WebSocketUpgrade};
+    use axum::http::HeaderMap;
+    use axum::routing::{get, post};
+    let app = axum::Router::new()
+        .route(
+            "/api/ws",
+            get(move |ws: WebSocketUpgrade, headers: HeaderMap| async move {
+                let proto = headers.get("sec-websocket-protocol").and_then(|v| v.to_str().ok()).unwrap_or("").to_string();
+                assert!(proto.contains("wb-token.peer-session-for-"), "{proto}");
+                ws.protocols(["wb"]).on_upgrade(move |mut s| async move {
+                    let _ = s.send(Down::Text(snapshot.into())).await;
+                    while let Some(Ok(_)) = s.recv().await {}
+                })
+            }),
+        )
+        .route(
+            "/api/action",
+            post(move |headers: HeaderMap, body: String| async move {
+                let auth = headers.get("authorization").and_then(|v| v.to_str().ok()).unwrap_or("");
+                assert!(auth.starts_with("Bearer peer-session-for-"), "{auth}");
+                actions.lock().unwrap().push(body);
+                "ok"
+            }),
+        );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    port
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_fleet_view_follows_another_machines_snapshot() {
+    let ok = Arc::new(AtomicBool::new(false));
+    let desktop = instance("desktop", ok.clone());
+    let laptop = instance("laptop", ok.clone());
+    let code = join_string(&desktop).await;
+    laptop.join(&code).await.unwrap();
+    until("linked", || online(&desktop, "laptop") && online(&laptop, "desktop")).await;
+    let d = id_of(&laptop, "desktop");
+
+    let entries: Arc<std::sync::Mutex<Vec<view::ViewEntry>>> = Arc::default();
+    let seen = entries.clone();
+    let v = view::FleetView::new(laptop.clone(), Box::new(move |e| seen.lock().unwrap().push(e.clone())));
+    // Remote access off there: no socket.
+    v.scan();
+    assert!(v.list().is_empty());
+
+    let actions: Arc<std::sync::Mutex<Vec<String>>> = Arc::default();
+    let port = fake_remote(r#"{"instances":[]}"#, actions.clone()).await;
+    desktop.set_remote_port(Some(port));
+    until("the desktop's port in a beat", || laptop.relay_target(&d).is_some()).await;
+    tokio::spawn(v.clone().run());
+    until("its snapshot", || v.snapshots().len() == 1).await;
+    assert_eq!(v.snapshots()[0], (d.clone(), r#"{"instances":[]}"#.to_string()));
+    assert!(entries.lock().unwrap().iter().any(|e| e.machine == d && e.snapshot.is_some()));
+
+    // An action goes to its /api/action with this machine's session.
+    v.action(&d, &serde_json::json!({ "type": "interrupt", "instanceId": "i1" })).await.unwrap();
+    assert!(actions.lock().unwrap()[0].contains("interrupt"));
+
+    // Its remote access goes off: the view goes, and says so.
+    desktop.set_remote_port(None);
+    until("the view gone", || v.snapshots().is_empty()).await;
+    let last = entries.lock().unwrap().last().cloned().unwrap();
+    assert_eq!((last.machine.as_str(), last.snapshot), (d.as_str(), None));
 }

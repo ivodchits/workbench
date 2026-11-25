@@ -63,6 +63,7 @@ pub mod files;
 pub mod merge;
 pub mod proto;
 mod store;
+pub mod view;
 
 use std::collections::{HashMap, HashSet};
 use std::net::{IpAddr, SocketAddr};
@@ -103,6 +104,9 @@ const NAME_MAX: usize = 40;
 const ASK_TIMEOUT: Duration = Duration::from_secs(5);
 /// A relay session is used this long before another is asked for (the other side
 /// keeps one alive for hours while it's used).
+/// The cache key for this machine's own session on another (no device id is it).
+const PEER_SELF: &str = "~peer";
+
 const RELAY_SESSION_TTL: Duration = Duration::from_secs(3600);
 
 /// What this machine's network says, behind a trait so tests can run on loopback.
@@ -135,6 +139,9 @@ pub trait DeviceBook: Send + Sync + 'static {
     /// A session for `device` on this machine's remote server, for a machine that
     /// relays its requests here (F2.2). The device must be approved here.
     fn relay_session(&self, device: &str) -> Result<String, String>;
+    /// A session on this machine's remote server for fleet member `machine` itself
+    /// (F9.1), which shows this machine's sessions in its own rail and office.
+    fn peer_session(&self, machine: &str) -> Result<String, String>;
 }
 
 /// The database the fleet keeps its state in: the app's (given by [`init`]), or a
@@ -1728,8 +1735,9 @@ impl Fleet {
     }
 
     /// A question from `peer` (the link's reader): the answer to send back.
-    async fn on_ask(self: &Arc<Self>, ask: Ask) -> Result<String, String> {
+    async fn on_ask(self: &Arc<Self>, peer: &str, ask: Ask) -> Result<String, String> {
         match ask {
+            Ask::PeerSession => self.book.peer_session(peer),
             Ask::Handover { term } => self.give_handover(term).await,
             Ask::TakeOver { term, head } => self.take_over(term, head).await,
             Ask::RelaySession { device } => self.book.relay_session(&device),
@@ -2079,7 +2087,7 @@ impl Fleet {
     /// from before unless `fresh` (the last one was refused).
     pub async fn relay_session(&self, id: &str, device: &str, fresh: bool) -> Result<String, String> {
         if id == self.me() {
-            return self.book.relay_session(device);
+            return if device == PEER_SELF { self.book.peer_session(&self.me()) } else { self.book.relay_session(device) };
         }
         let key = (id.to_string(), device.to_string());
         if !fresh {
@@ -2089,9 +2097,31 @@ impl Fleet {
                 }
             }
         }
-        let session = self.ask(id, Ask::RelaySession { device: device.to_string() }).await?;
+        let ask = if device == PEER_SELF { Ask::PeerSession } else { Ask::RelaySession { device: device.to_string() } };
+        let session = self.ask(id, ask).await?;
         self.relay_sessions.lock().unwrap().insert(key, (session.clone(), Instant::now()));
         Ok(session)
+    }
+
+    /// A session for this machine itself on machine `id`'s remote server (F9.1: the
+    /// fleet view and the remote consoles), kept from before unless `fresh`.
+    pub async fn peer_session(&self, id: &str, fresh: bool) -> Result<String, String> {
+        self.relay_session(id, PEER_SELF, fresh).await
+    }
+
+    /// Whether `id` is another member of this fleet (a peer session's holder).
+    pub fn is_member(&self, id: &str) -> bool {
+        let inner = self.inner.lock().unwrap();
+        id != inner.me && inner.members.iter().any(|m| m.id == id)
+    }
+
+    /// The other members that can be relayed to now: linked, with remote access on.
+    pub fn relayable(&self) -> Vec<String> {
+        let ids: Vec<String> = {
+            let inner = self.inner.lock().unwrap();
+            inner.links.keys().filter(|id| **id != inner.me).cloned().collect()
+        };
+        ids.into_iter().filter(|id| self.relay_target(id).is_some()).collect()
     }
 
     /// Where Duck is, when it isn't here: the main (the pin, else the list's first
@@ -2450,7 +2480,66 @@ pub fn init(app: &AppHandle) {
         let _ = host_app.emit("fleet-host", serde_json::json!({ "from": from, "text": text }));
     }));
     app.manage(fleet.clone());
+    // Every other machine's sessions, here (F9.1).
+    let view_app = app.clone();
+    let fleet_view = view::FleetView::new(
+        fleet.clone(),
+        Box::new(move |entry| {
+            let _ = view_app.emit("fleet-view", entry);
+        }),
+    );
+    app.manage(fleet_view.clone());
+    tauri::async_runtime::spawn(fleet_view.run());
     tauri::async_runtime::spawn(fleet.run());
+}
+
+// --- the fleet view (F9.1) ---------------------------------------------------------
+
+#[tauri::command]
+pub fn fleet_view_list(view: State<'_, Arc<view::FleetView>>) -> Vec<view::ViewEntry> {
+    view.list()
+}
+
+#[tauri::command]
+pub async fn fleet_view_action(
+    view: State<'_, Arc<view::FleetView>>,
+    machine: String,
+    action: serde_json::Value,
+) -> Result<(), String> {
+    view.action(&machine, &action).await
+}
+
+/// Open a remote console's socket (`/api/term?…` or `/api/transcript?…`) on another
+/// machine; its frames come down `on`.
+#[tauri::command]
+pub fn fleet_socket_open(
+    view: State<'_, Arc<view::FleetView>>,
+    machine: String,
+    path: String,
+    on: tauri::ipc::Channel<view::SocketMsg>,
+) -> Result<u64, String> {
+    view.open(&machine, &path, Box::new(move |m| {
+        let _ = on.send(m);
+    }))
+}
+
+#[tauri::command]
+pub fn fleet_socket_send(
+    view: State<'_, Arc<view::FleetView>>,
+    id: u64,
+    text: Option<String>,
+    bin: Option<Vec<u8>>,
+) -> Result<(), String> {
+    match (text, bin) {
+        (Some(t), _) => view.send(id, view::SocketOut::Text(t)),
+        (None, Some(b)) => view.send(id, view::SocketOut::Bin(b)),
+        (None, None) => Ok(()),
+    }
+}
+
+#[tauri::command]
+pub fn fleet_socket_close(view: State<'_, Arc<view::FleetView>>, id: u64) {
+    view.close(id);
 }
 
 /// Make the copy of the old main's Duck this machine's (F6.1): its `duck.db` (the

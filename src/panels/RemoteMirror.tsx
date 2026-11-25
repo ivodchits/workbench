@@ -29,6 +29,7 @@ import {
 } from "../state/latestActivity";
 import { useChoiceStates, type PendingChoice } from "../state/pendingChoice";
 import { useRegistry } from "../state/registry";
+import { gitRemoteOf, useGitRemotesVersion } from "../state/gitRemotes";
 import { useConsoles } from "../state/consoles";
 import { onStatusTransition, useLiveStatuses } from "../state/status";
 import { officeDuck } from "../state/officeDuck";
@@ -181,6 +182,8 @@ export default function RemoteMirror(): null {
   // The phone's unread dot on its Duck button: each thread's last change.
   const duckThreadsKey = JSON.stringify(duckStore.threads.map((t) => ({ id: t.id, updated: t.updated })));
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // The projects' git remotes (fleet plan F9.1), as their lookups finish.
+  const remotesVersion = useGitRemotesVersion();
 
   useEffect(() => {
     if (!running) return;
@@ -246,6 +249,7 @@ export default function RemoteMirror(): null {
           remote: p.remoteSshDest != null,
           lastCommitAt: commits.get(p.id)?.lastAt ?? null,
           commitsToday: commits.get(p.id)?.since ?? null,
+          gitRemote: gitRemoteOf(p) ?? null,
         })),
         duck: JSON.parse(duckKey) as RemoteDuck,
         duckThreads: JSON.parse(duckThreadsKey) as { id: string; updated: number }[],
@@ -259,7 +263,7 @@ export default function RemoteMirror(): null {
         timer.current = null;
       }
     };
-  }, [running, registry, consoles, statuses, limits, alerts, notif, created, choices, commits, latest, duckKey, duckThreadsKey]);
+  }, [running, registry, consoles, statuses, limits, alerts, notif, created, choices, commits, latest, duckKey, duckThreadsKey, remotesVersion]);
 
   return null;
 }

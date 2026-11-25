@@ -233,9 +233,9 @@ async fn run(
                     Some(Frame::Host { text }) => fleet.take_host(&peer, text),
                     Some(Frame::Ask { req, ask }) => {
                         // Answered on its own: a handover takes up to a minute.
-                        let (f, o) = (fleet.clone(), out.clone());
+                        let (f, o, p) = (fleet.clone(), out.clone(), peer.clone());
                         tokio::spawn(async move {
-                            let (ok, err) = match f.on_ask(ask).await {
+                            let (ok, err) = match f.on_ask(&p, ask).await {
                                 Ok(v) => (Some(v), None),
                                 Err(e) => (None, Some(e)),
                             };

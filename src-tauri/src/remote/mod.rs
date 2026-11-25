@@ -455,6 +455,26 @@ impl crate::fleet::DeviceBook for RemoteState {
             None => Err("that device isn’t paired there".into()),
         }
     }
+
+    fn peer_session(&self, machine: &str) -> Result<String, String> {
+        let mut inner = self.inner.lock().unwrap();
+        if !inner.running {
+            return Err("remote access is off there".into());
+        }
+        Ok(inner.sessions.start(&peer_device(machine), now()))
+    }
+}
+
+/// The session holder for fleet member `machine` itself (F9.1). Never a device id:
+/// those are random tokens with no `:`.
+fn peer_device(machine: &str) -> String {
+    format!("fleet:{machine}")
+}
+
+/// A peer session's holder is still a member of this machine's fleet.
+fn peer_valid(state: &RemoteState, id: &str) -> bool {
+    id.strip_prefix("fleet:")
+        .is_some_and(|m| crate::fleet::get(&state.app).is_some_and(|f| f.is_member(m)))
 }
 
 /// Bind loopback (and the Tailscale interface, if it is up) and spawn the axum server.
@@ -733,6 +753,13 @@ fn check_token(state: &Arc<RemoteState>, token: Option<&str>, addr: &str) -> Acc
     }
     let now = now();
     let session = state.inner.lock().unwrap().sessions.device(token, now);
+    if let Some(id) = session.as_deref().filter(|id| id.starts_with("fleet:")) {
+        if peer_valid(state, id) {
+            return Access::Granted(id.to_string());
+        }
+        log_failure(state, addr, "a session of a machine that left the fleet");
+        return Access::Denied;
+    }
     let found = match &session {
         Some(id) => state.inner.lock().unwrap().devices.iter().find(|d| &d.id == id).cloned(),
         None => device_by_token(state, token),
@@ -831,6 +858,9 @@ fn start_session(
 
 /// Whether the device behind an open socket still has access.
 fn device_valid(state: &RemoteState, id: &str) -> bool {
+    if id.starts_with("fleet:") {
+        return state.inner.lock().unwrap().running && peer_valid(state, id);
+    }
     let inner = state.inner.lock().unwrap();
     inner.running && inner.devices.iter().any(|d| d.id == id && d.approved)
 }

@@ -2,7 +2,7 @@
 // the fleet, the other Workbench machines it links to on the tailnet, joining them
 // with a one-time code, and the fleet's shared settings (priority order, pin). The backend announces every change as `fleet-changed`.
 
-import { invoke } from "@tauri-apps/api/core";
+import { Channel, invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
 import type { AuthFailure } from "./remote";
@@ -221,4 +221,65 @@ export function fleetLeaveCancel(): Promise<void> {
 /** Quit without handing Duck over: the other machines take it over by themselves. */
 export function fleetQuitNow(): Promise<void> {
   return invoke("fleet_quit_now");
+}
+
+// ── The fleet view (fleet plan F9.1): every other machine's sessions, here ──────
+
+/** One other machine's view: its latest dashboard snapshot (JSON text), or null
+ *  while there's no socket to it (`error` says why, when opening it failed). */
+export interface FleetViewEntry {
+  machine: string;
+  snapshot: string | null;
+  error: string | null;
+}
+
+export function fleetViewList(): Promise<FleetViewEntry[]> {
+  return invoke("fleet_view_list");
+}
+
+export function onFleetView(cb: (e: FleetViewEntry) => void): Promise<UnlistenFn> {
+  return listen<FleetViewEntry>("fleet-view", (e) => cb(e.payload));
+}
+
+/** Send a `RemoteAction` to another machine, as its phone would. */
+export function fleetViewAction(machine: string, action: unknown): Promise<void> {
+  return invoke("fleet_view_action", { machine, action });
+}
+
+/** A frame on a remote console's socket. `bin` is base64. */
+export type FleetSocketMsg =
+  | { t: "open" }
+  | { t: "text"; d: string }
+  | { t: "bin"; d: string }
+  | { t: "closed"; why: string | null };
+
+/** A socket to another machine's `/api/term?…` or `/api/transcript?…`. */
+export interface FleetSocket {
+  sendText(text: string): void;
+  sendBytes(bytes: Uint8Array): void;
+  close(): void;
+}
+
+export async function fleetSocketOpen(
+  machine: string,
+  path: string,
+  on: (m: FleetSocketMsg) => void,
+): Promise<FleetSocket> {
+  const channel = new Channel<FleetSocketMsg>();
+  channel.onmessage = on;
+  const id = await invoke<number>("fleet_socket_open", { machine, path, on: channel });
+  let closed = false;
+  return {
+    sendText(text) {
+      if (!closed) void invoke("fleet_socket_send", { id, text, bin: null }).catch(() => {});
+    },
+    sendBytes(bytes) {
+      if (!closed) void invoke("fleet_socket_send", { id, text: null, bin: Array.from(bytes) }).catch(() => {});
+    },
+    close() {
+      if (closed) return;
+      closed = true;
+      void invoke("fleet_socket_close", { id }).catch(() => {});
+    },
+  };
 }

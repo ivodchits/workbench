@@ -96,6 +96,10 @@ export interface RemoteProject {
   /** How many commits its repo had today (since the local midnight), on any branch;
    *  null for a remote project, or before it is known. */
   commitsToday: number | null;
+  /** Its repo's `origin` as `host/owner/repo` (`normalizeRemote`), null when it has
+   *  none; absent from older desktops (fleet plan F9.1: the same project on two
+   *  machines is matched by it). */
+  gitRemote?: string | null;
 }
 
 /** What Duck is up to, for the office's boss:

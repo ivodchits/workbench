@@ -796,6 +796,30 @@ and drive them as the phone does.
   decisions 1–4. A Rust test opens a view on a loopback peer, gets its snapshot, and
   gets `null` when the link goes. Live test owed: the laptop's snapshot arrives on the
   desktop.
+- _(Built, 2026-11-24: `src-tauri/src/fleet/view.rs`, the `fleet_view_*` and
+  `fleet_socket_*` commands, `src/state/fleetView.ts`, `src/state/fleetRail.ts`,
+  `src/state/gitRemotes.ts`, the wrappers in `src/ipc/fleet.ts`.
+  **Changed from the plan:**
+  - The view doesn't go through the relay's `/m/<machine>/` routes. Those check a
+    paired phone, and this machine isn't one. It asks the peer for a session of its
+    own over the link (`Ask::PeerSession`), held as `fleet:<machine>` on the peer's
+    remote server, valid while that machine is a member. It then opens the same
+    `/api/ws` the relay would, on the peer's tailnet address. So `relay.rs` is
+    unchanged.
+  - The remote console's transcript and terminal sockets are opened the same way
+    (`fleet_socket_open`, frames down a Tauri channel, binary as base64), ready for
+    F9.2.
+  - Matching: by remote when both sides know theirs, else by name. A remote still
+    being looked up matches by name rather than flickering. Several of one
+    machine's projects matching one project here share its divider.
+  - An offline machine keeps its last projects in the store, so its divider stays
+    in the projects it had.
+  **Checked:** `fleetRail.test.ts` (decisions 1–4, a pending remote, an offline
+  machine, two machines), and the Rust test
+  `the_fleet_view_follows_another_machines_snapshot` (a fake remote server on
+  loopback: no socket with remote access off, the snapshot arrives with the peer
+  session, an action is posted, and `null` comes when it goes). Live test owed: the
+  laptop's snapshot arrives on the desktop.)_
 
 ### Step F9.2 — The rail: two groups per project, and the other machines below
 - **Depends on:** F9.1.

@@ -363,6 +363,9 @@ pub enum Ask {
     /// A session on your remote server for this paired device, so I can relay its
     /// requests to you. It must be approved there.
     RelaySession { device: String },
+    /// A session on your remote server for me, the machine asking (F9.1: my rail
+    /// and office show your sessions, and drive them as the phone does).
+    PeerSession,
     /// Send machine `id` a Wake-on-LAN packet: you're on its network (F4.1).
     Wake { id: String },
     /// Your `duck.db` log after `seq`, for my copy of `epoch` (F5.1, `repl.rs`).
