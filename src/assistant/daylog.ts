@@ -322,6 +322,8 @@ export interface RunReport {
   away: string[];
   /** Stopped at the budget's cap. */
   capped: boolean;
+  /** What failed on the way (a call's error), said in the window. */
+  problems?: string[];
 }
 
 // ── parsing what's stored ──
@@ -640,7 +642,10 @@ export function createDayLog(deps: DayLogDeps): DayLog {
         } catch (e) {
           ok = false;
           if (deps.isCap?.(e)) report.capped = true;
-          else warn(`a capture call failed (${g.project.name}, ${g.day})`, e);
+          else {
+            warn(`a capture call failed (${g.project.name}, ${g.day})`, e);
+            (report.problems ??= []).push(`noting ${g.project.name} failed: ${e instanceof Error ? e.message : String(e)}`);
+          }
           break;
         }
       }
@@ -699,7 +704,9 @@ export function createDayLog(deps: DayLogDeps): DayLog {
     return report;
   }
 
-  async function runTidy(opts: { days?: string[]; force?: boolean; onStep?: (s: Step) => void } = {}): Promise<string[]> {
+  async function runTidy(
+    opts: { days?: string[]; force?: boolean; onStep?: (s: Step) => void; problems?: string[] } = {},
+  ): Promise<string[]> {
     const state = await loadState();
     const t = now();
     const dirty = (day: string) =>
@@ -730,9 +737,11 @@ export function createDayLog(deps: DayLogDeps): DayLog {
         } catch (e) {
           if (deps.isCap?.(e)) {
             capped = true;
+            opts.problems?.push("Duck's budget cap was reached before the day was tidied");
             break;
           }
           warn(`a tidy call failed (${name}, ${day})`, e);
+          opts.problems?.push(`tidying ${name} failed: ${e instanceof Error ? e.message : String(e)}`);
           continue;
         }
         entries = [...entries.filter((e) => e.project !== key), ...entriesFrom(out, day, key, name, ns, current)].sort(
@@ -759,14 +768,14 @@ export function createDayLog(deps: DayLogDeps): DayLog {
     refresh: (onStep) =>
       serial(async () => {
         const r = await runCapture(onStep);
-        if (!r.capped) r.tidied = await runTidy({ onStep });
+        if (!r.capped) r.tidied = await runTidy({ onStep, problems: (r.problems ??= []) });
         onStep?.({ step: "done" });
         return r;
       }),
     quitRun: (onStep) =>
       serial(async () => {
         const r = await runCapture(onStep);
-        if (!r.capped) r.tidied = await runTidy({ days: [dayOf(now())], onStep });
+        if (!r.capped) r.tidied = await runTidy({ days: [dayOf(now())], onStep, problems: (r.problems ??= []) });
         return r;
       }),
     async tick() {
@@ -849,7 +858,7 @@ export function createDayLog(deps: DayLogDeps): DayLog {
           }
           if (r.calls === 0) break;
         }
-        if (!total.capped) total.tidied = await runTidy({ onStep });
+        if (!total.capped) total.tidied = await runTidy({ onStep, problems: (total.problems ??= []) });
         const s2 = await loadState();
         s2.backfill = total.capped ? "offered" : "done";
         await deps.files.save({ state: s2 }, "daylog: backfill done");

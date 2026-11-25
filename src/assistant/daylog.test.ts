@@ -447,3 +447,16 @@ describe("entriesFrom", () => {
     ]);
   });
 });
+
+describe("a failed tidy", () => {
+  it("is said in the run's report, not just dropped", async () => {
+    const desk = machine("d1", "desktop");
+    session(desk, "s1", "x", user("u1", at(9), "Add the export"));
+    const { log } = setup([desk], async () => {
+      throw new Error('400 "thinking.type.disabled" is not supported');
+    });
+    const r = await log.refresh();
+    expect(r.tidied).toEqual([]);
+    expect(r.problems).toEqual(['tidying Shop failed: 400 "thinking.type.disabled" is not supported']);
+  });
+});

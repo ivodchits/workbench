@@ -70,6 +70,12 @@ export interface StructuredRequest<S extends z.ZodType> {
   signal?: AbortSignal;
 }
 
+/** The setting that turns up-front thinking off for `model`. Claude Sonnet 5.5
+ *  refuses `disabled` (a 400) and wants `between_tools`; Haiku takes `disabled`. */
+export function noThinking(model: string): "disabled" | "between_tools" {
+  return model.startsWith("claude-sonnet-5-5") ? "between_tools" : "disabled";
+}
+
 export async function structured<S extends z.ZodType = z.ZodString>(
   r: StructuredRequest<S>,
 ): Promise<z.infer<S>> {
@@ -83,7 +89,7 @@ export async function structured<S extends z.ZodType = z.ZodString>(
       model: r.model,
       max_tokens: r.maxTokens,
       system: r.system,
-      thinking: { type: r.think ? "adaptive" : "disabled" },
+      thinking: { type: r.think ? "adaptive" : noThinking(r.model) },
       output_config: { effort: "low", ...(format && { format }) },
       messages: [{ role: "user", content: r.input }],
     },

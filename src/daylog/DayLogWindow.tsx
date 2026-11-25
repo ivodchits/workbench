@@ -115,6 +115,7 @@ export default function DayLogWindow() {
       if (ev.error) setError(ev.error);
       else if (ev.report?.away.length) setError(`Couldn't read ${ev.report.away.join(", ")} now; its work is read when it's back.`);
       else if (ev.report?.capped) setError("Duck's budget cap was reached; the rest is read once there's room.");
+      else if (ev.report?.problems?.length) setError(ev.report.problems.join(" · "));
       void load(day).catch(() => {});
     });
     const whereNow = () => ask({ requestId: "where", kind: "where" });
