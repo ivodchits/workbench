@@ -32,8 +32,9 @@ vi.mock("./activeProject", () => ({ setActiveProject: (id: string) => calls.push
 vi.mock("./dock", () => ({ activatePanel: (id: string) => calls.push(`activate ${id}`) }));
 vi.mock("./consoles", () => ({
   openConsole: (i: Instance) => calls.push(`open ${i.id} ${i.workingDir}`),
-  resumeConsole: (i: Instance) => calls.push(`resume ${i.id} ${i.workingDir} ${i.lastSessionId}`),
-  closeConsole: vi.fn(),
+  resumeConsole: (i: Instance, sessionId?: string, o?: { background?: boolean }) =>
+    calls.push(`resume ${i.id} ${i.workingDir} ${i.lastSessionId}${sessionId ? ` @${sessionId}` : ""}${o?.background ? " bg" : ""}`),
+  closeConsole: (id: string) => calls.push(`close ${id}`),
 }));
 vi.mock("./worktree", () => ({
   provisionWorktree: async (i: Instance) => {
@@ -55,7 +56,11 @@ vi.mock("../panels/terminalPool", () => ({
   readScreen: () => screen,
   submitPrompt: (id: string, text: string) => calls.push(`send ${id} ${text}`),
   submitToTerminal: vi.fn(),
-  release: vi.fn(),
+  release: (id: string) => calls.push(`release ${id}`),
+}));
+vi.mock("./diffs", () => ({
+  closeDiff: (id: string) => calls.push(`close diff ${id}`),
+  diffIdFor: (id: string) => `diff:${id}`,
 }));
 vi.mock("./registry", () => ({
   getRegistry: () => ({ projects, instances }),
@@ -75,6 +80,9 @@ vi.mock("./registry", () => ({
   deleteInstance: async (id: string) => {
     instances = instances.filter((i) => i.id !== id);
     calls.push(`delete ${id}`);
+  },
+  renumberInstances: async (projectId: string) => {
+    calls.push(`renumber ${projectId}`);
   },
 }));
 
@@ -392,5 +400,41 @@ describe("a new session in an existing worktree", () => {
       "not both",
     );
     expect(calls).toEqual([]);
+  });
+});
+
+describe("removing and resuming from another machine (F9.4)", () => {
+  beforeEach(() => {
+    calls.length = 0;
+    projects = [
+      { id: "p1", name: "proj", rootPath: "/root", remoteSshDest: null } as Project,
+      { id: "p2", name: "ssh", rootPath: "/srv", remoteSshDest: "me@host" } as Project,
+    ];
+    instances = [
+      { id: "i1", projectId: "p1", title: "1", workingDir: "/root", lastSessionId: "s-last" } as Instance,
+      { id: "i2", projectId: "p2", title: "1", workingDir: "/srv", lastSessionId: "s-ssh" } as Instance,
+    ];
+  });
+
+  it("kills as the rail does: console, PTY, review panel, row, then renumbers", async () => {
+    handleRemoteAction({ type: "delete", instanceId: "i1" });
+    await vi.waitFor(() => expect(calls).toContain("renumber p1"));
+    expect(calls).toEqual(["close i1", "release i1", "close diff diff:i1", "delete i1", "renumber p1"]);
+    expect(instances.map((i) => i.id)).toEqual(["i2"]);
+  });
+
+  it("resumes the chosen conversation, or the last one, without bringing it forward", () => {
+    handleRemoteAction({ type: "resume", instanceId: "i1", sessionId: "s-old" });
+    handleRemoteAction({ type: "resume", instanceId: "i1" });
+    expect(calls).toEqual(["resume i1 /root s-last @s-old bg", "resume i1 /root s-last bg"]);
+  });
+
+  it("leaves an SSH project's session and an unknown one alone", async () => {
+    handleRemoteAction({ type: "delete", instanceId: "i2" });
+    handleRemoteAction({ type: "resume", instanceId: "i2" });
+    handleRemoteAction({ type: "delete", instanceId: "nope" });
+    await Promise.resolve();
+    expect(calls).toEqual([]);
+    expect(instances).toHaveLength(2);
   });
 });

@@ -386,6 +386,7 @@ pub fn run() {
             fleet::fleet_status,
             fleet::fleet_view_list,
             fleet::fleet_view_action,
+            fleet::fleet_view_sessions,
             fleet::fleet_socket_open,
             fleet::fleet_socket_send,
             fleet::fleet_socket_close,

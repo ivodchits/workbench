@@ -16,7 +16,15 @@ import { ENTER_KEY, INTERRUPT_KEY, ptyWrite } from "../ipc/pty";
 import { onRemoteAction, type RemoteAction } from "../ipc/remote";
 import type { Instance, Project } from "../ipc/registry";
 import type { RemoteChooseAction, RemoteCreateAction } from "../remote/protocol";
-import { addInstance, deleteInstance, getRegistry, nextInstanceTitle, sessionYouStarted } from "./registry";
+import {
+  addInstance,
+  deleteInstance,
+  getRegistry,
+  nextInstanceTitle,
+  renumberInstances,
+  sessionYouStarted,
+} from "./registry";
+import { closeDiff, diffIdFor } from "./diffs";
 import { markInterrupted } from "./status";
 import { getPendingChoice, markChoiceSent, takeHold } from "./pendingChoice";
 import { closeConsole, openConsole, resumeConsole } from "./consoles";
@@ -45,6 +53,10 @@ export function handleRemoteAction(action: RemoteAction): void {
   }
   if (action.type === "choose") {
     chooseRemote(action);
+    return;
+  }
+  if (action.type === "resume") {
+    resumeRemote(action.instanceId, action.sessionId);
     return;
   }
   if (action.type === "openMedia") {
@@ -90,7 +102,41 @@ export function handleRemoteAction(action: RemoteAction): void {
       closeConsole(instanceId);
       release(instanceId);
       break;
+    case "delete":
+      void deleteRemote(instanceId);
+      break;
   }
+}
+
+/** An instance another machine may resume or remove (fleet plan F9.4): not one of an
+ *  SSH project, whose session is a tmux one on its host (killing that wants a
+ *  password typed here). */
+function fleetActionable(instanceId: string): Instance | null {
+  const { instances, projects } = getRegistry();
+  const instance = instances.find((i) => i.id === instanceId);
+  if (!instance) return null;
+  const project = projects.find((p) => p.id === instance.projectId);
+  return project?.remoteSshDest ? null : instance;
+}
+
+/** Resume one of the instance's conversations, its last when `sessionId` is absent
+ *  (a fresh one when it has none): the resume picker's `resumeConsole`, without
+ *  bringing it forward here. */
+function resumeRemote(instanceId: string, sessionId?: string): void {
+  const instance = fleetActionable(instanceId);
+  if (instance) resumeConsole(instance, sessionId, { background: true });
+}
+
+/** The rail's kill (`KillConfirm`), asked for from another machine (which confirmed
+ *  it): stop its console, drop its review panel, delete the row, renumber. */
+async function deleteRemote(instanceId: string): Promise<void> {
+  const instance = fleetActionable(instanceId);
+  if (!instance) return;
+  closeConsole(instance.id);
+  release(instance.id);
+  closeDiff(diffIdFor(instance.id));
+  await deleteInstance(instance.id).catch(() => {});
+  await renumberInstances(instance.projectId).catch(() => {});
 }
 
 /** An answer to a pending prompt: one of its numbered options, or dismissing it. */

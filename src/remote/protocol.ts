@@ -165,14 +165,25 @@ export type RemoteActionType =
   | "start"
   | "stop"
   | "create"
-  | "choose";
+  | "choose"
+  | "delete"
+  | "resume";
 
 /** An action on an existing instance. */
 export interface RemoteInstanceAction {
-  type: Exclude<RemoteActionType, "create" | "choose">;
+  type: Exclude<RemoteActionType, "create" | "choose" | "resume">;
   instanceId: string;
   /** Present for `prompt`. */
   text?: string;
+}
+
+/** Resume one of an instance's conversations (fleet plan F9.4): `sessionId`, or its
+ *  last one when absent. Another fleet machine only (`delete` too): the server drops
+ *  both from the phone and the office. */
+export interface RemoteResumeAction {
+  type: "resume";
+  instanceId: string;
+  sessionId?: string;
 }
 
 /** Start a new session in an existing project (step R7). The phone only ever names
@@ -209,7 +220,12 @@ export interface RemoteOpenMediaAction {
 }
 
 /** An action message from a remote client, routed to the frontend handler. */
-export type RemoteAction = RemoteInstanceAction | RemoteCreateAction | RemoteChooseAction | RemoteOpenMediaAction;
+export type RemoteAction =
+  | RemoteInstanceAction
+  | RemoteResumeAction
+  | RemoteCreateAction
+  | RemoteChooseAction
+  | RemoteOpenMediaAction;
 
 /** A text frame on the terminal-mirror socket (`/api/term`); output itself is binary. */
 export type TermControl =

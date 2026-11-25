@@ -866,6 +866,17 @@ fn device_valid(state: &RemoteState, id: &str) -> bool {
     inner.running && inner.devices.iter().any(|d| d.id == id && d.approved)
 }
 
+/// Actions only another machine of the fleet may send (fleet plan F9.4): removing a
+/// session and resuming one of its conversations. Not the phone, not the office.
+const FLEET_ONLY_ACTIONS: &[&str] = &["delete", "resume"];
+
+/// Whether `action` may come from `holder` (the session's device id; a fleet peer's
+/// is `fleet:<machine>`).
+pub(crate) fn action_allowed(holder: &str, action: &serde_json::Value) -> bool {
+    let kind = action.get("type").and_then(|t| t.as_str()).unwrap_or("");
+    !FLEET_ONLY_ACTIONS.contains(&kind) || holder.starts_with("fleet:")
+}
+
 /// Forget a device on every machine and close its sockets. It leaves a tombstone.
 fn remove_device(state: &RemoteState, id: &str) {
     let at = {
@@ -1185,6 +1196,22 @@ pub fn remote_clear_auth_log(state: State<'_, Arc<RemoteState>>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Removing and resuming sessions is for the fleet's machines only; everything
+    /// else stays open to the phone.
+    #[test]
+    fn delete_and_resume_are_fleet_only() {
+        let del = serde_json::json!({ "type": "delete", "instanceId": "i" });
+        let res = serde_json::json!({ "type": "resume", "instanceId": "i", "sessionId": "s" });
+        let stop = serde_json::json!({ "type": "stop", "instanceId": "i" });
+        assert!(action_allowed("fleet:abc", &del));
+        assert!(action_allowed("fleet:abc", &res));
+        assert!(!action_allowed("devtoken", &del));
+        assert!(!action_allowed("devtoken", &res));
+        assert!(!action_allowed("office", &del));
+        assert!(action_allowed("devtoken", &stop));
+        assert!(action_allowed("devtoken", &serde_json::json!({ "no": "type" })));
+    }
 
     /// The Tailscale CGNAT block 100.64.0.0/10 is recognized; neighboring private and
     /// public ranges are not — so we only ever bind the tailnet (and loopback), never the

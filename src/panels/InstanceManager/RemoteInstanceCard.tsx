@@ -1,8 +1,10 @@
 // Another machine's session in the rail (fleet plan F9.2, decision 6): a card like
 // a local one, fed from that machine's snapshot (phase, activity, needs-you,
 // context), with a small machine mark. Clicking it opens the session in a remote
-// console tab. Its actions are only what the phone can do: interrupt, start, stop.
-// No kill, worktree or edit: those belong to the machine that has it.
+// console tab. Its actions: interrupt, start, stop, and (fleet plan F9.4, not for an
+// SSH project's session) resume with the picker and kill with the rail's
+// confirmation (`RemoteSessionDialogs`, `state/remoteSessionDialogs`). No worktree
+// or edit: those belong to the machine that has it.
 
 import { useState } from "react";
 import { GLYPH, Spinner } from "../../theme";
@@ -11,6 +13,7 @@ import type { RemoteInstance } from "../../remote/protocol";
 import { formatTokens } from "../../util/format";
 import { openRemoteConsole, remoteStatus, sendRemote } from "../remoteSession";
 import { relativeTime } from "./status";
+import { askKillRemote, askResumeRemote } from "../../state/remoteSessionDialogs";
 
 interface Props {
   inst: RemoteInstance;
@@ -107,9 +110,20 @@ function RemoteInstanceCard({ inst, machine, machineName, localProject }: Props)
           <span style={{ display: "flex", gap: 9, flex: "0 0 auto" }} onClick={(e) => e.stopPropagation()}>
             {inst.live && inst.phase === "working" && <CardAction label="interrupt" onClick={() => act("interrupt")}>⏹</CardAction>}
             {inst.live ? (
-              <CardAction label={`stop it on ${machineName}`} onClick={() => act("stop")}>{GLYPH.fail}</CardAction>
+              <CardAction label={`stop it on ${machineName}`} onClick={() => act("stop")}>■</CardAction>
             ) : (
               <CardAction label={`start it on ${machineName}`} onClick={() => act("start")}>▶</CardAction>
+            )}
+            {/* An SSH project's session is a tmux one on its host: not from here. */}
+            {!inst.remote && (
+              <CardAction label={`resume a session on ${machineName}`} onClick={() => askResumeRemote(machine, machineName, inst)}>
+                ↻
+              </CardAction>
+            )}
+            {!inst.remote && (
+              <CardAction label={`kill it on ${machineName}`} onClick={() => askKillRemote(machine, machineName, inst)} danger>
+                {GLYPH.fail}
+              </CardAction>
             )}
           </span>
         ) : (
@@ -144,7 +158,17 @@ function RemoteInstanceCard({ inst, machine, machineName, localProject }: Props)
   );
 }
 
-function CardAction({ label, onClick, children }: { label: string; onClick: () => void; children: React.ReactNode }) {
+function CardAction({
+  label,
+  onClick,
+  danger,
+  children,
+}: {
+  label: string;
+  onClick: () => void;
+  danger?: boolean;
+  children: React.ReactNode;
+}) {
   return (
     <button
       type="button"
@@ -154,7 +178,7 @@ function CardAction({ label, onClick, children }: { label: string; onClick: () =
         e.stopPropagation();
         onClick();
       }}
-      style={{ background: "transparent", border: "none", cursor: "pointer", padding: 0, lineHeight: 1, font: "11px var(--wb-mono)", color: "var(--wb-accent)" }}
+      style={{ background: "transparent", border: "none", cursor: "pointer", padding: 0, lineHeight: 1, font: "11px var(--wb-mono)", color: danger ? "var(--wb-needs)" : "var(--wb-accent)" }}
     >
       {children}
     </button>

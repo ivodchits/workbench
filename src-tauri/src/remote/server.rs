@@ -31,7 +31,10 @@
 //!   subprotocol beside `wb` — a browser can't set an `Authorization` header on a
 //!   `WebSocket`, and a query string would put the token in URLs and logs).
 //! - `POST /api/action` — submit one action over plain HTTP (auth: bearer). Same effect
-//!   as a WS action: forwarded to the webview as `remote-action`.
+//!   as a WS action: forwarded to the webview as `remote-action`. `delete` and
+//!   `resume` are taken from another fleet machine only ([`super::action_allowed`]).
+//! - `GET /api/sessions` — an instance's resumable conversations, for another fleet
+//!   machine's resume picker (fleet machines only; `?instance=`).
 //! - `GET /api/term` — WebSocket: mirrors one instance's live PTY (step 4.5). Attaches
 //!   as a multiplexer subscriber (step 4.1), streams raw output down (with scrollback
 //!   replayed on connect) and routes raw keystrokes up (auth: as `/api/ws`;
@@ -114,6 +117,7 @@ async fn run(listener: std::net::TcpListener, state: Arc<RemoteState>) -> std::i
         .route("/api/fleet", get(api_fleet))
         .route("/api/ws", get(api_ws))
         .route("/api/action", post(api_action))
+        .route("/api/sessions", get(api_sessions))
         .route("/api/term", get(api_term))
         .route("/api/transcript", get(super::transcript::api_transcript))
         // Files a session showed with `show_media` (improvement plan S3).
@@ -453,15 +457,72 @@ async fn api_action(
     body: Bytes,
 ) -> Response {
     let addr = client_addr(peer, &headers);
-    if let Err(refusal) = authed(&state, bearer(&headers).as_deref(), &addr) {
-        return refusal;
-    }
+    let holder = match authed(&state, bearer(&headers).as_deref(), &addr) {
+        Ok(id) => id,
+        Err(refusal) => return refusal,
+    };
     match serde_json::from_slice::<Value>(&body) {
+        Ok(action) if !super::action_allowed(&holder, &action) => StatusCode::FORBIDDEN.into_response(),
         Ok(action) => {
             let _ = state.app.emit("remote-action", action);
             StatusCode::OK.into_response()
         }
         Err(_) => StatusCode::BAD_REQUEST.into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+struct SessionsQuery {
+    instance: String,
+}
+
+/// `GET /api/sessions?instance=…` (fleet plan F9.4): the conversations an instance
+/// can resume, for another machine's resume picker. Fleet machines only, and not a
+/// session of an SSH project (its transcripts live on the host).
+async fn api_sessions(
+    State(state): State<Arc<RemoteState>>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    Query(q): Query<SessionsQuery>,
+) -> Response {
+    let holder = match authed(&state, bearer(&headers).as_deref(), &client_addr(peer, &headers)) {
+        Ok(id) => id,
+        Err(refusal) => return refusal,
+    };
+    if !holder.starts_with("fleet:") {
+        return StatusCode::FORBIDDEN.into_response();
+    }
+    let found = {
+        let db = state.app.state::<crate::db::Db>();
+        let Ok(conn) = db.conn.lock() else {
+            return StatusCode::SERVICE_UNAVAILABLE.into_response();
+        };
+        crate::registry::get_instance(&conn, &q.instance).ok().map(|i| {
+            let ssh = crate::registry::get_project(&conn, &i.project_id)
+                .map(|p| p.remote_ssh_dest.is_some())
+                .unwrap_or(false);
+            (i, ssh)
+        })
+    };
+    let Some((inst, ssh)) = found else {
+        return (StatusCode::NOT_FOUND, Json(json!({ "error": "that session is gone there" }))).into_response();
+    };
+    if ssh {
+        return (StatusCode::CONFLICT, Json(json!({ "error": "an SSH project’s sessions live on its host" })))
+            .into_response();
+    }
+    let app = state.app.clone();
+    let dir = inst.working_dir.clone();
+    let listed = tauri::async_runtime::spawn_blocking(move || crate::transcript::list_project_sessions(app, dir)).await;
+    match listed {
+        Ok(Ok(sessions)) => Json(json!({
+            "workingDir": inst.working_dir,
+            "lastSessionId": inst.last_session_id,
+            "sessions": sessions,
+        }))
+        .into_response(),
+        Ok(Err(e)) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": e }))).into_response(),
+        Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     }
 }
 
@@ -520,6 +581,9 @@ async fn handle_socket(mut socket: WebSocket, state: Arc<RemoteState>, device: S
             incoming = socket.recv() => match incoming {
                 Some(Ok(Message::Text(t))) => {
                     if let Ok(action) = serde_json::from_str::<Value>(t.as_str()) {
+                        if !super::action_allowed(&device, &action) {
+                            continue;
+                        }
                         let _ = state.app.emit("remote-action", action);
                     }
                 }

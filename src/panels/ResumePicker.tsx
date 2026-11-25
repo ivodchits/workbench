@@ -12,17 +12,26 @@
 // to highlight. Resuming into an instance that's *working* or *needs you* first asks
 // for confirmation rather than tearing its live session down silently.
 
-import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import Modal from "./InstanceManager/Modal";
 import { registerCommand } from "../keyboard/bus";
 import { getRegistry, useRegistry } from "../state/registry";
 import { useResumePicker, closeResumePicker, openResumePicker } from "../state/resumePicker";
-import { getLiveStatuses, useLiveStatuses, type StatusPhase } from "../state/status";
+import { getLiveStatuses, useLiveStatuses } from "../state/status";
 import { getActiveConsoleId, resumeConsole, useConsoles } from "../state/consoles";
 import { setActiveProject, getActiveProject } from "../state/activeProject";
 import { activatePanel } from "../state/dock";
 import { listProjectSessions, type SessionSummary } from "../ipc/sessions";
+import {
+  ago,
+  cancelBtnStyle,
+  confirmBtnStyle,
+  hintRowStyle,
+  phaseDot,
+  searchStyle,
+  warnRowStyle,
+} from "./resumePickerParts";
 import type { Instance } from "../ipc/registry";
 
 /** Always-mounted host: opens the picker on the `resumeLastSession` command, scoped
@@ -45,30 +54,6 @@ export default function ResumePickerHost() {
   );
   if (!open) return null;
   return <ResumePicker />;
-}
-
-/** Phase → status glyph + color for the instance list (mirrors the rail palette). */
-function phaseDot(phase: StatusPhase | undefined): { glyph: string; color: string } | null {
-  switch (phase) {
-    case "working":
-      return { glyph: "◐", color: "var(--wb-working)" };
-    case "needs_you":
-      return { glyph: "●", color: "var(--wb-needs)" };
-    case "done":
-      return { glyph: "○", color: "var(--wb-done)" };
-    default:
-      return null;
-  }
-}
-
-function ago(epochSecs: number): string {
-  const s = Math.max(0, Math.floor(Date.now() / 1000) - epochSecs);
-  if (s < 60) return `${s}s ago`;
-  const m = Math.floor(s / 60);
-  if (m < 60) return `${m}m ago`;
-  const h = Math.floor(m / 60);
-  if (h < 24) return `${h}h ago`;
-  return `${Math.floor(h / 24)}d ago`;
 }
 
 function ResumePicker() {
@@ -321,13 +306,13 @@ function ResumePicker() {
   );
 }
 
-function InstanceRow({
+export function InstanceRow({
   inst,
   dot,
   selected,
   onSelect,
 }: {
-  inst: Instance;
+  inst: { title: string };
   dot: { glyph: string; color: string } | null;
   selected: boolean;
   onSelect: () => void;
@@ -368,7 +353,7 @@ function InstanceRow({
   );
 }
 
-function SessionRow({
+export function SessionRow({
   session,
   selected,
   current,
@@ -445,7 +430,7 @@ function Tag({ children, color }: { children: string; color: string }) {
   );
 }
 
-function PaneLabel({ children }: { children: React.ReactNode }) {
+export function PaneLabel({ children }: { children: React.ReactNode }) {
   return (
     <div
       style={{
@@ -464,7 +449,7 @@ function PaneLabel({ children }: { children: React.ReactNode }) {
   );
 }
 
-function Empty({ children }: { children: React.ReactNode }) {
+export function Empty({ children }: { children: React.ReactNode }) {
   return (
     <div style={{ font: "11.5px var(--wb-mono)", color: "var(--wb-textFaint)", padding: "10px 4px" }}>
       {children}
@@ -472,60 +457,10 @@ function Empty({ children }: { children: React.ReactNode }) {
   );
 }
 
-function Hint({ k, v }: { k: string; v: string }) {
+export function Hint({ k, v }: { k: string; v: string }) {
   return (
     <span>
       <span style={{ color: "var(--wb-accent)" }}>{k}</span> {v}
     </span>
   );
 }
-
-const searchStyle: CSSProperties = {
-  background: "var(--wb-bg)",
-  color: "var(--wb-text)",
-  border: "1px solid var(--wb-borderActive)",
-  padding: "8px 10px",
-  fontFamily: "var(--wb-mono)",
-  fontSize: 13,
-  outline: "none",
-};
-
-const hintRowStyle: CSSProperties = {
-  display: "flex",
-  alignItems: "center",
-  gap: 12,
-  borderTop: "1px solid var(--wb-border)",
-  paddingTop: 9,
-  font: "10px var(--wb-mono)",
-  color: "var(--wb-textFaint)",
-};
-
-const warnRowStyle: CSSProperties = {
-  display: "flex",
-  alignItems: "center",
-  gap: 10,
-  borderTop: "1px solid var(--wb-border)",
-  paddingTop: 9,
-  font: "11px var(--wb-mono)",
-  color: "var(--wb-text)",
-};
-
-const confirmBtnStyle: CSSProperties = {
-  font: "11px var(--wb-mono)",
-  color: "var(--wb-needs)",
-  background: "transparent",
-  border: "1px solid var(--wb-needs)",
-  borderRadius: 3,
-  padding: "3px 9px",
-  cursor: "pointer",
-};
-
-const cancelBtnStyle: CSSProperties = {
-  font: "11px var(--wb-mono)",
-  color: "var(--wb-textDim2)",
-  background: "transparent",
-  border: "1px solid var(--wb-border)",
-  borderRadius: 3,
-  padding: "3px 9px",
-  cursor: "pointer",
-};

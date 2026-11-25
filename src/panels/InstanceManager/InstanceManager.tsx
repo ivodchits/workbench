@@ -82,6 +82,7 @@ import { pickKillTarget } from "./killTarget";
 import RemoteInstanceCard from "./RemoteInstanceCard";
 import { remoteStatus } from "../remoteSession";
 import { FleetSection, MachineDivider, RemotePicker } from "./FleetRail";
+import RemoteSessionDialogs from "../RemoteSessionDialogs";
 import { getFleetRail, offlineWhy, useFleetRail } from "../../state/useFleetRail";
 import { newSessionElsewhere, targetsFor } from "../../state/fleetCreate";
 import { useFleet } from "../../state/fleet";
@@ -765,6 +766,7 @@ function InstanceManager({ onCollapse }: InstanceManagerProps) {
           />
         ))}
       <RemotePicker />
+      <RemoteSessionDialogs />
       {worktreePick && (
         <WorktreePicker
           project={worktreePick.project}

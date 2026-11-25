@@ -2540,6 +2540,34 @@ pub async fn fleet_view_action(
     view.action(&machine, &action).await
 }
 
+/// Instance `instance`'s resumable conversations on another machine (F9.4): its
+/// `/api/sessions` answer, `{ workingDir, lastSessionId, sessions }`.
+#[tauri::command]
+pub async fn fleet_view_sessions(
+    view: State<'_, Arc<view::FleetView>>,
+    machine: String,
+    instance: String,
+) -> Result<serde_json::Value, String> {
+    if instance.is_empty() || !instance.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
+        return Err("a strange instance id".into());
+    }
+    let path = format!("/api/sessions?instance={instance}");
+    let resp = view.get(&machine, &path, None).await?;
+    let status = resp.status();
+    let body = resp.bytes().await.map_err(|e| format!("that machine’s answer broke off: {e}"))?;
+    let v: serde_json::Value = serde_json::from_slice(&body).unwrap_or(serde_json::Value::Null);
+    if !status.is_success() {
+        let why = v.get("error").and_then(|e| e.as_str()).map(str::to_string);
+        return Err(why.unwrap_or_else(|| match status.as_u16() {
+            // No reason given: a build from before F9.4, without the route.
+            404 => "that machine’s Workbench is too old for this: update it".into(),
+            403 => "that machine doesn’t take this from here".into(),
+            _ => format!("that machine refused ({status})"),
+        }));
+    }
+    Ok(v)
+}
+
 /// Open a remote console's socket (`/api/term?…` or `/api/transcript?…`) on another
 /// machine; its frames come down `on`.
 #[tauri::command]

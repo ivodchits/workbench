@@ -6,6 +6,7 @@ import { Channel, invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
 import type { AuthFailure } from "./remote";
+import type { SessionSummary } from "./sessions";
 
 export interface FleetMember {
   id: string;
@@ -244,6 +245,17 @@ export function onFleetView(cb: (e: FleetViewEntry) => void): Promise<UnlistenFn
 /** Send a `RemoteAction` to another machine, as its phone would. */
 export function fleetViewAction(machine: string, action: unknown): Promise<void> {
   return invoke("fleet_view_action", { machine, action });
+}
+
+/** An instance's resumable conversations on another machine (fleet plan F9.4). */
+export interface FleetSessions {
+  workingDir: string;
+  lastSessionId: string | null;
+  sessions: SessionSummary[];
+}
+
+export function fleetViewSessions(machine: string, instance: string): Promise<FleetSessions> {
+  return invoke("fleet_view_sessions", { machine, instance });
 }
 
 /** A frame on a remote console's socket. `bin` is base64. */

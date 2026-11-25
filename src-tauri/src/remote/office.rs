@@ -417,6 +417,10 @@ fn compose(local: &str, me: &str, name_of: impl Fn(&str) -> Option<String>, peer
 /// An action from the office: to another machine when it names one (a worker of
 /// theirs, F9.3), else to the webview as the phone's are.
 fn route_action(state: &Arc<RemoteState>, mut action: Value) {
+    // Removing and resuming sessions are the rail's, never the office's.
+    if !super::action_allowed("office", &action) {
+        return;
+    }
     let machine = action.as_object_mut().and_then(|o| o.remove("machine")).and_then(|m| m.as_str().map(str::to_string));
     let here = crate::fleet::get(&state.app).map(|f| f.id());
     match (machine, state.app.try_state::<Arc<crate::fleet::view::FleetView>>()) {
