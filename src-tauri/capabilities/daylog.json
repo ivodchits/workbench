@@ -1,0 +1,10 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "daylog",
+  "description": "The daily log's window (improvement plan J2): one window reading this machine's copy of Duck's repo, asking the main window to run or edit the log, and reading the prefs for theming.",
+  "windows": ["daylog"],
+  "permissions": [
+    "core:default",
+    "store:default"
+  ]
+}

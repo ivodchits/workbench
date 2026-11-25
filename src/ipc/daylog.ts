@@ -3,6 +3,7 @@
 // from an offset.
 
 import { invoke } from "@tauri-apps/api/core";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import type { TranscriptPage } from "./transcript";
 
 export interface GitCommit {
@@ -58,6 +59,10 @@ export interface LogCopy {
   /** The copy's last log commit, epoch seconds. */
   syncedAt: number | null;
   days: DayCount[];
+  /** The state's backfill (null: not offered yet). */
+  backfill: string | null;
+  /** The log has run at least once. */
+  started: boolean;
 }
 
 export const daylogGit = (dir: string, since: number): Promise<GitActivity> => invoke("daylog_git", { dir, since: Math.floor(since) });
@@ -72,10 +77,18 @@ export const daylogSave = (workspace: string | null, save: SaveRequest, message:
  *  branches kept (F6.2). */
 export const daylogOwnNotes = (sinceDay: string): Promise<unknown[]> => invoke("daylog_own_notes", { sinceDay });
 
-export const daylogDays = (workspace: string | null): Promise<LogCopy> => invoke("daylog_days", { workspace });
+/** The days with entries in the copy this machine reads: Duck's own on the main,
+ *  else the mirror of the main's. */
+export const daylogDays = (): Promise<LogCopy> => invoke("daylog_days");
 
-export const daylogDay = (workspace: string | null, day: string): Promise<unknown | null> =>
-  invoke("daylog_day", { workspace, day });
+/** One day's entries in that copy (null: none). */
+export const daylogDay = (day: string): Promise<unknown | null> => invoke("daylog_day", { day });
+
+/** Open the daily log's window, or focus it. */
+export const openDayLogWindow = (): Promise<void> => invoke("window_open_daylog");
+
+/** A save on this machine (the main) changed the log. */
+export const onDaylogChanged = (cb: () => void): Promise<UnlistenFn> => listen("daylog-changed", () => cb());
 
 /** A session's transcript read forward from `fromOffset`, by its id. */
 export const readSessionForward = (sessionId: string, fromOffset: number, maxBytes?: number): Promise<TranscriptPage> =>

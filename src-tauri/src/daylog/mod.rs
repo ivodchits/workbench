@@ -22,7 +22,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tauri::{AppHandle, Manager};
+use tauri::{AppHandle, Emitter, Manager};
 
 use crate::git::run::{exec, Spec};
 
@@ -355,8 +355,9 @@ pub fn branch_notes(ws: &Path, since_day: &str) -> Vec<Value> {
 
 /// The workspace this machine reads the log from: Duck's own when Duck runs here,
 /// else the mirror of the main's (when it has one).
-fn copy(app: &AppHandle, workspace: Option<&str>) -> Result<(PathBuf, bool), String> {
-    let own = crate::assistant::workspace::resolve(workspace)?;
+fn copy(app: &AppHandle) -> Result<(PathBuf, bool), String> {
+    let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let own = crate::assistant::workspace::resolve_configured(&dir)?;
     if let Some(fleet) = crate::fleet::get(app) {
         if let Some(mirror) = fleet.duck_mirror() {
             if crate::fleet::files::head(&mirror).is_some() {
@@ -375,13 +376,15 @@ pub fn daylog_load(workspace: Option<String>, days: Vec<String>) -> Result<Loade
     load(&ws, &days)
 }
 
-/// Save a run's changes and commit them, as one commit.
+/// Save a run's changes and commit them, as one commit. The window hears of it
+/// (`daylog-changed`).
 #[tauri::command(async)]
-pub fn daylog_save(workspace: Option<String>, save: Save, message: String) -> Result<Saved, String> {
+pub fn daylog_save(app: AppHandle, workspace: Option<String>, save: Save, message: String) -> Result<Saved, String> {
     let ws = crate::assistant::workspace::resolve(workspace.as_deref())?;
     let saved = self::save(&ws, &save)?;
     if !saved.files.is_empty() {
         crate::assistant::memory::commit(&ws, saved.files.clone(), message);
+        let _ = app.emit("daylog-changed", ());
     }
     Ok(saved)
 }
@@ -415,27 +418,34 @@ pub struct Copy {
     /// The copy's last commit, epoch seconds.
     pub synced_at: Option<i64>,
     pub days: Vec<DayCount>,
+    /// The log's state's `backfill` (null: not offered yet), and whether there's a
+    /// state at all (the log has run).
+    pub backfill: Option<String>,
+    pub started: bool,
 }
 
 /// The days with entries in the copy this machine reads (J2).
 #[tauri::command(async)]
-pub fn daylog_days(app: AppHandle, workspace: Option<String>) -> Result<Copy, String> {
-    let (ws, mirrored) = copy(&app, workspace.as_deref())?;
+pub fn daylog_days(app: AppHandle) -> Result<Copy, String> {
+    let (ws, mirrored) = copy(&app)?;
     let synced_at = git(&ws, &["log", "-1", "--format=%ct", "--", DIR]).and_then(|s| s.trim().parse().ok());
+    let state: Option<Value> = std::fs::read_to_string(ws.join(STATE)).ok().and_then(|t| serde_json::from_str(&t).ok());
     Ok(Copy {
         mirrored,
         synced_at,
+        backfill: state.as_ref().and_then(|s| s["backfill"].as_str().map(String::from)),
+        started: state.is_some(),
         days: days(&ws).into_iter().map(|(day, entries)| DayCount { day, entries }).collect(),
     })
 }
 
 /// One day's entries in the copy this machine reads (J2).
 #[tauri::command(async)]
-pub fn daylog_day(app: AppHandle, workspace: Option<String>, day: String) -> Result<Option<Value>, String> {
+pub fn daylog_day(app: AppHandle, day: String) -> Result<Option<Value>, String> {
     if !day_ok(&day) {
         return Err(format!("not a day: {day}"));
     }
-    let (ws, _) = copy(&app, workspace.as_deref())?;
+    let (ws, _) = copy(&app)?;
     Ok(std::fs::read_to_string(ws.join(day_file(&day))).ok().and_then(|t| serde_json::from_str(&t).ok()))
 }
 

@@ -53,8 +53,21 @@ import { badgeText, createAutopilot, ipcAutopilotBackend, type AutopilotManager 
 import { createDecisionsLog, ipcDecisionsLogBackend, sessionOfRow, trustEntry } from "./decisionsLog";
 import { ipcPlanStore } from "./generatedPlan";
 import { capMessage, errorMessage, getClient, oneShot, structured } from "./client";
-import { CAPTURE_SYSTEM, CaptureOut, createDayLog, PURPOSE as DAYLOG_PURPOSE, TIDY_SYSTEM, TidyOut, type DayLog, type LogMachine } from "./daylog";
+import {
+  CAPTURE_SYSTEM,
+  CaptureOut,
+  createDayLog,
+  PURPOSE as DAYLOG_PURPOSE,
+  TIDY_SYSTEM,
+  TidyOut,
+  type DayLog,
+  type LogMachine,
+  type RunReport as DayLogReport,
+  type Step as DayLogStep,
+} from "./daylog";
 import type { Activity } from "./daylogSource";
+import { startDayLogBridge, type DayLogRequest } from "./daylogBridge";
+import { emit, listen } from "@tauri-apps/api/event";
 import { daylogLoad, daylogSave } from "../ipc/daylog";
 import { MAIN_MODEL, PRIMITIVE_MODEL } from "./prompt";
 import { createEngine, eventText, type Engine } from "./engine";
@@ -631,6 +644,28 @@ export function endpoint(
         else await r.setEnabled(msg.id, msg.action === "resume");
         return;
       }
+      case "daylog.run":
+      case "daylog.edit": {
+        const log = dayLog;
+        const { requestId } = msg;
+        if (!log) {
+          answer({ type: "daylog.done", requestId, error: "The daily log isn't running on Duck's main.", report: null });
+          return;
+        }
+        try {
+          let report: DayLogReport | null = null;
+          if (msg.type === "daylog.edit") await log.editEntry(msg.day, msg.id, msg.change);
+          else if (msg.what === "declineBackfill") await log.declineBackfill();
+          else {
+            const step = (s: DayLogStep) => answer({ type: "daylog.step", requestId, step: s });
+            report = msg.what === "backfill" ? await log.backfill(step) : await log.refresh(step);
+          }
+          answer({ type: "daylog.done", requestId, error: null, report });
+        } catch (err) {
+          answer({ type: "daylog.done", requestId, error: errorMessage(err), report: null });
+        }
+        return;
+      }
       case "backup.create": {
         if (!routines) throw new Error("Routines aren't available here.");
         await routines.backup.create(msg.name);
@@ -976,6 +1011,21 @@ async function startShell(): Promise<Shell> {
   const drawer = createSwitchTransport(createLocalTransport(endpointSwap));
   hub.setEndpoint(endpointSwap);
   fleetLink.setDrawer(drawer);
+  // The daily log's window (J2) reaches Duck's main through the drawer's transport.
+  startDayLogBridge({
+    transport: drawer,
+    where: () =>
+      duckHere
+        ? { available: true, main: null, why: null }
+        : drawer.where()
+          ? { available: true, main: drawer.where(), why: null }
+          : { available: false, main: null, why: "Duck's main machine isn't connected now." },
+    listen: (cb) => {
+      const off = listen<DayLogRequest>("daylog-request", ({ payload }) => cb(payload));
+      return () => void off.then((f) => f());
+    },
+    emit: (ev) => void emit("daylog-event", ev).catch(() => {}),
+  });
   // The phones' reminders follow whichever core is running.
   const phoneReminderSubs = new Set<() => void>();
   const coreOrThrow = () => {

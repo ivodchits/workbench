@@ -66,6 +66,7 @@ export type CommandId =
   | "pluginsReload"
   | "pluginsEdit"
   | "openOffice"
+  | "openDayLog"
   // git panel (G5) — handled by the most recently activated Git panel
   | "gitRefresh"
   | "gitFetch"
@@ -206,6 +207,8 @@ const RAW_BINDINGS: RawBinding[] = [
   { chord: "", command: "pluginsEdit", scope: "global", title: "Plugins: edit" },
   // The office (office plan O0.2): opens in the browser. Unbound, like the plugins'.
   { chord: "", command: "openOffice", scope: "global", title: "Open the office" },
+  // The daily log's window (J2). `U` for "update": Ctrl+Shift+J is the notes'.
+  { chord: "Ctrl+Shift+U", command: "openDayLog", scope: "global", title: "Open the daily log" },
   // Attention navigation (wired to the status engine in Phase 2). Modifiers must
   // be written in `eventToChord`'s canonical order (Ctrl → Alt → Shift) or the
   // string match in `matchCommand` never fires — hence `Alt+Shift`, not `Shift+Alt`.

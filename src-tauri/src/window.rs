@@ -91,3 +91,22 @@ pub async fn window_open_torn(
         .map(|_| ())
         .map_err(|e| e.to_string())
 }
+
+/// The daily log's window (improvement plan J2): one of it. Opening it again shows
+/// and focuses the one there is.
+pub const DAYLOG_LABEL: &str = "daylog";
+
+#[tauri::command]
+pub async fn window_open_daylog(app: AppHandle) -> Result<(), String> {
+    if let Some(win) = app.get_webview_window(DAYLOG_LABEL) {
+        let _ = win.show();
+        let _ = win.unminimize();
+        let _ = win.set_focus();
+        return Ok(());
+    }
+    let builder = WebviewWindowBuilder::new(&app, DAYLOG_LABEL, WebviewUrl::App("index.html?window=daylog".into()))
+        .title("Daily log")
+        .inner_size(780.0, 720.0)
+        .min_inner_size(420.0, 360.0);
+    profile(&app, builder).build().map(|_| ()).map_err(|e| e.to_string())
+}

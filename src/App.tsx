@@ -36,6 +36,7 @@ import {
 import { useGlobalKeys } from "./keyboard";
 import { loadKeymap } from "./keyboard/keymap";
 import { registerCommand, runCommand } from "./keyboard/bus";
+import { runAction } from "./keyboard/commands";
 import { getHookServerStatus, onHookEvent } from "./ipc/hooks";
 import { initStatusEngine } from "./state/status";
 import { initStatusWatchdog } from "./state/statusWatchdog";
@@ -413,6 +414,7 @@ function TitleBar({ context }: { context: string }) {
       </div>
       <ProjectToolbar />
       <PaletteButton />
+      <DayLogButton />
       <TemplatesButton />
       <PresetsBar />
     </div>
@@ -449,6 +451,39 @@ function PaletteButton() {
     >
       <span style={{ color: "var(--wb-accent)" }}>{GLYPH.run}</span>
       palette
+    </button>
+  );
+}
+
+/** Title-bar entry point to the daily log's window (improvement plan J2), beside the
+ *  palette's "Open the daily log" and Ctrl+Shift+U. */
+function DayLogButton() {
+  const [hover, setHover] = useState(false);
+  return (
+    <button
+      type="button"
+      onClick={() => runAction("openDayLog")}
+      onMouseEnter={() => setHover(true)}
+      onMouseLeave={() => setHover(false)}
+      aria-label="daily log"
+      title="the daily log (Ctrl+Shift+U)"
+      style={{
+        display: "inline-flex",
+        alignItems: "center",
+        gap: 5,
+        background: hover ? "var(--wb-sel)" : "transparent",
+        border: "1px solid var(--wb-border)",
+        color: hover ? "var(--wb-accent)" : "var(--wb-textDim2)",
+        font: "11px var(--wb-mono)",
+        cursor: "pointer",
+        padding: "2px 8px",
+        marginRight: 6,
+        letterSpacing: "0.12em",
+        textTransform: "uppercase",
+      }}
+    >
+      <span style={{ color: "var(--wb-accent)" }}>≡</span>
+      log
     </button>
   );
 }

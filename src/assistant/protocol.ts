@@ -6,6 +6,7 @@
 // Surfaces send `ClientMessage`s and render `DuckEvent`s; they never reach into the
 // engine or the thread store directly.
 
+import type { RunReport as DayLogReport, Step as DayLogStep } from "./daylog";
 import type { DecisionRow, Spend, StoredMessage, ThreadRow } from "../ipc/assistant";
 import type { AttachmentRef } from "./attachments";
 import type { ReaderView } from "./reader";
@@ -314,6 +315,17 @@ export type ClientMessage =
   | { type: "routine.set"; id: string; action: "pause" | "resume" | "delete" | "run" }
   /** Set up the backup: a private GitHub repo (the settings' button, step L4). */
   | { type: "backup.create"; name: string }
+  /** The daily log (J2): run it now (a capture and a tidy), build the past days,
+   *  or say no to that. Its steps come back as `daylog.step`, then `daylog.done`. */
+  | { type: "daylog.run"; requestId: string; what: "refresh" | "backfill" | "declineBackfill" }
+  /** Edit or hide one of a day's entries by hand (J2). */
+  | {
+      type: "daylog.edit";
+      requestId: string;
+      day: string;
+      id: string;
+      change: { title?: string; detail?: string | null; hidden?: boolean };
+    }
   /** Ask for the thread list, the open confirmations and the spend (a surface
    *  connecting). */
   | { type: "sync" }
@@ -385,6 +397,9 @@ export type ReaderAction = "pause" | "resume" | "next" | "prev" | "stop";
 export type DuckEvent =
   /** Answer to `sync`: every thread, most recent first. */
   | { type: "threads"; threads: ThreadRow[] }
+  /** A daily log run's step (J2), and its end. */
+  | { type: "daylog.step"; requestId: string; step: DayLogStep }
+  | { type: "daylog.done"; requestId: string; error: string | null; report: DayLogReport | null }
   /** Answer to `thread.open`. */
   | {
       type: "history";

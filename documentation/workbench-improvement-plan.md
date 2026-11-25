@@ -2868,6 +2868,60 @@ that says so ("Added X; reverted later that day"), not two. Asked for on 2026-11
   only its entries, Refresh from the laptop runs on the desktop (the main) and the
   laptop's window updates, an edit made on the laptop sticks after the next tidy, and
   Copy pastes clean text.
+- _(Built, 2026-11-24:
+  - **The window:** `window_open_daylog` (`window.rs`) opens
+    `index.html?window=daylog` with the app's profile, or shows and focuses the one
+    already open. It has its own capability, `capabilities/daylog.json`, and
+    `main.tsx` renders `daylog/DayLogWindow.tsx` for it.
+    - It opens from the title bar's **log** button, the palette's "Open the daily
+      log", and **Ctrl+Shift+U** (`openDayLog`). Ctrl+Shift+J is the notes'.
+  - **What it reads:** `daylog_days` and `daylog_day` read this machine's copy: Duck's
+    own workspace where Duck's main is, else the mirror of the main's
+    (`Fleet::duck_mirror`).
+    - The status line says when the day was last tidied ("updated 17:20") and, on a
+      mirror, when it last synced.
+    - It looks again every 15 seconds, and at once on `daylog-changed`, which a save
+      emits on the main.
+  - **The day bar and calendar:** `daylog/model.ts` (new, pure) moves by day,
+    titles it, and lays out the month Monday first.
+    - Days with entries are marked, future days can't be picked, and **Today** jumps
+      back.
+    - `›` is greyed on today, and the arrow keys move by day.
+  - **The list:** all projects by default, grouped with the busiest first. A side
+    list picks one project and shows each with its count.
+    - Each entry shows its time, title, detail line, machines, and a `reverted`,
+      `in progress` or `edited` mark.
+    - Reverted and hidden entries are dimmed. Hidden ones are left out until
+      "N hidden: show".
+  - **Refresh, edits and the backfill:** these go to Duck's main as new Duck
+    protocol messages, `daylog.run` (`refresh`, `backfill`, `declineBackfill`) and
+    `daylog.edit`, answered with `daylog.step` and `daylog.done`.
+    - The window has no Duck of its own. It asks the main window over Tauri events
+      (`assistant/daylogBridge.ts`, new), and the main window sends through its
+      drawer's transport: to this machine's Duck, or over the fleet link to the
+      main's.
+    - **Deviation:** this goes through the drawer's link, not through
+      `fleetHosts.ts` as the plan said. That link already carries the protocol both
+      ways (F3.1b).
+    - With the main unreachable, Refresh and the entry menu are off, and the status
+      line says why.
+    - The run's steps show as it goes: reading a machine's sessions, writing up,
+      tidying, saving.
+  - **The backfill offer** (J1's) is a banner here while the log's state says it
+    hasn't been offered: **build** or **no thanks**.
+  - **Copy** puts the day, or the one project shown, on the clipboard as plain text.
+  **Checked:**
+  - Vitest:
+    - `daylog/model.test.ts`: moving across months, the calendar's weeks, marks and
+      future days, the grouping and the copy text;
+    - `daylogBridge.test.ts`: a run goes to the main and its steps come back; an
+      unreachable main gets the reason and nothing is sent.
+  - The window, rendered from the real bundle in headless Edge with a mocked Tauri
+    backend: the day bar, the backfill banner, both machines' entries with their
+    marks, the calendar with a marked day and greyed future days, and the entry
+    menu.
+  **Live test owed:** the Done when, on the two machines (Refresh from the laptop
+  running on the desktop, an edit made on the laptop surviving a tidy).)_
 
 #### Step J3 — Quitting waits for the log
 
@@ -3002,6 +3056,6 @@ any session, which lowers the urgency and makes the terminal bugs easier to comp
 | S2 | `show_media` tool, strip and viewer | ☑ |
 | S3 | Media from another machine | ☑ |
 | J1 | Daily log: capture and tidy, on the main | ☑ |
-| J2 | Daily log window | ☐ |
+| J2 | Daily log window | ☑ |
 | J3 | Quitting waits for the log | ☐ |
 | J4 | Standup reads the log | ☐ |

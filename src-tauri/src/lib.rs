@@ -562,6 +562,7 @@ pub fn run() {
             daylog::daylog_own_notes,
             daylog::daylog_days,
             daylog::daylog_day,
+            window::window_open_daylog,
             layout::get_layout,
             layout::set_layout,
             mcp::mcp_list,
