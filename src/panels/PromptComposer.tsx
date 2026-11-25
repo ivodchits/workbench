@@ -15,7 +15,7 @@
 // the same way. Its claude queues a prompt typed mid-turn itself, so there is no
 // queue here, and a pasted image (a file on this PC) can't go along.
 
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 
 import { GLYPH } from "../theme";
 import { submitPrompt } from "./terminalPool";
@@ -153,20 +153,44 @@ function PromptComposer({ instanceId, live, typed, onShowTerminal, onSent, fleet
     else if (noteHere === "idle") void startNote(instanceId);
   };
 
-  useLayoutEffect(() => {
+  /** Size the field to its text (or the dragged size). Not while it isn't rendered
+   *  (a hidden tab, a console mounted in the background): everything measures 0
+   *  there, and a 0px border-box field shows as a sliver of its padding until the
+   *  next keystroke fits it again. */
+  const fitField = useCallback(() => {
     const field = fieldRef.current;
-    if (!field) return;
+    if (!field || field.getClientRects().length === 0) return;
     field.style.height = "auto";
     // `scrollHeight` leaves out the border, which the border-box height includes.
     const wanted = field.scrollHeight + (field.offsetHeight - field.clientHeight);
     const height = fieldPx === null ? Math.min(wanted, MAX_FIELD_PX) : Math.min(fieldPx, largestFieldPx());
     field.style.height = `${height}px`;
     field.style.overflowY = wanted > height ? "auto" : "hidden";
-    if (pendingSelection.current) {
+  }, [fieldPx]);
+
+  useLayoutEffect(() => {
+    fitField();
+    const field = fieldRef.current;
+    if (field && pendingSelection.current) {
       field.setSelectionRange(...pendingSelection.current);
       pendingSelection.current = null;
     }
-  }, [draft, fieldPx]);
+  }, [draft, fitField]);
+
+  // Shown again (its width goes from 0 to something, or the panel is resized
+  // sideways, which rewraps the text): fit it then. Height changes are its own.
+  useEffect(() => {
+    const root = rootRef.current;
+    if (!root) return;
+    let width = root.clientWidth;
+    const ro = new ResizeObserver(() => {
+      if (root.clientWidth === width) return;
+      width = root.clientWidth;
+      fitField();
+    });
+    ro.observe(root);
+    return () => ro.disconnect();
+  }, [fitField]);
 
   /** The tallest the field may be dragged: the transcript above keeps some room. */
   const largestFieldPx = (): number => {
