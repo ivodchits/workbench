@@ -2760,6 +2760,77 @@ that says so ("Added X; reverted later that day"), not two. Asked for on 2026-11
 
   Live (owed until it's used for a day): a day of real work on both machines reads
   as one sensible list by evening, on both machines.
+- _(Built, 2026-11-24:
+  - **Reading each machine:** `assistant/daylogSource.ts` (new, no Tauri) runs on the
+    machine it reads. It's a new port member, `daylogActivity`, which the main calls
+    on itself and over the fleet link on the others (in `REMOTE_METHODS`, with a
+    5-minute timeout).
+    - For each of the machine's own projects, it lists the sessions written since the
+      last read and reads each on from its offset. That uses
+      `transcript_read_session`, a new forward read by session id.
+    - A session it hasn't seen is read back from its end to the floor: today's 04:00,
+      or 30 days back for the backfill.
+    - The lines are the transcript model's, as `readPlainText` writes them, each with
+      its time.
+    - It also reads the git activity (`daylog_git`): commits on every branch with
+      their messages, `Revert "…"` marked, and the resets in the reflog.
+    - A project's key is its git remote, else its name: F9.1's rule.
+    - One answer is capped at about 3 MB of text. Past that it says `more`, and the
+      next capture asks again.
+  - **The passes:** `assistant/daylog.ts` (new), started in the core
+    (`assistant/index.ts`) and run only where `duckHere`.
+    - **Capture:** every 30 minutes, and a minute after a session ends. It makes one
+      Haiku call per machine, project and day, with at most 40k characters a call.
+    - A note names the chunks it came from: `<machine>:<session>:<offset>`,
+      `commit:<hash>`, or a reset. A chunk already noted that day isn't sent again,
+      so a commit seen on both machines is noted once.
+    - A chunk with nothing worth a note gets an empty marker note, so it isn't read
+      again.
+    - A machine's offsets move only past what was noted. A failed call, the budget's
+      cap, or a machine that's away leaves them where they were.
+    - **Tidy:** Sonnet (`MAIN_MODEL`), one call per project and day with new notes.
+      It runs at most once an hour for today, and at the first 5 idle minutes for a
+      past day.
+    - Entries edited or hidden by hand are kept as they are, and are given to the
+      model as work not to write again.
+    - An entry's id is `e-` and its first note's id, so it stays the same across
+      tidies.
+    - `plainWords` takes code in backticks, paths, file names and hex commit ids out
+      of every note and entry.
+    - Both calls use the purpose `daylog`, through `structured`.
+  - **The files:** `src-tauri/src/daylog/` (new).
+    - `daylog_load` and `daylog_save` read and write the notes, days and state. Notes
+      are saved as a union by id, so none is ever dropped.
+    - Each save is one commit on the git queue (`memory::commit`).
+    - `daylog_days` and `daylog_day` read the copy this machine has: its own
+      workspace on the main, else the mirror of the main's (`Fleet::duck_mirror`).
+      They're for J2.
+  - **A split:** `daylog_own_notes` returns a machine's own workspace notes from
+    the last 14 days, plus those on the `fleet/before-term-*` branches a promotion
+    kept.
+    - The main takes them in (`takeNotes`) 90 seconds after its core starts, and on
+      `fleet-merged`.
+    - Where two capture runs noted the same chunk, the tidy reads only the run whose
+      least note id is smaller (`notesForTidy`). Either order gives the same day.
+  - **Deviation:** the backfill (`DayLog.backfill`, 30 days, oldest first) is built,
+    but it's offered in J2's window, which shows the state's `backfill`. J1 has no
+    window to offer it in.
+  **Checked:**
+  - Vitest (`daylog.test.ts`), with fake machines read through the real
+    `readActivity` and a fake model:
+    - add then revert is one `reverted` entry;
+    - laptop then desktop is one entry with both machines;
+    - cut off is `in progress`;
+    - no path, backtick or hash survives;
+    - nothing new makes no call, and an offset is never noted twice;
+    - a machine that was away lands later;
+    - the cap stops the run and the rest is read next time;
+    - an edited entry survives a tidy;
+    - a split's two sides give the same day.
+  - Rust: the log and reflog parsing, a real repo's commits and reset, the union and
+    the save, and an old main's branch notes.
+  - Whether the models' wording is good can only be judged on real work.
+  **Live test owed:** the line above, on both machines.)_
 
 #### Step J2 — The daily log window
 
@@ -2930,7 +3001,7 @@ any session, which lowers the urgency and makes the terminal bugs easier to comp
 | S1 | Pictures that tools return, in the transcript | ☑ |
 | S2 | `show_media` tool, strip and viewer | ☑ |
 | S3 | Media from another machine | ☑ |
-| J1 | Daily log: capture and tidy, on the main | ☐ |
+| J1 | Daily log: capture and tidy, on the main | ☑ |
 | J2 | Daily log window | ☐ |
 | J3 | Quitting waits for the log | ☐ |
 | J4 | Standup reads the log | ☐ |

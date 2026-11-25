@@ -1766,6 +1766,19 @@ impl Fleet {
         self.duck.lock().unwrap().clone().ok_or_else(|| "Duck's database isn't open here".to_string())
     }
 
+    /// The mirror of the main's repo, when Duck's main is another machine: what the
+    /// daily log's window reads here (improvement plan J2).
+    pub fn duck_mirror(&self) -> Option<std::path::PathBuf> {
+        let elsewhere = {
+            let inner = self.inner.lock().unwrap();
+            Self::duck_of(&inner).is_some_and(|m| m != inner.me)
+        };
+        if !elsewhere {
+            return None;
+        }
+        self.duck().ok().map(|d| d.mirror.clone())
+    }
+
     /// The source's side: the log after `seq`.
     fn repl_log(&self, epoch: Option<&str>, seq: i64) -> Result<String, String> {
         let d = self.duck()?;

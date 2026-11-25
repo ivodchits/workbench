@@ -808,6 +808,22 @@ pub fn transcript_read_session_back(
     page(Some(session_id), path, |p| read_back(p, before_offset, page_bytes(max_bytes)))
 }
 
+/// Like [`transcript_read`], for any session by its id: the daily log (J1) reads
+/// each session on from where its last capture stopped.
+#[tauri::command(async)]
+pub fn transcript_read_session(
+    app: AppHandle,
+    session_id: String,
+    from_offset: u64,
+    max_bytes: Option<u64>,
+) -> Result<Page, String> {
+    if !session_id_ok(&session_id) {
+        return Err("not a session id".into());
+    }
+    let path = find_transcript(&app, &session_id);
+    page(Some(session_id), path, |p| read_forward(p, from_offset, page_bytes(max_bytes)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

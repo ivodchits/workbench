@@ -9,6 +9,7 @@ mod filedrop;
 mod fleet;
 mod attention;
 mod badge;
+mod daylog;
 mod db;
 mod fs;
 mod git;
@@ -554,6 +555,13 @@ pub fn run() {
             transcript::stream::transcript_read,
             transcript::stream::transcript_read_back,
             transcript::stream::transcript_read_session_back,
+            transcript::stream::transcript_read_session,
+            daylog::daylog_git,
+            daylog::daylog_load,
+            daylog::daylog_save,
+            daylog::daylog_own_notes,
+            daylog::daylog_days,
+            daylog::daylog_day,
             layout::get_layout,
             layout::set_layout,
             mcp::mcp_list,

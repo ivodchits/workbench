@@ -34,7 +34,9 @@ import {
 import { ptyWrite } from "../ipc/pty";
 import type { Instance, Project } from "../ipc/registry";
 import { answerPermission, holdPermissions } from "../ipc/hooks";
-import { readTranscript, readTranscriptBack } from "../ipc/transcript";
+import { readSessionBack, readTranscript, readTranscriptBack } from "../ipc/transcript";
+import { daylogGit, daylogOwnNotes, readSessionForward } from "../ipc/daylog";
+import { readActivity } from "./daylogSource";
 import { readLastResponse } from "../transcript/feed";
 import { getSessionContext, getUsageLimits } from "../ipc/usageLimits";
 import { startPluginRunFor } from "../panels/pluginRun";
@@ -55,7 +57,7 @@ import {
   teardownWorktree,
   type WorktreeUse,
 } from "../state/worktree";
-import { resolveWorktree, type WorktreeEntry } from "../ipc/git";
+import { gitOriginUrl, resolveWorktree, type WorktreeEntry } from "../ipc/git";
 import { listProjectSessions } from "../ipc/sessions";
 import {
   closeConsole,
@@ -825,6 +827,22 @@ export const localPort: WorkbenchPort = {
     };
   },
   setDoneSummary,
+  daylogActivity: (req) =>
+    readActivity(
+      {
+        projects: () =>
+          getRegistry()
+            .projects.filter((p) => p.remoteSshDest == null)
+            .map((p) => ({ name: p.name, rootPath: p.rootPath })),
+        sessions: listProjectSessions,
+        readForward: (id, from, max) => readSessionForward(id, from, max),
+        readBack: (id, before) => readSessionBack(id, before),
+        git: daylogGit,
+        origin: gitOriginUrl,
+      },
+      req,
+    ),
+  daylogOwnNotes,
   readPluginsDraft: pluginsDraftRead,
   clearPluginsDraft: pluginsDraftClear,
   onTaskEnd(taskId, cb) {

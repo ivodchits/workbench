@@ -52,7 +52,11 @@ import { listMonitors, saveScreenshot, screenshot } from "../ipc/screen";
 import { badgeText, createAutopilot, ipcAutopilotBackend, type AutopilotManager } from "./autopilot";
 import { createDecisionsLog, ipcDecisionsLogBackend, sessionOfRow, trustEntry } from "./decisionsLog";
 import { ipcPlanStore } from "./generatedPlan";
-import { errorMessage, getClient, oneShot, structured } from "./client";
+import { capMessage, errorMessage, getClient, oneShot, structured } from "./client";
+import { CAPTURE_SYSTEM, CaptureOut, createDayLog, PURPOSE as DAYLOG_PURPOSE, TIDY_SYSTEM, TidyOut, type DayLog, type LogMachine } from "./daylog";
+import type { Activity } from "./daylogSource";
+import { daylogLoad, daylogSave } from "../ipc/daylog";
+import { MAIN_MODEL, PRIMITIVE_MODEL } from "./prompt";
 import { createEngine, eventText, type Engine } from "./engine";
 import { createBrainHost } from "./brain/subscription";
 import { createPolicy } from "./policy";
@@ -220,6 +224,10 @@ let reminderAction: ((id: string, action: ReminderAction) => Promise<void>) | nu
 
 /** How often the nightly tidy (step L2) checks whether it's due. */
 const TIDY_CHECK_MS = 5 * 60_000;
+/** Another machine's answer to the daily log's read may take a while (a backfill). */
+const DAYLOG_CALL_MS = 5 * 60_000;
+/** The daily log (J1), on the core where Duck's main is. */
+let dayLog: DayLog | null = null;
 /** How often routines (step L4) check what's due. */
 const ROUTINE_CHECK_MS = 60_000;
 /** A thread a surface showed this recently counts as open there (L4). */
@@ -958,6 +966,7 @@ async function startShell(): Promise<Shell> {
   }).catch(() => {});
   // A merge after a split (F6.2): said in the latest thread.
   void onFleetMerged((text) => {
+    if (duckHere) void dayLog?.gatherSplit().catch((e: unknown) => console.warn("duck: the daily log's split notes failed", e));
     const t = core?.store.threads()[0];
     if (t) void core?.engine.notice(t.id, { kind: "note", text }).catch(() => {});
   }).catch(() => {});
@@ -1042,6 +1051,26 @@ async function startShell(): Promise<Shell> {
     hosts,
     fleetPort: port,
     fleetTools,
+    localMachineId: () => self?.id ?? "local",
+    daylogMachines: () => [
+      {
+        id: self?.id ?? "local",
+        name: self?.name ?? "this computer",
+        activity: (req) => localPort.daylogActivity(req),
+        ownNotes: (since) => localPort.daylogOwnNotes(since),
+      },
+      ...hub
+        .ports()
+        .filter((r) => !r.closed)
+        .map(
+          (r): LogMachine => ({
+            id: r.id,
+            name: r.name,
+            activity: (req) => r.call("daylogActivity", [req], DAYLOG_CALL_MS) as Promise<Activity>,
+            ownNotes: (since) => r.call("daylogOwnNotes", [since]) as Promise<unknown[]>,
+          }),
+        ),
+    ],
     remindersChanged: () => {
       for (const cb of phoneReminderSubs) cb();
     },
@@ -1118,6 +1147,9 @@ interface CoreDeps {
   hosts: ReturnType<typeof createHosts>;
   fleetPort: FleetPort;
   fleetTools: ReturnType<typeof createFleetTools>;
+  /** Every machine the daily log reads (J1): this one, and those linked now. */
+  daylogMachines(): LogMachine[];
+  localMachineId(): string;
   /** The reminders changed: the phones' alarms follow. */
   remindersChanged(): void;
 }
@@ -1361,6 +1393,39 @@ async function buildCore(d: CoreDeps, scope: Scope): Promise<Core> {
       .tick()
       .then((r) => r && pushAfterTidy())
       .catch((e: unknown) => console.warn("duck: the nightly memory tidy failed", e)),
+  );
+  // The daily log (J1): read every machine, note, tidy, in Duck's repo. Only where
+  // Duck's main is; the state is in the repo, so a new main carries on from it.
+  const log = createDayLog({
+    machines: () => d.daylogMachines(),
+    localId: () => d.localMachineId(),
+    files: {
+      load: (days) => daylogLoad(ws(), days),
+      save: (sv, message) => daylogSave(ws(), sv, message),
+    },
+    capture: (input, signal) =>
+      structured({ model: PRIMITIVE_MODEL, system: CAPTURE_SYSTEM, input, maxTokens: 2000, think: false, purpose: DAYLOG_PURPOSE, schema: CaptureOut, signal }),
+    tidy: (input, signal) =>
+      structured({ model: MAIN_MODEL, system: TIDY_SYSTEM, input, maxTokens: 4000, think: false, purpose: DAYLOG_PURPOSE, schema: TidyOut, signal }),
+    idleMs: () => getPresence().then((p) => p.idleMs),
+    isCap: (e) => capMessage(e) !== null,
+  });
+  dayLog = log;
+  scope.add(() => {
+    log.dispose();
+    if (dayLog === log) dayLog = null;
+  });
+  scope.every(TIDY_CHECK_MS, () => {
+    if (duckHere && !scope.disposed) void log.tick().catch((e: unknown) => console.warn("duck: the daily log's run failed", e));
+  });
+  // What a split left on the machines (F6.2), once they've had time to link.
+  scope.after(90_000, () => {
+    if (duckHere && !scope.disposed) void log.gatherSplit().catch((e: unknown) => console.warn("duck: the daily log's split notes failed", e));
+  });
+  scope.add(
+    d.fleetPort.onPhase((_id, phase, prev) => {
+      if (duckHere && phase === "ended" && prev !== "ended") log.sessionEnded();
+    }),
   );
   const { hosts, fleetPort, fleetTools, registry, browser, hosted } = d;
   void fleetTools.load().catch((e: unknown) => console.warn("duck: the waiting queue didn't load", e));
@@ -1670,6 +1735,11 @@ async function buildCore(d: CoreDeps, scope: Scope): Promise<Core> {
 }
 
 /** Tidy Duck's long-term memory now (the Memory view's button). */
+/** The daily log (J1), on the machine where Duck's main is; null elsewhere. */
+export function getDayLog(): DayLog | null {
+  return duckHere ? dayLog : null;
+}
+
 export function tidyMemory(): Promise<TidyReport> {
   if (!consolidator) return Promise.reject(new Error("Duck isn't started yet."));
   return consolidator.run();

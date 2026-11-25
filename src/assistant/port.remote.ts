@@ -82,6 +82,8 @@ export const REMOTE_METHODS = new Set<string>([
   "openDecisionsLog",
   "decisionsLogged",
   "alertUser",
+  "daylogActivity",
+  "daylogOwnNotes",
 ]);
 
 /** How often the host side looks for changes besides the events. */
@@ -176,8 +178,8 @@ export interface RemotePort {
   projects(): ProjectRef[];
   sessions(): SessionRef[];
   promptPending(instanceId: string): boolean;
-  /** Run a member of its port there. */
-  call(method: string, args: unknown[]): Promise<unknown>;
+  /** Run a member of its port there (`timeoutMs`: longer than a call's usual). */
+  call(method: string, args: unknown[], timeoutMs?: number): Promise<unknown>;
   /** A prompt sent there with a failure callback. */
   sendPrompt(id: string, text: string, opts?: { now?: boolean; onFailed?: (why: string) => void }): Promise<unknown>;
   receive(msg: PortUp): void;
@@ -204,14 +206,14 @@ export function createRemotePort(
   const calls = new Map<string, { resolve(v: unknown): void; reject(e: Error): void; timer: ReturnType<typeof setTimeout> }>();
   const failed = new Map<string, (why: string) => void>();
 
-  const call = (method: string, args: unknown[]): Promise<unknown> => {
+  const call = (method: string, args: unknown[], wait = timeoutMs): Promise<unknown> => {
     if (closed) return Promise.reject(new Error(`${label} isn't connected`));
     const callId = `p${++next}`;
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         calls.delete(callId);
         reject(new Error(`${label} didn't answer in time`));
-      }, timeoutMs);
+      }, wait);
       calls.set(callId, { resolve, reject, timer });
       send({ type: "port.call", id: callId, method, args });
     });

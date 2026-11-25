@@ -202,6 +202,9 @@ export function createFleetPort(
     onUserBack: (cb) => local.onUserBack(cb),
 
     setDoneSummary: (fn) => local.setDoneSummary(fn),
+    // The log asks each machine itself (`daylog.ts`): these are this one's.
+    daylogActivity: (req) => local.daylogActivity(req),
+    daylogOwnNotes: (since) => local.daylogOwnNotes(since),
   };
   return port;
 }

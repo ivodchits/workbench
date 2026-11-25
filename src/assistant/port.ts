@@ -15,6 +15,7 @@ import type { Branches, Commit, StatusEntry } from "../ipc/git";
 import type { Note, NoteMeta } from "../ipc/notes";
 import type { PluginsDraft, PluginsText, PluginsView, Problem } from "../ipc/plugins";
 import type { TranscriptPage } from "../ipc/transcript";
+import type { Activity, ActivityRequest } from "./daylogSource";
 import type { RateLimits } from "../ipc/usageLimits";
 
 export interface ProjectRef {
@@ -385,6 +386,13 @@ export interface WorkbenchPort {
   /** Give the app's done alerts a body maker (the turn's summary headline; null keeps
    *  the last line), or take it back with null. */
   setDoneSummary(fn: ((instanceId: string, reply: string) => Promise<string | null>) | null): void;
+
+  // ── the daily log (improvement plan J1) ──
+
+  /** What this machine's sessions and repos did past the log's offsets. */
+  daylogActivity(req: ActivityRequest): Promise<Activity>;
+  /** This machine's own workspace's log notes since `sinceDay` (what a split left). */
+  daylogOwnNotes(sinceDay: string): Promise<unknown[]>;
 }
 
 /** A worktree's changes (L3). */

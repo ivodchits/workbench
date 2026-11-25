@@ -509,6 +509,12 @@ export function fakePort(data: FakePortData = {}): FakePort {
       return Promise.resolve(data.replies?.[id] ?? null);
     },
     setDoneSummary() {},
+    async daylogActivity() {
+      return { projects: [] };
+    },
+    async daylogOwnNotes() {
+      return [];
+    },
     setDuckTask(id, task) {
       record("setDuckTask", id, task);
       const s = data.sessions?.find((x) => x.id === id);
