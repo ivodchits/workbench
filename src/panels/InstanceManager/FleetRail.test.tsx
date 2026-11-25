@@ -61,14 +61,17 @@ describe("the rail's other machines", () => {
     noSessions: [{ machine: "L", project: project("q", "empty"), instances: [] }],
   };
 
-  it("shows the band, the machine, its projects, and a folded no-sessions group", () => {
+  it("shows the band, the machine, its folded projects, and a folded no-sessions group", () => {
     const el = render(<FleetSection sections={[laptop]} needsYouOnly={false} whyOffline={() => "offline"} />);
     const text = el.textContent ?? "";
     expect(text).toContain("OTHER MACHINES");
     expect(text).toContain("laptop");
     expect(text).toContain("solo");
-    expect(text).toContain("session a");
-    expect(text).toContain("needs you");
+    expect(text).toContain("need you"); // the folded project's count
+    expect(text).not.toContain("session a"); // folded
+    const proj = [...el.querySelectorAll<HTMLElement>("[data-wb-rail-row]")].find((r) => r.textContent?.includes("solo"))!;
+    act(() => proj.click());
+    expect(el.textContent).toContain("session a");
     expect(text).toContain("no sessions");
     expect(text).not.toContain("empty"); // folded
     const fold = [...el.querySelectorAll("button")].find((b) => b.textContent?.includes("no sessions"))!;

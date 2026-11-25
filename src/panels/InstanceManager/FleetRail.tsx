@@ -6,7 +6,8 @@
 // - **The bottom section** (decisions 2 and 4): after the last group, the
 //   `OTHER MACHINES` band, then one header per machine, its projects with sessions,
 //   and last a folded `No sessions` group with the rest, from where a session can
-//   still be started. All of them fold, and the folds are remembered.
+//   still be started. All of them fold, and the folds are remembered; the projects
+//   start folded, so a machine shows its project cards, not every session.
 // - **The picker** (decision 9): which machine, when more than one has the project.
 
 import { useState, type CSSProperties } from "react";
@@ -145,7 +146,7 @@ function MachineBlock({ section, needsYouOnly, why }: { section: MachineSection;
 }
 
 function RemoteProjectNode({ entry, machineName, needsYouOnly }: { entry: RemoteOnly; machineName: string; needsYouOnly: boolean }) {
-  const [open, toggle] = useFold(`rproj:${entry.machine}:${entry.project.id}`, true);
+  const [open, toggle] = useFold(`rproj:${entry.machine}:${entry.project.id}`, false);
   const [hover, setHover] = useState(false);
   const needs = entry.instances.filter((i) => remoteStatus(i).needsYou).length;
   const running = entry.instances.filter((i) => i.live).length;
