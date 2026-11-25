@@ -287,7 +287,10 @@ impl FleetView {
         let (tx, mut rx) = mpsc::unbounded_channel::<SocketOut>();
         self.sockets.lock().unwrap().insert(n, tx);
         let (me, id, path) = (self.clone(), id.to_string(), path.to_string());
-        tokio::spawn(async move {
+        // Not `tokio::spawn`: `fleet_socket_open` is a sync command, so this runs on
+        // the main thread, outside any runtime. There `tokio::spawn` panics, inside
+        // WebView2's callback, where a panic can't unwind and the app aborts.
+        tauri::async_runtime::spawn(async move {
             let up = match me.connect(&id, &path).await {
                 Ok(up) => up,
                 Err(why) => {
