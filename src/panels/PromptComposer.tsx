@@ -9,6 +9,11 @@
 // The mic button records a voice message (`voiceNote`): its transcript lands in
 // the field, to read over and send with ↵ — never sent unseen, since a
 // misheard word in a prompt costs a turn.
+//
+// Bound to another machine's session (`fleet`, fleet plan F9.2) it sends over the
+// fleet instead: the prompt goes to that machine, which pastes it into its console
+// the same way. Its claude queues a prompt typed mid-turn itself, so there is no
+// queue here, and a pasted image (a file on this PC) can't go along.
 
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 
@@ -20,6 +25,7 @@ import {
   COMPOSER_ATTR,
   imageToken,
   insertReferences,
+  promptChunks,
   promptHistory,
   rememberSent,
   sentPrompts,
@@ -35,6 +41,7 @@ import { interruptSession } from "../state/remoteActions";
 import { useTemplates, type PromptTemplate } from "../state/templates";
 import { clock } from "../util/dictation";
 import { flash } from "../util/flash";
+import { sendRemote } from "./remoteSession";
 import { cancelNote, dismissNoteError, NOTE_MAX_S, startNote, stopNote, useNoteState } from "./voiceNote";
 
 interface PromptComposerProps {
@@ -46,6 +53,9 @@ interface PromptComposerProps {
   onShowTerminal: () => void;
   /** A prompt left the composer — the view follows the conversation's end again. */
   onSent: () => void;
+  /** Another machine's session: send there (`instanceId` is then only the key the
+   *  draft and the sent list go by). */
+  fleet?: { machine: string; instance: string; running: boolean };
 }
 
 /** The field grows with its text up to this height, then scrolls — unless the
@@ -95,7 +105,7 @@ function useStarting(instanceId: string, live: LiveStatus | null): boolean {
   return starting;
 }
 
-function PromptComposer({ instanceId, live, typed, onShowTerminal, onSent }: PromptComposerProps) {
+function PromptComposer({ instanceId, live, typed, onShowTerminal, onSent, fleet }: PromptComposerProps) {
   const fieldRef = useRef<HTMLTextAreaElement>(null);
   const rootRef = useRef<HTMLDivElement>(null);
   /** The height the user dragged the field to, or null to fit its text. */
@@ -108,7 +118,8 @@ function PromptComposer({ instanceId, live, typed, onShowTerminal, onSent }: Pro
   /** The past prompt ↑/↓ put in the field (its index in `promptHistory`), or -1. */
   const recalled = useRef(-1);
 
-  const startingUp = useStarting(instanceId, live);
+  const startingUp = useStarting(instanceId, live) && !fleet;
+  const notRunning = fleet ? !fleet.running : false;
   const resting = atRest(live) && !startingUp;
   const working = live?.phase === "working" && !live.compacting;
   const canSend = draft.trim().length > 0;
@@ -202,6 +213,26 @@ function PromptComposer({ instanceId, live, typed, onShowTerminal, onSent }: Pro
 
   const send = () => {
     if (!canSend) return;
+    if (fleet) {
+      if (notRunning) {
+        flash("this session isn't running over there — start it first");
+        return;
+      }
+      if (promptChunks(draft).some((c) => c.kind === "image")) {
+        flash("a pasted image is a file on this PC — it can't go to the other machine");
+        return;
+      }
+      const command = terminalCommand(draft);
+      sendRemote(fleet.machine, { type: "prompt", instanceId: fleet.instance, text: draft.trim() });
+      rememberSent(instanceId, draft);
+      recalled.current = -1;
+      setDraft(instanceId, "");
+      if (command) {
+        flash(`/${command} answers in the terminal`);
+        onShowTerminal();
+      } else onSent();
+      return;
+    }
     const command = terminalCommand(draft);
     if (command) {
       // Its menu (or its output) only exists in the TUI, which a headless worker
@@ -236,7 +267,8 @@ function PromptComposer({ instanceId, live, typed, onShowTerminal, onSent }: Pro
   };
 
   const interrupt = () => {
-    interruptSession(instanceId);
+    if (fleet) sendRemote(fleet.machine, { type: "interrupt", instanceId: fleet.instance });
+    else interruptSession(instanceId);
     fieldRef.current?.focus();
   };
 
@@ -266,6 +298,10 @@ function PromptComposer({ instanceId, live, typed, onShowTerminal, onSent }: Pro
     const images = Array.from(e.clipboardData.files).filter((f) => f.type.startsWith("image/"));
     if (images.length === 0) return;
     e.preventDefault();
+    if (fleet) {
+      flash("images can't be pasted into another machine's session yet");
+      return;
+    }
     void Promise.all(
       images.map(async (f) =>
         savePastedImage(new Uint8Array(await f.arrayBuffer()), f.type.slice("image/".length)),
@@ -431,7 +467,9 @@ function PromptComposer({ instanceId, live, typed, onShowTerminal, onSent }: Pro
           </span>
         ) : (
         <span className="wb-cmp-hint">
-          {startingUp ? (
+          {notRunning ? (
+            <>not running over there — start it from the header first</>
+          ) : startingUp ? (
             <>
               claude hasn't started — answer its dialog in the terminal; <b>↵</b> holds this
               until it has

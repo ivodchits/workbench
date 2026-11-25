@@ -10,6 +10,12 @@
 // T4), and over it the card for a prompt the agent is waiting on (step T5). Each
 // message has a listen button: Duck's reader reads it aloud, and its reader bar
 // shows here while it does (`assistant/listen.ts`).
+//
+// Another machine's session (fleet plan F9.2) uses this view too, bound by `fleet`:
+// its transcript comes over that machine's `/api/transcript`, its files from there,
+// the card for its prompt from that machine's snapshot, and the composer sends
+// over the fleet. What only exists here (reading aloud, plans, the media badge) is
+// left out.
 
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 
@@ -31,14 +37,34 @@ import { desktopActions, desktopMedia, markMediaSeen, useMediaCounts } from "../
 import { listenPrefix, listenRequest, listeningTo } from "../assistant/listen";
 import { listenToMessage, useDuckState } from "./Assistant/duckState";
 import ReaderBar from "./Assistant/ReaderBar";
+import { fleetTranscriptSource } from "../transcript/fleetSource";
+import { fleetActions, fleetMedia } from "../state/fleetMedia";
+import type { RemoteChoice } from "../remote/protocol";
+import RemoteChoiceCard from "./RemoteChoiceCard";
+import { useMachineName } from "./remoteSession";
+
+/** A transcript view bound to another machine's session. */
+export interface FleetBinding {
+  /** The machine's fleet id. */
+  machine: string;
+  /** The session's instance id there. */
+  instance: string;
+  /** Its console is running there (a prompt has somewhere to go). */
+  running: boolean;
+  /** The prompt it is waiting on, from that machine's snapshot. */
+  choice: RemoteChoice | null;
+}
 
 interface TranscriptViewProps {
+  /** The local instance, or for a `fleet` view the key its draft and composer go by. */
   instanceId: string;
   /** Hook-fed live status, for the working indicator. */
   live: LiveStatus | null;
   /** Switch this console back to its terminal (offered when the agent is waiting
    *  on an answer, which is still given there). */
   onShowTerminal: () => void;
+  /** Another machine's session instead of a local one. */
+  fleet?: FleetBinding;
 }
 
 /** How long a listen button's "can't" stays up. */
@@ -67,7 +93,12 @@ const EMPTY: FeedState = {
   prompts: [],
 };
 
-function TranscriptView({ instanceId, live, onShowTerminal }: TranscriptViewProps) {
+function TranscriptView({ instanceId, live, onShowTerminal, fleet }: TranscriptViewProps) {
+  const fleetMachine = fleet?.machine ?? null;
+  const fleetInstance = fleet?.instance ?? null;
+  const machineName = useMachineName(fleetMachine ?? "");
+  /** The fleet link is up (the local feed has none). */
+  const [link, setLink] = useState(true);
   const rootRef = useRef<HTMLDivElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
@@ -80,7 +111,8 @@ function TranscriptView({ instanceId, live, onShowTerminal }: TranscriptViewProp
   // Held back until the conversation is loaded: it may show the prompt was
   // already answered (in the terminal, while this view was away).
   const pending = usePendingChoice(instanceId);
-  const choice = feedState.ready ? pending : null;
+  const choice = fleet ? null : feedState.ready ? pending : null;
+  const fleetChoice = fleet && feedState.ready ? fleet.choice : null;
 
   /** Whether the view was at the bottom, and where, as of the last scroll while
    *  it was on screen. Used when the geometry can't be measured (panel hidden). */
@@ -91,7 +123,9 @@ function TranscriptView({ instanceId, live, onShowTerminal }: TranscriptViewProp
     const scroll = scrollRef.current;
     const list = listRef.current;
     if (!scroll || !list) return;
-    const renderer = createRenderer(list, { listen: true, media: desktopMedia });
+    const renderer = fleetMachine
+      ? createRenderer(list, { media: fleetMedia(fleetMachine, machineName) })
+      : createRenderer(list, { listen: true, media: desktopMedia });
     stuck.current = true;
     setFeedState(EMPTY);
     setAway(false);
@@ -101,7 +135,11 @@ function TranscriptView({ instanceId, live, onShowTerminal }: TranscriptViewProp
         ? stuck.current
         : scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight < STICK_PX;
 
-    const feed = createFeed(instanceSource(instanceId), (why) => {
+    const source =
+      fleetMachine && fleetInstance
+        ? fleetTranscriptSource(fleetMachine, fleetInstance, setLink)
+        : instanceSource(instanceId);
+    const feed = createFeed(source, (why) => {
       // Follow the end only if the reader was there, and keep their place when
       // an earlier page lands above it. "Was there" is what the last scroll said,
       // not the geometry now: the choice card may have just taken space from the
@@ -111,9 +149,11 @@ function TranscriptView({ instanceId, live, onShowTerminal }: TranscriptViewProp
       const top = scroll.scrollTop;
       if (why !== "loading") {
         renderer.update(feed.items);
-        // A refused or dismissed prompt is only ever recorded here (no hook).
-        if (feed.ready) reconcileWithTranscript(instanceId, feed.items);
-        notePlans(instanceId, plansIn(feed.items));
+        if (!fleetMachine) {
+          // A refused or dismissed prompt is only ever recorded here (no hook).
+          if (feed.ready) reconcileWithTranscript(instanceId, feed.items);
+          notePlans(instanceId, plansIn(feed.items));
+        }
       }
       if (follow) scroll.scrollTop = scroll.scrollHeight;
       else if (why === "prepend") scroll.scrollTop = top + (scroll.scrollHeight - height);
@@ -194,7 +234,7 @@ function TranscriptView({ instanceId, live, onShowTerminal }: TranscriptViewProp
       feedRef.current = null;
       renderer.clear();
     };
-  }, [instanceId]);
+  }, [instanceId, fleetMachine, fleetInstance, machineName]);
 
   // The chrome React draws around the list ("load earlier", the status line) changes
   // height after the feed's own scroll adjustment; a reader at the end stays there.
@@ -216,14 +256,15 @@ function TranscriptView({ instanceId, live, onShowTerminal }: TranscriptViewProp
   // goes unseen (the terminal view's badge, S2).
   const mediaUnseen = useMediaCounts(instanceId).unseen;
   useEffect(() => {
-    if (mediaUnseen > 0) markMediaSeen(instanceId);
-  }, [instanceId, mediaUnseen]);
+    if (mediaUnseen > 0 && !fleetMachine) markMediaSeen(instanceId);
+  }, [instanceId, mediaUnseen, fleetMachine]);
 
   // A picture's thumbnail opens the viewer over this panel (improvement plan S1).
   useEffect(() => {
-    if (scrollRef.current && rootRef.current)
-      return attachMediaViewer(scrollRef.current, rootRef.current, desktopActions(instanceId));
-  }, [instanceId]);
+    if (!scrollRef.current || !rootRef.current) return;
+    const actions = fleetMachine ? fleetActions(fleetMachine, machineName) : desktopActions(instanceId);
+    return attachMediaViewer(scrollRef.current, rootRef.current, actions);
+  }, [instanceId, fleetMachine, machineName]);
 
   useEffect(() => {
     if (!listenNote) return;
@@ -233,10 +274,10 @@ function TranscriptView({ instanceId, live, onShowTerminal }: TranscriptViewProp
 
   // A prompt that opens after the conversation was last read is checked once
   // against it too — the answer may have been recorded before the card was built.
-  const pendingId = choice?.id ?? null;
+  const pendingId = choice?.id ?? fleetChoice?.id ?? null;
   useEffect(() => {
-    if (pendingId && feedRef.current) reconcileWithTranscript(instanceId, feedRef.current.items);
-  }, [instanceId, pendingId]);
+    if (pendingId && feedRef.current && !fleetMachine) reconcileWithTranscript(instanceId, feedRef.current.items);
+  }, [instanceId, pendingId, fleetMachine]);
 
   // The card is gone: typing goes to the prompt again.
   const hadChoice = useRef(false);
@@ -308,7 +349,7 @@ function TranscriptView({ instanceId, live, onShowTerminal }: TranscriptViewProp
       e.stopPropagation();
       const id = planBtn.closest<HTMLElement>("[data-item-id]")?.dataset.itemId;
       const plan = plansIn(feedRef.current?.items ?? []).find((p) => p.id === id);
-      if (plan && e.type === "click") openPlan(instanceId, plan);
+      if (plan && e.type === "click" && !fleetMachine) openPlan(instanceId, plan);
       return;
     }
     const link = e.target instanceof Element ? e.target.closest("a[href]") : null;
@@ -340,7 +381,8 @@ function TranscriptView({ instanceId, live, onShowTerminal }: TranscriptViewProp
             </div>
           )}
           <div ref={listRef} />
-          <StatusLine live={live} hasCard={choice !== null} onShowTerminal={onShowTerminal} />
+          {!link && <div className="wb-txv-status">○ reconnecting…</div>}
+          <StatusLine live={live} hasCard={choice !== null || fleetChoice !== null} onShowTerminal={onShowTerminal} />
         </div>
         {away && (
           <button type="button" className="wb-txv-jump" onClick={jumpToLatest}>
@@ -348,7 +390,9 @@ function TranscriptView({ instanceId, live, onShowTerminal }: TranscriptViewProp
           </button>
         )}
       </div>
-      <ReaderBar only={listenPrefix(instanceId)} style={{ padding: "3px 10px", borderTop: "1px solid var(--wb-border)" }} />
+      {!fleet && (
+        <ReaderBar only={listenPrefix(instanceId)} style={{ padding: "3px 10px", borderTop: "1px solid var(--wb-border)" }} />
+      )}
       {listenNote && (
         <div className="wb-txv-listen-note" role="status">
           {listenNote}
@@ -357,12 +401,16 @@ function TranscriptView({ instanceId, live, onShowTerminal }: TranscriptViewProp
       {choice && (
         <ChoiceCard instanceId={instanceId} choice={choice} onShowTerminal={onShowTerminal} />
       )}
+      {fleet && fleetChoice && (
+        <RemoteChoiceCard machine={fleet.machine} instance={fleet.instance} choice={fleetChoice} onShowTerminal={onShowTerminal} />
+      )}
       <PromptComposer
         instanceId={instanceId}
         live={live}
         typed={feedState.prompts}
         onShowTerminal={onShowTerminal}
         onSent={followEnd}
+        fleet={fleet ? { machine: fleet.machine, instance: fleet.instance, running: fleet.running } : undefined}
       />
     </div>
   );

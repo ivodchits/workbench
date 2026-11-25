@@ -2,10 +2,10 @@
 // phone can do with it, from the desktop. Like a local console it switches between
 // its transcript and its terminal:
 //
-// - **Transcript:** the feed and renderer the local view uses, fed over that
-//   machine's `/api/transcript` (`transcript/fleetSource.ts`). Under it a composer
-//   that sends `prompt`, and over it the card for a prompt the session waits on,
-//   from the machine's snapshot, answered with `choose`.
+// - **Transcript:** the local console's own `TranscriptView`, bound to that
+//   machine (`fleet`): fed over its `/api/transcript` (`transcript/fleetSource.ts`),
+//   the composer sending `prompt`, and over it the card for a prompt the session
+//   waits on, from the machine's snapshot, answered with `choose`.
 // - **Terminal:** an xterm on that machine's `/api/term`, as the phone's console
 //   mirror: the scrollback replayed on connect, raw keys up. It keeps the owner's
 //   size (the `size` frame) and never resizes the other machine's terminal; a
@@ -22,13 +22,10 @@ import { Terminal } from "@xterm/xterm";
 import { Spinner } from "../theme";
 import { deriveXtermTheme, mono } from "../theme/tokens";
 import { fleetSocketOpen, type FleetSocket } from "../ipc/fleet";
-import { openUrl } from "../ipc/os";
-import type { RemoteChoice, RemoteInstance, TermControl } from "../remote/protocol";
-import { createFeed, type Feed } from "../transcript/feed";
-import { fleetTranscriptSource, withQuery } from "../transcript/fleetSource";
-import { createRenderer, renderPendingTool } from "../transcript/render";
-import { attachMediaViewer } from "../transcript/media";
-import { fleetActions, fleetMedia } from "../state/fleetMedia";
+import type { RemoteInstance, TermControl } from "../remote/protocol";
+import { withQuery } from "../transcript/fleetSource";
+import type { LiveStatus } from "../state/status";
+import TranscriptView from "./TranscriptView";
 import { sendRemote, useMachineName, useRemoteInstance, type RemoteConsoleParams } from "./remoteSession";
 
 
@@ -53,6 +50,7 @@ function RemoteConsole(props: IDockviewPanelProps<RemoteConsoleParams>) {
   }, [inst, online, props.api]);
 
   const phase = inst?.phase ?? null;
+  const live = useMemo(() => liveOf(inst), [inst]);
   const status = !online
     ? `${name} · offline`
     : !inst
@@ -114,7 +112,19 @@ function RemoteConsole(props: IDockviewPanelProps<RemoteConsoleParams>) {
           {name} is offline. This tab comes back to life when it does.
         </div>
       ) : mode === "transcript" ? (
-        <RemoteTranscript machine={machine} instance={remoteInstance} inst={inst} onShowTerminal={() => setMode("terminal")} />
+        <div style={{ flex: 1, minHeight: 0 }}>
+          <TranscriptView
+            instanceId={fleetKey(machine, remoteInstance)}
+            live={live}
+            onShowTerminal={() => setMode("terminal")}
+            fleet={{
+              machine,
+              instance: remoteInstance,
+              running: inst?.live ?? false,
+              choice: inst?.phase === "needs_you" ? inst.choice : null,
+            }}
+          />
+        </div>
       ) : (
         <RemoteTerminal
           machine={machine}
@@ -125,6 +135,23 @@ function RemoteConsole(props: IDockviewPanelProps<RemoteConsoleParams>) {
       )}
     </div>
   );
+}
+
+/** The key a remote session's draft and sent prompts go by here. */
+const fleetKey = (machine: string, instance: string) => `fleet:${machine}:${instance}`;
+
+/** The snapshot's status in the shape the transcript view takes. */
+function liveOf(inst: RemoteInstance | null): LiveStatus | null {
+  if (!inst?.phase) return null;
+  return {
+    phase: inst.phase,
+    compacting: inst.compacting,
+    subagents: inst.subagents,
+    activity: inst.activity,
+    updatedAt: 0,
+    needsSince: inst.needsSince,
+    reason: null,
+  };
 }
 
 function HeaderButton({ onClick, children }: { onClick: () => void; children: React.ReactNode }) {
@@ -143,217 +170,6 @@ function HeaderButton({ onClick, children }: { onClick: () => void; children: Re
     >
       {children}
     </button>
-  );
-}
-
-// --- the transcript ---------------------------------------------------------------
-
-const STICK_PX = 48;
-
-function RemoteTranscript({
-  machine,
-  instance,
-  inst,
-  onShowTerminal,
-}: {
-  machine: string;
-  instance: string;
-  inst: RemoteInstance | null;
-  onShowTerminal: () => void;
-}) {
-  const scrollRef = useRef<HTMLDivElement>(null);
-  const listRef = useRef<HTMLDivElement>(null);
-  const feedRef = useRef<Feed | null>(null);
-  const [state, setState] = useState({ count: 0, ready: false, loading: false, hasEarlier: false });
-  const [link, setLink] = useState(true);
-  const stuck = useRef(true);
-  const machineName = useMachineName(machine);
-
-  useEffect(() => {
-    const scroll = scrollRef.current;
-    const list = listRef.current;
-    if (!scroll || !list) return;
-    // A file shown over there comes from there (improvement plan S3).
-    const renderer = createRenderer(list, { media: fleetMedia(machine, machineName) });
-    stuck.current = true;
-    const feed = createFeed(fleetTranscriptSource(machine, instance, setLink), (why) => {
-      const follow = why === "reset" || stuck.current;
-      const height = scroll.scrollHeight;
-      const top = scroll.scrollTop;
-      if (why !== "loading") renderer.update(feed.items);
-      if (follow) scroll.scrollTop = scroll.scrollHeight;
-      else if (why === "prepend") scroll.scrollTop = top + (scroll.scrollHeight - height);
-      setState({ count: feed.items.length, ready: feed.ready, loading: feed.loading, hasEarlier: feed.hasEarlier });
-    });
-    feedRef.current = feed;
-    const onScroll = () => {
-      if (scroll.clientHeight === 0) return;
-      stuck.current = scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight < STICK_PX;
-    };
-    scroll.addEventListener("scroll", onScroll);
-    // A picture's thumbnail opens the viewer over the tab (improvement plan S1).
-    const host = scroll.parentElement?.parentElement;
-    const detach = host ? attachMediaViewer(scroll, host, fleetActions(machine, machineName)) : null;
-    return () => {
-      detach?.();
-      scroll.removeEventListener("scroll", onScroll);
-      feed.stop();
-      feedRef.current = null;
-      renderer.clear();
-    };
-  }, [machine, instance, machineName]);
-
-  const onLink = (e: React.MouseEvent) => {
-    const a = e.target instanceof Element ? e.target.closest("a[href]") : null;
-    if (!a) return;
-    e.preventDefault();
-    void openUrl(a.getAttribute("href") ?? "").catch(() => {});
-  };
-
-  const choice = inst?.phase === "needs_you" ? inst.choice : null;
-
-  return (
-    <div className="wb-txv" tabIndex={-1} style={{ flex: 1, minHeight: 0 }}>
-      <div className="wb-txv-body">
-        <div ref={scrollRef} className="wb-txv-scroll" onClick={onLink}>
-          {state.hasEarlier && (
-            <button
-              type="button"
-              className="wb-txv-earlier"
-              disabled={state.loading}
-              onClick={() => void feedRef.current?.loadEarlier()}
-            >
-              {state.loading ? "loading…" : "↑ load earlier"}
-            </button>
-          )}
-          {state.count === 0 && (
-            <div className="wb-txv-empty">
-              {!state.ready || state.loading ? "loading…" : "nothing in this session yet"}
-            </div>
-          )}
-          <div ref={listRef} />
-          {!link && <div className="wb-txv-status">○ reconnecting…</div>}
-        </div>
-      </div>
-      {choice && <RemoteChoiceCard machine={machine} instance={instance} choice={choice} onShowTerminal={onShowTerminal} />}
-      <RemoteComposer machine={machine} instance={instance} disabled={!inst?.live} />
-    </div>
-  );
-}
-
-const KIND_TITLE: Record<RemoteChoice["kind"], string> = { permission: "permission", question: "question", plan: "plan ready" };
-
-function RemoteChoiceCard({
-  machine,
-  instance,
-  choice,
-  onShowTerminal,
-}: {
-  machine: string;
-  instance: string;
-  choice: RemoteChoice;
-  onShowTerminal: () => void;
-}) {
-  const bodyRef = useRef<HTMLDivElement>(null);
-  const [sent, setSent] = useState<string | null>(null);
-  useEffect(() => setSent(null), [choice.id]);
-  useEffect(() => {
-    const body = bodyRef.current;
-    if (!body || choice.kind === "question") return;
-    body.replaceChildren(renderPendingTool(choice.toolName, choice.input));
-    return () => body.replaceChildren();
-  }, [choice.id, choice.kind, choice.toolName, choice.input]);
-
-  const choose = (option: number | "deny", label: string) => {
-    sendRemote(machine, { type: "choose", instanceId: instance, choiceId: choice.id, option });
-    setSent(label);
-  };
-  const shownSent = choice.sent ?? sent;
-
-  return (
-    <div className={`wb-chc wb-chc-${choice.kind}`} role="group" aria-label={`${KIND_TITLE[choice.kind]} — waiting for an answer`}>
-      <div className="wb-chc-head">
-        <span className="wb-chc-kind">● {KIND_TITLE[choice.kind]}</span>
-        <span className="wb-chc-tool">{choice.kind === "permission" ? choice.toolName : choice.questions[0]?.header ?? ""}</span>
-      </div>
-      <div className="wb-chc-content">
-        {choice.kind === "question" ? (
-          choice.questions.map((q, i) => (
-            <div key={i} className="wb-chc-question">
-              <div className="wb-chc-question-text">{q.question}</div>
-            </div>
-          ))
-        ) : (
-          <div ref={bodyRef} />
-        )}
-      </div>
-      {shownSent ? (
-        <div className="wb-chc-note">sent: {shownSent}</div>
-      ) : (
-        <>
-          {choice.terminalOnly ? (
-            <div className="wb-chc-note">{choice.terminalOnly}</div>
-          ) : (
-            <div className="wb-chc-options">
-              {choice.options.map((o) => (
-                <button key={o.key} type="button" className="wb-chc-option" onClick={() => choose(o.key, o.label)}>
-                  <span className="wb-chc-option-key">{o.key}</span>
-                  <span className="wb-chc-option-label">
-                    {o.label}
-                    {o.detail && <span className="wb-chc-option-detail"> — {o.detail}</span>}
-                  </span>
-                </button>
-              ))}
-            </div>
-          )}
-          <div className="wb-chc-bar">
-            <button type="button" onClick={onShowTerminal}>
-              answer in terminal
-            </button>
-            <button type="button" className="wb-chc-deny" onClick={() => choose("deny", choice.kind === "permission" ? "deny" : "cancel")}>
-              {choice.kind === "permission" ? "deny" : "cancel"}
-            </button>
-          </div>
-        </>
-      )}
-    </div>
-  );
-}
-
-function RemoteComposer({ machine, instance, disabled }: { machine: string; instance: string; disabled: boolean }) {
-  const [text, setText] = useState("");
-  const send = () => {
-    const t = text.trim();
-    if (!t || disabled) return;
-    sendRemote(machine, { type: "prompt", instanceId: instance, text: t });
-    setText("");
-  };
-  return (
-    <div style={{ flex: "0 0 auto", borderTop: "1px solid var(--wb-border)", padding: "6px 10px", display: "flex", gap: 8 }}>
-      <textarea
-        value={text}
-        disabled={disabled}
-        placeholder={disabled ? "not running — start it first" : "a prompt for this session (Enter sends)"}
-        onChange={(e) => setText(e.target.value)}
-        onKeyDown={(e) => {
-          if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
-            e.preventDefault();
-            send();
-          }
-        }}
-        rows={Math.min(8, Math.max(1, text.split("\n").length))}
-        style={{
-          flex: 1,
-          resize: "none",
-          background: "var(--wb-bgInset, transparent)",
-          color: "var(--wb-text)",
-          border: "1px solid var(--wb-border)",
-          borderRadius: 3,
-          padding: "5px 8px",
-          font: "12.5px var(--wb-mono)",
-        }}
-      />
-    </div>
   );
 }
 
