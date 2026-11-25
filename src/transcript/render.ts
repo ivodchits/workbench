@@ -29,7 +29,7 @@ import type {
   UserItem,
 } from "./model";
 import { inputStr, toolTarget, toolTitle } from "./summary";
-import { mediaStrip, type MediaRef } from "./media";
+import { mediaStrip, pendingStrip, type MediaRef } from "./media";
 
 /** Output longer than this is cut, with a "show all" button. */
 const CLIP_LINES = 40;
@@ -351,10 +351,33 @@ function imageRefs(images: readonly TxImage[], label: string): MediaRef[] {
   }));
 }
 
-/** A tool's card, with the pictures its result returned under it (step S1): they
- *  show without opening the card. */
-function toolBlock(item: ToolItem): HTMLElement {
+/** Where the files a session showed (S2) are had from: what each id is, as the
+ *  strip draws it. Without one, the strip says they're not to be had here. */
+export interface MediaSource {
+  resolve(ids: string[]): Promise<MediaRef[]>;
+}
+
+/** `show_media`'s strip: grey boxes until the source says what the files are. */
+function shownStrip(shown: NonNullable<ToolItem["shown"]>, source: MediaSource | undefined): HTMLElement {
+  if (!source) {
+    const refs: MediaRef[] = shown.ids.map((id) => ({ kind: "file", src: "", label: "a file shown in the session", id, note: "not available here", gone: true }));
+    return mediaStrip(refs, shown.caption);
+  }
+  const strip = pendingStrip(shown.ids.length, shown.caption);
+  source.resolve(shown.ids).then(
+    (refs) => strip.fill(refs),
+    () => strip.fill(shown.ids.map((id) => ({ kind: "file", src: "", label: "a shown file", id, note: "couldn't be read", gone: true }))),
+  );
+  return strip.node;
+}
+
+/** A tool's card, with the pictures its result returned (step S1) or the files it
+ *  showed (S2) under it: they show without opening the card. */
+function toolBlock(item: ToolItem, source: MediaSource | undefined): HTMLElement {
   const details = toolCard(item);
+  if (item.shown && item.shown.ids.length > 0) {
+    return el("div", "wb-tx-tool-media", details, shownStrip(item.shown, source));
+  }
   if (item.images.length === 0) return details;
   const label = `${toolTitle(item)} ${toolTarget(item)}`.trim();
   return el("div", "wb-tx-tool-media", details, mediaStrip(imageRefs(item.images, label)));
@@ -394,6 +417,7 @@ export function renderPendingTool(name: string, input: Record<string, unknown>):
     status: "running",
     resultText: null,
     images: [],
+    shown: null,
     stdout: null,
     stderr: null,
     diff: null,
@@ -457,6 +481,8 @@ function dividerBlock(item: DividerItem): HTMLElement {
 export interface RenderOptions {
   /** Messages get a listen button (`listenButton`). */
   listen?: boolean;
+  /** Where files shown with `show_media` are had from (S2). */
+  media?: MediaSource;
 }
 
 /** Build the element for one item. */
@@ -483,7 +509,7 @@ export function renderItem(item: Item, opts: RenderOptions = {}): HTMLElement {
         : el("div", "wb-tx-thinking wb-tx-marker", "thought");
       break;
     case "tool":
-      node = toolBlock(item);
+      node = toolBlock(item, opts.media);
       break;
     case "command":
       node = commandBlock(item);

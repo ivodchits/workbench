@@ -82,6 +82,74 @@
   object-fit: contain;
 }
 
+/* A file card in the strip (and one that's gone, or not to be had here). */
+.wb-tx-thumb-file,
+.wb-tx-thumb-audio,
+.wb-tx-thumb-pending {
+  height: 120px;
+  min-width: 120px;
+  max-width: 240px;
+  padding: 8px 10px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 4px;
+  line-height: 1.35;
+  text-align: left;
+  color: var(--wb-text);
+  font: inherit;
+}
+
+.wb-tx-thumb-audio {
+  width: 260px;
+  max-width: none;
+}
+
+.wb-tx-thumb-gone {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.wb-tx-thumb-pending {
+  align-items: center;
+  opacity: 0.5;
+  cursor: default;
+}
+
+.wb-tx-file-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
+}
+
+.wb-tx-file-facts {
+  opacity: 0.7;
+  font-size: 0.9em;
+}
+
+.wb-tx-audio {
+  width: 100%;
+  height: 32px;
+}
+
+/* A video's first frame, with a play mark. */
+.wb-tx-thumb-video {
+  position: relative;
+}
+
+.wb-tx-play {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+  font-size: 26px;
+  text-shadow: 0 0 6px rgba(0, 0, 0, 0.8);
+  pointer-events: none;
+}
+
 .wb-tx-media-caption {
   margin-top: 2px;
   opacity: 0.7;
@@ -149,12 +217,71 @@
   flex: 1;
   min-height: 0;
   overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* A picture pans and zooms. */
+.wb-media-stage-pan {
+  display: block;
   cursor: grab;
   touch-action: none;
 }
 
-.wb-media-stage:active {
+.wb-media-stage-pan:active {
   cursor: grabbing;
+}
+
+.wb-media-zoom {
+  display: flex;
+  gap: 4px;
+}
+
+.wb-media-zoom[hidden],
+.wb-media-btn[hidden] {
+  display: none;
+}
+
+/* A video or a sound, with its controls. */
+.wb-media-play {
+  max-width: 100%;
+  max-height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+}
+
+.wb-media-video {
+  max-width: 100%;
+  max-height: 100%;
+  background: #000;
+}
+
+.wb-media-play-audio .wb-media-audio,
+.wb-media-play-audio audio {
+  width: min(420px, 90vw);
+}
+
+/* What can't be shown here: its name, size, and what the host can do with it. */
+.wb-media-file {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 18px 22px;
+  border: 1px solid var(--wb-border);
+  background: var(--wb-panel);
+  color: var(--wb-text);
+  max-width: 90%;
+  text-align: center;
+}
+
+.wb-media-file-actions {
+  display: flex;
+  gap: 6px;
+  margin-top: 4px;
 }
 
 .wb-media-img {
@@ -1056,4 +1183,69 @@
 }
 .wb-tx-open-plan:hover {
   border-color: var(--wb-accent);
+}
+
+/* ── the session's media, over the console in terminal view (S2) ─────────── */
+
+.wb-media-tray {
+  position: absolute;
+  inset: 0;
+  z-index: 40;
+  display: flex;
+  flex-direction: column;
+  background: var(--wb-bg);
+  outline: none;
+}
+
+.wb-media-tray-grid {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 10px;
+}
+
+.wb-media-tray-grid .wb-tx-media-row {
+  flex-wrap: wrap;
+  overflow: visible;
+}
+
+.wb-media-refuse {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  opacity: 0.8;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+/* ── a file popped out into a panel of its own ───────────────────────────── */
+
+.wb-media-panel {
+  height: 100%;
+  overflow: auto;
+  background: var(--wb-bg);
+  color: var(--wb-text);
+  font: 12px var(--wb-mono);
+}
+
+.wb-media-panel-centre {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.wb-media-panel-fit {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  cursor: zoom-in;
+}
+
+video.wb-media-panel-fit {
+  cursor: default;
+}
+
+.wb-media-panel-actual {
+  display: block;
+  cursor: zoom-out;
 }

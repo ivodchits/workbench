@@ -309,6 +309,22 @@ const MIGRATIONS: &[&str] = &[
     );
     ALTER TABLE projects ADD COLUMN profile_id TEXT REFERENCES profiles(id) ON DELETE SET NULL;
     "#,
+    // v22 -> v23: files a session showed with `show_media` (improvement plan S2).
+    // Only these are served, by id. `modified` is the file's mtime (ms) when shown.
+    r#"
+    CREATE TABLE session_media (
+        id          TEXT PRIMARY KEY,
+        instance_id TEXT NOT NULL,
+        path        TEXT NOT NULL,
+        size        INTEGER NOT NULL,
+        mime        TEXT NOT NULL,
+        kind        TEXT NOT NULL,
+        modified    INTEGER NOT NULL,
+        shown_at    INTEGER NOT NULL,
+        caption     TEXT
+    );
+    CREATE INDEX idx_session_media_instance ON session_media(instance_id, shown_at);
+    "#,
 ];
 
 /// Apply any migrations the database hasn't seen yet, advancing

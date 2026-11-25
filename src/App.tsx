@@ -52,6 +52,7 @@ import { startDuckBadge } from "./state/duckBadgeHost";
 import { initRemoteServer } from "./state/remoteServer";
 import { initFleet } from "./state/fleet";
 import { initFleetView } from "./state/fleetView";
+import { initMedia } from "./state/media";
 import { draftImageNames } from "./state/composer";
 import { prunePastedImages } from "./ipc/os";
 import RemoteApprovalHost from "./panels/RemoteApproval";
@@ -114,6 +115,7 @@ function App() {
     initFleet();
     // Every other machine's sessions (fleet plan F9.1), for the rail and the office.
     initFleetView();
+    initMedia();
     // Notification routing + escalation (step 4.6): route needs-you to the configured
     // destinations and watch for held/stuck cards. App-lifetime, idempotent.
     initNotifications();

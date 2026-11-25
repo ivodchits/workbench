@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { fixtures, screenshotLines, sessionLines, sessionNames } from "./fixtures.test-util";
+import { fixtures, screenshotLines, sessionLines, sessionNames, showMediaLines } from "./fixtures.test-util";
 import { createTranscript, type Item, type ToolItem } from "./model";
 
 function fold(lines: string[], sidechain = false): Item[] {
@@ -254,5 +254,18 @@ describe("delivery", () => {
     ]);
     expect(changed).toBe(true);
     expect(t.items).toMatchObject([{ kind: "notice", level: "error", text: "overloaded" }]);
+  });
+});
+
+describe("files shown with show_media (S2)", () => {
+  it("reads the ids from the result's media line, and the caption", () => {
+    const [tool] = tools(fold(showMediaLines("Shown in the session: chart.png (picture, 2 KB), clip.mp4 (video, 1 MB).\nmedia: 0a1b 2c3d")));
+    expect(tool.shown).toEqual({ ids: ["0a1b", "2c3d"], caption: "the chart" });
+  });
+
+  it("has nothing for an error, or a result without the line", () => {
+    expect(tools(fold(showMediaLines("Nothing was shown. x.png (not found)", true)))[0].shown).toBeNull();
+    expect(tools(fold(showMediaLines("something else")))[0].shown).toBeNull();
+    expect(tools(fold(screenshotLines))[0].shown).toBeNull();
   });
 });

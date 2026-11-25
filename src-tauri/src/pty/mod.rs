@@ -919,6 +919,9 @@ pub(crate) fn session_args(
         }
     }
     args.extend(extra);
+    // `show_media` (S2): only Workbench's own local sessions get it. (An SSH project's
+    // console never comes here: its files are on that host.)
+    args.extend(crate::media::launch_args(app, instance_id));
     args
 }
 

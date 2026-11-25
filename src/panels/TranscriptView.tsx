@@ -27,6 +27,7 @@ import { notePlans } from "../state/plans";
 import { openPlan } from "./openPlan";
 import { createRenderer, markListening } from "../transcript/render";
 import { attachMediaViewer } from "../transcript/media";
+import { desktopActions, desktopMedia, markMediaSeen, useMediaCounts } from "../state/media";
 import { listenPrefix, listenRequest, listeningTo } from "../assistant/listen";
 import { listenToMessage, useDuckState } from "./Assistant/duckState";
 import ReaderBar from "./Assistant/ReaderBar";
@@ -90,7 +91,7 @@ function TranscriptView({ instanceId, live, onShowTerminal }: TranscriptViewProp
     const scroll = scrollRef.current;
     const list = listRef.current;
     if (!scroll || !list) return;
-    const renderer = createRenderer(list, { listen: true });
+    const renderer = createRenderer(list, { listen: true, media: desktopMedia });
     stuck.current = true;
     setFeedState(EMPTY);
     setAway(false);
@@ -211,10 +212,18 @@ function TranscriptView({ instanceId, live, onShowTerminal }: TranscriptViewProp
       markListening(listRef.current, listenId && listenState ? { itemId: listenId, state: listenState } : null);
   }, [listenId, listenState, feedState.rev]);
 
+  // The transcript on screen shows the files a session shows as they come: none
+  // goes unseen (the terminal view's badge, S2).
+  const mediaUnseen = useMediaCounts(instanceId).unseen;
+  useEffect(() => {
+    if (mediaUnseen > 0) markMediaSeen(instanceId);
+  }, [instanceId, mediaUnseen]);
+
   // A picture's thumbnail opens the viewer over this panel (improvement plan S1).
   useEffect(() => {
-    if (scrollRef.current && rootRef.current) return attachMediaViewer(scrollRef.current, rootRef.current);
-  }, []);
+    if (scrollRef.current && rootRef.current)
+      return attachMediaViewer(scrollRef.current, rootRef.current, desktopActions(instanceId));
+  }, [instanceId]);
 
   useEffect(() => {
     if (!listenNote) return;

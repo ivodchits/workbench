@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { describe, expect, it } from "vitest";
 
-import { fixtures, screenshotLines, sessionLines } from "./fixtures.test-util";
+import { fixtures, screenshotLines, sessionLines, showMediaLines } from "./fixtures.test-util";
 import { createTranscript, type Item } from "./model";
 import { createRenderer, markListening, renderItem } from "./render";
 
@@ -287,5 +287,37 @@ describe("pictures under a tool call (S1)", () => {
   it("makes a pasted picture a thumbnail too", () => {
     const pasted = fold(fixtures["14-image-paste"]).find((i) => i.kind === "user");
     expect(pasted && renderItem(pasted).querySelectorAll(".wb-tx-thumb")).toHaveLength(1);
+  });
+});
+
+describe("files shown with show_media (S2)", () => {
+  const item = () => fold(showMediaLines("Shown.\nmedia: aa bb")).find((i) => i.kind === "tool")!;
+
+  it("titles the card plainly and fills the strip from the source", async () => {
+    let asked: string[] = [];
+    const node = renderItem(item(), {
+      media: {
+        resolve: async (ids) => {
+          asked = ids;
+          return [
+            { kind: "image", src: "http://wbmedia.localhost/aa", label: "chart.png", id: "aa" },
+            { kind: "file", src: "", label: "gone.mp4", id: "bb", gone: true, note: "file gone" },
+          ];
+        },
+      },
+    });
+    expect(node.querySelector(".wb-tx-tool-name")?.textContent).toBe("Show media");
+    expect(node.querySelectorAll(".wb-tx-thumb-pending")).toHaveLength(2);
+    await new Promise((r) => setTimeout(r, 0));
+    expect(asked).toEqual(["aa", "bb"]);
+    expect(node.querySelector(".wb-tx-media-caption")?.textContent).toBe("the chart");
+    expect(node.querySelector("img")?.getAttribute("src")).toBe("http://wbmedia.localhost/aa");
+    expect(node.querySelector(".wb-tx-thumb-gone")?.textContent).toContain("file gone");
+  });
+
+  it("says the files aren't to be had where there's no source", () => {
+    const node = renderItem(item());
+    expect(node.querySelectorAll(".wb-tx-thumb-gone")).toHaveLength(2);
+    expect(node.textContent).toContain("not available here");
   });
 });

@@ -38,6 +38,7 @@ import GitPanel, { type GitPanelParams } from "./Git";
 import NotesPanel, { type NotesPanelParams } from "./Notes";
 import TaskPanel, { type TaskPanelParams } from "./TaskPanel";
 import PreviewPanel from "./PreviewPanel";
+import MediaPanel from "./MediaPanel";
 import RemoteConsole from "./RemoteConsole";
 import PlanPanel from "./PlanPanel";
 import DecisionsPanel from "./DecisionsPanel";
@@ -176,6 +177,7 @@ const COMPONENTS = {
   // `editorId`) in params, so the reconcilers above ignore them — they persist and
   // restore purely as part of the dockview tree.
   preview: PreviewPanel as React.FunctionComponent<IDockviewPanelProps>,
+  media: MediaPanel as React.FunctionComponent<IDockviewPanelProps>,
   // Plan tabs (step P1) carry their text in params and no store id, so like the
   // preview they persist purely as part of the tree.
   plan: PlanPanel as React.FunctionComponent<IDockviewPanelProps>,

@@ -46,6 +46,8 @@ import { setViewMode, toggleViewMode, useViewMode, type ViewMode } from "../stat
 import { takeOverHeadless } from "../state/headless";
 import { getBindings } from "../keyboard/keymap";
 import { prettyChord } from "./keymapFormat";
+import { MediaButton, MediaTray } from "./MediaTray";
+import { useMediaTray } from "../state/media";
 
 export interface ConsolePanelParams {
   instanceId: string;
@@ -56,6 +58,7 @@ function ConsolePanel(props: IDockviewPanelProps<ConsolePanelParams>) {
   const { open } = useConsoles();
   const { instances, projects } = useRegistry();
   const live = useLiveStatuses().get(instanceId) ?? null;
+  const tray = useMediaTray();
   const viewMode = useViewMode(instanceId);
 
   const session = open.find((c) => c.instanceId === instanceId) ?? null;
@@ -103,9 +106,11 @@ function ConsolePanel(props: IDockviewPanelProps<ConsolePanelParams>) {
         viewMode={hasTranscript && !headless ? viewMode : null}
         onToggleView={() => toggleViewMode(instanceId)}
         plans={hasTranscript}
+        media={!showTranscript}
         onTakeOver={headless && session.status !== "spawning" ? takeOver : undefined}
       />
-      <div style={{ flex: "1 1 auto", minHeight: 0 }}>
+      <div style={{ flex: "1 1 auto", minHeight: 0, position: "relative" }}>
+        {tray === instanceId && !showTranscript && <MediaTray instanceId={instanceId} />}
         {dormant ? (
           <Dormant instance={instance} />
         ) : headless && session.status === "error" ? (
@@ -189,6 +194,7 @@ function HeaderStrip({
   onToggleView,
   plans,
   onTakeOver,
+  media,
 }: {
   project: Project | null;
   instance: Instance;
@@ -202,6 +208,8 @@ function HeaderStrip({
   plans: boolean;
   /** A headless worker: continue it in a terminal. */
   onTakeOver?: () => void;
+  /** The terminal is on screen: the files the session showed get a badge (S2). */
+  media: boolean;
 }) {
   const branch = instance.branch ?? project?.defaultBranch ?? null;
   return (
@@ -244,6 +252,7 @@ function HeaderStrip({
       <span style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 10, paddingLeft: 12 }}>
         <PlanButton instanceId={instance.id} enabled={plans} />
         <DecisionsButton instanceId={instance.id} />
+        {media && <MediaButton instanceId={instance.id} />}
         {viewMode && <ViewToggle mode={viewMode} onToggle={onToggleView} />}
         {onTakeOver && (
           <button

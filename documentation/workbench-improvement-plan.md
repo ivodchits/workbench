@@ -2519,6 +2519,71 @@ on 2026-11-24, to be built **after the fleet plan's F9** (S3 needs F9.2).
   - The badge counts in terminal view, and its tray opens the same files.
   - A request for an unregistered id or a path gets nothing.
   - A `claude` started by hand has no `show_media`.
+- _(Built, 2026-11-24:
+  - **The tool:** `src-tauri/src/media/mod.rs` (new), at `/mcp/<instance>` on the hook
+    server's port (merged into its router in `hooks/server.rs`).
+    - `launch_args`, called at the end of `pty::session_args`, writes the session's
+      MCP config to `<app data>/media/<instance>.mcp.json` (a file, so no launcher
+      quoting can break the JSON). It passes `--mcp-config <file> --allowedTools
+      mcp__workbench__show_media --append-system-prompt <the line>`. Both list flags
+      take several values, so each is followed by a flag.
+    - **Changed from the plan:** the tool is allowed up front. Without that, every call
+      would stop at a permission prompt in the default mode.
+    - **Added:** a token. The URL names the instance, and the call must carry a token
+      made from it and a secret drawn at startup (`MediaState::token`). Without it,
+      anything on the machine could register any path for any session.
+    - A missing file fails the whole call, and nothing is registered.
+  - **The table:** `session_media` (migration v23). `media_info`, `media_list` and the
+    refusal setting's get/set are commands.
+  - **Serving:** `media/serve.rs`, the `wbmedia` scheme, registered asynchronously in
+    `lib.rs`. It serves a registered id only. A `Range` is honoured, and an open-ended
+    one gets at most 4 MB per answer. A gone file is `410`, and `no-store` means a
+    changed file is served as it is now.
+  - **Refusing opens:** `media/refuse.rs`. A `PreToolUse` for `Bash` or `PowerShell`
+    whose command only opens media files (`start`, `cmd /c start`, `Invoke-Item`,
+    `ii`, `explorer`, `open`, `xdg-open`) is answered with a `deny` and the reason.
+    The hook server already answered with decisions (T4). A command that does
+    anything else as well (`python plot.py && start out.png`) is left alone. The
+    setting is `media_refuse_open` in `meta`, on unless set to `0`, and its checkbox
+    is in the media tray.
+  - **The transcript:**
+    - `ToolItem.shown` (`model.ts`) is read from the `media:` line of an
+      `mcp__*__show_media` result, together with its caption.
+    - The renderer takes a `MediaSource` (`RenderOptions.media`) that turns ids into
+      thumbnails. Until it answers, the strip shows grey boxes. With no source (the
+      phone, the office, another machine's session until S3), it shows "not available
+      here" cards.
+    - The card reads "Show media" with the paths.
+  - **The strip and viewer** (`transcript/media.ts`) now handle video (its first
+    frame and a play mark), sound (a small player in the strip that plays in place)
+    and file cards, plus "file gone" and "changed since it was shown".
+    - The viewer shows a video or sound with its controls. A video that can't play
+      here (a mov that isn't H.264) turns into the file card.
+    - A file card offers the host's **open externally** and **show in folder**, and
+      **pop out** moves an item into a panel.
+  - **Desktop:** `src/state/media.ts` holds the source (an info cache over
+    `media_info`), the actions, the unseen counts fed by the `media-shown` event, and
+    the tray state.
+    - `MediaPanel.tsx` is the dockable panel (`media` component), restored with the
+      layout.
+    - `MediaTray.tsx` holds the header's **media · N** button, shown in terminal view
+      once the session has shown anything, and the tray over the console, newest
+      first.
+    - The transcript view on screen counts as having looked.
+  **Checked:**
+  - Rust (`media/tests.rs`): extensions; registering and the result's text with its
+    `media:` line; changed and gone; a missing file registering nothing; unknown ids;
+    per-session tokens; the config; the handshake and `tools/list`; which commands
+    are refused; the `PreToolUse` denial; `Range` parsing; sizes.
+  - Vitest: the `media:` line and caption (none for errors), the strip filled from a
+    source and the cards without one, each kind's thumbnail, a sound's player not
+    opening the viewer, the video's controls, the file card's actions, and pop out
+    (none for a gone file).
+  - The installed `claude` (2.1.332) takes `--mcp-config`, `--allowedTools` and
+    `--append-system-prompt`.
+  **Live test owed:** the whole Done when in the app: a session drawing a chart, the
+  200 MB mp4 seeking, `start out.png` refused, the badge and tray, and an unknown id
+  getting nothing.)_
 
 #### Step S3 — Media from another machine
 
@@ -2817,7 +2882,7 @@ any session, which lowers the urgency and makes the terminal bugs easier to comp
 | M1 | Run summary on done (mod) | ☐ |
 | K1 | Project toolbar: plugin file, toolbar, task runs | ☑ |
 | S1 | Pictures that tools return, in the transcript | ☑ |
-| S2 | `show_media` tool, strip and viewer | ☐ |
+| S2 | `show_media` tool, strip and viewer | ☑ |
 | S3 | Media from another machine | ☐ |
 | J1 | Daily log: capture and tidy, on the main | ☐ |
 | J2 | Daily log window | ☐ |

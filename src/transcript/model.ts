@@ -82,6 +82,9 @@ export interface ToolItem extends ItemBase {
   resultText: string | null;
   /** Pictures in the result (a browser screenshot, `Read` on an image), step S1. */
   images: TxImage[];
+  /** `show_media` (S2): the ids of the files it showed, read from its result's
+   *  `media:` line, and its caption. Null for any other tool, or before it answered. */
+  shown: { ids: string[]; caption: string | null } | null;
   /** Bash: what the command printed. */
   stdout: string | null;
   stderr: string | null;
@@ -237,6 +240,23 @@ function imageOf(block: Json): TxImage | null {
   return block.source.type === "base64" && data && IMAGE_TYPES.test(mediaType) ? { mediaType, data } : null;
 }
 
+/** The tool Workbench gives its sessions to show files (S2), as Claude Code names
+ *  it (`mcp__workbench__show_media`). */
+export function isShowMedia(name: string): boolean {
+  return /^mcp__[^_].*__show_media$/.test(name);
+}
+
+/** The `media: <id> <id> …` line that ends `show_media`'s result. */
+const MEDIA_LINE = /^media:((?:\s+[0-9a-f]+)+)\s*$/m;
+
+function shownBy(item: ToolItem): ToolItem["shown"] {
+  if (!isShowMedia(item.name) || !item.resultText) return null;
+  const line = MEDIA_LINE.exec(item.resultText);
+  if (!line) return null;
+  const caption = typeof item.input.caption === "string" && item.input.caption.trim() ? item.input.caption.trim() : null;
+  return { ids: line[1].trim().split(/\s+/), caption };
+}
+
 /** A `tool_result` block's pictures. */
 function resultImages(content: unknown): TxImage[] {
   if (!Array.isArray(content)) return [];
@@ -305,6 +325,7 @@ function toolUse(state: State, line: Json, block: Json): void {
     status: "running",
     resultText: null,
     images: [],
+    shown: null,
     stdout: null,
     stderr: null,
     diff: null,
@@ -343,6 +364,7 @@ function toolResult(state: State, line: Json, block: Json): void {
   item.images = resultImages(block.content);
   item.status =
     line.toolDenialKind !== undefined ? "denied" : block.is_error === true ? "error" : "ok";
+  item.shown = item.status === "ok" ? shownBy(item) : null;
 
   const result = line.toolUseResult;
   if (!isObject(result)) {

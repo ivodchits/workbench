@@ -16,6 +16,7 @@ mod gitqueue;
 mod hooks;
 mod layout;
 mod mcp;
+mod media;
 mod notes;
 mod plugins;
 mod profiles;
@@ -62,6 +63,11 @@ pub fn run() {
         )
         // Paths of files dropped in from the OS (step D2).
         .plugin(filedrop::plugin())
+        // Files a session showed with `show_media` (improvement plan S2), by id only.
+        .register_asynchronous_uri_scheme_protocol(media::serve::SCHEME, |ctx, request, responder| {
+            let app = ctx.app_handle().clone();
+            tauri::async_runtime::spawn_blocking(move || responder.respond(media::serve::serve(&app, &request)));
+        })
         .setup(|app| {
             // Open the registry database under the OS app-data dir so it
             // survives restarts (design §4.6). Created on first launch.
@@ -171,6 +177,8 @@ pub fn run() {
             Ok(())
         })
         .manage(pty::PtyManager::default())
+        // The secret `show_media`'s per-session tokens come from (S2).
+        .manage(media::MediaState::default())
         // Duck's headless workers (step D4).
         .manage(assistant::headless::HeadlessManager::default())
         // Duck's subscription brains (step M3).
@@ -380,6 +388,10 @@ pub fn run() {
             fleet::fleet_socket_open,
             fleet::fleet_socket_send,
             fleet::fleet_socket_close,
+            media::media_info,
+            media::media_list,
+            media::media_refuse_get,
+            media::media_refuse_set,
             fleet::fleet_host_send,
             fleet::fleet_set_workspace,
             fleet::fleet_drained,

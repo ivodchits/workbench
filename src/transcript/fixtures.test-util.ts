@@ -59,3 +59,22 @@ export const screenshotLines = [
     toolUseResult: [{ type: "text", text: "Captured 2 screenshots" }],
   }),
 ];
+
+/** A `show_media` call (S2) and its answer, ending with the `media:` line. */
+export function showMediaLines(result: string, isError = false): string[] {
+  return [
+    JSON.stringify({
+      type: "assistant",
+      uuid: "sm-a",
+      message: {
+        role: "assistant",
+        content: [{ type: "tool_use", id: "toolu_show", name: "mcp__workbench__show_media", input: { paths: ["C:/out/chart.png", "clip.mp4"], caption: " the chart " } }],
+      },
+    }),
+    JSON.stringify({
+      type: "user",
+      uuid: "sm-u",
+      message: { role: "user", content: [{ type: "tool_result", tool_use_id: "toolu_show", content: [{ type: "text", text: result }], ...(isError && { is_error: true }) }] },
+    }),
+  ];
+}

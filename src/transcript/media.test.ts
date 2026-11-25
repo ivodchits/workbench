@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { attachMediaViewer, mediaStrip, type MediaRef } from "./media";
 
@@ -66,6 +66,67 @@ describe("the media strip and viewer", () => {
     thumbs[2].click();
     expect(host.querySelectorAll(".wb-media-viewer")).toHaveLength(1);
     detach();
+    expect(viewer(host)).toBeNull();
+  });
+});
+
+describe("video, sound and files in the viewer (S2)", () => {
+  const files: MediaRef[] = [
+    { kind: "video", src: "http://wbmedia.localhost/v", label: "clip.mp4", id: "v" },
+    { kind: "audio", src: "http://wbmedia.localhost/a", label: "take.wav", id: "a" },
+    { kind: "file", src: "", label: "report.pdf", id: "f", size: 2048 },
+    { kind: "image", src: "", label: "old.png", id: "g", gone: true, note: "file gone" },
+  ];
+
+  function open(actions = {}) {
+    const host = document.createElement("div");
+    const scope = document.createElement("div");
+    scope.append(mediaStrip(files));
+    host.append(scope);
+    document.body.append(host);
+    attachMediaViewer(scope, host, actions);
+    return { host, scope, thumbs: scope.querySelectorAll<HTMLElement>(".wb-tx-thumb") };
+  }
+
+  it("draws each kind's thumbnail", () => {
+    const { scope } = open();
+    expect(scope.querySelector(".wb-tx-thumb-video video")?.getAttribute("src")).toBe("http://wbmedia.localhost/v#t=0.1");
+    expect(scope.querySelector(".wb-tx-thumb-audio audio")).not.toBeNull();
+    expect(scope.querySelector(".wb-tx-thumb-file")?.textContent).toContain("2.0 KB");
+    expect(scope.querySelector(".wb-tx-thumb-gone")?.textContent).toContain("file gone");
+  });
+
+  it("plays a video with its controls, and a sound's own player doesn't open the viewer", () => {
+    const { host, thumbs } = open();
+    thumbs[1].querySelector("audio")!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    expect(viewer(host)).toBeNull();
+    thumbs[0].click();
+    const video = host.querySelector<HTMLVideoElement>(".wb-media-video");
+    expect(video?.controls).toBe(true);
+    expect(host.querySelector<HTMLElement>(".wb-media-zoom")?.hidden).toBe(true);
+  });
+
+  it("offers the host's actions for a file, and pops out what can be", () => {
+    const open_ = vi.fn();
+    const reveal = vi.fn();
+    const popOut = vi.fn();
+    const { host, thumbs } = open({ open: open_, reveal, popOut });
+    thumbs[2].click();
+    const buttons = [...host.querySelectorAll<HTMLButtonElement>(".wb-media-file .wb-media-btn")];
+    expect(buttons.map((b) => b.textContent)).toEqual(["open externally", "show in folder"]);
+    buttons[0].click();
+    buttons[1].click();
+    expect(open_).toHaveBeenCalledWith(files[2]);
+    expect(reveal).toHaveBeenCalledWith(files[2]);
+    // A gone file has nothing to open or pop out.
+    key(host, "ArrowRight");
+    expect(host.querySelectorAll(".wb-media-file .wb-media-btn")).toHaveLength(0);
+    const pop = [...host.querySelectorAll<HTMLButtonElement>(".wb-media-btn")].find((b) => b.textContent === "pop out")!;
+    expect(pop.hidden).toBe(true);
+    key(host, "ArrowLeft");
+    expect(pop.hidden).toBe(false);
+    pop.click();
+    expect(popOut).toHaveBeenCalledWith(files[2]);
     expect(viewer(host)).toBeNull();
   });
 });

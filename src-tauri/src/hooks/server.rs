@@ -190,6 +190,8 @@ async fn run(listener: std::net::TcpListener, ctx: Arc<HookContext>) -> std::io:
     if let Some(proxy) = crate::assistant::router(&ctx.app) {
         router = router.merge(proxy);
     }
+    // So does `show_media`, the tool Workbench's sessions get (S2).
+    router = router.merge(crate::media::router(ctx.app.clone()));
     axum::serve(listener, router).await
 }
 
@@ -302,7 +304,16 @@ async fn handle(
                 envelope.event.transcript_path.as_deref(),
                 is_clear_rotation(&envelope.event),
             );
+            // A shell command that only opens a media file in another app is
+            // refused, with the reason to use `show_media` (S2).
+            let refusal = (envelope.event.hook_event_name.as_deref() == Some("PreToolUse"))
+                .then(|| crate::media::refuse::answer(envelope.event.tool_name.as_deref(), &envelope.event.rest))
+                .flatten()
+                .filter(|_| crate::media::refusing(&ctx.app.state::<crate::db::Db>()));
             let _ = ctx.app.emit(HOOK_EVENT, *envelope);
+            if let Some(body) = refusal {
+                return ([(header::CONTENT_TYPE, "application/json")], body.to_string()).into_response();
+            }
             if let Some((id, rx)) = held {
                 let decision = tokio::time::timeout(Duration::from_millis(HOLD_MS), rx)
                     .await

@@ -2,7 +2,7 @@
 // tool call acted on and what to call it. Pure, so the DOM renderer and Duck's
 // plain-text reader (`plainText.ts`) share them.
 
-import type { ToolItem } from "./model";
+import { isShowMedia, type ToolItem } from "./model";
 
 /** The last two segments of a path — enough to recognise a file on one line. */
 export function shortPath(path: string): string {
@@ -67,6 +67,10 @@ export function toolTarget(item: ToolItem): string {
     case "Skill":
       return inputStr(item, "skill");
     default: {
+      if (isShowMedia(item.name)) {
+        const paths = Array.isArray(item.input.paths) ? item.input.paths.filter((p) => typeof p === "string") : [];
+        return oneLine(paths.map((p) => shortPath(p)).join(", "), 100);
+      }
       // Unknown tool: the first short string argument usually names its target.
       const first = Object.values(item.input).find(
         (v) => typeof v === "string" && v.length > 0,
@@ -78,6 +82,7 @@ export function toolTarget(item: ToolItem): string {
 
 export function toolTitle(item: ToolItem): string {
   if (item.agent) return item.agent.type || "Agent";
+  if (isShowMedia(item.name)) return "Show media";
   if (item.name === "AskUserQuestion") return "Question";
   if (item.name === "ExitPlanMode") return "Plan";
   // `mcp__server__tool` reads better as `server: tool`.
