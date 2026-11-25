@@ -38,7 +38,7 @@ const cut = (s: string, n: number) => {
   return one.length > n ? `${one.slice(0, n - 1)}…` : one;
 };
 
-const projectName = (port: WorkbenchPort, s: SessionRef) =>
+const projectName = (port: WorkbenchPort, s: Pick<SessionRef, "projectId">) =>
   port.listProjects().find((p) => p.id === s.projectId)?.name ?? s.projectId;
 
 /** A session Claude Code is running in (not offline, not ended). */
@@ -108,13 +108,16 @@ export const sendPrompt = defineTool({
   },
   trust: (input, port) => ({ ...onSession(input, port), texts: [input.text] }),
   timeoutMs: 20_000,
-  async run({ session, project, text, when, files }, { port, later, attachment, toSession }) {
+  async run({ session, project, text, when, files }, ctx) {
+    const { port, later, attachment, toSession } = ctx;
     const s = findSession(port, session, project);
     const paths = files?.length ? await filesFor(port, s, files, attachment, toSession) : [];
     const delivery = await port.sendPrompt(s.id, paths.length ? `${text}\n\n${filesLine(paths)}` : text, {
       now: when === "now",
       onFailed: (why) => later(`The prompt sent to "${s.title}" didn't go in: ${why}.`),
     });
+    // This thread hears how the turn goes without a wait_for_session.
+    followSession(ctx, s);
     return {
       session: s.title,
       id: s.id,
@@ -256,8 +259,9 @@ export const createSession = defineTool<typeof createSchema, WorktreeTarget | un
   trust: (input, port) => ({ ...onProject(input, port), texts: input.prompt ? [input.prompt] : [] }),
   async run(
     { project, prompt, title, worktree, resume, model, permissionMode, delegatedBy },
-    { port, settings, request, threadId, reminders, prepared },
+    ctx,
   ) {
+    const { port, settings, request, threadId, reminders, prepared } = ctx;
     // Handed over only on the user's own words (step T3).
     const delegated = !!delegatedBy?.trim() && quotes(request, delegatedBy);
     const p = findProject(port, project);
@@ -282,6 +286,8 @@ export const createSession = defineTool<typeof createSchema, WorktreeTarget | un
       // What the session is for, in the user's words: its prompts are judged by it.
       mandate: request ? { text: request, threadId, ...(delegated && { delegated: true }) } : undefined,
     });
+    // Its first turn is followed, as a prompt sent to it would be.
+    if (prompt?.trim()) followSession(ctx, { id: made.id, title: made.title, projectId: p.id });
     return compact({
       id: made.id,
       title: made.title,
@@ -436,6 +442,8 @@ export const answerChoice = defineTool({
     const asked = workerQuestion(s) ? (s.choice?.questions[0]?.question ?? "") : null;
     const c = s.choice;
     const label = port.answerChoice(s.id, choiceId, answerOf(option, text));
+    // The turn goes on: its next prompt and its end come back here (not this one).
+    followSession(ctx, s, choiceId);
     if (asked !== null) tasks?.noteAnswer(s.id, { question: asked, answer: label, reason: reason?.trim() || "" });
     else if (c) void logAnswer(ctx, s, c, label, reason);
     return { session: s.title, answered: label };
@@ -646,8 +654,24 @@ const reached = (until: Until, phase: SessionPhase) =>
   (until !== "needs_you" && phase === "done") ||
   (until !== "done" && phase === "needs_you");
 
+/** A thread's watch on one session. `wait_for_session` makes an explicit one (what
+ *  the user asked to be told); giving a session work from a thread (create_session
+ *  with a prompt, send_prompt, answer_choice) makes it follow the session, which
+ *  tells the thread that turn's prompts and its end without anyone asking. One
+ *  watch per thread and session holds both, so nothing is told twice. */
+interface Watch {
+  stop(): void;
+  /** Follow the session from now: its prompts after `seen` (the one open now, or
+   *  the one just answered), and the end of the turn it is starting. */
+  follow(seen: string | null): void;
+  /** Following, and the end of that turn not yet told. */
+  readonly following: boolean;
+  /** The turn being followed was seen under way. */
+  readonly begun: boolean;
+}
+
 /** Live watches, one per thread and session: watching again replaces it. */
-const watches = new Map<string, () => void>();
+const watches = new Map<string, Watch>();
 
 /** The threads with a live watch (housekeeping leaves them, step L4). Keys are
  *  `${threadId}:${sessionId}`; session ids have no colon. */
@@ -657,7 +681,7 @@ export function watchedThreads(): Set<string> {
 
 /** Stop every watch (tests). */
 export function clearWatches(): void {
-  for (const stop of [...watches.values()]) stop();
+  for (const w of [...watches.values()]) w.stop();
 }
 
 /** Before answering "already done": a prompt sent in the same batch of calls may
@@ -665,6 +689,11 @@ export function clearWatches(): void {
 export const ALREADY_GRACE_MS = 1_500;
 /** How often a watch looks again, for an end its events didn't tell. */
 const WATCH_LOOK_MS = 5_000;
+/** How long a follow lasts with no end of its turn told. */
+export const FOLLOW_MINUTES = 480;
+/** A followed session seen at rest this long after its work was given, with the
+ *  turn never seen under way (too short for an event or a look), is done. */
+export const FOLLOW_REST_MS = 30_000;
 
 /** Where the session is for a watch: at rest only when it isn't compacting and no
  *  prompt of Duck's is on its way in (its phase doesn't show those yet). A `/compact`
@@ -677,10 +706,196 @@ const settledAs = (port: WorkbenchPort, s: SessionRef): SessionPhase | null =>
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
+const inTurn = (phase: SessionPhase | null | undefined) => phase === "working" || phase === "needs_you";
+
+type WatchedSession = Pick<SessionRef, "id" | "title" | "projectId">;
+
+interface WatchOpts {
+  /** What the user asked for; null for a follow alone (no wait_for_session). */
+  until: Until | null;
+  timeoutMin: number;
+  /** At a prompt when the watch began: said in the tool's result. */
+  open: SessionRef | null;
+  /** Follow from the start, as `Watch.follow` (`seen`: the prompt to leave out;
+   *  `begun`: carried over from the watch this one replaces). */
+  follow?: { seen: string | null; begun?: boolean };
+}
+
+function watchSession(ctx: ToolContext, s: WatchedSession, opts: WatchOpts): Watch {
+  const { port, threadId } = ctx;
+  const { until, timeoutMin, open } = opts;
+  const current = () => port.listSessions().find((x) => x.id === s.id);
+  const key = `${threadId}:${s.id}`;
+  watches.get(key)?.stop();
+  const name = `"${s.title}" (${projectName(port, s)}, id ${s.id})`;
+  /** What the user asked to be told; the rest is told because this thread gave
+   *  the session its work. */
+  const asked = (what: "prompt" | "end") =>
+    until !== null && (what === "prompt" ? until !== "done" : until !== "needs_you");
+  const why = (what: "prompt" | "end") =>
+    asked(what) ? "The user asked to be told." : "You gave it work from this thread, so you're told without a watch.";
+  let following = false;
+  let begun = true;
+  let since = 0;
+  /** The prompts told (or open when the watch began), by id: each is told once. */
+  const told = new Set<string>();
+  /** This stretch of needs-you was told; `bare`: before its prompt was in the
+   *  store, so the prompt that turns up for it isn't told again. */
+  let toldNow = false;
+  let bare = false;
+  let stopped = false;
+  const tellsPrompts = () => asked("prompt") || following;
+  const tellsEnd = () => asked("end") || following;
+  /** The prompt open now, and `seen`, aren't news. */
+  const leaveOut = (now: SessionRef | undefined, seen: string | null) => {
+    if (seen) told.add(seen);
+    if (now?.phase !== "needs_you") return;
+    toldNow = true;
+    if (now.choice) told.add(now.choice.id);
+    else bare = true;
+  };
+  if (open) leaveOut(open, null);
+
+  const finish = (phase: SessionPhase) => {
+    stop();
+    ctx.later(`Session ${name} is now ${phase}. ${why("end")}`);
+  };
+  /** A needs-you: tell its prompt once the trust watcher has had its say (one it
+   *  answers itself isn't news), and go on watching. */
+  const prompted = (now: SessionRef) => {
+    const c = now.choice;
+    if (c) {
+      if (told.has(c.id)) return;
+      told.add(c.id);
+      if (bare) {
+        bare = false;
+        return;
+      }
+    } else {
+      if (toldNow) return;
+      bare = true;
+    }
+    toldNow = true;
+    void port.tellNeedsYou(now.id).then((yes) => {
+      const again = current();
+      if (!yes || stopped || !again) return;
+      const shown = again.choice;
+      // Answered, or closed, while the hold decided: nothing to tell.
+      if (c ? shown?.id !== c.id || shown.sent !== null : again.phase !== "needs_you") return;
+      if (shown) told.add(shown.id);
+      if (!c && shown) bare = false;
+      const what = shown ? `: ${choiceLine(shown)}` : "";
+      const next = tellsEnd() ? "for its next prompt and the end of its turn" : "for its next prompt";
+      ctx.later(`Session ${name} is now needs_you${what}. ${why("prompt")} Still watching it ${next}.`);
+    });
+  };
+  const look = (phase: SessionPhase | null, now: SessionRef | undefined) => {
+    if (stopped) return;
+    if (phase === "ended") return finish(phase);
+    // Compacting, or a prompt or an answer still going in: not yet.
+    if (phase === null) return;
+    if (inTurn(phase)) begun = true;
+    if (phase === "needs_you") {
+      if (tellsPrompts() && now) prompted(now);
+      return;
+    }
+    toldNow = false;
+    bare = false;
+    if (phase !== "done") return;
+    if (asked("end")) return finish(phase);
+    if (!following) return;
+    // Done before the followed turn was seen to start is the last turn's end,
+    // unless it has sat at rest so long that the turn came and went unseen.
+    if (!begun && Date.now() - since < FOLLOW_REST_MS) return;
+    if (until === null) return finish(phase);
+    // A needs_you watch the user asked for goes on; the turn's end is told.
+    following = false;
+    ctx.later(`Session ${name} is now done. ${why("end")} Still watching it for its next prompt.`);
+  };
+  const settled = () => {
+    const now = current();
+    look(now ? settledAs(port, now) : null, now);
+  };
+  const off = port.onPhase((id, phase, prev) => {
+    if (id !== s.id) return;
+    if (inTurn(prev)) begun = true;
+    // Done while it still compacts, or before Duck's prompt went in: not yet.
+    const now = current();
+    if (phase !== "ended" && now && settledAs(port, now) === null) return;
+    look(phase, now);
+  });
+  // A prompt right after another opens with no phase change: its choice does.
+  const offChoices = port.onChoices(() => {
+    if (tellsPrompts()) settled();
+  });
+  // A compaction from rest ends with no phase change.
+  const offCompaction = port.onCompactionEnd((id) => {
+    if (id === s.id) settled();
+  });
+  // And for anything they all missed (a prompt that wasn't taken, an event lost
+  // on the way from another machine).
+  const timerLook = setInterval(settled, WATCH_LOOK_MS);
+  const timer = setTimeout(() => {
+    stop();
+    const now = current();
+    ctx.later(
+      `Session ${name} is still ${now?.compacting ? "compacting" : (now?.phase ?? "unknown")} after ${timeoutMin} minutes; stopped watching it.`,
+    );
+  }, timeoutMin * 60_000);
+  function stop() {
+    stopped = true;
+    off();
+    offChoices();
+    offCompaction();
+    clearInterval(timerLook);
+    clearTimeout(timer);
+    if (watches.get(key) === watch) watches.delete(key);
+  }
+  const watch: Watch = {
+    stop,
+    follow(seen) {
+      const now = current();
+      following = true;
+      begun = inTurn(now?.phase);
+      since = Date.now();
+      leaveOut(now, seen);
+    },
+    get following() {
+      return following;
+    },
+    get begun() {
+      return begun;
+    },
+  };
+  watches.set(key, watch);
+  if (opts.follow) {
+    watch.follow(opts.follow.seen);
+    if (opts.follow.begun) begun = true;
+  }
+  return watch;
+}
+
+/** Follow `s` for this thread, which just gave it work (create_session with a
+ *  prompt, send_prompt, answer_choice): its next prompts and the end of the turn
+ *  come back as events with no wait_for_session (`seen`: the prompt just answered,
+ *  not to be told again). A watch already there follows it too. Duck's workers and
+ *  a running autopilot report on their own. */
+export function followSession(
+  ctx: ToolContext,
+  s: WatchedSession & { duckTask?: string | null },
+  seen: string | null = null,
+): void {
+  if (s.duckTask) return;
+  if (ctx.autopilot?.get(s.id)?.state === "running") return;
+  const w = watches.get(`${ctx.threadId}:${s.id}`);
+  if (w) return w.follow(seen);
+  watchSession(ctx, s, { until: null, timeoutMin: FOLLOW_MINUTES, open: null, follow: { seen } });
+}
+
 export const waitForSession = defineTool({
   name: "wait_for_session",
   description:
-    "Watch a session and get told when it finishes its turn (done), starts waiting on the user (needs_you), or either. A watch on needs_you or either tells every prompt the session opens (a permission request, a question, a plan), one event each, including one right after a prompt you answered, and keeps watching: either ends at the end of the turn, needs_you at the timeout. There's no need to watch again after answering. A compaction isn't the end: a session that is compacting, or that a prompt of yours is still going into, is waited for. Returns at once; the news arrives later as a <workbench_event> message, and then you tell the user. Use it for \"tell me when it's done\". Watches don't survive an app restart.",
+    "Watch a session and get told when it finishes its turn (done), starts waiting on the user (needs_you), or either. A watch on needs_you or either tells every prompt the session opens (a permission request, a question, a plan), one event each, including one right after a prompt you answered, and keeps watching: either ends at the end of the turn, needs_you at the timeout. There's no need to watch again after answering. A compaction isn't the end: a session that is compacting, or that a prompt of yours is still going into, is waited for. Returns at once; the news arrives later as a <workbench_event> message, and then you tell the user. Use it for \"tell me when it's done\". A session you gave work from this thread (create_session with a prompt, send_prompt, answer_choice) is followed anyway: you're told its next prompts and the end of that turn with no watch. Watches don't survive an app restart.",
   schema: z.object({
     ...sessionArgs,
     until: z.enum(["done", "needs_you", "either"]).default("either"),
@@ -716,105 +931,11 @@ export const waitForSession = defineTool({
       }
     }
 
-    const key = `${threadId}:${s.id}`;
-    watches.get(key)?.();
-    const name = `"${s.title}" (${projectName(port, s)}, id ${s.id})`;
-    const prompts = until !== "done";
-    /** The prompts told (or open when the watch began), by id: each is told once. */
-    const told = new Set<string>();
-    /** This stretch of needs-you was told; `bare`: before its prompt was in the
-     *  store, so the prompt that turns up for it isn't told again. */
-    let toldNow = false;
-    let bare = false;
-    let stopped = false;
-    if (open) {
-      toldNow = true;
-      if (open.choice) told.add(open.choice.id);
-      else bare = true;
-    }
-    const finish = (phase: SessionPhase) => {
-      stop();
-      ctx.later(`Session ${name} is now ${phase}. The user asked to be told.`);
-    };
-    /** A needs-you: tell its prompt once the trust watcher has had its say (one it
-     *  answers itself isn't news), and go on watching. */
-    const prompted = (now: SessionRef) => {
-      const c = now.choice;
-      if (c) {
-        if (told.has(c.id)) return;
-        told.add(c.id);
-        if (bare) {
-          bare = false;
-          return;
-        }
-      } else {
-        if (toldNow) return;
-        bare = true;
-      }
-      toldNow = true;
-      void port.tellNeedsYou(now.id).then((yes) => {
-        const again = current();
-        if (!yes || stopped || !again) return;
-        const shown = again.choice;
-        // Answered, or closed, while the hold decided: nothing to tell.
-        if (c ? shown?.id !== c.id || shown.sent !== null : again.phase !== "needs_you") return;
-        if (shown) told.add(shown.id);
-        if (!c && shown) bare = false;
-        const why = shown ? `: ${choiceLine(shown)}` : "";
-        const next = until === "either" ? "for its next prompt and the end of its turn" : "for its next prompt";
-        ctx.later(`Session ${name} is now needs_you${why}. The user asked to be told. Still watching it ${next}.`);
-      });
-    };
-    const look = (phase: SessionPhase | null, now: SessionRef | undefined) => {
-      if (stopped) return;
-      if (phase === "ended") return finish(phase);
-      // Compacting, or a prompt or an answer still going in: not yet.
-      if (phase === null) return;
-      if (phase === "needs_you") {
-        if (prompts && now) prompted(now);
-        return;
-      }
-      toldNow = false;
-      bare = false;
-      if (phase !== "working" && reached(until, phase)) finish(phase);
-    };
-    const settled = () => {
-      const now = current();
-      look(now ? settledAs(port, now) : null, now);
-    };
-    const off = port.onPhase((id, phase) => {
-      if (id !== s.id) return;
-      // Done while it still compacts, or before Duck's prompt went in: not yet.
-      const now = current();
-      if (phase !== "ended" && now && settledAs(port, now) === null) return;
-      look(phase, now);
-    });
-    // A prompt right after another opens with no phase change: its choice does.
-    const offChoices = prompts ? port.onChoices(settled) : () => {};
-    // A compaction from rest ends with no phase change.
-    const offCompaction = port.onCompactionEnd((id) => {
-      if (id === s.id) settled();
-    });
-    // And for anything they all missed (a prompt that wasn't taken, an event lost
-    // on the way from another machine).
-    const timerLook = setInterval(settled, WATCH_LOOK_MS);
-    const timer = setTimeout(() => {
-      stop();
-      const now = current();
-      ctx.later(
-        `Session ${name} is still ${now?.compacting ? "compacting" : (now?.phase ?? "unknown")} after ${timeoutMin} minutes; stopped watching it.`,
-      );
-    }, timeoutMin * 60_000);
-    function stop() {
-      stopped = true;
-      off();
-      offChoices();
-      offCompaction();
-      clearInterval(timerLook);
-      clearTimeout(timer);
-      if (watches.get(key) === stop) watches.delete(key);
-    }
-    watches.set(key, stop);
+    // A follow this thread has on the session carries over: its turn's end is
+    // still told, whatever this watch is for.
+    const prev = watches.get(`${threadId}:${s.id}`);
+    const follow = prev?.following ? { seen: null, begun: prev.begun } : undefined;
+    watchSession(ctx, s, { until, timeoutMin, open, follow });
     if (open) return { session: s.title, already: "needs_you", watching: until, forMinutes: timeoutMin };
     return { session: s.title, watching: until, forMinutes: timeoutMin };
   },

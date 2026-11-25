@@ -8,7 +8,8 @@ import {
   type FakePortData,
 } from "../fakePort.test-util";
 import { createPolicy } from "../policy";
-import type { ChoiceRef, WorktreeLoss, WorktreeRef } from "../port";
+import type { AutopilotManager } from "../autopilot";
+import type { ChoiceRef, SessionPhase, WorktreeLoss, WorktreeRef } from "../port";
 import { DEFAULT_SETTINGS } from "../settings";
 import {
   ACT_TOOLS,
@@ -607,6 +608,186 @@ describe("wait_for_session on every prompt", () => {
     port.setChoice("i1", prompt("c8"));
     await vi.advanceTimersByTimeAsync(0);
     expect(ctx.posted).toHaveLength(1);
+  });
+});
+
+describe("following a session this thread gave work", () => {
+  const prompt = (id: string, extra: Partial<ChoiceRef> = {}): ChoiceRef => ({ ...choice, id, ...extra });
+  /** The fixture's sessions plus "plans" (i9), at rest after a turn. */
+  function setup(extra: { autopilot?: boolean; worker?: boolean } = {}) {
+    vi.useFakeTimers();
+    const d = data();
+    d.sessions!.push(
+      session({ id: "i9", projectId: "p1", title: "plans", phase: "done", duckTask: extra.worker ? "task-1" : null }),
+    );
+    const port = fakePort(d);
+    const ctx = toolCtx(port);
+    if (extra.autopilot) ctx.autopilot = { get: () => ({ state: "running" }) } as unknown as AutopilotManager;
+    const at = (id: string) => d.sessions!.find((x) => x.id === id)!;
+    /** Move a session to `phase`, as the status engine reports it. */
+    const to = (id: string, phase: SessionPhase) => {
+      const s = at(id);
+      const prev = s.phase;
+      s.phase = phase;
+      port.phase(id, phase, prev);
+    };
+    const call = (tool: ToolDef, input: unknown) =>
+      tool.run(tool.schema.parse(input), ctx) as Promise<Record<string, unknown>>;
+    const flush = () => vi.advanceTimersByTimeAsync(0);
+    return { d, port, ctx, at, to, call, flush };
+  }
+
+  it("send_prompt: tells the end of the turn it started, once, with no wait_for_session", async () => {
+    const { ctx, to, call } = setup();
+    await call(sendPrompt, { session: "plans", text: "build the APK" });
+    to("i9", "working");
+    expect(ctx.posted).toEqual([]);
+    to("i9", "done");
+    expect(ctx.posted).toHaveLength(1);
+    expect(ctx.posted[0]).toMatch(/^Session "plans" \(Backend, id i9\) is now done\. You gave it work from this thread/);
+    // The follow ended with the turn: the next one isn't told.
+    to("i9", "working");
+    to("i9", "done");
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(ctx.posted).toHaveLength(1);
+  });
+
+  it("doesn't take the last turn's rest for the end, unless the turn came and went unseen", async () => {
+    const { ctx, call } = setup();
+    await call(sendPrompt, { session: "plans", text: "quick one" });
+    // Still at done from the last turn on the next looks: not the end yet.
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(ctx.posted).toEqual([]);
+    // No turn was ever seen (another machine's events lost), and it sits at rest.
+    await vi.advanceTimersByTimeAsync(25_000);
+    expect(ctx.posted).toHaveLength(1);
+    expect(ctx.posted[0]).toMatch(/is now done\./);
+  });
+
+  it("answer_choice: the answered prompt isn't told again, the next one and the end are", async () => {
+    const { port, ctx, at, to, call, flush } = setup();
+    // "api" (i1) waits on c7.
+    await call(answerChoice, { session: "api", choiceId: "c7", option: 1 });
+    // Another machine's mirror still shows c7 unanswered for a while.
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(ctx.posted).toEqual([]);
+    port.setChoice("i1", null);
+    to("i1", "working");
+    at("i1").phase = "needs_you";
+    port.setChoice("i1", prompt("c8", { input: { command: "npm run build" } }));
+    port.phase("i1", "needs_you", "working");
+    await flush();
+    expect(ctx.posted).toHaveLength(1);
+    expect(ctx.posted[0]).toMatch(/is now needs_you: .*npm run build.*Still watching it for its next prompt and the end of its turn\./);
+    // Answered again: still followed, the end is told.
+    await call(answerChoice, { session: "api", choiceId: "c8", option: 1 });
+    port.setChoice("i1", null);
+    to("i1", "working");
+    to("i1", "done");
+    expect(ctx.posted).toHaveLength(2);
+    expect(ctx.posted[1]).toMatch(/^Session "api" .* is now done\./);
+  });
+
+  it("create_session with a prompt: tells its first prompt and the end of its first turn", async () => {
+    const { d, port, ctx, call, flush } = setup();
+    const out = await call(createSession, { project: "Backend", title: "apk", prompt: "build the APK" });
+    const s = session({ id: String(out.id), projectId: "p1", title: "apk", phase: "offline" });
+    d.sessions!.push(s);
+    s.phase = "working";
+    port.phase(s.id, "working", "offline");
+    s.phase = "needs_you";
+    port.setChoice(s.id, prompt("t1"));
+    port.phase(s.id, "needs_you", "working");
+    await flush();
+    expect(ctx.posted).toHaveLength(1);
+    expect(ctx.posted[0]).toMatch(/^Session "apk" .* is now needs_you/);
+    port.setChoice(s.id, null);
+    s.phase = "done";
+    port.phase(s.id, "done", "needs_you");
+    expect(ctx.posted).toHaveLength(2);
+    expect(ctx.posted[1]).toMatch(/is now done\./);
+
+    // Without a prompt there's no turn to follow.
+    const bare = await call(createSession, { project: "Backend", title: "empty" });
+    d.sessions!.push(session({ id: String(bare.id), projectId: "p1", title: "empty", phase: "done" }));
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(ctx.posted).toHaveLength(2);
+  });
+
+  it("shares the watch the user asked for: one event, said as theirs", async () => {
+    const { ctx, to, call } = setup();
+    await call(waitForSession, { session: "tests" }); // i2, working
+    await call(sendPrompt, { session: "tests", text: "and the docs", when: "now" });
+    to("i2", "done");
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(ctx.posted).toHaveLength(1);
+    expect(ctx.posted[0]).toMatch(/is now done\. The user asked to be told\.$/);
+  });
+
+  it("adds the prompts to a done-only watch it follows, and the end to a needs_you one", async () => {
+    const done = setup();
+    await done.call(waitForSession, { session: "api", until: "done" }); // at c7: a done watch
+    await done.call(answerChoice, { session: "api", choiceId: "c7", option: 1 });
+    done.port.setChoice("i1", null);
+    done.to("i1", "working");
+    done.at("i1").phase = "needs_you";
+    done.port.setChoice("i1", prompt("c8"));
+    await done.flush();
+    expect(done.ctx.posted).toHaveLength(1);
+    expect(done.ctx.posted[0]).toMatch(/needs_you: .*You gave it work from this thread/);
+    done.port.setChoice("i1", null);
+    done.to("i1", "working");
+    done.to("i1", "done");
+    expect(done.ctx.posted).toHaveLength(2);
+    expect(done.ctx.posted[1]).toMatch(/is now done\. The user asked to be told\.$/);
+    clearWatches();
+
+    const ny = setup();
+    await ny.call(waitForSession, { session: "plans", until: "needs_you" });
+    await ny.call(sendPrompt, { session: "plans", text: "go on" });
+    ny.to("i9", "working");
+    ny.to("i9", "done");
+    expect(ny.ctx.posted).toHaveLength(1);
+    expect(ny.ctx.posted[0]).toMatch(/is now done\. You gave it work .* Still watching it for its next prompt\.$/);
+    // The needs_you watch the user asked for goes on.
+    ny.to("i9", "working");
+    ny.at("i9").phase = "needs_you";
+    ny.port.setChoice("i9", prompt("p1"));
+    ny.port.phase("i9", "needs_you", "working");
+    await ny.flush();
+    expect(ny.ctx.posted).toHaveLength(2);
+    expect(ny.ctx.posted[1]).toMatch(/needs_you: .*The user asked to be told\. Still watching it for its next prompt\.$/);
+  });
+
+  it("carries a follow over when wait_for_session replaces it", async () => {
+    const { ctx, to, call } = setup();
+    await call(sendPrompt, { session: "tests", text: "more" }); // i2, working: followed
+    await call(waitForSession, { session: "tests", until: "needs_you" });
+    to("i2", "done");
+    expect(ctx.posted).toHaveLength(1);
+    expect(ctx.posted[0]).toMatch(/is now done\./);
+  });
+
+  it("a watch on a session already at a prompt also tells the end of the turn", async () => {
+    const { port, ctx, to, call } = setup();
+    expect(await call(waitForSession, { session: "api" })).toMatchObject({ already: "needs_you", watching: "either" });
+    port.setChoice("i1", null);
+    to("i1", "working");
+    to("i1", "done");
+    expect(ctx.posted).toHaveLength(1);
+    expect(ctx.posted[0]).toMatch(/is now done\. The user asked to be told\.$/);
+  });
+
+  it("leaves Duck's workers and a running autopilot to report on their own", async () => {
+    for (const opts of [{ worker: true }, { autopilot: true }]) {
+      const { ctx, to, call } = setup(opts);
+      await call(sendPrompt, { session: "plans", text: "go" });
+      to("i9", "working");
+      to("i9", "done");
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(ctx.posted).toEqual([]);
+      clearWatches();
+    }
   });
 });
 
